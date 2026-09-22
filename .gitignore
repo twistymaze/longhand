@@ -1,0 +1,8 @@
+# Upstream clones kept on disk for reference only — never tracked, never edited.
+reference-source/
+
+# OS / editor
+.DS_Store
+
+# Compound Engineering local scratch
+.context/compound-engineering/
