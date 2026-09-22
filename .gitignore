@@ -12,3 +12,10 @@ sample.m4a
 sample.txt
 fixtures/
 .env
+
+# Build output
+target/
+node_modules/
+dist/
+src-tauri/gen/
+src-tauri/transcribe-libs/

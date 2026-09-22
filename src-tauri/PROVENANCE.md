@@ -1,0 +1,76 @@
+# Provenance
+
+Handy-derived modules in the application crate, one record per file (R27).
+
+## `build.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/build.rs` (`stage_transcribe_runtime_libs`, `split_versioned_so`, `stage_vc_runtime_dlls`)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — Apple Intelligence bridge, tray translations, ONNX Runtime staging and Linux rpath removed; environment variable renamed `LONGHAND_VC_REDIST_DIRS`
+
+## `src/window.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/src/lib.rs` (`show_main_window`, the `CloseRequested` handler)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — settings-driven tray visibility removed; the window always hides to the tray
+
+## `src/tray.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/src/lib.rs` (tray builder, Windows click convention)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — menu reduced to open and quit
+
+## `src/managers/settings.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/src/settings.rs` (`get_settings`, `salvage_settings`, `apply_settings_migrations`, `write_settings`)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — Longhand schema; portable mode omitted; writes flush immediately
+
+## `src/lib.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/src/lib.rs` (tauri-specta builder, bindings export, `RunEvent::Reopen`)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified
+
+## `Entitlements.plist`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/Entitlements.plist`
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: copied
+
+## `Info.plist`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/Info.plist`
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — usage string
+
+## `capabilities/default.json`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/capabilities/default.json`
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — duplicated permission lines, the `**` asset scope and the filesystem plugin removed
+

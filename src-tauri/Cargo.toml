@@ -1,0 +1,40 @@
+[package]
+name = "longhand"
+version = "0.1.0"
+description = "Longhand"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+default-run = "longhand"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name, which
+# otherwise collides on Windows (rust-lang/cargo#8519). Same as Handy.
+name = "longhand_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2.6"
+tauri-plugin-log = "2.7"
+tauri-plugin-notification = "=2.4.0"
+tauri-plugin-store = "2.4"
+# Compiles to a no-op off macOS; registered everywhere so one capability file
+# resolves on every platform (as Handy does).
+tauri-plugin-macos-permissions = "2.3.0"
+
+specta.workspace = true
+specta-typescript.workspace = true
+tauri-specta.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+sha2 = "0.10"
+
+secrets = { path = "../crates/secrets" }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "=2.3.2"
