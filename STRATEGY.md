@@ -21,7 +21,7 @@ The transcript is the system of record, so the notes can stay lazy: a scratchpad
 
 ## Boundaries
 
-- **No third party holds the store.** Inference can go to an endpoint you trust; the audio, transcripts, and notes stay on your machine.
+- **No provider is forced on you.** The system of record — audio, transcripts, and notes — is held on your machine, and no feature depends on a third party holding it. Which providers see your data is your choice, made per stage and visible in the app: local by default, pointable at an endpoint you trust. A cloud recognition or summarization option is consistent with this boundary; a default that quietly ships your data somewhere is not.
 - **No calendar integration.** Not auto-start, not prefill. Calendar access inside an enterprise is complicated; revisit only if a genuinely simple path appears.
 - **No speaker identity.** Diarization marks that the speaker changed so an LLM can follow the turn-taking. No voiceprints, no enrollment, no names.
 - **No note-organization scheme.** Folders, and that's it. No inter-note linking, no graph, no tag system — Obsidian already exists and Longhand hands off to it.
@@ -29,7 +29,7 @@ The transcript is the system of record, so the notes can stay lazy: a scratchpad
 - **No distribution machinery until someone asks.** Cross-platform correctness from day one; installers and update paths only when a real person wants one.
 - **No time limits.** A four-hour session is a supported case, not an edge case.
 
-_Resist a change when:_ it makes Longhand the place your knowledge lives, or adds a dependency on something outside your machine. Expose the data and let something else do it.
+_Resist a change when:_ it makes Longhand the place your knowledge lives, or makes something outside your machine unavoidable. Expose the data and let something else do it.
 
 ## Key metrics
 
