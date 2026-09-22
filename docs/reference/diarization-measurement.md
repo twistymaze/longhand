@@ -111,6 +111,54 @@ This session runs at three times that, and a four-hour session would run at four
 times. The 149 fragments and the weak boundary agreement are what a 6 s hop
 produces; they are not evidence about the models.
 
+### Confirming the cause: the same audio at the native hop
+
+Rerun unchanged except for `max_windows: 6000`, which holds the hop at 2.00 s
+across all three hours.
+
+| Measure | cap 1800 (hop 6.02 s) | cap 6000 (hop 2.00 s) |
+|---|---|---|
+| Labels emitted | 149 | **7** |
+| Speech mass in top 6 labels | 88.7% | **100.0%** |
+| Speakers per 5-min window (reference: 4) | 12 | **4** |
+| Speakers per 10-min window (reference: 5) | 21 | 4 |
+| Turn count ratio vs reference | 1.354 | **1.056** |
+| Windowed DER, 5 min | 0.580 | **0.480** |
+| Boundary agreement F1 | 0.395 | 0.349 |
+| Gate | PASS | PASS |
+
+Seven labels against a real headcount of five or six, with the top six holding
+all the speech. The fragment tail is gone entirely, and the per-window speaker
+count matches the reference exactly. The hop was the whole cause.
+
+Boundary agreement F1 dips because fewer labels mean fewer turn changes, and
+recall is measured against a reference that itself over-segments into 16 labels.
+Precision rose, 0.457 to 0.516, which is the trustworthy direction here.
+
+### Cost of the fix
+
+| Measure | cap 1800 | cap 6000 | Delta |
+|---|---|---|---|
+| Peak RSS | 1.121 GB | 1.164 GB | **+43 MB** |
+| Wall time, 3.01 h of audio | 725 s | 2,103 s | **2.9x** |
+| Realtime factor | 0.067 | 0.194 | |
+
+Memory is not the constraint. `linkage` allocates an n x n f32 distance matrix,
+which is 13 MB at 1,800 windows, 52 MB at 3,612, and 209 MB at 7,228; embeddings
+are negligible beside it at 256 floats per window. Wall time scales close to
+linearly with window count rather than quadratically, so embedding dominates and
+the cap can rise without the cost exploding.
+
+`max_windows` is very nearly 30 per minute of audio:
+
+| Cap | Session length held at a 2 s hop |
+|---|---|
+| 1,804 | 60 min |
+| 2,708 | 90 min |
+| **3,612** | **120 min** |
+| 5,420 | 180 min |
+| 7,228 | 240 min |
+
 ### Resource profile
 
 | Measure | Value |
@@ -132,16 +180,21 @@ produces; they are not evidence about the models.
 
 **PASS, with one design consequence for U9.**
 
+Settled: `max_windows` rises to **3,612**, holding the native 2 s hop for
+sessions up to 120 minutes, and sessions longer than that are clustered in
+consecutive windows of at most that length. Speaker numbering continues across
+windows rather than restarting, so one person may carry two labels while a label
+never covers two people. The reasoning below records why.
+
 The borrowed stack is sound: 11.2% DER against human annotation, with speaker
 counts recovered exactly on recordings up to 39 minutes. It degrades on long
 sessions for a single identifiable reason, and the fix is structural rather than
 a model change.
 
-**Diarize in windows shorter than 60 minutes rather than over the whole
-session.** This keeps the hop at its native 2 s, bounds embedding memory by
-window length instead of session length, and costs nothing the product needs:
-labels are only required to be coherent within a window, because the summarizer
-reads a window at a time.
+**Hold the native 2 s hop, and cap the clustering window rather than the
+session.** The hop is what decides quality; the cap only decides how much
+compute a very long session spends. 120 minutes covers routine use in a single
+window, and memory at that size is 52 MB, which nothing in R7 notices.
 
 **Do not apply a global exact speaker count on a long session.** The Risk table
 named R36's count as the first lever when diarization underperforms; measured
