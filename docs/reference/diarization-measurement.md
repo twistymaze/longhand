@@ -53,8 +53,101 @@ Upstream match: PENDING.
 
 ## Results
 
-PENDING.
+### The gate
+
+| Run | Multi-speaker 5-min windows kept | Turn ratio | Verdict |
+|---|---|---|---|
+| Unconstrained | 37/37 = 1.000 | 1.354 | **PASS** |
+| Bounded at 6 (`--exact-speakers`) | 29/37 = 0.784 | 0.605 | FAIL |
+
+**Phase 1 passes on the unconstrained configuration.** The session does not
+collapse into a monologue, which is the only outcome that would have blocked
+Phase 2.
+
+### Absolute DER, human ground truth
+
+12 files, 4.67 hours, collar 0.25. Every file here is between 7 and 39 minutes.
+
+| Corpus | Files | DER | miss | FA | conf | Speaker count recovery |
+|---|---|---|---|---|---|---|
+| AMI single distant mic | 6 | 0.096 - 0.248 | 0.045 - 0.171 | 0.020 - 0.034 | 0.017 - 0.051 | 4->4 on three, 4->6, 4->5, 4->2 |
+| VoxConverse | 6 | 0.018 - 0.078 | 0.001 - 0.040 | 0.006 - 0.036 | 0.009 - 0.027 | 7->7, 12->12, 10->10, 9->10, 2->2, 3->2 |
+| **Overall** | **12** | **0.1124** | 0.0640 | 0.0247 | 0.0237 | 67 reference speakers, 68 found |
+
+The stack recovers twelve speakers from a twelve-speaker recording. Its quality
+is not in question.
+
+### The session, and why it differs
+
+| Measure | Unconstrained | Bounded at 6 |
+|---|---|---|
+| Labels emitted | 149 | 6 |
+| Speech mass in top 6 labels | 88.7% | - |
+| Speakers per 5-min window (reference: 4) | 12 | 2 |
+| Boundary agreement F1, label-free | 0.395 | 0.032 |
+| Windowed DER, 5 min | 0.580 | 0.559 |
+| Global DER from the eval binary | 2.361 | 0.569 |
+
+The last two rows disagree about which run is better, and the structural
+measures are the ones to believe. Global DER rewards the bounded run for having
+the right number of labels while it merges four speakers into two inside a
+window; that is the error that flattens an exchange.
+
+### Root cause: `max_windows` stretches the analysis hop
+
+`DiarizationConfig::max_windows` is 1800 and `step_samples` grows the hop so the
+window count stays under it. The hop is therefore a function of session length:
+
+| Session length | Effective hop |
+|---|---|
+| 20 min | 1.99 s |
+| 39 min | 1.99 s |
+| 59.9 min | 2.00 s (the cliff) |
+| 3.01 h (this session) | 6.02 s |
+| 4 h | 8.02 s |
+
+Every corpus file above sits under the cliff and runs at the native 2 s hop.
+This session runs at three times that, and a four-hour session would run at four
+times. The 149 fragments and the weak boundary agreement are what a 6 s hop
+produces; they are not evidence about the models.
+
+### Resource profile
+
+| Measure | Value |
+|---|---|
+| Realtime factor | 0.067 (3.01 h diarized in 12.1 min; a 4 h session costs ~16 min) |
+| Peak RSS, as measured | 1.12 GB |
+| Audio buffer within that | 694 MB (the eval binary reads the whole WAV into a `Vec<f32>`) |
+| Working set, buffer subtracted | ~430 MB -- the figure R7 constrains, since the shipping path reads through a file-backed source |
+| Growth over three hours | none; RSS was flat from minute 3 onward |
+
+### Risks this retires
+
+- **Segmentation cap.** Only 1.0% of 10-second windows carry four or more
+  distinct speakers, so the three-distinct-speakers-per-window limit almost
+  never binds on this material.
+- **Memory at length.** Flat, not growing with session length.
 
 ## Verdict
 
-PENDING.
+**PASS, with one design consequence for U9.**
+
+The borrowed stack is sound: 11.2% DER against human annotation, with speaker
+counts recovered exactly on recordings up to 39 minutes. It degrades on long
+sessions for a single identifiable reason, and the fix is structural rather than
+a model change.
+
+**Diarize in windows shorter than 60 minutes rather than over the whole
+session.** This keeps the hop at its native 2 s, bounds embedding memory by
+window length instead of session length, and costs nothing the product needs:
+labels are only required to be coherent within a window, because the summarizer
+reads a window at a time.
+
+**Do not apply a global exact speaker count on a long session.** The Risk table
+named R36's count as the first lever when diarization underperforms; measured
+here, it is a regression -- a single global cut cannot track a voice across three
+hours of far-field drift, so it merges speakers inside a window while splitting
+them across windows. R36 stays useful per window, not per session.
+
+**Filter clusters by speech mass.** The top 6 of 149 labels hold 88.7% of
+speech. `min_cluster_seconds: 12.0` is far too permissive at this length.
