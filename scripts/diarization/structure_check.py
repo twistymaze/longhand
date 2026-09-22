@@ -209,6 +209,23 @@ def main() -> None:
     print(f"  boundary agreement +/-{args.tolerance}s   "
           f"P={precision:.3f} R={recall:.3f} F1={f1:.3f}")
 
+    for size in (300.0, 600.0):
+        ref_counts = [len(speakers_in(ref, a, b)) for a, b in windows(total, size)]
+        hyp_counts = [len(speakers_in(hyp, a, b)) for a, b in windows(total, size)]
+        print(f"  speakers per {size / 60:.0f}-min window     "
+              f"ref median {int(np.median(ref_counts))} max {max(ref_counts)}   "
+              f"hyp median {int(np.median(hyp_counts))} max {max(hyp_counts)}")
+
+    mass = defaultdict(float)
+    for a, b, speaker in hyp:
+        mass[speaker] += b - a
+    ranked = sorted(mass.values(), reverse=True)
+    whole = sum(ranked) or 1.0
+    for top in (6, 16):
+        if len(ranked) > top:
+            print(f"  hyp speech mass in top {top:<2} labels  "
+                  f"{sum(ranked[:top]) / whole:.1%} of {len(ranked)} labels")
+
     dense = sum(
         1 for a, b in windows(total, 10.0, 2.0)
         if len(speakers_in(ref, a, b)) >= 4
