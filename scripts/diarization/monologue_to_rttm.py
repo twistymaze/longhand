@@ -54,6 +54,12 @@ def main() -> None:
     parser.add_argument("--duration", type=float, help="audio duration in seconds")
     parser.add_argument("--min-duration", type=float, default=0.1,
                         help="drop turns shorter than this after closing (default 0.1 s)")
+    parser.add_argument("--collapse-labels", type=int, metavar="N",
+                        help="rewrite the labels onto N of them, keeping boundaries identical. "
+                             "`diarization-eval --exact-speakers` takes its speaker bound from the "
+                             "count of distinct labels in the reference and offers no flag of its "
+                             "own, so this exists solely to set that bound to the number of people "
+                             "actually present. It asserts nothing about who spoke when.")
     args = parser.parse_args()
 
     turns = parse(args.transcript)
@@ -68,6 +74,19 @@ def main() -> None:
         sys.exit("pass --audio or --duration so the final turn can be closed")
     if end <= turns[-1][0]:
         sys.exit(f"duration {end:.2f}s is not after the last turn at {turns[-1][0]:.2f}s")
+
+    if args.collapse_labels is not None:
+        if args.collapse_labels < 1:
+            sys.exit("--collapse-labels needs a positive count")
+        ranked = sorted(
+            {s for _, s in turns},
+            key=lambda s: sum(1 for _, t in turns if t == s),
+            reverse=True,
+        )
+        keep = ranked[: args.collapse_labels - 1]
+        merged = f"spk{args.collapse_labels}"
+        remap = {s: (s if s in keep else merged) for s in ranked}
+        turns = [(start, remap[speaker]) for start, speaker in turns]
 
     stem = args.dest.stem
     lines, dropped = [], 0
@@ -89,6 +108,8 @@ def main() -> None:
     print(f"  {len(lines)} turns written ({dropped} dropped under {args.min_duration}s)")
     print(f"  {len(speakers)} distinct labels, spanning {end / 3600:.2f} h")
     print("  labels are NOT reliable; use this reference for boundaries only")
+    if args.collapse_labels is not None:
+        print(f"  labels collapsed to {args.collapse_labels} to set the eval binary's speaker bound")
 
 
 if __name__ == "__main__":
