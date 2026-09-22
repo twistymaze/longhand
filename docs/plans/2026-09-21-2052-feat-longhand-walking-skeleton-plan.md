@@ -15,7 +15,7 @@ execution: code
 - **Objective:** A four-hour in-person session recorded on one microphone survives to become a transcript with legible turn-taking and a summary shaped by what the user typed while it happened — without the user having lost the session to sleep, a crash, or an accidental stop.
 - **Product authority:** `STRATEGY.md` at the repo root. Its Boundaries section governs; this plan narrows within it and contradicts none of it.
 - **Active scope:** The end-to-end capture-to-summary path only. Library and browsing, Obsidian sync, and the CLI are separate work and are not active scope here, though they consume what this writes.
-- **Delivery shape:** Four phases, each ending in a validation checkpoint the user performs: prove diarization on a real session, then the happy path on real segments, then survivability, then durability and handoff.
+- **Delivery shape:** Four phases and five checkpoints, each performed by the user: prove diarization on a real session; prove the application shell runs on macOS; then the happy path on real segments, then survivability, then durability and handoff.
 - **Open blockers:** None. Phase 1's diarization measurement gates the turn-dependent units in Phases 2–4 but blocks nothing in Phase 1 itself.
 
 ---
@@ -536,13 +536,14 @@ sequenceDiagram
 ### Phased Delivery
 
 - **Phase 1 — Prove the risky assumption.** U1. The collapse gate is automated and needs no judgement call; the checkpoint is the user reading the recorded verdict and diagnostics, and a failed gate redirects U9's post-processing and the summary design.
-- **Phase 2 — End-to-end happy path.** U2–U12, plus U20 and U22. Segments and gaps are real from the first build because the timeline, note anchors, and transcript positions are all computed against them. Two things that read as survivability land here anyway, because the checkpoint stakes a real session on them: U22's idle-sleep assertion, since screensaver sleep is one of the failures the Problem Frame names and the checkpoint cannot be re-run cheaply; and U20's coverage verification, since landing is defined on a *verified* transcript (KD13) and a placeholder would let a truncated recap be the thing the user grades. Nothing else recovers from anything yet. Checkpoint: record a real Pathfinder session and one ordinary work meeting, and read both recaps, accepting that an interruption loses the session.
+- **Phase 2a — Prove the shell on macOS.** U2 and U3. Split out because this is the first Tauri build in this repo and its failures are toolchain failures, not design failures — cheaper to hit them with nothing else in flight. U2 declares the microphone entitlement, the global-shortcut permission and the notification permission but nothing exercises them until U7, so the checkpoint includes a dev-only probe that requests microphone access, registers a global shortcut and fires it once. The probe stays until U7 lands the real shortcut and U6 the real capture, so the checkpoint can be re-run while Phase 2b is in progress; it is removed as those units supersede it, not left as dead scaffolding. Windows stays in the workspace and in CI so nothing is written twice, but a red Windows job does not gate this checkpoint — U21 owns platform verification. Checkpoint: on this Mac, `bun tauri build` produces a bundle, the dev build launches, closing the window leaves it alive in the tray, the microphone prompt appears and is granted, a global shortcut fires, `src/bindings.ts` regenerates, and `cargo deny` and the provenance check pass.
+- **Phase 2b — End-to-end happy path.** U4–U12, plus U20 and U22. Segments and gaps are real from the first build because the timeline, note anchors, and transcript positions are all computed against them. Two things that read as survivability land here anyway, because the checkpoint stakes a real session on them: U22's idle-sleep assertion, since screensaver sleep is one of the failures the Problem Frame names and the checkpoint cannot be re-run cheaply; and U20's coverage verification, since landing is defined on a *verified* transcript (KD13) and a placeholder would let a truncated recap be the thing the user grades. Nothing else recovers from anything yet. Checkpoint: record a real Pathfinder session and one ordinary work meeting, and read both recaps, accepting that an interruption loses the session.
 - **Phase 3 — Survivability.** U13–U16. Checkpoint: unplug the microphone mid-session, close the lid, kill the process; each yields intact audio, a recorded gap, and an alert where one is due.
 - **Phase 4 — Durability and handoff.** U17–U19 and U21. Checkpoint: quit during processing and relaunch; land onto an external volume and a cloud-synced vault; launch a second instance; run the soak; verify notifications from an installed Windows build.
 
 ### Sequencing
 
-U1 first and alone. In Phase 2, U2 → U3 → U4 and U5 in parallel → U6 → U22 → U7 → U8 → U9 → U20 → U10 → U11 → U12; U20 sits before U11 so landing gates on real coverage from the first landed session, and it depends on U8's checkpointed window spans rather than on anything in Phase 4. Phase 3 units depend on U6 and U5 and can proceed in the order U13, U14, U15, U16. Phase 4: U17 first (the others assume liveness claims), then U18, U19, U21.
+U1 first and alone. Phase 2a is U2 → U3. Phase 2b resumes with U4 and U5 in parallel → U6 → U22 → U7 → U8 → U9 → U20 → U10 → U11 → U12; U20 sits before U11 so landing gates on real coverage from the first landed session, and it depends on U8's checkpointed window spans rather than on anything in Phase 4. Phase 3 units depend on U6 and U5 and can proceed in the order U13, U14, U15, U16. Phase 4: U17 first (the others assume liveness claims), then U18, U19, U21.
 
 ---
 
@@ -665,7 +666,7 @@ crates/
   - Input: the session WAV; action: run with `--exact-speakers`; expected: the run is bounded at the count derived from the reference, and the bounded and unconstrained speaker counts are both recorded.
 - **Verification:** `docs/reference/diarization-measurement.md` contains the frozen gate, the two gate statistics and a pass/fail verdict, the diagnostics from step 7, realtime factor and buffer-adjusted peak RSS; the weights measured are the ones that will ship; the clone is byte-identical to its pinned revision.
 
-### Phase 2 -- End-to-end happy path
+### Phase 2a -- Prove the shell on macOS
 
 ### U2. Workspace and application scaffold
 
@@ -676,7 +677,7 @@ crates/
 - **Approach:** Mirror Handy's single app crate inside a workspace; register tauri-specta with `collect_commands!`/`collect_events!` and generate `src/bindings.ts`. `build.rs` copies Handy's `transcribe-cpp` handling: `DEP_TRANSCRIBE_CPP_*` forwarding, runtime-lib staging that panics when zero libraries are found on dynamic platforms, MSVC runtime staging on Windows, `metal` static on macOS. Capabilities list `"windows": ["main"]`, `fs:scope` at `$APPDATA` only, `dialog:allow-open`, the notification and global-shortcut permission strings. `Info.plist` carries `NSMicrophoneUsageDescription`; `Entitlements.plist` carries both microphone entitlements; `tauri.conf.json` sets `hardenedRuntime` and points at the entitlements. Window close hides rather than exits, with the activation policy set between `build()` and `run()` (KTD11). CI runs fmt, clippy with `-D warnings`, tests, `cargo deny`, the provenance check, and a `tauri build` on `macos-latest` and `windows-latest`.
 - **Patterns to follow:** `reference-source/Handy/src-tauri/build.rs`, `reference-source/Handy/src-tauri/src/lib.rs` (specta builder, `CloseRequested` handling, activation-policy comment), `reference-source/Handy/src-tauri/capabilities/default.json` (without the duplicated permission lines and without the `**` asset scope), `reference-source/Handy/src-tauri/Info.plist`, `reference-source/Handy/src-tauri/Entitlements.plist`.
 - **Test scenarios:** Test expectation: none -- scaffolding and configuration; CI green on both platforms is the check.
-- **Verification:** `bun tauri build` produces an app bundle on macOS; the Windows CI job produces an installer; launching the dev build and closing the window leaves the process alive with a tray icon; `cargo deny check licenses` passes; `src/bindings.ts` regenerates from the Rust command set.
+- **Verification:** `bun tauri build` produces an app bundle on macOS; launching the dev build and closing the window leaves the process alive with a tray icon; `cargo deny check licenses` passes; `src/bindings.ts` regenerates from the Rust command set. A dev-only probe confirms the declared permissions actually work on this machine: the microphone prompt appears and returns a grant, and a registered global shortcut fires once. It is retained so the checkpoint stays reproducible during Phase 2b, and removed when U6 and U7 supersede it. The Windows CI job producing an installer is verified here but does not gate the checkpoint (Phased Delivery).
 
 ### U3. Borrowed foundation crates with provenance
 
@@ -693,6 +694,8 @@ crates/
   - Input: the mock provider configured to emit a 1 kHz tone; action: `open_mic_capture`; expected: frames arrive with the configured chunk size and the stream ends when told to.
   - Input: a `PROVENANCE.md` citing `reference-source/anarlog/enterprise/x.rs`; action: `check-provenance.sh`; expected: non-zero exit naming the file.
 - **Verification:** All four crates compile without `tauri` or `ractor`; the provenance check passes in CI; `restart.rs` tests port unchanged.
+
+### Phase 2b -- End-to-end happy path
 
 ### U4. Settings, secrets, destination roots, model acquisition
 
@@ -1113,12 +1116,12 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
 | `scripts/check-provenance.sh` | every change touching `crates/` or `src-tauri/src/` |
 | `grep -c 'name = "ort-sys"' Cargo.lock` equals 1 | every dependency change |
 | `bun install --frozen-lockfile && bun run typecheck && bun run lint && bun run test` | every frontend change |
-| `bun tauri build` | before each phase checkpoint on macOS; the Windows CI job on every push |
+| `bun tauri build` | before each phase checkpoint on macOS; the Windows CI job on every push, non-blocking until Phase 4 |
 | `CARGO_TARGET_DIR=$TMPDIR/anarlog-target cargo run --release --manifest-path reference-source/anarlog/Cargo.toml -p pyannote-local --features eval --bin diarization-eval -- <dir> --collar 0.25 --dump-dir <out>` | U1 only |
 | `uv run scripts/diarization/to_16k_wav.py`, `uv run scripts/diarization/monologue_to_rttm.py`, `uv run scripts/diarization/structure_check.py` | U1 and any diarization re-measurement |
 | `cargo run --release -p pyannote-local --features eval --bin diarization-eval -- <dir> --collar 0.25` | after U9, to reproduce the U1 gate statistics inside the workspace |
 
-Quality gates: clippy clean; all non-ignored tests green on macOS and Windows CI; `cargo deny` and the provenance check pass; a single `ort-sys`; the four phase checkpoints performed by the user and their outcomes noted in the plan's Appendix.
+Quality gates: clippy clean; all non-ignored tests green on macOS and Windows CI; `cargo deny` and the provenance check pass; a single `ort-sys`; the five phase checkpoints performed by the user and their outcomes noted in the plan's Appendix.
 
 ---
 
@@ -1127,7 +1130,7 @@ Quality gates: clippy clean; all non-ignored tests green on macOS and Windows CI
 **Global**
 
 - Every requirement R1–R36 with lettered variants is advanced by at least one unit, except R25 (the index rule, whose index is deferred to Library and browsing per Scope Boundaries) and R29 (the locality boundary, satisfied by R21, R24, R31 and R33 rather than by a unit of its own). Every AE is exercised by at least one test scenario or a named manual checkpoint step.
-- The four phase checkpoints have been performed by the user; a Phase 1 verdict is recorded in `docs/reference/diarization-measurement.md`.
+- The five phase checkpoints have been performed by the user; a Phase 1 verdict is recorded in `docs/reference/diarization-measurement.md`.
 - A complete Friday Pathfinder session has been captured, processed, landed, and read (Success Criteria).
 - Every borrowed crate and module has a complete `PROVENANCE.md`; no record cites `enterprise/`; no model weight is compiled into the binary.
 - No git dependencies in `Cargo.toml`; `cargo deny` passes; one `ort-sys` in the lockfile.
