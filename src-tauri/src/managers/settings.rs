@@ -3,8 +3,10 @@
 //! Shape follows Handy's `settings.rs` (one `#[serde(default)]` struct, a
 //! schema-version integer, migrations keyed on the stored version, salvage of
 //! individually valid fields); see src-tauri/PROVENANCE.md. Portable mode is
-//! omitted. The struct carries a single probe field in Phase 2a; U4 replaces
-//! it with the real schema through a version migration.
+//! omitted. Credentials are not settings: they live in the OS secret store,
+//! keyed by endpoint host (see `managers::secrets`).
+
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,23 +18,80 @@ use tauri_plugin_store::StoreExt;
 pub const SETTINGS_STORE_PATH: &str = "settings.json";
 const SETTINGS_KEY: &str = "settings";
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+
+/// The chord a fresh install records with. Obscure enough to collide with
+/// nothing common; the Phase 2a probe proved it registers on macOS.
+pub const DEFAULT_SHORTCUT: &str = "CommandOrControl+Alt+Shift+L";
+
+/// An optional bound on how many people are speaking (R36).
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SpeakerCountSetting {
+    Exact { count: u32 },
+    Range { min: u32, max: u32 },
+}
+
+impl SpeakerCountSetting {
+    pub fn validate(&self) -> Result<(), String> {
+        match *self {
+            Self::Exact { count } if count >= 1 => Ok(()),
+            Self::Range { min, max } if min >= 1 && min <= max => Ok(()),
+            Self::Exact { .. } => Err("a speaker count must be at least 1".into()),
+            Self::Range { .. } => {
+                Err("a speaker range must start at 1 or more and not run backwards".into())
+            }
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
     pub settings_schema_version: u32,
-    /// Phase 2a only: a value the checkpoint writes and reads back across a
-    /// relaunch and a rebuild.
-    pub probe_value: String,
+    pub shortcut: String,
+    /// Every folder the user has ever chosen, oldest first (R25a). The index
+    /// is rebuilt by scanning these, so a root is never dropped silently.
+    pub destination_roots: Vec<String>,
+    /// Where the next session lands (R23). Always one of the roots.
+    pub current_destination: Option<String>,
+    /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
+    pub endpoint_base_url: String,
+    pub endpoint_model: String,
+    /// Overrides the probed context budget when set (KTD16).
+    pub context_limit_tokens: Option<u32>,
+    pub default_speaker_count: Option<SpeakerCountSetting>,
+    /// Catalog id of the recognition model (KTD6).
+    pub asr_model: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             settings_schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
-            probe_value: String::new(),
+            shortcut: DEFAULT_SHORTCUT.to_string(),
+            destination_roots: Vec::new(),
+            current_destination: None,
+            endpoint_base_url: String::new(),
+            endpoint_model: String::new(),
+            context_limit_tokens: None,
+            default_speaker_count: None,
+            asr_model: models::DEFAULT_ASR_MODEL.to_string(),
         }
+    }
+}
+
+impl Settings {
+    /// Make `folder` the current destination and retain it as a root (R23, R25a).
+    pub fn choose_destination(&mut self, folder: &str) {
+        if !self.destination_roots.iter().any(|r| r == folder) {
+            self.destination_roots.push(folder.to_string());
+        }
+        self.current_destination = Some(folder.to_string());
+    }
+
+    pub fn endpoint_configured(&self) -> bool {
+        !self.endpoint_base_url.trim().is_empty() && !self.endpoint_model.trim().is_empty()
     }
 }
 
@@ -61,10 +120,16 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
         .unwrap_or(0);
     let mut updated = false;
     if stored_version < 1 {
-        // Nothing to transform yet; stamp the version so later migrations
-        // can key on it.
-        settings.settings_schema_version = 1;
+        // Nothing to transform; the version is stamped below.
         updated = true;
+    }
+    if stored_version < 2 {
+        // Version 1 carried only the Phase 2a probe field, which is dropped;
+        // every real field takes its default.
+        updated = true;
+    }
+    if updated {
+        settings.settings_schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     }
     updated
 }
@@ -123,9 +188,26 @@ pub fn get_settings(app: &AppHandle) -> Settings {
     settings
 }
 
+/// Serializes read-modify-write so two commands changing different fields
+/// never lose one another's change.
+static UPDATE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Apply `change` to the stored settings and persist the result. Nothing is
+/// written when `change` refuses.
+pub fn update_settings(
+    app: &AppHandle,
+    change: impl FnOnce(&mut Settings) -> Result<(), String>,
+) -> Result<Settings, String> {
+    let _guard = UPDATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settings = get_settings(app);
+    change(&mut settings)?;
+    write_settings(app, &settings)?;
+    Ok(settings)
+}
+
 /// Write and flush immediately: the store's autosave is debounced, and a
 /// setting changed just before quitting must survive the quit.
-pub fn write_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+fn write_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let store = app.store(SETTINGS_STORE_PATH).map_err(|e| e.to_string())?;
     store.set(
         SETTINGS_KEY,
@@ -155,37 +237,50 @@ mod tests {
     }
 
     #[test]
-    fn present_fields_survive_a_version_migration() {
-        let (settings, updated) = settings_from_value(&json!({ "probe_value": "kept" }));
+    fn a_phase_2a_store_migrates_onto_the_real_schema() {
+        let stored = json!({ "settings_schema_version": 1, "probe_value": "Test" });
+        let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings.probe_value, "kept");
-        assert_eq!(settings.settings_schema_version, 1);
+        assert_eq!(settings, Settings::default());
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("probe_value").is_none());
+        assert_eq!(saved["settings_schema_version"], 2);
+    }
+
+    #[test]
+    fn present_fields_survive_a_version_migration() {
+        let (settings, updated) =
+            settings_from_value(&json!({ "endpoint_model": "gpt-5", "destination_roots": ["/a"] }));
+        assert!(updated);
+        assert_eq!(settings.endpoint_model, "gpt-5");
+        assert_eq!(settings.destination_roots, ["/a"]);
     }
 
     #[test]
     fn unknown_field_loads_and_is_dropped_on_save() {
         let stored = json!({
-            "settings_schema_version": 1,
-            "probe_value": "x",
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "x",
             "from_the_future": true,
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated);
-        assert_eq!(settings.probe_value, "x");
+        assert_eq!(settings.endpoint_model, "x");
         let saved = serde_json::to_value(&settings).unwrap();
         assert!(saved.get("from_the_future").is_none());
     }
 
     #[test]
     fn one_invalid_field_keeps_the_rest() {
-        let stored = json!({ "settings_schema_version": "one", "probe_value": "kept" });
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "context_limit_tokens": "lots",
+            "endpoint_model": "kept",
+        });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings.probe_value, "kept");
-        assert_eq!(
-            settings.settings_schema_version,
-            CURRENT_SETTINGS_SCHEMA_VERSION
-        );
+        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(settings.context_limit_tokens, None);
     }
 
     #[test]
@@ -193,5 +288,39 @@ mod tests {
         let (settings, updated) = settings_from_value(&json!("garbage"));
         assert!(updated);
         assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn speaker_counts_must_be_positive_and_ordered() {
+        assert!(SpeakerCountSetting::Exact { count: 4 }.validate().is_ok());
+        assert!(SpeakerCountSetting::Exact { count: 0 }.validate().is_err());
+        assert!(
+            SpeakerCountSetting::Range { min: 2, max: 2 }
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            SpeakerCountSetting::Range { min: 5, max: 3 }
+                .validate()
+                .is_err()
+        );
+        assert!(
+            SpeakerCountSetting::Range { min: 0, max: 3 }
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn every_chosen_destination_is_retained_once() {
+        let mut settings = Settings::default();
+        for folder in ["/vault/a", "/vault/b", "/vault/a", "/vault/c"] {
+            settings.choose_destination(folder);
+        }
+        assert_eq!(
+            settings.destination_roots,
+            ["/vault/a", "/vault/b", "/vault/c"]
+        );
+        assert_eq!(settings.current_destination.as_deref(), Some("/vault/c"));
     }
 }

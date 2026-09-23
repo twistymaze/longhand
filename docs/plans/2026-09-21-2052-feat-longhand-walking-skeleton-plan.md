@@ -474,7 +474,7 @@ sequenceDiagram
 - Whisper large-v3-turbo through `transcribe-cpp` on Apple silicon runs near 10× realtime, so a four-hour session transcribes in roughly 25 minutes; the diarization stack's realtime factor is measured in U1.
 - The user's destination is usually an Obsidian vault under a sync client, so the ~115 MB Opus archive per four hours is the size that lands, and the 16 kHz processing WAV (~920 MB at four hours) stays in the working location and is deleted after landing.
 - Working-location space for a four-hour session is about 1.4 GB of native-rate WAV chunks plus ~920 MB of processing WAV plus the Opus archive; the free-space floor is 256 MB as in anarlog and the destination pre-check (R22c) adds the archive size plus margin.
-- The two diarization weights can be identified against upstream releases by checksum (`segmentation.onnx` against `pyannote/segmentation-3.0`; `embedding.onnx`, 256-dimensional over 80 mel bins, against the WeSpeaker ResNet34-LM release pyannote's pipeline uses) and downloaded under their own terms; if either cannot be matched, U9 selects a different upstream embedding model with a published licence rather than shipping the blob.
+- The two diarization weights can be identified against upstream releases by checksum (`segmentation.onnx` against `pyannote/segmentation-3.0`; `embedding.onnx`, 256-dimensional over 80 mel bins, against the WeSpeaker ResNet34-LM release pyannote's pipeline uses) and downloaded under their own terms; if either cannot be matched, U9 selects a different upstream embedding model with a published licence rather than shipping the blob. *U4 result (2026-09-22): `segmentation.onnx` is byte-identical to `onnx-community/pyannote-segmentation-3.0` at revision `733a93b6` (MIT). The embedding blob matches no public release — it entered anarlog with no recorded source — so the catalog pins WeSpeaker's own `voxceleb_resnet34_LM.onnx` (`Wespeaker/wespeaker-voxceleb-resnet34-LM` at `f0c48c29`, 26,530,309 bytes, CC BY 4.0), the model pyannote's pipeline uses. U1 measured the unprovenanced blob, so U9 re-measures with this file before relying on the Phase 1 verdict.*
 
 ### Implementation Constraints
 
@@ -512,6 +512,7 @@ sequenceDiagram
 | `rodio` | 0.22.x | cue | anarlog `sfx` |
 | `sysinfo` | 0.38 | free-space check | anarlog `chunks.rs` |
 | `tokio`, `tokio-util` | 1.x | runtime, `CancellationToken` | anarlog |
+| `reqwest` | 0.12.x (`native-tls`, `stream`) | weight download; U10 client | Handy `download.rs` |
 | `windows` | the version `wry` links | device monitor, power, mute | KTD13 |
 | React, Vite, TypeScript, Tailwind, Zustand | 18.x, 6.x, 5.x, 4.x, 5.x | frontend | Handy |
 | Whisper large-v3-turbo GGUF Q5_K_M | Handy catalog revision | default ASR model, MIT weights | KTD6 |
@@ -871,7 +872,7 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
   - Input: a 150-minute session; action: diarize; expected: two clustering windows, speaker numbering continuing across the boundary rather than restarting, and no label shared between windows.
   - Input: a 120-minute session; action: diarize; expected: the effective analysis hop is 2 s, confirming `max_windows: 3612` covers the cap (KTD7).
   - Input: a session with an exact speaker count set; action: diarize across two clustering windows; expected: the bound applies within each window and the session's total distinct labels may exceed the count.
-  - Input: the U1 session recording; action: run Longhand's diarize stage; expected: the U1 gate statistics reproduced within 1 point, U1 having measured the weights that ship (U1 step 4).
+  - Input: the U1 session recording; action: run Longhand's diarize stage; expected: the U1 gate statistics reproduced within 1 point using the catalog's WeSpeaker embedding. U1 measured anarlog's unprovenanced embedding blob, so this is the first measurement of the weights that ship: confirm the ONNX input and output names and the 80-bin fbank front end match what `crates/embedding` feeds, and if the gate statistics move by more than a point, rerun the full U1 gate and record the result in `docs/reference/diarization-measurement.md` before continuing.
 - **Verification:** `check-provenance.sh` passes with the four new crates; no `include_bytes!` of a model remains; the U1 harness rebuilt inside the workspace reproduces the Phase 1 gate statistics; a real six-person recording renders a transcript with separated turns (AE8).
 
 ### U10. Summarization

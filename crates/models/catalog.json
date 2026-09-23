@@ -1,0 +1,58 @@
+{
+  "catalog_version": 1,
+  "models": [
+    {
+      "id": "whisper-large-v3-turbo-q5km",
+      "kind": "asr",
+      "name": "Whisper Large v3 Turbo (Q5_K_M)",
+      "description": "Default recognition model: 100 languages, segment-level timestamps, not streaming.",
+      "streaming": false,
+      "timestamps": "segment",
+      "repository": "https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf",
+      "revision": "5eaf945c7978e564bae5b28a5b1639dd93c2bfb1",
+      "filename": "whisper-large-v3-turbo-Q5_K_M.gguf",
+      "url": "https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf/resolve/5eaf945c7978e564bae5b28a5b1639dd93c2bfb1/whisper-large-v3-turbo-Q5_K_M.gguf",
+      "size_bytes": 619628128,
+      "sha256": "977b5db4e004349dffd1ab9caa10ba5aaba3fc3edd3ba72cadb84328a3203e36",
+      "licence": {
+        "name": "Apache-2.0",
+        "url": "https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf",
+        "attribution": "GGUF conversion by handy-computer of openai/whisper-large-v3-turbo (OpenAI, MIT)."
+      }
+    },
+    {
+      "id": "pyannote-segmentation-3.0",
+      "kind": "segmentation",
+      "name": "pyannote segmentation 3.0 (ONNX)",
+      "description": "Speaker-change segmentation for diarization.",
+      "repository": "https://huggingface.co/onnx-community/pyannote-segmentation-3.0",
+      "revision": "733a93b6473d019a773298e08cefa686894b1854",
+      "filename": "segmentation.onnx",
+      "url": "https://huggingface.co/onnx-community/pyannote-segmentation-3.0/resolve/733a93b6473d019a773298e08cefa686894b1854/onnx/model.onnx",
+      "size_bytes": 5986908,
+      "sha256": "057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25",
+      "licence": {
+        "name": "MIT",
+        "url": "https://huggingface.co/pyannote/segmentation-3.0",
+        "attribution": "pyannote/segmentation-3.0 by Hervé Bredin and pyannote contributors; ONNX export by onnx-community."
+      }
+    },
+    {
+      "id": "wespeaker-voxceleb-resnet34-lm",
+      "kind": "embedding",
+      "name": "WeSpeaker ResNet34-LM (ONNX)",
+      "description": "Speaker embeddings for diarization clustering.",
+      "repository": "https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM",
+      "revision": "f0c48c298fd835726c27956a5d617bad7115627e",
+      "filename": "embedding.onnx",
+      "url": "https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/f0c48c298fd835726c27956a5d617bad7115627e/voxceleb_resnet34_LM.onnx",
+      "size_bytes": 26530309,
+      "sha256": "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068",
+      "licence": {
+        "name": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "WeSpeaker ResNet34-LM r-vector, trained on VoxCeleb2 by the WeNet community (wenet-e2e/wespeaker)."
+      }
+    }
+  ]
+}

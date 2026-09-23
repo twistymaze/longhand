@@ -5,12 +5,64 @@
 
 
 export const commands = {
-async getProbeSetting() : Promise<string> {
-    return await TAURI_INVOKE("get_probe_setting");
+async getSettings() : Promise<Settings> {
+    return await TAURI_INVOKE("get_settings");
 },
-async setProbeSetting(value: string) : Promise<Result<null, string>> {
+/**
+ * Set the summarization endpoint (R32). An empty base URL clears it; any
+ * other value must be a URL with a host, since the credential is keyed by
+ * that host (R30a).
+ */
+async setEndpoint(baseUrl: string, model: string) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_probe_setting", { value }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_endpoint", { baseUrl, model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setContextLimit(limit: number | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_context_limit", { limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setDefaultSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_default_speaker_count", { count }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setAsrModel(modelId: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_asr_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Pick a folder with the system dialog, make it current, and retain it as a
+ * root (R23, R25a). `None` when the user closes the dialog.
+ */
+async chooseDestination() : Promise<Result<Settings | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("choose_destination") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Switch to a folder chosen earlier.
+ */
+async setCurrentDestination(folder: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_current_destination", { folder }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -48,6 +100,32 @@ async repairKeychainAccess() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async modelStatuses() : Promise<ModelStatus[]> {
+    return await TAURI_INVOKE("model_statuses");
+},
+/**
+ * Start fetching `ids`; progress and the outcome arrive as
+ * `ModelDownloadEvent`s.
+ */
+async downloadModels(ids: string[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_models", { ids }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async cancelModelDownloads() : Promise<void> {
+    await TAURI_INVOKE("cancel_model_downloads");
+},
+async readiness() : Promise<Result<Readiness, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("readiness") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async probeStatus() : Promise<ProbeStatus> {
     return await TAURI_INVOKE("probe_status");
 }
@@ -57,8 +135,10 @@ async probeStatus() : Promise<ProbeStatus> {
 
 
 export const events = __makeEvents__<{
+modelDownloadEvent: ModelDownloadEvent,
 probeShortcutFired: ProbeShortcutFired
 }>({
+modelDownloadEvent: "model-download-event",
 probeShortcutFired: "probe-shortcut-fired"
 })
 
@@ -73,8 +153,61 @@ export type CredentialStatus = { kind: "present"; host: string; length: number; 
  * Locked or refused: the user can recover it (R20b).
  */
 { kind: "needs_unlock"; message: string } | { kind: "failed"; message: string }
+export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: string; free_bytes: number | null } | 
+/**
+ * Deleted, renamed, or on a volume that is not mounted.
+ */
+{ kind: "missing"; path: string } | { kind: "not_a_directory"; path: string } | { kind: "not_writable"; path: string; message: string } | { kind: "low_space"; path: string; free_bytes: number; floor_bytes: number }
+export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
+export type LicenceInfo = { name: string; url: string; attribution: string }
+export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
+export type ModelRole = "recognition" | "segmentation" | "embedding"
+export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
+export type ModelStatus = { id: string; role: ModelRole; name: string; description: string; size_bytes: number; 
+/**
+ * Needed by the current settings: the selected recognition model and
+ * both diarization weights.
+ */
+required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo }
 export type ProbeShortcutFired = { count: number }
 export type ProbeStatus = { shortcut: string; registered: boolean; registration_error: string | null; fired: number }
+export type Readiness = { microphone_authorized: boolean; destination: DestinationStatus; 
+/**
+ * Microphone authorized and a destination chosen, and nothing else (R1c):
+ * a destination that is unreachable right now can be changed before the
+ * session lands (R23), so it is shown rather than blocking the shortcut.
+ */
+armed: boolean; 
+/**
+ * Catalog ids of required weights not yet on disk.
+ */
+missing_models: string[]; endpoint_configured: boolean }
+export type Settings = { settings_schema_version: number; shortcut: string; 
+/**
+ * Every folder the user has ever chosen, oldest first (R25a). The index
+ * is rebuilt by scanning these, so a root is never dropped silently.
+ */
+destination_roots: string[]; 
+/**
+ * Where the next session lands (R23). Always one of the roots.
+ */
+current_destination: string | null; 
+/**
+ * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
+ */
+endpoint_base_url: string; endpoint_model: string; 
+/**
+ * Overrides the probed context budget when set (KTD16).
+ */
+context_limit_tokens: number | null; default_speaker_count: SpeakerCountSetting | null; 
+/**
+ * Catalog id of the recognition model (KTD6).
+ */
+asr_model: string }
+/**
+ * An optional bound on how many people are speaking (R36).
+ */
+export type SpeakerCountSetting = { kind: "exact"; count: number } | { kind: "range"; min: number; max: number }
 
 /** tauri-specta globals **/
 

@@ -16,6 +16,7 @@ set -euo pipefail
 BORROWED_DIRS=(
   crates/audio
   crates/audio-mock
+  crates/models
   crates/secrets
   crates/supervisor
   crates/vad

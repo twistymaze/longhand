@@ -49,7 +49,10 @@ Measured against the weights in the pinned clone
 | `crates/pyannote-local/src/data/segmentation.onnx` | 5,986,908 | `057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25` |
 | `crates/embedding/src/onnx/embedding.onnx` | 26,543,975 | `841645a9b5109369858ca89695e8b23ecfd4486b30bdd5cb3f99fef8d1c29205` |
 
-Upstream match: PENDING.
+Upstream match (checked in U4, 2026-09-22, by SHA-256 against the publishers' LFS metadata):
+
+- `segmentation.onnx` — **matched**: byte-identical to `onnx/model.onnx` in `onnx-community/pyannote-segmentation-3.0` at revision `733a93b6473d019a773298e08cefa686894b1854` (MIT), an ONNX export of `pyannote/segmentation-3.0`.
+- `embedding.onnx` — **not matched**: no public release has this size or hash, and anarlog added the file without recording a source. The catalog instead pins `voxceleb_resnet34_LM.onnx` from `Wespeaker/wespeaker-voxceleb-resnet34-LM` at revision `f0c48c298fd835726c27956a5d617bad7115627e` (26,530,309 bytes, SHA-256 `7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068`, CC BY 4.0) — the ResNet34-LM model pyannote's pipeline uses. The results below were measured with the unprovenanced blob; U9 re-measures with the WeSpeaker file.
 
 ## Results
 

@@ -33,8 +33,14 @@ serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
 sha2 = "0.10"
+# Free space on the destination volume, as anarlog measures it.
+sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
+models = { path = "../crates/models" }
 secrets = { path = "../crates/secrets" }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "=2.3.2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,5 +1,92 @@
 @import "tailwindcss";
 
+/* Semantic tokens after macOS's system colours, so light and dark are one
+   decision made here rather than in every component. */
 :root {
   color-scheme: light dark;
+  --window: #f2f2f4;
+  --sidebar: #e6e6ea;
+  --group: #ffffff;
+  --separator: rgb(0 0 0 / 0.09);
+  --label: rgb(0 0 0 / 0.86);
+  --label-secondary: rgb(0 0 0 / 0.52);
+  --label-tertiary: rgb(0 0 0 / 0.3);
+  --fill: rgb(0 0 0 / 0.05);
+  --fill-pressed: rgb(0 0 0 / 0.12);
+  --control: #ffffff;
+  --control-border: rgb(0 0 0 / 0.14);
+  --accent: #007aff;
+  --accent-pressed: #0062cc;
+  --positive: #1e8e3e;
+  --caution: #b85c00;
+  --negative: #d70015;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --window: #1e1e20;
+    --sidebar: #2a2a2d;
+    --group: #2c2c2f;
+    --separator: rgb(255 255 255 / 0.09);
+    --label: rgb(255 255 255 / 0.88);
+    --label-secondary: rgb(255 255 255 / 0.56);
+    --label-tertiary: rgb(255 255 255 / 0.3);
+    --fill: rgb(255 255 255 / 0.08);
+    --fill-pressed: rgb(255 255 255 / 0.16);
+    --control: rgb(255 255 255 / 0.07);
+    --control-border: rgb(255 255 255 / 0.14);
+    --accent: #0a84ff;
+    --accent-pressed: #3a9bff;
+    --positive: #32d74b;
+    --caution: #ff9f0a;
+    --negative: #ff453a;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --separator: rgb(128 128 128 / 0.6);
+    --control-border: rgb(128 128 128 / 0.9);
+    --label-secondary: color-mix(in srgb, var(--label) 80%, transparent);
+  }
+}
+
+@theme inline {
+  --color-window: var(--window);
+  --color-sidebar: var(--sidebar);
+  --color-group: var(--group);
+  --color-separator: var(--separator);
+  --color-label: var(--label);
+  --color-label-secondary: var(--label-secondary);
+  --color-label-tertiary: var(--label-tertiary);
+  --color-fill: var(--fill);
+  --color-fill-pressed: var(--fill-pressed);
+  --color-control: var(--control);
+  --color-control-border: var(--control-border);
+  --color-accent: var(--accent);
+  --color-accent-pressed: var(--accent-pressed);
+  --color-positive: var(--positive);
+  --color-caution: var(--caution);
+  --color-negative: var(--negative);
+}
+
+html {
+  /* macOS body text is 13 pt; rem-based spacing scales with it. */
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: var(--window);
+  color: var(--label);
+  /* A desktop window, not a document: no rubber-band on the whole page. */
+  overscroll-behavior: none;
+}
+
+/* Only the download bar moves, and only to report progress. */
+.progress-fill {
+  transition: width 240ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill {
+    transition: none;
+  }
 }

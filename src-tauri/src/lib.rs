@@ -15,15 +15,27 @@ pub const BINDINGS_PATH: &str = "../src/bindings.ts";
 pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
-            commands::settings::get_probe_setting,
-            commands::settings::set_probe_setting,
+            commands::settings::get_settings,
+            commands::settings::set_endpoint,
+            commands::settings::set_context_limit,
+            commands::settings::set_default_speaker_count,
+            commands::settings::set_asr_model,
+            commands::settings::choose_destination,
+            commands::settings::set_current_destination,
             commands::settings::credential_status,
             commands::settings::set_credential,
             commands::settings::delete_credential,
             commands::settings::repair_keychain_access,
+            commands::models::model_statuses,
+            commands::models::download_models,
+            commands::models::cancel_model_downloads,
+            commands::readiness::readiness,
             probe::probe_status,
         ])
-        .events(collect_events![probe::ProbeShortcutFired])
+        .events(collect_events![
+            probe::ProbeShortcutFired,
+            managers::models::ModelDownloadEvent,
+        ])
 }
 
 pub fn export_bindings(builder: &Builder<tauri::Wry>) {
@@ -63,6 +75,9 @@ pub fn run() {
 
             let handle = app.handle().clone();
             app.manage(managers::secrets::SecretsManager::new(&handle));
+            app.manage(std::sync::Arc::new(managers::models::ModelsManager::new(
+                &handle,
+            )?));
             // Read once at launch so a first run writes the defaults and an old
             // store migrates before anything else reads it.
             let settings = managers::settings::get_settings(&handle);
