@@ -268,7 +268,7 @@ pub fn session_document(
             .session(&session_id)
             .map_err(|e| e.to_string())?
             .and_then(|r| r.landed_path)
-            .ok_or_else(|| "this session has not landed yet".to_string())?
+            .ok_or_else(|| "this session has not finished processing yet".to_string())?
     };
     let folder = Path::new(&landed);
     let read = |name: &str| {

@@ -45,7 +45,7 @@ function SummarizeDetail({ detail }: { detail: SessionDetail }) {
     return <Status tone="caution">Skipped. {sentence(detail.summary_problem)}</Status>;
   }
   const endpoint = detail.endpoint;
-  if (!endpoint) return <>No endpoint is set, so the session lands without a summary.</>;
+  if (!endpoint) return <>No endpoint is set, so the session is saved without a summary.</>;
   const sent = detail.done.includes("summarize");
   return (
     <>
@@ -102,7 +102,7 @@ function Exception({
       );
     case "awaiting_destination":
       return (
-        <Group footer="Everything is kept in the working location until it lands.">
+        <Group footer="Everything is kept safely on this Mac until it can be saved.">
           <Row label={<Status tone="caution">Waiting for a folder</Status>} detail={detail.message && sentence(detail.message)}>
             <Button onClick={() => run(() => commands.retrySession(id))}>Try Again</Button>
             <Button

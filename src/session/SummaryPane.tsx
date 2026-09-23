@@ -81,7 +81,7 @@ export function SummaryPane({
         <div className="mb-4 rounded-[10px] bg-group px-3 py-2.5 shadow-[0_0_0_0.5px_var(--separator)]">
           <p className="font-semibold text-caution">No summary yet</p>
           <p className="text-label-secondary">
-            The transcript and notes landed; the summary did not. Regenerate once the endpoint is reachable.
+            The transcript and notes were saved; the summary was not. Regenerate once the endpoint is reachable.
           </p>
           <div className="mt-2">{regenerate}</div>
         </div>

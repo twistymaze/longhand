@@ -273,7 +273,9 @@ pub fn regenerate_summary(
     let (path, segments) = {
         let guard = lock(store);
         let path = landed_path(&guard, session_id)?.ok_or_else(|| {
-            StageError::Failed("only a landed session's summary can be regenerated".into())
+            StageError::Failed(
+                "a summary can be regenerated only once the session has finished processing".into(),
+            )
         })?;
         (path, guard.segments(session_id)?)
     };
