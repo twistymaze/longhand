@@ -344,6 +344,22 @@ impl Store {
         )
     }
 
+    pub fn note(&self, note_id: i64) -> Result<Option<Note>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id FROM notes WHERE id = ?1")?;
+        let session_id: Option<Option<String>> = stmt
+            .query_map([note_id], |r| r.get::<_, Option<String>>(0))?
+            .next()
+            .transpose()?;
+        let notes = match session_id {
+            None => return Ok(None),
+            Some(Some(session_id)) => self.notes(&session_id)?,
+            Some(None) => self.pending_notes()?,
+        };
+        Ok(notes.into_iter().find(|n| n.id == note_id))
+    }
+
     pub fn pending_notes(&self) -> Result<Vec<Note>> {
         self.query_notes(
             "SELECT id, session_id, text, anchor FROM notes WHERE session_id IS NULL ORDER BY id",

@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 asr = { path = "../asr" }
 diarize = { path = "../diarize" }
+landing = { path = "../landing" }
 recorder = { path = "../recorder" }
 session-core = { path = "../session-core" }
 chrono = "0.4"

@@ -16,12 +16,13 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
+use crate::land;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
 use diarize::{DiarizeError, SpeakerAnalyzer};
 
-/// The stages this build runs, in order. Landing (U11) follows the summary.
+/// The stages, in order.
 pub const STAGES: &[Stage] = &[
     Stage::Assemble,
     Stage::Diarize,
@@ -29,6 +30,7 @@ pub const STAGES: &[Stage] = &[
     Stage::Join,
     Stage::Verify,
     Stage::Summarize,
+    Stage::Land,
 ];
 
 const POLL: Duration = Duration::from_secs(2);
@@ -50,6 +52,9 @@ pub trait EngineProvider: Send + Sync {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
+    /// The destination folder chosen now, read when the session lands, so
+    /// a destination changed during recording lands it in the last (AE7).
+    fn destination(&self) -> Option<PathBuf>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +113,25 @@ pub enum RunnerEvent {
         session_id: String,
         what: String,
     },
-    /// Every stage of this build has run.
+    /// Summarization failed; the session lands with a stub summary (KD13).
+    SummaryUnavailable {
+        session_id: String,
+        message: String,
+    },
+    /// The destination cannot take the session; it waits, whole, in the
+    /// working location (R22b).
+    AwaitingDestination {
+        session_id: String,
+        problem: String,
+    },
+    /// In the destination under its final name. `copied` when the volumes
+    /// differed and the session was copied rather than moved in one step.
+    Landed {
+        session_id: String,
+        path: PathBuf,
+        copied: bool,
+    },
+    /// Every stage has run.
     Finished {
         session_id: String,
     },
@@ -121,6 +144,7 @@ pub enum Outcome {
     Cancelled,
     Waiting,
     Blocked,
+    AwaitingDestination { problem: String },
 }
 
 pub struct Runner {
@@ -255,6 +279,57 @@ impl Runner {
         Ok(())
     }
 
+    /// The destination changed or came back: every session waiting for one
+    /// goes back in line (R22b).
+    pub fn retry_awaiting(&self) -> Result<Vec<String>, StageError> {
+        let waiting = lock(&self.env.store).sessions_in("awaiting_destination")?;
+        let ids: Vec<String> = waiting.into_iter().map(|r| r.id).collect();
+        for id in &ids {
+            self.retry(id)?;
+        }
+        Ok(ids)
+    }
+
+    /// Summarize a landed session again, replacing its `summary.md` (R19,
+    /// AE17). Takes its turn with the stages, one at a time (R20c).
+    pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
+        let _permit = self
+            .permit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| StageError::Failed(e.to_string()))?;
+        let env = Arc::clone(&self.env);
+        let cancel = self.shutdown.child_token();
+        let id = session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let endpoint = endpoint(&env)?;
+            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
+            let control = Unattended {
+                cancel,
+                env: Arc::clone(&env),
+            };
+            land::regenerate_summary(
+                &env.store,
+                &id,
+                endpoint,
+                &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
+                &control,
+                &mut |done, total| {
+                    (env.events)(RunnerEvent::Progress {
+                        session_id: id.clone(),
+                        stage: Stage::Summarize,
+                        segment: 0,
+                        done,
+                        total,
+                    })
+                },
+            )
+        })
+        .await
+        .map_err(|e| StageError::Failed(format!("the summary stopped unexpectedly: {e}")))?
+    }
+
     pub fn shutdown(&self) {
         self.shutdown.cancel();
         if let Some((_, token)) = self
@@ -319,10 +394,41 @@ impl Runner {
 
     async fn run_session(&self, id: &str, model: &str, cancel: CancellationToken) -> Outcome {
         let emit = |event| (self.env.events)(event);
+        // Once landing has begun, the working directory may be gone: only
+        // landing itself is left to finish.
+        let landing = land::begun(&lock(&self.env.store), id).unwrap_or(false);
         for &stage in STAGES {
+            if landing && stage != Stage::Land {
+                continue;
+            }
             let result = self.run_stage(id, model, stage, cancel.clone()).await;
             match result {
                 Ok(()) => {}
+                // A failed summary costs the summary, not the session: it
+                // lands with a stub naming the failure (KD13, R22).
+                Err(StageError::Failed(message)) if stage == Stage::Summarize => {
+                    log::warn!("summarization failed for {id}; landing without it: {message}");
+                    if let Err(e) = land::record_summary_failure(&self.env.store, id, &message) {
+                        log::error!("could not record the summary failure of {id}: {e}");
+                    }
+                    emit(RunnerEvent::SummaryUnavailable {
+                        session_id: id.to_string(),
+                        message,
+                    });
+                }
+                Err(StageError::NoDestination(problem)) => {
+                    log::info!("{id} waits for its destination: {problem}");
+                    if let Err(e) =
+                        lock(&self.env.store).apply(id, &Event::LandingFailed(problem.clone()))
+                    {
+                        log::warn!("could not mark {id} awaiting its destination: {e}");
+                    }
+                    emit(RunnerEvent::AwaitingDestination {
+                        session_id: id.to_string(),
+                        problem: problem.clone(),
+                    });
+                    return Outcome::AwaitingDestination { problem };
+                }
                 // Speaker separation failing costs the speaker marks, not the
                 // transcript (R20a).
                 Err(StageError::Failed(message)) if stage == Stage::Diarize => {
@@ -533,10 +639,7 @@ fn execute(
         Stage::Join => join::run(&env.store, id, &dir, segments).map(|_| ()),
         Stage::Verify => verify::run(&env.store, id, &dir, segments),
         Stage::Summarize => {
-            let endpoint = env.engines.summary_endpoint().map_err(|p| match p {
-                EndpointProblem::Locked(message) => StageError::Blocked(message),
-                EndpointProblem::Unconfigured(message) => StageError::Failed(message),
-            })?;
+            let endpoint = endpoint(env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             summarize::run(
                 &env.store,
@@ -557,8 +660,64 @@ fn execute(
                 },
             )
         }
-        other => Err(StageError::Failed(format!(
-            "{other:?} is not in this build"
-        ))),
+        Stage::Land => {
+            let destination = env.engines.destination();
+            let landed = land::run(
+                &env.store,
+                id,
+                &dir,
+                segments,
+                destination.as_deref(),
+                &landing::RealFs,
+                control,
+            )?;
+            log::info!(
+                "{id} landed at {}{}",
+                landed.path.display(),
+                if landed.copied {
+                    " (copied across volumes)"
+                } else {
+                    ""
+                }
+            );
+            (env.events)(RunnerEvent::Landed {
+                session_id: id.to_string(),
+                path: landed.path,
+                copied: landed.copied,
+            });
+            Ok(())
+        }
+    }
+}
+
+fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
+    env.engines.summary_endpoint().map_err(|p| match p {
+        EndpointProblem::Locked(message) => StageError::Blocked(message),
+        EndpointProblem::Unconfigured(message) => StageError::Failed(message),
+    })
+}
+
+/// For work on a landed session: stops on shutdown and waits out capture,
+/// with no processing state to be taken back from.
+struct Unattended {
+    cancel: CancellationToken,
+    env: Arc<Environment>,
+}
+
+impl Control for Unattended {
+    fn proceed(&self) -> Result<(), StageError> {
+        loop {
+            if self.cancel.is_cancelled() {
+                return Err(StageError::Cancelled);
+            }
+            if !(self.env.suspended)() {
+                return Ok(());
+            }
+            std::thread::sleep(SUSPENDED_POLL);
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
     }
 }

@@ -10,6 +10,7 @@ pub mod assemble;
 pub mod checkpoint;
 pub mod diarize;
 pub mod join;
+pub mod land;
 pub mod resample;
 pub mod runner;
 pub mod summarize;
@@ -20,7 +21,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use session_core::Store;
 
-pub use runner::{EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent};
+pub use land::Landed;
+pub use runner::{EndpointProblem, EngineProvider, Environment, Outcome, Runner, RunnerEvent};
 pub use summarize::SummaryEndpoint;
 
 /// The one job store connection, shared with capture so every lifecycle
@@ -49,6 +51,10 @@ pub enum StageError {
     /// waits for the user to unlock it, which is not a failure.
     #[error("blocked: {0}")]
     Blocked(String),
+    /// The destination cannot take the session (R22b): it waits, whole in
+    /// the working location, until the user fixes or changes it.
+    #[error("{0}")]
+    NoDestination(String),
     #[error("{0}")]
     Failed(String),
 }

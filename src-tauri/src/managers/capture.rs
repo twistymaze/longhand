@@ -47,6 +47,8 @@ pub enum CaptureError {
     Store(#[from] session_core::StoreError),
     #[error(transparent)]
     Timeline(#[from] session_core::TimelineError),
+    #[error("this session is already moving to its destination and can no longer be resumed")]
+    Landing,
     #[error("{0}")]
     Other(String),
 }
@@ -305,15 +307,23 @@ impl CaptureManager {
         )
         .is_ok();
         let resumed_at = now();
-        let is_most_recent = self.store().is_most_recent(id)?;
-        let state = self.store().apply(
-            id,
-            &Event::UserResume {
-                now: resumed_at,
-                is_most_recent,
-                space_ok,
-            },
-        )?;
+        // Under one lock with landing's claim: either landing has begun and
+        // the resume is refused, or the resume wins and landing stops.
+        let state = {
+            let mut store = self.store();
+            if pipeline::land::begun(&store, id).map_err(|e| CaptureError::Other(e.to_string()))? {
+                return Err(CaptureError::Landing);
+            }
+            let is_most_recent = store.is_most_recent(id)?;
+            store.apply(
+                id,
+                &Event::UserResume {
+                    now: resumed_at,
+                    is_most_recent,
+                    space_ok,
+                },
+            )?
+        };
         if !matches!(state, SessionState::Capturing) {
             return Ok(state);
         }
@@ -412,8 +422,17 @@ impl CaptureManager {
         }))
     }
 
+    /// Change a note's text. On a landed session the folder's `notes.md` is
+    /// rewritten whole in the same breath (R22f), under the lock landing
+    /// takes to write it, so no edit is lost or written twice.
     pub fn edit_note(&self, note_id: i64, text: &str) -> Result<(), CaptureError> {
-        Ok(self.store().edit_note(note_id, text)?)
+        let mut store = self.store();
+        store.edit_note(note_id, text)?;
+        if let Some(session_id) = store.note(note_id)?.and_then(|n| n.session_id) {
+            pipeline::land::rewrite_notes(&mut store, &session_id)
+                .map_err(|e| CaptureError::Other(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// The open session's notes, or the pending buffer when none is open.

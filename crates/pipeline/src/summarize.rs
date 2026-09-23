@@ -138,6 +138,8 @@ pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     Ok(lock(store).clear_checkpoints(session_id, Stage::Summarize)?)
 }
 
+/// The summarize stage: produce the summary and write it into the working
+/// directory, where landing picks it up.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
@@ -149,6 +151,28 @@ pub fn run(
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
+    let summary = produce(
+        store, session_id, segments, endpoint, learn, control, progress,
+    )?;
+    let path = session_dir.join(SUMMARY_FILE);
+    let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
+    std::fs::write(&temp, summary.render())?;
+    crate::sync_file(&temp)?;
+    std::fs::rename(&temp, &path)?;
+    checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
+}
+
+/// Summarize the session from its checkpoints, resuming any calls already
+/// made. Writes nothing but checkpoints.
+pub fn produce(
+    store: &SharedStore,
+    session_id: &str,
+    segments: &[Segment],
+    endpoint: SummaryEndpoint,
+    learn: &dyn Fn(u32),
+    control: &dyn Control,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Summary, StageError> {
     let turns = transcript_turns(store, session_id, segments)?;
     let notes = session_notes(store, session_id)?;
     let (anchored, general): (Vec<Note>, Vec<Note>) =
@@ -269,19 +293,13 @@ pub fn run(
         }
     };
 
-    let summary = Summary {
+    Ok(Summary {
         meta: SummaryMeta::Complete {
             endpoint_host: client.host(),
             model: endpoint.model.clone(),
         },
         body: text,
-    };
-    let path = session_dir.join(SUMMARY_FILE);
-    let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
-    std::fs::write(&temp, summary.render())?;
-    crate::sync_file(&temp)?;
-    std::fs::rename(&temp, &path)?;
-    checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
+    })
 }
 
 fn forget_layers_from(

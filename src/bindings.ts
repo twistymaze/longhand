@@ -195,6 +195,18 @@ async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result
 },
 async shortcutStatus() : Promise<ShortcutStatus> {
     return await TAURI_INVOKE("shortcut_status");
+},
+/**
+ * Summarize a landed session again, replacing its `summary.md` (R19,
+ * AE17). Returns the summary's path.
+ */
+async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("regenerate_summary", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -273,7 +285,21 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
 /**
  * A model is not on disk; the session keeps its place in the queue.
  */
-{ kind: "waiting"; what: string } | { kind: "cancelled" } | { kind: "finished" }
+{ kind: "waiting"; what: string } | 
+/**
+ * Summarization failed; the session lands with a stub summary.
+ */
+{ kind: "summary_unavailable"; message: string } | 
+/**
+ * The destination cannot take the session; it waits, whole, until
+ * one is chosen or comes back.
+ */
+{ kind: "awaiting_destination"; problem: string } | 
+/**
+ * In the destination. `copied` when it crossed volumes, so the move
+ * was a verified copy rather than one atomic step.
+ */
+{ kind: "landed"; path: string; copied: boolean } | { kind: "cancelled" } | { kind: "finished" }
 /**
  * What processing is doing, for the surface.
  */

@@ -7,9 +7,10 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use specta::Type;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::processing::ProcessingManager;
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{self, Settings, SpeakerCountSetting};
 
@@ -128,11 +129,19 @@ pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, Stri
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
     let folder = path.to_string_lossy().into_owned();
-    settings::update_settings(&app, |s| {
+    let settings = settings::update_settings(&app, |s| {
         s.choose_destination(&folder);
         Ok(())
-    })
-    .map(Some)
+    })?;
+    destination_changed(&app);
+    Ok(Some(settings))
+}
+
+/// Sessions waiting for a destination try the new one (R22b).
+fn destination_changed(app: &AppHandle) {
+    if let Some(processing) = app.try_state::<std::sync::Arc<ProcessingManager>>() {
+        processing.retry_awaiting();
+    }
 }
 
 /// Switch to a folder chosen earlier.
@@ -146,6 +155,7 @@ pub fn set_current_destination(app: AppHandle, folder: String) -> Result<Setting
         s.current_destination = Some(folder);
         Ok(())
     })
+    .inspect(|_| destination_changed(&app))
 }
 
 #[tauri::command]

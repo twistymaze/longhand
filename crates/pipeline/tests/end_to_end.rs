@@ -32,6 +32,7 @@ use session_core::{Event, Stage};
 struct RealModel {
     path: String,
     blank_every: Option<usize>,
+    destination: Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
 }
 
 /// A recognizer that loses every nth window, as a failing decoder would.
@@ -78,6 +79,9 @@ impl EngineProvider for RealModel {
     }
     fn learn_limit(&self, _: &str, _: &str, limit: u32) {
         eprintln!("learned a context limit of {limit}");
+    }
+    fn destination(&self) -> Option<std::path::PathBuf> {
+        self.destination.lock().unwrap().clone()
     }
     fn ready(&self, _: &str) -> bool {
         true
@@ -153,6 +157,9 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         .unwrap();
     }
 
+    // No destination at first: the session stops before landing, with its
+    // working files in place to inspect, and lands once one is chosen.
+    let destination = Arc::new(std::sync::Mutex::new(None));
     let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&stages);
     let started = Instant::now();
@@ -162,6 +169,7 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         engines: Box::new(RealModel {
             path: model,
             blank_every,
+            destination: Arc::clone(&destination),
         }),
         suspended: Box::new(|| false),
         events: Box::new(move |e| {
@@ -194,24 +202,20 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         );
         return;
     }
-    match &outcome {
-        Outcome::Finished => {
-            let text =
-                std::fs::read_to_string(dir.join(pipeline::summarize::SUMMARY_FILE)).unwrap();
+    assert!(
+        matches!(outcome, Outcome::AwaitingDestination { .. }),
+        "{outcome:?}"
+    );
+    // Without an endpoint in the environment the summary is a stub.
+    match std::fs::read_to_string(dir.join(pipeline::summarize::SUMMARY_FILE)) {
+        Ok(text) => {
             let meta = session_core::folder::Summary::parse(&text).unwrap().meta;
             eprintln!(
                 "summary: {} words; {meta:?}",
                 text.split_whitespace().count()
             );
         }
-        // Without an endpoint in the environment the run ends at the summary.
-        Outcome::Failed {
-            stage: Stage::Summarize,
-            message,
-        } if std::env::var("LONGHAND_SUMMARY_BASE_URL").is_err() => {
-            eprintln!("summary: skipped ({message})");
-        }
-        other => panic!("{other:?}"),
+        Err(_) => eprintln!("summary: none"),
     }
 
     let proc = hound::WavReader::open(dir.join(proc_file(&segment.audio_file))).unwrap();
@@ -243,7 +247,7 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         .unwrap()
         .len();
 
-    let stages = stages.lock().unwrap();
+    let stages = stages.lock().unwrap().clone();
     eprintln!("audio: {seconds:.0} s at {} Hz", spec.sample_rate);
     for (i, (stage, began)) in stages.iter().enumerate() {
         let ended = stages.get(i + 1).map_or(total, |(_, t)| *t);
@@ -258,6 +262,7 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         pipeline::diarize::Speakers::Unavailable => "unavailable".into(),
     };
     eprintln!("speakers: {speakers}");
+
     let transcript = std::fs::read_to_string(dir.join(pipeline::join::TRANSCRIPT_FILE)).unwrap();
     eprintln!("transcript: {} lines", transcript.lines().count());
     eprintln!(
@@ -270,4 +275,38 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     );
     eprintln!("words: {words}; archive {:.1} MB", archive as f64 / 1e6);
     assert!(words > 0);
+
+    let dest = tempfile::tempdir().unwrap();
+    *destination.lock().unwrap() = Some(dest.path().to_path_buf());
+    let working_bytes = tree_bytes(&dir);
+    runner.retry_awaiting().unwrap();
+    let landing = Instant::now();
+    let (_, outcome) = runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let record = store.lock().unwrap().session("e2e").unwrap().unwrap();
+    let landed = std::path::PathBuf::from(record.landed_path.unwrap());
+    assert!(!landed.join(pipeline::PROC_DIR).exists());
+    assert!(!landed.join(pipeline::RECOVERY_DIR).exists());
+    eprintln!(
+        "landed in {:.2} s: {:.1} MB (archive {:.1} MB) from a {:.1} MB working copy",
+        landing.elapsed().as_secs_f64(),
+        tree_bytes(&landed) as f64 / 1e6,
+        archive as f64 / 1e6,
+        working_bytes as f64 / 1e6
+    );
+}
+
+fn tree_bytes(dir: &std::path::Path) -> u64 {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            let meta = e.metadata().unwrap();
+            if meta.is_dir() {
+                tree_bytes(&e.path())
+            } else {
+                meta.len()
+            }
+        })
+        .sum()
 }

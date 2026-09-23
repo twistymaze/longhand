@@ -55,6 +55,21 @@ pub enum ProcessingStep {
     Waiting {
         what: String,
     },
+    /// Summarization failed; the session lands with a stub summary.
+    SummaryUnavailable {
+        message: String,
+    },
+    /// The destination cannot take the session; it waits, whole, until
+    /// one is chosen or comes back.
+    AwaitingDestination {
+        problem: String,
+    },
+    /// In the destination. `copied` when it crossed volumes, so the move
+    /// was a verified copy rather than one atomic step.
+    Landed {
+        path: String,
+        copied: bool,
+    },
     Cancelled,
     Finished,
 }
@@ -112,6 +127,25 @@ impl From<RunnerEvent> for ProcessingUpdate {
             RunnerEvent::Waiting { session_id, what } => {
                 (session_id, ProcessingStep::Waiting { what })
             }
+            RunnerEvent::SummaryUnavailable {
+                session_id,
+                message,
+            } => (session_id, ProcessingStep::SummaryUnavailable { message }),
+            RunnerEvent::AwaitingDestination {
+                session_id,
+                problem,
+            } => (session_id, ProcessingStep::AwaitingDestination { problem }),
+            RunnerEvent::Landed {
+                session_id,
+                path,
+                copied,
+            } => (
+                session_id,
+                ProcessingStep::Landed {
+                    path: path.to_string_lossy().into_owned(),
+                    copied,
+                },
+            ),
             RunnerEvent::Cancelled { session_id } => (session_id, ProcessingStep::Cancelled),
             RunnerEvent::Finished { session_id } => (session_id, ProcessingStep::Finished),
         };
@@ -167,6 +201,13 @@ impl EngineProvider for Models {
         }) {
             log::warn!("could not remember the context limit for {model}: {e}");
         }
+    }
+
+    /// Read when the session lands, so the last destination chosen wins (AE7).
+    fn destination(&self) -> Option<std::path::PathBuf> {
+        settings::get_settings(&self.app)
+            .current_destination
+            .map(std::path::PathBuf::from)
     }
 
     /// Everything processing needs, diarization weights included: a
@@ -257,5 +298,25 @@ impl ProcessingManager {
     /// A resume took `session_id` back; its stage stops at the next checkpoint.
     pub fn cancel(&self, session_id: &str) {
         self.runner.cancel(session_id);
+    }
+
+    /// The destination changed: sessions waiting for one go back in line.
+    pub fn retry_awaiting(&self) {
+        match self.runner.retry_awaiting() {
+            Ok(ids) if !ids.is_empty() => {
+                log::info!("{} session(s) will try the new destination", ids.len())
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("could not retry sessions awaiting a destination: {e}"),
+        }
+    }
+
+    /// Summarize a landed session again, replacing its `summary.md` (AE17).
+    pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
+        self.runner
+            .regenerate_summary(session_id)
+            .await
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(|e| e.to_string())
     }
 }

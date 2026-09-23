@@ -39,6 +39,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::scratchpad_notes,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
+            commands::processing::regenerate_summary,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
