@@ -8,6 +8,14 @@
 //! and there is no archive stream — the Opus archive is encoded after stop.
 //! See PROVENANCE.md.
 //!
+//! A closed chunk is synced and renamed off the writing thread, as anarlog
+//! does since its slow-disk fix: on macOS `sync_all` is a full cache flush
+//! that can block for seconds while another session is saved, and a writer
+//! blocked that long lets the capture ring overrun. At most one such sync is
+//! outstanding; its failure surfaces at the next rotation or at finish, and a
+//! chunk renamed only after its sync means an unsynced one is still a
+//! `.part` that recovery repairs.
+//!
 //! Names, all times in milliseconds:
 //! - open: `{segment}-{capture_started_at}-{start_ms}-{audio_start_ms}.part`
 //! - closed: `{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav`
@@ -17,7 +25,9 @@
 //! `capture_started_at` is the segment's wall-clock start in Unix ms.
 
 use std::collections::VecDeque;
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
 
 use crate::storage::{self, SpaceProbe};
 use crate::wav::{self, WavFile};
@@ -89,6 +99,9 @@ pub struct ChunkedWriter {
     history: VecDeque<f32>,
     since_flush: u64,
     since_space_check: u64,
+    /// The previous chunk's sync and rename, still running.
+    pending: Option<JoinHandle<std::io::Result<()>>>,
+    sync: fn(&File) -> std::io::Result<()>,
 }
 
 impl ChunkedWriter {
@@ -115,7 +128,16 @@ impl ChunkedWriter {
             history: VecDeque::new(),
             since_flush: 0,
             since_space_check: 0,
+            pending: None,
+            sync: File::sync_all,
         })
+    }
+
+    /// Replace how a closed chunk is made durable, to test a slow or
+    /// failing disk.
+    pub fn with_sync(mut self, sync: fn(&File) -> std::io::Result<()>) -> Self {
+        self.sync = sync;
+        self
     }
 
     pub fn offset_ms(&self) -> u64 {
@@ -157,7 +179,7 @@ impl ChunkedWriter {
             self.write_within_chunk(now)?;
             rest = later;
             if self.chunk_samples >= chunk_len {
-                self.close_chunk()?;
+                self.close_chunk(true)?;
             }
         }
         Ok(())
@@ -205,12 +227,16 @@ impl ChunkedWriter {
         Ok(())
     }
 
-    fn close_chunk(&mut self) -> Result<(), RecorderError> {
+    /// Close the open chunk; `background` syncs and renames it on a thread
+    /// of its own. The previous chunk's sync is waited for either way, so
+    /// only one is ever outstanding and its failure stops this writer.
+    fn close_chunk(&mut self, background: bool) -> Result<(), RecorderError> {
         let Some(chunk) = self.chunk.take() else {
-            return Ok(());
+            return self.join_pending();
         };
-        chunk.finish()?;
+        let file = chunk.close()?;
         let end_ms = self.start_ms + self.ms(self.chunk_samples);
+        let partial = self.partial_path();
         let closed = self.args.dir.join(format!(
             "{}-{}-{}-{}-{}.wav",
             self.args.segment,
@@ -219,21 +245,52 @@ impl ChunkedWriter {
             end_ms,
             self.audio_start_ms
         ));
-        std::fs::rename(self.partial_path(), closed)?;
-        sync_dir(&self.args.dir)?;
+        let dir = self.args.dir.clone();
+        let sync = self.sync;
+        let publish = move || {
+            sync(&file)?;
+            drop(file);
+            std::fs::rename(partial, closed)?;
+            sync_dir(&dir)
+        };
+        let previous = self.join_pending();
+        let current = if background {
+            self.pending = Some(std::thread::spawn(publish));
+            Ok(())
+        } else {
+            publish().map_err(RecorderError::from)
+        };
         self.start_ms = end_ms;
         self.chunk_samples = 0;
+        previous?;
+        current
+    }
+
+    fn join_pending(&mut self) -> Result<(), RecorderError> {
+        if let Some(handle) = self.pending.take() {
+            handle
+                .join()
+                .map_err(|_| std::io::Error::other("the chunk sync thread panicked"))??;
+        }
         Ok(())
     }
 
     /// Close the last chunk and report the segment's span.
     pub fn finish(mut self) -> Result<SegmentSpan, RecorderError> {
-        self.close_chunk()?;
+        self.close_chunk(false)?;
         Ok(SegmentSpan {
             segment: self.args.segment,
             start_ms: self.args.offset_ms,
             end_ms: self.end_ms(),
         })
+    }
+}
+
+impl Drop for ChunkedWriter {
+    /// A writer dropped without `finish` still lets its last sync end, so
+    /// what is on disk is settled when the segment is.
+    fn drop(&mut self) {
+        let _ = self.join_pending();
     }
 }
 

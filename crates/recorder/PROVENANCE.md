@@ -11,6 +11,15 @@ Borrowed material in this crate, one record per file (R27). `src/wav.rs` and the
 - Licence: MIT, LICENSES/anarlog-MIT.txt
 - Status: modified — native-rate 16-bit WAV instead of 16 kHz MP3; segment index in the name; no archive stream, acknowledgement or zero-retention path; lookback held as samples; storage and flush cadence counted in audio time; recovery repairs the WAV header instead of decoding
 
+## `src/chunks.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 66d59aa6c24121af022782a299dd1b5b620c209d
+- Source paths: `crates/listener-core/src/actors/recorder/chunks.rs` (`close_chunk`, `join_pending_sync`, `with_sync`; "Keep recording through slow-disk stalls instead of stopping the recorder", #7724)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, LICENSES/anarlog-MIT.txt
+- Status: modified — the closed chunk's sync, rename and directory sync run on one background thread, joined at the next rotation, at finish and on drop; the tests follow anarlog's two with a WAV writer
+
 ## `src/storage.rs`
 
 - Repository: https://github.com/fastrepl/anarlog

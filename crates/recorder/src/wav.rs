@@ -70,12 +70,19 @@ impl WavFile {
     }
 
     /// Write the final header and make the file durable.
-    pub fn finish(self) -> io::Result<()> {
+    /// Write the final header and hand back the file, not yet synced: the
+    /// caller decides where the sync may block.
+    pub fn close(self) -> io::Result<File> {
         let data_bytes = (self.samples * BYTES_PER_SAMPLE) as u32;
         let mut file = self.file.into_inner().map_err(|e| e.into_error())?;
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header(self.sample_rate, data_bytes))?;
-        file.sync_all()
+        Ok(file)
+    }
+
+    /// [`WavFile::close`], then make the file durable.
+    pub fn finish(self) -> io::Result<()> {
+        self.close()?.sync_all()
     }
 }
 

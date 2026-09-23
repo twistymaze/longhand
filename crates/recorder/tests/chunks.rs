@@ -350,3 +350,62 @@ async fn every_quarter_second_of_audio_reports_its_peak_and_position() {
     );
     assert!(ticks.iter().all(|t| (t.peak - 0.5).abs() < 0.01));
 }
+
+/// A minute of audio at `rate`, in the 20 ms blocks capture delivers.
+fn write_minute(w: &mut ChunkedWriter, rate: u32) -> Result<(), RecorderError> {
+    let block = vec![0.1; rate as usize / 50];
+    for _ in 0..(50 * 60) {
+        w.write(&block)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_slow_chunk_sync_neither_blocks_the_writer_nor_publishes_early() {
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 16_000;
+    let mut w = writer(dir.path(), 0, 0, rate).with_sync(|_| {
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
+    });
+    let started = std::time::Instant::now();
+    write_minute(&mut w, rate).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        list_chunks(dir.path()).unwrap().is_empty(),
+        "published before it was synced"
+    );
+    w.write(&[0.1; 320]).unwrap();
+    w.finish().unwrap();
+    let chunks = list_chunks(dir.path()).unwrap();
+    assert_eq!(chunks.len(), 2);
+    assert_eq!((chunks[0].start_ms, chunks[0].end_ms), (0, 60_000));
+    assert!(
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .all(|e| e.unwrap().path().extension().unwrap() == "wav")
+    );
+}
+
+#[test]
+fn a_failed_chunk_sync_stops_the_writer_and_leaves_the_chunk_recoverable() {
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 16_000;
+    let mut w =
+        writer(dir.path(), 0, 0, rate).with_sync(|_| Err(std::io::Error::other("disk gone")));
+    write_minute(&mut w, rate).unwrap();
+    // The failure surfaces at the next rotation.
+    assert!(write_minute(&mut w, rate).is_err());
+    drop(w);
+    assert!(list_chunks(dir.path()).unwrap().is_empty());
+    recover_partial_chunks(dir.path()).unwrap();
+    let chunks = list_chunks(dir.path()).unwrap();
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].start_ms, 0);
+    assert!(chunks[0].end_ms >= 60_000);
+    assert_eq!(chunks[1].start_ms, 60_000);
+}
