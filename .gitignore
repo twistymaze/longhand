@@ -10,7 +10,7 @@ reference-source/
 # Local evaluation fixtures — real recordings, never committed.
 sample.m4a
 sample.txt
-fixtures/
+/fixtures/
 .env
 
 # Build output

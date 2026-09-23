@@ -46,7 +46,18 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: tests
+        if: runner.os != 'Windows'
         run: cargo test --workspace
+
+      # A test binary that links Tauri lacks the Windows app manifest (Tauri
+      # embeds it into the application binary only), so it cannot start there:
+      # STATUS_ENTRYPOINT_NOT_FOUND. The app crate's tests are
+      # platform-independent and run on macOS; Windows compiles them.
+      - name: tests (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo test --workspace --exclude longhand
+          cargo test -p longhand --no-run
 
       - name: Bindings are current
         if: runner.os == 'macOS'
