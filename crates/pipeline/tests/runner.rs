@@ -23,6 +23,8 @@ use session_core::{SessionState, Stage};
 struct Script {
     /// Model ids loaded, in order.
     loads: Mutex<Vec<String>>,
+    /// Engines dropped.
+    unloads: AtomicUsize,
     calls: AtomicUsize,
     running: AtomicUsize,
     overlapped: AtomicBool,
@@ -76,6 +78,12 @@ impl SpeakerAnalyzer for FakeAnalyzer {
 struct Fake {
     model: String,
     script: Arc<Script>,
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        self.script.unloads.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 impl Recognizer for Fake {
@@ -1458,4 +1466,39 @@ async fn a_resumed_session_whose_folder_went_missing_names_it_and_retries_once_i
     r.runner.retry("s").unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert!(folder.join("audio/segment-02.opus").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_frees_the_engine_and_nothing_loads_it_again() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "a",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        r.script.unloads.load(Ordering::SeqCst),
+        0,
+        "kept across sessions"
+    );
+
+    r.runner.shutdown();
+    assert_eq!(r.script.unloads.load(Ordering::SeqCst), 1);
+    queue_session(
+        &r.store,
+        &r.root,
+        "b",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    assert!(
+        r.runner.run_next().await.is_none(),
+        "nothing starts after shutdown"
+    );
+    assert_eq!(r.script.loads.lock().unwrap().len(), 1);
 }

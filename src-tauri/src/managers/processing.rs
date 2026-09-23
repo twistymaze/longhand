@@ -321,6 +321,11 @@ impl ProcessingManager {
     }
 
     /// A session was queued or capture ended.
+    /// Before the process exits: stop processing and free the models.
+    pub fn shutdown(&self) {
+        self.runner.shutdown();
+    }
+
     pub fn wake(&self) {
         self.runner.wake();
     }

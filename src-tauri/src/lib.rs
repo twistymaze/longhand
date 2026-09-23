@@ -142,15 +142,22 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app, event| {
+    app.run(|app, event| match event {
+        // Free the recognition engine before static destructors run.
+        tauri::RunEvent::Exit => {
+            if let Some(processing) =
+                app.try_state::<std::sync::Arc<managers::processing::ProcessingManager>>()
+            {
+                processing.shutdown();
+            }
+        }
         #[cfg(target_os = "macos")]
-        if let tauri::RunEvent::Reopen { .. } = event {
+        tauri::RunEvent::Reopen { .. } => {
             // Launching the running bundle again (Finder, Spotlight, Dock) is a
             // request to see the window it hid on close.
             window::show_main_window(app);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = (app, event);
+        _ => {}
     });
 }
 

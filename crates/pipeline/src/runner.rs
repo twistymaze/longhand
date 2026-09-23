@@ -330,6 +330,11 @@ impl Runner {
         .map_err(|e| StageError::Failed(format!("the summary stopped unexpectedly: {e}")))?
     }
 
+    /// Stop at the next window and free the recognition engine. Called as
+    /// the process exits: ggml's Metal backend asserts in its static
+    /// destructor if a model is still loaded then, and the abort reads as a
+    /// crash on every quit after a session was transcribed. Handy unloads on
+    /// exit for the same reason. Waits for a window in progress to end.
     pub fn shutdown(&self) {
         self.shutdown.cancel();
         if let Some((_, token)) = self
@@ -340,6 +345,7 @@ impl Runner {
         {
             token.cancel();
         }
+        self.engine.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     pub async fn run(self: Arc<Self>) {
@@ -627,6 +633,9 @@ fn execute(
                 Speakers::Unavailable => TurnCuts::new(),
             };
             let mut slot = engine.lock().unwrap_or_else(|e| e.into_inner());
+            // Checked under the engine's lock, so a shutdown that freed the
+            // engine is never followed by loading it again.
+            control.proceed()?;
             // A queued session keeps the model selected when it stopped (R20c).
             if slot.as_ref().map(|e| e.model_id()) != Some(model) {
                 *slot = None;
