@@ -40,6 +40,7 @@ audio = { path = "../crates/audio" }
 audio-cpal = { path = "../crates/audio-cpal" }
 models = { path = "../crates/models" }
 power = { path = "../crates/power" }
+sfx = { path = "../crates/sfx" }
 recorder = { path = "../crates/recorder" }
 secrets = { path = "../crates/secrets" }
 asr = { path = "../crates/asr" }

@@ -9,9 +9,35 @@ use tauri::{AppHandle, Manager};
 use crate::window::show_main_window;
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+const OPEN: &str = "Open Longhand";
+
+/// The menu item that fronts the window, renamed while an alert is raised.
+struct OpenItem(MenuItem<tauri::Wry>);
+
+/// Show a failed-capture alert on the tray, or clear it (U15): a title
+/// beside the menu-bar icon on macOS, the tooltip, and the menu's first
+/// item, which fronts the window on the Resume and Stop controls.
+pub fn set_alert(app: &AppHandle, headline: Option<&str>) {
+    if let Some(tray) = app.tray_by_id("main") {
+        #[cfg(target_os = "macos")]
+        let _ = tray.set_title(headline.map(|_| "Interrupted"));
+        let _ = tray.set_tooltip(Some(match headline {
+            Some(headline) => format!("Longhand: {headline}"),
+            None => "Longhand".to_string(),
+        }));
+    }
+    if let Some(item) = app.try_state::<OpenItem>() {
+        let text = match headline {
+            Some(_) => "Recording interrupted: Open Longhand",
+            None => OPEN,
+        };
+        let _ = item.0.set_text(text);
+    }
+}
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Longhand", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", OPEN, true, None::<&str>)?;
+    app.manage(OpenItem(open.clone()));
     let quit = MenuItem::with_id(app, "quit", "Quit Longhand", true, Some("CmdOrCtrl+Q"))?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open, &separator, &quit])?;

@@ -142,6 +142,39 @@ function Exceptions({
   );
 }
 
+/// Capture stopped and could not go on by itself (R5c): what happened, and
+/// the two ways out. Stop acknowledges it; Resume opens the next segment.
+function FailedCapture({ capture, onError }: { capture: Capture; onError: (e: string | null) => void }) {
+  const status = capture.status;
+  const [busy, setBusy] = useState(false);
+  if (!status?.interruption || !status.session_id) return null;
+  const id = status.session_id;
+  const act = async (action: () => Promise<{ status: "ok" | "error"; error?: string }>) => {
+    setBusy(true);
+    const result = await action();
+    setBusy(false);
+    onError(result.status === "error" ? (result.error ?? null) : null);
+    await capture.refresh();
+  };
+  return (
+    <div role="alert" className="grid gap-1.5 border-t border-separator px-3 py-2">
+      <p className="font-medium text-negative">{status.interruption.headline}</p>
+      {capture.lostReason && <p className="text-[0.85rem] text-label-secondary">{capture.lostReason}</p>}
+      {status.interruption.disk && (
+        <p className="text-[0.85rem] text-label-secondary">Free some space on this disk, then resume.</p>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button disabled={busy} onClick={() => void act(() => commands.stopRecording())}>
+          Stop
+        </Button>
+        <Button prominent disabled={busy} onClick={() => void act(() => commands.resumeRecording(id))}>
+          Resume
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /// What stands between the shortcut and a recording (R1a).
 export function missingPreconditions(readiness: Readiness): string {
   const missing: string[] = [];
@@ -209,7 +242,11 @@ export function Rail({
         ) : (
           <span className="text-caution">Not armed: {missingPreconditions(readiness)}</span>
         )}
-        <Button prominent={!recording} disabled={busy || (!recording && !readiness.armed)} onClick={toggle}>
+        <Button
+          prominent={!recording && !capture.status?.interruption}
+          disabled={busy || (!recording && !readiness.armed)}
+          onClick={toggle}
+        >
           {recording ? "Stop" : "Record"}
         </Button>
       </div>
@@ -219,7 +256,11 @@ export function Rail({
         </p>
       )}
       {recording && <Exceptions capture={capture} readiness={readiness} />}
-      {!recording && capture.lostReason && <Exceptions capture={capture} readiness={readiness} />}
+      {!recording && capture.status?.interruption ? (
+        <FailedCapture capture={capture} onError={setError} />
+      ) : (
+        !recording && capture.lostReason && <Exceptions capture={capture} readiness={readiness} />
+      )}
       {error && <p className="border-t border-separator px-3 py-1.5 text-[0.85rem] text-negative">{error}</p>}
     </section>
   );

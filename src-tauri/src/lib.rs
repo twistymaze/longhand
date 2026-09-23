@@ -107,6 +107,8 @@ pub fn run() {
                     .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
             );
             app.manage(std::sync::Arc::clone(&capture));
+            let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
+            app.manage(std::sync::Arc::clone(&alerts));
             // Sleep closes the segment on the notifying thread, before the
             // machine stops; the wake's restart runs off it (U13).
             let sleeping = std::sync::Arc::clone(&capture);
@@ -130,8 +132,9 @@ pub fn run() {
             app.manage(processing);
             // Resolving the microphone queries the audio HAL; keep it off the
             // launch path. A failure here is retried at the first press.
+            let preparing = std::sync::Arc::clone(&capture);
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(e) = capture.prepare() {
+                if let Err(e) = preparing.prepare() {
                     log::warn!("microphone not prepared at launch: {e}");
                 }
             });
@@ -146,6 +149,8 @@ pub fn run() {
             window::create_main_window(&handle)?;
             tray::create_tray(&handle)?;
             shortcut::register(&handle);
+            // After the tray exists, so the restored alert can mark it.
+            alerts.restore(&handle, &capture);
 
             window::show_main_window(&handle);
             Ok(())

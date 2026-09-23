@@ -340,6 +340,11 @@ export type EndpointView = { host: string; model: string;
  * False when the transcript would cross the network unencrypted.
  */
 encrypted: boolean }
+export type Interruption = { headline: string; 
+/**
+ * A disk interruption resumes only once space is freed (R7a).
+ */
+disk: boolean }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "segmentation" | "embedding"
@@ -419,6 +424,11 @@ session_id: string | null; state: string | null; recording: boolean;
  * still counts as recording.
  */
 reconnecting: boolean; 
+/**
+ * Why the open session stopped recording, while it is interrupted: the
+ * failed-capture state, with Resume and Stop (R5c).
+ */
+interruption: Interruption | null; 
 /**
  * Free bytes where audio is being written.
  */

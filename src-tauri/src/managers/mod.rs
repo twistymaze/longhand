@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod capture;
 pub mod destination;
 pub mod models;

@@ -35,6 +35,8 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
 
+use crate::managers::alerts::{self, AlertsManager};
+
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
 /// enough to keep per-frame overhead negligible.
 const FRAMES_PER_SECOND: u32 = 50;
@@ -122,8 +124,18 @@ pub struct RecordingStatus {
     /// The microphone went away and is being reopened (U14); the session
     /// still counts as recording.
     pub reconnecting: bool,
+    /// Why the open session stopped recording, while it is interrupted: the
+    /// failed-capture state, with Resume and Stop (R5c).
+    pub interruption: Option<Interruption>,
     /// Free bytes where audio is being written.
     pub working_free_bytes: Option<u64>,
+}
+
+#[derive(Serialize, Clone, Type, Debug)]
+pub struct Interruption {
+    pub headline: String,
+    /// A disk interruption resumes only once space is freed (R7a).
+    pub disk: bool,
 }
 
 /// Capture stopped on its own: the device went away or the disk filled.
@@ -368,8 +380,16 @@ impl CaptureManager {
                 self.close_segment(&mut inner, active)?;
                 id
             }
-            // Stopped between restart attempts: the lost segment is closed.
-            None => reconnecting.ok_or(CaptureError::NotCapturing)?,
+            None => match reconnecting {
+                // Stopped between restart attempts: the lost segment is closed.
+                Some(id) => id,
+                // Stopped from the failed-capture state, which acknowledges
+                // it (R5c).
+                None => match self.open_session()? {
+                    Some((id, SessionState::Interrupted { .. })) => id,
+                    _ => return Err(CaptureError::NotCapturing),
+                },
+            },
         };
         let retained_audio = !self.store().segments(&id)?.is_empty();
         let state = self.store().apply(
@@ -386,6 +406,8 @@ impl CaptureManager {
             let _ = std::fs::remove_dir_all(self.session_dir(&id));
             log::info!("session {id} kept no audio and was discarded");
         }
+        drop(inner);
+        app.state::<Arc<AlertsManager>>().clear(&id);
         changed(app, None);
         Ok((id, state))
     }
@@ -465,6 +487,7 @@ impl CaptureManager {
         });
         inner.clock = Some(Clock::new(id, timeline, epoch));
         log::info!("session {id} resumed as segment {index} at {offset} ms");
+        app.state::<Arc<AlertsManager>>().clear(id);
         changed(app, Some(id));
         Ok(state)
     }
@@ -481,6 +504,24 @@ impl CaptureManager {
         Ok(None)
     }
 
+    pub fn session_state(&self, id: &str) -> Option<SessionState> {
+        self.store().session(id).ok().flatten().map(|r| r.state)
+    }
+
+    /// The session left in failed-capture, if any: interrupted by a device,
+    /// the disk or a crash, and not yet acknowledged (R5c).
+    pub fn failed_session(&self) -> Option<(String, InterruptReason)> {
+        let sessions = self.store().sessions_in("interrupted").ok()?;
+        sessions.into_iter().find_map(|r| match r.state {
+            SessionState::Interrupted {
+                reason,
+                acknowledged: false,
+                ..
+            } if reason != InterruptReason::Sleep => Some((r.id, reason)),
+            _ => None,
+        })
+    }
+
     pub fn status(&self) -> Result<RecordingStatus, CaptureError> {
         let (recording, reconnecting) = {
             let inner = self.inner();
@@ -488,11 +529,19 @@ impl CaptureManager {
             (inner.active.is_some() || reconnecting, reconnecting)
         };
         let open = self.open_session()?;
+        let interruption = match open.as_ref().map(|(_, state)| state) {
+            Some(SessionState::Interrupted { reason, .. }) => Some(Interruption {
+                headline: alerts::headline(*reason).to_string(),
+                disk: *reason == InterruptReason::Disk,
+            }),
+            _ => None,
+        };
         Ok(RecordingStatus {
             session_id: open.as_ref().map(|(id, _)| id.clone()),
             state: open.as_ref().map(|(_, state)| state.name().to_string()),
             recording,
             reconnecting,
+            interruption,
             working_free_bytes: recorder::storage::available_space(
                 self.working_root.parent().unwrap_or(&self.working_root),
             ),
@@ -754,9 +803,19 @@ impl CaptureManager {
         changed(app, None);
         let _ = CaptureEnded {
             session_id: id.to_string(),
-            reason,
+            reason: reason.clone(),
         }
         .emit(app);
+        if loss.reason != InterruptReason::Sleep {
+            app.state::<Arc<AlertsManager>>().raise(
+                app,
+                &self,
+                id,
+                loss.reason,
+                Some(&reason),
+                true,
+            );
+        }
         if loss.reason == InterruptReason::Device {
             let manager = Arc::clone(&self);
             let app = app.clone();
@@ -824,6 +883,7 @@ impl CaptureManager {
             inner.watching = None;
             drop(inner);
             log::info!("session {id} resumed on its microphone's return");
+            app.state::<Arc<AlertsManager>>().clear(id);
             changed(app, Some(id));
             return;
         }
