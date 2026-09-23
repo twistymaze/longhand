@@ -38,6 +38,7 @@ A first sketch, for the brainstorm to accept or overturn:
 - **Real notes:** a markdown editor, editable and rearrangeable at any time, with an optional way to stamp the current time on a line (for example a shortcut) instead of every line being timestamped.
 - **Settings in a standard macOS Settings window** (⌘,), with the readiness status folded into it or into the menu bar item.
 - **A title per session,** perhaps proposed by the summarizer, so the list and the saved folder read as something better than "Longhand session".
+- **Choosing the recognition model** in Settings. The skeleton hard-codes Whisper large-v3-turbo, which is not the model the user will use day to day. The code already carries a model id per setting and per session behind a `Recognizer` trait; the plan defers the picker and a second engine.
 - **Resume** of any completed session, with no time limit (decided 2026-09-23). The brainstorm decides where it lives, and whether it is tucked into a menu for older sessions.
 
 ## Questions for the brainstorm
