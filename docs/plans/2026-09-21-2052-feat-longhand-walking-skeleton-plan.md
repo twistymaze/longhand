@@ -792,6 +792,7 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
   - Input: mock disk with 300 MB free falling to 200 MB; action: write; expected: storage check returns the floor error at the next 5 s check (handled in U15).
   - Input: 4 h of mock audio at 48 kHz written as fast as accepted; action: record; expected: ~240 chunks, constant memory, no ring overrun.
 - **Verification:** Shortcut-to-first-sample latency measured under 200 ms on the dev machine; chunk files are valid WAV playable by any player; memory flat over a long mock run.
+- **Execution notes (2026-09-22):** Frames proved against the built-in microphone first: after `prepare` (device and config resolved ahead of the press, cached), open-to-first-20 ms-frame measures 150–160 ms at 48 kHz, of which stream build is ~104 ms — pre-building the stream at arm time, started at the press, is the lever if U7 misses its budget. CoreAudio hands over ~120–140 ms of pre-roll when a stream starts, so a segment's timeline length is its sample count, not wall time. The Bluetooth-default swap follows anarlog's reasoning but decides from the transport cpal reports: WASAPI reports Bluetooth, CoreAudio does not yet, so on macOS the default input is kept. The 4-hour writer run is an ignored soak test (1.4 GB); CI writes 20 minutes. Until a sessions manager exists, the capture manager owns the job store at `<app data>/longhand.db`.
 
 ### U22. Idle-sleep assertion
 

@@ -15,8 +15,10 @@ set -euo pipefail
 # directory adds it here, so the record cannot be forgotten.
 BORROWED_DIRS=(
   crates/audio
+  crates/audio-cpal
   crates/audio-mock
   crates/models
+  crates/recorder
   crates/secrets
   crates/supervisor
   crates/vad

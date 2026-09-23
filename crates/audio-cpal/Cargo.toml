@@ -1,0 +1,23 @@
+[package]
+name = "audio-cpal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+audio = { path = "../audio" }
+cpal = "0.18.2"
+rtrb = "0.4"
+rubato = "0.16"
+futures-util = "0.3"
+log.workspace = true
+tokio = { version = "1", features = ["sync"] }
+tokio-stream = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+hound = "3.5.1"
+recorder = { path = "../recorder" }
+tempfile = "3"
+tokio-util = "0.7"

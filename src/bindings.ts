@@ -126,6 +126,33 @@ async readiness() : Promise<Result<Readiness, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async startRecording() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async stopRecording() : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_recording", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async isRecording() : Promise<boolean> {
+    return await TAURI_INVOKE("is_recording");
+},
 async probeStatus() : Promise<ProbeStatus> {
     return await TAURI_INVOKE("probe_status");
 }
@@ -135,9 +162,11 @@ async probeStatus() : Promise<ProbeStatus> {
 
 
 export const events = __makeEvents__<{
+captureEnded: CaptureEnded,
 modelDownloadEvent: ModelDownloadEvent,
 probeShortcutFired: ProbeShortcutFired
 }>({
+captureEnded: "capture-ended",
 modelDownloadEvent: "model-download-event",
 probeShortcutFired: "probe-shortcut-fired"
 })
@@ -148,6 +177,11 @@ probeShortcutFired: "probe-shortcut-fired"
 
 /** user-defined types **/
 
+/**
+ * Capture stopped on its own: the device went away or the disk filled.
+ * Interruption handling (U14, U15) consumes it.
+ */
+export type CaptureEnded = { session_id: string; reason: string }
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).

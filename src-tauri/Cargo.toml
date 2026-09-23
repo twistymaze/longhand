@@ -36,8 +36,17 @@ sha2 = "0.10"
 # Free space on the destination volume, as anarlog measures it.
 sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
+audio = { path = "../crates/audio" }
+audio-cpal = { path = "../crates/audio-cpal" }
 models = { path = "../crates/models" }
+recorder = { path = "../crates/recorder" }
 secrets = { path = "../crates/secrets" }
+session-core = { path = "../crates/session-core" }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+thiserror.workspace = true
+tokio = { version = "1", features = ["rt", "time"] }
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "=2.3.2"

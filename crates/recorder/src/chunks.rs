@@ -1,0 +1,359 @@
+//! Chunked capture on disk (KTD4).
+//!
+//! anarlog's `ChunkedSink` reshaped: 60 s chunks at the device's native
+//! rate as 16-bit WAV instead of 16 kHz MP3; the 2 s lookback written first
+//! into each new chunk so consecutive chunks overlap and a boundary never
+//! loses a word; the file name is the metadata; `.part` while open,
+//! `sync_all()` and a rename when closed. The segment index leads the name,
+//! and there is no archive stream — the Opus archive is encoded after stop.
+//! See PROVENANCE.md.
+//!
+//! Names, all times in milliseconds:
+//! - open: `{segment}-{capture_started_at}-{start_ms}-{audio_start_ms}.part`
+//! - closed: `{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav`
+//!
+//! `start_ms` and `end_ms` are on the session timeline; `audio_start_ms` is
+//! where the file's first sample sits, up to 2 s before `start_ms`.
+//! `capture_started_at` is the segment's wall-clock start in Unix ms.
+
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+
+use crate::storage::{self, SpaceProbe};
+use crate::wav::{self, WavFile};
+
+pub const CHUNK_SECONDS: u64 = 60;
+pub const LOOKBACK_SECONDS: u64 = 2;
+/// Seconds of audio between free-space checks.
+pub const STORAGE_CHECK_SECONDS: u64 = 5;
+/// Seconds of audio between handing buffered bytes to the OS.
+pub const FLUSH_SECONDS: u64 = 1;
+
+#[derive(Debug, thiserror::Error)]
+pub enum RecorderError {
+    #[error(
+        "only {available} bytes free where audio is saved; recording stopped at the floor of {floor} bytes"
+    )]
+    LowDisk { available: u64, floor: u64 },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkInfo {
+    pub path: PathBuf,
+    pub segment: u32,
+    pub capture_started_at: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub audio_start_ms: u64,
+}
+
+pub struct SegmentArgs {
+    /// The session's `audio-recovery/` directory.
+    pub dir: PathBuf,
+    pub segment: u32,
+    pub capture_started_at: u64,
+    /// Where the segment starts on the session timeline, so a resumed
+    /// segment continues it rather than restarting at zero.
+    pub offset_ms: u64,
+    pub sample_rate: u32,
+    pub floor_bytes: u64,
+}
+
+/// What a closed segment covered on the session timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentSpan {
+    pub segment: u32,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
+impl SegmentSpan {
+    pub fn duration_ms(&self) -> u64 {
+        self.end_ms - self.start_ms
+    }
+}
+
+pub struct ChunkedWriter {
+    args: SegmentArgs,
+    probe: SpaceProbe,
+    /// Logical start of the open chunk on the session timeline.
+    start_ms: u64,
+    audio_start_ms: u64,
+    /// New (non-lookback) samples in the open chunk.
+    chunk_samples: u64,
+    /// Every new sample of the segment, for its end on the timeline.
+    segment_samples: u64,
+    chunk: Option<WavFile>,
+    history: VecDeque<f32>,
+    since_flush: u64,
+    since_space_check: u64,
+}
+
+impl ChunkedWriter {
+    pub fn create(args: SegmentArgs) -> Result<Self, RecorderError> {
+        Self::with_probe(args, storage::system_probe())
+    }
+
+    pub fn with_probe(args: SegmentArgs, probe: SpaceProbe) -> Result<Self, RecorderError> {
+        std::fs::create_dir_all(&args.dir)?;
+        storage::check(probe(&args.dir), args.floor_bytes).map_err(|available| {
+            RecorderError::LowDisk {
+                available,
+                floor: args.floor_bytes,
+            }
+        })?;
+        Ok(Self {
+            start_ms: args.offset_ms,
+            audio_start_ms: args.offset_ms,
+            args,
+            probe,
+            chunk_samples: 0,
+            segment_samples: 0,
+            chunk: None,
+            history: VecDeque::new(),
+            since_flush: 0,
+            since_space_check: 0,
+        })
+    }
+
+    fn rate(&self) -> u64 {
+        self.args.sample_rate as u64
+    }
+
+    fn ms(&self, samples: u64) -> u64 {
+        samples * 1000 / self.rate()
+    }
+
+    fn partial_path(&self) -> PathBuf {
+        self.args.dir.join(format!(
+            "{}-{}-{}-{}.part",
+            self.args.segment, self.args.capture_started_at, self.start_ms, self.audio_start_ms
+        ))
+    }
+
+    /// Where the segment currently ends on the session timeline.
+    pub fn end_ms(&self) -> u64 {
+        self.args.offset_ms + self.ms(self.segment_samples)
+    }
+
+    pub fn write(&mut self, samples: &[f32]) -> Result<(), RecorderError> {
+        let chunk_len = CHUNK_SECONDS * self.rate();
+        let mut rest = samples;
+        // Split at the chunk boundary so every closed chunk holds exactly
+        // 60 s of new audio and stems stay on whole-second marks.
+        while !rest.is_empty() {
+            let room = (chunk_len - self.chunk_samples) as usize;
+            let (now, later) = rest.split_at(room.min(rest.len()));
+            self.write_within_chunk(now)?;
+            rest = later;
+            if self.chunk_samples >= chunk_len {
+                self.close_chunk()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_within_chunk(&mut self, samples: &[f32]) -> Result<(), RecorderError> {
+        if self.since_space_check >= STORAGE_CHECK_SECONDS * self.rate() {
+            self.since_space_check = 0;
+            storage::check((self.probe)(&self.args.dir), self.args.floor_bytes).map_err(
+                |available| RecorderError::LowDisk {
+                    available,
+                    floor: self.args.floor_bytes,
+                },
+            )?;
+        }
+        if self.chunk.is_none() {
+            self.audio_start_ms = self
+                .start_ms
+                .saturating_sub(self.ms(self.history.len() as u64));
+            let mut chunk = WavFile::create(&self.partial_path(), self.args.sample_rate)?;
+            let (a, b) = self.history.as_slices();
+            chunk.write(a)?;
+            chunk.write(b)?;
+            self.chunk = Some(chunk);
+        }
+        let rate = self.rate();
+        let chunk = self.chunk.as_mut().expect("opened above");
+        chunk.write(samples)?;
+        let n = samples.len() as u64;
+        self.chunk_samples += n;
+        self.segment_samples += n;
+        self.since_space_check += n;
+        self.since_flush += n;
+
+        let limit = (LOOKBACK_SECONDS * rate) as usize;
+        self.history
+            .extend(&samples[samples.len().saturating_sub(limit)..]);
+        let excess = self.history.len().saturating_sub(limit);
+        self.history.drain(..excess);
+
+        if self.since_flush >= FLUSH_SECONDS * rate {
+            self.since_flush = 0;
+            chunk.flush()?;
+        }
+        Ok(())
+    }
+
+    fn close_chunk(&mut self) -> Result<(), RecorderError> {
+        let Some(chunk) = self.chunk.take() else {
+            return Ok(());
+        };
+        chunk.finish()?;
+        let end_ms = self.start_ms + self.ms(self.chunk_samples);
+        let closed = self.args.dir.join(format!(
+            "{}-{}-{}-{}-{}.wav",
+            self.args.segment,
+            self.args.capture_started_at,
+            self.start_ms,
+            end_ms,
+            self.audio_start_ms
+        ));
+        std::fs::rename(self.partial_path(), closed)?;
+        sync_dir(&self.args.dir)?;
+        self.start_ms = end_ms;
+        self.chunk_samples = 0;
+        Ok(())
+    }
+
+    /// Close the last chunk and report the segment's span.
+    pub fn finish(mut self) -> Result<SegmentSpan, RecorderError> {
+        self.close_chunk()?;
+        Ok(SegmentSpan {
+            segment: self.args.segment,
+            start_ms: self.args.offset_ms,
+            end_ms: self.end_ms(),
+        })
+    }
+}
+
+/// A rename is durable only once its directory is.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
+fn parse_numbers<const N: usize>(stem: &str) -> Option<[u64; N]> {
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() != N {
+        return None;
+    }
+    let mut out = [0u64; N];
+    for (slot, part) in out.iter_mut().zip(parts) {
+        *slot = part.parse().ok()?;
+    }
+    Some(out)
+}
+
+/// Closed chunks in `dir`, ordered by segment and then timeline position.
+pub fn list_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut chunks = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(stem) = name.strip_suffix(".wav") else {
+            continue;
+        };
+        let Some([segment, capture, start, end, audio_start]) = parse_numbers::<5>(stem) else {
+            continue;
+        };
+        let Ok(segment) = u32::try_from(segment) else {
+            continue;
+        };
+        chunks.push(ChunkInfo {
+            path: entry.path(),
+            segment,
+            capture_started_at: capture,
+            start_ms: start,
+            end_ms: end,
+            audio_start_ms: audio_start,
+        });
+    }
+    chunks.sort_by_key(|c| (c.segment, c.start_ms));
+    Ok(chunks)
+}
+
+/// Remove every chunk of `segment`, closed or open (R35).
+pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let prefix = format!("{segment}-");
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && (name.ends_with(".wav") || name.ends_with(".part")) {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Close every `.part` a crash left open: repair its header from its length
+/// and give it the closed name its audio supports (R8). A partial holding
+/// nothing past its lookback duplicates the previous chunk and is removed.
+/// Call only while no writer is running on `dir`.
+pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut recovered = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(stem) = name.strip_suffix(".part") else {
+            continue;
+        };
+        let Some([segment, capture, start, audio_start]) = parse_numbers::<4>(stem) else {
+            continue;
+        };
+        let (rate, samples) = match wav::repair(&entry.path()) {
+            Ok(repaired) => repaired,
+            Err(e) => {
+                log::warn!("partial chunk {name} is unreadable ({e}); left in place");
+                continue;
+            }
+        };
+        let end = audio_start + samples * 1000 / rate.max(1) as u64;
+        if end <= start {
+            std::fs::remove_file(entry.path())?;
+            continue;
+        }
+        let closed = dir.join(format!(
+            "{segment}-{capture}-{start}-{end}-{audio_start}.wav"
+        ));
+        std::fs::rename(entry.path(), &closed)?;
+        recovered.push(ChunkInfo {
+            path: closed,
+            segment: segment as u32,
+            capture_started_at: capture,
+            start_ms: start,
+            end_ms: end,
+            audio_start_ms: audio_start,
+        });
+    }
+    if !recovered.is_empty() {
+        sync_dir(dir)?;
+    }
+    Ok(recovered)
+}

@@ -30,11 +30,16 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::models::download_models,
             commands::models::cancel_model_downloads,
             commands::readiness::readiness,
+            commands::capture::start_recording,
+            commands::capture::stop_recording,
+            commands::capture::resume_recording,
+            commands::capture::is_recording,
             probe::probe_status,
         ])
         .events(collect_events![
             probe::ProbeShortcutFired,
             managers::models::ModelDownloadEvent,
+            managers::capture::CaptureEnded,
         ])
 }
 
@@ -78,6 +83,18 @@ pub fn run() {
             app.manage(std::sync::Arc::new(managers::models::ModelsManager::new(
                 &handle,
             )?));
+            let capture = std::sync::Arc::new(
+                managers::capture::CaptureManager::new(&handle)
+                    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
+            );
+            app.manage(std::sync::Arc::clone(&capture));
+            // Resolving the microphone queries the audio HAL; keep it off the
+            // launch path. A failure here is retried at the first press.
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(e) = capture.prepare() {
+                    log::warn!("microphone not prepared at launch: {e}");
+                }
+            });
             // Read once at launch so a first run writes the defaults and an old
             // store migrates before anything else reads it.
             let settings = managers::settings::get_settings(&handle);
