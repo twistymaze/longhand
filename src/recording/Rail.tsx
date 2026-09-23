@@ -3,11 +3,11 @@
 // all a participant at the table should spend:
 // - persistent: input status, 30 s of level history, elapsed time;
 // - exceptions: silent until something is degraded.
-// Nothing here animates except an exception or the one-time model sentence
-// arriving, with a short fade. The trace updates in place: it is data, and easing it
-// would only make it lag the room.
+// Nothing here animates except an exception arriving, with a short fade. The
+// trace updates in place: it is data, and easing it would only make it lag
+// the room.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   commands,
   type ModelStatus,
@@ -19,8 +19,6 @@ import { Button, fieldClass, formatBytes } from "../settings/ui";
 import { formatPosition, levelFraction } from "../lib/timeline";
 import type { InputStatus } from "./inputStatus";
 import { type Capture, HISTORY } from "./useCapture";
-
-const MODEL_SENTENCE_MS = 8000;
 
 const statusText: Record<InputStatus, string> = {
   idle: "Not recording",
@@ -228,15 +226,6 @@ export function Rail({
   const recording = capture.status?.recording ?? false;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showModelSentence, setShowModelSentence] = useState(false);
-
-  // R10: said once as the session starts, not held on screen.
-  useEffect(() => {
-    if (!recording) return;
-    setShowModelSentence(true);
-    const timer = window.setTimeout(() => setShowModelSentence(false), MODEL_SENTENCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [recording, capture.status?.session_id]);
 
   const asr = models.find((m) => m.role === "recognition" && m.required);
   const modelSentence = asr?.streaming
@@ -280,8 +269,10 @@ export function Rail({
           {recording ? "Stop" : "Record"}
         </Button>
       </div>
-      {recording && showModelSentence && (
-        <p className="fade-in border-t border-separator px-3 py-1.5 text-[0.85rem] text-label-secondary">
+      {/* R10, held while recording: a line that vanished on a timer was
+          motion that drew the eye and left nothing to read. */}
+      {recording && (
+        <p className="border-t border-separator px-3 py-1.5 text-[0.85rem] text-label-secondary">
           {modelSentence}
         </p>
       )}
