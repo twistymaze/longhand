@@ -809,6 +809,7 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
   - Input: capture inactive; action: query; expected: no assertion held.
   - Input: idle timer condition (manual); action: leave the machine an hour while recording; expected: no sleep, capture continuous (AE2).
 - **Verification:** A machine left untouched for an hour mid-recording does not sleep, and holds no assertion once recording stops.
+- **Execution notes (2026-09-22):** `crates/power` borrows nothing, so it carries no `PROVENANCE.md` (the checker rejects a record-less one). The guard is `!Send`, which makes the Windows per-thread rule a compile-time property rather than a convention. On macOS the ignored hardware test confirms `PreventUserIdleSystemSleep` is held under the process id while capturing and gone within 500 ms of release; the hour-long idle test (AE2) and the Windows `powercfg /requests` check are manual, at the Phase 2b checkpoint and U21.
 
 ### U7. Shortcut, recording surface and scratchpad
 

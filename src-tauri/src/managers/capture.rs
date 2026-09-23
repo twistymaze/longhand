@@ -1,9 +1,9 @@
 //! Owns capture: the microphone, the segment being recorded, and the
 //! hand-off of segment open and close to the session core (KTD3, KTD4, KTD9).
 //!
-//! Each segment records on a thread of its own, which is also where the
-//! idle-sleep guard will live (U22): the guard must be created and dropped by
-//! the thread that owns active capture. A crash leaves the open segment's
+//! Each segment records on a thread of its own, which also holds the
+//! idle-sleep assertion (U22): it must be created and dropped by the thread
+//! that owns active capture. A crash leaves the open segment's
 //! chunks on disk under their names; those names, not the job store, are
 //! what launch recovery rebuilds the segment from (R8).
 
@@ -318,6 +318,8 @@ impl CaptureManager {
         let thread = std::thread::Builder::new()
             .name(format!("longhand-segment-{segment}"))
             .spawn(move || {
+                // Held by this thread for exactly as long as it records (R4, R5d).
+                let _awake = power::IdleGuard::acquire();
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_time()
                     .build()
