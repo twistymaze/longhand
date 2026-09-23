@@ -206,7 +206,7 @@ mod hardware {
     /// output as the probe sees it.
     #[test]
     #[ignore = "reads the real output device"]
-    fn probe_reports_this_machine() {
+    fn hardware_output_probe_reports_this_machine() {
         let state = super::output_state();
         println!("{state:?} -> {:?}", state.problem());
         assert!(state.present);
