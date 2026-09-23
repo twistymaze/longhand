@@ -1,8 +1,15 @@
 // Runtime-library staging is copied from Handy's build.rs (see PROVENANCE.md).
-// Nothing links transcribe-cpp until U8, so both staging steps are no-ops today:
-// each self-gates on the environment a shared or Windows build provides.
+// Both staging steps self-gate on the environment a shared or Windows build
+// provides, and are no-ops for the static macOS build.
 
 fn main() {
+    // ggml's Metal backend calls `__isPlatformVersionAtLeast` (an `@available`
+    // check), which lives in clang's runtime library; the release link fails
+    // without it. anarlog's onnx build.rs passes the same flag for CoreML.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-fapple-link-rtlib");
+    }
+
     // Stage transcribe-cpp's shared runtime libraries (and the dlopen'd ggml
     // backend modules) for the installer. Self-gates on the shared /
     // dynamic-backends posture used on Windows; it's a no-op for the static
