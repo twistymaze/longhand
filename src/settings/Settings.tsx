@@ -5,7 +5,6 @@ import {
   type DownloadUpdate,
   type ModelStatus,
   type Readiness,
-  type SessionEntry,
   type Settings as SettingsData,
 } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
@@ -121,18 +120,9 @@ export function Settings() {
     }
   }, [recordingSession, lastRecorded, sessions.entries]);
 
-  // The session on screen stays listed while it is shown, even once a newer
-  // one has landed and taken its place in the backend's list.
-  const [kept, setKept] = useState<SessionEntry | null>(null);
-  const fresh = sessions.entries.filter((e) => !isOpen(e.state));
+  const listed = sessions.entries.filter((e) => !isOpen(e.state));
   const selectedId = "session" in selection ? selection.session : null;
-  const current = fresh.find((e) => e.id === selectedId);
-  useEffect(() => {
-    if (current) setKept(current);
-  }, [current]);
-  const held = !current && kept?.id === selectedId && kept?.state === "landed" ? kept : undefined;
-  const listed = held ? [...fresh, held].sort((a, b) => a.started.localeCompare(b.started)) : fresh;
-  const shown = current ?? held;
+  const shown = listed.find((e) => e.id === selectedId);
 
   const onSettings = useCallback(
     (next: SettingsData) => {
@@ -170,6 +160,27 @@ export function Settings() {
             <span aria-label="recording" className="size-2 rounded-full bg-negative" />
           )}
         </button>
+        <SectionHeader>Settings</SectionHeader>
+        {panes.map((p) => {
+          const tone = paneTone(p.id, readiness);
+          const selected = pane === p.id;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              aria-current={selected ? "page" : undefined}
+              onClick={() => setPane(p.id)}
+              className={`flex items-center justify-between ${itemClass(selected)}`}
+            >
+              {p.label}
+              {tone && !selected && (
+                <Status tone={tone}>
+                  <span className="sr-only">needs attention</span>
+                </Status>
+              )}
+            </button>
+          );
+        })}
         {listed.length > 0 && <SectionHeader>Sessions</SectionHeader>}
         {listed.map((entry) => {
           const selected = shown?.id === entry.id;
@@ -188,27 +199,6 @@ export function Settings() {
                   {entryStatus(entry, sessions.stages[entry.id] ?? null)}
                 </span>
               </span>
-              {tone && !selected && (
-                <Status tone={tone}>
-                  <span className="sr-only">needs attention</span>
-                </Status>
-              )}
-            </button>
-          );
-        })}
-        <SectionHeader>Settings</SectionHeader>
-        {panes.map((p) => {
-          const tone = paneTone(p.id, readiness);
-          const selected = pane === p.id;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              aria-current={selected ? "page" : undefined}
-              onClick={() => setPane(p.id)}
-              className={`flex items-center justify-between ${itemClass(selected)}`}
-            >
-              {p.label}
               {tone && !selected && (
                 <Status tone={tone}>
                   <span className="sr-only">needs attention</span>

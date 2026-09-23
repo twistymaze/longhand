@@ -121,27 +121,16 @@ fn entry(
     }
 }
 
-/// Every session not yet landed, and the one that landed last: the
-/// switcher's list, oldest first.
+/// Every session but the discarded ones: the switcher's list, newest first.
 #[tauri::command]
 #[specta::specta]
 pub fn list_sessions(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<SessionEntry>, String> {
     let store = capture.shared_store();
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     let records = store.sessions().map_err(|e| e.to_string())?;
-    let last_landed = records
-        .iter()
-        .rev()
-        .find(|r| r.state == SessionState::Landed)
-        .map(|r| r.id.clone());
     let mut out = Vec::new();
-    for record in &records {
-        let keep = match record.state {
-            SessionState::Discarded => false,
-            SessionState::Landed => last_landed.as_deref() == Some(record.id.as_str()),
-            _ => true,
-        };
-        if keep {
+    for record in records.iter().rev() {
+        if record.state != SessionState::Discarded {
             let segments = store.segments(&record.id).map_err(|e| e.to_string())?;
             let stage = store.current_stage(&record.id).map_err(|e| e.to_string())?;
             out.push(entry(record, &segments, stage));

@@ -233,8 +233,7 @@ async unblockSession(sessionId: string) : Promise<Result<null, string>> {
 }
 },
 /**
- * Every session not yet landed, and the one that landed last: the
- * switcher's list, oldest first.
+ * Every session but the discarded ones: the switcher's list, newest first.
  */
 async listSessions() : Promise<Result<SessionEntry[], string>> {
     try {
