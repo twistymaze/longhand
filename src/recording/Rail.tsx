@@ -196,7 +196,7 @@ export function Rail({
         <span className="w-32 shrink-0 font-medium">{statusText[capture.input]}</span>
         <Trace levels={capture.levels} input={capture.input} />
         <span className="w-[4.5rem] shrink-0 text-right text-[1.05rem] font-medium tabular-nums tracking-tight">
-          {recording || capture.input === "lost" ? formatPosition(capture.positionMs) : "--:--:--"}
+          {recording || capture.input === "lost" ? formatPosition(capture.recordedMs) : "--:--:--"}
         </span>
       </div>
       <div className="flex items-center justify-between gap-3 border-t border-separator px-3 py-1.5">

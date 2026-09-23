@@ -307,7 +307,18 @@ export type CaptureEnded = { session_id: string; reason: string }
  * A quarter-second of capture: level and position (R9). Ticks follow frame
  * arrival, so their absence is what a stalled input looks like.
  */
-export type CaptureTick = { session_id: string; peak: number; position_ms: number }
+export type CaptureTick = { session_id: string; peak: number; 
+/**
+ * On the session timeline, gaps between segments included: where a
+ * note typed now is anchored.
+ */
+position_ms: number; 
+/**
+ * Audio recorded in the session so far, gaps excluded: the elapsed
+ * time shown while recording, which a resume continues rather than
+ * jumping by the time spent away.
+ */
+recorded_ms: number }
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).

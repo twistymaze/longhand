@@ -59,7 +59,13 @@ pub enum CaptureError {
 pub struct CaptureTick {
     pub session_id: String,
     pub peak: f32,
+    /// On the session timeline, gaps between segments included: where a
+    /// note typed now is anchored.
     pub position_ms: u64,
+    /// Audio recorded in the session so far, gaps excluded: the elapsed
+    /// time shown while recording, which a resume continues rather than
+    /// jumping by the time spent away.
+    pub recorded_ms: u64,
 }
 
 /// A session started, stopped, or resumed recording.
@@ -482,6 +488,12 @@ impl CaptureManager {
                 return Err(e.into());
             }
         };
+        let recorded_before: u64 = self
+            .store()
+            .segments(session_id)?
+            .iter()
+            .map(|s| s.duration_ms)
+            .sum();
         let capture_started_at = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let writer = ChunkedWriter::create(SegmentArgs {
             dir: self.session_dir(session_id).join(RECOVERY_DIR),
@@ -523,6 +535,7 @@ impl CaptureManager {
                             session_id: tick_session.clone(),
                             peak: tick.peak,
                             position_ms: tick.position_ms,
+                            recorded_ms: recorded_before + tick.segment_ms,
                         }
                         .emit(&tick_app);
                     },

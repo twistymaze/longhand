@@ -9,7 +9,8 @@ export type Capture = {
   status: RecordingStatus | null;
   input: InputStatus;
   levels: number[];
-  positionMs: number;
+  /// Recorded so far, gaps between segments excluded: the elapsed time shown.
+  recordedMs: number;
   lostReason: string | null;
   refresh: () => Promise<void>;
 };
@@ -17,7 +18,7 @@ export type Capture = {
 export function useCapture(): Capture {
   const [status, setStatus] = useState<RecordingStatus | null>(null);
   const [levels, setLevels] = useState<number[]>([]);
-  const [positionMs, setPositionMs] = useState(0);
+  const [recordedMs, setRecordedMs] = useState(0);
   const [lostReason, setLostReason] = useState<string | null>(null);
   const [now, setNow] = useState(() => performance.now());
   const lastTickAt = useRef<number | null>(null);
@@ -35,7 +36,7 @@ export function useCapture(): Capture {
     const unlisteners = [
       events.captureTick.listen(({ payload }) => {
         lastTickAt.current = performance.now();
-        setPositionMs(payload.position_ms);
+        setRecordedMs(payload.recorded_ms);
         setLevels((l) => {
           const next = l.length >= HISTORY ? l.slice(l.length - HISTORY + 1) : l.slice();
           next.push(payload.peak);
@@ -82,7 +83,7 @@ export function useCapture(): Capture {
       now,
     }),
     levels,
-    positionMs,
+    recordedMs,
     lostReason,
     refresh,
   };

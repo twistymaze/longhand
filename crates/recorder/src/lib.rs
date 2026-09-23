@@ -33,6 +33,8 @@ pub struct Tick {
     pub peak: f32,
     /// Where the segment has reached on the session timeline.
     pub position_ms: u64,
+    /// Audio this segment has recorded so far.
+    pub segment_ms: u64,
 }
 
 /// Ticks per second of audio.
@@ -77,6 +79,7 @@ pub async fn run_segment(
                             on_tick(Tick {
                                 peak: tick_peak.min(1.0),
                                 position_ms: offset_ms + seen * 1000 / rate,
+                                segment_ms: seen * 1000 / rate,
                             });
                             tick_samples = 0;
                             tick_peak = 0.0;
