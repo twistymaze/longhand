@@ -308,19 +308,24 @@ impl CaptureManager {
         .is_ok();
         let resumed_at = now();
         // Under one lock with landing's claim: either landing has begun and
-        // the resume is refused, or the resume wins and landing stops.
+        // the resume is refused, or the resume wins and landing stops. A
+        // completed session has finished landing and resumes into its folder
+        // while that holds its audio (R6d).
         let state = {
             let mut store = self.store();
-            if pipeline::land::begun(&store, id).map_err(|e| CaptureError::Other(e.to_string()))? {
+            let other = |e: pipeline::StageError| CaptureError::Other(e.to_string());
+            let completed = store
+                .session(id)?
+                .is_some_and(|r| r.state == SessionState::Landed);
+            if !completed && pipeline::land::begun(&store, id).map_err(other)? {
                 return Err(CaptureError::Landing);
             }
-            let is_most_recent = store.is_most_recent(id)?;
+            let audio_intact = pipeline::land::home_intact(&store, id).map_err(other)?;
             store.apply(
                 id,
                 &Event::UserResume {
-                    now: resumed_at,
-                    is_most_recent,
                     space_ok,
+                    audio_intact,
                 },
             )?
         };

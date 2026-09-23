@@ -31,8 +31,27 @@ pub fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> io::Result<()> {
     write_atomic_via(dir, name, &temp, contents)
 }
 
+/// Place a copy of `source` at `dir/name` atomically, streaming it rather
+/// than holding it in memory (R7): audio added to a folder by a resume (R6d).
+pub fn copy_atomic(dir: &Path, name: &str, source: &Path) -> io::Result<()> {
+    let temp = format!(".{name}.{:016x}.tmp", unpredictable());
+    let mut from = std::fs::File::open(source)?;
+    fill_atomic(dir, name, &temp, |file| {
+        io::copy(&mut from, file).map(|_| ())
+    })
+}
+
 /// [`write_atomic`] through a given temporary name, for tests.
 pub fn write_atomic_via(dir: &Path, name: &str, temp: &str, contents: &[u8]) -> io::Result<()> {
+    fill_atomic(dir, name, temp, |file| file.write_all(contents))
+}
+
+fn fill_atomic(
+    dir: &Path,
+    name: &str,
+    temp: &str,
+    fill: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
     let temp_path = dir.join(temp);
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -42,7 +61,7 @@ pub fn write_atomic_via(dir: &Path, name: &str, temp: &str, contents: &[u8]) -> 
         options.custom_flags(libc::O_NOFOLLOW).mode(0o644);
     }
     let mut file = options.open(&temp_path)?;
-    let written = file.write_all(contents).and_then(|()| file.sync_all());
+    let written = fill(&mut file).and_then(|()| file.sync_all());
     drop(file);
     if let Err(e) = written.and_then(|()| std::fs::rename(&temp_path, dir.join(name))) {
         let _ = std::fs::remove_file(&temp_path);

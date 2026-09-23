@@ -8,8 +8,9 @@
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
-/// How long after stopping or being interrupted a session may be resumed (R6a).
-pub const RESUME_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(30);
+/// How long an interrupted session waits untouched before it is stopped and
+/// queued (R5e). Resume has no window (R6a).
+pub const AUTO_QUEUE_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,12 +80,12 @@ pub enum Event {
         at: DateTime<FixedOffset>,
     },
     DidWake,
-    /// The user resumed. `now` checks the window; `is_most_recent` is the
-    /// caller's answer to R6a; `space_ok` is the disk re-check (R7a).
+    /// The user resumed (R6a). `space_ok` is the disk re-check (R7a);
+    /// `audio_intact` is the caller's answer, for a completed session, to
+    /// whether its folder still holds every segment's audio (R6d).
     UserResume {
-        now: DateTime<FixedOffset>,
-        is_most_recent: bool,
         space_ok: bool,
+        audio_intact: bool,
     },
     DeviceReturned,
     /// The user stopped. `retained_audio` is false when every segment was
@@ -139,28 +140,31 @@ impl SessionState {
         }
     }
 
-    /// The wall-clock time from which the resume window runs, if the session
-    /// is in a state that can be resumed at all.
-    pub fn resume_window_start(&self) -> Option<DateTime<FixedOffset>> {
-        match self {
-            SessionState::Interrupted { since, .. } => Some(*since),
-            SessionState::Queued { stopped_at }
-            | SessionState::Processing { stopped_at }
-            | SessionState::Blocked { stopped_at }
-            | SessionState::ProcessingFailed { stopped_at, .. }
-            | SessionState::AwaitingDestination { stopped_at, .. } => Some(*stopped_at),
-            _ => None,
-        }
+    /// Whether the session has stopped and not completed: it holds a place
+    /// in the processing lifecycle a resume takes it out of (R6b).
+    pub fn is_stopped(&self) -> bool {
+        matches!(
+            self,
+            SessionState::Queued { .. }
+                | SessionState::Processing { .. }
+                | SessionState::Blocked { .. }
+                | SessionState::ProcessingFailed { .. }
+                | SessionState::AwaitingDestination { .. }
+        )
     }
 
-    /// Whether `now` is still inside the resume window. A clock set backwards
-    /// reads as no time elapsed rather than as a negative interval.
-    pub fn within_resume_window(&self, now: DateTime<FixedOffset>) -> bool {
-        self.resume_window_start().is_some_and(|start| {
-            now.signed_duration_since(start)
-                .max(chrono::TimeDelta::zero())
-                <= RESUME_WINDOW
-        })
+    /// Whether an interrupted session has waited untouched long enough to be
+    /// queued (R5e). A clock set backwards reads as no time elapsed rather
+    /// than as a negative interval.
+    pub fn auto_queue_due(&self, now: DateTime<FixedOffset>) -> bool {
+        match self {
+            SessionState::Interrupted { since, .. } => {
+                now.signed_duration_since(*since)
+                    .max(chrono::TimeDelta::zero())
+                    > AUTO_QUEUE_AFTER
+            }
+            _ => false,
+        }
     }
 
     pub fn is_final(&self) -> bool {
@@ -203,16 +207,8 @@ impl SessionState {
                 },
                 Event::DeviceReturned,
             ) => Some(S::Capturing),
-            (
-                S::Interrupted { reason, .. },
-                Event::UserResume {
-                    now,
-                    is_most_recent,
-                    space_ok,
-                },
-            ) if *is_most_recent
-                && self.within_resume_window(*now)
-                && (*reason != R::Disk || *space_ok) =>
+            (S::Interrupted { reason, .. }, Event::UserResume { space_ok, .. })
+                if *reason != R::Disk || *space_ok =>
             {
                 Some(S::Capturing)
             }
@@ -226,10 +222,10 @@ impl SessionState {
                     now,
                     retained_audio,
                 },
-            ) if !self.within_resume_window(*now) => {
-                // Queued as of the moment the window closed, so FIFO order
-                // reflects when the session became final, not when it was noticed.
-                Some(stopped(*since + RESUME_WINDOW, *retained_audio))
+            ) if self.auto_queue_due(*now) => {
+                // Queued as of the moment the wait ran out, so FIFO order
+                // reflects when the session stopped, not when it was noticed.
+                Some(stopped(*since + AUTO_QUEUE_AFTER, *retained_audio))
             }
             (S::Interrupted { reason, since, .. }, Event::Acknowledge) => Some(S::Interrupted {
                 reason: *reason,
@@ -269,18 +265,10 @@ impl SessionState {
             }),
             (S::Landed, Event::LandedEdit) => Some(S::Landed),
 
-            (
-                S::Queued { .. }
-                | S::Processing { .. }
-                | S::ProcessingFailed { .. }
-                | S::Blocked { .. }
-                | S::AwaitingDestination { .. },
-                Event::UserResume {
-                    now,
-                    is_most_recent,
-                    ..
-                },
-            ) if *is_most_recent && self.within_resume_window(*now) => Some(S::Capturing),
+            (_, Event::UserResume { .. }) if self.is_stopped() => Some(S::Capturing),
+            (S::Landed, Event::UserResume { audio_intact, .. }) if *audio_intact => {
+                Some(S::Capturing)
+            }
 
             _ => None,
         };

@@ -108,8 +108,7 @@ impl Recognizer for Fake {
                 .apply(
                     id,
                     &session_core::Event::UserResume {
-                        now: common::at(150),
-                        is_most_recent: true,
+                        audio_intact: true,
                         space_ok: true,
                     },
                 )
@@ -902,8 +901,7 @@ async fn a_resume_during_summarization_discards_it_and_keeps_the_transcription()
             .apply(
                 "s",
                 &session_core::Event::UserResume {
-                    now: common::at(150),
-                    is_most_recent: true,
+                    audio_intact: true,
                     space_ok: true,
                 },
             )
@@ -1330,4 +1328,134 @@ async fn a_view_opened_later_rebuilds_progress_and_the_failure_from_the_store() 
         .unwrap()
         .unwrap();
     assert!(message.contains("misses speech"), "{message}");
+}
+
+/// Resume a completed session and record one more segment into it (R6d).
+fn resume_completed(r: &Rig, id: &str, audio: &[f32]) {
+    let mut s = r.store.lock().unwrap();
+    s.apply(
+        id,
+        &session_core::Event::UserResume {
+            space_ok: true,
+            audio_intact: true,
+        },
+    )
+    .unwrap();
+    let last = s.segments(id).unwrap().last().unwrap().clone();
+    let segment = common::write_segment(
+        &r.root.join(id),
+        last.index + 1,
+        last.end_ms() + 86_400_000,
+        16_000,
+        audio,
+        false,
+    );
+    s.put_segment(id, &segment).unwrap();
+    s.apply(
+        id,
+        &session_core::Event::UserStop {
+            at: common::at(90_000),
+            retained_audio: true,
+        },
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_completed_session_updates_its_folder_in_place() {
+    use session_core::folder::{SessionDoc, Transcript, TranscriptLine};
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech()), (16_000, speech())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = landed(&r, "s");
+    let before: Vec<Vec<u8>> = ["audio/segment-01.opus", "audio/segment-02.opus"]
+        .iter()
+        .map(|f| std::fs::read(folder.join(f)).unwrap())
+        .collect();
+    let calls = r.script.calls.load(Ordering::SeqCst);
+
+    // A day later.
+    resume_completed(&r, "s", &speech());
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(landed(&r, "s"), folder, "the same folder");
+    assert_eq!(std::fs::read_dir(&r.dest).unwrap().count(), 1);
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+    for (file, bytes) in ["audio/segment-01.opus", "audio/segment-02.opus"]
+        .iter()
+        .zip(&before)
+    {
+        assert_eq!(
+            &std::fs::read(folder.join(file)).unwrap(),
+            bytes,
+            "{file} rewritten"
+        );
+    }
+    assert!(folder.join("audio/segment-03.opus").exists());
+    let hidden: Vec<_> = std::fs::read_dir(&folder)
+        .unwrap()
+        .chain(std::fs::read_dir(folder.join("audio")).unwrap())
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
+        .collect();
+    assert!(hidden.is_empty(), "{hidden:?}");
+
+    let doc =
+        SessionDoc::parse(&std::fs::read_to_string(folder.join("session.md")).unwrap()).unwrap();
+    assert_eq!(doc.timeline_segments().len(), 3);
+    let transcript =
+        Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap()).unwrap();
+    let gaps = transcript
+        .lines
+        .iter()
+        .filter(|l| matches!(l, TranscriptLine::Gap { .. }))
+        .count();
+    assert_eq!(gaps, 2, "both recordings and the day between them");
+    // Only the new segment was transcribed again.
+    let plan: WindowPlan =
+        checkpoint::get(&r.store, "s", Stage::Transcribe, &checkpoint::plan_key(2))
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        r.script.calls.load(Ordering::SeqCst) - calls,
+        plan.windows.len()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_session_whose_folder_went_missing_names_it_and_retries_once_it_is_back() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = landed(&r, "s");
+
+    resume_completed(&r, "s", &speech());
+    let moved = r.dest.join("moved");
+    std::fs::rename(&folder, &moved).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    let message = pipeline::progress::error(&r.store, "s", Stage::Assemble)
+        .unwrap()
+        .unwrap();
+    assert!(message.contains(&folder.display().to_string()), "{message}");
+    assert!(r.root.join("s").exists(), "the new recording is kept");
+
+    std::fs::rename(&moved, &folder).unwrap();
+    r.runner.retry("s").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(folder.join("audio/segment-02.opus").exists());
 }

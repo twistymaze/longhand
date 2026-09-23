@@ -1,6 +1,7 @@
-// A landed session (F4): notes on the left, as while processing, beside a
+// A completed session (F4): notes on the left, as while processing, beside a
 // pane that switches between the summary and the transcript. Following a
-// note switches to the transcript at its passage (R12).
+// note switches to the transcript at its passage (R12). Resume records more
+// into it while its folder holds its audio (R6d).
 
 import { useCallback, useEffect, useState } from "react";
 import { commands, type NoteView, type SessionDocument, type SessionEntry } from "../bindings";
@@ -39,6 +40,8 @@ function Segmented({ mode, onMode }: { mode: Mode; onMode: (m: Mode) => void }) 
 export function SessionView({ entry, live }: { entry: SessionEntry; live: Live | undefined }) {
   const [doc, setDoc] = useState<SessionDocument | null>(null);
   const [path, setPath] = useState<string | null>(null);
+  const [resumable, setResumable] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("summary");
   const [target, setTarget] = useState<{ index: number; nonce: number } | null>(null);
@@ -54,7 +57,10 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
       setDoc(document.data);
       setError(null);
     } else setError(document.error);
-    if (detail.status === "ok") setPath(detail.data.landed_path);
+    if (detail.status === "ok") {
+      setPath(detail.data.landed_path);
+      setResumable(detail.data.resumable);
+    }
   }, [entry.id]);
 
   useEffect(() => {
@@ -68,6 +74,12 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
     setMode("transcript");
     setTarget((t) => ({ index, nonce: (t?.nonce ?? 0) + 1 }));
   };
+
+  const resume = () =>
+    void commands.resumeRecording(entry.id).then((r) => {
+      setResumeError(r.status === "error" ? r.error : null);
+      if (r.status === "error") void load();
+    });
 
   const regenerate = () => {
     setRegenerating(true);
@@ -103,9 +115,11 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
               {path && ` · ${path}`}
             </p>
           </div>
+          {resumable && <Button onClick={resume}>Resume Recording</Button>}
           <Segmented mode={mode} onMode={setMode} />
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto select-text">
+          {resumeError && <p className="px-6 pt-4 text-negative">{resumeError}</p>}
           {error && <p className="px-6 py-4 text-negative">{error}</p>}
           {doc && mode === "summary" && <SummaryPane summary={doc.summary} regenerate={regenerateControl} />}
           {doc && mode === "transcript" && (

@@ -13,6 +13,7 @@ use landing::{Fs, Job, LandState, LandingError, post_landing};
 use session_core::folder::{self, NoteLine, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionState, Stage, Store};
 
+use crate::join::TRANSCRIPT_FILE;
 use crate::summarize::{self, SUMMARY_FILE, SummaryEndpoint};
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
@@ -38,6 +39,17 @@ pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
         .checkpoints(session_id, Stage::Land)?
         .iter()
         .any(|(key, _)| key == STATE))
+}
+
+/// Whether a completed session's folder still holds every segment's audio,
+/// which is what resuming it needs (R6d). False for a session that has not
+/// completed.
+pub fn home_intact(store: &Store, session_id: &str) -> Result<bool, StageError> {
+    let Some(home) = landed_path(store, session_id)? else {
+        return Ok(false);
+    };
+    let segments = store.segments(session_id)?;
+    Ok(!segments.is_empty() && segments.iter().all(|s| home.join(&s.audio_file).is_file()))
 }
 
 /// Record why summarization failed; the session lands with a stub.
@@ -71,6 +83,13 @@ pub fn run(
             "the transcript has not been verified, so the session stays in the working location"
                 .into(),
         ));
+    }
+    let home = lock(store)
+        .session(session_id)?
+        .and_then(|record| record.landed_path)
+        .map(PathBuf::from);
+    if let Some(home) = home {
+        return update_home(store, session_id, working, segments, &home, control);
     }
     let destination = destination
         .ok_or_else(|| StageError::NoDestination("no destination folder is set".into()))?;
@@ -145,6 +164,88 @@ pub fn run(
     )?;
     guard.apply(session_id, &Event::Landed)?;
     Ok(Landed { path, copied })
+}
+
+/// A resumed session completes into the folder it completed into before
+/// (R6d): new audio is added beside the old, which is never rewritten, then
+/// the documents are replaced, `session.md` last because the folder parses
+/// back from it. Every step can run again, so a crash reruns the update;
+/// the working directory goes only once the folder is complete (R22b).
+fn update_home(
+    store: &SharedStore,
+    session_id: &str,
+    working: &Path,
+    segments: &[Segment],
+    home: &Path,
+    control: &dyn Control,
+) -> Result<Landed, StageError> {
+    if !home.is_dir() {
+        return Err(StageError::NoDestination(format!(
+            "the session's folder {} is missing; put it back to finish",
+            home.display()
+        )));
+    }
+    let finished = match checkpoint::get::<LandState>(store, session_id, Stage::Land, STATE)? {
+        Some(state) => matches!(state, LandState::Done { .. }),
+        None => {
+            control.proceed()?;
+            claim(store, session_id)?;
+            false
+        }
+    };
+    if !finished {
+        if !working.exists() {
+            return Err(StageError::Failed(format!(
+                "the working copy at {} is gone before {} was updated",
+                working.display(),
+                home.display()
+            )));
+        }
+        render(store, session_id, working, segments)?;
+        for segment in segments {
+            let target = home.join(&segment.audio_file);
+            if target.exists() {
+                continue;
+            }
+            let (Some(dir), Some(name)) =
+                (target.parent(), target.file_name().and_then(|n| n.to_str()))
+            else {
+                return Err(StageError::Failed(format!(
+                    "bad audio name {}",
+                    segment.audio_file
+                )));
+            };
+            std::fs::create_dir_all(dir)?;
+            post_landing::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
+        }
+        for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE, SESSION_FILE] {
+            let contents = std::fs::read(working.join(name))?;
+            post_landing::write_atomic(home, name, &contents)?;
+        }
+        let done = LandState::Done {
+            path: home.to_path_buf(),
+        };
+        checkpoint::put(store, session_id, Stage::Land, STATE, &done)?;
+    }
+    if working.exists() {
+        std::fs::remove_dir_all(working)?;
+    }
+
+    let mut guard = lock(store);
+    write_notes(&guard, session_id, home)?;
+    guard.put_checkpoint(
+        session_id,
+        Stage::Land,
+        checkpoint::DONE,
+        &serde_json::to_string(&checkpoint::StageDone {
+            segments: segments.len(),
+        })?,
+    )?;
+    guard.apply(session_id, &Event::Landed)?;
+    Ok(Landed {
+        path: home.to_path_buf(),
+        copied: false,
+    })
 }
 
 /// Take the session for landing, unless a resume took it first.

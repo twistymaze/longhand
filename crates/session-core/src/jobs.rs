@@ -150,11 +150,11 @@ impl Store {
         Ok(stopped)
     }
 
-    /// Queue every interruption whose resume window has elapsed (R5e).
+    /// Queue every interruption left untouched too long (R5e).
     pub fn tick(&mut self, now: DateTime<FixedOffset>) -> Result<Vec<String>> {
         let mut queued = Vec::new();
         for record in self.sessions_in("interrupted")? {
-            if !record.state.within_resume_window(now) {
+            if record.state.auto_queue_due(now) {
                 let retained_audio = !self.segments(&record.id)?.is_empty();
                 self.apply(
                     &record.id,
@@ -184,23 +184,6 @@ impl Store {
     fn require(&self, id: &str) -> Result<SessionRecord> {
         self.session(id)?
             .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
-    }
-
-    /// The most recently created session, which is the only one Resume is
-    /// offered on (R6a).
-    pub fn most_recent_session(&self) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id FROM sessions ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?)
-    }
-
-    pub fn is_most_recent(&self, id: &str) -> Result<bool> {
-        Ok(self.most_recent_session()?.as_deref() == Some(id))
     }
 
     pub fn set_speaker_count(&self, id: &str, count: Option<SpeakerCount>) -> Result<()> {
@@ -638,13 +621,31 @@ fn apply_queue_effects(
         // Resuming a stopped session takes it out of the queue (R20c) and
         // discards summarization output, keeping transcription and
         // diarization checkpoints for the segments already recorded (R6b).
-        SessionState::Capturing if before.resume_window_start().is_some() => {
+        SessionState::Capturing if before.is_stopped() => {
             tx.execute("UPDATE sessions SET queue_seq = NULL WHERE id = ?1", [id])?;
             tx.execute("DELETE FROM jobs WHERE session_id = ?1", [id])?;
             tx.execute(
                 "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
                 params![id, stage_key(Stage::Summarize)],
             )?;
+        }
+        // Resuming a completed session (R6d): its speaker analyses left with
+        // the working directory, so diarization and everything after it run
+        // again; assembly and transcription of the recorded segments are
+        // kept, and the folder it completed into stays its home.
+        SessionState::Capturing if *before == SessionState::Landed => {
+            for stage in [
+                Stage::Diarize,
+                Stage::Join,
+                Stage::Verify,
+                Stage::Summarize,
+                Stage::Land,
+            ] {
+                tx.execute(
+                    "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                    params![id, stage_key(stage)],
+                )?;
+            }
         }
         SessionState::Landed | SessionState::Discarded => {
             tx.execute("UPDATE sessions SET queue_seq = NULL WHERE id = ?1", [id])?;

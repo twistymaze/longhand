@@ -579,7 +579,13 @@ fn execute(
 ) -> Result<(), StageError> {
     let dir = env.working_root.join(id);
     match stage {
-        Stage::Assemble => assemble::run(&env.store, id, &dir, segments, control).map(|_| ()),
+        Stage::Assemble => {
+            let home = lock(&env.store)
+                .session(id)?
+                .and_then(|record| record.landed_path)
+                .map(std::path::PathBuf::from);
+            assemble::run(&env.store, id, &dir, segments, home.as_deref(), control).map(|_| ())
+        }
         Stage::Diarize => {
             let mut analyzer = env.engines.analyzer().map_err(|e| match e {
                 DiarizeError::MissingWeights(path) => StageError::Waiting(path),

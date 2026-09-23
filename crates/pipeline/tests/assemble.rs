@@ -78,6 +78,7 @@ fn three_overlapping_chunks_and_a_part_tail_become_one_continuous_segment() {
         "s1",
         &dir,
         std::slice::from_ref(&segment),
+        None,
         &Unattended,
     )
     .unwrap();
@@ -137,6 +138,7 @@ fn three_overlapping_chunks_and_a_part_tail_become_one_continuous_segment() {
         "s1",
         &dir,
         std::slice::from_ref(&segment),
+        None,
         &Unattended,
     )
     .unwrap();
@@ -165,6 +167,7 @@ fn a_44_1_khz_device_lands_its_rate_in_the_archive_header_and_16_khz_in_proc() {
         "s2",
         &dir,
         std::slice::from_ref(&segment),
+        None,
         &Unattended,
     )
     .unwrap();
@@ -175,4 +178,69 @@ fn a_44_1_khz_device_lands_its_rate_in_the_archive_header_and_16_khz_in_proc() {
     let (input_rate, samples) = opus_samples(&dir.join(&segment.audio_file));
     assert_eq!(input_rate, 44_100);
     assert!((samples as i64 - 360_000).abs() <= 960);
+}
+
+#[test]
+fn a_resumed_sessions_segment_is_decoded_back_from_its_completed_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("s3");
+    let audio = tone(48_000, 20.0);
+    let segment = write_segment(&dir, 0, 0, 48_000, &audio, false);
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s3", at(0), None).unwrap();
+        s.put_segment("s3", &segment).unwrap();
+    }
+    let first = assemble::run(
+        &store,
+        "s3",
+        &dir,
+        std::slice::from_ref(&segment),
+        None,
+        &Unattended,
+    )
+    .unwrap();
+    let (_, original) = read_proc(&dir.join(proc_file(&segment.audio_file)));
+
+    // The session completed: its archive is in the folder, and the working
+    // directory, processing audio and chunks included, is gone.
+    let home = root.path().join("folder");
+    std::fs::create_dir_all(home.join("audio")).unwrap();
+    std::fs::rename(
+        dir.join(&segment.audio_file),
+        home.join(&segment.audio_file),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let archive = std::fs::read(home.join(&segment.audio_file)).unwrap();
+
+    let done = assemble::run(
+        &store,
+        "s3",
+        &dir,
+        std::slice::from_ref(&segment),
+        Some(&home),
+        &Unattended,
+    )
+    .unwrap();
+    let (spec, decoded) = read_proc(&dir.join(proc_file(&segment.audio_file)));
+    assert_eq!(spec.sample_rate, 16_000);
+    assert_eq!(done[0].proc_samples, decoded.len() as u64);
+    let drift = (decoded.len() as i64 - first[0].proc_samples as i64).abs();
+    assert!(
+        drift <= 16,
+        "{} decoded against {} originally",
+        decoded.len(),
+        first[0].proc_samples
+    );
+    let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
+    let (a, b) = (rms(&original), rms(&decoded));
+    assert!((a - b).abs() < a * 0.1, "level {b} against {a}");
+    assert_eq!(
+        std::fs::read(home.join(&segment.audio_file)).unwrap(),
+        archive,
+        "the folder's audio is never rewritten"
+    );
+    assert!(!dir.join(&segment.audio_file).exists(), "no second archive");
 }

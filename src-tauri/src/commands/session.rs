@@ -6,7 +6,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use chrono::Local;
 use serde::Serialize;
 use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Event, SessionRecord, SessionState, Stage};
@@ -152,18 +151,19 @@ pub fn session_detail(
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
-    let (record, segments, most_recent, landing) = {
+    let (record, segments, landing, audio_intact) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&session_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no session {session_id}"))?;
         let segments = store.segments(&session_id).map_err(|e| e.to_string())?;
-        let most_recent = store
-            .is_most_recent(&session_id)
-            .map_err(|e| e.to_string())?;
-        let landing = pipeline::land::begun(&store, &session_id).map_err(e)?;
-        (record, segments, most_recent, landing)
+        // A completed session has finished landing; only one mid-landing
+        // refuses a resume.
+        let landing = record.state != SessionState::Landed
+            && pipeline::land::begun(&store, &session_id).map_err(e)?;
+        let audio_intact = pipeline::land::home_intact(&store, &session_id).map_err(e)?;
+        (record, segments, landing, audio_intact)
     };
     let snapshot = pipeline::progress::snapshot(&shared, &session_id).map_err(e)?;
 
@@ -171,9 +171,8 @@ pub fn session_detail(
         && record
             .state
             .transition(&Event::UserResume {
-                now: Local::now().fixed_offset(),
-                is_most_recent: most_recent,
                 space_ok: true,
+                audio_intact,
             })
             .is_ok()
         && !matches!(record.state, SessionState::Capturing);

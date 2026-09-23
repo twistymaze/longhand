@@ -34,25 +34,23 @@ fn queue_is_fifo_by_stop_and_resume_removes_from_it() {
     }
     assert_eq!(store.queue().unwrap(), ["s1", "s2", "s3"]);
 
-    // Only the most recent may resume; s3 is.
-    assert!(!store.is_most_recent("s2").unwrap());
+    // Any stopped session may resume, not only the newest (R6a).
     store
         .apply(
-            "s3",
+            "s2",
             &Event::UserResume {
-                now: t(30),
-                is_most_recent: store.is_most_recent("s3").unwrap(),
                 space_ok: true,
+                audio_intact: true,
             },
         )
         .unwrap();
-    assert_eq!(store.queue().unwrap(), ["s1", "s2"]);
+    assert_eq!(store.queue().unwrap(), ["s1", "s3"]);
 
     assert_eq!(
         store.dequeue("run-a", t(40)).unwrap().as_deref(),
         Some("s1")
     );
-    assert_eq!(store.queue().unwrap(), ["s2"]);
+    assert_eq!(store.queue().unwrap(), ["s3"]);
     assert_eq!(store.claim_owner("s1").unwrap().as_deref(), Some("run-a"));
 }
 
@@ -105,9 +103,8 @@ fn resume_keeps_transcription_and_drops_summary_checkpoints() {
         .apply(
             "s1",
             &Event::UserResume {
-                now: t(10),
-                is_most_recent: true,
                 space_ok: true,
+                audio_intact: true,
             },
         )
         .unwrap();
@@ -213,7 +210,6 @@ fn the_shortcut_queues_the_open_session_and_starts_a_new_one() {
         store.session("s2").unwrap().unwrap().state,
         SessionState::Capturing
     );
-    assert!(store.is_most_recent("s2").unwrap());
 }
 
 #[test]

@@ -39,12 +39,12 @@ fn states() -> Vec<SessionState> {
     ]
 }
 
-/// Resume inside the window, most recent, space re-checked.
+/// Resume with space re-checked and, for a completed session, its folder
+/// holding every segment's audio.
 fn resume_ok() -> Event {
     Event::UserResume {
-        now: t(10),
-        is_most_recent: true,
         space_ok: true,
+        audio_intact: true,
     }
 }
 
@@ -129,6 +129,7 @@ fn expected(state: &SessionState, event: &Event) -> Option<&'static str> {
         (S::Processing { .. } | S::Blocked { .. }, Event::ClaimLost) => Some("queued"),
         (S::Landed, Event::LandedEdit) => Some("landed"),
         (_, Event::UserResume { .. }) if post_stop => Some("capturing"),
+        (S::Landed, Event::UserResume { .. }) => Some("capturing"),
         _ => None,
     }
 }
@@ -157,30 +158,17 @@ fn every_state_event_pair_matches_the_diagram() {
 }
 
 #[test]
-fn landed_cannot_resume() {
-    assert!(SessionState::Landed.transition(&resume_ok()).is_err());
-}
-
-#[test]
-fn resume_after_the_window_is_illegal() {
-    let state = SessionState::Processing { stopped_at: t(0) };
-    let late = Event::UserResume {
-        now: t(31),
-        is_most_recent: true,
+fn a_completed_session_resumes_only_while_its_folder_holds_its_audio() {
+    assert_eq!(
+        SessionState::Landed.transition(&resume_ok()).unwrap(),
+        SessionState::Capturing
+    );
+    let missing = Event::UserResume {
         space_ok: true,
+        audio_intact: false,
     };
-    assert!(state.transition(&late).is_err());
-}
-
-#[test]
-fn resume_of_an_older_session_is_illegal() {
-    let state = SessionState::Processing { stopped_at: t(0) };
-    let older = Event::UserResume {
-        now: t(10),
-        is_most_recent: false,
-        space_ok: true,
-    };
-    assert!(state.transition(&older).is_err());
+    assert!(SessionState::Landed.transition(&missing).is_err());
+    assert!(SessionState::Discarded.transition(&resume_ok()).is_err());
 }
 
 #[test]
@@ -188,9 +176,8 @@ fn disk_interruption_ignores_device_return_and_needs_space_to_resume() {
     let state = interrupted(InterruptReason::Disk);
     assert!(state.transition(&Event::DeviceReturned).is_err());
     let no_space = Event::UserResume {
-        now: t(5),
-        is_most_recent: true,
         space_ok: false,
+        audio_intact: true,
     };
     assert!(state.transition(&no_space).is_err());
     assert_eq!(
@@ -209,7 +196,7 @@ fn device_interruption_resumes_on_device_return() {
 }
 
 #[test]
-fn untouched_interruption_is_queued_when_the_window_elapses() {
+fn untouched_interruption_is_queued_after_thirty_minutes() {
     let state = interrupted(InterruptReason::Device);
     let early = Event::Tick {
         now: t(29),
@@ -239,14 +226,13 @@ fn stopping_with_no_retained_audio_discards() {
 }
 
 #[test]
-fn a_clock_set_backwards_does_not_close_the_window() {
-    let state = SessionState::Queued { stopped_at: t(0) };
-    let before = Event::UserResume {
+fn a_clock_set_backwards_does_not_queue_an_interruption() {
+    let state = interrupted(InterruptReason::Device);
+    let before = Event::Tick {
         now: t(-120),
-        is_most_recent: true,
-        space_ok: true,
+        retained_audio: true,
     };
-    assert_eq!(state.transition(&before).unwrap(), SessionState::Capturing);
+    assert!(state.transition(&before).is_err());
 }
 
 #[test]

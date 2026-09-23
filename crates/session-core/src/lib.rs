@@ -12,5 +12,5 @@ pub mod timeline;
 pub use anchors::{Anchor, DEFAULT_LOOKBACK_MS, resolve};
 pub use folder::SpeakerCount;
 pub use jobs::{Note, SessionRecord, Store, StoreError};
-pub use state::{Event, IllegalTransition, InterruptReason, RESUME_WINDOW, SessionState, Stage};
+pub use state::{AUTO_QUEUE_AFTER, Event, IllegalTransition, InterruptReason, SessionState, Stage};
 pub use timeline::{Closed, Location, MIN_SEGMENT_MS, Segment, Timeline, TimelineError};

@@ -35,12 +35,16 @@ pub struct AssembledSegment {
     pub proc_samples: u64,
 }
 
-/// Assemble every segment of the session that is not yet assembled.
+/// Assemble every segment of the session that is not yet assembled. `home`
+/// is the folder a resumed session completed into (R6d): a segment whose
+/// archive is there is already assembled, and its processing file is decoded
+/// back from that archive.
 pub fn run(
     store: &SharedStore,
     session_id: &str,
     session_dir: &Path,
     segments: &[Segment],
+    home: Option<&Path>,
     control: &dyn Control,
 ) -> Result<Vec<AssembledSegment>, StageError> {
     let recovery = session_dir.join(RECOVERY_DIR);
@@ -56,6 +60,39 @@ pub fn run(
         {
             out.push(done);
             continue;
+        }
+        if let Some(archive) = home
+            .map(|home| home.join(&segment.audio_file))
+            .filter(|archive| archive.exists())
+        {
+            control.proceed()?;
+            let proc_samples =
+                decode_archive(&archive, &session_dir.join(proc_file(&segment.audio_file)))?;
+            let done = AssembledSegment {
+                segment: segment.index,
+                native_rate: OPUS_RATE,
+                native_samples: proc_samples * (OPUS_RATE / PROC_RATE) as u64,
+                proc_samples,
+            };
+            checkpoint::put(store, session_id, Stage::Assemble, &key, &done)?;
+            log::info!(
+                "decoded segment {} of {session_id} from {}",
+                segment.index,
+                archive.display()
+            );
+            out.push(done);
+            continue;
+        }
+        if let Some(home) = home
+            && !recorder::list_chunks(&recovery)?
+                .iter()
+                .any(|c| c.segment == segment.index)
+        {
+            return Err(StageError::Failed(format!(
+                "segment {}'s audio is in {}, which is missing or incomplete; put the folder back and retry",
+                segment.index + 1,
+                home.display()
+            )));
         }
         control.proceed()?;
         let done = assemble_segment(&recovery, session_dir, segment, control)?;
@@ -189,6 +226,68 @@ pub fn assemble_segment(
         native_samples,
         proc_samples,
     })
+}
+
+/// Decode an archive this stage wrote back into a 16 kHz processing file,
+/// trimmed as a player would (RFC 7845: pre-skip at the start, the last
+/// granule at the end). Returns the processing samples written.
+pub fn decode_archive(archive: &Path, processing: &Path) -> Result<u64, StageError> {
+    let bad = |why: &str| StageError::Failed(format!("{}: {why}", archive.display()));
+    let mut packets = ogg::PacketReader::new(BufReader::new(File::open(archive)?));
+    let head = packets
+        .read_packet()
+        .map_err(|e| bad(&e.to_string()))?
+        .ok_or_else(|| bad("empty"))?;
+    if head.data.len() < 19 || &head.data[..8] != b"OpusHead" || head.data[9] != 1 {
+        return Err(bad("not a mono Opus stream"));
+    }
+    let pre_skip = u16::from_le_bytes([head.data[10], head.data[11]]) as u64;
+    packets
+        .read_packet()
+        .map_err(|e| bad(&e.to_string()))?
+        .ok_or_else(|| bad("no tags"))?;
+
+    let mut decoder = opus::Decoder::new(OPUS_RATE, opus::Channels::Mono)
+        .map_err(|e| bad(&format!("opus decoder: {e}")))?;
+    let mut to_proc = StreamResampler::new(OPUS_RATE, PROC_RATE);
+    let mut proc = ProcWriter::create(&temp_path(processing))?;
+    let mut failure: Option<StageError> = None;
+    let mut buf = vec![0f32; 5_760];
+    // 48 kHz samples decoded so far, pre-skip included.
+    let mut decoded = 0u64;
+    while let Some(packet) = packets.read_packet().map_err(|e| bad(&e.to_string()))? {
+        let n = decoder
+            .decode_float(&packet.data, &mut buf, false)
+            .map_err(|e| bad(&format!("opus decoder: {e}")))? as u64;
+        let end = if packet.last_in_stream() {
+            (decoded + n).min(packet.absgp_page())
+        } else {
+            decoded + n
+        };
+        let from = pre_skip.max(decoded).min(end);
+        let pcm = &buf[(from - decoded) as usize..(end - decoded) as usize];
+        decoded += n;
+        to_proc.push(pcm, &mut |s| {
+            if failure.is_none()
+                && let Err(e) = proc.push(s)
+            {
+                failure = Some(e);
+            }
+        });
+    }
+    to_proc.finish(&mut |s| {
+        if failure.is_none()
+            && let Err(e) = proc.push(s)
+        {
+            failure = Some(e);
+        }
+    });
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    let samples = proc.finish()?;
+    commit(&temp_path(processing), processing)?;
+    Ok(samples)
 }
 
 fn ms_to_samples(ms: u64, rate: u32) -> u64 {
@@ -355,13 +454,13 @@ impl OpusWriter {
         } else {
             PacketWriteEndInfo::NormalPacket
         };
-        // The granule of a packet is the 48 kHz sample count through its end,
-        // pre-skip included; the last one's is short of the padded frame so
+        // A page's granule is the 48 kHz samples decoded through its last
+        // packet, pre-skip included; the final one stops at the real end so
         // a decoder trims the padding (RFC 7845 §4).
         let granule = if last {
             self.pre_skip + self.samples
         } else {
-            self.pre_skip + self.packets_written * OPUS_FRAME as u64
+            self.packets_written * OPUS_FRAME as u64
         };
         self.packets
             .write_packet(packet, self.serial, end, granule)?;
@@ -369,11 +468,16 @@ impl OpusWriter {
     }
 
     fn finish(mut self) -> Result<(), StageError> {
-        if !self.frame.is_empty() {
-            self.samples += self.frame.len() as u64;
+        // The decoder's output runs `pre_skip` samples behind the input, so
+        // frames of silence past the end carry the last real samples out; the
+        // final granule trims them again (RFC 7845 §4).
+        let real = self.samples + self.frame.len() as u64;
+        let needed = (real + self.pre_skip).div_ceil(OPUS_FRAME as u64);
+        while self.packets_written + u64::from(self.held.is_some()) < needed {
             self.frame.resize(OPUS_FRAME, 0.0);
             self.encode_frame()?;
         }
+        self.samples = real;
         match self.held.take() {
             Some(last) => self.write(last, true)?,
             None => {
