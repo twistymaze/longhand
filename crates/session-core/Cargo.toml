@@ -1,0 +1,21 @@
+[package]
+name = "session-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+# 2.6 is the first to accept rusqlite 0.40 and needs rustc 1.95; the
+# toolchain stays on 1.94.0 with anarlog, so this pair is one step back.
+rusqlite_migration = "=2.5.0"
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"

@@ -508,7 +508,7 @@ sequenceDiagram
 | `ort`, `ndarray` | `=2.0.0-rc.10`, 0.16 | ONNX for diarization | anarlog `crates/onnx` |
 | `keepawake` | 0.6.1 | idle assertion | KTD12 |
 | `keyring` | 4.x | secrets | anarlog `store2` |
-| `rusqlite`, `rusqlite_migration` | 0.40.x, 2.x | job store | KTD10 |
+| `rusqlite`, `rusqlite_migration` | 0.39.x, =2.5.0 | job store | KTD10; 0.40 needs `rusqlite_migration` 2.6, which needs rustc 1.95, so the pair steps back one release to keep the 1.94.0 toolchain anarlog shares |
 | `rodio` | 0.22.x | cue | anarlog `sfx` |
 | `sysinfo` | 0.38 | free-space check | anarlog `chunks.rs` |
 | `tokio`, `tokio-util` | 1.x | runtime, `CancellationToken` | anarlog |
@@ -740,7 +740,7 @@ crates/
 - **Requirements:** R3, R3a, R5c, R5e, R6a, R6b, R6c, R12, R12a, R13, R16a, R20c, R35, R36, R14 (store shape).
 - **Dependencies:** U2.
 - **Files:** `crates/session-core/src/{lib,state,timeline,anchors,jobs,schema,folder}.rs`, `crates/session-core/migrations/0001_init.sql`, `crates/session-core/tests/{state_machine,timeline,anchors,jobs}.rs`.
-- **Approach:** `state.rs` encodes the state diagram in High-Level Technical Design as an enum with a `transition(event) -> Result<State, IllegalTransition>`; guards carry the resume window (30 min constant), most-recent check, and disk-reason exclusion. `timeline.rs` holds segments (`offset_ms`, `duration_ms`, wall-clock start/end, audio file) and computes gaps, `to_position(segment, within_ms)`, and `locate(position) -> InSegment | InGap`. `anchors.rs` resolves a keystroke's monotonic time minus the lookback (provisional 5 s) to a position, snapping gap landings to the preceding segment's end and marking gap-anchored. `jobs.rs` is the queue: `sessions`, `segments`, `notes`, `jobs` (stage, status, claim owner, heartbeat), `checkpoints` (per window / per segment / per chunk) with WAL and `synchronous=FULL`, migrated with `rusqlite_migration`. `folder.rs` renders and parses `session.md`, `transcript.md`, `notes.md`, `summary.md` per the folder shape.
+- **Approach:** `state.rs` encodes the state diagram in High-Level Technical Design as an enum with a `transition(event) -> Result<State, IllegalTransition>`; guards carry the resume window (30 min constant), most-recent check, and disk-reason exclusion. The resume window is measured on the wall clock, because it spans process restarts and a monotonic clock resets with the process; this is not timeline arithmetic, so R3a is untouched, and a clock set backwards reads as no time elapsed. A job's claim names the run (one launch of the app) that holds it; at launch any claim not held by the current run is dead, which single instance (R34) guarantees, so a crash-then-relaunch inside a heartbeat interval still reclaims its work. `timeline.rs` holds segments (`offset_ms`, `duration_ms`, wall-clock start/end, audio file) and computes gaps, `to_position(segment, within_ms)`, and `locate(position) -> InSegment | InGap`. `anchors.rs` resolves a keystroke's monotonic time minus the lookback (provisional 5 s) to a position, snapping gap landings to the preceding segment's end and marking gap-anchored. `jobs.rs` is the queue: `sessions`, `segments`, `notes`, `jobs` (stage, status, claim owner, heartbeat), `checkpoints` (per window / per segment / per chunk) with WAL and `synchronous=FULL`, migrated with `rusqlite_migration`. `folder.rs` renders and parses `session.md`, `transcript.md`, `notes.md`, `summary.md` per the folder shape.
 - **Technical design:**
 
 ```
