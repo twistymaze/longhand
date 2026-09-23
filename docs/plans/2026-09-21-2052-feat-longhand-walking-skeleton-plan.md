@@ -1158,6 +1158,13 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
   - Input: a `.longhand-staging-xyz/` for a session mid-landing under a live claim; action: sweep; expected: untouched.
   - Input: a `.longhand-staging-def/` whose session is AwaitingDestination with an empty working location; action: launch sweep; expected: untouched, and Retry lands it from staging.
 - **Verification:** Unmount-during-landing on a real external disk recovers by remount and Retry; an Obsidian vault used as destination shows no debris after a forced kill during landing and a relaunch.
+- **Execution notes (2026-09-23):** Much was already built in U11 and U12:
+  - a missing or unwritable destination waits in AwaitingDestination;
+  - Choose Folder retries every waiting session;
+  - the marker-guarded staging directory;
+  - the rail's destination status (missing, not writable, under 256 MB free) while recording.
+
+  This unit closed the rest, in `crates/pipeline/src/land.rs` and `crates/landing` rather than new `validate`, `retry` and `sweep` modules. Every landing failure other than a lost copy now waits in AwaitingDestination naming the error: a mid-copy write error or a refused rename no longer fails processing. Before a cross-volume copy, the destination must hold what leaves the working location (it stops short of `proc/` and `audio-recovery/`) plus 64 MB. A same-volume landing is a rename and is not checked, since the disk it would refuse on is the one the session is already on. A failed copy resets the landing state to Working, so a retry after choosing another folder goes there. A session already staged completes beside its staged copy even if the setting changed, because that copy is the complete one and only a same-volume rename finishes it without a second copy. At launch, with the instance lock held, `landing::sweep_staging` removes a staging folder in every retained root only when its session is Landed; any other staging folder, including an AwaitingDestination one holding the only copy, is left. Sessions waiting for a destination are retried at every launch. Not built: a separate space check at stop against the archive size. The rail's destination status during recording and the check before the copy cover it. Tests cover a staged copy completing beside itself, the sweep, a read-only destination, and the room check. Unmounting a real disk mid-landing is the Phase 4 checkpoint.
 
 ### U19. Single instance and liveness
 

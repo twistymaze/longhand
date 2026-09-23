@@ -308,3 +308,83 @@ fn folder_names_follow_the_session_start() {
         "2026-09-22 1405 Longhand session"
     );
 }
+
+#[test]
+fn a_staged_copy_lands_beside_itself_when_the_destination_has_changed() {
+    let root = tempfile::tempdir().unwrap();
+    let work = working(root.path());
+    let first = destination(root.path());
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &first,
+        folder_name: NAME,
+    };
+    let staged = step(&LandState::Working, &job, &RealFs).unwrap();
+    assert!(matches!(staged, LandState::Staged { .. }));
+
+    // The user chose another folder while the session waited; the staged
+    // copy is the complete one, so it completes where it is (R22b).
+    let other = root.path().join("elsewhere");
+    std::fs::create_dir(&other).unwrap();
+    let moved = Job {
+        destination: &other,
+        ..job
+    };
+    let LandState::Landed { path, .. } = step(&staged, &moved, &RealFs).unwrap() else {
+        panic!("expected the staged copy to land");
+    };
+    assert_eq!(path.parent(), Some(first.as_path()));
+    assert!(std::fs::read_dir(&other).unwrap().next().is_none());
+}
+
+#[test]
+fn the_launch_sweep_removes_only_staging_that_completed_sessions_left() {
+    let root = tempfile::tempdir().unwrap();
+    for name in [
+        ".longhand-staging-done",
+        ".longhand-staging-waiting",
+        "2026-09-22 1400 Longhand session",
+    ] {
+        std::fs::create_dir(root.path().join(name)).unwrap();
+        std::fs::write(root.path().join(name).join("session.md"), "x").unwrap();
+    }
+
+    let removed = landing::sweep_staging(root.path(), |id| id == "done").unwrap();
+
+    assert_eq!(removed, vec![root.path().join(".longhand-staging-done")]);
+    assert!(root.path().join(".longhand-staging-waiting").exists());
+    assert!(
+        root.path()
+            .join("2026-09-22 1400 Longhand session")
+            .exists()
+    );
+    assert!(
+        landing::sweep_staging(&root.path().join("unmounted"), |_| true)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_destination_waits_naming_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let work = working(root.path());
+    let dest = destination(root.path());
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &dest,
+        folder_name: NAME,
+    };
+    let err = step(&LandState::Working, &job, &RealFs).unwrap_err();
+    std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let LandingError::Destination { problem, .. } = &err else {
+        panic!("{err:?}");
+    };
+    assert!(problem.starts_with("is not writable"), "{problem}");
+    assert!(work.join("proc/segment-01.wav").exists());
+}

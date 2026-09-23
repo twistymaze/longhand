@@ -113,6 +113,34 @@ pub fn check_destination(destination: &Path) -> Result<(), LandingError> {
     }
 }
 
+/// At launch, remove staging directories in `root` left by sessions that
+/// have since completed (U18). Any other staging directory is left: one
+/// whose session is still landing or waiting for its destination may hold
+/// the only complete copy (R22d).
+pub fn sweep_staging(root: &Path, completed: impl Fn(&str) -> bool) -> io::Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut removed = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(id) = name
+            .to_str()
+            .and_then(|n| n.strip_prefix(naming::STAGING_PREFIX))
+        else {
+            continue;
+        };
+        if entry.file_type()?.is_dir() && completed(id) {
+            std::fs::remove_dir_all(entry.path())?;
+            removed.push(entry.path());
+        }
+    }
+    Ok(removed)
+}
+
 fn is_ours(staging: &Path, session_id: &str) -> bool {
     std::fs::read_to_string(staging.join(MARKER)).is_ok_and(|m| m.trim() == session_id)
 }
@@ -202,13 +230,15 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                 _ => {}
             }
             fsync::sync_dir(staging)?;
+            // The final name goes beside the staged copy, a same-volume
+            // rename, even if the destination setting has changed since it
+            // was staged: that copy is the complete one (R22b).
+            let root = staging.parent().unwrap_or(job.destination);
             for attempt in 1..=MAX_NAMES {
-                let target = job
-                    .destination
-                    .join(naming::candidate(job.folder_name, attempt));
+                let target = root.join(naming::candidate(job.folder_name, attempt));
                 match fs.rename_new(staging, &target) {
                     Ok(()) => {
-                        fsync::sync_dir(job.destination)?;
+                        fsync::sync_dir(root)?;
                         return Ok(LandState::Landed {
                             path: target,
                             working_retained: *copied,

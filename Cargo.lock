@@ -2792,6 +2792,7 @@ dependencies = [
  "audio-cpal",
  "chrono",
  "diarize",
+ "landing",
  "log",
  "models",
  "pipeline",

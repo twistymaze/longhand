@@ -115,6 +115,10 @@ pub fn run(
     };
     if state == LandState::Working && working.exists() {
         render(store, session_id, working, segments)?;
+        if let Err(e) = check_room(working, destination) {
+            release(store, session_id);
+            return Err(e);
+        }
     }
 
     let mut copied = false;
@@ -122,14 +126,25 @@ pub fn run(
         let next = match landing::step(&state, &job, fs) {
             Ok(next) => next,
             Err(e) => {
+                // A failed copy removed its partial staging and left the
+                // working copy whole: start over from it, so a retry after
+                // choosing another folder goes there.
+                if matches!(state, LandState::Copying { .. }) && working.exists() {
+                    checkpoint::put(store, session_id, Stage::Land, STATE, &LandState::Working)?;
+                    state = LandState::Working;
+                }
                 if state == LandState::Working && working.exists() {
                     release(store, session_id);
                 }
+                // Every failure but a lost copy waits for the destination
+                // to be fixed or changed (R22b), naming what went wrong.
                 return Err(match e {
-                    LandingError::Destination { .. } | LandingError::StagingTaken(_) => {
-                        StageError::NoDestination(e.to_string())
-                    }
-                    other => StageError::Failed(other.to_string()),
+                    LandingError::Lost(_) => StageError::Failed(e.to_string()),
+                    LandingError::Io(io) => StageError::NoDestination(format!(
+                        "saving to {} failed: {io}",
+                        destination.display()
+                    )),
+                    other => StageError::NoDestination(other.to_string()),
                 });
             }
         };
@@ -164,6 +179,63 @@ pub fn run(
     )?;
     guard.apply(session_id, &Event::Landed)?;
     Ok(Landed { path, copied })
+}
+
+/// Room for the session in a destination on another volume, where landing
+/// copies: what leaves the working location, plus a margin (U18). Checked
+/// before the copy starts, so a copy it just validated cannot run out of
+/// space part-way. A same-volume landing is a rename and needs none.
+fn check_room(working: &Path, destination: &Path) -> Result<(), StageError> {
+    const MARGIN: u64 = 64 * 1024 * 1024;
+    if same_volume(working, destination).unwrap_or(false) {
+        return Ok(());
+    }
+    let needed = tree_size(working, landing::LEFT_BEHIND)? + MARGIN;
+    match recorder::storage::available_space(destination) {
+        Some(free) if free < needed => Err(StageError::NoDestination(format!(
+            "the destination folder {} has {:.1} GB free and the session needs about {:.1} GB",
+            destination.display(),
+            free as f64 / 1e9,
+            needed as f64 / 1e9
+        ))),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+fn same_volume(a: &Path, b: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    Some(std::fs::metadata(a).ok()?.dev() == std::fs::metadata(b).ok()?.dev())
+}
+
+#[cfg(windows)]
+fn same_volume(a: &Path, b: &Path) -> Option<bool> {
+    let root = |p: &Path| {
+        let canonical = p.canonicalize().ok()?;
+        canonical
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+    };
+    Some(root(a)? == root(b)?)
+}
+
+/// Bytes under `dir`, not counting the top-level entries named in `skip`.
+fn tree_size(dir: &Path, skip: &[&str]) -> std::io::Result<u64> {
+    let mut total = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if skip.iter().any(|s| entry.file_name() == *s) {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        total += if kind.is_dir() {
+            tree_size(&entry.path(), &[])?
+        } else {
+            entry.metadata()?.len()
+        };
+    }
+    Ok(total)
 }
 
 /// A resumed session completes into the folder it completed into before
@@ -394,4 +466,30 @@ pub fn regenerate_summary(
     guard.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;
     guard.apply(session_id, &Event::LandedEdit)?;
     Ok(path.join(SUMMARY_FILE))
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+
+    #[test]
+    fn the_room_a_copy_needs_leaves_out_what_stays_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("audio")).unwrap();
+        std::fs::create_dir_all(dir.path().join("proc")).unwrap();
+        std::fs::write(dir.path().join("audio/segment-01.opus"), vec![0u8; 1_000]).unwrap();
+        std::fs::write(dir.path().join("session.md"), vec![0u8; 24]).unwrap();
+        std::fs::write(dir.path().join("proc/segment-01.wav"), vec![0u8; 50_000]).unwrap();
+        assert_eq!(tree_size(dir.path(), landing::LEFT_BEHIND).unwrap(), 1_024);
+    }
+
+    #[test]
+    fn a_folder_on_the_same_volume_needs_no_room() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert_eq!(same_volume(&a, &b), Some(true));
+        assert!(check_room(&a, &b).is_ok());
+    }
 }

@@ -248,6 +248,32 @@ impl EngineProvider for Models {
 
 /// A session finished while the window was away (R15). Nothing is posted
 /// while the window is in front: the surface already says so.
+/// Remove staging folders that completed sessions left in any destination
+/// ever chosen (U18). Only with the instance lock held, so no other run is
+/// landing into them.
+fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
+    let roots = crate::managers::settings::get_settings(app).destination_roots;
+    let completed = |id: &str| {
+        store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .session(id)
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.state == session_core::SessionState::Landed)
+    };
+    for root in roots {
+        match landing::sweep_staging(std::path::Path::new(&root), completed) {
+            Ok(removed) => {
+                for path in removed {
+                    log::info!("removed leftover staging folder {}", path.display());
+                }
+            }
+            Err(e) => log::warn!("could not sweep {root} for staging folders: {e}"),
+        }
+    }
+}
+
 fn notify_landed(app: &AppHandle, path: &std::path::Path) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
@@ -314,7 +340,13 @@ impl ProcessingManager {
             Ok(_) => {}
             Err(e) => log::error!("launch sweep of the job queue failed: {e}"),
         }
-        Self { runner }
+        if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+            sweep_staging(app, &capture.shared_store());
+        }
+        let manager = Self { runner };
+        // The volume may be back, or the folder restored (U18).
+        manager.retry_awaiting();
+        manager
     }
 
     pub fn start(&self) {

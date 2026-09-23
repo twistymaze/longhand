@@ -17,6 +17,8 @@ pub fn candidate(name: &str, attempt: usize) -> String {
 }
 
 /// The hidden directory a session is assembled in inside its destination.
+pub const STAGING_PREFIX: &str = ".longhand-staging-";
+
 pub fn staging_name(session_id: &str) -> String {
-    format!(".longhand-staging-{session_id}")
+    format!("{STAGING_PREFIX}{session_id}")
 }
