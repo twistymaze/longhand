@@ -1,4 +1,5 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
+use session_core::jobs::Liveness;
 use session_core::{Anchor, Event, InterruptReason, SessionState, Stage, Store};
 
 fn t(minutes: i64) -> DateTime<FixedOffset> {
@@ -68,7 +69,12 @@ fn a_dead_runs_claim_is_reclaimed_with_checkpoints_intact() {
 
     // Even a heartbeat from a second ago does not keep a foreign claim alive.
     store.heartbeat("s1", "dead-run", t(20)).unwrap();
-    assert_eq!(store.reclaim_at_launch("new-run").unwrap(), ["s1"]);
+    assert_eq!(
+        store
+            .reclaim_at_launch("new-run", Liveness::OnlyInstance)
+            .unwrap(),
+        ["s1"]
+    );
     assert!(matches!(
         store.session("s1").unwrap().unwrap().state,
         SessionState::Queued { .. }
@@ -84,7 +90,39 @@ fn the_current_runs_claim_is_left_alone() {
     store.create_session("s1", t(0), None).unwrap();
     stop(&mut store, "s1", 5);
     store.dequeue("run", t(6)).unwrap();
-    assert!(store.reclaim_at_launch("run").unwrap().is_empty());
+    assert!(
+        store
+            .reclaim_at_launch("run", Liveness::OnlyInstance)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn without_the_lock_a_fresh_heartbeat_keeps_a_claim_and_a_quiet_one_loses_it() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    stop(&mut store, "s1", 5);
+    store.dequeue("other-run", t(10)).unwrap();
+    store.heartbeat("s1", "other-run", t(100)).unwrap();
+
+    // 5 s old: an owner that may still be alive keeps it.
+    let fresh = Liveness::Unknown {
+        now: t(100) + TimeDelta::seconds(5),
+    };
+    assert!(
+        store
+            .reclaim_at_launch("new-run", fresh)
+            .unwrap()
+            .is_empty()
+    );
+    // 2 min old: gone.
+    let quiet = Liveness::Unknown { now: t(102) };
+    assert_eq!(store.reclaim_at_launch("new-run", quiet).unwrap(), ["s1"]);
+    assert!(matches!(
+        store.session("s1").unwrap().unwrap().state,
+        SessionState::Queued { .. }
+    ));
 }
 
 #[test]

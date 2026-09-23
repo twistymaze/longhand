@@ -70,6 +70,50 @@ pub fn export_bindings(builder: &Builder<tauri::Wry>) {
         .expect("failed to export TypeScript bindings");
 }
 
+/// Take the single-instance lock in the app's data directory before the
+/// store opens (U19). A live holder means another copy is running that the
+/// single-instance plugin did not reach (a direct launch of the binary):
+/// this one says so and exits before touching anything. A lock that cannot
+/// be tried leaves liveness unknown, and launch then trusts only stale
+/// heartbeats and leaves recording sessions alone.
+fn take_instance_lock(
+    app: &tauri::AppHandle,
+) -> Result<session_core::jobs::Liveness, Box<dyn std::error::Error>> {
+    use session_core::lock::{self, Acquired};
+    let data = app.path().app_data_dir()?;
+    std::fs::create_dir_all(&data)?;
+    let instance = uuid::Uuid::new_v4().to_string();
+    match lock::acquire(&data, &instance) {
+        Acquired::Exclusive(held) => {
+            if let Some(previous) = &held.displaced {
+                log::info!(
+                    "took over the instance lock from {} (pid {}), which is no longer running",
+                    previous.instance,
+                    previous.pid
+                );
+            }
+            app.manage(held);
+            Ok(session_core::jobs::Liveness::OnlyInstance)
+        }
+        Acquired::HeldBy(holder) => {
+            let who = holder.map_or_else(
+                || "another process".to_string(),
+                |h| format!("process {}", h.pid),
+            );
+            let message = format!("Longhand is already running ({who}); this copy is exiting.");
+            log::error!("{message}");
+            eprintln!("{message}");
+            std::process::exit(0);
+        }
+        Acquired::Unavailable(e) => {
+            log::warn!("the instance lock could not be taken ({e}); judging claims by heartbeat");
+            Ok(session_core::jobs::Liveness::Unknown {
+                now: chrono::Local::now().fixed_offset(),
+            })
+        }
+    }
+}
+
 pub fn run() {
     let specta_builder = specta_builder();
 
@@ -79,6 +123,11 @@ pub fn run() {
     let invoke_handler = specta_builder.invoke_handler();
 
     let builder = tauri::Builder::default()
+        // First, so a second launch goes no further than fronting this one
+        // (R34, AE21).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            window::show_main_window(app);
+        }))
         .plugin(
             // onnxruntime logs every graph pass at INFO; left in, it rotates
             // the capture warnings out of the default 40 KB file in minutes.
@@ -100,6 +149,7 @@ pub fn run() {
             specta_builder.mount_events(app);
 
             let handle = app.handle().clone();
+            let liveness = take_instance_lock(&handle)?;
             let secrets = managers::secrets::SecretsManager::new(&handle);
             let secret_store = secrets.store();
             app.manage(secrets);
@@ -110,8 +160,11 @@ pub fn run() {
                     .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
             );
             app.manage(std::sync::Arc::clone(&capture));
-            // Before processing's launch sweep and any writer (U16).
-            capture.recover_at_launch();
+            // Before processing's launch sweep and any writer (U16), and
+            // only when no other instance can be recording.
+            if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+                capture.recover_at_launch();
+            }
             let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
             app.manage(std::sync::Arc::clone(&alerts));
             // Sleep closes the segment on the notifying thread, before the
@@ -132,6 +185,7 @@ pub fn run() {
                 &capture,
                 models,
                 secret_store,
+                liveness,
             ));
             processing.start();
             app.manage(processing);

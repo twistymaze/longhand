@@ -222,8 +222,11 @@ impl Runner {
 
     /// Launch sweep: return sessions an earlier process was working on to
     /// the queue, checkpoints intact.
-    pub fn reclaim(&self) -> Result<Vec<String>, StageError> {
-        Ok(lock(&self.env.store).reclaim_at_launch(&self.owner)?)
+    pub fn reclaim(
+        &self,
+        liveness: session_core::jobs::Liveness,
+    ) -> Result<Vec<String>, StageError> {
+        Ok(lock(&self.env.store).reclaim_at_launch(&self.owner, liveness)?)
     }
 
     /// Something changed that may let work start: a session was queued,

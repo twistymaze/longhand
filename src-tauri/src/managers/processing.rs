@@ -285,6 +285,7 @@ impl ProcessingManager {
         capture: &Arc<CaptureManager>,
         models: Arc<ModelsManager>,
         secrets: Arc<SecretStore>,
+        liveness: session_core::jobs::Liveness,
     ) -> Self {
         let suspended = Arc::clone(capture);
         let events = app.clone();
@@ -306,7 +307,7 @@ impl ProcessingManager {
                 }
             }),
         });
-        match runner.reclaim() {
+        match runner.reclaim(liveness) {
             Ok(ids) if !ids.is_empty() => {
                 log::info!("returned {} session(s) to the queue", ids.len())
             }

@@ -1131,6 +1131,14 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
   - Input: Blocked on credential; action: relaunch with the keyring unlocked; expected: stage proceeds from its checkpoints.
   - Input: window hidden, processing running; action: reshow; expected: view rebuilt from the store, channel re-subscribed.
 - **Verification:** Killing the process during each stage and relaunching completes the session with no stage restarted from zero; `longhand.db` shows a single owner per job at any time.
+- **Execution notes (2026-09-23):** Built together with U19, because the liveness verdict this unit reclaims on is U19's lock. Most of the unit was already in place from U8–U12:
+  - job claims with a 10-second heartbeat, and the launch reclaim;
+  - resume from checkpoints: `a_run_dropped_part_way_resumes_at_the_first_unfinished_window`, and summarization parts via `a_server_error_on_part_five_lands_a_stub_and_regenerating_starts_there`;
+  - the Blocked round trip: `a_locked_keychain_blocks_and_unlocking_resumes_without_redoing_work`;
+  - a relaunch mid-landing: `a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage`;
+  - hide-on-close.
+
+  What changed is that `reclaim_at_launch` now takes a `Liveness`. With the instance lock held, every foreign claim is dead and is reclaimed at once, including one whose heartbeat is seconds old, so a relaunch within half a minute of a crash strands nothing. Without the lock, only claims quiet for 30 s are taken. The lock is an OS file lock rather than a recorded pid, so the "dead pid" and "live pid" cases are decided by the kernel: a pid can be reused, a released lock cannot lie. A hidden window keeps its webview and its event subscriptions, and a reshown one reads the store as before, so the reshow scenario needed no change.
 
 ### U18. Landing failure paths and staging hygiene
 
@@ -1165,6 +1173,7 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
   - Input: a lock file with a dead pid and a 5-second-old heartbeat; action: launch; expected: lock taken over and the displaced instance's jobs reclaimed immediately, not held behind the heartbeat threshold (U17).
   - Input: a lock file with a live pid; action: launch (direct, bypassing the plugin); expected: startup aborts with a clear message.
 - **Verification:** Two launches in quick succession leave one process and one lock owner; `longhand.db` shows no job with two owners.
+- **Execution notes (2026-09-23):** `session_core::lock` takes an exclusive `File::try_lock` (std, flock on Unix and LockFileEx on Windows) on `longhand.lock` in the app data directory. The lock is taken before the store opens and held for the life of the process. The operating system releases it however the process ends, so there is no heartbeat in the file: holding the lock is the liveness proof, and a heartbeat would only add a clock to disagree with it. The file names the holder's pid and instance id, for the refusal message and for the log's "took over from" line. A live holder makes a direct second launch log the reason and exit before the store opens. `tauri-plugin-single-instance` (2.4.5) is registered first, so a normal second launch goes no further than bringing the running window forward. If the lock cannot be tried at all, liveness is unknown: the reclaim falls back to the heartbeat threshold and the crash sweep is skipped, so no possibly-live recording is touched. Tests in `crates/session-core/tests/lock.rs` cover a live holder refused, a dead holder's file taken over and named, and a released lock taken again. The claim-threshold test is in `tests/jobs.rs`.
 
 ### U20. Transcript coverage verification
 

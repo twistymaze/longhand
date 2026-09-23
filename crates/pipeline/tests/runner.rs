@@ -383,7 +383,13 @@ async fn a_run_dropped_part_way_resumes_at_the_first_unfinished_window() {
     let Rig { _root, .. } = first;
     let second = rig_with(Arc::clone(&store), _root, Arc::default());
     with_summaries(&second.script).await;
-    assert_eq!(second.runner.reclaim().unwrap(), vec!["s".to_string()]);
+    assert_eq!(
+        second
+            .runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        vec!["s".to_string()]
+    );
     let (_, outcome) = second.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
     assert_eq!(second.script.calls.load(Ordering::SeqCst), total - 2);

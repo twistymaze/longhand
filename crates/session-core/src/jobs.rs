@@ -52,6 +52,20 @@ pub struct Note {
     pub anchor: Anchor,
 }
 
+/// How long a claim's heartbeat may be quiet before its owner, when it
+/// cannot be shown dead, is taken to be gone (U17). The runner beats every
+/// 10 s.
+pub const CLAIM_STALE_AFTER: chrono::TimeDelta = chrono::TimeDelta::seconds(30);
+
+/// What launch knows of the other runs that hold claims.
+#[derive(Debug, Clone, Copy)]
+pub enum Liveness {
+    /// This process holds the instance lock: no other run is alive.
+    OnlyInstance,
+    /// The lock could not be taken; judge each claim by its heartbeat.
+    Unknown { now: DateTime<FixedOffset> },
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -474,18 +488,37 @@ impl Store {
         Ok(())
     }
 
-    /// At launch, return every session claimed by another run to the queue
-    /// with its checkpoints intact. Single instance (R34) guarantees no other
+    /// At launch, return sessions claimed by another run to the queue with
+    /// their checkpoints intact (U17). With the instance lock held, no other
     /// run is alive, so a foreign claim is a dead one however fresh its
-    /// heartbeat looks.
-    pub fn reclaim_at_launch(&mut self, current_owner: &str) -> Result<Vec<String>> {
+    /// heartbeat looks, and waiting out the heartbeat would strand a session
+    /// relaunched within half a minute of a crash. Without the lock, only
+    /// claims whose heartbeat has gone quiet for [`CLAIM_STALE_AFTER`] are
+    /// taken.
+    pub fn reclaim_at_launch(
+        &mut self,
+        current_owner: &str,
+        liveness: Liveness,
+    ) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id FROM jobs WHERE claim_owner IS NOT NULL AND claim_owner != ?1",
+            "SELECT session_id, heartbeat_at FROM jobs
+             WHERE claim_owner IS NOT NULL AND claim_owner != ?1",
         )?;
-        let ids: Vec<String> = stmt
-            .query_map([current_owner], |r| r.get(0))?
+        let claims: Vec<(String, Option<String>)> = stmt
+            .query_map([current_owner], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
+        let ids = claims
+            .into_iter()
+            .filter_map(|(id, heartbeat)| match liveness {
+                Liveness::OnlyInstance => Some(id),
+                Liveness::Unknown { now } => {
+                    let beat = heartbeat.and_then(|h| DateTime::parse_from_rfc3339(&h).ok());
+                    let quiet = beat.is_none_or(|beat| now - beat > CLAIM_STALE_AFTER);
+                    quiet.then_some(id)
+                }
+            });
+        let ids: Vec<String> = ids.collect();
         let mut reclaimed = Vec::new();
         for id in ids {
             let state = self.require(&id)?.state;
