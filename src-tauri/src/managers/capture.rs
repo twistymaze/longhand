@@ -567,9 +567,7 @@ impl CaptureManager {
     /// and 4 s between attempts. The session stays Capturing throughout and
     /// is interrupted only once the budget runs out.
     fn segment_lost(self: Arc<Self>, app: &AppHandle, id: &str, segment: u32, loss: Loss) {
-        let pending = Pending::new(id);
-        let cancel = pending.cancel.clone();
-        let mut restarts = {
+        let (cancel, restarts) = {
             let mut inner = self.inner();
             let ours = inner
                 .active
@@ -589,12 +587,117 @@ impl CaptureManager {
                 self.interrupt(app, id, &loss, None);
                 return;
             }
-            inner.recovering = Some(pending);
-            match inner.clock.as_mut().filter(|c| c.session_id == id) {
-                Some(clock) => std::mem::take(&mut clock.restarts),
-                None => RestartTracker::new(),
-            }
+            begin_restart(&mut inner, id)
         };
+        self.restart(app, id, cancel, restarts, loss);
+    }
+
+    /// The system is about to sleep (U13): close the segment, so it is whole
+    /// on disk before the machine stops, and pause the session without an
+    /// alert. Runs on the thread delivering the notice, which sleep waits on.
+    pub fn will_sleep(&self, app: &AppHandle) {
+        let mut inner = self.inner();
+        // A restart in progress is moot; the wake starts a fresh one. A
+        // device watch carries on through the sleep.
+        let reconnecting = inner.recovering.take().map(|p| {
+            p.cancel.cancel();
+            p.session_id
+        });
+        let id = match inner.active.take() {
+            Some(active) => {
+                let id = active.session_id.clone();
+                if let Err(e) = self.close_segment(&mut inner, active) {
+                    log::error!("closing {id} for sleep failed: {e}");
+                }
+                id
+            }
+            None => match reconnecting {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        let paused = Event::CaptureLost {
+            reason: InterruptReason::Sleep,
+            at: now(),
+        };
+        if let Err(e) = self.store().apply(&id, &paused) {
+            log::error!("pausing {id} for sleep failed: {e}");
+            return;
+        }
+        drop(inner);
+        log::info!("session {id} paused for sleep");
+        changed(app, None);
+    }
+
+    /// The system woke (U13). A session paused for sleep resumes as its next
+    /// segment under the same budget as a lost device (U14), so a microphone
+    /// that did not come back ends in Interrupted(device) and its alert.
+    pub fn did_wake(self: Arc<Self>, app: &AppHandle) {
+        let (id, cancel, restarts) = {
+            let mut inner = self.inner();
+            let Some(clock) = inner.clock.as_mut() else {
+                return;
+            };
+            // The monotonic clock stands still while a Mac sleeps; the wall
+            // clock is the only measure of the time away.
+            if let Some(last) = clock.timeline.segments().last() {
+                let away = (now() - last.wall_end).num_milliseconds().max(0) as u64;
+                let elapsed = clock.epoch.elapsed().as_millis() as u64;
+                let position = position_after_wake(elapsed, last.end_ms(), away);
+                if position > elapsed
+                    && let Some(epoch) = Instant::now().checked_sub(Duration::from_millis(position))
+                {
+                    clock.epoch = epoch;
+                }
+            }
+            let id = clock.session_id.clone();
+            if inner.active.is_some() || inner.recovering.is_some() {
+                return;
+            }
+            // A sleep past the auto-queue wait (R5e) is taken as the end of
+            // the session, whichever of the wake and the queue's tick is
+            // first; it can still be resumed by hand.
+            let paused = self.store().session(&id).ok().flatten().is_some_and(|r| {
+                matches!(
+                    r.state,
+                    SessionState::Interrupted {
+                        reason: InterruptReason::Sleep,
+                        ..
+                    }
+                ) && !r.state.auto_queue_due(now())
+            });
+            if !paused {
+                return;
+            }
+            if let Err(e) = self.store().apply(&id, &Event::DidWake) {
+                log::error!("waking {id} failed: {e}");
+                return;
+            }
+            if let Some(clock) = inner.clock.as_mut() {
+                clock.restarts = RestartTracker::new();
+            }
+            let (cancel, restarts) = begin_restart(&mut inner, &id);
+            (id, cancel, restarts)
+        };
+        log::info!("session {id} resuming after sleep");
+        let loss = Loss {
+            reason: InterruptReason::Device,
+            message: "the microphone did not come back after sleep".into(),
+            restartable: true,
+        };
+        self.restart(app, &id, cancel, restarts, loss);
+    }
+
+    /// Reopen the microphone within the source budget, sleeping 1, 2 and 4 s
+    /// before the attempts; interrupt the session once the budget runs out.
+    fn restart(
+        self: Arc<Self>,
+        app: &AppHandle,
+        id: &str,
+        cancel: CancellationToken,
+        mut restarts: RestartTracker,
+        loss: Loss,
+    ) {
         changed(app, Some(id));
 
         let backoff = Backoff(&cancel);
@@ -935,6 +1038,26 @@ fn recovered_span(dir: &Path) -> Result<recorder::SegmentSpan, CaptureError> {
     })
 }
 
+/// Where the session clock stands after a wake: the wall-clock time away
+/// since the last segment ended, when the monotonic clock shows less. Only
+/// ever forward, and never back into the last segment, so a wall-clock step
+/// cannot overlap it.
+fn position_after_wake(elapsed_ms: u64, last_end_ms: u64, away_ms: u64) -> u64 {
+    elapsed_ms.max(last_end_ms + away_ms)
+}
+
+/// Mark the session as restarting and hand out its budget.
+fn begin_restart(inner: &mut Inner, id: &str) -> (CancellationToken, RestartTracker) {
+    let pending = Pending::new(id);
+    let cancel = pending.cancel.clone();
+    inner.recovering = Some(pending);
+    let restarts = match inner.clock.as_mut().filter(|c| c.session_id == id) {
+        Some(clock) => std::mem::take(&mut clock.restarts),
+        None => RestartTracker::new(),
+    };
+    (cancel, restarts)
+}
+
 /// Whether the inputs changed in a way worth one attempt: something changed
 /// and there is a default input to open.
 fn device_returned(before: &Inputs, now: &Inputs) -> bool {
@@ -1054,6 +1177,16 @@ mod tests {
         assert!(device.restartable);
         assert_eq!(device.reason, InterruptReason::Device);
         assert!(Loss::of(&SegmentEnd::Stopped).is_none());
+    }
+
+    #[test]
+    fn a_wake_after_ten_minutes_leaves_a_ten_minute_gap() {
+        // Paused at 5 min; the monotonic clock stood still through the sleep.
+        assert_eq!(position_after_wake(300_000, 300_000, 600_000), 900_000);
+        // A clock that did advance (Windows) is not pushed back.
+        assert_eq!(position_after_wake(910_000, 300_000, 600_000), 910_000);
+        // A wall clock stepped backwards cannot overlap the last segment.
+        assert_eq!(position_after_wake(300_000, 300_000, 0), 300_000);
     }
 
     #[test]

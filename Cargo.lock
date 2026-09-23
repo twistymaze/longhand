@@ -3866,8 +3866,13 @@ dependencies = [
 name = "power"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "keepawake",
  "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

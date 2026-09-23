@@ -23,6 +23,7 @@ BORROWED_DIRS=(
   crates/models
   crates/onnx
   crates/pipeline
+  crates/power
   crates/pyannote-local
   crates/recorder
   crates/secrets

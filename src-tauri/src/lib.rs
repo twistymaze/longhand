@@ -107,6 +107,19 @@ pub fn run() {
                     .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
             );
             app.manage(std::sync::Arc::clone(&capture));
+            // Sleep closes the segment on the notifying thread, before the
+            // machine stops; the wake's restart runs off it (U13).
+            let sleeping = std::sync::Arc::clone(&capture);
+            let sleep_app = handle.clone();
+            let watch = power::SleepWatch::start(move |event| match event {
+                power::PowerEvent::WillSleep => sleeping.will_sleep(&sleep_app),
+                power::PowerEvent::DidWake => {
+                    let capture = std::sync::Arc::clone(&sleeping);
+                    let app = sleep_app.clone();
+                    std::thread::spawn(move || capture.did_wake(&app));
+                }
+            });
+            app.manage(std::sync::Mutex::new(watch));
             let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
                 &handle,
                 &capture,
