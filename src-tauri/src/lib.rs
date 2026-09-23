@@ -110,6 +110,8 @@ pub fn run() {
                     .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
             );
             app.manage(std::sync::Arc::clone(&capture));
+            // Before processing's launch sweep and any writer (U16).
+            capture.recover_at_launch();
             let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
             app.manage(std::sync::Arc::clone(&alerts));
             // Sleep closes the segment on the notifying thread, before the

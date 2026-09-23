@@ -12,6 +12,7 @@ pub mod diarize;
 pub mod join;
 pub mod land;
 pub mod progress;
+pub mod recover;
 pub mod resample;
 pub mod runner;
 pub mod summarize;

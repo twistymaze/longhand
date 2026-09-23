@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use audio::AudioProvider;
 use audio_cpal::{CpalAudio, Inputs};
 use chrono::{DateTime, FixedOffset, Local};
+use pipeline::recover::segment_audio_file;
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, SegmentOutcome};
 use serde::Serialize;
@@ -266,10 +267,6 @@ fn now() -> DateTime<FixedOffset> {
     Local::now().fixed_offset()
 }
 
-fn segment_audio_file(index: u32) -> String {
-    format!("audio/segment-{:02}.opus", index + 1)
-}
-
 /// Where a resumed segment starts on the session timeline. While this
 /// process still holds the session's monotonic origin, it is the elapsed
 /// time since then; across a restart the origin is gone, and the wall-clock
@@ -323,6 +320,24 @@ impl CaptureManager {
 
     pub fn session_dir(&self, session_id: &str) -> PathBuf {
         self.working_root.join(session_id)
+    }
+
+    /// At launch, before anything records: sessions a dead process left
+    /// recording get their open segment back from its chunks and become
+    /// Interrupted(crash), or are discarded if they kept nothing (U16).
+    pub fn recover_at_launch(&self) {
+        match pipeline::recover::recover_crashed(&self.store, &self.working_root) {
+            Ok(recovered) => {
+                for session in recovered {
+                    log::warn!(
+                        "recovered {} after a crash: {}",
+                        session.session_id,
+                        session.state.name()
+                    );
+                }
+            }
+            Err(e) => log::error!("crash recovery at launch failed: {e}"),
+        }
     }
 
     /// Resolve the microphone and its format ahead of the press, so pressing
