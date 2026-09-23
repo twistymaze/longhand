@@ -80,7 +80,11 @@ async fn toggle(app: AppHandle) {
     if manager.is_capturing() {
         let app = app.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || match manager.stop_session(&app) {
-            Ok((id, state)) => log::info!("shortcut stopped {id}; now {}", state.name()),
+            Ok((id, state)) => {
+                log::info!("shortcut stopped {id}; now {}", state.name());
+                app.state::<Arc<crate::managers::processing::ProcessingManager>>()
+                    .wake();
+            }
             Err(e) => log::error!("shortcut stop failed: {e}"),
         })
         .await;

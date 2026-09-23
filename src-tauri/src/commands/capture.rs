@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, State};
 
 use crate::managers::capture::{CaptureManager, NoteView, RecordingStatus};
+use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, SpeakerCountSetting};
 use crate::shortcut::{self, ShortcutRegistration, ShortcutStatus};
 
@@ -38,9 +39,10 @@ pub async fn start_recording(
 pub async fn stop_recording(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
 ) -> Result<String, String> {
     let manager = Arc::clone(&manager);
-    blocking(move || {
+    let state = blocking(move || {
         manager
             .stop_session(&app)
             .map(|(id, state)| {
@@ -49,7 +51,9 @@ pub async fn stop_recording(
             })
             .map_err(|e| e.to_string())
     })
-    .await
+    .await?;
+    processing.wake();
+    Ok(state)
 }
 
 #[tauri::command]
@@ -57,16 +61,23 @@ pub async fn stop_recording(
 pub async fn resume_recording(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
 ) -> Result<String, String> {
     let manager = Arc::clone(&manager);
-    blocking(move || {
+    let id = session_id.clone();
+    let state = blocking(move || {
         manager
-            .resume_session(&app, &session_id)
+            .resume_session(&app, &id)
             .map(|state| state.name().to_string())
             .map_err(|e| e.to_string())
     })
-    .await
+    .await?;
+    // Out of the queue (R20c); a stage running on it stops at its next checkpoint.
+    if state == "capturing" {
+        processing.cancel(&session_id);
+    }
+    Ok(state)
 }
 
 #[tauri::command]

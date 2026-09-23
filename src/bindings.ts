@@ -205,11 +205,13 @@ export const events = __makeEvents__<{
 captureEnded: CaptureEnded,
 captureTick: CaptureTick,
 modelDownloadEvent: ModelDownloadEvent,
+processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
 modelDownloadEvent: "model-download-event",
+processingUpdate: "processing-update",
 recordingChanged: "recording-changed"
 })
 
@@ -259,6 +261,11 @@ export type NoteView = { id: number; text: string;
  * Position on the session timeline; `None` when un-anchored (R13).
  */
 position_ms: number | null; gap_anchored: boolean }
+export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | { kind: "cancelled" } | { kind: "finished" }
+/**
+ * What processing is doing, for the surface.
+ */
+export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
 export type Readiness = { microphone_authorized: boolean; destination: DestinationStatus; 
 /**
  * Microphone authorized, a destination chosen, and the chord registered

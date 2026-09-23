@@ -16,8 +16,10 @@ set -euo pipefail
 BORROWED_DIRS=(
   crates/audio
   crates/audio-cpal
+  crates/asr
   crates/audio-mock
   crates/models
+  crates/pipeline
   crates/recorder
   crates/secrets
   crates/supervisor

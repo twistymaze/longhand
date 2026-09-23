@@ -42,6 +42,8 @@ models = { path = "../crates/models" }
 power = { path = "../crates/power" }
 recorder = { path = "../crates/recorder" }
 secrets = { path = "../crates/secrets" }
+asr = { path = "../crates/asr" }
+pipeline = { path = "../crates/pipeline" }
 session-core = { path = "../crates/session-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 thiserror.workspace = true

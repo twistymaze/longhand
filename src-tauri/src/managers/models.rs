@@ -138,6 +138,11 @@ impl ModelsManager {
         }
     }
 
+    /// Where a catalog model lives on disk, present or not.
+    pub fn file_path(&self, id: &str) -> Option<PathBuf> {
+        models::model(id).map(|m| self.dir.join(&m.filename))
+    }
+
     /// Catalog ids required by `asr_model` that are not on disk.
     pub fn missing(&self, asr_model: &str) -> Vec<String> {
         models::required_for(asr_model)

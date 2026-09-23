@@ -8,8 +8,8 @@
 //! what launch recovery rebuilds the segment from (R8).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 /// enough to keep per-frame overhead negligible.
 const FRAMES_PER_SECOND: u32 = 50;
 
-pub const RECOVERY_DIR: &str = "audio-recovery";
+pub use pipeline::RECOVERY_DIR;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
@@ -137,7 +137,9 @@ struct Inner {
 pub struct CaptureManager {
     audio: CpalAudio,
     working_root: PathBuf,
-    store: Mutex<Store>,
+    /// Shared with the processing runner, so every lifecycle transition goes
+    /// through one connection.
+    store: pipeline::SharedStore,
     inner: Mutex<Inner>,
 }
 
@@ -179,7 +181,7 @@ impl CaptureManager {
         Ok(Self {
             audio: CpalAudio::new(),
             working_root: data.join("sessions"),
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
             inner: Mutex::new(Inner::default()),
         })
     }
@@ -190,6 +192,14 @@ impl CaptureManager {
 
     fn store(&self) -> std::sync::MutexGuard<'_, Store> {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn shared_store(&self) -> pipeline::SharedStore {
+        Arc::clone(&self.store)
+    }
+
+    pub fn working_root(&self) -> &Path {
+        &self.working_root
     }
 
     pub fn session_dir(&self, session_id: &str) -> PathBuf {
@@ -234,6 +244,7 @@ impl CaptureManager {
             }
         };
         for other in stopped {
+            self.record_model_at_stop(app, &other);
             log::info!("session {other} stopped by a new session");
         }
         inner.active = Some(active);
@@ -262,13 +273,23 @@ impl CaptureManager {
                 retained_audio,
             },
         )?;
-        if !retained_audio {
+        if retained_audio {
+            self.record_model_at_stop(app, &id);
+        } else {
             // Nothing survived R35; the notice is the surface's (U7).
             let _ = std::fs::remove_dir_all(self.session_dir(&id));
             log::info!("session {id} kept no audio and was discarded");
         }
         changed(app, None);
         Ok((id, state))
+    }
+
+    /// A queued session keeps the model selected when it stopped (R20c).
+    fn record_model_at_stop(&self, app: &AppHandle, id: &str) {
+        let model = crate::managers::settings::get_settings(app).asr_model;
+        if let Err(e) = self.store().set_asr_model(id, &model) {
+            log::warn!("could not record the model for {id}: {e}");
+        }
     }
 
     /// Resume an interrupted session as its next segment (R6). The store

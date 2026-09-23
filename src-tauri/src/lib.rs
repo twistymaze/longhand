@@ -45,6 +45,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureEnded,
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
+            managers::processing::ProcessingUpdate,
         ])
 }
 
@@ -85,14 +86,18 @@ pub fn run() {
 
             let handle = app.handle().clone();
             app.manage(managers::secrets::SecretsManager::new(&handle));
-            app.manage(std::sync::Arc::new(managers::models::ModelsManager::new(
-                &handle,
-            )?));
+            let models = std::sync::Arc::new(managers::models::ModelsManager::new(&handle)?);
+            app.manage(std::sync::Arc::clone(&models));
             let capture = std::sync::Arc::new(
                 managers::capture::CaptureManager::new(&handle)
                     .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
             );
             app.manage(std::sync::Arc::clone(&capture));
+            let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
+                &handle, &capture, models,
+            ));
+            processing.start();
+            app.manage(processing);
             // Resolving the microphone queries the audio HAL; keep it off the
             // launch path. A failure here is retried at the first press.
             tauri::async_runtime::spawn_blocking(move || {
