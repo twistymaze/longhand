@@ -1,8 +1,10 @@
 name: CI
 
+# The repository is private, so runner minutes are billed, macOS and
+# Windows at a multiple. Local checks gate day-to-day work
+# (scripts/check-windows.sh included); CI runs when a branch asks to merge,
+# and on demand: `gh workflow run ci.yml --ref <branch>`.
 on:
-  push:
-    branches: ["**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -17,10 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows takes far longer than macOS, so a push checks macOS only.
-        # Pull requests into main and manual runs check both; run Windows on
-        # a branch with `gh workflow run ci.yml --ref <branch>`.
-        os: ${{ fromJSON(github.event_name == 'push' && '["macos-latest"]' || '["macos-latest", "windows-latest"]') }}
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
