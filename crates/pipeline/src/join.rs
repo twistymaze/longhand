@@ -32,7 +32,7 @@ pub fn run(
     let path = session_dir.join(TRANSCRIPT_FILE);
     let temp = session_dir.join(format!("{TRANSCRIPT_FILE}.tmp"));
     std::fs::write(&temp, transcript.render())?;
-    std::fs::File::open(&temp)?.sync_all()?;
+    crate::sync_file(&temp)?;
     std::fs::rename(&temp, &path)?;
     checkpoint::mark_complete(store, session_id, Stage::Join, segments.len())?;
     Ok(transcript)

@@ -216,7 +216,7 @@ fn create_fresh(path: &Path) -> std::io::Result<File> {
 
 /// Make a finished file durable under its real name.
 fn commit(temp: &Path, path: &Path) -> std::io::Result<()> {
-    File::open(temp)?.sync_all()?;
+    crate::sync_file(temp)?;
     std::fs::rename(temp, path)?;
     #[cfg(unix)]
     if let Some(parent) = path.parent() {

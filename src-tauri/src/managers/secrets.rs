@@ -17,6 +17,11 @@ impl SecretsManager {
         }
     }
 
+    /// The store itself, for work already on the blocking pool (a stage).
+    pub fn store(&self) -> Arc<SecretStore> {
+        Arc::clone(&self.store)
+    }
+
     /// Run a store operation on the blocking pool: a keychain call can wait on
     /// a system prompt, and must never hold an async worker while it does.
     pub async fn run<T, F>(&self, op: F) -> Result<T, SecretError>

@@ -63,6 +63,14 @@ pub struct Settings {
     pub default_speaker_count: Option<SpeakerCountSetting>,
     /// Catalog id of the recognition model (KTD6).
     pub asr_model: String,
+    /// Context limits endpoints have shown by rejecting longer prompts,
+    /// keyed by [`learned_limit_key`] (KTD16).
+    pub learned_context_limits: std::collections::BTreeMap<String, u32>,
+}
+
+/// One endpoint and model: a limit learned for one says nothing of another.
+pub fn learned_limit_key(base_url: &str, model: &str) -> String {
+    format!("{} {}", base_url.trim(), model.trim())
 }
 
 impl Default for Settings {
@@ -77,6 +85,7 @@ impl Default for Settings {
             context_limit_tokens: None,
             default_speaker_count: None,
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
+            learned_context_limits: Default::default(),
         }
     }
 }

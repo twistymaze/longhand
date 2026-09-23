@@ -4,12 +4,17 @@
 //! LONGHAND_E2E_WAV=/path/to/mono-16bit.wav \
 //! LONGHAND_ASR_MODEL=/path/to/model \
 //! LONGHAND_WEIGHTS_DIR=/path/to/diarization/weights \
+//! [LONGHAND_E2E_MUTE=start_s,length_s] [LONGHAND_E2E_BLANK_EVERY=n] \
 //! cargo test -p pipeline --release --test end_to_end -- --ignored --nocapture
 //! ```
 //!
 //! The WAV is fed through the chunk writer at its own rate, as capture
 //! would, then assembled, diarized, transcribed and joined. Only counts and timings are
 //! printed, never transcript text: the input may be a private recording.
+//!
+//! `LONGHAND_E2E_MUTE` silences a stretch of the input, which verification
+//! must pass; `LONGHAND_E2E_BLANK_EVERY` makes every nth window decode
+//! nothing, which verification must catch (U20).
 
 mod common;
 
@@ -24,16 +29,71 @@ use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{EngineProvider, Environment, Runner, checkpoint, proc_file};
 use session_core::{Event, Stage};
 
-struct RealModel(String);
+struct RealModel {
+    path: String,
+    blank_every: Option<usize>,
+}
+
+/// A recognizer that loses every nth window, as a failing decoder would.
+struct Blanking {
+    inner: Box<dyn Recognizer>,
+    every: usize,
+    calls: usize,
+}
+
+impl Recognizer for Blanking {
+    fn model_id(&self) -> &str {
+        self.inner.model_id()
+    }
+    fn transcribe(&mut self, pcm: &[f32]) -> Result<asr::WindowText, asr::AsrError> {
+        self.calls += 1;
+        if self.calls.is_multiple_of(self.every) {
+            return Ok(asr::WindowText {
+                text: String::new(),
+                segments: vec![],
+            });
+        }
+        self.inner.transcribe(pcm)
+    }
+}
 
 impl EngineProvider for RealModel {
+    fn summary_endpoint(&self) -> Result<pipeline::SummaryEndpoint, pipeline::EndpointProblem> {
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        match (
+            var("LONGHAND_SUMMARY_BASE_URL"),
+            var("LONGHAND_SUMMARY_MODEL"),
+        ) {
+            (Some(base_url), Some(model)) => Ok(pipeline::SummaryEndpoint {
+                base_url,
+                model,
+                credential: var("LONGHAND_SUMMARY_KEY"),
+                context_limit: var("LONGHAND_SUMMARY_CONTEXT").map(|v| v.parse().unwrap()),
+                learned_limit: None,
+            }),
+            _ => Err(pipeline::EndpointProblem::Unconfigured(
+                "no summary endpoint in the environment".into(),
+            )),
+        }
+    }
+    fn learn_limit(&self, _: &str, _: &str, limit: u32) {
+        eprintln!("learned a context limit of {limit}");
+    }
     fn ready(&self, _: &str) -> bool {
         true
     }
     fn load(&self, model_id: &str) -> Result<Box<dyn Recognizer>, String> {
-        Engine::load(model_id, std::path::Path::new(&self.0))
+        let engine = Engine::load(model_id, std::path::Path::new(&self.path))
             .map(|e| Box::new(e) as Box<dyn Recognizer>)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        Ok(match self.blank_every {
+            Some(every) => Box::new(Blanking {
+                inner: engine,
+                every,
+                calls: 0,
+            }),
+            None => engine,
+        })
     }
     fn default_model(&self) -> String {
         "e2e".into()
@@ -57,11 +117,22 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     let reader = hound::WavReader::open(&wav).unwrap();
     let spec = reader.spec();
     assert_eq!((spec.channels, spec.bits_per_sample), (1, 16));
-    let audio: Vec<f32> = reader
+    let mut audio: Vec<f32> = reader
         .into_samples::<i16>()
         .map(|s| s.unwrap() as f32 / 32_768.0)
         .collect();
     let seconds = audio.len() as f64 / spec.sample_rate as f64;
+    if let Ok(mute) = std::env::var("LONGHAND_E2E_MUTE") {
+        let (start, length) = mute.split_once(',').expect("start_s,length_s");
+        let rate = spec.sample_rate as usize;
+        let start = start.parse::<usize>().unwrap() * rate;
+        let end = (start + length.parse::<usize>().unwrap() * rate).min(audio.len());
+        audio[start..end].fill(0.0);
+        eprintln!("muted {} s", (end - start) / rate);
+    }
+    let blank_every = std::env::var("LONGHAND_E2E_BLANK_EVERY")
+        .ok()
+        .map(|n| n.parse::<usize>().unwrap());
 
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("e2e");
@@ -88,7 +159,10 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     let runner = Runner::new(Environment {
         store: Arc::clone(&store),
         working_root: root.path().to_path_buf(),
-        engines: Box::new(RealModel(model)),
+        engines: Box::new(RealModel {
+            path: model,
+            blank_every,
+        }),
         suspended: Box::new(|| false),
         events: Box::new(move |e| {
             if let pipeline::RunnerEvent::StageStarted { stage, .. } = e {
@@ -98,7 +172,47 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     });
     let (_, outcome) = runner.run_next().await.unwrap();
     let total = started.elapsed();
-    assert_eq!(outcome, Outcome::Finished);
+    let coverage: Option<pipeline::verify::Coverage> =
+        checkpoint::get(&store, "e2e", Stage::Verify, &checkpoint::segment_key(0)).unwrap();
+    if let Some(c) = &coverage {
+        eprintln!(
+            "coverage: {:.1}% of {:.0} s voiced; worst untranscribed stretch {:.1} s; {} stretches",
+            c.ratio() * 100.0,
+            c.voiced_ms as f64 / 1000.0,
+            c.longest_uncovered_ms as f64 / 1000.0,
+            c.uncovered.len()
+        );
+    }
+    if blank_every.is_some() {
+        let Outcome::Failed { stage, message } = outcome else {
+            panic!("blanked windows passed verification");
+        };
+        assert_eq!(stage, Stage::Verify);
+        eprintln!(
+            "verification caught it: {} characters of message",
+            message.len()
+        );
+        return;
+    }
+    match &outcome {
+        Outcome::Finished => {
+            let text =
+                std::fs::read_to_string(dir.join(pipeline::summarize::SUMMARY_FILE)).unwrap();
+            let meta = session_core::folder::Summary::parse(&text).unwrap().meta;
+            eprintln!(
+                "summary: {} words; {meta:?}",
+                text.split_whitespace().count()
+            );
+        }
+        // Without an endpoint in the environment the run ends at the summary.
+        Outcome::Failed {
+            stage: Stage::Summarize,
+            message,
+        } if std::env::var("LONGHAND_SUMMARY_BASE_URL").is_err() => {
+            eprintln!("summary: skipped ({message})");
+        }
+        other => panic!("{other:?}"),
+    }
 
     let proc = hound::WavReader::open(dir.join(proc_file(&segment.audio_file))).unwrap();
     let proc_spec = proc.spec();

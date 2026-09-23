@@ -514,6 +514,14 @@ impl Store {
         )?;
         Ok(())
     }
+
+    pub fn delete_checkpoint(&self, session_id: &str, stage: Stage, key: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2 AND key = ?3",
+            params![session_id, stage_key(stage), key],
+        )?;
+        Ok(())
+    }
 }
 
 fn parse_time(text: &str) -> Result<DateTime<FixedOffset>> {

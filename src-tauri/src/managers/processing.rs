@@ -7,7 +7,10 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
-use pipeline::{EngineProvider, Environment, Runner, RunnerEvent};
+use pipeline::{
+    EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SummaryEndpoint,
+};
+use secrets::{SecretError, SecretStore};
 use serde::Serialize;
 use specta::Type;
 use tauri::AppHandle;
@@ -38,6 +41,10 @@ pub enum ProcessingStep {
     },
     StageFailed {
         stage: String,
+        message: String,
+    },
+    /// The secret store holding the endpoint credential is locked (R20b).
+    Blocked {
         message: String,
     },
     /// Speaker separation failed; the transcript comes without speakers.
@@ -98,6 +105,10 @@ impl From<RunnerEvent> for ProcessingUpdate {
                 session_id,
                 message,
             } => (session_id, ProcessingStep::SpeakersUnavailable { message }),
+            RunnerEvent::Blocked {
+                session_id,
+                message,
+            } => (session_id, ProcessingStep::Blocked { message }),
             RunnerEvent::Waiting { session_id, what } => {
                 (session_id, ProcessingStep::Waiting { what })
             }
@@ -111,9 +122,53 @@ impl From<RunnerEvent> for ProcessingUpdate {
 struct Models {
     app: AppHandle,
     models: Arc<ModelsManager>,
+    secrets: Arc<SecretStore>,
 }
 
 impl EngineProvider for Models {
+    fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
+        let s = settings::get_settings(&self.app);
+        if !s.endpoint_configured() {
+            return Err(EndpointProblem::Unconfigured(
+                "no summarization endpoint is set; choose one in Settings".into(),
+            ));
+        }
+        // The credential is keyed by the configured host: a changed base URL
+        // has none until one is entered for it (R30a).
+        let credential = self
+            .secrets
+            .endpoint_credential(&s.endpoint_base_url)
+            .map_err(|e| match e {
+                SecretError::Locked { .. } | SecretError::Unavailable { .. } => {
+                    EndpointProblem::Locked(e.to_string())
+                }
+                other => EndpointProblem::Unconfigured(other.to_string()),
+            })?;
+        Ok(SummaryEndpoint {
+            learned_limit: s
+                .learned_context_limits
+                .get(&settings::learned_limit_key(
+                    &s.endpoint_base_url,
+                    &s.endpoint_model,
+                ))
+                .copied(),
+            base_url: s.endpoint_base_url,
+            model: s.endpoint_model,
+            credential,
+            context_limit: s.context_limit_tokens,
+        })
+    }
+
+    fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {
+        let key = settings::learned_limit_key(base_url, model);
+        if let Err(e) = settings::update_settings(&self.app, |s| {
+            s.learned_context_limits.insert(key, limit);
+            Ok(())
+        }) {
+            log::warn!("could not remember the context limit for {model}: {e}");
+        }
+    }
+
     /// Everything processing needs, diarization weights included: a
     /// session is processed once its models are all on disk.
     fn ready(&self, model_id: &str) -> bool {
@@ -157,7 +212,12 @@ pub struct ProcessingManager {
 impl ProcessingManager {
     /// Build the runner and return sessions a previous run left mid-stage to
     /// the queue. Call [`ProcessingManager::start`] to begin working.
-    pub fn new(app: &AppHandle, capture: &Arc<CaptureManager>, models: Arc<ModelsManager>) -> Self {
+    pub fn new(
+        app: &AppHandle,
+        capture: &Arc<CaptureManager>,
+        models: Arc<ModelsManager>,
+        secrets: Arc<SecretStore>,
+    ) -> Self {
         let suspended = Arc::clone(capture);
         let events = app.clone();
         let runner = Runner::new(Environment {
@@ -166,6 +226,7 @@ impl ProcessingManager {
             engines: Box::new(Models {
                 app: app.clone(),
                 models,
+                secrets,
             }),
             suspended: Box::new(move || suspended.is_capturing()),
             events: Box::new(move |event| {

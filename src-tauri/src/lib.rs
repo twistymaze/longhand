@@ -85,7 +85,9 @@ pub fn run() {
             specta_builder.mount_events(app);
 
             let handle = app.handle().clone();
-            app.manage(managers::secrets::SecretsManager::new(&handle));
+            let secrets = managers::secrets::SecretsManager::new(&handle);
+            let secret_store = secrets.store();
+            app.manage(secrets);
             let models = std::sync::Arc::new(managers::models::ModelsManager::new(&handle)?);
             app.manage(std::sync::Arc::clone(&models));
             let capture = std::sync::Arc::new(
@@ -94,7 +96,10 @@ pub fn run() {
             );
             app.manage(std::sync::Arc::clone(&capture));
             let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
-                &handle, &capture, models,
+                &handle,
+                &capture,
+                models,
+                secret_store,
             ));
             processing.start();
             app.manage(processing);

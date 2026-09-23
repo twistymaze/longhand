@@ -12,13 +12,16 @@ pub mod diarize;
 pub mod join;
 pub mod resample;
 pub mod runner;
+pub mod summarize;
 pub mod transcribe;
+pub mod verify;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use session_core::Store;
 
-pub use runner::{EngineProvider, Environment, Runner, RunnerEvent};
+pub use runner::{EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent};
+pub use summarize::SummaryEndpoint;
 
 /// The one job store connection, shared with capture so every lifecycle
 /// transition is serialized through it.
@@ -42,6 +45,10 @@ pub enum StageError {
     /// session goes back to its place in the queue rather than failing.
     #[error("waiting for {0}")]
     Waiting(String),
+    /// The secret store holding a credential is locked (R20b): the session
+    /// waits for the user to unlock it, which is not a failure.
+    #[error("blocked: {0}")]
+    Blocked(String),
     #[error("{0}")]
     Failed(String),
 }
@@ -75,6 +82,12 @@ pub trait Control: Send + Sync {
     /// Return once the stage may continue, or `Cancelled`. Blocks while
     /// inference is suspended (KTD20: capture is active).
     fn proceed(&self) -> Result<(), StageError>;
+
+    /// Whether work should stop now, without waiting out a suspension: for
+    /// a stage polling while a network call is in flight.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// A control that never suspends or cancels, for tools and tests.
@@ -84,6 +97,15 @@ impl Control for Unattended {
     fn proceed(&self) -> Result<(), StageError> {
         Ok(())
     }
+}
+
+/// Flush a written file to disk. The handle is opened for writing because
+/// Windows refuses `FlushFileBuffers` on a read-only one ("Access is denied").
+pub(crate) fn sync_file(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()
 }
 
 /// The processing audio's path for a segment, next to its archive name.

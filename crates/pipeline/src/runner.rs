@@ -16,17 +16,19 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
+use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
-use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock};
+use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
 use diarize::{DiarizeError, SpeakerAnalyzer};
 
-/// The stages this build runs, in order. Later units add verification,
-/// the summary and landing after the join.
+/// The stages this build runs, in order. Landing (U11) follows the summary.
 pub const STAGES: &[Stage] = &[
     Stage::Assemble,
     Stage::Diarize,
     Stage::Transcribe,
     Stage::Join,
+    Stage::Verify,
+    Stage::Summarize,
 ];
 
 const POLL: Duration = Duration::from_secs(2);
@@ -43,6 +45,19 @@ pub trait EngineProvider: Send + Sync {
     /// The speaker-separation stack, loaded for each diarize stage and
     /// dropped when it ends, so its memory is free before transcription.
     fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError>;
+    /// The summarization endpoint, read fresh for each summarize stage so a
+    /// settings change applies to the next session to reach it.
+    fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
+    /// Remember that `model` at `base_url` takes no more than `limit` tokens.
+    fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndpointProblem {
+    /// No endpoint is set, or its settings are unusable.
+    Unconfigured(String),
+    /// The secret store is locked; the user can unlock it (R20b).
+    Locked(String),
 }
 
 /// What the runner needs from the application.
@@ -83,6 +98,11 @@ pub enum RunnerEvent {
         session_id: String,
         message: String,
     },
+    /// The credential store is locked; the session waits for the user.
+    Blocked {
+        session_id: String,
+        message: String,
+    },
     /// A model is missing; the session keeps its place in the queue.
     Waiting {
         session_id: String,
@@ -100,6 +120,7 @@ pub enum Outcome {
     Failed { stage: Stage, message: String },
     Cancelled,
     Waiting,
+    Blocked,
 }
 
 pub struct Runner {
@@ -146,6 +167,10 @@ impl Control for StageControl {
             }
             std::thread::sleep(SUSPENDED_POLL);
         }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled() || self.taken_back()
     }
 }
 
@@ -195,6 +220,39 @@ impl Runner {
         {
             token.cancel();
         }
+    }
+
+    /// The user's Retry on a failed session: put it back in line, keeping
+    /// its place and its checkpoints. A failed verification first forgets
+    /// the windows that missed speech, so only those are transcribed again.
+    pub fn retry(&self, session_id: &str) -> Result<(), StageError> {
+        let failed = lock(&self.env.store).session(session_id)?.map(|r| r.state);
+        if let Some(SessionState::ProcessingFailed { stage, .. }) = failed
+            && stage == Stage::Verify
+        {
+            verify::prepare_retry(&self.env.store, session_id)?;
+        }
+        {
+            let mut store = lock(&self.env.store);
+            store.apply(session_id, &Event::Retry)?;
+            store.apply(session_id, &Event::ClaimLost)?;
+        }
+        self.wake();
+        Ok(())
+    }
+
+    /// The secret store is available again: a blocked session goes back to
+    /// its place in line and resumes at its checkpoints (R20b).
+    pub fn unblock(&self, session_id: &str) -> Result<(), StageError> {
+        let blocked = matches!(
+            lock(&self.env.store).session(session_id)?.map(|r| r.state),
+            Some(SessionState::Blocked { .. })
+        );
+        if blocked {
+            lock(&self.env.store).apply(session_id, &Event::ClaimLost)?;
+            self.wake();
+        }
+        Ok(())
     }
 
     pub fn shutdown(&self) {
@@ -294,6 +352,17 @@ impl Runner {
                         what: what.clone(),
                     });
                     return Outcome::Waiting;
+                }
+                Err(StageError::Blocked(message)) => {
+                    log::info!("{id} is blocked on the secret store: {message}");
+                    if let Err(e) = lock(&self.env.store).apply(id, &Event::CredentialUnavailable) {
+                        log::warn!("could not mark {id} blocked: {e}");
+                    }
+                    emit(RunnerEvent::Blocked {
+                        session_id: id.to_string(),
+                        message,
+                    });
+                    return Outcome::Blocked;
                 }
                 Err(StageError::Cancelled) => {
                     log::info!("processing of {id} stopped at a checkpoint");
@@ -462,6 +531,32 @@ fn execute(
             )
         }
         Stage::Join => join::run(&env.store, id, &dir, segments).map(|_| ()),
+        Stage::Verify => verify::run(&env.store, id, &dir, segments),
+        Stage::Summarize => {
+            let endpoint = env.engines.summary_endpoint().map_err(|p| match p {
+                EndpointProblem::Locked(message) => StageError::Blocked(message),
+                EndpointProblem::Unconfigured(message) => StageError::Failed(message),
+            })?;
+            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
+            summarize::run(
+                &env.store,
+                id,
+                &dir,
+                segments,
+                endpoint,
+                &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
+                control,
+                &mut |done, total| {
+                    (env.events)(RunnerEvent::Progress {
+                        session_id: id.to_string(),
+                        stage,
+                        segment: 0,
+                        done,
+                        total,
+                    })
+                },
+            )
+        }
         other => Err(StageError::Failed(format!(
             "{other:?} is not in this build"
         ))),

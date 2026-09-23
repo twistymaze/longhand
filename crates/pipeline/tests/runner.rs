@@ -1,6 +1,8 @@
 //! The runner end to end over real chunk files, with a scripted recognizer.
 
 mod common;
+#[path = "../../summarize/tests/common/mod.rs"]
+mod http;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +13,10 @@ use diarize::{Analysis, AudioSource, DiarizeError, DiarizeRequest, SpeakerAnalyz
 use pipeline::join::TRANSCRIPT_FILE;
 use pipeline::runner::Outcome;
 use pipeline::transcribe::{self, WindowPlan};
-use pipeline::{EngineProvider, Environment, Runner, RunnerEvent, SharedStore, checkpoint};
+use pipeline::{
+    EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SharedStore,
+    SummaryEndpoint, checkpoint,
+};
 use session_core::{SessionState, Stage};
 
 #[derive(Default)]
@@ -28,6 +33,16 @@ struct Script {
     /// Resume this session through the store after the given number of calls.
     resume_after: Mutex<Option<(usize, SharedStore, String)>>,
     analyses: AtomicUsize,
+    /// Where summaries go; unset is an unconfigured endpoint.
+    summary: Mutex<Option<Result<SummaryEndpoint, EndpointProblem>>>,
+    /// Limits the summarize stage learned.
+    learned: Mutex<Vec<u32>>,
+    /// Filler sentences each window decodes, to make transcripts long.
+    sentences: AtomicUsize,
+    /// A sentence the given call decodes as well.
+    says: Mutex<Option<(usize, String)>>,
+    /// Calls (0-based) that decode nothing.
+    blank_on: Mutex<Vec<usize>>,
     diarize_fails: AtomicBool,
     weights_missing: AtomicBool,
 }
@@ -98,13 +113,29 @@ impl Recognizer for Fake {
                 )
                 .unwrap();
         }
+        if s.blank_on.lock().unwrap().contains(&n) {
+            return Ok(WindowText {
+                text: String::new(),
+                segments: vec![],
+            });
+        }
         let ms = pcm.len() as u64 / 16;
+        let mut text = format!("call {n}.");
+        for _ in 0..s.sentences.load(Ordering::SeqCst) {
+            text.push_str(" Someone talks at length about the rules of the game.");
+        }
+        if let Some((at, said)) = s.says.lock().unwrap().as_ref()
+            && *at == n
+        {
+            text.push(' ');
+            text.push_str(said);
+        }
         Ok(WindowText {
-            text: format!("call {n}"),
+            text: text.clone(),
             segments: vec![AsrSegment {
                 start_ms: 0,
                 end_ms: ms,
-                text: format!("call {n}"),
+                text,
             }],
         })
     }
@@ -132,6 +163,38 @@ impl EngineProvider for Provider {
         }
         Ok(Box::new(FakeAnalyzer(Arc::clone(&self.0))))
     }
+    fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
+        self.0
+            .summary
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Err(EndpointProblem::Unconfigured("no endpoint".into())))
+    }
+    fn learn_limit(&self, _: &str, _: &str, limit: u32) {
+        self.0.learned.lock().unwrap().push(limit);
+    }
+}
+
+fn endpoint(base: &str) -> SummaryEndpoint {
+    SummaryEndpoint {
+        base_url: base.into(),
+        model: "summarizer".into(),
+        credential: Some("sk-secret-test".into()),
+        context_limit: None,
+        learned_limit: None,
+    }
+}
+
+/// An endpoint that answers every completion with the same summary.
+async fn with_summaries(script: &Arc<Script>) -> http::Mock {
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::Json(200, http::completion("A short summary.")),
+    )]))
+    .await;
+    *script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    mock
 }
 
 struct Rig {
@@ -164,8 +227,10 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
     }
 }
 
-fn rig() -> Rig {
-    rig_with(store(), tempfile::tempdir().unwrap(), Arc::default())
+async fn rig() -> Rig {
+    let r = rig_with(store(), tempfile::tempdir().unwrap(), Arc::default());
+    with_summaries(&r.script).await;
+    r
 }
 
 /// Speech, a pause long enough to split windows, and speech again.
@@ -189,7 +254,7 @@ fn state(store: &SharedStore, id: &str) -> SessionState {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -231,10 +296,14 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
             ("earlier".into(), Stage::Diarize),
             ("earlier".into(), Stage::Transcribe),
             ("earlier".into(), Stage::Join),
+            ("earlier".into(), Stage::Verify),
+            ("earlier".into(), Stage::Summarize),
             ("later".into(), Stage::Assemble),
             ("later".into(), Stage::Diarize),
             ("later".into(), Stage::Transcribe),
             ("later".into(), Stage::Join),
+            ("later".into(), Stage::Verify),
+            ("later".into(), Stage::Summarize),
         ]
     );
     // One engine load serves both sessions.
@@ -245,7 +314,7 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_mid_segment_stops_at_the_next_window_and_keeps_what_is_done() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -284,6 +353,7 @@ async fn a_run_dropped_part_way_resumes_at_the_first_unfinished_window() {
     // A new process: the old claim is reclaimed at launch.
     let Rig { _root, .. } = first;
     let second = rig_with(Arc::clone(&store), _root, Arc::default());
+    with_summaries(&second.script).await;
     assert_eq!(second.runner.reclaim().unwrap(), vec!["s".to_string()]);
     let (_, outcome) = second.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
@@ -303,7 +373,7 @@ async fn a_run_dropped_part_way_resumes_at_the_first_unfinished_window() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_engine_error_fails_the_stage_naming_the_window_and_keeps_audio_and_earlier_windows() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -341,7 +411,7 @@ async fn an_engine_error_fails_the_stage_naming_the_window_and_keeps_audio_and_e
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_queued_session_uses_the_model_recorded_at_stop() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -363,10 +433,12 @@ async fn nothing_starts_while_capture_is_active() {
     let root = tempfile::tempdir().unwrap();
     let capturing = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&capturing);
+    let script = Arc::default();
+    with_summaries(&script).await;
     let runner = Runner::new(Environment {
         store: Arc::clone(&store),
         working_root: root.path().to_path_buf(),
-        engines: Box::new(Provider(Arc::default())),
+        engines: Box::new(Provider(script)),
         suspended: Box::new(move || flag.load(Ordering::SeqCst)),
         events: Box::new(|_| {}),
     });
@@ -386,7 +458,7 @@ async fn nothing_starts_while_capture_is_active() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resume_takes_the_session_back_at_the_next_window_without_being_told() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -407,7 +479,7 @@ async fn a_resume_takes_the_session_back_at_the_next_window_without_being_told()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_finished_session_has_its_transcript_on_disk() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -434,7 +506,7 @@ async fn a_finished_session_has_its_transcript_on_disk() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_diarization_failure_delivers_the_transcript_without_speakers() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -460,7 +532,7 @@ async fn a_diarization_failure_delivers_the_transcript_without_speakers() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
-    let r = rig();
+    let r = rig().await;
     queue_session(
         &r.store,
         &r.root,
@@ -491,4 +563,428 @@ async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
             ..
         }
     )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    *r.script.blank_on.lock().unwrap() = vec![1];
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    let Outcome::Failed { stage, message } = outcome else {
+        panic!("expected a failure, got {outcome:?}");
+    };
+    assert_eq!(stage, Stage::Verify);
+    assert!(message.contains("misses speech"), "{message}");
+    assert!(r.root.join("s").join(TRANSCRIPT_FILE).exists());
+    let windows = plan(&r.store, "s").windows.len();
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), windows);
+
+    // The decoder recovers; only the blank window runs again.
+    r.script.blank_on.lock().unwrap().clear();
+    r.runner.retry("s").unwrap();
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), windows + 1);
+    let transcript = std::fs::read_to_string(r.root.join("s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(
+        transcript.contains(&format!("call {windows}")),
+        "{transcript}"
+    );
+}
+
+// ------------------------------------------------------------- summarize (U10)
+
+fn user_content(body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    v["messages"][1]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn chat_calls(mock: &http::Mock) -> Vec<String> {
+    mock.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.path == "/v1/chat/completions")
+        .map(|s| user_content(&s.body))
+        .collect()
+}
+
+/// Point the script's summaries at `reply`, with an optional context setting.
+async fn summaries_from(r: &Rig, reply: http::Reply, context_limit: Option<u32>) -> http::Mock {
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit,
+        ..endpoint(&mock.base)
+    }));
+    mock
+}
+
+/// A session long enough to need several calls under a small budget.
+fn long_session(r: &Rig) {
+    r.script.sentences.store(60, Ordering::SeqCst);
+    let segments: Vec<(u32, Vec<f32>)> = (0..4).map(|_| (16_000, conversation())).collect();
+    queue_session(&r.store, &r.root, "s", 100, Some("m"), &segments);
+}
+
+fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(files_under(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcript_that_fits_is_summarized_in_one_call_and_names_host_and_model() {
+    let r = rig().await;
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("One pass.")),
+        None,
+    )
+    .await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let calls = chat_calls(&mock);
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].contains("<transcript>"));
+    let summary = std::fs::read_to_string(r.root.join("s/summary.md")).unwrap();
+    assert!(summary.contains("endpoint_host: 127.0.0.1"), "{summary}");
+    assert!(summary.contains("model: summarizer"), "{summary}");
+    assert!(summary.contains("One pass."));
+    assert!(
+        mock.seen.lock().unwrap()[0..]
+            .iter()
+            .all(|s| s.path != "/v1/chat/completions"
+                || s.authorization.as_deref() == Some("Bearer sk-secret-test"))
+    );
+    // The credential is in no file the session wrote (R24b).
+    for file in files_under(&r.root.join("s")) {
+        let bytes = std::fs::read(&file).unwrap();
+        assert!(
+            !bytes.windows(14).any(|w| w == b"sk-secret-test"),
+            "{}",
+            file.display()
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_transcript_is_summarized_in_parts_and_merged_in_layers() {
+    let r = rig().await;
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(2_048),
+    )
+    .await;
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let calls = chat_calls(&mock);
+    let parts = calls
+        .iter()
+        .filter(|c| c.contains("<transcript part="))
+        .count();
+    let merges = calls
+        .iter()
+        .filter(|c| c.contains("<summary part="))
+        .count();
+    assert!(parts > 2, "{parts} parts");
+    assert!(merges >= 1);
+    // Each prompt stays inside the budget the setting names.
+    for c in &calls {
+        assert!(summarize::tokens::estimate(c) < 2_048, "{}", c.len());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_error_on_part_five_fails_naming_it_and_retry_starts_there() {
+    let r = rig().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&n);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        if count.fetch_add(1, Ordering::SeqCst) == 4 {
+            (500, r#"{"error":"overloaded"}"#.into())
+        } else {
+            (200, http::completion("Notes on a part."))
+        }
+    }));
+    let mock = summaries_from(&r, reply, Some(2_048)).await;
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    let Outcome::Failed { stage, message } = outcome else {
+        panic!("expected a failure, got {outcome:?}");
+    };
+    assert_eq!(stage, Stage::Summarize);
+    assert!(message.contains("part 5 of"), "{message}");
+    assert_eq!(chat_calls(&mock).len(), 5);
+
+    r.runner.retry("s").unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"5\">"),
+        "{}",
+        &calls[5][..80]
+    );
+    assert!(
+        calls[5..]
+            .iter()
+            .all(|c| !c.contains("<transcript part=\"4\">"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_locked_keychain_blocks_and_unlocking_resumes_without_redoing_work() {
+    let r = rig().await;
+    *r.script.summary.lock().unwrap() = Some(Err(EndpointProblem::Locked(
+        "the login keychain is locked".into(),
+    )));
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Blocked);
+    assert!(matches!(state(&r.store, "s"), SessionState::Blocked { .. }));
+    assert!(
+        r.runner.run_next().await.is_none(),
+        "a blocked session is not claimed"
+    );
+    let transcribed = r.script.calls.load(Ordering::SeqCst);
+
+    let mock = summaries_from(&r, http::Reply::Json(200, http::completion("Done.")), None).await;
+    r.runner.unblock("s").unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), transcribed);
+    assert_eq!(chat_calls(&mock).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejection_the_estimate_did_not_foresee_shrinks_the_budget_and_learns_it() {
+    let r = rig().await;
+    // The server takes far less than the default budget it never reports.
+    let reply = http::Reply::With(Arc::new(|body: &str| {
+        if body.len() > 6_000 {
+            (
+                400,
+                r#"{"error":{"message":"This model's maximum context length is 2048 tokens"}}"#
+                    .into(),
+            )
+        } else {
+            (200, http::completion("Notes."))
+        }
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
+    let learned = r.script.learned.lock().unwrap().clone();
+    assert!(!learned.is_empty());
+    assert!(learned.windows(2).all(|w| w[1] < w[0]), "{learned:?}");
+    assert!(*learned.last().unwrap() < 8_192);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_during_summarization_discards_it_and_keeps_the_transcription() {
+    let r = rig().await;
+    let _mock = summaries_from(&r, http::Reply::Hang, None).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let store = Arc::clone(&r.store);
+    let events = Arc::clone(&r.events);
+    tokio::spawn(async move {
+        loop {
+            let summarizing = events.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    RunnerEvent::StageStarted {
+                        stage: Stage::Summarize,
+                        ..
+                    }
+                )
+            });
+            if summarizing {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        store
+            .lock()
+            .unwrap()
+            .apply(
+                "s",
+                &session_core::Event::UserResume {
+                    now: common::at(150),
+                    is_most_recent: true,
+                    space_ok: true,
+                },
+            )
+            .unwrap();
+    });
+    let started = std::time::Instant::now();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert_eq!(state(&r.store, "s"), SessionState::Capturing);
+    let kept = r.store.lock().unwrap();
+    assert!(kept.checkpoints("s", Stage::Summarize).unwrap().is_empty());
+    assert!(!kept.checkpoints("s", Stage::Transcribe).unwrap().is_empty());
+    assert!(!kept.checkpoints("s", Stage::Diarize).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_rewrites_the_summary_without_transcribing_again() {
+    let r = rig().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&n);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let k = count.fetch_add(1, Ordering::SeqCst);
+        (200, http::completion(&format!("Version {k}.")))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let transcribed = r.script.calls.load(Ordering::SeqCst);
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let (store, dir, script) = (
+        Arc::clone(&r.store),
+        r.root.join("s"),
+        Arc::clone(&r.script),
+    );
+    tokio::task::spawn_blocking(move || {
+        pipeline::summarize::clear(&store, "s").unwrap();
+        let endpoint = script.summary.lock().unwrap().clone().unwrap().unwrap();
+        pipeline::summarize::run(
+            &store,
+            "s",
+            &dir,
+            &segments,
+            endpoint,
+            &|_| {},
+            &pipeline::Unattended,
+            &mut |_, _| {},
+        )
+        .unwrap();
+    })
+    .await
+    .unwrap();
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), transcribed);
+    let summary = std::fs::read_to_string(r.root.join("s/summary.md")).unwrap();
+    assert!(summary.contains("Version 1."), "{summary}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unannotated_decision_survives_the_layers_to_the_final_summary() {
+    let r = rig().await;
+    // A model that echoes what it was given, so only the framing can lose it.
+    let echo = http::Reply::With(Arc::new(|body: &str| {
+        let content = user_content(body);
+        let data: String = content
+            .lines()
+            .filter(|l| !l.starts_with('<') && !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (200, http::completion(&data))
+    }));
+    let _mock = summaries_from(&r, echo, Some(4_096)).await;
+    *r.script.says.lock().unwrap() = Some((5, "We decided to meet on Friday instead.".into()));
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
+    let summary = std::fs::read_to_string(r.root.join("s/summary.md")).unwrap();
+    assert!(summary.contains("We decided to meet on Friday instead."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_endpoint_fails_the_summary_naming_the_setting() {
+    let r = rig().await;
+    *r.script.summary.lock().unwrap() = None;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    let Outcome::Failed { stage, message } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(stage, Stage::Summarize);
+    assert!(message.contains("no endpoint"), "{message}");
+    assert!(r.root.join("s").join(TRANSCRIPT_FILE).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
+    let r = rig().await;
+    // A reasoning model: it needs 1,500 tokens of reply before it answers.
+    let reply = http::Reply::With(Arc::new(|body: &str| {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        if v["max_tokens"].as_u64().unwrap_or(0) < 1_500 {
+            (
+                200,
+                r#"{"choices":[{"message":{"content":""},"finish_reason":"length"}]}"#.into(),
+            )
+        } else {
+            (200, http::completion("Notes."))
+        }
+    }));
+    let _mock = summaries_from(&r, reply, Some(4_096)).await;
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
+    assert!(r.script.learned.lock().unwrap().is_empty());
 }

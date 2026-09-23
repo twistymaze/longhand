@@ -263,6 +263,10 @@ export type NoteView = { id: number; text: string;
 position_ms: number | null; gap_anchored: boolean }
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
+ * The secret store holding the endpoint credential is locked (R20b).
+ */
+{ kind: "blocked"; message: string } | 
+/**
  * Speaker separation failed; the transcript comes without speakers.
  */
 { kind: "speakers_unavailable"; message: string } | 
@@ -323,7 +327,12 @@ context_limit_tokens: number | null; default_speaker_count: SpeakerCountSetting 
 /**
  * Catalog id of the recognition model (KTD6).
  */
-asr_model: string }
+asr_model: string; 
+/**
+ * Context limits endpoints have shown by rejecting longer prompts,
+ * keyed by [`learned_limit_key`] (KTD16).
+ */
+learned_context_limits: Partial<{ [key in string]: number }> }
 export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
 /**
  * An optional bound on how many people are speaking (R36).

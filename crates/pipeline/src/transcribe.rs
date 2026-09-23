@@ -20,8 +20,12 @@ const READ_BLOCK: usize = 16_000;
 pub struct WindowPlan {
     pub segment: u32,
     pub duration_ms: u64,
-    /// Voiced duration by VAD, which verification measures coverage against.
+    /// Voiced duration by VAD.
     pub voiced_ms: u64,
+    /// The voiced spans themselves, which verification measures coverage
+    /// against (U20). Empty in a plan checkpointed before they were kept.
+    #[serde(default)]
+    pub voiced: Vec<Span>,
     pub windows: Vec<Span>,
 }
 
@@ -160,6 +164,7 @@ pub fn plan_segment(
         duration_ms: voicing.duration_ms(),
         voiced_ms: asr::voiced_ms(&spans),
         windows: voicing.windows(turn_cuts_ms),
+        voiced: spans,
     })
 }
 
