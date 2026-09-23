@@ -19,8 +19,14 @@ struct OpenItem(MenuItem<tauri::Wry>);
 /// item, which fronts the window on the Resume and Stop controls.
 pub fn set_alert(app: &AppHandle, headline: Option<&str>) {
     if let Some(tray) = app.tray_by_id("main") {
+        // An empty title, not `None`: tray-icon ignores `None` on macOS and
+        // would leave "Interrupted" in the menu bar after the alert ended.
         #[cfg(target_os = "macos")]
-        let _ = tray.set_title(headline.map(|_| "Interrupted"));
+        let _ = tray.set_title(Some(if headline.is_some() {
+            "Interrupted"
+        } else {
+            ""
+        }));
         let _ = tray.set_tooltip(Some(match headline {
             Some(headline) => format!("Longhand: {headline}"),
             None => "Longhand".to_string(),
