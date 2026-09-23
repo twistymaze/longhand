@@ -51,7 +51,7 @@ They ignore what the user bothered to write. Notes typed during a session are th
 - KD11. **The user decides which providers see their data; none is ever forced.** The system of record stays on the machine, so a provider the user points a stage at is a choice rather than a dependency — which is why a future remote recognition option would be consistent with this boundary rather than a breach of it. Governs R29, R30.
 - KD12. **Recognition is local in this version; summarization reaches one OpenAI-compatible endpoint.** Audio is the data most worth keeping on the machine and local recognition is good enough, while summaries of a four-hour transcript are where model quality actually decides whether the product works. Targeting the OpenAI-compatible shape reaches a hosted provider, a gateway, and a local server through a single integration. *(session-settled: user-directed — chosen over both stages local and over multiple API shapes in this version.)* Governs R31, R32.
 - KD13. **A session is complete, and lands, once it has audio and a verified transcript.** A failed summary lands as a stub naming the failed stage, and regeneration is the recovery; a session with no verified transcript does not land. *(session-settled: user-approved — chosen over landing only on full success and over always landing whatever exists: a transcript-only session in the vault is recoverable, a session trapped in the working location reproduces the loss the product exists to prevent.)* Governs R22, R22b.
-- KD14. **The shortcut always starts a new session; resume is an explicit, time-bounded action on a named session.** *(session-settled: user-approved — chosen over an open-ended pre-landing resume window: a shortcut that silently appends Monday's meeting to Friday's failed session mixes two sessions' content.)* Governs R6a, R6c.
+- KD14. **The shortcut always starts a new session; resume is an explicit action on a named session.** *(Redirected 2026-09-23, user-directed: resume has no time limit and applies to any session, completed ones included; the shortcut rule is unchanged.)* *(session-settled: user-approved — chosen over an open-ended pre-landing resume window: a shortcut that silently appends Monday's meeting to Friday's failed session mixes two sessions' content.)* Governs R6a, R6c.
 - KD15. **A session may carry an optional speaker count or range, default unset.** A count is not an identity, so the no-speaker-identity boundary holds, and supplying it is the strongest accuracy lever the diarization engine offers. *(session-settled: user-approved — chosen over fully automatic diarization and over exposing the count only as a recovery lever.)* Governs R36.
 - KD16. **The archive is full-band; recognition and diarization read a 16 kHz tap.** The device opens at its native rate and the landed audio keeps it; only the processing input is resampled. *(session-settled: user-approved — chosen over anarlog's 16 kHz-throughout pipeline and over deferring the choice: Opus keeps four hours near the same ~115 MB as anarlog's MP3, so vault-sync cost barely moves.)* Governs R24, R24a.
 
@@ -116,9 +116,10 @@ This plan covers the capture-to-summary path only. The breakdown below is how th
 - R5b. Automatic resumption is bounded to three attempts within a 22-second window with 1 s, 2 s and 4 s backoff between attempts, the backoff excluded from the window; exhausting the budget enters the failed-capture state, and while that state was entered for a device reason, the return of an input device triggers one further automatic attempt with a fresh budget.
 - R5c. The failed-capture state offers Resume and Stop, Stop implies acknowledgement, and the state and its alert persist across quitting and relaunching the application until acknowledged.
 - R5d. While capture is not active the sleep assertion is released, and the audible cue fires once and repeats at a widening interval at most three times in total.
-- R5e. An interrupted session on which the user takes no action is stopped and queued for processing when the resume window in R6a elapses or when a new session starts, whichever comes first.
+- R5e. An interrupted session on which the user takes no action is stopped and queued for processing 30 minutes after the interruption or when a new session starts, whichever comes first. Queuing it does not end the user's ability to resume it (R6a).
 - R6. A user-initiated resume continues the existing session rather than starting a new one, using the same mechanism as automatic recovery.
-- R6a. Resume is an explicit action on a named session, offered only while that session is the most recent one and for 30 minutes after it stopped or was interrupted; outside that window, or once the session has landed, the session is final.
+- R6a. Resume is an explicit action on a named session, offered for any stopped session with no time limit, including one that has completed; a completed session is resumable while its folder still holds every segment's audio. *(Redirected 2026-09-23 from a 30-minute, most-recent-only window: a short session completing before the user noticed removed the choice. Whether resume is tucked away for older sessions is a UX question for the redesign brainstorm.)*
+- R6d. Resuming a completed session leaves its folder where it is. The new segment is recorded in the working location; when it stops, every segment is processed again from the folder's audio, and on completion the new audio is added beside the old and the transcript, summary, notes and session record in the folder are replaced. The folder's existing audio is never rewritten. If the folder has gone missing by then, the session waits for it, as it would for a missing destination.
 - R6b. Resuming a session that has begun processing cancels in-flight summarization, preserves every completed transcription window and diarization result, removes the session from the processing queue, and later queues only the new segment for transcription; a summarization request already sent to a remote endpoint is not un-sent and the surface does not imply otherwise.
 - R6c. The shortcut always starts a new session and never resumes one; starting a new session first stops and queues any session still capturing or interrupted.
 - R7. Captured audio is written to durable storage continuously during the session, no code path holds a whole session's audio in memory, and processing stages read audio from files; the memory ceiling is the diarization embedding store and clustering affinity matrix, which are bounded by the analysis-window cap in KTD7 and measured at four hours in Phase 1.
@@ -202,7 +203,8 @@ This plan covers the capture-to-summary path only. The breakdown below is how th
 - AE9. **Covers R10.** **Given** a selected model that can stream, **when** a session is recording, **then** the surface states that a live transcript is available for this model and still offers no live view, because the view is deferred.
 - AE10. **Covers R1a, R1b.** **Given** the application running in the background with the shortcut armed, **when** the user presses it mid-sentence, **then** recording begins with no prompt and that sentence is present in the recorded audio.
 - AE11. **Covers R17a.** **Given** a four-hour session whose transcription returns text covering only its first portion, **when** processing runs, **then** the shortfall is detected against the voiced duration and reported as a failed stage rather than delivered as a complete transcript.
-- AE12. **Covers R6a, R6b.** **Given** a session the user stopped by accident that has begun transcribing, **when** they resume it within 30 minutes, **then** in-flight summarization is cancelled, completed transcription windows are kept, recording continues into a new segment, and the eventual summary covers both segments.
+- AE12a. **Covers R6a, R6d.** **Given** a session that completed four days ago and whose folder is intact, **when** the user resumes it, records two minutes and stops, **then** the same folder ends with the old audio unchanged, one new audio file, and a transcript and summary that cover both recordings with the gap between them marked.
+- AE12. **Covers R6a, R6b.** **Given** a session the user stopped by accident that has begun transcribing, **when** they resume it, **then** in-flight summarization is cancelled, completed transcription windows are kept, recording continues into a new segment, and the eventual summary covers both segments.
 - AE13. **Covers R32, R33.** **Given** a configured endpoint and credential, **when** a session finishes processing, **then** the summary is produced through that endpoint, the surface names it, and neither the credential nor any setting appears anywhere in the landed session folder.
 - AE14. **Covers R7a.** **Given** a session recording on a volume approaching the free-space floor, **when** the floor is reached, **then** the open segment closes intact, the session enters failed-capture with a disk reason and no automatic resume attempt, and a user resume after freeing space opens a new segment.
 - AE15. **Covers R5b.** **Given** a Bluetooth microphone that disconnects and reconnects every four seconds, **when** it flaps, **then** after three restarts within the window the session enters failed-capture instead of accumulating one-second segments.
@@ -232,7 +234,8 @@ This plan covers the capture-to-summary path only. The breakdown below is how th
 - The session index. R25 fixes the rule any index must satisfy and R25a retains the roots it would be rebuilt from, but the index is built with Library and browsing, whose queries should shape it.
 - Remote speech recognition. Recognition is local in this version (R31); a remote option is permitted by the boundary but is not built here.
 - API shapes other than OpenAI-compatible, such as Anthropic's. One shape reaches every endpoint worth reaching on day one, and a second integration can follow when a specific provider justifies it.
-- Re-running diarization on a landed session. Summary regeneration is the only post-landing reprocessing in this version.
+- Re-running diarization on a landed session as its own action. Summary regeneration and resuming (R6d, which reprocesses every segment) are the only post-landing reprocessing in this version.
+- Choosing the recognition model. The skeleton ships one model, Whisper large-v3-turbo, which is not the one the user intends to use day to day. The shape is already there: the catalog lists models, the settings carry `asr_model`, each session records the model it was stopped with, and recognition sits behind the `Recognizer` trait, so a picker and a second engine slot in without restructuring. A second engine may need its own runtime; KTD6 records why `transcribe-rs` (Parakeet) is excluded this version.
 - Portable mode and user-facing distribution: auto-update and published artifacts. Signing is not on that list. Builds carry the machine's Developer ID Application identity from U2 onward, because macOS keys TCC grants and Keychain ACLs to the code signature and an ad-hoc identity breaks both across rebuilds — and because changing identity later would invalidate every grant established under the old one. Notarization is deferred to U21, where an installed build is needed anyway; it is cheap to add there and proves the Gatekeeper path a local run never exercises. Cross-platform correctness is required from day one, so U2's CI job does produce an unsigned Windows installer bundle — U21's notification and platform checks need an installed build, since Windows toasts do not work under a dev run.
 - Library and browsing, Obsidian vault synchronization, and the local CLI. Each is a separate piece of work that reads what this one writes.
 
@@ -368,7 +371,7 @@ flowchart TB
   Land -->|rename| Dest[(destination folder)]
 ```
 
-**Session lifecycle.** Every transition below is legal; anything not drawn is illegal and the state machine rejects it with a typed error. The shortcut never resumes; Landed never returns to Capturing; Interrupted with a disk reason never auto-resumes.
+**Session lifecycle.** Every transition below is legal; anything not drawn is illegal and the state machine rejects it with a typed error. The shortcut never resumes; Landed returns to Capturing only by user Resume while its folder holds its audio (R6d); Interrupted with a disk reason never auto-resumes.
 
 ```mermaid
 stateDiagram-v2
@@ -380,7 +383,7 @@ stateDiagram-v2
   Capturing --> Interrupted: WillSleep (sleep reason, no cue)
   Interrupted --> Capturing: DidWake resume within budget (sleep reason)
   Interrupted --> Capturing: user Resume (disk reason re-checks space) / device returned (device reason only)
-  Interrupted --> Queued: user Stop / resume window elapsed / new session started
+  Interrupted --> Queued: user Stop / 30 min untouched / new session started
   Capturing --> Queued: user Stop (sub-1 s segment dropped; no audio -> Discarded)
   Capturing --> Discarded: stop with no retained audio
   Queued --> Processing: head of FIFO
@@ -388,15 +391,16 @@ stateDiagram-v2
   Blocked --> Processing: store unlocked
   Processing --> ProcessingFailed: assemble / transcribe / join / verify failed
   ProcessingFailed --> Processing: user Retry (from checkpoint)
-  Queued --> Capturing: Resume within 30 min, most recent
-  Processing --> Capturing: Resume within 30 min, most recent
-  ProcessingFailed --> Capturing: Resume within 30 min, most recent
-  Blocked --> Capturing: Resume within 30 min, most recent
-  AwaitingDestination --> Capturing: Resume within 30 min, most recent
+  Queued --> Capturing: user Resume
+  Processing --> Capturing: user Resume
+  ProcessingFailed --> Capturing: user Resume
+  Blocked --> Capturing: user Resume
+  AwaitingDestination --> Capturing: user Resume
   Processing --> AwaitingDestination: landing failed
   AwaitingDestination --> Processing: Retry / new folder / next launch
   Processing --> Landed: rename into place
   Landed --> Landed: note edit / regenerate summary
+  Landed --> Capturing: user Resume (folder holds its audio, R6d)
   Discarded --> [*]
 ```
 
@@ -540,12 +544,13 @@ sequenceDiagram
 - **Phase 1 — Prove the risky assumption.** U1. The collapse gate is automated and needs no judgement call; the checkpoint is the user reading the recorded verdict and diagnostics, and a failed gate redirects U9's post-processing and the summary design.
 - **Phase 2a — Prove the shell on macOS.** U2, U3 and U23. Split out because this is the first Tauri build in this repo and its failures are toolchain failures, not design failures — cheaper to hit them with nothing else in flight. U2 declares the microphone entitlement, the global-shortcut permission and the notification permission but nothing exercises them until U7, so the checkpoint includes a dev-only probe that requests microphone access, registers a global shortcut and fires it once. The probe stays until U7 lands the real shortcut and U6 the real capture, so the checkpoint can be re-run while Phase 2b is in progress; it is removed as those units supersede it, not left as dead scaffolding. Windows stays in the workspace and in CI so nothing is written twice, but a red Windows job does not gate this checkpoint — U21 owns platform verification. U23 comes along because settings and credential persistence is the other thing a signing identity decides: a Keychain ACL is bound to the code signature exactly as a TCC grant is, so an ad-hoc identity makes stored credentials prompt on every rebuild. The storage plumbing lands here and U4 puts the real settings fields on it in 2b. Checkpoint: on this Mac, `bun tauri build` produces a bundle, the dev build launches, closing the window leaves it alive in the tray, the microphone prompt appears and is granted, a global shortcut fires, a setting and a credential survive both a relaunch and a rebuild without re-prompting, `src/bindings.ts` regenerates, and `cargo deny` and the provenance check pass.
 - **Phase 2b — End-to-end happy path.** U4–U12, plus U20 and U22. Segments and gaps are real from the first build because the timeline, note anchors, and transcript positions are all computed against them. Two things that read as survivability land here anyway, because the checkpoint stakes a real session on them: U22's idle-sleep assertion, since screensaver sleep is one of the failures the Problem Frame names and the checkpoint cannot be re-run cheaply; and U20's coverage verification, since landing is defined on a *verified* transcript (KD13) and a placeholder would let a truncated recap be the thing the user grades. Nothing else recovers from anything yet. Checkpoint: record a real Pathfinder session and one ordinary work meeting, and read both recaps, accepting that an interruption loses the session.
+- **Phase 2c — Checkpoint redirects.** U24 and U25, added at the Phase 2b checkpoint: resume any session with no time limit, and keep audio time true to the clock. No checkpoint of its own; Phase 3's covers them.
 - **Phase 3 — Survivability.** U13–U16. Checkpoint: unplug the microphone mid-session, close the lid, kill the process; each yields intact audio, a recorded gap, and an alert where one is due.
 - **Phase 4 — Durability and handoff.** U17–U19 and U21. Checkpoint: quit during processing and relaunch; land onto an external volume and a cloud-synced vault; launch a second instance; run the soak; verify notifications from an installed Windows build.
 
 ### Sequencing
 
-U1 first and alone. Phase 2a is U2 → U3 and U23 in parallel. Phase 2b resumes with U4 and U5 in parallel → U6 → U22 → U7 → U8 → U9 → U20 → U10 → U11 → U12; U20 sits before U11 so landing gates on real coverage from the first landed session, and it depends on U8's checkpointed window spans rather than on anything in Phase 4. Phase 3 units depend on U6 and U5 and can proceed in the order U13, U14, U15, U16. Phase 4: U17 first (the others assume liveness claims), then U18, U19, U21.
+U1 first and alone. Phase 2a is U2 → U3 and U23 in parallel. Phase 2b resumes with U4 and U5 in parallel → U6 → U22 → U7 → U8 → U9 → U20 → U10 → U11 → U12; U20 sits before U11 so landing gates on real coverage from the first landed session, and it depends on U8's checkpointed window spans rather than on anything in Phase 4. Phase 2c is U25 → U24, both before Phase 3. Phase 3 units depend on U6 and U5 and can proceed in the order U13, U14, U15, U16. Phase 4: U17 first (the others assume liveness claims), then U18, U19, U21.
 
 ---
 
@@ -741,7 +746,7 @@ crates/
 - **Requirements:** R3, R3a, R5c, R5e, R6a, R6b, R6c, R12, R12a, R13, R16a, R20c, R35, R36, R14 (store shape).
 - **Dependencies:** U2.
 - **Files:** `crates/session-core/src/{lib,state,timeline,anchors,jobs,schema,folder}.rs`, `crates/session-core/migrations/0001_init.sql`, `crates/session-core/tests/{state_machine,timeline,anchors,jobs}.rs`.
-- **Approach:** `state.rs` encodes the state diagram in High-Level Technical Design as an enum with a `transition(event) -> Result<State, IllegalTransition>`; guards carry the resume window (30 min constant), most-recent check, and disk-reason exclusion. The resume window is measured on the wall clock, because it spans process restarts and a monotonic clock resets with the process; this is not timeline arithmetic, so R3a is untouched, and a clock set backwards reads as no time elapsed. A job's claim names the run (one launch of the app) that holds it; at launch any claim not held by the current run is dead, which single instance (R34) guarantees, so a crash-then-relaunch inside a heartbeat interval still reclaims its work. `timeline.rs` holds segments (`offset_ms`, `duration_ms`, wall-clock start/end, audio file) and computes gaps, `to_position(segment, within_ms)`, and `locate(position) -> InSegment | InGap`. `anchors.rs` resolves a keystroke's monotonic time minus the lookback (provisional 5 s) to a position, snapping gap landings to the preceding segment's end and marking gap-anchored. `jobs.rs` is the queue: `sessions`, `segments`, `notes`, `jobs` (stage, status, claim owner, heartbeat), `checkpoints` (per window / per segment / per chunk) with WAL and `synchronous=FULL`, migrated with `rusqlite_migration`. `folder.rs` renders and parses `session.md`, `transcript.md`, `notes.md`, `summary.md` per the folder shape.
+- **Approach:** `state.rs` encodes the state diagram in High-Level Technical Design as an enum with a `transition(event) -> Result<State, IllegalTransition>`; guards carry the interrupted session's 30-minute auto-queue interval (R5e) and the disk-reason exclusion; resume itself has no window since the 2026-09-23 redirect (R6a). The auto-queue interval is measured on the wall clock, because it spans process restarts and a monotonic clock resets with the process; this is not timeline arithmetic, so R3a is untouched, and a clock set backwards reads as no time elapsed. A job's claim names the run (one launch of the app) that holds it; at launch any claim not held by the current run is dead, which single instance (R34) guarantees, so a crash-then-relaunch inside a heartbeat interval still reclaims its work. `timeline.rs` holds segments (`offset_ms`, `duration_ms`, wall-clock start/end, audio file) and computes gaps, `to_position(segment, within_ms)`, and `locate(position) -> InSegment | InGap`. `anchors.rs` resolves a keystroke's monotonic time minus the lookback (provisional 5 s) to a position, snapping gap landings to the preceding segment's end and marking gap-anchored. `jobs.rs` is the queue: `sessions`, `segments`, `notes`, `jobs` (stage, status, claim owner, heartbeat), `checkpoints` (per window / per segment / per chunk) with WAL and `synchronous=FULL`, migrated with `rusqlite_migration`. `folder.rs` renders and parses `session.md`, `transcript.md`, `notes.md`, `summary.md` per the folder shape.
 - **Technical design:**
 
 ```
@@ -754,9 +759,9 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
 
 - **Patterns to follow:** `reference-source/Handy/src-tauri/src/managers/history.rs` for the migration harness; `reference-source/anarlog/apps/desktop/src/stt/capture-lifecycle-storage.ts` for the per-session durable marker whose offset seeds continuation.
 - **Test scenarios:**
-  - Input: state Landed; action: Resume; expected: `IllegalTransition`.
-  - Input: state Processing, stopped 31 min ago; action: Resume; expected: `IllegalTransition` (window elapsed).
-  - Input: state Processing, stopped 10 min ago but a newer session exists; action: Resume; expected: `IllegalTransition` (not most recent).
+  - Input: state Landed, folder holds its audio; action: Resume; expected: Capturing (R6d).
+  - Input: state Processing, stopped four days ago and a newer session exists; action: Resume; expected: Capturing (no window, R6a).
+  - Input: state Discarded; action: Resume; expected: `IllegalTransition`.
   - Input: state Interrupted with disk reason; action: device-returned event; expected: no transition.
   - Input: state Interrupted with device reason; action: device-returned event; expected: Capturing with a fresh budget.
   - Input: state Interrupted for 30 min with no action; action: window-elapsed tick; expected: Queued.
@@ -970,7 +975,7 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
   - **The switcher.** The switcher is a Sessions section in the window's existing source-list sidebar, between the Scratchpad and the settings panes. It lists every stopped session not yet landed, plus the one that landed last. A session still recording or interrupted is the Scratchpad itself, so it is not listed twice. Stopping moves the view to the session just recorded; completion and every later change update its entry without moving the view. A landed session being read stays listed until the user leaves it, even after a newer one lands.
   - **Rebuilt from the store.** Both views rebuild from the store on mount, on focus and on each lifecycle event (AE4): `list_sessions`, `session_detail`, `session_notes` and `session_document`. `pipeline::progress::snapshot` reads the completed stages, the job's current stage and the transcribe window counts from the checkpoints. The runner now records each failure's and block's message under its stage, so a view opened later can say why. Transcribe progress events trigger a re-read at most once a second; other stages show the live event's fraction.
   - **Actions.**
-    - Resume appears only when the state machine accepts `UserResume` now and landing has not begun (R6a).
+    - Resume appears only when the state machine accepts `UserResume` now and landing has not begun (R6a); for a completed session, only while its folder holds every segment's audio (R6d).
     - A failure names the stage and its reason, lists the audio and transcript as kept, and offers Retry.
     - Blocked says it is waiting for the keychain, with Continue, which retries the store; reading a locked keychain item is what asks macOS to unlock it. No failure wording.
     - Waiting for a folder offers Choose Folder… (which retries every waiting session) and Try Again.
@@ -981,6 +986,38 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
     - Regenerate is in the summary's footer, or prominent in a stub's notice.
   - **Notification.** When a session lands with the window hidden or unfocused, a system notification names its folder (R15). Whether clicking it fronts the window is checked at the Phase 2b checkpoint in the signed bundle. `tauri-plugin-notification` exposes no click handler, and a hidden window is shown by the Reopen event or the tray.
   - **Tests.** As in U7, the frontend tests are logic tests under `bun test` rather than DOM tests of the components: stage rows and wording, note-to-passage targeting, and the markdown parser, including that HTML stays text. The views were reviewed in a browser against invented fixture data through `@tauri-apps/api/mocks`.
+
+### Phase 2c -- Checkpoint redirects
+
+Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
+
+### U24. Resume any session, completed ones included
+
+- **Goal:** Resume has no time limit and works on a completed session, reprocessing every segment and updating the folder in place (R6a, R6d, AE12a).
+- **Requirements:** R6, R6a, R6b, R6d, R5e, R22b.
+- **Dependencies:** U5, U8, U11, U12.
+- **Files:** `crates/session-core/src/state.rs`, `src-tauri/src/managers/capture.rs`, `src-tauri/src/commands/session.rs`, `crates/pipeline/src/{assemble,land,runner}.rs`, tests beside each.
+- **Approach:** The state machine drops the resume window and the most-recent guard; the 30-minute constant survives only as R5e's auto-queue interval. `Landed --> Capturing` on `UserResume` when the caller confirms the folder holds every segment's audio. Resuming a completed session clears every stage's checkpoints except assemble's per-segment ones and the landing state, keeps the recorded folder path as the session's home, and records into a fresh working directory. Assemble treats a segment whose archive is in the home folder as assembled and decodes that Opus archive to the 16 kHz processing file, so diarize, transcribe, join, verify and summarize run over every segment as usual. Landing sees a home folder and updates it in place instead of staging: each new archive is copied in under a temporary name and renamed, then `transcript.md`, `summary.md` and `notes.md` are replaced with `write_atomic`, `session.md` last because it is what the folder parses back from; each step is idempotent, so a crash reruns the update, and the working directory goes only after the folder is complete (R22b). A missing home folder at landing time waits as AwaitingDestination with a message naming the folder.
+- **Execution note:** Positions keep R3a's arithmetic, so a segment resumed days later sits days after the first on the session clock; the redesign brainstorm decides how the transcript shows that.
+- **Test scenarios:**
+  - Input: a completed session with two segments in its folder; action: resume, record, stop, process; expected: the folder holds three archives, the first two byte-identical, and `session.md` parses back with three segments.
+  - Input: the same, with the folder moved away after resume; action: process; expected: AwaitingDestination naming the folder, working copy kept.
+  - Input: a completed session whose folder lacks one archive; action: Resume; expected: refused, and `session_detail` reports it not resumable.
+  - Input: a crash between replacing `transcript.md` and `session.md`; action: relaunch; expected: the update reruns and the folder ends complete.
+- **Verification:** The tests above pass, and from the signed bundle a session completed earlier in the day is resumed, extended and reopened with both recordings in its transcript.
+
+### U25. Capture timeline integrity
+
+- **Goal:** Audio time always matches the clock: samples lost to a capture overrun become silence of the same length, and the count is recorded, so gaps, positions and note anchors stay true.
+- **Requirements:** R3, R3a, R7.
+- **Dependencies:** U6.
+- **Files:** `crates/audio-cpal/src/{callback,lib}.rs`, `crates/recorder/src/chunks.rs`, `src-tauri/src/managers/capture.rs`, `crates/session-core/src/folder.rs`.
+- **Approach:** When the capture worker observes new overrun samples, it writes that many zero samples into the chunk stream before the next real frame and logs the count; the segment records the total dropped, and `session.md` states it when non-zero. A trailing silence is marked in the transcript the way an internal silence is.
+- **Execution note:** Found at the Phase 2b checkpoint: session 1057's first segment held 1,270.0 s of audio across 1,276.8 s of wall time, so a 12 s pause read as a 19 s gap and later positions drifted up to 6.8 s from the notes. The cause went unrecorded because the log kept only 40 KB (fixed in 604b4bf).
+- **Test scenarios:**
+  - Input: a ring that overruns by 4,800 samples mid-segment; action: capture; expected: the chunk stream is 4,800 samples longer than the frames delivered, all zero at the overrun point, and the segment records 4,800 dropped.
+  - Input: a session whose last 3 minutes are digital silence; action: join; expected: the transcript ends with a silence marker.
+- **Verification:** Tests pass; a recording made while another session processes keeps `duration_ms` within 0.1 s of its wall time.
 
 ### Phase 3 -- Survivability
 
