@@ -77,8 +77,13 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(
+            // onnxruntime logs every graph pass at INFO; left in, it rotates
+            // the capture warnings out of the default 40 KB file in minutes.
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                .level_for("ort", log::LevelFilter::Warn)
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(4))
                 .build(),
         )
         .plugin(tauri_plugin_store::Builder::default().build())
