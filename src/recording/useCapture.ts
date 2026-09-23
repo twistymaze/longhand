@@ -77,6 +77,7 @@ export function useCapture(): Capture {
     status,
     input: inputStatus({
       recording,
+      reconnecting: status?.reconnecting ?? false,
       lostReason,
       lastTickAt: lastTickAt.current,
       startedAt: startedAt.current,

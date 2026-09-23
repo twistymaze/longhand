@@ -34,6 +34,13 @@ const FRAME_QUEUE: usize = 64;
 /// How long the capture thread sleeps when the ring is empty.
 const IDLE_POLL: Duration = Duration::from_millis(4);
 
+/// A snapshot of the system's inputs; see [`CpalAudio::inputs`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Inputs {
+    pub default: Option<String>,
+    pub all: Vec<String>,
+}
+
 #[derive(Default)]
 pub struct CpalAudio {
     /// Configs the device accepted, by device name, so an open after
@@ -46,6 +53,30 @@ pub struct CpalAudio {
 impl CpalAudio {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Forget every device's config, so the next open queries the device
+    /// again: after a loss the device may be another one, or the same one at
+    /// a new rate.
+    pub fn forget(&self) {
+        self.configs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// The inputs the system offers now: the default and every device, by
+    /// name. Compared between polls, a change is what "the microphone came
+    /// back" looks like without a platform device-event listener (U14).
+    pub fn inputs() -> Inputs {
+        let host = cpal::default_host();
+        let default = host.default_input_device().map(|d| config::device_name(&d));
+        let mut all: Vec<String> = host
+            .input_devices()
+            .map(|devices| devices.map(|d| config::device_name(&d)).collect())
+            .unwrap_or_default();
+        all.sort();
+        Inputs { default, all }
     }
 
     /// Resolve the device and its stream config ahead of the press, and

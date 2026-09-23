@@ -5,16 +5,19 @@
 /// means the input has stalled.
 export const STALL_AFTER_MS = 1500;
 
-export type InputStatus = "idle" | "starting" | "capturing" | "stalled" | "lost";
+export type InputStatus = "idle" | "starting" | "capturing" | "stalled" | "reconnecting" | "lost";
 
 export function inputStatus(opts: {
   recording: boolean;
+  /// The microphone went away and is being reopened (U14).
+  reconnecting?: boolean;
   lostReason: string | null;
   lastTickAt: number | null;
   startedAt: number | null;
   now: number;
 }): InputStatus {
-  const { recording, lostReason, lastTickAt, startedAt, now } = opts;
+  const { recording, reconnecting, lostReason, lastTickAt, startedAt, now } = opts;
+  if (reconnecting) return "reconnecting";
   if (lostReason) return "lost";
   if (!recording) return "idle";
   const since = lastTickAt ?? startedAt;

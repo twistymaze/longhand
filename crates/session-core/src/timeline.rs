@@ -153,6 +153,12 @@ impl Timeline {
         Ok(index)
     }
 
+    /// Forget the open segment: its stream never started, so it holds no
+    /// audio and leaves no gap of its own.
+    pub fn abandon_open(&mut self) {
+        self.open = None;
+    }
+
     /// Close the open segment at `end_ms` on the session timeline.
     pub fn close(
         &mut self,

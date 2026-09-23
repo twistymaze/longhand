@@ -3,6 +3,12 @@ import { inputStatus, STALL_AFTER_MS } from "./inputStatus";
 
 const base = { recording: true, lostReason: null, startedAt: 0 };
 
+test("a microphone being reopened reads as reconnecting, not stalled", () => {
+  expect(inputStatus({ ...base, reconnecting: true, lastTickAt: 0, now: 60_000 })).toBe(
+    "reconnecting",
+  );
+});
+
 test("silence with frames still arriving is capturing", () => {
   // Level plays no part: a tick of zero peak is still a tick.
   expect(inputStatus({ ...base, lastTickAt: 10_000, now: 10_200 })).toBe("capturing");

@@ -30,6 +30,7 @@ const statusText: Record<InputStatus, string> = {
   starting: "Starting…",
   capturing: "Recording",
   stalled: "No audio arriving",
+  reconnecting: "Reconnecting…",
   lost: "Microphone lost",
 };
 
@@ -44,7 +45,8 @@ function StatusDot({ input }: { input: InputStatus }) {
 }
 
 function Trace({ levels, input }: { levels: number[]; input: InputStatus }) {
-  const dim = input === "stalled" || input === "lost" || input === "idle";
+  const dim =
+    input === "stalled" || input === "reconnecting" || input === "lost" || input === "idle";
   const padded = Array.from({ length: HISTORY - levels.length }, () => -1).concat(levels);
   return (
     <div

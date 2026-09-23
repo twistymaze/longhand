@@ -6,23 +6,31 @@
 //! that owns active capture. A crash leaves the open segment's
 //! chunks on disk under their names; those names, not the job store, are
 //! what launch recovery rebuilds the segment from (R8).
+//!
+//! A segment that ends on its own is restarted within the source budget
+//! (U14): the session stays Capturing across the attempts, and only an
+//! exhausted budget interrupts it. While it is Interrupted(device) the
+//! system's inputs are polled for the microphone's return; anarlog listens
+//! for platform device events instead, through a crate this does not take.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use audio::AudioProvider;
-use audio_cpal::CpalAudio;
+use audio_cpal::{CpalAudio, Inputs};
 use chrono::{DateTime, FixedOffset, Local};
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, SegmentOutcome};
 use serde::Serialize;
 use session_core::{
-    Anchor, Closed, DEFAULT_LOOKBACK_MS, Event, SessionState, SpeakerCount, Store, Timeline,
+    Anchor, Closed, DEFAULT_LOOKBACK_MS, Event, InterruptReason, SessionState, SpeakerCount, Store,
+    Timeline,
 };
 use specta::Type;
+use supervisor::{RestartTracker, SOURCE_RESTART_BUDGET};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +38,9 @@ use tokio_util::sync::CancellationToken;
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
 /// enough to keep per-frame overhead negligible.
 const FRAMES_PER_SECOND: u32 = 50;
+
+/// How often the inputs are compared while waiting for a lost microphone.
+const DEVICE_POLL: Duration = Duration::from_secs(2);
 
 pub use pipeline::RECOVERY_DIR;
 
@@ -108,6 +119,9 @@ pub struct RecordingStatus {
     pub session_id: Option<String>,
     pub state: Option<String>,
     pub recording: bool,
+    /// The microphone went away and is being reopened (U14); the session
+    /// still counts as recording.
+    pub reconnecting: bool,
     /// Free bytes where audio is being written.
     pub working_free_bytes: Option<u64>,
 }
@@ -122,6 +136,7 @@ pub struct CaptureEnded {
 
 struct ActiveSegment {
     session_id: String,
+    segment: u32,
     stop: CancellationToken,
     outcome: std_mpsc::Receiver<SegmentOutcome>,
     thread: JoinHandle<()>,
@@ -133,6 +148,66 @@ struct Clock {
     timeline: Timeline,
     /// The monotonic origin of the timeline, while this process holds it.
     epoch: Instant,
+    /// Restarts after a loss, across the session: a microphone that keeps
+    /// dropping runs the budget out rather than resetting it at each drop.
+    restarts: RestartTracker,
+}
+
+impl Clock {
+    fn new(session_id: &str, timeline: Timeline, epoch: Instant) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            timeline,
+            epoch,
+            restarts: RestartTracker::new(),
+        }
+    }
+}
+
+/// Background work on a session's behalf that a user action supersedes.
+struct Pending {
+    session_id: String,
+    cancel: CancellationToken,
+}
+
+impl Pending {
+    fn new(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            cancel: CancellationToken::new(),
+        }
+    }
+}
+
+/// Why a segment ended on its own.
+struct Loss {
+    reason: InterruptReason,
+    message: String,
+    /// Whether a restart can help: a full disk stays full (R7a).
+    restartable: bool,
+}
+
+impl Loss {
+    fn of(end: &SegmentEnd) -> Option<Self> {
+        match end {
+            SegmentEnd::Stopped => None,
+            SegmentEnd::SourceLost(e) => Some(Self {
+                reason: InterruptReason::Device,
+                message: format!("microphone: {e}"),
+                restartable: true,
+            }),
+            SegmentEnd::Storage(e @ recorder::RecorderError::LowDisk { .. }) => Some(Self {
+                reason: InterruptReason::Disk,
+                message: e.to_string(),
+                restartable: false,
+            }),
+            SegmentEnd::Storage(e) => Some(Self {
+                reason: InterruptReason::Disk,
+                message: e.to_string(),
+                restartable: true,
+            }),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -140,6 +215,23 @@ struct Inner {
     active: Option<ActiveSegment>,
     clock: Option<Clock>,
     sample_rate: Option<u32>,
+    /// A lost segment being restarted.
+    recovering: Option<Pending>,
+    /// An Interrupted(device) session waiting for its microphone.
+    watching: Option<Pending>,
+}
+
+impl Inner {
+    /// Stop any restart or device watch: a user action decides now.
+    fn supersede(&mut self) -> Option<String> {
+        if let Some(watch) = self.watching.take() {
+            watch.cancel.cancel();
+        }
+        self.recovering.take().map(|p| {
+            p.cancel.cancel();
+            p.session_id
+        })
+    }
 }
 
 pub struct CaptureManager {
@@ -223,8 +315,10 @@ impl CaptureManager {
         Ok(rate)
     }
 
+    /// Recording, or reopening a lost microphone to go on recording.
     pub fn is_capturing(&self) -> bool {
-        self.inner().active.is_some()
+        let inner = self.inner();
+        inner.active.is_some() || inner.recovering.is_some()
     }
 
     /// Start a new session recording (R1, R6c). A session already recording
@@ -235,6 +329,7 @@ impl CaptureManager {
         speaker_count: Option<SpeakerCount>,
     ) -> Result<String, CaptureError> {
         let mut inner = self.inner();
+        inner.supersede();
         if let Some(active) = inner.active.take() {
             self.close_segment(&mut inner, active)?;
         }
@@ -256,11 +351,7 @@ impl CaptureManager {
             log::info!("session {other} stopped by a new session");
         }
         inner.active = Some(active);
-        inner.clock = Some(Clock {
-            session_id: id.clone(),
-            timeline,
-            epoch: Instant::now(),
-        });
+        inner.clock = Some(Clock::new(&id, timeline, Instant::now()));
         log::info!("session {id} recording");
         changed(app, Some(&id));
         Ok(id)
@@ -270,9 +361,16 @@ impl CaptureManager {
     /// queued for processing, or discarded when it kept no audio.
     pub fn stop_session(&self, app: &AppHandle) -> Result<(String, SessionState), CaptureError> {
         let mut inner = self.inner();
-        let active = inner.active.take().ok_or(CaptureError::NotCapturing)?;
-        let id = active.session_id.clone();
-        self.close_segment(&mut inner, active)?;
+        let reconnecting = inner.supersede();
+        let id = match inner.active.take() {
+            Some(active) => {
+                let id = active.session_id.clone();
+                self.close_segment(&mut inner, active)?;
+                id
+            }
+            // Stopped between restart attempts: the lost segment is closed.
+            None => reconnecting.ok_or(CaptureError::NotCapturing)?,
+        };
         let retained_audio = !self.store().segments(&id)?.is_empty();
         let state = self.store().apply(
             &id,
@@ -304,7 +402,7 @@ impl CaptureManager {
     /// decides whether the resume is allowed (window, most recent, space).
     pub fn resume_session(&self, app: &AppHandle, id: &str) -> Result<SessionState, CaptureError> {
         let mut inner = self.inner();
-        if inner.active.is_some() {
+        if inner.active.is_some() || inner.recovering.is_some() {
             return Err(CaptureError::AlreadyCapturing);
         }
         let space_ok = recorder::storage::check(
@@ -338,6 +436,7 @@ impl CaptureManager {
         if !matches!(state, SessionState::Capturing) {
             return Ok(state);
         }
+        inner.supersede();
         let held = inner
             .clock
             .take()
@@ -359,15 +458,12 @@ impl CaptureManager {
         let index = timeline.open(offset, resumed_at)?;
         let active = self.open_segment(app, &mut inner, id, index, offset)?;
         inner.active = Some(active);
-        inner.clock = Some(Clock {
-            session_id: id.to_string(),
-            timeline,
-            epoch: epoch.unwrap_or_else(|| {
-                let now = Instant::now();
-                now.checked_sub(std::time::Duration::from_millis(offset))
-                    .unwrap_or(now)
-            }),
+        let epoch = epoch.unwrap_or_else(|| {
+            let now = Instant::now();
+            now.checked_sub(Duration::from_millis(offset))
+                .unwrap_or(now)
         });
+        inner.clock = Some(Clock::new(id, timeline, epoch));
         log::info!("session {id} resumed as segment {index} at {offset} ms");
         changed(app, Some(id));
         Ok(state)
@@ -386,12 +482,17 @@ impl CaptureManager {
     }
 
     pub fn status(&self) -> Result<RecordingStatus, CaptureError> {
-        let recording = self.is_capturing();
+        let (recording, reconnecting) = {
+            let inner = self.inner();
+            let reconnecting = inner.recovering.is_some();
+            (inner.active.is_some() || reconnecting, reconnecting)
+        };
         let open = self.open_session()?;
         Ok(RecordingStatus {
             session_id: open.as_ref().map(|(id, _)| id.clone()),
             state: open.as_ref().map(|(_, state)| state.name().to_string()),
             recording,
+            reconnecting,
             working_free_bytes: recorder::storage::available_space(
                 self.working_root.parent().unwrap_or(&self.working_root),
             ),
@@ -459,6 +560,204 @@ impl CaptureManager {
     pub fn set_speaker_count(&self, count: Option<SpeakerCount>) -> Result<(), CaptureError> {
         let (id, _) = self.open_session()?.ok_or(CaptureError::NotCapturing)?;
         Ok(self.store().set_speaker_count(&id, count)?)
+    }
+
+    /// A segment ended on its own (U14). Close it; then, when a restart can
+    /// help, reopen the microphone within the source budget, sleeping 1, 2
+    /// and 4 s between attempts. The session stays Capturing throughout and
+    /// is interrupted only once the budget runs out.
+    fn segment_lost(self: Arc<Self>, app: &AppHandle, id: &str, segment: u32, loss: Loss) {
+        let pending = Pending::new(id);
+        let cancel = pending.cancel.clone();
+        let mut restarts = {
+            let mut inner = self.inner();
+            let ours = inner
+                .active
+                .as_ref()
+                .is_some_and(|a| a.session_id == id && a.segment == segment);
+            // Already stopped, or replaced by a new session.
+            if !ours {
+                return;
+            }
+            if let Some(active) = inner.active.take()
+                && let Err(e) = self.close_segment(&mut inner, active)
+            {
+                log::error!("closing the lost segment of {id} failed: {e}");
+            }
+            if !loss.restartable {
+                drop(inner);
+                self.interrupt(app, id, &loss, None);
+                return;
+            }
+            inner.recovering = Some(pending);
+            match inner.clock.as_mut().filter(|c| c.session_id == id) {
+                Some(clock) => std::mem::take(&mut clock.restarts),
+                None => RestartTracker::new(),
+            }
+        };
+        changed(app, Some(id));
+
+        let backoff = Backoff(&cancel);
+        let recovery = supervisor::recover(&mut restarts, &SOURCE_RESTART_BUDGET, &backoff, || {
+            let mut inner = self.inner();
+            if cancel.is_cancelled() {
+                return Err(CaptureError::Other("superseded".into()));
+            }
+            self.reopen(app, &mut inner, id)
+        });
+
+        let mut inner = self.inner();
+        // A stop or a new session took over; it has settled the session.
+        if cancel.is_cancelled() {
+            return;
+        }
+        inner.recovering = None;
+        if let Some(clock) = inner.clock.as_mut().filter(|c| c.session_id == id) {
+            clock.restarts = restarts;
+        }
+        match recovery {
+            supervisor::Recovery::Resumed(()) => {
+                if let Err(e) = self.store().apply(id, &Event::AutoResumed) {
+                    log::error!("recording the restart of {id} failed: {e}");
+                }
+                drop(inner);
+                changed(app, Some(id));
+            }
+            supervisor::Recovery::Exhausted(last) => {
+                drop(inner);
+                self.interrupt(app, id, &loss, last);
+            }
+            supervisor::Recovery::Cancelled => {}
+        }
+    }
+
+    /// Capture cannot go on by itself: interrupt the session, say why, and
+    /// for a lost microphone watch for its return.
+    fn interrupt(self: Arc<Self>, app: &AppHandle, id: &str, loss: &Loss, last: Option<String>) {
+        let lost = Event::CaptureLost {
+            reason: loss.reason,
+            at: now(),
+        };
+        if let Err(e) = self.store().apply(id, &lost) {
+            log::error!("interrupting {id} failed: {e}");
+            return;
+        }
+        let reason = match last {
+            Some(last) => format!("{}; reopening it failed: {last}", loss.message),
+            None => loss.message.clone(),
+        };
+        log::warn!("session {id} interrupted: {reason}");
+        // In this order: the surface clears the reason on a change.
+        changed(app, None);
+        let _ = CaptureEnded {
+            session_id: id.to_string(),
+            reason,
+        }
+        .emit(app);
+        if loss.reason == InterruptReason::Device {
+            let manager = Arc::clone(&self);
+            let app = app.clone();
+            let id = id.to_string();
+            let spawned = std::thread::Builder::new()
+                .name("longhand-device-watch".into())
+                .spawn(move || manager.watch_for_device(&app, &id));
+            if let Err(e) = spawned {
+                log::error!("could not watch for the microphone's return: {e}");
+            }
+        }
+    }
+
+    /// While the session is Interrupted(device), compare the system's inputs
+    /// every [`DEVICE_POLL`]; each change that leaves a default input is one
+    /// attempt to resume (U14). A failed attempt waits for the next change.
+    fn watch_for_device(self: Arc<Self>, app: &AppHandle, id: &str) {
+        let pending = Pending::new(id);
+        let cancel = pending.cancel.clone();
+        if let Some(previous) = self.inner().watching.replace(pending) {
+            previous.cancel.cancel();
+        }
+        let mut before = CpalAudio::inputs();
+        while sleep_unless(&cancel, DEVICE_POLL) {
+            let waiting = self.store().session(id).ok().flatten().is_some_and(|r| {
+                matches!(
+                    r.state,
+                    SessionState::Interrupted {
+                        reason: InterruptReason::Device,
+                        ..
+                    }
+                )
+            });
+            if !waiting {
+                break;
+            }
+            let inputs = CpalAudio::inputs();
+            let returned = device_returned(&before, &inputs);
+            before = inputs;
+            if !returned {
+                continue;
+            }
+            let mut inner = self.inner();
+            if cancel.is_cancelled() {
+                return;
+            }
+            if inner.active.is_some() || inner.recovering.is_some() {
+                break;
+            }
+            log::info!("inputs changed while {id} waits for its microphone; trying it");
+            if let Err(e) = self.reopen(app, &mut inner, id) {
+                log::warn!("the microphone is still not usable: {e}");
+                continue;
+            }
+            if let Err(e) = self.store().apply(id, &Event::DeviceReturned) {
+                log::error!("resuming {id} failed: {e}");
+                if let Some(active) = inner.active.take() {
+                    let _ = self.close_segment(&mut inner, active);
+                }
+                break;
+            }
+            if let Some(clock) = inner.clock.as_mut() {
+                clock.restarts = RestartTracker::new();
+            }
+            inner.watching = None;
+            drop(inner);
+            log::info!("session {id} resumed on its microphone's return");
+            changed(app, Some(id));
+            return;
+        }
+        let mut inner = self.inner();
+        if !cancel.is_cancelled() {
+            inner.watching = None;
+        }
+    }
+
+    /// Open the held session's next segment where its clock stands now, on
+    /// whatever input is the default by then and at that input's rate.
+    fn reopen(&self, app: &AppHandle, inner: &mut Inner, id: &str) -> Result<(), CaptureError> {
+        self.audio.forget();
+        inner.sample_rate = None;
+        let (index, offset) = {
+            let clock = inner
+                .clock
+                .as_mut()
+                .filter(|c| c.session_id == id)
+                .ok_or_else(|| CaptureError::Other("the session's timeline is not held".into()))?;
+            let last_end = clock.timeline.segments().last().map_or(0, |s| s.end_ms());
+            let offset = (clock.epoch.elapsed().as_millis() as u64).max(last_end);
+            (clock.timeline.open(offset, now())?, offset)
+        };
+        match self.open_segment(app, inner, id, index, offset) {
+            Ok(active) => {
+                inner.active = Some(active);
+                log::info!("session {id} reopened as segment {index} at {offset} ms");
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(clock) = inner.clock.as_mut() {
+                    clock.timeline.abandon_open();
+                }
+                Err(e)
+            }
+        }
     }
 
     fn open_segment(
@@ -540,24 +839,30 @@ impl CaptureManager {
                         .emit(&tick_app);
                     },
                 ));
-                let reason = match &result.end {
-                    SegmentEnd::Stopped => None,
-                    SegmentEnd::SourceLost(e) => Some(format!("microphone: {e}")),
-                    SegmentEnd::Storage(e) => Some(e.to_string()),
-                };
-                if let Some(reason) = reason {
-                    log::warn!("segment {segment} of {thread_session} ended: {reason}");
-                    let _ = CaptureEnded {
-                        session_id: thread_session,
-                        reason,
-                    }
-                    .emit(&thread_app);
-                }
+                let loss = Loss::of(&result.end);
+                // Sent before anything takes the manager's lock: a stop in
+                // progress holds it while it waits for this outcome.
                 let _ = tx.send(result);
+                if let Some(loss) = loss {
+                    log::warn!(
+                        "segment {segment} of {thread_session} ended: {}",
+                        loss.message
+                    );
+                    let manager = Arc::clone(&thread_app.state::<Arc<CaptureManager>>());
+                    let spawned = std::thread::Builder::new()
+                        .name("longhand-restart".into())
+                        .spawn(move || {
+                            manager.segment_lost(&thread_app, &thread_session, segment, loss)
+                        });
+                    if let Err(e) = spawned {
+                        log::error!("could not start the restart: {e}");
+                    }
+                }
             })
             .map_err(|e| CaptureError::Other(e.to_string()))?;
         Ok(ActiveSegment {
             session_id: session_id.to_string(),
+            segment,
             stop,
             outcome,
             thread,
@@ -572,6 +877,7 @@ impl CaptureManager {
             stop,
             outcome,
             thread,
+            ..
         } = active;
         stop.cancel();
         let outcome = outcome.recv();
@@ -629,6 +935,38 @@ fn recovered_span(dir: &Path) -> Result<recorder::SegmentSpan, CaptureError> {
     })
 }
 
+/// Whether the inputs changed in a way worth one attempt: something changed
+/// and there is a default input to open.
+fn device_returned(before: &Inputs, now: &Inputs) -> bool {
+    now.default.is_some() && now != before
+}
+
+/// The restart budget's clock: real time, with sleeps a stop can cut short.
+struct Backoff<'a>(&'a CancellationToken);
+
+impl supervisor::Clock for Backoff<'_> {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn sleep(&self, duration: Duration) -> bool {
+        sleep_unless(self.0, duration)
+    }
+}
+
+/// Sleep for `duration`, or until `cancel` fires. True when it slept out.
+fn sleep_unless(cancel: &CancellationToken, duration: Duration) -> bool {
+    let deadline = Instant::now() + duration;
+    while !cancel.is_cancelled() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(50)));
+    }
+    false
+}
+
 /// Stop a segment whose session never came to exist, discarding its audio.
 fn abandon(active: ActiveSegment) {
     active.stop.cancel();
@@ -671,6 +1009,64 @@ mod tests {
             resume_offset(300_000, at(1_000), at(1_000), Some(10)),
             300_000
         );
+    }
+
+    fn inputs(default: Option<&str>, all: &[&str]) -> Inputs {
+        Inputs {
+            default: default.map(str::to_string),
+            all: all.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_microphone_plugged_back_in_is_worth_an_attempt() {
+        let gone = inputs(None, &[]);
+        let back = inputs(Some("USB mic"), &["USB mic"]);
+        assert!(device_returned(&gone, &back));
+    }
+
+    #[test]
+    fn a_new_device_with_the_default_unchanged_is_still_worth_an_attempt() {
+        // The default kept its name but failed; a new device may be the fix.
+        let before = inputs(Some("Built-in"), &["Built-in"]);
+        let after = inputs(Some("Built-in"), &["Built-in", "USB mic"]);
+        assert!(device_returned(&before, &after));
+    }
+
+    #[test]
+    fn no_change_or_no_default_is_no_attempt() {
+        let same = inputs(Some("Built-in"), &["Built-in"]);
+        assert!(!device_returned(&same, &same.clone()));
+        let before = inputs(None, &["USB mic"]);
+        assert!(!device_returned(&before, &inputs(None, &[])));
+    }
+
+    #[test]
+    fn a_disk_floor_is_never_restarted_but_other_losses_are() {
+        let floor = SegmentEnd::Storage(recorder::RecorderError::LowDisk {
+            available: 1,
+            floor: 2,
+        });
+        let loss = Loss::of(&floor).unwrap();
+        assert!(!loss.restartable);
+        assert_eq!(loss.reason, InterruptReason::Disk);
+        let device = Loss::of(&SegmentEnd::SourceLost(audio::Error::MicStreamEnded)).unwrap();
+        assert!(device.restartable);
+        assert_eq!(device.reason, InterruptReason::Device);
+        assert!(Loss::of(&SegmentEnd::Stopped).is_none());
+    }
+
+    #[test]
+    fn a_stop_cuts_the_backoff_short() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let started = Instant::now();
+        assert!(!sleep_unless(&cancel, Duration::from_secs(4)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(sleep_unless(
+            &CancellationToken::new(),
+            Duration::from_millis(1)
+        ));
     }
 
     #[test]

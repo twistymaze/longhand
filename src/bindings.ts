@@ -415,6 +415,11 @@ export type RecordingStatus = {
  */
 session_id: string | null; state: string | null; recording: boolean; 
 /**
+ * The microphone went away and is being reopened (U14); the session
+ * still counts as recording.
+ */
+reconnecting: boolean; 
+/**
  * Free bytes where audio is being written.
  */
 working_free_bytes: number | null }

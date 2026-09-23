@@ -2804,6 +2804,7 @@ dependencies = [
  "sha2 0.10.9",
  "specta",
  "specta-typescript",
+ "supervisor",
  "sysinfo",
  "tauri",
  "tauri-build",

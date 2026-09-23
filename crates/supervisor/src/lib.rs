@@ -3,13 +3,16 @@
 //! `restart.rs` is copied from anarlog's `crates/supervisor`; `retry.rs` is
 //! that crate's backoff loop with the `ractor` actor types removed; the budget
 //! constants are anarlog's `listener-core/.../supervisor/children.rs`. The
-//! actor framework itself is not taken. See PROVENANCE.md.
+//! actor framework itself is not taken; `recover.rs` is Longhand's own loop
+//! over that budget. See PROVENANCE.md.
 
+mod recover;
 mod restart;
 mod retry;
 
 use std::time::Duration;
 
+pub use recover::{Clock, Recovery, recover};
 pub use restart::{RestartBudget, RestartTracker};
 pub use retry::{RetryStrategy, retry_with_backoff};
 
