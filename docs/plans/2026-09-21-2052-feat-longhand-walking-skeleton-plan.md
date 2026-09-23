@@ -1012,10 +1012,11 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
 - **Requirements:** R3, R3a, R7.
 - **Dependencies:** U6.
 - **Files:** `crates/audio-cpal/src/{callback,lib}.rs`, `crates/recorder/src/chunks.rs`, `src-tauri/src/managers/capture.rs`, `crates/session-core/src/folder.rs`.
-- **Approach:** When the capture worker observes new overrun samples, it writes that many zero samples into the chunk stream before the next real frame and logs the count; the segment records the total dropped, and `session.md` states it when non-zero. A trailing silence is marked in the transcript the way an internal silence is.
+- **Approach:** The callback reports each overrun with its position in the ring's frame count, merging consecutive ones, and the worker feeds that many zero frames at that position, so the chunk stream is as long as the time that passed; the worker logs every overrun. The ring grows from 2 s to 10 s so a stall seldom overruns at all. Silence of a minute or more at a segment's start or end is marked in the transcript the way an internal silence is.
+- **Execution notes (2026-09-23):** The likely cause is the worker's blocking hand-off: a consumer stalled by disk contention (the full fsync while another session is saved) holds the worker past the ring's 2 s plus the frame queue's 1.3 s. The dropped count goes to the log, not `session.md`; recording it per segment needs a schema change the log does not justify yet.
 - **Execution note:** Found at the Phase 2b checkpoint: session 1057's first segment held 1,270.0 s of audio across 1,276.8 s of wall time, so a 12 s pause read as a 19 s gap and later positions drifted up to 6.8 s from the notes. The cause went unrecorded because the log kept only 40 KB (fixed in 604b4bf).
 - **Test scenarios:**
-  - Input: a ring that overruns by 4,800 samples mid-segment; action: capture; expected: the chunk stream is 4,800 samples longer than the frames delivered, all zero at the overrun point, and the segment records 4,800 dropped.
+  - Input: a ring that overruns by 4,800 frames mid-stream; action: drain; expected: the frames passed on are 4,800 longer than those read, all zero at the overrun's position.
   - Input: a session whose last 3 minutes are digital silence; action: join; expected: the transcript ends with a silence marker.
 - **Verification:** Tests pass; a recording made while another session processes keeps `duration_ms` within 0.1 s of its wall time.
 

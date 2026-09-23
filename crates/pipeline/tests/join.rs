@@ -136,7 +136,7 @@ fn times_move_to_session_positions_and_segments_are_separated_by_a_gap() {
 
 #[test]
 fn a_long_silence_inside_a_segment_is_marked_and_splits_the_turn() {
-    let segments = [segment(0, 0, 200_000)];
+    let segments = [segment(0, 0, 2_000 + SILENCE_MARK_MS)];
     let windows = [
         window(0, 0, &[(0, 1_000, "hello")]),
         window(0, 1_000 + SILENCE_MARK_MS, &[(0, 1_000, "again")]),
@@ -157,6 +157,39 @@ fn a_long_silence_inside_a_segment_is_marked_and_splits_the_turn() {
     ];
     let t = build(&segments, &windows, &speakers);
     assert_eq!(turns_of(&t.lines), vec![(0, Some(1), "hello again".into())]);
+}
+
+#[test]
+fn silence_at_a_segments_start_or_end_is_marked_too() {
+    // Playback stopped a minute and a half in; the recording ran on (U25).
+    let segments = [segment(0, 0, 284_000)];
+    let windows = [window(0, 70_000, &[(0, 20_000, "the last line")])];
+    let speakers = Speakers::Turns(vec![turn(0, 70_000, 90_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        t.lines,
+        vec![
+            TranscriptLine::Silence {
+                duration_ms: 70_000
+            },
+            TranscriptLine::Turn {
+                position_ms: 70_000,
+                speaker: Some(1),
+                text: "the last line".into()
+            },
+            TranscriptLine::Silence {
+                duration_ms: 194_000
+            },
+        ]
+    );
+    // A segment with nothing said is one silence.
+    let t = build(&[segment(0, 0, 90_000)], &[], &Speakers::Turns(vec![]));
+    assert_eq!(
+        t.lines,
+        vec![TranscriptLine::Silence {
+            duration_ms: 90_000
+        }]
+    );
 }
 
 #[test]

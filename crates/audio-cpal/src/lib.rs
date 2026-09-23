@@ -24,11 +24,11 @@ use tokio_stream::wrappers::ReceiverStream;
 
 pub use audio::{AudioProvider, CaptureConfig, CaptureFrame, CaptureStream, Error};
 
-use callback::{FAULT_DEVICE_LOST, NO_FAULT, Shared};
+use callback::{FAULT_DEVICE_LOST, NO_FAULT, Overrun, Shared};
 use resampler::FrameResampler;
 
 /// Frames queued between the capture thread and the consumer. At 20 ms per
-/// frame this is about 1.3 s, on top of the ring's two seconds.
+/// frame this is about 1.3 s, on top of the ring's ten seconds.
 const FRAME_QUEUE: usize = 64;
 
 /// How long the capture thread sleeps when the ring is empty.
@@ -107,13 +107,13 @@ impl CpalAudio {
                         config.channels(),
                         config.sample_format()
                     );
-                    let (stream, consumer) = build(&device, &config, Arc::clone(&shared))?;
+                    let (stream, consumer, gaps) = build(&device, &config, Arc::clone(&shared))?;
                     stream
                         .play()
                         .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
-                    Ok((stream, consumer, config.sample_rate()))
+                    Ok((stream, consumer, gaps, config.sample_rate()))
                 })();
-                let (stream, consumer, native_rate) = match opened {
+                let (stream, consumer, gaps, native_rate) = match opened {
                     Ok(opened) => {
                         let _ = init_tx.send(Ok(()));
                         opened
@@ -135,7 +135,15 @@ impl CpalAudio {
                 } else {
                     sample_rate
                 };
-                drain(consumer, &shared, native_rate, out_rate, chunk_size, &tx);
+                drain(
+                    consumer,
+                    gaps,
+                    &shared,
+                    native_rate,
+                    out_rate,
+                    chunk_size,
+                    &tx,
+                );
                 drop(stream);
             })
             .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
@@ -151,7 +159,7 @@ fn build(
     device: &cpal::Device,
     config: &SupportedStreamConfig,
     shared: Arc<Shared>,
-) -> Result<(cpal::Stream, rtrb::Consumer<f32>), Error> {
+) -> Result<(cpal::Stream, rtrb::Consumer<f32>, rtrb::Consumer<Overrun>), Error> {
     let built = match config.sample_format() {
         SampleFormat::U8 => callback::build_stream::<u8>(device, config, shared),
         SampleFormat::I8 => callback::build_stream::<i8>(device, config, shared),
@@ -167,10 +175,65 @@ fn build(
     built.map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))
 }
 
+const SILENCE: [f32; 4_096] = [0.0; 4_096];
+
+/// Pass `parts` (the next frames read from the ring, `consumed` frames in) to
+/// `feed`, with silence the length of every overrun at its position, so what
+/// leaves this thread is as long as the time that passed (U25). Overruns the
+/// callback could not place are filled here, where they were noticed.
+fn feed_with_silence(
+    parts: [&[f32]; 2],
+    consumed: &mut u64,
+    gaps: &mut rtrb::Consumer<Overrun>,
+    unplaced: u64,
+    mut feed: impl FnMut(&[f32]),
+) {
+    let silence = |mut frames: u64, feed: &mut dyn FnMut(&[f32])| {
+        while frames > 0 {
+            let n = frames.min(SILENCE.len() as u64) as usize;
+            feed(&SILENCE[..n]);
+            frames -= n as u64;
+        }
+    };
+    silence(unplaced, &mut feed);
+    for mut part in parts {
+        while !part.is_empty() {
+            let next = gaps.peek().ok().copied();
+            match next {
+                Some(gap) if gap.at <= *consumed => {
+                    let _ = gaps.pop();
+                    silence(gap.frames, &mut feed);
+                }
+                Some(gap) if gap.at < *consumed + part.len() as u64 => {
+                    let (before, after) = part.split_at((gap.at - *consumed) as usize);
+                    feed(before);
+                    *consumed += before.len() as u64;
+                    part = after;
+                }
+                _ => {
+                    feed(part);
+                    *consumed += part.len() as u64;
+                    part = &[];
+                }
+            }
+        }
+    }
+    // An overrun right after the last frame read is filled now: the frames
+    // after it were committed, or it would not have been reported.
+    while let Ok(gap) = gaps.peek().copied() {
+        if gap.at > *consumed {
+            break;
+        }
+        let _ = gaps.pop();
+        silence(gap.frames, &mut feed);
+    }
+}
+
 /// Move samples from the ring to the consumer until the consumer goes away
 /// or the stream faults.
 fn drain(
     mut consumer: rtrb::Consumer<f32>,
+    mut gaps: rtrb::Consumer<Overrun>,
     shared: &Shared,
     native_rate: u32,
     out_rate: u32,
@@ -183,6 +246,7 @@ fn drain(
     let mut last_overrun = 0;
     let mut last_xruns = 0;
     let mut first = true;
+    let mut consumed = 0u64;
 
     loop {
         if tx.is_closed() {
@@ -201,7 +265,7 @@ fn drain(
         let overrun = shared.overrun_samples.load(Ordering::Relaxed);
         if overrun != last_overrun {
             log::warn!(
-                "capture ring overran: {} samples dropped",
+                "capture ring overran: {} samples dropped and replaced with silence",
                 overrun - last_overrun
             );
             last_overrun = overrun;
@@ -222,7 +286,8 @@ fn drain(
         };
         let (a, b) = chunk.as_slices();
         let mut closed = false;
-        for part in [a, b] {
+        let unplaced = shared.unplaced.swap(0, Ordering::Relaxed);
+        feed_with_silence([a, b], &mut consumed, &mut gaps, unplaced, |part| {
             resampler.push(part, |frame| {
                 if closed {
                     return;
@@ -238,7 +303,7 @@ fn drain(
                 };
                 closed = tx.blocking_send(Ok(frame)).is_err();
             });
-        }
+        });
         chunk.commit_all();
         if closed {
             return;
@@ -316,5 +381,66 @@ mod tests {
             audio.probe_speaker(),
             Err(Error::SpeakerStreamSetupFailed)
         ));
+    }
+
+    fn fed(parts: [&[f32]; 2], consumed: &mut u64, gaps: &[Overrun], unplaced: u64) -> Vec<f32> {
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(8);
+        for gap in gaps {
+            tx.push(*gap).unwrap();
+        }
+        let mut out = Vec::new();
+        feed_with_silence(parts, consumed, &mut rx, unplaced, |p| {
+            out.extend_from_slice(p)
+        });
+        out
+    }
+
+    #[test]
+    fn an_overrun_becomes_silence_at_its_position() {
+        let mut consumed = 0;
+        let out = fed(
+            [&[1.0, 2.0, 3.0], &[4.0]],
+            &mut consumed,
+            &[Overrun { at: 2, frames: 3 }],
+            0,
+        );
+        assert_eq!(out, [1.0, 2.0, 0.0, 0.0, 0.0, 3.0, 4.0]);
+        assert_eq!(consumed, 4, "silence is not ring frames");
+    }
+
+    #[test]
+    fn an_overrun_between_the_two_slices_or_at_the_end_is_filled() {
+        let mut consumed = 10;
+        let gaps = [Overrun { at: 12, frames: 1 }, Overrun { at: 13, frames: 2 }];
+        let out = fed([&[1.0, 2.0], &[3.0]], &mut consumed, &gaps, 0);
+        assert_eq!(out, [1.0, 2.0, 0.0, 3.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_later_overrun_waits_and_an_unplaced_one_leads() {
+        let mut consumed = 0;
+        let out = fed(
+            [&[1.0], &[]],
+            &mut consumed,
+            &[Overrun { at: 5, frames: 2 }],
+            2,
+        );
+        assert_eq!(out, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_long_overrun_is_fed_in_bounded_pieces() {
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(1);
+        tx.push(Overrun {
+            at: 0,
+            frames: 10_000,
+        })
+        .unwrap();
+        let (mut total, mut largest) = (0, 0);
+        feed_with_silence([&[], &[]], &mut 0, &mut rx, 0, |p| {
+            total += p.len();
+            largest = largest.max(p.len());
+        });
+        assert_eq!((total, largest), (10_000, SILENCE.len()));
     }
 }

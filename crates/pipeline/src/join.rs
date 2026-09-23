@@ -14,7 +14,8 @@ use crate::transcribe::{WindowResult, results};
 use crate::{SharedStore, StageError, checkpoint};
 
 /// A within-segment stretch with nothing said at least this long is marked
-/// in the transcript (provisional).
+/// in the transcript (provisional), including one at a segment's start or
+/// end, so a transcript that stops early says why.
 pub const SILENCE_MARK_MS: u64 = 60_000;
 pub const TRANSCRIPT_FILE: &str = "transcript.md";
 
@@ -90,17 +91,15 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
 
         // (speaker, position, text) of the turn being built.
         let mut open: Option<(Option<u32>, u64, String)> = None;
-        let mut last_end: Option<u64> = None;
+        let mut last_end = 0u64;
         for piece in pieces.iter().filter(|p| !p.text.trim().is_empty()) {
-            if let Some(end) = last_end
-                && piece.start_ms.saturating_sub(end) >= SILENCE_MARK_MS
-            {
+            if piece.start_ms.saturating_sub(last_end) >= SILENCE_MARK_MS {
                 flush(&mut open, &mut lines);
                 lines.push(TranscriptLine::Silence {
-                    duration_ms: piece.start_ms - end,
+                    duration_ms: piece.start_ms - last_end,
                 });
             }
-            last_end = Some(last_end.map_or(piece.end_ms, |e| e.max(piece.end_ms)));
+            last_end = last_end.max(piece.end_ms);
             let speaker = if has_speakers {
                 speaker_for(piece, &own)
             } else {
@@ -122,6 +121,11 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
             }
         }
         flush(&mut open, &mut lines);
+        if segment.duration_ms.saturating_sub(last_end) >= SILENCE_MARK_MS {
+            lines.push(TranscriptLine::Silence {
+                duration_ms: segment.duration_ms - last_end,
+            });
+        }
     }
 
     renumber(&mut lines);

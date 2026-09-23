@@ -36,4 +36,4 @@ Borrowed material in this crate, one record per file (R27). The provider in `src
 - Source paths: `src-tauri/src/audio_toolkit/audio/recorder.rs` (`build_stream`, `write_input_to_ring`)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, LICENSES/Handy-MIT.txt
-- Status: modified — pause handshake and channel selection removed; the error callback records the cpal 0.18 error kind so a lost device ends capture
+- Status: modified — pause handshake and channel selection removed; the error callback records the cpal 0.18 error kind so a lost device ends capture; overruns are reported with their position so the worker can fill them with silence (U25)
