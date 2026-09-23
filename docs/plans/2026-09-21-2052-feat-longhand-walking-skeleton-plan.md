@@ -63,6 +63,7 @@ This plan covers the capture-to-summary path only. The breakdown below is how th
 - **Library and browsing** — finding a session weeks later.
   - Depends on this plan for the on-disk shape (R24, R24a), the retained destination roots (R25a), and the rule any index must satisfy (R25). The index itself is built with this track, including what a rebuild does when a retained root is missing or unmounted.
   - Can proceed independently of Obsidian sync and the CLI.
+  - Future idea: a unified library across machines that share a synced destination, such as OneDrive. Today each machine lists only the sessions it recorded, because its store is local; the shared folder holds both machines' session folders side by side. Such a library would build its index from the folders themselves, and it would have to settle which machine may resume or re-summarize a session it did not record.
 - **Obsidian vault synchronization.**
   - Depends on this plan for sessions landing atomically as plain markdown (R22, R22f, R24).
   - Shares the folder model with Library.
