@@ -12,6 +12,8 @@ sample.m4a
 sample.txt
 /fixtures/
 .env
+# Destination for manual test sessions: landed recordings.
+/manual-tests/
 
 # Build output
 target/

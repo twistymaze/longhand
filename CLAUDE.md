@@ -20,4 +20,4 @@ Apple's restraint principle matches a product rule already in the plan: the reco
 - Microphone and Keychain behaviour must be tested from the signed bundle (`bun tauri build --bundles app`), never `tauri dev`: an unsigned dev binary's microphone request is attributed to the launching terminal.
 - `reference-source/` holds the anarlog and Handy clones: read-only, never edited, never tracked. Borrowed code needs a `PROVENANCE.md` record; `scripts/check-provenance.sh` enforces it.
 - CI runs only on pull requests into main and on `gh workflow run ci.yml --ref <branch>`: runner minutes are billed. Local checks are the gate, including `scripts/check-windows.sh`, which lints for Windows from macOS in seconds except the crates that build C or C++. Commit per unit, push in batches, and don't wait on CI.
-- `sample.m4a`, `sample.txt`, `fixtures/` and `.env` are private and gitignored. Never commit, print, or upload them.
+- `sample.m4a`, `sample.txt`, `fixtures/`, `manual-tests/` (the destination for manual test sessions) and `.env` are private and gitignored. Never commit, print, or upload them.
