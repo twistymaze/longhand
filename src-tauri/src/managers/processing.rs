@@ -5,6 +5,8 @@
 use std::sync::Arc;
 
 use asr::{Engine, Recognizer};
+use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
+use models::ModelKind;
 use pipeline::{EngineProvider, Environment, Runner, RunnerEvent};
 use serde::Serialize;
 use specta::Type;
@@ -37,6 +39,14 @@ pub enum ProcessingStep {
     StageFailed {
         stage: String,
         message: String,
+    },
+    /// Speaker separation failed; the transcript comes without speakers.
+    SpeakersUnavailable {
+        message: String,
+    },
+    /// A model is not on disk; the session keeps its place in the queue.
+    Waiting {
+        what: String,
     },
     Cancelled,
     Finished,
@@ -84,6 +94,13 @@ impl From<RunnerEvent> for ProcessingUpdate {
                     message,
                 },
             ),
+            RunnerEvent::SpeakersUnavailable {
+                session_id,
+                message,
+            } => (session_id, ProcessingStep::SpeakersUnavailable { message }),
+            RunnerEvent::Waiting { session_id, what } => {
+                (session_id, ProcessingStep::Waiting { what })
+            }
             RunnerEvent::Cancelled { session_id } => (session_id, ProcessingStep::Cancelled),
             RunnerEvent::Finished { session_id } => (session_id, ProcessingStep::Finished),
         };
@@ -115,6 +132,21 @@ impl EngineProvider for Models {
 
     fn default_model(&self) -> String {
         settings::get_settings(&self.app).asr_model
+    }
+
+    fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+        let path = |kind: ModelKind| {
+            models::CATALOG
+                .iter()
+                .find(|m| m.kind == kind)
+                .and_then(|m| self.models.file_path(&m.id))
+                .ok_or_else(|| DiarizeError::MissingWeights(format!("{kind:?} weights")))
+        };
+        let analyzer = OnnxAnalyzer::load(
+            &path(ModelKind::Segmentation)?,
+            &path(ModelKind::Embedding)?,
+        )?;
+        Ok(Box::new(analyzer))
     }
 }
 

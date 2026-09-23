@@ -15,12 +15,19 @@ use session_core::{Event, SessionState, Stage};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use crate::diarize::Speakers;
 use crate::transcribe::{self, TurnCuts};
-use crate::{Control, SharedStore, StageError, assemble, checkpoint, lock};
+use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock};
+use diarize::{DiarizeError, SpeakerAnalyzer};
 
-/// The stages this build runs, in order. Later units add diarization ahead
-/// of transcription and the join, verification, summary and landing after.
-pub const STAGES: &[Stage] = &[Stage::Assemble, Stage::Transcribe];
+/// The stages this build runs, in order. Later units add verification,
+/// the summary and landing after the join.
+pub const STAGES: &[Stage] = &[
+    Stage::Assemble,
+    Stage::Diarize,
+    Stage::Transcribe,
+    Stage::Join,
+];
 
 const POLL: Duration = Duration::from_secs(2);
 const HEARTBEAT: Duration = Duration::from_secs(10);
@@ -33,6 +40,9 @@ pub trait EngineProvider: Send + Sync {
     fn load(&self, model_id: &str) -> Result<Box<dyn Recognizer>, String>;
     /// The model for a session that recorded none.
     fn default_model(&self) -> String;
+    /// The speaker-separation stack, loaded for each diarize stage and
+    /// dropped when it ends, so its memory is free before transcription.
+    fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError>;
 }
 
 /// What the runner needs from the application.
@@ -68,6 +78,16 @@ pub enum RunnerEvent {
     Cancelled {
         session_id: String,
     },
+    /// Diarization failed; the transcript goes ahead without speaker marks.
+    SpeakersUnavailable {
+        session_id: String,
+        message: String,
+    },
+    /// A model is missing; the session keeps its place in the queue.
+    Waiting {
+        session_id: String,
+        what: String,
+    },
     /// Every stage of this build has run.
     Finished {
         session_id: String,
@@ -79,6 +99,7 @@ pub enum Outcome {
     Finished,
     Failed { stage: Stage, message: String },
     Cancelled,
+    Waiting,
 }
 
 pub struct Runner {
@@ -190,7 +211,11 @@ impl Runner {
 
     pub async fn run(self: Arc<Self>) {
         loop {
-            while self.run_next().await.is_some() {}
+            // A session waiting on a model is back at the head of the queue;
+            // claiming it again at once would spin until the model lands.
+            while let Some((_, outcome)) = self.run_next().await
+                && outcome != Outcome::Waiting
+            {}
             tokio::select! {
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(POLL) => {}
@@ -240,6 +265,36 @@ impl Runner {
             let result = self.run_stage(id, model, stage, cancel.clone()).await;
             match result {
                 Ok(()) => {}
+                // Speaker separation failing costs the speaker marks, not the
+                // transcript (R20a).
+                Err(StageError::Failed(message)) if stage == Stage::Diarize => {
+                    log::warn!(
+                        "diarization failed for {id}; continuing without speakers: {message}"
+                    );
+                    let segments = lock(&self.env.store).segments(id).map(|s| s.len());
+                    let recorded = segments.map_err(StageError::from).and_then(|n| {
+                        crate::diarize::record_failure(&self.env.store, id, n, &message)
+                    });
+                    if let Err(e) = recorded {
+                        log::error!("could not record the diarization failure of {id}: {e}");
+                    }
+                    emit(RunnerEvent::SpeakersUnavailable {
+                        session_id: id.to_string(),
+                        message,
+                    });
+                }
+                Err(StageError::Waiting(what)) => {
+                    log::info!("{id} waits for {what}");
+                    // Back to its place in line; it runs once the models are in.
+                    if let Err(e) = lock(&self.env.store).apply(id, &Event::ClaimLost) {
+                        log::warn!("could not return {id} to the queue: {e}");
+                    }
+                    emit(RunnerEvent::Waiting {
+                        session_id: id.to_string(),
+                        what: what.clone(),
+                    });
+                    return Outcome::Waiting;
+                }
                 Err(StageError::Cancelled) => {
                     log::info!("processing of {id} stopped at a checkpoint");
                     emit(RunnerEvent::Cancelled {
@@ -340,7 +395,46 @@ fn execute(
     let dir = env.working_root.join(id);
     match stage {
         Stage::Assemble => assemble::run(&env.store, id, &dir, segments, control).map(|_| ()),
+        Stage::Diarize => {
+            let mut analyzer = env.engines.analyzer().map_err(|e| match e {
+                DiarizeError::MissingWeights(path) => StageError::Waiting(path),
+                other => StageError::Failed(other.to_string()),
+            })?;
+            let count = lock(&env.store)
+                .session(id)?
+                .and_then(|record| record.speaker_count);
+            let mut last = None;
+            crate::diarize::run(
+                &env.store,
+                id,
+                &dir,
+                segments,
+                count,
+                analyzer.as_mut(),
+                control,
+                &mut |segment, fraction| {
+                    let percent = (fraction * 100.0) as usize;
+                    if last != Some((segment, percent)) {
+                        last = Some((segment, percent));
+                        (env.events)(RunnerEvent::Progress {
+                            session_id: id.to_string(),
+                            stage,
+                            segment,
+                            done: percent,
+                            total: 100,
+                        });
+                    }
+                },
+            )
+        }
         Stage::Transcribe => {
+            let cuts: TurnCuts = match crate::diarize::speakers(&env.store, id)? {
+                Speakers::Turns(turns) => segments
+                    .iter()
+                    .map(|s| (s.index, diarize::turn_cuts(&turns, s.index)))
+                    .collect(),
+                Speakers::Unavailable => TurnCuts::new(),
+            };
             let mut slot = engine.lock().unwrap_or_else(|e| e.into_inner());
             // A queued session keeps the model selected when it stopped (R20c).
             if slot.as_ref().map(|e| e.model_id()) != Some(model) {
@@ -353,7 +447,7 @@ fn execute(
                 id,
                 &dir,
                 segments,
-                &TurnCuts::new(),
+                &cuts,
                 recognizer.as_mut(),
                 control,
                 &mut |p| {
@@ -367,6 +461,7 @@ fn execute(
                 },
             )
         }
+        Stage::Join => join::run(&env.store, id, &dir, segments).map(|_| ()),
         other => Err(StageError::Failed(format!(
             "{other:?} is not in this build"
         ))),

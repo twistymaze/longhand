@@ -28,6 +28,10 @@ exceptions = [
   { crate = "dtoa-short", allow = ["MPL-2.0"] },
   { crate = "selectors", allow = ["MPL-2.0"] },
   { crate = "option-ext", allow = ["MPL-2.0"] },
+  # A permissive data licence on Mozilla's root certificates, which reach the
+  # graph only as a build dependency of ort-sys (its ONNX Runtime download);
+  # nothing of it is linked into the binary.
+  { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 # Workspace crates are unpublished and carry no licence field of their own.

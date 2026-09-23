@@ -1,0 +1,21 @@
+[package]
+name = "embedding"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["onnx"]
+onnx = ["dep:anlg-onnx", "dep:knf-rs"]
+coreml = ["onnx", "anlg-onnx/coreml"]
+directml = ["onnx", "anlg-onnx/directml"]
+
+[dependencies]
+anlg-onnx = { path = "../onnx", package = "onnx", optional = true }
+# The crates.io release of the revision anarlog pins by git (e23bd29); the
+# sources are identical.
+knf-rs = { version = "=0.3.2", optional = true }
+
+serde.workspace = true
+thiserror.workspace = true

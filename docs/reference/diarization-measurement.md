@@ -207,3 +207,28 @@ them across windows. R36 stays useful per window, not per session.
 
 **Filter clusters by speech mass.** The top 6 of 149 labels hold 88.7% of
 speech. `min_cluster_seconds: 12.0` is far too permissive at this length.
+
+## Re-measure with the shipping embedding (U9, 2026-09-22)
+
+Everything above measured the embedding blob compiled into anarlog's
+`crates/embedding`, which carries no provenance. Longhand ships the model
+catalog's WeSpeaker ResNet34-LM download instead (SHA-256 `7bb2f06e…`, against
+the blob's `841645a9…`). Rerun on the same session and configuration (cap 6000,
+2 s hop), built inside Longhand's workspace with weights loaded from disk:
+
+| Measure | anarlog blob | catalog WeSpeaker |
+|---|---|---|
+| Multi-speaker 5-min windows kept | 37/37 | **37/37** |
+| Turn count ratio vs reference | 1.056 | **1.056** |
+| Labels emitted | 7 | **7** |
+| Windowed DER, 5 min | 0.480 | **0.480** |
+| Boundary agreement F1 | 0.349 | **0.349** |
+| Wall time, 3.01 h of audio | 2,103 s | 2,125 s |
+| Peak RSS | 1.164 GB | 1.150 GB |
+| Gate | PASS | **PASS** |
+
+Identical to three decimals on every statistic, so the two files are almost
+certainly the same network serialized differently. The model's `feats`/`embs`
+input and output names and the 80-bin fbank front end in `crates/embedding`
+match the catalog file as downloaded. The gate stands for the weights that ship;
+no full rerun is needed.

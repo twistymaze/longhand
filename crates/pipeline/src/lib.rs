@@ -8,6 +8,8 @@
 
 pub mod assemble;
 pub mod checkpoint;
+pub mod diarize;
+pub mod join;
 pub mod resample;
 pub mod runner;
 pub mod transcribe;
@@ -36,6 +38,10 @@ pub enum StageError {
     /// Completed checkpoints stand.
     #[error("cancelled")]
     Cancelled,
+    /// Something the stage needs is not on disk yet (model weights). The
+    /// session goes back to its place in the queue rather than failing.
+    #[error("waiting for {0}")]
+    Waiting(String),
     #[error("{0}")]
     Failed(String),
 }

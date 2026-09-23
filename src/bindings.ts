@@ -261,7 +261,15 @@ export type NoteView = { id: number; text: string;
  * Position on the session timeline; `None` when un-anchored (R13).
  */
 position_ms: number | null; gap_anchored: boolean }
-export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | { kind: "cancelled" } | { kind: "finished" }
+export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
+/**
+ * Speaker separation failed; the transcript comes without speakers.
+ */
+{ kind: "speakers_unavailable"; message: string } | 
+/**
+ * A model is not on disk; the session keeps its place in the queue.
+ */
+{ kind: "waiting"; what: string } | { kind: "cancelled" } | { kind: "finished" }
 /**
  * What processing is doing, for the surface.
  */

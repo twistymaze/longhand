@@ -3,11 +3,12 @@
 //! ```text
 //! LONGHAND_E2E_WAV=/path/to/mono-16bit.wav \
 //! LONGHAND_ASR_MODEL=/path/to/model \
+//! LONGHAND_WEIGHTS_DIR=/path/to/diarization/weights \
 //! cargo test -p pipeline --release --test end_to_end -- --ignored --nocapture
 //! ```
 //!
 //! The WAV is fed through the chunk writer at its own rate, as capture
-//! would, then assembled and transcribed. Only counts and timings are
+//! would, then assembled, diarized, transcribed and joined. Only counts and timings are
 //! printed, never transcript text: the input may be a private recording.
 
 mod common;
@@ -17,6 +18,7 @@ use std::time::Instant;
 
 use asr::{Engine, Recognizer};
 use common::{at, store, write_segment};
+use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use pipeline::runner::Outcome;
 use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{EngineProvider, Environment, Runner, checkpoint, proc_file};
@@ -35,6 +37,15 @@ impl EngineProvider for RealModel {
     }
     fn default_model(&self) -> String {
         "e2e".into()
+    }
+    fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+        let dir = std::path::PathBuf::from(
+            std::env::var("LONGHAND_WEIGHTS_DIR").expect("LONGHAND_WEIGHTS_DIR is set"),
+        );
+        Ok(Box::new(OnnxAnalyzer::load(
+            &dir.join("segmentation.onnx"),
+            &dir.join("embedding.onnx"),
+        )?))
     }
 }
 
@@ -119,18 +130,22 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         .len();
 
     let stages = stages.lock().unwrap();
-    let transcribe_at = stages
-        .iter()
-        .find(|(s, _)| *s == Stage::Transcribe)
-        .map(|(_, t)| *t)
-        .unwrap();
     eprintln!("audio: {seconds:.0} s at {} Hz", spec.sample_rate);
-    eprintln!("assemble: {:.1} s", transcribe_at.as_secs_f64());
-    eprintln!(
-        "transcribe: {:.1} s ({:.1}x real time)",
-        (total - transcribe_at).as_secs_f64(),
-        seconds / (total - transcribe_at).as_secs_f64()
-    );
+    for (i, (stage, began)) in stages.iter().enumerate() {
+        let ended = stages.get(i + 1).map_or(total, |(_, t)| *t);
+        let took = (ended - *began).as_secs_f64();
+        eprintln!("{stage:?}: {took:.1} s ({:.1}x real time)", seconds / took);
+    }
+    let speakers = match pipeline::diarize::speakers(&store, "e2e").unwrap() {
+        pipeline::diarize::Speakers::Turns(turns) => {
+            let labels: std::collections::BTreeSet<u32> = turns.iter().map(|t| t.speaker).collect();
+            format!("{} turns, {} speakers", turns.len(), labels.len())
+        }
+        pipeline::diarize::Speakers::Unavailable => "unavailable".into(),
+    };
+    eprintln!("speakers: {speakers}");
+    let transcript = std::fs::read_to_string(dir.join(pipeline::join::TRANSCRIPT_FILE)).unwrap();
+    eprintln!("transcript: {} lines", transcript.lines().count());
     eprintln!(
         "windows: {} (longest {} ms, {} empty), voiced {:.0} s of {:.0} s",
         plan.windows.len(),

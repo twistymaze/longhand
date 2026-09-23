@@ -43,7 +43,13 @@ power = { path = "../crates/power" }
 recorder = { path = "../crates/recorder" }
 secrets = { path = "../crates/secrets" }
 asr = { path = "../crates/asr" }
+# Named directly, not only through `asr`: cargo hands a `links` crate's build
+# metadata (`DEP_TRANSCRIBE_CPP_RUNTIME_DIR`) to direct dependents alone, and
+# build.rs needs it to stage the Windows runtime libraries. Features come from
+# `asr`'s per-platform declarations.
+transcribe-cpp = { version = "0.2.3", default-features = false }
 pipeline = { path = "../crates/pipeline" }
+diarize = { path = "../crates/diarize" }
 session-core = { path = "../crates/session-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 thiserror.workspace = true

@@ -18,8 +18,12 @@ BORROWED_DIRS=(
   crates/audio-cpal
   crates/asr
   crates/audio-mock
+  crates/diarize
+  crates/embedding
   crates/models
+  crates/onnx
   crates/pipeline
+  crates/pyannote-local
   crates/recorder
   crates/secrets
   crates/supervisor

@@ -1,0 +1,27 @@
+[package]
+name = "pyannote-local"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+coreml = ["anlg-onnx/coreml", "anlg-embedding/coreml"]
+directml = ["anlg-onnx/directml", "anlg-embedding/directml"]
+eval = ["dep:hound", "dep:serde_json", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "diarization-eval"
+path = "src/bin/diarization_eval.rs"
+required-features = ["eval"]
+
+[dependencies]
+anlg-embedding = { path = "../embedding", package = "embedding" }
+anlg-onnx = { path = "../onnx", package = "onnx" }
+
+hound = { version = "3.5.1", optional = true }
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+thiserror.workspace = true
+tracing-subscriber = { version = "0.3", optional = true, features = ["env-filter"] }

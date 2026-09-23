@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use asr::{AsrError, AsrSegment, Recognizer, WindowText};
 use common::{queue_session, speech, store};
+use diarize::{Analysis, AudioSource, DiarizeError, DiarizeRequest, SpeakerAnalyzer};
+use pipeline::join::TRANSCRIPT_FILE;
 use pipeline::runner::Outcome;
 use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{EngineProvider, Environment, Runner, RunnerEvent, SharedStore, checkpoint};
@@ -25,6 +27,33 @@ struct Script {
     cancel_after: Mutex<Option<(usize, Arc<Runner>, String)>>,
     /// Resume this session through the store after the given number of calls.
     resume_after: Mutex<Option<(usize, SharedStore, String)>>,
+    analyses: AtomicUsize,
+    diarize_fails: AtomicBool,
+    weights_missing: AtomicBool,
+}
+
+/// Analyses without finding anyone: the stage runs, no speaker turns come out.
+struct FakeAnalyzer(Arc<Script>);
+
+impl SpeakerAnalyzer for FakeAnalyzer {
+    fn analyze(
+        &mut self,
+        audio: &mut dyn AudioSource,
+        request: &DiarizeRequest<'_>,
+    ) -> Result<Analysis, DiarizeError> {
+        self.0.analyses.fetch_add(1, Ordering::SeqCst);
+        if self.0.diarize_fails.load(Ordering::SeqCst) {
+            return Err(DiarizeError::Format("segmentation exploded".into()));
+        }
+        if let Some(report) = request.on_progress {
+            report(1.0);
+        }
+        Ok(Analysis {
+            total: audio.sample_count().map_err(DiarizeError::Engine)?,
+            step: 32_000,
+            ..Analysis::default()
+        })
+    }
 }
 
 struct Fake {
@@ -96,6 +125,12 @@ impl EngineProvider for Provider {
     }
     fn default_model(&self) -> String {
         "selected-now".into()
+    }
+    fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+        if self.0.weights_missing.load(Ordering::SeqCst) {
+            return Err(DiarizeError::MissingWeights("segmentation.onnx".into()));
+        }
+        Ok(Box::new(FakeAnalyzer(Arc::clone(&self.0))))
     }
 }
 
@@ -193,9 +228,13 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
         started,
         vec![
             ("earlier".into(), Stage::Assemble),
+            ("earlier".into(), Stage::Diarize),
             ("earlier".into(), Stage::Transcribe),
+            ("earlier".into(), Stage::Join),
             ("later".into(), Stage::Assemble),
+            ("later".into(), Stage::Diarize),
             ("later".into(), Stage::Transcribe),
+            ("later".into(), Stage::Join),
         ]
     );
     // One engine load serves both sessions.
@@ -364,4 +403,92 @@ async fn a_resume_takes_the_session_back_at_the_next_window_without_being_told()
     assert_eq!(state(&r.store, "s"), SessionState::Capturing);
     // The completed window survives the resume (R6b).
     assert_eq!(transcribe::results(&r.store, "s").unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_session_has_its_transcript_on_disk() {
+    let r = rig();
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech()), (16_000, speech())],
+    );
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    // One analysis per segment, clustered together.
+    assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
+    let transcript = std::fs::read_to_string(r.root.join("s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(transcript.contains("call 0"), "{transcript}");
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::Progress {
+            stage: Stage::Diarize,
+            done: 100,
+            ..
+        }
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_diarization_failure_delivers_the_transcript_without_speakers() {
+    let r = rig();
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.script.diarize_fails.store(true, Ordering::SeqCst);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(
+        pipeline::diarize::speakers(&r.store, "s").unwrap(),
+        pipeline::diarize::Speakers::Unavailable
+    );
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::SpeakersUnavailable { message, .. } if message.contains("segmentation exploded")
+    )));
+    let transcript = std::fs::read_to_string(r.root.join("s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(transcript.contains("call 0"), "{transcript}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
+    let r = rig();
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.script.weights_missing.store(true, Ordering::SeqCst);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Waiting);
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    assert_eq!(
+        r.store.lock().unwrap().queue().unwrap(),
+        vec!["s".to_string()]
+    );
+    assert!(r.root.join("s/audio/segment-01.opus").exists());
+
+    // The weights land: it picks up after assembly.
+    r.script.weights_missing.store(false, Ordering::SeqCst);
+    r.events.lock().unwrap().clear();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert!(r.events.lock().unwrap().iter().all(|e| !matches!(
+        e,
+        RunnerEvent::StageStarted {
+            stage: Stage::Assemble,
+            ..
+        }
+    )));
 }
