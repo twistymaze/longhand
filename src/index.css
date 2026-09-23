@@ -90,3 +90,12 @@ html {
     transition: none;
   }
 }
+
+/* An exception or a one-time sentence arrives with a short fade, nothing
+   more: the rail must not pull eyes to the screen. */
+.fade-in {
+  transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1);
+  @starting-style {
+    opacity: 0;
+  }
+}

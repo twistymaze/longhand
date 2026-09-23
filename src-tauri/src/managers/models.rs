@@ -51,6 +51,8 @@ pub struct ModelStatus {
     pub role: ModelRole,
     pub name: String,
     pub description: String,
+    /// Recognition models only: whether a live transcript is possible (R10).
+    pub streaming: bool,
     pub size_bytes: u64,
     /// Needed by the current settings: the selected recognition model and
     /// both diarization weights.
@@ -108,6 +110,7 @@ impl ModelsManager {
                 name: m.name.clone(),
                 description: m.description.clone(),
                 size_bytes: m.size_bytes,
+                streaming: m.streaming,
                 required: required.contains(&m.id.as_str()),
                 state: self.state_of(m, active.contains_key(&m.id)),
                 repository: m.repository.clone(),

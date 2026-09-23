@@ -1,45 +1,16 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { commands, events, type ProbeStatus, type Readiness } from "../bindings";
+import type { Readiness } from "../bindings";
+import { formatChord } from "../lib/timeline";
 import { describeDestination } from "./DestinationPicker";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
 
 const isMac = navigator.userAgent.includes("Mac");
 
-export type PaneId = "status" | "destination" | "summarization" | "recognition" | "licences";
+export type PaneId = "scratchpad" | "status" | "destination" | "summarization" | "recognition" | "licences";
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
-}
-
-// Phase 2a probe, kept until U7 lands the real shortcut.
-function ShortcutProbe() {
-  const [status, setStatus] = useState<ProbeStatus | null>(null);
-  useEffect(() => {
-    void commands.probeStatus().then(setStatus);
-    const unlisten = events.probeShortcutFired.listen((event) => {
-      setStatus((s) => (s ? { ...s, fired: event.payload.count } : s));
-    });
-    return () => {
-      void unlisten.then((f) => f());
-    };
-  }, []);
-  if (!status) return null;
-  return (
-    <Group
-      header="Shortcut"
-      footer="Recording from the shortcut arrives in a later build; for now it only counts presses."
-    >
-      <Row
-        label={<code>{status.shortcut}</code>}
-        detail={status.registered ? `Pressed ${status.fired} time${status.fired === 1 ? "" : "s"} this launch` : status.registration_error}
-      >
-        <StatusText tone={status.registered ? "positive" : "negative"}>
-          {status.registered ? "Registered" : "Not registered"}
-        </StatusText>
-      </Row>
-    </Group>
-  );
 }
 
 export function StatusPane({
@@ -85,6 +56,18 @@ export function StatusPane({
         >
           <StatusText tone={readiness.armed ? "positive" : "caution"}>
             {readiness.armed ? "Armed" : "Not armed"}
+          </StatusText>
+        </Row>
+        <Row
+          label={`Shortcut ${formatChord(readiness.shortcut.chord, isMac)}`}
+          detail={
+            readiness.shortcut.registered
+              ? "Starts and stops a recording from any app"
+              : readiness.shortcut.error
+          }
+        >
+          <StatusText tone={readiness.shortcut.registered ? "positive" : "negative"}>
+            {readiness.shortcut.registered ? "Registered" : "Not registered"}
           </StatusText>
         </Row>
         <Row
@@ -140,7 +123,6 @@ export function StatusPane({
         </Row>
       </Group>
 
-      <ShortcutProbe />
     </Pane>
   );
 }

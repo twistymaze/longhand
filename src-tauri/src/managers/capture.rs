@@ -19,7 +19,9 @@ use chrono::{DateTime, FixedOffset, Local};
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, SegmentOutcome};
 use serde::Serialize;
-use session_core::{Closed, Event, SessionState, SpeakerCount, Store, Timeline};
+use session_core::{
+    Anchor, Closed, DEFAULT_LOOKBACK_MS, Event, SessionState, SpeakerCount, Store, Timeline,
+};
 use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
@@ -47,6 +49,59 @@ pub enum CaptureError {
     Timeline(#[from] session_core::TimelineError),
     #[error("{0}")]
     Other(String),
+}
+
+/// A quarter-second of capture: level and position (R9). Ticks follow frame
+/// arrival, so their absence is what a stalled input looks like.
+#[derive(Serialize, Clone, Type, tauri_specta::Event)]
+pub struct CaptureTick {
+    pub session_id: String,
+    pub peak: f32,
+    pub position_ms: u64,
+}
+
+/// A session started, stopped, or resumed recording.
+#[derive(Serialize, Clone, Type, tauri_specta::Event)]
+pub struct RecordingChanged {
+    /// The session now recording; `None` once nothing is.
+    pub session_id: Option<String>,
+}
+
+#[derive(Serialize, Clone, Type, Debug)]
+pub struct NoteView {
+    pub id: i64,
+    pub text: String,
+    /// Position on the session timeline; `None` when un-anchored (R13).
+    pub position_ms: Option<u64>,
+    pub gap_anchored: bool,
+}
+
+impl From<session_core::Note> for NoteView {
+    fn from(note: session_core::Note) -> Self {
+        let (position_ms, gap_anchored) = match note.anchor {
+            Anchor::Unanchored => (None, false),
+            Anchor::At {
+                position_ms,
+                gap_anchored,
+            } => (Some(position_ms), gap_anchored),
+        };
+        Self {
+            id: note.id,
+            text: note.text,
+            position_ms,
+            gap_anchored,
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Type, Debug)]
+pub struct RecordingStatus {
+    /// The open session: recording, or interrupted and resumable.
+    pub session_id: Option<String>,
+    pub state: Option<String>,
+    pub recording: bool,
+    /// Free bytes where audio is being written.
+    pub working_free_bytes: Option<u64>,
 }
 
 /// Capture stopped on its own: the device went away or the disk filled.
@@ -188,12 +243,13 @@ impl CaptureManager {
             epoch: Instant::now(),
         });
         log::info!("session {id} recording");
+        changed(app, Some(&id));
         Ok(id)
     }
 
     /// Stop the recording session (R6b, R35). Returns its state afterwards:
     /// queued for processing, or discarded when it kept no audio.
-    pub fn stop_session(&self) -> Result<(String, SessionState), CaptureError> {
+    pub fn stop_session(&self, app: &AppHandle) -> Result<(String, SessionState), CaptureError> {
         let mut inner = self.inner();
         let active = inner.active.take().ok_or(CaptureError::NotCapturing)?;
         let id = active.session_id.clone();
@@ -211,6 +267,7 @@ impl CaptureManager {
             let _ = std::fs::remove_dir_all(self.session_dir(&id));
             log::info!("session {id} kept no audio and was discarded");
         }
+        changed(app, None);
         Ok((id, state))
     }
 
@@ -270,7 +327,87 @@ impl CaptureManager {
             }),
         });
         log::info!("session {id} resumed as segment {index} at {offset} ms");
+        changed(app, Some(id));
         Ok(state)
+    }
+
+    /// The session a note typed now belongs to: the one recording, or the
+    /// most recent one interrupted and still resumable.
+    fn open_session(&self) -> Result<Option<(String, SessionState)>, CaptureError> {
+        let store = self.store();
+        for name in ["capturing", "interrupted"] {
+            if let Some(record) = store.sessions_in(name)?.into_iter().next() {
+                return Ok(Some((record.id, record.state)));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn status(&self) -> Result<RecordingStatus, CaptureError> {
+        let recording = self.is_capturing();
+        let open = self.open_session()?;
+        Ok(RecordingStatus {
+            session_id: open.as_ref().map(|(id, _)| id.clone()),
+            state: open.as_ref().map(|(_, state)| state.name().to_string()),
+            recording,
+            working_free_bytes: recorder::storage::available_space(
+                self.working_root.parent().unwrap_or(&self.working_root),
+            ),
+        })
+    }
+
+    /// Record a note at its first keystroke (R12, R12a, R13). The anchor is
+    /// resolved here, on the capture clock, and never moves afterwards.
+    pub fn begin_note(&self, text: &str) -> Result<NoteView, CaptureError> {
+        let inner = self.inner();
+        let Some((session_id, _)) = self.open_session()? else {
+            let id = self.store().add_pending_note(text)?;
+            return Ok(NoteView {
+                id,
+                text: text.to_string(),
+                position_ms: None,
+                gap_anchored: false,
+            });
+        };
+        let anchor = match inner.clock.as_ref().filter(|c| c.session_id == session_id) {
+            Some(clock) => session_core::resolve(
+                &clock.timeline,
+                Some(clock.epoch.elapsed().as_millis() as u64),
+                DEFAULT_LOOKBACK_MS,
+            ),
+            // Interrupted before this launch: the process clock is gone, and
+            // any moment now is in the gap after the last segment (R12a).
+            None => {
+                let timeline = Timeline::from_segments(self.store().segments(&session_id)?)?;
+                session_core::resolve(&timeline, Some(u64::MAX), DEFAULT_LOOKBACK_MS)
+            }
+        };
+        let id = self.store().add_note(&session_id, text, anchor)?;
+        Ok(NoteView::from(session_core::Note {
+            id,
+            session_id: Some(session_id),
+            text: text.to_string(),
+            anchor,
+        }))
+    }
+
+    pub fn edit_note(&self, note_id: i64, text: &str) -> Result<(), CaptureError> {
+        Ok(self.store().edit_note(note_id, text)?)
+    }
+
+    /// The open session's notes, or the pending buffer when none is open.
+    pub fn notes(&self) -> Result<Vec<NoteView>, CaptureError> {
+        let notes = match self.open_session()? {
+            Some((id, _)) => self.store().notes(&id)?,
+            None => self.store().pending_notes()?,
+        };
+        Ok(notes.into_iter().map(NoteView::from).collect())
+    }
+
+    /// Bound the open session's diarization (R36).
+    pub fn set_speaker_count(&self, count: Option<SpeakerCount>) -> Result<(), CaptureError> {
+        let (id, _) = self.open_session()?.ok_or(CaptureError::NotCapturing)?;
+        Ok(self.store().set_speaker_count(&id, count)?)
     }
 
     fn open_segment(
@@ -330,7 +467,21 @@ impl CaptureManager {
                         return;
                     }
                 };
-                let result = runtime.block_on(recorder::run_segment(stream, writer, thread_stop));
+                let tick_app = thread_app.clone();
+                let tick_session = thread_session.clone();
+                let result = runtime.block_on(recorder::run_segment(
+                    stream,
+                    writer,
+                    thread_stop,
+                    move |tick| {
+                        let _ = CaptureTick {
+                            session_id: tick_session.clone(),
+                            peak: tick.peak,
+                            position_ms: tick.position_ms,
+                        }
+                        .emit(&tick_app);
+                    },
+                ));
                 let reason = match &result.end {
                     SegmentEnd::Stopped => None,
                     SegmentEnd::SourceLost(e) => Some(format!("microphone: {e}")),
@@ -394,6 +545,13 @@ impl CaptureManager {
         }
         Ok(())
     }
+}
+
+fn changed(app: &AppHandle, session_id: Option<&str>) {
+    let _ = RecordingChanged {
+        session_id: session_id.map(str::to_string),
+    }
+    .emit(app);
 }
 
 /// The span of the last segment on disk, after closing any chunk a failed

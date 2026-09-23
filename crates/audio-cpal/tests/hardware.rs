@@ -40,7 +40,9 @@ async fn three_seconds_of_the_real_microphone_land_as_a_playable_wav() {
     let dir = tempfile::tempdir().unwrap();
     let audio = CpalAudio::new();
     let rate = audio.prepare(None).unwrap();
-    let stream = audio.open_mic_capture(None, 0, (rate / 50) as usize).unwrap();
+    let stream = audio
+        .open_mic_capture(None, 0, (rate / 50) as usize)
+        .unwrap();
     let writer = ChunkedWriter::create(SegmentArgs {
         dir: dir.path().to_path_buf(),
         segment: 0,
@@ -51,7 +53,7 @@ async fn three_seconds_of_the_real_microphone_land_as_a_playable_wav() {
     })
     .unwrap();
     let stop = CancellationToken::new();
-    let task = tokio::spawn(run_segment(stream, writer, stop.clone()));
+    let task = tokio::spawn(run_segment(stream, writer, stop.clone(), |_| {}));
     tokio::time::sleep(Duration::from_secs(3)).await;
     stop.cancel();
     let outcome = task.await.unwrap();

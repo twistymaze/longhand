@@ -150,11 +150,51 @@ async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async isRecording() : Promise<boolean> {
-    return await TAURI_INVOKE("is_recording");
+async recordingStatus() : Promise<Result<RecordingStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("recording_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
-async probeStatus() : Promise<ProbeStatus> {
-    return await TAURI_INVOKE("probe_status");
+/**
+ * Called at a line's first keystroke; the anchor is fixed now (R12).
+ */
+async beginNote(text: string) : Promise<Result<NoteView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("begin_note", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async editNote(noteId: number, text: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("edit_note", { noteId, text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async scratchpadNotes() : Promise<Result<NoteView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("scratchpad_notes") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_session_speaker_count", { count }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async shortcutStatus() : Promise<ShortcutStatus> {
+    return await TAURI_INVOKE("shortcut_status");
 }
 }
 
@@ -163,12 +203,14 @@ async probeStatus() : Promise<ProbeStatus> {
 
 export const events = __makeEvents__<{
 captureEnded: CaptureEnded,
+captureTick: CaptureTick,
 modelDownloadEvent: ModelDownloadEvent,
-probeShortcutFired: ProbeShortcutFired
+recordingChanged: RecordingChanged
 }>({
 captureEnded: "capture-ended",
+captureTick: "capture-tick",
 modelDownloadEvent: "model-download-event",
-probeShortcutFired: "probe-shortcut-fired"
+recordingChanged: "recording-changed"
 })
 
 /** user-defined constants **/
@@ -182,6 +224,11 @@ probeShortcutFired: "probe-shortcut-fired"
  * Interruption handling (U14, U15) consumes it.
  */
 export type CaptureEnded = { session_id: string; reason: string }
+/**
+ * A quarter-second of capture: level and position (R9). Ticks follow frame
+ * arrival, so their absence is what a stalled input looks like.
+ */
+export type CaptureTick = { session_id: string; peak: number; position_ms: number }
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
@@ -197,25 +244,49 @@ export type LicenceInfo = { name: string; url: string; attribution: string }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
-export type ModelStatus = { id: string; role: ModelRole; name: string; description: string; size_bytes: number; 
+export type ModelStatus = { id: string; role: ModelRole; name: string; description: string; 
+/**
+ * Recognition models only: whether a live transcript is possible (R10).
+ */
+streaming: boolean; size_bytes: number; 
 /**
  * Needed by the current settings: the selected recognition model and
  * both diarization weights.
  */
 required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo }
-export type ProbeShortcutFired = { count: number }
-export type ProbeStatus = { shortcut: string; registered: boolean; registration_error: string | null; fired: number }
+export type NoteView = { id: number; text: string; 
+/**
+ * Position on the session timeline; `None` when un-anchored (R13).
+ */
+position_ms: number | null; gap_anchored: boolean }
 export type Readiness = { microphone_authorized: boolean; destination: DestinationStatus; 
 /**
- * Microphone authorized and a destination chosen, and nothing else (R1c):
- * a destination that is unreachable right now can be changed before the
- * session lands (R23), so it is shown rather than blocking the shortcut.
+ * Microphone authorized, a destination chosen, and the chord registered
+ * (R1c). A destination that is unreachable right now can be changed
+ * before the session lands (R23), so it is shown rather than blocking.
  */
-armed: boolean; 
+armed: boolean; shortcut: ShortcutStatus; 
 /**
  * Catalog ids of required weights not yet on disk.
  */
 missing_models: string[]; endpoint_configured: boolean }
+/**
+ * A session started, stopped, or resumed recording.
+ */
+export type RecordingChanged = { 
+/**
+ * The session now recording; `None` once nothing is.
+ */
+session_id: string | null }
+export type RecordingStatus = { 
+/**
+ * The open session: recording, or interrupted and resumable.
+ */
+session_id: string | null; state: string | null; recording: boolean; 
+/**
+ * Free bytes where audio is being written.
+ */
+working_free_bytes: number | null }
 export type Settings = { settings_schema_version: number; shortcut: string; 
 /**
  * Every folder the user has ever chosen, oldest first (R25a). The index
@@ -238,6 +309,7 @@ context_limit_tokens: number | null; default_speaker_count: SpeakerCountSetting 
  * Catalog id of the recognition model (KTD6).
  */
 asr_model: string }
+export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
 /**
  * An optional bound on how many people are speaking (R36).
  */

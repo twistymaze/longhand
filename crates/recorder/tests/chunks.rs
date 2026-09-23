@@ -63,6 +63,7 @@ async fn a_130_s_recording_closes_into_three_overlapping_chunks() {
         stream,
         writer(dir.path(), 0, 0, rate),
         CancellationToken::new(),
+        |_| {},
     )
     .await;
     // The mock's stream ends after its samples, which reads as a lost source.
@@ -230,6 +231,7 @@ async fn stopping_closes_the_open_chunk() {
         stream,
         writer(dir.path(), 0, 0, rate),
         stop.clone(),
+        |_| {},
     ));
     tokio::time::sleep(Duration::from_secs(3)).await;
     stop.cancel();
@@ -323,4 +325,28 @@ fn twenty_minutes_of_native_rate_audio_stays_contiguous() {
 #[ignore = "writes 1.4 GB"]
 fn four_hours_of_native_rate_audio() {
     long_run(240);
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_quarter_second_of_audio_reports_its_peak_and_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 16_000;
+    let mock = MockAudio::tone(440.0, rate, Duration::from_secs(2));
+    let stream = mock.open_mic_capture(None, rate, 320).unwrap();
+    let mut ticks = Vec::new();
+    run_segment(
+        stream,
+        writer(dir.path(), 0, 60_000, rate),
+        CancellationToken::new(),
+        |t| ticks.push(t),
+    )
+    .await;
+    let positions: Vec<_> = ticks.iter().map(|t| t.position_ms).collect();
+    assert_eq!(
+        positions,
+        [
+            60_250, 60_500, 60_750, 61_000, 61_250, 61_500, 61_750, 62_000
+        ]
+    );
+    assert!(ticks.iter().all(|t| (t.peak - 0.5).abs() < 0.01));
 }

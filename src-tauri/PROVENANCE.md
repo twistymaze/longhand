@@ -83,3 +83,12 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, LICENSES/anarlog-MIT.txt
 - Status: modified — `available_space` only, returning the figure instead of an error; the reserve becomes the destination's reporting floor; the existence, directory and write-probe checks are new
+
+## `src/shortcut.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/src/shortcut/tauri_impl.rs` (registration through `tauri-plugin-global-shortcut`, handling `Pressed` only)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, LICENSES/Handy-MIT.txt
+- Status: modified — one chord that toggles a session; arming checked at the press; presses serialized

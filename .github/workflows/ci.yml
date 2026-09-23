@@ -39,6 +39,9 @@ jobs:
       - name: Frontend build (typecheck + bundle)
         run: bun run build
 
+      - name: Frontend tests
+        run: bun run test
+
       - name: rustfmt
         run: cargo fmt --all --check
 

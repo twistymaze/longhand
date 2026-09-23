@@ -12,9 +12,12 @@ import { EndpointForm } from "./EndpointForm";
 import { Licences } from "./Licences";
 import { Models } from "./Models";
 import { type PaneId, StatusPane } from "./Status";
+import { RecordingPane } from "../recording/RecordingPane";
+import { useCapture } from "../recording/useCapture";
 import { Status, type Tone } from "./ui";
 
 const panes: { id: PaneId; label: string }[] = [
+  { id: "scratchpad", label: "Scratchpad" },
   { id: "status", label: "Status" },
   { id: "destination", label: "Destination" },
   { id: "summarization", label: "Summarization" },
@@ -34,12 +37,14 @@ function paneTone(id: PaneId, readiness: Readiness | null): Tone | null {
     case "recognition":
       return readiness.missing_models.length === 0 ? null : "neutral";
     case "licences":
+    case "scratchpad":
       return null;
   }
 }
 
 export function Settings() {
-  const [pane, setPane] = useState<PaneId>("status");
+  const [pane, setPane] = useState<PaneId>("scratchpad");
+  const capture = useCapture();
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [models, setModels] = useState<ModelStatus[]>([]);
@@ -74,6 +79,13 @@ export function Settings() {
       void unlisten.then((f) => f());
     };
   }, [refresh]);
+
+  // A recording that starts, from the shortcut or anywhere, brings its
+  // scratchpad forward. Nothing moves the window itself.
+  const recordingSession = capture.status?.recording ? capture.status.session_id : null;
+  useEffect(() => {
+    if (recordingSession) setPane("scratchpad");
+  }, [recordingSession]);
 
   const onSettings = useCallback(
     (next: SettingsData) => {
@@ -114,6 +126,9 @@ export function Settings() {
               } outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
             >
               {p.label}
+              {p.id === "scratchpad" && capture.status?.recording && (
+                <span aria-label="recording" className={`size-2 rounded-full `} />
+              )}
               {tone && !selected && (
                 <Status tone={tone}>
                   <span className="sr-only">needs attention</span>
@@ -124,6 +139,9 @@ export function Settings() {
         })}
       </nav>
       <main className="min-w-0 flex-1 overflow-y-auto select-text">
+        {pane === "scratchpad" && (
+          <RecordingPane capture={capture} readiness={readiness} models={models} settings={settings} />
+        )}
         {pane === "status" && <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={setPane} />}
         {pane === "destination" && (
           <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />

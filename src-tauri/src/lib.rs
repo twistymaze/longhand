@@ -1,6 +1,6 @@
 mod commands;
 mod managers;
-mod probe;
+mod shortcut;
 mod tray;
 mod window;
 
@@ -33,13 +33,18 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::start_recording,
             commands::capture::stop_recording,
             commands::capture::resume_recording,
-            commands::capture::is_recording,
-            probe::probe_status,
+            commands::capture::recording_status,
+            commands::capture::begin_note,
+            commands::capture::edit_note,
+            commands::capture::scratchpad_notes,
+            commands::capture::set_session_speaker_count,
+            commands::capture::shortcut_status,
         ])
         .events(collect_events![
-            probe::ProbeShortcutFired,
             managers::models::ModelDownloadEvent,
             managers::capture::CaptureEnded,
+            managers::capture::CaptureTick,
+            managers::capture::RecordingChanged,
         ])
 }
 
@@ -105,7 +110,7 @@ pub fn run() {
 
             window::create_main_window(&handle)?;
             tray::create_tray(&handle)?;
-            probe::register(&handle);
+            shortcut::register(&handle);
 
             window::show_main_window(&handle);
             Ok(())

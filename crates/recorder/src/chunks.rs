@@ -118,6 +118,14 @@ impl ChunkedWriter {
         })
     }
 
+    pub fn offset_ms(&self) -> u64 {
+        self.args.offset_ms
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.args.sample_rate
+    }
+
     fn rate(&self) -> u64 {
         self.args.sample_rate as u64
     }
