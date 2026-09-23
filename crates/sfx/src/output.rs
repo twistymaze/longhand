@@ -48,6 +48,14 @@ impl OutputState {
     }
 }
 
+/// The default output's name, cheap enough to poll: a change is when the
+/// full probe runs again (R5a).
+pub fn default_output_name() -> Option<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let device = cpal::default_host().default_output_device()?;
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// Probe the default output. Spawns `osascript` on macOS, so call it off any
 /// path that must be quick.
 pub fn output_state() -> OutputState {

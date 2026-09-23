@@ -39,6 +39,39 @@ pub struct AssembledSegment {
 /// is the folder a resumed session completed into (R6d): a segment whose
 /// archive is there is already assembled, and its processing file is decoded
 /// back from that archive.
+/// Refuse to start when the working location cannot hold what assembling
+/// the remaining segments writes (R7b): better named now, with the session
+/// whole, than as a write failure part-way through.
+fn check_space(
+    store: &SharedStore,
+    session_id: &str,
+    session_dir: &Path,
+    segments: &[Segment],
+) -> Result<(), StageError> {
+    let mut remaining_ms = 0;
+    for segment in segments {
+        let key = checkpoint::segment_key(segment.index);
+        if checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?.is_none()
+        {
+            remaining_ms += segment.duration_ms;
+        }
+    }
+    let needed = recorder::storage::processing_demand(remaining_ms.div_ceil(1_000));
+    let available = recorder::storage::available_space(session_dir);
+    recorder::storage::check_headroom(available, needed, recorder::storage::DISK_RESERVE_BYTES)
+        .map_err(|free| {
+            StageError::Failed(format!(
+                "processing needs about {} free on the disk holding Longhand's working audio, and {} is free; free some space, then retry",
+                gigabytes(needed + recorder::storage::DISK_RESERVE_BYTES),
+                gigabytes(free)
+            ))
+        })
+}
+
+fn gigabytes(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
+}
+
 pub fn run(
     store: &SharedStore,
     session_id: &str,
@@ -50,6 +83,7 @@ pub fn run(
     let recovery = session_dir.join(RECOVERY_DIR);
     // A crash while capturing leaves a `.part` open; close it from its length.
     recorder::recover_partial_chunks(&recovery)?;
+    check_space(store, session_id, session_dir, segments)?;
     let mut out = Vec::new();
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);

@@ -11,4 +11,4 @@ mod cue;
 mod output;
 
 pub use cue::{CueError, cue_samples, play_cue};
-pub use output::{OutputProblem, OutputState, VOLUME_FLOOR, output_state};
+pub use output::{OutputProblem, OutputState, VOLUME_FLOOR, default_output_name, output_state};

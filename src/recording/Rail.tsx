@@ -20,9 +20,6 @@ import { formatPosition, levelFraction } from "../lib/timeline";
 import type { InputStatus } from "./inputStatus";
 import { type Capture, HISTORY } from "./useCapture";
 
-/// Below this, the working location is named in the exception tier. A
-/// four-hour session needs about 2.3 GB of working space (U15 projects it).
-const LOW_HEADROOM_BYTES = 3e9;
 const MODEL_SENTENCE_MS = 8000;
 
 const statusText: Record<InputStatus, string> = {
@@ -110,9 +107,25 @@ function Exceptions({
   readiness: Readiness;
 }) {
   const items: { tone: "caution" | "negative"; text: string }[] = [];
-  const free = capture.status?.working_free_bytes;
-  if (free != null && free < LOW_HEADROOM_BYTES) {
-    items.push({ tone: "caution", text: `${formatBytes(free)} free for audio on this disk` });
+  const status = capture.status;
+  const free = status?.working_free_bytes;
+  if (status && free != null) {
+    // R7b: what processing will need by the time this session stops.
+    const needed =
+      (status.processing_bytes_per_second * capture.recordedMs) / 1000 + status.reserve_bytes;
+    if (free < needed) {
+      items.push({
+        tone: "negative",
+        text: `${formatBytes(free)} free: processing this session needs about ${formatBytes(needed)}`,
+      });
+    }
+  }
+  const problem = capture.alert?.output_problem;
+  if (problem) {
+    items.push({ tone: "caution", text: `If recording fails, ${problem}` });
+  }
+  if (capture.alert && !capture.alert.tone_heard) {
+    items.push({ tone: "caution", text: "The alert sound has not been tested (Status)" });
   }
   if (readiness.destination.kind !== "ready") {
     const d = describeDestination(readiness.destination);
@@ -139,6 +152,23 @@ function Exceptions({
         </li>
       ))}
     </ul>
+  );
+}
+
+/// Before a recording: whether this disk holds a four-hour session and the
+/// processing that follows (R7b), said while the session can still go
+/// elsewhere.
+function SpaceWarning({ capture }: { capture: Capture }) {
+  const status = capture.status;
+  const free = status?.working_free_bytes;
+  const demand = status?.session_demand_bytes;
+  if (!status || free == null || demand == null) return null;
+  if (free >= demand + status.reserve_bytes) return null;
+  return (
+    <p className="border-t border-separator px-3 py-1.5 text-[0.85rem] text-caution">
+      {formatBytes(free)} free: a four-hour session and its processing need about{" "}
+      {formatBytes(demand + status.reserve_bytes)}
+    </p>
   );
 }
 
@@ -256,6 +286,7 @@ export function Rail({
         </p>
       )}
       {recording && <Exceptions capture={capture} readiness={readiness} />}
+      {!recording && !capture.status?.interruption && <SpaceWarning capture={capture} />}
       {!recording && capture.status?.interruption ? (
         <FailedCapture capture={capture} onError={setError} />
       ) : (

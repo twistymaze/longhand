@@ -39,6 +39,17 @@ struct Raised {
 pub struct AlertsManager {
     raised: Mutex<Option<Raised>>,
     generations: AtomicU64,
+    /// The last output probe, by the output it was taken on.
+    checked: Mutex<Option<(Option<String>, Option<String>)>>,
+}
+
+/// Whether an alert raised now would reach the user (R5a).
+#[derive(serde::Serialize, specta::Type, Clone, Debug)]
+pub struct AlertCheck {
+    /// Why the cue would not be heard, when it would not.
+    pub output_problem: Option<String>,
+    /// The user has confirmed hearing the cue at setup.
+    pub tone_heard: bool,
 }
 
 /// What the user is told, by the reason capture stopped.
@@ -118,6 +129,33 @@ impl AlertsManager {
             });
         if let Err(e) = spawned {
             log::error!("could not start the alert: {e}");
+        }
+    }
+
+    /// Check the alert path. The output is probed again only when `force`
+    /// or when the default output has changed since the last probe, since
+    /// the probe spawns a process on macOS.
+    pub fn check(&self, tone_heard: bool, force: bool) -> AlertCheck {
+        let output = sfx::default_output_name();
+        let mut checked = self.checked.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = checked
+            .as_ref()
+            .filter(|(name, _)| !force && *name == output)
+            .map(|(_, problem)| problem.clone());
+        let output_problem = match cached {
+            Some(problem) => problem,
+            None => {
+                let problem = sfx::output_state().problem().map(|p| p.to_string());
+                if let Some(problem) = &problem {
+                    log::info!("alert path: {problem}");
+                }
+                *checked = Some((output, problem.clone()));
+                problem
+            }
+        };
+        AlertCheck {
+            output_problem,
+            tone_heard,
         }
     }
 

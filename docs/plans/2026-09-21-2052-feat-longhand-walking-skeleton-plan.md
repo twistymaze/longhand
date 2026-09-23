@@ -1079,6 +1079,18 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
   - Input: default output changes from speakers to disconnected headphones (mock event); action: deliver; expected: pre-check re-runs and the rail updates (R5a).
   - Input: capture inactive; action: query assertion; expected: released.
 - **Verification:** AE3 manually: with the screen ignored, a forced failure is heard across a room and seen on return; the state is still present after relaunch until acknowledged.
+- **Execution notes (2026-09-23):** Changes from the plan, and why:
+  - **The cue.** It is synthesized (two falling tones, played twice, about 0.9 s) and played through cpal 0.18 in `crates/sfx`, not through rodio. rodio 0.22 pins cpal 0.17, which would add a second CoreAudio and WASAPI binding to play one sound. There is no `interrupted.wav` asset.
+  - **The output probe** is Handy's mute check, extended in the same call to read the volume, so the 10% floor can be tested. An unknown answer passes.
+  - **Notification permission is not checked.** `tauri-plugin-notification` 2.4 reports "granted" on every desktop platform, so the check would claim something it cannot know. The Status pane's Alerts footer says, next to the test tone, that Focus and Do Not Disturb can silence the notification undetected. That note sits there rather than in the rail, to spare the rail's attention budget.
+  - **Output-device changes.** The pre-check runs, forced, when recording starts. After that it rides the rail's 5-second status poll, re-probing only when the default output's name changes, since there is no device-event listener (as in U14).
+  - **The tray.** There is no second icon. On macOS the tray shows the title "Interrupted"; the tooltip names what stopped; and the menu's first item reads "Recording interrupted: Open Longhand", which fronts the window on Resume and Stop.
+  - **Notifications and the window.** Desktop notifications in this plugin carry no click handler, so whether clicking one fronts the app is checked by hand at the Phase 3 checkpoint; the tray item is the route that is certain. The window is not shown automatically, because pulling it forward mid-meeting would steal whatever the user is typing into another app.
+  - **Ending the alert.** An alert ends when its session leaves unacknowledged Interrupted by any path: resume, the device's return, Stop, or the auto-queue. A 1-second watch over the store notices this, so no code path has to remember to clear it; Resume, Stop and the device's return also stop the cue at once.
+  - **Stop from failed capture.** Stop now works on an interrupted session, which acknowledges it (R5c).
+  - **Relaunch.** A relaunch restores the notification and the tray state without the cue. Sleep raises no alert.
+  - **Working-space projection (R7b).** `recorder::storage` projects peak demand as chunks at 2 bytes per native sample plus 72 kB per second of processing: the 16 kHz f32 tap and the 64 kbit/s archive. That is 2.42 GB for four hours at 48 kHz. Before recording, the rail warns when the volume cannot hold a four-hour session above the floor. During recording, it warns once free space falls below what processing the audio so far will need. Assemble refuses to start, with a retryable failure naming both figures, when its remaining segments will not fit.
+  - **Tests.** The cue's shape, the output decision, the volume parsing, the demand figures, the cue schedule and which states hold the alert are unit-tested. The manager-level scenarios (cue at 0, 30 and 90 s; relaunch; notification click) are the manual AE3 checkpoint.
 
 ### U16. Crash recovery at launch
 

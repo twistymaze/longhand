@@ -66,6 +66,8 @@ pub struct Settings {
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
+    /// The user heard the alert cue played at setup (R5a, KTD14).
+    pub alert_tone_heard: bool,
 }
 
 /// One endpoint and model: a limit learned for one says nothing of another.
@@ -86,6 +88,7 @@ impl Default for Settings {
             default_speaker_count: None,
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
             learned_context_limits: Default::default(),
+            alert_tone_heard: false,
         }
     }
 }

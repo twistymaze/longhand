@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import type { Readiness } from "../bindings";
+import { commands, type Readiness } from "../bindings";
 import { formatChord } from "../lib/timeline";
 import { describeDestination } from "./DestinationPicker";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
@@ -123,6 +123,59 @@ export function StatusPane({
         </Row>
       </Group>
 
+      <AlertSound />
     </Pane>
+  );
+}
+
+/// The one-time test of the failed-capture cue (R5a, KTD14): the only check
+/// of the alert path that proves the user can hear it, not just that the
+/// output is on.
+function AlertSound() {
+  const [heard, setHeard] = useState<boolean | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void commands.getSettings().then((s) => setHeard(s.alert_tone_heard));
+  }, []);
+
+  const play = async () => {
+    const result = await commands.playAlertSound();
+    setError(result.status === "error" ? result.error : null);
+    setAsking(result.status === "ok");
+  };
+  const answer = async (yes: boolean) => {
+    const result = await commands.confirmAlertSound(yes);
+    if (result.status === "ok") setHeard(result.data.alert_tone_heard);
+    setAsking(false);
+  };
+
+  return (
+    <Group
+      header="Alerts"
+      footer="If recording stops and cannot restart, Longhand plays this sound three times over 90 seconds and posts a notification. Focus and Do Not Disturb can silence the notification, and Longhand cannot tell when they do."
+    >
+      <Row
+        label="Alert sound"
+        detail={error ?? (asking ? "Did you hear it?" : heard ? "Heard at setup" : "Not tested yet")}
+      >
+        {asking ? (
+          <>
+            <Button onClick={() => void answer(false)}>No</Button>
+            <Button prominent onClick={() => void answer(true)}>
+              Yes
+            </Button>
+          </>
+        ) : (
+          <>
+            {heard && <StatusText tone="positive">Tested</StatusText>}
+            <Button prominent={heard === false} onClick={() => void play()}>
+              Play Sound
+            </Button>
+          </>
+        )}
+      </Row>
+    </Group>
   );
 }

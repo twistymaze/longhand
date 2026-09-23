@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type RecordingStatus } from "../bindings";
+import { type AlertCheck, commands, events, type RecordingStatus } from "../bindings";
 import { type InputStatus, inputStatus } from "./inputStatus";
 
 /// 30 s of history at one peak per 250 ms.
@@ -12,6 +12,9 @@ export type Capture = {
   /// Recorded so far, gaps between segments excluded: the elapsed time shown.
   recordedMs: number;
   lostReason: string | null;
+  /// Whether an alert would reach the user: checked as recording starts and
+  /// kept current while it lasts (R5a).
+  alert: AlertCheck | null;
   refresh: () => Promise<void>;
 };
 
@@ -20,14 +23,24 @@ export function useCapture(): Capture {
   const [levels, setLevels] = useState<number[]>([]);
   const [recordedMs, setRecordedMs] = useState(0);
   const [lostReason, setLostReason] = useState<string | null>(null);
+  const [alert, setAlert] = useState<AlertCheck | null>(null);
   const [now, setNow] = useState(() => performance.now());
   const lastTickAt = useRef<number | null>(null);
   const startedAt = useRef<number | null>(null);
 
+  const checkAlert = useCallback(async (force: boolean) => {
+    const result = await commands.alertCheck(force);
+    if (result.status === "ok") setAlert(result.data);
+  }, []);
+
   const refresh = useCallback(async () => {
     const result = await commands.recordingStatus();
-    if (result.status === "ok") setStatus(result.data);
-  }, []);
+    if (result.status === "ok") {
+      setStatus(result.data);
+      // Re-probed only when the default output has changed.
+      if (result.data.recording) void checkAlert(false);
+    }
+  }, [checkAlert]);
 
   useEffect(() => {
     void refresh();
@@ -47,7 +60,10 @@ export function useCapture(): Capture {
         lastTickAt.current = null;
         startedAt.current = payload.session_id ? performance.now() : null;
         setLostReason(null);
-        if (payload.session_id) setLevels([]);
+        if (payload.session_id) {
+          setLevels([]);
+          void checkAlert(true);
+        }
         void refresh();
       }),
       events.captureEnded.listen(({ payload }) => {
@@ -59,7 +75,7 @@ export function useCapture(): Capture {
       window.clearInterval(poll);
       for (const u of unlisteners) void u.then((f) => f());
     };
-  }, [refresh]);
+  }, [refresh, checkAlert]);
 
   const recording = status?.recording ?? false;
 
@@ -86,6 +102,7 @@ export function useCapture(): Capture {
     levels,
     recordedMs,
     lostReason,
+    alert,
     refresh,
   };
 }

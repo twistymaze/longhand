@@ -129,6 +129,13 @@ pub struct RecordingStatus {
     pub interruption: Option<Interruption>,
     /// Free bytes where audio is being written.
     pub working_free_bytes: Option<u64>,
+    /// What a four-hour session at the microphone's rate needs there, its
+    /// processing included (R7b); `None` until the microphone is prepared.
+    pub session_demand_bytes: Option<u64>,
+    /// What each recorded second will need once processing begins.
+    pub processing_bytes_per_second: u64,
+    /// The free-space floor recording stops at (R7a).
+    pub reserve_bytes: u64,
 }
 
 #[derive(Serialize, Clone, Type, Debug)]
@@ -523,10 +530,14 @@ impl CaptureManager {
     }
 
     pub fn status(&self) -> Result<RecordingStatus, CaptureError> {
-        let (recording, reconnecting) = {
+        let (recording, reconnecting, sample_rate) = {
             let inner = self.inner();
             let reconnecting = inner.recovering.is_some();
-            (inner.active.is_some() || reconnecting, reconnecting)
+            (
+                inner.active.is_some() || reconnecting,
+                reconnecting,
+                inner.sample_rate,
+            )
         };
         let open = self.open_session()?;
         let interruption = match open.as_ref().map(|(_, state)| state) {
@@ -545,6 +556,11 @@ impl CaptureManager {
             working_free_bytes: recorder::storage::available_space(
                 self.working_root.parent().unwrap_or(&self.working_root),
             ),
+            session_demand_bytes: sample_rate.map(|rate| {
+                recorder::storage::session_demand(rate, recorder::storage::PLANNED_SESSION_SECONDS)
+            }),
+            processing_bytes_per_second: recorder::storage::PROCESSING_BYTES_PER_SECOND,
+            reserve_bytes: DISK_RESERVE_BYTES,
         })
     }
 

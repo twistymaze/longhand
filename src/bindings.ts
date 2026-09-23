@@ -197,6 +197,37 @@ async shortcutStatus() : Promise<ShortcutStatus> {
     return await TAURI_INVOKE("shortcut_status");
 },
 /**
+ * Whether an alert would reach the user now. Run as recording starts and
+ * polled while it lasts; the output is probed again when it changes.
+ */
+async alertCheck(force: boolean) : Promise<Result<AlertCheck, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("alert_check", { force }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Play the failed-capture cue once, for the user to confirm hearing it.
+ */
+async playAlertSound() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("play_alert_sound") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async confirmAlertSound(heard: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("confirm_alert_sound", { heard }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Summarize a landed session again, replacing its `summary.md` (R19,
  * AE17). Returns the summary's path.
  */
@@ -298,6 +329,18 @@ recordingChanged: "recording-changed"
 
 /** user-defined types **/
 
+/**
+ * Whether an alert raised now would reach the user (R5a).
+ */
+export type AlertCheck = { 
+/**
+ * Why the cue would not be heard, when it would not.
+ */
+output_problem: string | null; 
+/**
+ * The user has confirmed hearing the cue at setup.
+ */
+tone_heard: boolean }
 /**
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.
@@ -432,7 +475,20 @@ interruption: Interruption | null;
 /**
  * Free bytes where audio is being written.
  */
-working_free_bytes: number | null }
+working_free_bytes: number | null; 
+/**
+ * What a four-hour session at the microphone's rate needs there, its
+ * processing included (R7b); `None` until the microphone is prepared.
+ */
+session_demand_bytes: number | null; 
+/**
+ * What each recorded second will need once processing begins.
+ */
+processing_bytes_per_second: number; 
+/**
+ * The free-space floor recording stops at (R7a).
+ */
+reserve_bytes: number }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.
@@ -508,7 +564,11 @@ asr_model: string;
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).
  */
-learned_context_limits: Partial<{ [key in string]: number }> }
+learned_context_limits: Partial<{ [key in string]: number }>; 
+/**
+ * The user heard the alert cue played at setup (R5a, KTD14).
+ */
+alert_tone_heard: boolean }
 export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
 /**
  * An optional bound on how many people are speaking (R36).
