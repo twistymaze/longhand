@@ -14,6 +14,8 @@ sample.txt
 .env
 # Destination for manual test sessions: landed recordings.
 /manual-tests/
+# Reference screenshots for brainstorms: other apps showing real names.
+/docs/brainstorms/*-screenshots/
 
 # Build output
 target/

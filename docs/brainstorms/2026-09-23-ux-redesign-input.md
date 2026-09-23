@@ -16,7 +16,7 @@ Nothing in the UI is broken (the one broken item, the sidebar dropping sessions,
 
 ## Reference: Wispr Flow's notetaker
 
-The user considers its organisation very good. Longhand should not copy it pixel for pixel, but its approach is the model. Five screenshots were shared in the conversation; they contain real names and meeting content, so they are described here, not stored.
+The user considers its organisation very good. Longhand should not copy it pixel for pixel, but its approach is the model. The seven screenshots shared in the conversation contain real names and meeting content, so they are described here and kept only in the working copy, in the gitignored `docs/brainstorms/2026-09-23-ux-redesign-screenshots/`: 1–3 a note being recorded (Summary, My thoughts and Transcript tabs), 4–6 a completed note (a long turn split into paragraphs, the transcript's end, the summary), 7 home with a hovered note's preview. A fresh clone will not have them.
 
 **Home: past notes.** A main page lists previous notes grouped by day, each row a title and time. Hovering (or selecting) a row shows a side panel with the note's title, date and a short overview from the summary. Flow also shows upcoming meetings from a calendar and attendee names from Zoom or Teams; Longhand has neither. A speaker count would be a useful stand-in for attendees.
 
