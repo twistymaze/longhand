@@ -487,6 +487,7 @@ sequenceDiagram
 - All durations, gaps, and offsets in monotonic milliseconds (R3a); wall clock only in display fields.
 - The Rust toolchain is `1.94.0` via `rust-toolchain.toml`; TypeScript is strict; `bun` is the only JavaScript package manager.
 - Python only through `uv` (`uv run`), never system Python or `pip`.
+- UI units (U4's settings surfaces, U7, U12, and any later surface) are designed with the `apple-design` skill, paired with `emil-design-eng` for polish and `animate` for motion; see `CLAUDE.md`. Where Apple's guidance and U7's attention budget pull apart, the attention budget wins.
 
 ### Dependencies / Prerequisites
 
