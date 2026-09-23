@@ -1229,6 +1229,7 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
   - the Windows checklist: notification, sleep, Credential Manager, USB unplug.
 
   Those, with the laptop items carried from Phase 3, are the Phase 4 checkpoint.
+  The 30-minute real-microphone test is deferred by the user's decision (2026-09-23): arranging a real session will take days. Any problem it finds goes to a new plan.
 
 ---
 
