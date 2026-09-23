@@ -74,7 +74,7 @@ pub enum ProcessingStep {
     Finished,
 }
 
-fn stage_name(stage: session_core::Stage) -> String {
+pub(crate) fn stage_name(stage: session_core::Stage) -> String {
     serde_json::to_value(stage)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -246,6 +246,33 @@ impl EngineProvider for Models {
     }
 }
 
+/// A session finished while the window was away (R15). Nothing is posted
+/// while the window is in front: the surface already says so.
+fn notify_landed(app: &AppHandle, path: &std::path::Path) {
+    use tauri::Manager;
+    use tauri_plugin_notification::NotificationExt;
+    let visible = app
+        .get_webview_window(crate::window::MAIN_WINDOW)
+        .and_then(|w| Some(w.is_visible().ok()? && w.is_focused().ok()?))
+        .unwrap_or(false);
+    if visible {
+        return;
+    }
+    let folder = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("Session ready")
+        .body(format!("{folder} has its transcript and summary."))
+        .show()
+    {
+        log::warn!("could not post the landing notification: {e}");
+    }
+}
+
 pub struct ProcessingManager {
     runner: Arc<Runner>,
 }
@@ -271,6 +298,9 @@ impl ProcessingManager {
             }),
             suspended: Box::new(move || suspended.is_capturing()),
             events: Box::new(move |event| {
+                if let RunnerEvent::Landed { path, .. } = &event {
+                    notify_landed(&events, path);
+                }
                 if let Err(e) = ProcessingUpdate::from(event).emit(&events) {
                     log::warn!("could not emit a processing update: {e}");
                 }
@@ -309,6 +339,14 @@ impl ProcessingManager {
             Ok(_) => {}
             Err(e) => log::error!("could not retry sessions awaiting a destination: {e}"),
         }
+    }
+
+    pub fn retry(&self, session_id: &str) -> Result<(), String> {
+        self.runner.retry(session_id).map_err(|e| e.to_string())
+    }
+
+    pub fn unblock(&self, session_id: &str) -> Result<(), String> {
+        self.runner.unblock(session_id).map_err(|e| e.to_string())
     }
 
     /// Summarize a landed session again, replacing its `summary.md` (AE17).

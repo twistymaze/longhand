@@ -240,6 +240,20 @@ impl Store {
         Ok(next)
     }
 
+    /// Every session, oldest first.
+    pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, landed_path
+             FROM sessions ORDER BY created_at, rowid",
+        )?;
+        let rows = stmt.query_map([], read_session)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row??);
+        }
+        Ok(out)
+    }
+
     pub fn sessions_in(&self, state_name: &str) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, landed_path
@@ -449,6 +463,19 @@ impl Store {
             params![session_id, stage_key(stage)],
         )?;
         Ok(())
+    }
+
+    /// The stage a processing session last started, if it has a job.
+    pub fn current_stage(&self, session_id: &str) -> Result<Option<Stage>> {
+        let stage: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT stage FROM jobs WHERE session_id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(stage.and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()))
     }
 
     pub fn heartbeat(

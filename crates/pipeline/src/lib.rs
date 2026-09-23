@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod diarize;
 pub mod join;
 pub mod land;
+pub mod progress;
 pub mod resample;
 pub mod runner;
 pub mod summarize;

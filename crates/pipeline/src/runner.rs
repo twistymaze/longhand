@@ -461,6 +461,11 @@ impl Runner {
                 }
                 Err(StageError::Blocked(message)) => {
                     log::info!("{id} is blocked on the secret store: {message}");
+                    if let Err(e) =
+                        crate::progress::record_error(&self.env.store, id, stage, &message)
+                    {
+                        log::warn!("could not record why {id} is blocked: {e}");
+                    }
                     if let Err(e) = lock(&self.env.store).apply(id, &Event::CredentialUnavailable) {
                         log::warn!("could not mark {id} blocked: {e}");
                     }
@@ -479,6 +484,11 @@ impl Runner {
                 }
                 Err(StageError::Failed(message)) => {
                     log::error!("{stage:?} failed for {id}: {message}");
+                    if let Err(e) =
+                        crate::progress::record_error(&self.env.store, id, stage, &message)
+                    {
+                        log::warn!("could not record the failure of {id}: {e}");
+                    }
                     // A resume may have taken the session in the meantime;
                     // then there is nothing to mark.
                     if let Err(e) = lock(&self.env.store).apply(id, &Event::StageFailed(stage)) {

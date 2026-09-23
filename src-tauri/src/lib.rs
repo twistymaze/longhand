@@ -40,6 +40,12 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
             commands::processing::regenerate_summary,
+            commands::processing::retry_session,
+            commands::processing::unblock_session,
+            commands::session::list_sessions,
+            commands::session::session_detail,
+            commands::session::session_notes,
+            commands::session::session_document,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,

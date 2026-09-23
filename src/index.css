@@ -99,3 +99,19 @@ html {
     opacity: 0;
   }
 }
+
+/* A note followed into the transcript tints its turn, holds, and fades, so
+   the eye lands on it. Colour only: reduced motion keeps it. */
+@keyframes followed {
+  0%,
+  35% {
+    background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.followed {
+  animation: followed 1800ms linear;
+}

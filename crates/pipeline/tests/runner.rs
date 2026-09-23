@@ -1289,3 +1289,45 @@ async fn a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage() 
     assert_eq!(started, vec![Stage::Land]);
     assert!(landed(&r, "s").join("audio/segment-01.opus").exists());
 }
+
+// ------------------------------------------------------------- progress (U12)
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_view_opened_later_rebuilds_progress_and_the_failure_from_the_store() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    *r.script.blank_on.lock().unwrap() = vec![1];
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(
+        outcome,
+        Outcome::Failed {
+            stage: Stage::Verify,
+            ..
+        }
+    ));
+
+    let snapshot = pipeline::progress::snapshot(&r.store, "s").unwrap();
+    assert_eq!(
+        snapshot.done,
+        vec![
+            Stage::Assemble,
+            Stage::Diarize,
+            Stage::Transcribe,
+            Stage::Join
+        ]
+    );
+    assert_eq!(snapshot.current, Some(Stage::Verify));
+    let windows = plan(&r.store, "s").windows.len();
+    assert_eq!(snapshot.windows, Some((windows, windows)));
+    let message = pipeline::progress::error(&r.store, "s", Stage::Verify)
+        .unwrap()
+        .unwrap();
+    assert!(message.contains("misses speech"), "{message}");
+}

@@ -207,6 +207,72 @@ async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Retry a failed session, or one waiting for its destination, from its
+ * checkpoints.
+ */
+async retrySession(sessionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_session", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Try a blocked session's secret store again. Reading a locked keychain
+ * item is what asks macOS to unlock it (R20b).
+ */
+async unblockSession(sessionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("unblock_session", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Every session not yet landed, and the one that landed last: the
+ * switcher's list, oldest first.
+ */
+async listSessions() : Promise<Result<SessionEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_sessions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("session_detail", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * A session's notes, editable whatever its state (R11a).
+ */
+async sessionNotes(sessionId: string) : Promise<Result<NoteView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("session_notes", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The landed transcript and summary, read from the session's folder.
+ */
+async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("session_document", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -253,7 +319,17 @@ export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: strin
  * Deleted, renamed, or on a volume that is not mounted.
  */
 { kind: "missing"; path: string } | { kind: "not_a_directory"; path: string } | { kind: "not_writable"; path: string; message: string } | { kind: "low_space"; path: string; free_bytes: number; floor_bytes: number }
+export type DocLine = { kind: "turn"; position_ms: number; speaker: number | null; text: string } | 
+/**
+ * Between segments; `at_ms` is where the earlier segment ends.
+ */
+{ kind: "gap"; at_ms: number; duration_ms: number } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
+export type EndpointView = { host: string; model: string; 
+/**
+ * False when the transcript would cross the network unencrypted.
+ */
+encrypted: boolean }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "segmentation" | "embedding"
@@ -332,6 +408,55 @@ session_id: string | null; state: string | null; recording: boolean;
  * Free bytes where audio is being written.
  */
 working_free_bytes: number | null }
+export type SessionDetail = { entry: SessionEntry; 
+/**
+ * Stages whose work is complete.
+ */
+done: string[]; 
+/**
+ * The stage started last.
+ */
+current: string | null; windows_done: number | null; windows_total: number | null; 
+/**
+ * The stage a failed session stopped at.
+ */
+failed_stage: string | null; 
+/**
+ * Why it failed, is blocked, or is waiting for its destination.
+ */
+message: string | null; 
+/**
+ * Why the summary is missing, when the session will land with a stub.
+ */
+summary_problem: string | null; 
+/**
+ * The state machine allows Resume now (R6a).
+ */
+resumable: boolean; landed_path: string | null; 
+/**
+ * Where the summary goes, and what is sent: the transcript and notes (R30).
+ */
+endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean }
+export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; summary: SummaryView | null }
+export type SessionEntry = { id: string; 
+/**
+ * When the first segment began (RFC 3339), or when the session was made.
+ */
+started: string; 
+/**
+ * Recorded time, gaps excluded.
+ */
+duration_ms: number; 
+/**
+ * The lifecycle state's name: capturing, interrupted, queued,
+ * processing, blocked, processing_failed, awaiting_destination, landed.
+ */
+state: string; 
+/**
+ * The stage started last: the running one, or the one a failed
+ * session stopped at.
+ */
+stage: string | null }
 export type Settings = { settings_schema_version: number; shortcut: string; 
 /**
  * Every folder the user has ever chosen, oldest first (R25a). The index
@@ -364,6 +489,15 @@ export type ShortcutStatus = { chord: string; registered: boolean; error: string
  * An optional bound on how many people are speaking (R36).
  */
 export type SpeakerCountSetting = { kind: "exact"; count: number } | { kind: "range"; min: number; max: number }
+export type SummaryView = { 
+/**
+ * Markdown.
+ */
+body: string; 
+/**
+ * Summarization failed and this stands in for it.
+ */
+stub: boolean; host: string | null; model: string | null }
 
 /** tauri-specta globals **/
 

@@ -966,6 +966,21 @@ transcript turn at seg 1 within 12,000 -> position 5,652,000 -> rendered 01:34:1
   - Input: one session recording and an earlier one processing; action: view; expected: the switcher lists both and the window shows one at a time.
   - Input: processing completes while the window is hidden; action: complete; expected: a system notification naming the session.
 - **Verification:** Phase 2 checkpoint: a real Pathfinder session is recorded, processed, landed, and read in this surface; the user reports the recap usable.
+- **Execution notes (2026-09-22):**
+  - **The switcher.** The switcher is a Sessions section in the window's existing source-list sidebar, between the Scratchpad and the settings panes. It lists every stopped session not yet landed, plus the one that landed last. A session still recording or interrupted is the Scratchpad itself, so it is not listed twice. Stopping moves the view to the session just recorded; completion and every later change update its entry without moving the view. A landed session being read stays listed until the user leaves it, even after a newer one lands.
+  - **Rebuilt from the store.** Both views rebuild from the store on mount, on focus and on each lifecycle event (AE4): `list_sessions`, `session_detail`, `session_notes` and `session_document`. `pipeline::progress::snapshot` reads the completed stages, the job's current stage and the transcribe window counts from the checkpoints. The runner now records each failure's and block's message under its stage, so a view opened later can say why. Transcribe progress events trigger a re-read at most once a second; other stages show the live event's fraction.
+  - **Actions.**
+    - Resume appears only when the state machine accepts `UserResume` now and landing has not begun (R6a).
+    - A failure names the stage and its reason, lists the audio and transcript as kept, and offers Retry.
+    - Blocked says it is waiting for the keychain, with Continue, which retries the store; reading a locked keychain item is what asks macOS to unlock it. No failure wording.
+    - Waiting for a folder offers Choose Folder… (which retries every waiting session) and Try Again.
+    - The summarize row names the host and model and that the transcript and notes go there, flagging an unencrypted endpoint (R30).
+  - **The reading view.** Notes sit on the left in both the processing and reading views, so they stay in the same place as the session lands. Beside them, a segmented control switches between Summary and Transcript.
+    - An anchored note's timestamp is a link to the turn spanning it, centred and tinted briefly. A gap-anchored note links to the gap marker at its segment's end, placed by `session.md`'s segment ends. An un-anchored note shows "—" and no link.
+    - The summary's markdown is parsed into headings, lists and paragraphs with bold, italic and code runs, and rendered as elements, never as HTML: the body comes from a model.
+    - Regenerate is in the summary's footer, or prominent in a stub's notice.
+  - **Notification.** When a session lands with the window hidden or unfocused, a system notification names its folder (R15). Whether clicking it fronts the window is checked at the Phase 2b checkpoint in the signed bundle. `tauri-plugin-notification` exposes no click handler, and a hidden window is shown by the Reopen event or the tray.
+  - **Tests.** As in U7, the frontend tests are logic tests under `bun test` rather than DOM tests of the components: stage rows and wording, note-to-passage targeting, and the markdown parser, including that HTML stays text. The views were reviewed in a browser against invented fixture data through `@tauri-apps/api/mocks`.
 
 ### Phase 3 -- Survivability
 
