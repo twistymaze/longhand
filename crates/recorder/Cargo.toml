@@ -20,4 +20,6 @@ hound = "3.5.1"
 session-core = { path = "../session-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 tempfile = "3"
+# The soak reads its own resident memory.
+sysinfo = { version = "0.38", default-features = false, features = ["disk", "system"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }

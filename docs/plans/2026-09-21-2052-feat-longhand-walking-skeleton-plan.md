@@ -1216,6 +1216,19 @@ Added at the Phase 2b checkpoint (2026-09-23), before Phase 3.
   - Input: a scripted sequence of flap, floor, sleep, kill; action: run; expected: each yields the state the diagram specifies and no lost audio.
   - Input: installed Windows build; action: manual checklist; expected: notification shown, sleep produces two segments, credential stored in Credential Manager, capture from a USB microphone survives unplugging.
 - **Verification:** Phase 4 checkpoint passes; the nightly soak job is green; the platform checklist is recorded.
+- **Execution notes (2026-09-23):** Built:
+  - **The recorder soak** (`crates/recorder/tests/soak.rs`, ignored): 4 h at 48 kHz through the chunk writer beside a busy core. On this Mac it writes 240 contiguous chunks in 3.7 s, and resident memory stays at 7 MB from the first minute to the peak.
+  - **The kill test** in `crates/pipeline/tests/runner.rs`, `killed_after_every_stage_the_session_lands_once_with_the_same_transcript`. It uses the runner's fake engines, so it runs in every CI pass instead of only on a machine holding the U1 recording and the models. Each "process" runs one stage and is cancelled as the next begins, then a fresh runner reclaims. The session lands once, and its transcript is byte-identical to an uninterrupted run's.
+  - **The CI soak job**, which runs only on demand (`gh workflow run ci.yml --ref <branch> -f soak=true`), not nightly, because runner minutes are billed.
+
+  The scripted flap, floor, sleep and kill sequence is covered by the state-machine tests and by U13–U16's unit tests, not by one combined script.
+
+  Still to do, and not something code here can do:
+  - the notarized, stapled, quarantined-install launch, which needs the notary credentials;
+  - 30 minutes of a real microphone capturing while the real stack transcribes, on macOS and on an installed Windows build;
+  - the Windows checklist: notification, sleep, Credential Manager, USB unplug.
+
+  Those, with the laptop items carried from Phase 3, are the Phase 4 checkpoint.
 
 ---
 

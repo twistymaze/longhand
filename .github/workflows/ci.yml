@@ -8,6 +8,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      soak:
+        description: Also run the four-hour recorder soak (U21)
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -133,6 +138,22 @@ jobs:
       - name: Tauri build (Windows installer)
         if: runner.os == 'Windows'
         run: bun tauri build --debug --bundles nsis
+
+  # The recorder soak writes 1.4 GB as fast as the disk takes it. On demand
+  # rather than nightly, since runner minutes are billed:
+  # `gh workflow run ci.yml --ref <branch> -f soak=true`.
+  soak:
+    name: Recorder soak
+    if: github.event_name == 'workflow_dispatch' && inputs.soak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-soak
+      - name: Recorder soak
+        run: cargo test -p recorder --release --test soak -- --ignored --nocapture
 
   deny:
     name: cargo deny

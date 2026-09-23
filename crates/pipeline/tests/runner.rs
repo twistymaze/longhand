@@ -1508,3 +1508,94 @@ async fn shutdown_frees_the_engine_and_nothing_loads_it_again() {
     );
     assert_eq!(r.script.loads.lock().unwrap().len(), 1);
 }
+
+/// A process that runs one stage of `id` and is killed as the next starts:
+/// its events cancel the session at the second stage it begins (U21).
+fn one_stage_process(
+    store: &SharedStore,
+    root: &std::path::Path,
+    dest: &std::path::Path,
+    id: &'static str,
+) -> (
+    Arc<Runner>,
+    Arc<Script>,
+    Arc<std::sync::OnceLock<Arc<Runner>>>,
+) {
+    let script: Arc<Script> = Arc::default();
+    *script.destination.lock().unwrap() = Some(dest.to_path_buf());
+    let this: Arc<std::sync::OnceLock<Arc<Runner>>> = Arc::default();
+    let killer = Arc::clone(&this);
+    let started = AtomicUsize::new(0);
+    let runner = Runner::new(Environment {
+        store: Arc::clone(store),
+        working_root: root.to_path_buf(),
+        engines: Box::new(Provider(Arc::clone(&script))),
+        suspended: Box::new(|| false),
+        events: Box::new(move |e| {
+            if matches!(e, RunnerEvent::StageStarted { .. })
+                && started.fetch_add(1, Ordering::SeqCst) == 1
+                && let Some(runner) = killer.get()
+            {
+                runner.cancel(id);
+            }
+        }),
+    });
+    let _ = this.set(Arc::clone(&runner));
+    (runner, script, this)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn killed_after_every_stage_the_session_lands_once_with_the_same_transcript() {
+    // The uninterrupted run to compare against.
+    let clean = rig().await;
+    queue_session(
+        &clean.store,
+        &clean.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(clean.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let expected = std::fs::read_to_string(landed(&clean, "s").join(TRANSCRIPT_FILE)).unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let mut processes = 0;
+    loop {
+        processes += 1;
+        assert!(processes <= 12, "the session never finished");
+        let (runner, script, _) = one_stage_process(&store, root.path(), dest.path(), "s");
+        let _summaries = with_summaries(&script).await;
+        runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap();
+        let (_, outcome) = runner.run_next().await.unwrap();
+        if outcome == Outcome::Finished {
+            break;
+        }
+    }
+
+    // One process per stage, so every stage boundary saw a kill.
+    assert!(processes >= 5, "{processes} processes");
+    let folders: Vec<_> = std::fs::read_dir(dest.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(folders.len(), 1, "{folders:?}");
+    let record = store.lock().unwrap().session("s").unwrap().unwrap();
+    assert_eq!(record.state, SessionState::Landed);
+    let folder = std::path::PathBuf::from(record.landed_path.unwrap());
+    let transcript = std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap();
+    assert_eq!(transcript, expected);
+    assert!(!root.path().join("s").exists());
+}
