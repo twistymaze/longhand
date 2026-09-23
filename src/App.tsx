@@ -35,6 +35,8 @@ function MicrophonePanel() {
   }, []);
   useEffect(() => {
     void refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, [refresh]);
 
   if (!isMac) {
@@ -53,7 +55,13 @@ function MicrophonePanel() {
       <button
         className={button}
         onClick={async () => {
+          // The plugin passes a nil completion handler to AVCaptureDevice, so this
+          // resolves before the user answers the system dialog. Poll instead.
           await requestMicrophonePermission();
+          for (let i = 0; i < 120; i++) {
+            if (await checkMicrophonePermission()) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
           await refresh();
         }}
       >
