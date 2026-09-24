@@ -12,16 +12,16 @@ Some of what it holds never leaves it: the processing audio and the raw recovery
 ### Destination
 The folder the user chose to receive finished sessions, possibly on another volume or in a synced cloud folder that several computers share. Nothing partial ever appears in it.
 
-### Landing
-Moving a finished, verified session from the Working location into the Destination under its final folder name. At every moment exactly one location holds a complete copy, and a crash at any point resumes from what is on disk rather than starting over or losing the session.
-*Avoid in user-facing text:* "landed" — the app says saved, or shows a landed session as Ready.
+### Save
+The step that moves a finished, verified session from the Working location into the Destination under its final folder name. Its end state is Saved. At every moment, exactly one location holds a complete copy. After a crash at any point, Save continues from what is on disk. It does not start again and it does not lose the session.
+*Avoid in all text (code, docs and UI):* "land", "lands", "landed" and "landing". The step is Save and its end state is Saved. The UI says saved, or shows a saved session as Ready.
 
-Landing advances one step at a time and records each step durably before taking the next, so every step must recognise, from disk alone, a step that completed just before a crash. The Working-location copy is removed only after the session is recorded under its final name.
+Save does one step at a time. It records each step durably before it does the next step. Thus each step must recognise, from disk alone, a step that completed just before a crash. The app removes the Working-location copy only after it records the session under its final name.
 
 ### Staging
-The hidden, session-specific folder inside the Destination where a landing session is assembled before its final rename. Because it sits beside the final name, the last step of every Landing is a same-volume rename, even when the Working location is on another volume and the session had to be copied into Staging.
+The hidden, session-specific folder inside the Destination. Save assembles the session in this folder before the final rename. The folder is next to the final name, so the last step of every Save is a same-volume rename. This is also true when the Working location is on another volume and Save had to copy the session into Staging.
 
 A staging folder is removed at launch only when its session is recorded as completed: until then it may hold the only complete copy.
 
 ### Home folder
-The folder a session was landed into. A session keeps its home folder for life: when a saved session is resumed, recorded into and processed again, its home folder is updated in place (new audio added beside the old, the documents replaced) instead of Landing a second copy.
+The folder that Save put a session into. A session keeps its home folder for life. When a saved session is resumed, recorded into and processed again, the app updates its home folder in place (it adds new audio next to the old audio and replaces the documents). It does not save a second copy.
