@@ -1,0 +1,109 @@
+# Feature ideas
+
+A parking lot of feature ideas for Longhand, one file per idea. Nothing here is committed or scoped. Read it when deciding what to brainstorm next.
+
+## Keeping this up to date
+
+This is a running list. Add ideas as they come up in any session, not only in planning.
+
+- **A new idea** gets its own file, `docs/ideas/<kebab-case-slug>.md`, in the format below, plus a row in the matching area table here. Check the tables first: if the idea extends an existing one, add a note to that file instead of starting a new one.
+- **An idea only mentioned in passing** in a plan, brainstorm, review or conversation still belongs here. Record it here as well as wherever else it was mentioned, so the parking lot stays complete.
+- **When an idea is picked up,** set its status to `in-progress` and link the brainstorm or plan from its file. When it ships, set `done` and move its row to Done. Keep the file: it records where the work came from.
+- **An idea that conflicts with a boundary** in `STRATEGY.md` goes to Ruled out below with its reason. It gets no file, so the reasoning isn't re-derived later.
+- **When anything changes,** update the file and its row here in the same commit.
+
+Each idea file has this frontmatter and a short body:
+
+```markdown
+---
+title: A plain-language name
+status: open            # open | parked | in-progress | done
+area: capture           # capture | transcript-and-summary | processing | library-and-sharing | interface
+added: 2026-09-24
+source: "where it came up (a plan section, a brainstorm, a conversation)"
+related: [other-idea-slug]
+---
+
+# A plain-language name
+
+## Idea
+What it is, in a few sentences.
+
+## Why
+The problem it solves, or who asked. (For a parked idea: `## Why parked`.)
+
+## Notes / Current state
+Open questions, dependencies, what already exists.
+```
+
+**Status:** `open` is worth doing and waiting for its turn. `parked` was considered and set aside, with the reason in its file. `in-progress` has a brainstorm or plan. `done` has shipped.
+
+### How this relates to the compound-engineering folders
+
+- `docs/ideation/` is where `ce-ideate` writes each ranked ideation session. An idea that survives one of those sessions and isn't acted on belongs here.
+- `docs/plans/` is where `ce-brainstorm` writes the requirements it produces, as a requirements-only plan, and where `ce-plan` adds the implementation plan. Picking an idea up usually means brainstorming it, which creates that plan; link it from the idea's file.
+- `docs/brainstorms/` is a legacy location that current compound-engineering skills only read old `*-requirements` files from. Don't put idea briefs there; an idea's brief lives in its file here, with any private material beside it (see `ux-redesign.md`).
+- `docs/solutions/` holds learnings from solved problems.
+
+This folder is our own convention, not something compound engineering defines, so it has to keep fitting the plugin as the plugin changes. For example, a future version might give ideas a location of its own, move `ideation/` or where brainstorm output goes, or have a skill read or write backlog items. Whenever something like that surfaces, or the two start to disagree, raise it and resolve it: move this folder to the plugin's convention, or change how it links to the plugin's folders. Don't work around it quietly.
+
+## Capture
+
+| Idea | Status | In short |
+|---|---|---|
+| [System audio capture](system-audio-capture.md) | open | Record the computer's own audio for meetings on calls |
+| [Let the laptop sleep during a session](prevent-sleep-opt-out.md) | open | An opt-out for the four-hour sleep assertion on battery |
+| [A recording shortcut per folder](shortcut-per-folder.md) | parked | A hotkey per destination; set aside for "move it later" |
+| [Import an existing recording](import-existing-recording.md) | open | Process a file from a dedicated recorder as a session |
+| [Remember a speaker count per folder](speaker-count-per-folder.md) | open | Per-folder default; per-session counts already exist |
+
+## Transcript and summary
+
+| Idea | Status | In short |
+|---|---|---|
+| [Summary kinds chosen by folder](summary-kind-per-folder.md) | open | A recap for Pathfinder, decisions and follow-ups for work |
+| [Custom vocabulary per folder](custom-vocabulary.md) | open | A word list that corrects names and jargon |
+| [Live transcript while recording](live-transcript-view.md) | open | Offered only when the selected model streams (KD8) |
+| [Carry context from the previous session](session-to-session-context.md) | open | "Previously on" for recurring sessions |
+| [A diarization evaluation loop](diarization-evaluation-loop.md) | open | Measure speaker turns on real sessions, repeatedly |
+| [Alternative diarization architectures](alternative-diarization-architectures.md) | parked | MOSS or Sortformer if pyannote disappoints |
+| [Transcript review and correction](transcript-review-and-correction.md) | open | Seek, merge and split turns, fix mangled names |
+
+## Processing
+
+| Idea | Status | In short |
+|---|---|---|
+| [Schedule processing around power and thermals](power-aware-processing.md) | open | Wait for idle and plugged in before heavy compute |
+
+## Library and sharing
+
+| Idea | Status | In short |
+|---|---|---|
+| [Library and browsing](library-and-browsing.md) | open | Find, preview, search and tidy past sessions |
+| [One library across computers](cross-machine-library.md) | open | A shared destination listed as one library |
+| [Obsidian vault sync](obsidian-vault-sync.md) | open | Keep sessions in step with a vault |
+| [A local CLI](local-cli.md) | open | Command-line access to the session store |
+
+## Interface
+
+| Idea | Status | In short |
+|---|---|---|
+| [UX redesign](ux-redesign.md) | open | Settings window, session list home, one tabbed session page |
+| [Choose the recognition model](recognition-model-picker.md) | open | A Settings picker and a second engine |
+
+## Done
+
+Ideas from the original list that the walking skeleton ended up building.
+
+- **Timestamps in the summarization prompt.** Every transcript turn and note reaches the summarizer with its clock position, so a summary can say when something happened.
+- **Finer-grained checkpointing.** Transcription checkpoints each window, so a restart redoes only unfinished windows.
+- **A speaker count per session.** An optional count or range per session, with an app-wide default (KD15, R36). What remains is the per-folder default above.
+
+## Ruled out
+
+These conflict with a boundary in `STRATEGY.md`.
+
+- **Speaker identity:** enrollment, voiceprints, names attached to speakers. Turn boundaries are the requirement; generic labels that drift across a long session are acceptable.
+- **Calendar integration,** including auto-start and prefill. Revisit only if a genuinely simple path appears inside an enterprise.
+- **Any organization scheme beyond folders:** no linking, no graph, no tags. Obsidian exists.
+- **Anything that writes into Longhand from outside:** the only inputs are what you record and what you type.
