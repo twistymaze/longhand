@@ -71,8 +71,8 @@
 # on your session model and the run says so. Invalid/commented/missing -> no
 # elevation.
 
-plan_model: fable              # model alias for plan authoring; candidate preference when a Bake-off runs (no default)
-brainstorm_model: fable        # model alias for approach generation; candidate preference when a Bake-off runs (no default)
+plan_model: opus              # model alias for plan authoring; candidate preference when a Bake-off runs (no default)
+brainstorm_model: opus        # model alias for approach generation; candidate preference when a Bake-off runs (no default)
 
 # --- PR concept teaching (ce-commit-push-pr) ---
 # When a PR introduces a concept new to the codebase, the generated PR
@@ -130,7 +130,7 @@ brainstorm_model: fable        # model alias for approach generation; candidate 
 
 # cross_model_review_mode: off   # auto | off (default: auto)
 cross_model_peer: codex          # codex | claude | grok | cursor | composer | opencode
-cross_model_model: gpt-5.6-sol    # model alias or full id for the resolved peer target (no default)
+cross_model_model: gpt-6-sol    # model alias or full id for the resolved peer target (no default)
 cross_model_effort: high        # reasoning effort for the resolved peer target (no default)
 
 # --- ce-work implementation engine ---
