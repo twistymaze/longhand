@@ -1,0 +1,25 @@
+[package]
+name = "recorder"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+audio = { path = "../audio" }
+futures-util = "0.3"
+log.workspace = true
+sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+audio-mock = { path = "../audio-mock" }
+hound = "3.5.1"
+session-core = { path = "../session-core" }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+tempfile = "3"
+# The soak reads its own resident memory.
+sysinfo = { version = "0.38", default-features = false, features = ["disk", "system"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }

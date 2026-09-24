@@ -1,0 +1,51 @@
+# Licence gate for everything linked into the binary (Implementation Constraints).
+# LGPL, GPL and MPL fail the build; the allow-list is the whole policy.
+
+[graph]
+all-features = false
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+# MPL-2.0 is file-level copyleft and arrives only through Tauri itself: Servo's
+# CSS parser (via tauri-utils and wry) and `dirs`. Tauri cannot be built without
+# them, so each is excepted by name; an MPL crate anywhere else still fails.
+# Unmodified MPL files ship with their source available upstream, which is all
+# the licence asks of a binary distribution.
+exceptions = [
+  { crate = "cssparser", allow = ["MPL-2.0"] },
+  { crate = "cssparser-macros", allow = ["MPL-2.0"] },
+  { crate = "dtoa-short", allow = ["MPL-2.0"] },
+  { crate = "selectors", allow = ["MPL-2.0"] },
+  { crate = "option-ext", allow = ["MPL-2.0"] },
+  # A permissive data licence on Mozilla's root certificates, which reach the
+  # graph only as a build dependency of ort-sys (its ONNX Runtime download);
+  # nothing of it is linked into the binary.
+  { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
+]
+
+# Workspace crates are unpublished and carry no licence field of their own.
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# No git dependencies: every crate comes from crates.io (Implementation Constraints).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

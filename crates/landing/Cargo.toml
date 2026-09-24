@@ -1,0 +1,19 @@
+[package]
+name = "landing"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+libc = "0.2"
+log.workspace = true
+serde.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde_json.workspace = true
+tempfile = "3"

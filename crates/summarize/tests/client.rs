@@ -1,0 +1,163 @@
+//! The chat-completions client: redirects, deadlines, credentials, errors.
+
+mod common;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use common::{Reply, completion, serve};
+use summarize::client::Message;
+use summarize::{Client, Endpoint, Limits, SummarizeError};
+
+fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
+    Endpoint {
+        base_url: base.into(),
+        model: "m".into(),
+        credential: credential.map(str::to_string),
+    }
+}
+
+fn hello() -> Vec<Message> {
+    vec![Message {
+        role: "user",
+        content: "hello".into(),
+    }]
+}
+
+#[tokio::test]
+async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
+    let target = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(200, completion("stolen")),
+    )]))
+    .await;
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Redirect(307, format!("{}/chat/completions", target.base)),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, Some("secret"))).unwrap();
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let SummarizeError::Redirect { status, location } = &err else {
+        panic!("{err:?}");
+    };
+    assert_eq!(*status, 307);
+    assert!(location.starts_with(&target.base));
+    assert!(target.seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_endpoint_that_never_answers_hits_the_deadline() {
+    let mock = serve(HashMap::from([("/v1/chat/completions", Reply::Hang)])).await;
+    let quick = Limits {
+        connect: Duration::from_secs(1),
+        response: Duration::from_millis(300),
+        idle: Duration::from_millis(300),
+        total: Duration::from_secs(1),
+        max_bytes: 1 << 20,
+    };
+    let client = Client::with_limits(endpoint(&mock.base, None), quick, quick).unwrap();
+    let started = Instant::now();
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Deadline("response")),
+        "{err:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[tokio::test]
+async fn the_credential_goes_only_as_a_bearer_to_the_configured_endpoint() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(200, completion("fine")),
+    )]))
+    .await;
+    let with = Client::new(endpoint(&mock.base, Some("sk-test"))).unwrap();
+    assert_eq!(with.complete(&hello(), 100).await.unwrap().text, "fine");
+    let without = Client::new(endpoint(&mock.base, None)).unwrap();
+    without.complete(&hello(), 100).await.unwrap();
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen[0].authorization.as_deref(), Some("Bearer sk-test"));
+    assert_eq!(seen[1].authorization, None);
+    assert!(seen[0].body.contains("\"max_tokens\":100"));
+}
+
+#[tokio::test]
+async fn a_context_rejection_is_pressure_and_a_cut_off_reply_is_not() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#.into(),
+        ),
+    )]))
+    .await;
+    let err = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .complete(&hello(), 100)
+        .await
+        .unwrap_err();
+    assert!(err.is_context_pressure(), "{err:?}");
+
+    let cut = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(
+            200,
+            r#"{"choices":[{"message":{"content":"half"},"finish_reason":"length"}]}"#.into(),
+        ),
+    )]))
+    .await;
+    let err = Client::new(endpoint(&cut.base, None))
+        .unwrap()
+        .complete(&hello(), 100)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SummarizeError::ReplyCutOff));
+    assert!(
+        !err.is_context_pressure(),
+        "the prompt fit; the reply needs room"
+    );
+}
+
+#[tokio::test]
+async fn a_model_refusing_max_tokens_is_asked_again_with_max_completion_tokens() {
+    let reply = Reply::With(Arc::new(|body: &str| {
+        if body.contains("\"max_tokens\"") {
+            (
+                400,
+                r#"{"error":{"message":"Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."}}"#.into(),
+            )
+        } else {
+            (200, completion("ok"))
+        }
+    }));
+    let mock = serve(HashMap::from([("/v1/chat/completions", reply)])).await;
+    let text = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .complete(&hello(), 50)
+        .await
+        .unwrap()
+        .text;
+    assert_eq!(text, "ok");
+    assert_eq!(mock.seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn plain_http_to_another_machine_is_flagged_and_loopback_is_not() {
+    let flagged = |url: &str| {
+        Client::new(endpoint(url, None))
+            .unwrap()
+            .crosses_network_unencrypted()
+    };
+    assert!(flagged("http://192.168.1.20:1234/v1"));
+    assert!(flagged("http://gpu-box.local/v1"));
+    assert!(!flagged("http://localhost:1234/v1"));
+    assert!(!flagged("http://127.0.0.1:8080/v1"));
+    assert!(!flagged("https://api.example.com/v1"));
+    assert!(matches!(
+        Client::new(endpoint("ftp://x/v1", None)),
+        Err(SummarizeError::BadUrl(_))
+    ));
+}

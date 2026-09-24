@@ -6,3 +6,20 @@ reference-source/
 
 # Compound Engineering local scratch
 .context/compound-engineering/
+
+# Local evaluation fixtures — real recordings, never committed.
+sample.m4a
+sample.txt
+/fixtures/
+.env
+# Destination for manual test sessions: landed recordings.
+/manual-tests/
+# Reference screenshots for brainstorms: other apps showing real names.
+/docs/brainstorms/*-screenshots/
+
+# Build output
+target/
+node_modules/
+dist/
+src-tauri/gen/
+src-tauri/transcribe-libs/

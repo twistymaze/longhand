@@ -1,0 +1,20 @@
+[package]
+name = "onnx"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+cuda = ["ort/cuda"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
+
+[dependencies]
+ndarray = "0.16"
+ort = { version = "=2.0.0-rc.10", features = ["ndarray"] }
+thiserror.workspace = true
+# The borrowed code logs through `tracing`; its `log` feature forwards to the
+# app's `log` facade when no subscriber is installed.
+tracing = { version = "0.1", features = ["log"] }

@@ -1,0 +1,209 @@
+name: CI
+
+# The repository is private, so runner minutes are billed, macOS and
+# Windows at a multiple. Local checks gate day-to-day work
+# (scripts/check-windows.sh included); CI runs when a branch asks to merge,
+# and on demand: `gh workflow run ci.yml --ref <branch>`.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      soak:
+        description: Also run the four-hour recorder soak (U21)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # transcribe-cpp builds ggml from source; its deep paths need long-path
+      # support on Windows (as Handy's CI enables it).
+      - name: Enable long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+          git config --system core.longpaths true
+
+      - uses: actions/checkout@v7
+
+      # The Windows x64 build links ggml's Vulkan backend (KTD6), which needs
+      # the SDK's headers and glslc at build time. Version as Handy pins it.
+      # The action's own cache holds only the installer, which downloads in
+      # seconds, and it runs on the deprecated Node 20 `actions/cache@v4`.
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: humbletim/install-vulkan-sdk@v1.2
+        with:
+          version: 1.4.309.0
+          cache: false
+
+      # ggml-vulkan does `find_package(SPIRV-Headers CONFIG REQUIRED)`, and the
+      # SDK install exposes no findable SPIRV-HeadersConfig.cmake. The
+      # header-only vcpkg package on CMAKE_PREFIX_PATH resolves it, as Handy's
+      # CI does.
+      - name: Install SPIRV-Headers (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install spirv-headers:x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install spirv-headers failed" }
+          $prefix = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" -replace '\\','/'
+          $combined = if ($env:CMAKE_PREFIX_PATH) { "$prefix;$env:CMAKE_PREFIX_PATH" } else { $prefix }
+          Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$combined"
+
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+          # For the Windows lint that runs on macOS (below).
+          targets: ${{ runner.os == 'macOS' && 'x86_64-pc-windows-msvc' || '' }}
+
+      # Saved even when a later step fails: otherwise a job that has never
+      # passed never gets a cache, and every run compiles ggml, ONNX Runtime
+      # and SQLite from scratch. The key follows Cargo.lock only, and an exact
+      # hit is never saved again, so a change to how CI builds (flags,
+      # profiles, which cargo commands run) needs `prefix-key` bumped or its
+      # new artifacts are never cached.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-rust
+          cache-on-failure: true
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      # The two jobs run side by side, so the run lasts as long as the slower
+      # Windows job. Checks that come out the same on every platform
+      # (frontend, formatting, lint, bindings, provenance) run on macOS only;
+      # Windows runs what differs there: the tests and the installer.
+      - name: Frontend build (typecheck + bundle)
+        if: runner.os == 'macOS'
+        run: bun run build
+
+      - name: Frontend tests
+        if: runner.os == 'macOS'
+        run: bun run test
+
+      - name: rustfmt
+        if: runner.os == 'macOS'
+        run: cargo fmt --all --check
+
+      - name: clippy
+        if: runner.os == 'macOS'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Lints the Windows-only code from macOS, in place of clippy on the
+      # Windows runner. It leaves out the crates that build C or C++, whose
+      # Windows code the Windows tests still compile.
+      - name: clippy for Windows
+        if: runner.os == 'macOS'
+        run: scripts/check-windows.sh
+
+      # One cargo command over the same crates as clippy, so shared
+      # dependencies compile once and ggml's C++ build runs once. The app's
+      # test binaries start on Windows because build.rs embeds the app
+      # manifest in every binary the app crate links.
+      - name: tests
+        run: cargo test --workspace
+
+      # The tests just regenerated src/bindings.ts (`export_bindings`).
+      - name: Bindings are current
+        if: runner.os == 'macOS'
+        run: git diff --exit-code src/bindings.ts
+
+      - name: Provenance (R26, R27)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/check-provenance.sh --self-test
+          scripts/check-provenance.sh
+
+      # These builds prove the app bundles, not how fast it runs, so they
+      # use the debug profile the tests just built: a release build compiles
+      # every dependency a second time (412 crates) and doubles the cache.
+      - name: Tauri build (macOS, ad-hoc signed)
+        if: runner.os == 'macOS'
+        # CI holds no signing certificate; "-" overrides the Developer ID
+        # identity in tauri.conf.json with an ad-hoc signature.
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: bun tauri build --debug --bundles app
+
+      # The installer carries the VC++ runtime app-local, so Longhand starts
+      # on a machine without a current redistributable. build.rs stages the
+      # DLLs from these dirs, taken from the Visual Studio install that
+      # compiled the native code, as Handy's CI does.
+      - name: Locate the VC++ runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -property installationPath
+          if (-not $vsRoot) { throw "vswhere found no Visual Studio installation" }
+          $version = (Get-Content (Join-Path $vsRoot "VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt")).Trim()
+          $archDir = Join-Path $vsRoot "VC\Redist\MSVC\$version\x64"
+          $crt = Get-ChildItem $archDir -Directory -Filter "Microsoft.VC*.CRT" | Sort-Object Name | Select-Object -Last 1
+          if (-not $crt -or -not (Test-Path (Join-Path $crt.FullName "msvcp140.dll"))) {
+            throw "VC++ CRT redist not found under $archDir"
+          }
+          $dirs = $crt.FullName
+          $omp = Get-ChildItem $archDir -Directory -Filter "Microsoft.VC*.OpenMP" | Sort-Object Name | Select-Object -Last 1
+          if ($omp) { $dirs = "$dirs;$($omp.FullName)" }
+          Add-Content -Path $env:GITHUB_ENV -Value "LONGHAND_VC_REDIST_DIRS=$dirs"
+
+      - name: Tauri build (Windows installer)
+        if: runner.os == 'Windows'
+        run: bun tauri build --debug --bundles nsis
+
+      # A runner has the runtime installed, so launching the app here would
+      # not notice it missing; the installer's contents do.
+      - name: Installer carries the VC++ runtime (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          installer=$(ls target/debug/bundle/nsis/*.exe | head -1)
+          listing=$(7z l "$installer")
+          for dll in msvcp140.dll vcruntime140.dll; do
+            grep -qi "$dll" <<<"$listing" || { echo "$installer lacks $dll"; exit 1; }
+          done
+
+  # The recorder soak writes 1.4 GB as fast as the disk takes it. On demand
+  # rather than nightly, since runner minutes are billed:
+  # `gh workflow run ci.yml --ref <branch> -f soak=true`.
+  soak:
+    name: Recorder soak
+    if: github.event_name == 'workflow_dispatch' && inputs.soak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-soak
+      - name: Recorder soak
+        run: cargo test -p recorder --release --test soak -- --ignored --nocapture
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses sources bans
