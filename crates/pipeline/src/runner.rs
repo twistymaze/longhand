@@ -52,8 +52,8 @@ pub trait EngineProvider: Send + Sync {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
-    /// The destination folder chosen now, read when the session lands, so
-    /// a destination changed during recording lands it in the last (AE7).
+    /// The destination folder chosen now. It is read when the session is saved,
+    /// so a change during recording saves the session in the last one (AE7).
     fn destination(&self) -> Option<PathBuf>;
 }
 
@@ -113,7 +113,7 @@ pub enum RunnerEvent {
         session_id: String,
         what: String,
     },
-    /// Summarization failed; the session lands with a stub summary (KD13).
+    /// Summarization failed; the session is saved with a stub summary (KD13).
     SummaryUnavailable {
         session_id: String,
         message: String,
@@ -293,7 +293,7 @@ impl Runner {
         Ok(ids)
     }
 
-    /// Summarize a landed session again, replacing its `summary.md` (R19,
+    /// Summarize a saved session again, replacing its `summary.md` (R19,
     /// AE17). Takes its turn with the stages, one at a time (R20c).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
         let _permit = self
@@ -354,7 +354,7 @@ impl Runner {
     pub async fn run(self: Arc<Self>) {
         loop {
             // A session waiting on a model is back at the head of the queue;
-            // claiming it again at once would spin until the model lands.
+            // claiming it again at once would spin until the model download finishes.
             while let Some((_, outcome)) = self.run_next().await
                 && outcome != Outcome::Waiting
             {}
@@ -403,8 +403,8 @@ impl Runner {
 
     async fn run_session(&self, id: &str, model: &str, cancel: CancellationToken) -> Outcome {
         let emit = |event| (self.env.events)(event);
-        // Once landing has begun, the working directory may be gone: only
-        // landing itself is left to finish.
+        // Once saving has begun, the working directory may be gone: only
+        // the save itself is left to finish.
         let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
         for &stage in STAGES {
             if saving && stage != Stage::Save {
@@ -414,9 +414,9 @@ impl Runner {
             match result {
                 Ok(()) => {}
                 // A failed summary costs the summary, not the session: it
-                // lands with a stub naming the failure (KD13, R22).
+                // is saved with a stub naming the failure (KD13, R22).
                 Err(StageError::Failed(message)) if stage == Stage::Summarize => {
-                    log::warn!("summarization failed for {id}; landing without it: {message}");
+                    log::warn!("summarization failed for {id}; saving without it: {message}");
                     if let Err(e) = save::record_summary_failure(&self.env.store, id, &message) {
                         log::error!("could not record the summary failure of {id}: {e}");
                     }
@@ -700,7 +700,7 @@ fn execute(
                 control,
             )?;
             log::info!(
-                "{id} landed at {}{}",
+                "{id} saved at {}{}",
                 saved.path.display(),
                 if saved.copied {
                     " (copied across volumes)"
@@ -725,7 +725,7 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
     })
 }
 
-/// For work on a landed session: stops on shutdown and waits out capture,
+/// For work on a saved session: stops on shutdown and waits out capture,
 /// with no processing state to be taken back from.
 struct Unattended {
     cancel: CancellationToken,

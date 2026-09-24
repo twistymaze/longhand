@@ -18,7 +18,7 @@ pub struct Readiness {
     pub destination: DestinationStatus,
     /// Microphone authorized, a destination chosen, and the chord registered
     /// (R1c). A destination that is unreachable right now can be changed
-    /// before the session lands (R23), so it is shown rather than blocking.
+    /// before the session is saved (R23), so it is shown rather than blocking.
     pub armed: bool,
     pub shortcut: ShortcutStatus,
     /// Catalog ids of required weights not yet on disk.

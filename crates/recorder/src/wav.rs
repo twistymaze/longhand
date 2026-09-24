@@ -135,7 +135,7 @@ mod tests {
         wav.write(&[0.25; 100]).unwrap();
         wav.flush().unwrap();
         drop(wav); // the header still says zero samples
-        // Half a sample landed before the crash.
+        // Half a sample reached the disk before the crash.
         OpenOptions::new()
             .append(true)
             .open(&path)

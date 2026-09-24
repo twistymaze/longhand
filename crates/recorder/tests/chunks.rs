@@ -277,7 +277,7 @@ fn a_partial_holding_only_lookback_is_removed_at_recovery() {
     w.write(&vec![0.1; 60 * rate as usize]).unwrap();
     w.write(&[0.1; 1]).unwrap(); // opens the next chunk with 2 s of lookback
     drop(w);
-    // Simulate the crash landing before the new sample reached the disk.
+    // Simulate a crash before the new sample reaches the disk.
     let part = std::fs::read_dir(dir.path())
         .unwrap()
         .map(|e| e.unwrap().path())

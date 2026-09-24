@@ -2,7 +2,7 @@
 //! are on different volumes, the session is copied into staging file by
 //! file, each copy flushed and then checked against its source by size and
 //! SHA-256 before anything is called staged. The working copy stays until
-//! the landing is recorded.
+//! the save is recorded.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};

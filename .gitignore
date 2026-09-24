@@ -12,7 +12,7 @@ sample.m4a
 sample.txt
 /fixtures/
 .env
-# Destination for manual test sessions: landed recordings.
+# Destination for manual test sessions: saved recordings.
 /manual-tests/
 # Reference screenshots for idea briefs: other apps showing real names.
 /docs/ideas/*-screenshots/

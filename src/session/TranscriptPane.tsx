@@ -1,4 +1,4 @@
-// The landed transcript. A followed note scrolls its turn to the middle and
+// The saved transcript. A followed note scrolls its turn to the middle and
 // tints it briefly, so the eye finds the place without a search; the tint
 // is a colour change, which reduced motion keeps, and the scroll jumps
 // instead of gliding when motion is reduced.

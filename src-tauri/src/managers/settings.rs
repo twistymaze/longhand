@@ -53,7 +53,7 @@ pub struct Settings {
     /// Every folder the user has ever chosen, oldest first (R25a). The index
     /// is rebuilt by scanning these, so a root is never dropped silently.
     pub destination_roots: Vec<String>,
-    /// Where the next session lands (R23). Always one of the roots.
+    /// Where the next session is saved (R23). Always one of the roots.
     pub current_destination: Option<String>,
     /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
     pub endpoint_base_url: String,

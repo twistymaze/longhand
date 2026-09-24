@@ -55,7 +55,7 @@ pub enum ProcessingStep {
     Waiting {
         what: String,
     },
-    /// Summarization failed; the session lands with a stub summary.
+    /// Summarization failed; the session is saved with a stub summary.
     SummaryUnavailable {
         message: String,
     },
@@ -203,7 +203,7 @@ impl EngineProvider for Models {
         }
     }
 
-    /// Read when the session lands, so the last destination chosen wins (AE7).
+    /// Read when the session is saved, so the last destination chosen wins (AE7).
     fn destination(&self) -> Option<std::path::PathBuf> {
         settings::get_settings(&self.app)
             .current_destination
@@ -250,7 +250,7 @@ impl EngineProvider for Models {
 /// while the window is in front: the surface already says so.
 /// Remove staging folders that completed sessions left in any destination
 /// ever chosen (U18). Only with the instance lock held, so no other run is
-/// landing into them.
+/// saving into them.
 fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
     let roots = crate::managers::settings::get_settings(app).destination_roots;
     let completed = |id: &str| {
@@ -295,7 +295,7 @@ fn notify_saved(app: &AppHandle, path: &std::path::Path) {
         .body(format!("{folder} has its transcript and summary."))
         .show()
     {
-        log::warn!("could not post the landing notification: {e}");
+        log::warn!("could not post the save notification: {e}");
     }
 }
 
@@ -387,7 +387,7 @@ impl ProcessingManager {
         self.runner.unblock(session_id).map_err(|e| e.to_string())
     }
 
-    /// Summarize a landed session again, replacing its `summary.md` (AE17).
+    /// Summarize a saved session again, replacing its `summary.md` (AE17).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
         self.runner
             .regenerate_summary(session_id)

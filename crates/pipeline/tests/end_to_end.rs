@@ -157,8 +157,8 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
         .unwrap();
     }
 
-    // No destination at first: the session stops before landing, with its
-    // working files in place to inspect, and lands once one is chosen.
+    // No destination at first: the session stops before saving, with its
+    // working files in place to inspect, and is saved once one is chosen.
     let destination = Arc::new(std::sync::Mutex::new(None));
     let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&stages);
@@ -288,7 +288,7 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     assert!(!saved.join(pipeline::PROC_DIR).exists());
     assert!(!saved.join(pipeline::RECOVERY_DIR).exists());
     eprintln!(
-        "landed in {:.2} s: {:.1} MB (archive {:.1} MB) from a {:.1} MB working copy",
+        "saved in {:.2} s: {:.1} MB (archive {:.1} MB) from a {:.1} MB working copy",
         save_started.elapsed().as_secs_f64(),
         tree_bytes(&saved) as f64 / 1e6,
         archive as f64 / 1e6,

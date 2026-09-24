@@ -1,4 +1,4 @@
-// The landed summary, or the stub a failed summary left, with Regenerate
+// The saved summary, or the stub a failed summary left, with Regenerate
 // (R19, AE17). The body is rendered from parsed blocks, never as HTML.
 
 import type { ReactNode } from "react";

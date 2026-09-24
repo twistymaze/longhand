@@ -7,7 +7,7 @@ mod window;
 use tauri::Manager;
 use tauri_specta::{Builder, collect_commands, collect_events};
 
-/// Where the generated TypeScript bindings land, relative to this crate.
+/// Where the generated TypeScript bindings are written, relative to this crate.
 pub const BINDINGS_PATH: &str = "../src/bindings.ts";
 
 /// The command and event set exposed to the frontend. Kept in one function so

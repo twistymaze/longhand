@@ -1,4 +1,4 @@
-//! The landed session folder's markdown (R24, R24a, R24b, R36, R20a).
+//! The saved session folder's markdown (R24, R24a, R24b, R36, R20a).
 //!
 //! Each file renders from the session's data and parses back, so the session
 //! can be rebuilt from its folder alone (R25). Positions are rendered as
@@ -399,7 +399,7 @@ pub enum SummaryMeta {
         endpoint_host: String,
         model: String,
     },
-    /// Summarization failed; the session landed anyway (R22).
+    /// Summarization failed; the session was saved anyway (R22).
     Stub { failed_stage: String },
 }
 

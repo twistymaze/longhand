@@ -1,7 +1,7 @@
 //! Note anchors (R12, R12a, R13).
 //!
 //! A note is anchored at its first keystroke's position on the session
-//! timeline, minus a lookback so it lands on the subject it refers to. The
+//! timeline, minus a lookback so it marks the subject it refers to. The
 //! anchor is fixed when resolved and never moves when the text is edited.
 
 use serde::{Deserialize, Serialize};

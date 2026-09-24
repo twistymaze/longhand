@@ -1,4 +1,4 @@
-//! Writes into a landed folder: whole files only, and never through a link.
+//! Writes into a home folder: whole files only, and never through a link.
 
 use session_save::home_write::write_atomic;
 

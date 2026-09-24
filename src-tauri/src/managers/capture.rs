@@ -484,9 +484,9 @@ impl CaptureManager {
         )
         .is_ok();
         let resumed_at = now();
-        // Under one lock with landing's claim: either landing has begun and
-        // the resume is refused, or the resume wins and landing stops. A
-        // completed session has finished landing and resumes into its folder
+        // Under one lock with the save claim: either saving has begun and
+        // the resume is refused, or the resume wins and saving stops. A
+        // completed session has finished saving and resumes into its folder
         // while that holds its audio (R6d).
         let state = {
             let mut store = self.store();
@@ -660,8 +660,8 @@ impl CaptureManager {
         }))
     }
 
-    /// Change a note's text. On a landed session the folder's `notes.md` is
-    /// rewritten whole in the same breath (R22f), under the lock landing
+    /// Change a note's text. On a saved session the folder's `notes.md` is
+    /// rewritten whole in the same breath (R22f), under the lock the save stage
     /// takes to write it, so no edit is lost or written twice.
     pub fn edit_note(&self, note_id: i64, text: &str) -> Result<(), CaptureError> {
         let mut store = self.store();

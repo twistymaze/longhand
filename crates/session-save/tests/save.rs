@@ -1,4 +1,4 @@
-//! Landing step by step, with renames that can be made to cross devices.
+//! Saving step by step, with renames that can be made to cross devices.
 
 use std::cell::Cell;
 use std::io;
@@ -365,7 +365,7 @@ fn a_staged_copy_is_saved_beside_itself_when_the_destination_has_changed() {
         ..job
     };
     let SaveState::Saved { path, .. } = step(&staged, &moved, &RealFs).unwrap() else {
-        panic!("expected the staged copy to land");
+        panic!("expected the staged copy to be saved");
     };
     assert_eq!(path.parent(), Some(first.as_path()));
     assert!(std::fs::read_dir(&other).unwrap().next().is_none());

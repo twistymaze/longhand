@@ -1,4 +1,4 @@
-//! Writes into a landed folder (R22f): a temporary file in the same folder,
+//! Writes into a home folder (R22f): a temporary file in the same folder,
 //! then a rename over the target, so an external tool never sees a partial
 //! file. The temporary name is unpredictable and created with create-new,
 //! which refuses anything already at the path, a symlink included: in a

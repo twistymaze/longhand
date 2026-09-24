@@ -1,5 +1,5 @@
-//! The session list and each session's state, notes and landed documents,
-//! read from the job store and the landed folder, which are the truth: a
+//! The session list and each session's state, notes and saved documents,
+//! read from the job store and the home folder, which are the truth: a
 //! window shown mid-processing rebuilds from these, then follows events
 //! (U12, AE4).
 
@@ -52,7 +52,7 @@ pub struct SessionDetail {
     pub failed_stage: Option<String>,
     /// Why it failed, is blocked, or is waiting for its destination.
     pub message: Option<String>,
-    /// Why the summary is missing, when the session will land with a stub.
+    /// Why the summary is missing, when the session will be saved with a stub.
     pub summary_problem: Option<String>,
     /// The state machine allows Resume now (R6a).
     pub resumable: bool,
@@ -158,7 +158,7 @@ pub fn session_detail(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no session {session_id}"))?;
         let segments = store.segments(&session_id).map_err(|e| e.to_string())?;
-        // A completed session has finished landing; only one mid-landing
+        // A completed session has finished saving; only one still saving
         // refuses a resume.
         let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &session_id).map_err(e)?;
@@ -253,7 +253,7 @@ pub fn session_notes(
         .collect())
 }
 
-/// The landed transcript and summary, read from the session's folder.
+/// The saved transcript and summary, read from the session's folder.
 #[tauri::command]
 #[specta::specta]
 pub fn session_document(

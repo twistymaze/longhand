@@ -1,11 +1,11 @@
-//! Landing (KD4, R22a, R22b, KTD17): the session leaves the working location
+//! Saving (KD4, R22a, R22b, KTD17): the session leaves the working location
 //! exactly once, into its destination under its final name, and at every
 //! moment exactly one location holds a complete copy. Written for Longhand.
 //!
 //! The session is assembled in a hidden `.longhand-staging-<id>/` inside
 //! the destination, so the last step is a same-volume rename on every path.
 //! Getting it there is a rename when the volumes agree and a verified copy
-//! when the rename says they do not; no pre-check decides. Landing advances
+//! when the rename says they do not; no pre-check decides. Saving advances
 //! one [`SaveState`] at a time, and the caller records each state durably
 //! before the next step, so a crash anywhere resumes from what is on disk.
 
@@ -117,7 +117,7 @@ pub fn check_destination(destination: &Path) -> Result<(), SaveError> {
 
 /// At launch, remove staging directories in `root` left by sessions that
 /// have since completed (U18). Any other staging directory is left: one
-/// whose session is still landing or waiting for its destination may hold
+/// whose session is still saving or waiting for its destination may hold
 /// the only complete copy (R22d).
 pub fn sweep_staging(root: &Path, completed: impl Fn(&str) -> bool) -> io::Result<Vec<PathBuf>> {
     let entries = match std::fs::read_dir(root) {
@@ -151,7 +151,7 @@ fn exists(path: &Path) -> bool {
     path.symlink_metadata().is_ok()
 }
 
-/// Take one landing step from `state`.
+/// Take one save step from `state`.
 pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, SaveError> {
     let staging = job.destination.join(naming::staging_name(job.session_id));
     match state {

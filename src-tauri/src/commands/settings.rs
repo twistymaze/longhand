@@ -119,7 +119,7 @@ pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, Stri
         dialog_app
             .dialog()
             .file()
-            .set_title("Choose where sessions land")
+            .set_title("Choose where sessions are saved")
             .blocking_pick_folder()
     })
     .await

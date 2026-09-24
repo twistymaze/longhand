@@ -47,7 +47,7 @@ struct Script {
     blank_on: Mutex<Vec<usize>>,
     diarize_fails: AtomicBool,
     weights_missing: AtomicBool,
-    /// Where sessions land; unset is no destination chosen.
+    /// Where sessions are saved; unset is no destination chosen.
     destination: Mutex<Option<std::path::PathBuf>>,
 }
 
@@ -588,7 +588,7 @@ async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
     );
     assert!(r.root.join("s/audio/segment-01.opus").exists());
 
-    // The weights land: it picks up after assembly.
+    // The weights finish downloading: it picks up after assembly.
     r.script.weights_missing.store(false, Ordering::SeqCst);
     r.events.lock().unwrap().clear();
     let (_, outcome) = r.runner.run_next().await.unwrap();
@@ -1031,7 +1031,7 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
     assert!(r.script.learned.lock().unwrap().is_empty());
 }
 
-// ------------------------------------------------------------- landing (U11)
+// -------------------------------------------------------------- saving (U11)
 
 fn add_notes(store: &SharedStore, id: &str) -> Vec<i64> {
     let s = store.lock().unwrap();
@@ -1184,8 +1184,8 @@ async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_
         "{outcome:?}"
     );
 
-    // An edit made while waiting reaches the landed file, and the session
-    // lands in the destination chosen last (AE7).
+    // An edit made while waiting reaches the saved file, and the session
+    // is saved in the destination chosen last (AE7).
     r.store
         .lock()
         .unwrap()
@@ -1267,7 +1267,7 @@ async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage()
         Some("m"),
         &[(16_000, speech())],
     );
-    // Land into a missing folder to stop just before the move, then move
+    // Save into a missing folder to stop just before the move, then move
     // the session into staging by hand, as a killed process would leave it.
     *r.script.destination.lock().unwrap() = None;
     r.runner.run_next().await.unwrap();
@@ -1322,7 +1322,7 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
         Some("m"),
         &[(16_000, speech())],
     );
-    // Stop just before the move, then take the landing as far as the final
+    // Stop just before the move, then take the save as far as the final
     // name by hand and record it, as a process killed before `Done` leaves it.
     *r.script.destination.lock().unwrap() = None;
     r.runner.run_next().await.unwrap();
