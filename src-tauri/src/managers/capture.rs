@@ -363,15 +363,33 @@ impl CaptureManager {
         speaker_count: Option<SpeakerCount>,
     ) -> Result<String, CaptureError> {
         let mut inner = self.inner();
-        inner.supersede();
+        let mut ended = inner.supersede();
         if let Some(active) = inner.active.take() {
+            ended = Some(active.session_id.clone());
             self.close_segment(&mut inner, active)?;
         }
         let id = uuid::Uuid::new_v4().to_string();
         let started = now();
         let mut timeline = Timeline::new();
         let index = timeline.open(0, started)?;
-        let active = self.open_segment(app, &mut inner, &id, index, 0)?;
+        let active = match self.open_segment(app, &mut inner, &id, index, 0) {
+            Ok(active) => active,
+            Err(e) => {
+                // The session this press ended is already closed: stop and
+                // queue it, as the new session would have, rather than leave
+                // it Capturing with nothing recording.
+                let _ = std::fs::remove_dir_all(self.session_dir(&id));
+                if let Some(other) = ended {
+                    match self.stop_in_store(app, &other) {
+                        Ok(_) => log::info!("session {other} stopped by a start that failed"),
+                        Err(stop) => log::error!("stopping {other} failed: {stop}"),
+                    }
+                    drop(inner);
+                    changed(app, None);
+                }
+                return Err(e);
+            }
+        };
         let stopped = match self.store().start_session(&id, started, speaker_count) {
             Ok(stopped) => stopped,
             Err(e) => {
@@ -413,25 +431,32 @@ impl CaptureManager {
                 },
             },
         };
-        let retained_audio = !self.store().segments(&id)?.is_empty();
+        let state = self.stop_in_store(app, &id)?;
+        drop(inner);
+        app.state::<Arc<AlertsManager>>().clear(&id);
+        changed(app, None);
+        Ok((id, state))
+    }
+
+    /// Stop `id` in the store: queued for processing, or discarded when it
+    /// kept no audio. Its segment must already be closed.
+    fn stop_in_store(&self, app: &AppHandle, id: &str) -> Result<SessionState, CaptureError> {
+        let retained_audio = !self.store().segments(id)?.is_empty();
         let state = self.store().apply(
-            &id,
+            id,
             &Event::UserStop {
                 at: now(),
                 retained_audio,
             },
         )?;
         if retained_audio {
-            self.record_model_at_stop(app, &id);
+            self.record_model_at_stop(app, id);
         } else {
             // Nothing survived R35; the notice is the surface's (U7).
-            let _ = std::fs::remove_dir_all(self.session_dir(&id));
+            let _ = std::fs::remove_dir_all(self.session_dir(id));
             log::info!("session {id} kept no audio and was discarded");
         }
-        drop(inner);
-        app.state::<Arc<AlertsManager>>().clear(&id);
-        changed(app, None);
-        Ok((id, state))
+        Ok(state)
     }
 
     /// A queued session keeps the model selected when it stopped (R20c).
@@ -444,7 +469,11 @@ impl CaptureManager {
 
     /// Resume an interrupted session as its next segment (R6). The store
     /// decides whether the resume is allowed (window, most recent, space).
-    pub fn resume_session(&self, app: &AppHandle, id: &str) -> Result<SessionState, CaptureError> {
+    pub fn resume_session(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        id: &str,
+    ) -> Result<SessionState, CaptureError> {
         let mut inner = self.inner();
         if inner.active.is_some() || inner.recovering.is_some() {
             return Err(CaptureError::AlreadyCapturing);
@@ -500,13 +529,30 @@ impl CaptureManager {
             None => 0,
         };
         let index = timeline.open(offset, resumed_at)?;
-        let active = self.open_segment(app, &mut inner, id, index, offset)?;
-        inner.active = Some(active);
         let epoch = epoch.unwrap_or_else(|| {
             let now = Instant::now();
             now.checked_sub(Duration::from_millis(offset))
                 .unwrap_or(now)
         });
+        let active = match self.open_segment(app, &mut inner, id, index, offset) {
+            Ok(active) => active,
+            Err(e) => {
+                // The store already says Capturing: put the session back to
+                // Interrupted, with its alert and the watch for the
+                // microphone's return, which reopens from the held clock.
+                timeline.abandon_open();
+                inner.clock = Some(Clock::new(id, timeline, epoch));
+                drop(inner);
+                let loss = Loss {
+                    reason: InterruptReason::Device,
+                    message: format!("the microphone could not be opened: {e}"),
+                    restartable: false,
+                };
+                Arc::clone(self).interrupt(app, id, &loss, None);
+                return Err(e);
+            }
+        };
+        inner.active = Some(active);
         inner.clock = Some(Clock::new(id, timeline, epoch));
         log::info!("session {id} resumed as segment {index} at {offset} ms");
         app.state::<Arc<AlertsManager>>().clear(id);
@@ -1068,32 +1114,37 @@ impl CaptureManager {
     fn close_segment(&self, inner: &mut Inner, active: ActiveSegment) -> Result<(), CaptureError> {
         let ActiveSegment {
             session_id,
+            segment,
             stop,
             outcome,
             thread,
-            ..
         } = active;
         stop.cancel();
         let outcome = outcome.recv();
         let _ = thread.join();
         let dir = self.session_dir(&session_id).join(RECOVERY_DIR);
-        let span = match outcome {
-            Ok(SegmentOutcome { span: Ok(span), .. }) => span,
+        let end_ms = match outcome {
+            Ok(SegmentOutcome { span: Ok(span), .. }) => span.end_ms,
             Ok(SegmentOutcome { span: Err(e), .. }) => {
                 log::error!("closing the last chunk failed: {e}; recovering from disk");
-                recovered_span(&dir)?
+                recovered_end(&dir, segment)?
             }
-            Err(_) => recovered_span(&dir)?,
+            Err(_) => recovered_end(&dir, segment)?,
         };
         let Some(clock) = inner.clock.as_mut().filter(|c| c.session_id == session_id) else {
             return Err(CaptureError::Other(
                 "segment closed without its timeline".into(),
             ));
         };
-        let index = span.segment;
+        // The open segment's own index names its audio: never an earlier
+        // segment's, whose chunks a discard would otherwise remove.
+        let index = clock
+            .timeline
+            .open_segment()
+            .map_or(segment, |open| open.index);
         match clock
             .timeline
-            .close(span.end_ms, now(), segment_audio_file(index))?
+            .close(end_ms, now(), segment_audio_file(index))?
         {
             Closed::Kept(segment) => self.store().put_segment(&session_id, &segment)?,
             Closed::Discarded => {
@@ -1112,21 +1163,18 @@ fn changed(app: &AppHandle, session_id: Option<&str>) {
     .emit(app);
 }
 
-/// The span of the last segment on disk, after closing any chunk a failed
-/// writer left open.
-fn recovered_span(dir: &Path) -> Result<recorder::SegmentSpan, CaptureError> {
+/// Where `segment` ends on disk, after closing any chunk a failed writer
+/// left open. A segment that wrote nothing ends at 0, which the timeline
+/// discards.
+fn recovered_end(dir: &Path, segment: u32) -> Result<u64, CaptureError> {
     recorder::recover_partial_chunks(dir).map_err(recorder::RecorderError::from)?;
     let chunks = recorder::list_chunks(dir).map_err(recorder::RecorderError::from)?;
-    let last = chunks.iter().map(|c| c.segment).max();
-    let Some(segment) = last else {
-        return Err(CaptureError::Other("no audio was written".into()));
-    };
-    let of_segment: Vec<_> = chunks.iter().filter(|c| c.segment == segment).collect();
-    Ok(recorder::SegmentSpan {
-        segment,
-        start_ms: of_segment.first().map(|c| c.start_ms).unwrap_or(0),
-        end_ms: of_segment.last().map(|c| c.end_ms).unwrap_or(0),
-    })
+    Ok(chunks
+        .iter()
+        .filter(|c| c.segment == segment)
+        .map(|c| c.end_ms)
+        .max()
+        .unwrap_or(0))
 }
 
 /// Where the session clock stands after a wake: the wall-clock time away
