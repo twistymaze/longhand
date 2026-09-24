@@ -250,8 +250,8 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
 /// The folder that holds a saved session.
 fn saved_folder(r: &Rig, id: &str) -> std::path::PathBuf {
     let record = r.store.lock().unwrap().session(id).unwrap().unwrap();
-    assert_eq!(record.state, SessionState::Landed);
-    std::path::PathBuf::from(record.landed_path.expect("a landed path"))
+    assert_eq!(record.state, SessionState::Saved);
+    std::path::PathBuf::from(record.home_path.expect("a home path"))
 }
 
 async fn rig() -> Rig {
@@ -325,14 +325,14 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
             ("earlier".into(), Stage::Join),
             ("earlier".into(), Stage::Verify),
             ("earlier".into(), Stage::Summarize),
-            ("earlier".into(), Stage::Land),
+            ("earlier".into(), Stage::Save),
             ("later".into(), Stage::Assemble),
             ("later".into(), Stage::Diarize),
             ("later".into(), Stage::Transcribe),
             ("later".into(), Stage::Join),
             ("later".into(), Stage::Verify),
             ("later".into(), Stage::Summarize),
-            ("later".into(), Stage::Land),
+            ("later".into(), Stage::Save),
         ]
     );
     // One engine load serves both sessions.
@@ -819,7 +819,7 @@ async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_starts_there(
         summary.meta,
         session_core::folder::SummaryMeta::Complete { .. }
     ));
-    assert_eq!(state(&r.store, "s"), SessionState::Landed);
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1144,7 +1144,7 @@ async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
-    assert_eq!(state(&r.store, "s"), SessionState::Landed);
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1289,7 +1289,7 @@ async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage()
         &session_save::RealFs,
     )
     .unwrap();
-    checkpoint::put(&r.store, "s", Stage::Land, pipeline::save::STATE, &staged).unwrap();
+    checkpoint::put(&r.store, "s", Stage::Save, pipeline::save::STATE, &staged).unwrap();
     {
         let mut s = r.store.lock().unwrap();
         s.apply("s", &session_core::Event::ClaimLost).unwrap();
@@ -1307,7 +1307,7 @@ async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage()
             _ => None,
         })
         .collect();
-    assert_eq!(started, vec![Stage::Land]);
+    assert_eq!(started, vec![Stage::Save]);
     assert!(saved_folder(&r, "s").join("audio/segment-01.opus").exists());
 }
 
@@ -1351,12 +1351,12 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
     r.store
         .lock()
         .unwrap()
-        .set_landed_path("s", &path.to_string_lossy())
+        .set_home_path("s", &path.to_string_lossy())
         .unwrap();
     checkpoint::put(
         &r.store,
         "s",
-        Stage::Land,
+        Stage::Save,
         pipeline::save::STATE,
         &saved_state,
     )
@@ -1664,8 +1664,8 @@ async fn killed_after_every_stage_the_session_is_saved_once_with_the_same_transc
         .collect();
     assert_eq!(folders.len(), 1, "{folders:?}");
     let record = store.lock().unwrap().session("s").unwrap().unwrap();
-    assert_eq!(record.state, SessionState::Landed);
-    let folder = std::path::PathBuf::from(record.landed_path.unwrap());
+    assert_eq!(record.state, SessionState::Saved);
+    let folder = std::path::PathBuf::from(record.home_path.unwrap());
     let transcript = std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap();
     assert_eq!(transcript, expected);
     assert!(!root.path().join("s").exists());

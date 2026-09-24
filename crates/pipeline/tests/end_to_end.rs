@@ -284,7 +284,7 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     let (_, outcome) = runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
     let record = store.lock().unwrap().session("e2e").unwrap().unwrap();
-    let saved = std::path::PathBuf::from(record.landed_path.unwrap());
+    let saved = std::path::PathBuf::from(record.home_path.unwrap());
     assert!(!saved.join(pipeline::PROC_DIR).exists());
     assert!(!saved.join(pipeline::RECOVERY_DIR).exists());
     eprintln!(

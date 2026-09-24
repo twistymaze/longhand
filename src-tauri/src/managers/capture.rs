@@ -493,7 +493,7 @@ impl CaptureManager {
             let other = |e: pipeline::StageError| CaptureError::Other(e.to_string());
             let completed = store
                 .session(id)?
-                .is_some_and(|r| r.state == SessionState::Landed);
+                .is_some_and(|r| r.state == SessionState::Saved);
             if !completed && pipeline::save::begun(&store, id).map_err(other)? {
                 return Err(CaptureError::Save);
             }

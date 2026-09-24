@@ -66,7 +66,7 @@ pub enum ProcessingStep {
     },
     /// In the destination. `copied` when it crossed volumes, so the move
     /// was a verified copy rather than one atomic step.
-    Landed {
+    Saved {
         path: String,
         copied: bool,
     },
@@ -141,7 +141,7 @@ impl From<RunnerEvent> for ProcessingUpdate {
                 copied,
             } => (
                 session_id,
-                ProcessingStep::Landed {
+                ProcessingStep::Saved {
                     path: path.to_string_lossy().into_owned(),
                     copied,
                 },
@@ -260,7 +260,7 @@ fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
             .session(id)
             .ok()
             .flatten()
-            .is_some_and(|r| r.state == session_core::SessionState::Landed)
+            .is_some_and(|r| r.state == session_core::SessionState::Saved)
     };
     for root in roots {
         match session_save::sweep_staging(std::path::Path::new(&root), completed) {
@@ -274,7 +274,7 @@ fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
     }
 }
 
-fn notify_landed(app: &AppHandle, path: &std::path::Path) {
+fn notify_saved(app: &AppHandle, path: &std::path::Path) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
     let visible = app
@@ -326,7 +326,7 @@ impl ProcessingManager {
             suspended: Box::new(move || suspended.is_capturing()),
             events: Box::new(move |event| {
                 if let RunnerEvent::Saved { path, .. } = &event {
-                    notify_landed(&events, path);
+                    notify_saved(&events, path);
                 }
                 if let Err(e) = ProcessingUpdate::from(event).emit(&events) {
                     log::warn!("could not emit a processing update: {e}");

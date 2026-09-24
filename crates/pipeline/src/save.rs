@@ -36,7 +36,7 @@ pub struct Saved {
 /// Whether landing has begun for `session_id` (a resume must refuse).
 pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
     Ok(store
-        .checkpoints(session_id, Stage::Land)?
+        .checkpoints(session_id, Stage::Save)?
         .iter()
         .any(|(key, _)| key == STATE))
 }
@@ -45,7 +45,7 @@ pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
 /// which is what resuming it needs (R6d). False for a session that has not
 /// completed.
 pub fn home_intact(store: &Store, session_id: &str) -> Result<bool, StageError> {
-    let Some(home) = landed_path(store, session_id)? else {
+    let Some(home) = home_path(store, session_id)? else {
         return Ok(false);
     };
     let segments = store.segments(session_id)?;
@@ -86,10 +86,10 @@ pub fn run(
     }
     let home = lock(store)
         .session(session_id)?
-        .and_then(|record| record.landed_path)
+        .and_then(|record| record.home_path)
         .map(PathBuf::from);
-    let recorded = checkpoint::get::<SaveState>(store, session_id, Stage::Land, STATE)?;
-    // `landed_path` is recorded with `Saved`, before the step loop reaches
+    let recorded = checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)?;
+    // `home_path` is recorded with `Saved`, before the step loop reaches
     // `Done`: a first save still in progress finishes through the loop. A
     // resumed session has no landing state, since resuming clears it.
     let first_save_in_progress = matches!(
@@ -146,7 +146,7 @@ pub fn run(
                 // working copy whole: start over from it, so a retry after
                 // choosing another folder goes there.
                 if matches!(state, SaveState::Copying { .. }) && working.exists() {
-                    checkpoint::put(store, session_id, Stage::Land, STATE, &SaveState::Working)?;
+                    checkpoint::put(store, session_id, Stage::Save, STATE, &SaveState::Working)?;
                     state = SaveState::Working;
                 }
                 if state == SaveState::Working && working.exists() {
@@ -170,9 +170,9 @@ pub fn run(
         } = &next
         {
             copied = *working_retained;
-            lock(store).set_landed_path(session_id, &path.to_string_lossy())?;
+            lock(store).set_home_path(session_id, &path.to_string_lossy())?;
         }
-        checkpoint::put(store, session_id, Stage::Land, STATE, &next)?;
+        checkpoint::put(store, session_id, Stage::Save, STATE, &next)?;
         state = next;
     }
     let SaveState::Done { path } = state else {
@@ -181,19 +181,19 @@ pub fn run(
 
     // Reopen notes against the landed folder (R22e): anything edited while
     // landing is in the store, and is written here. Under the lock, so an
-    // edit lands either before this render or after the session is Landed,
+    // edit lands either before this render or after the session is Saved,
     // where it rewrites the file itself.
     let mut guard = lock(store);
     write_notes(&guard, session_id, &path)?;
     guard.put_checkpoint(
         session_id,
-        Stage::Land,
+        Stage::Save,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone {
             segments: segments.len(),
         })?,
     )?;
-    guard.apply(session_id, &Event::Landed)?;
+    guard.apply(session_id, &Event::Saved)?;
     Ok(Saved { path, copied })
 }
 
@@ -273,7 +273,7 @@ fn update_home(
             home.display()
         )));
     }
-    let finished = match checkpoint::get::<SaveState>(store, session_id, Stage::Land, STATE)? {
+    let finished = match checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)? {
         Some(state) => matches!(state, SaveState::Done { .. }),
         None => {
             control.proceed()?;
@@ -313,7 +313,7 @@ fn update_home(
         let done = SaveState::Done {
             path: home.to_path_buf(),
         };
-        checkpoint::put(store, session_id, Stage::Land, STATE, &done)?;
+        checkpoint::put(store, session_id, Stage::Save, STATE, &done)?;
     }
     if working.exists() {
         std::fs::remove_dir_all(working)?;
@@ -323,13 +323,13 @@ fn update_home(
     write_notes(&guard, session_id, home)?;
     guard.put_checkpoint(
         session_id,
-        Stage::Land,
+        Stage::Save,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone {
             segments: segments.len(),
         })?,
     )?;
-    guard.apply(session_id, &Event::Landed)?;
+    guard.apply(session_id, &Event::Saved)?;
     Ok(Saved {
         path: home.to_path_buf(),
         copied: false,
@@ -348,7 +348,7 @@ fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     }
     guard.put_checkpoint(
         session_id,
-        Stage::Land,
+        Stage::Save,
         STATE,
         &serde_json::to_string(&SaveState::Working)?,
     )?;
@@ -357,7 +357,7 @@ fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 
 /// Nothing moved: the session may be resumed again.
 fn release(store: &SharedStore, session_id: &str) {
-    if let Err(e) = lock(store).delete_checkpoint(session_id, Stage::Land, STATE) {
+    if let Err(e) = lock(store).delete_checkpoint(session_id, Stage::Save, STATE) {
         log::warn!("could not release the landing claim on {session_id}: {e}");
     }
 }
@@ -428,11 +428,11 @@ fn write_working(dir: &Path, name: &str, contents: &str) -> Result<(), StageErro
 }
 
 /// The landed folder of a session, if it has landed.
-fn landed_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
+fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
     Ok(store
         .session(session_id)?
-        .filter(|r| r.state == SessionState::Landed)
-        .and_then(|r| r.landed_path)
+        .filter(|r| r.state == SessionState::Saved)
+        .and_then(|r| r.home_path)
         .map(PathBuf::from))
 }
 
@@ -440,11 +440,11 @@ fn landed_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, Stage
 /// (R22f). Returns false when the session has not landed, so there is no
 /// file to write yet.
 pub fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
-    let Some(path) = landed_path(store, session_id)? else {
+    let Some(path) = home_path(store, session_id)? else {
         return Ok(false);
     };
     write_notes(store, session_id, &path)?;
-    store.apply(session_id, &Event::LandedEdit)?;
+    store.apply(session_id, &Event::SavedEdit)?;
     Ok(true)
 }
 
@@ -461,7 +461,7 @@ pub fn regenerate_summary(
 ) -> Result<PathBuf, StageError> {
     let (path, segments) = {
         let guard = lock(store);
-        let path = landed_path(&guard, session_id)?.ok_or_else(|| {
+        let path = home_path(&guard, session_id)?.ok_or_else(|| {
             StageError::Failed(
                 "a summary can be regenerated only once the session has finished processing".into(),
             )
@@ -480,7 +480,7 @@ pub fn regenerate_summary(
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;
     let mut guard = lock(store);
     guard.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;
-    guard.apply(session_id, &Event::LandedEdit)?;
+    guard.apply(session_id, &Event::SavedEdit)?;
     Ok(path.join(SUMMARY_FILE))
 }
 

@@ -41,7 +41,7 @@ pub struct SessionRecord {
     pub queue_seq: Option<i64>,
     pub speaker_count: Option<SpeakerCount>,
     pub asr_model: Option<String>,
-    pub landed_path: Option<String>,
+    pub home_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,7 +186,7 @@ impl Store {
     pub fn session(&self, id: &str) -> Result<Option<SessionRecord>> {
         self.conn
             .query_row(
-                "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, landed_path
+                "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
                  FROM sessions WHERE id = ?1",
                 [id],
                 read_session,
@@ -217,9 +217,9 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_landed_path(&self, id: &str, path: &str) -> Result<()> {
+    pub fn set_home_path(&self, id: &str, path: &str) -> Result<()> {
         self.conn.execute(
-            "UPDATE sessions SET landed_path = ?2 WHERE id = ?1",
+            "UPDATE sessions SET home_path = ?2 WHERE id = ?1",
             params![id, path],
         )?;
         Ok(())
@@ -240,7 +240,7 @@ impl Store {
     /// Every session, oldest first.
     pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, landed_path
+            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
              FROM sessions ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([], read_session)?;
@@ -253,7 +253,7 @@ impl Store {
 
     pub fn sessions_in(&self, state_name: &str) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, landed_path
+            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
              FROM sessions ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([], read_session)?;
@@ -600,7 +600,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let queue_seq: Option<i64> = r.get(3)?;
     let speaker_count: Option<String> = r.get(4)?;
     let asr_model: Option<String> = r.get(5)?;
-    let landed_path: Option<String> = r.get(6)?;
+    let home_path: Option<String> = r.get(6)?;
     Ok((|| {
         Ok(SessionRecord {
             id,
@@ -611,7 +611,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
                 .map(|c| serde_json::from_str(&c))
                 .transpose()?,
             asr_model,
-            landed_path,
+            home_path,
         })
     })())
 }
@@ -666,13 +666,13 @@ fn apply_queue_effects(
         // the working directory, so diarization and everything after it run
         // again; assembly and transcription of the recorded segments are
         // kept, and the folder it completed into stays its home.
-        SessionState::Capturing if *before == SessionState::Landed => {
+        SessionState::Capturing if *before == SessionState::Saved => {
             for stage in [
                 Stage::Diarize,
                 Stage::Join,
                 Stage::Verify,
                 Stage::Summarize,
-                Stage::Land,
+                Stage::Save,
             ] {
                 tx.execute(
                     "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
@@ -680,7 +680,7 @@ fn apply_queue_effects(
                 )?;
             }
         }
-        SessionState::Landed | SessionState::Discarded => {
+        SessionState::Saved | SessionState::Discarded => {
             tx.execute("UPDATE sessions SET queue_seq = NULL WHERE id = ?1", [id])?;
             tx.execute("DELETE FROM jobs WHERE session_id = ?1", [id])?;
         }

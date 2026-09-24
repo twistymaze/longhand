@@ -433,7 +433,7 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * In the destination. `copied` when it crossed volumes, so the move
  * was a verified copy rather than one atomic step.
  */
-{ kind: "landed"; path: string; copied: boolean } | { kind: "cancelled" } | { kind: "finished" }
+{ kind: "saved"; path: string; copied: boolean } | { kind: "cancelled" } | { kind: "finished" }
 /**
  * What processing is doing, for the surface.
  */
@@ -513,7 +513,7 @@ summary_problem: string | null;
 /**
  * The state machine allows Resume now (R6a).
  */
-resumable: boolean; landed_path: string | null; 
+resumable: boolean; home_path: string | null; 
 /**
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
@@ -530,7 +530,7 @@ started: string;
 duration_ms: number; 
 /**
  * The lifecycle state's name: capturing, interrupted, queued,
- * processing, blocked, processing_failed, awaiting_destination, landed.
+ * processing, blocked, processing_failed, awaiting_destination, saved.
  */
 state: string; 
 /**

@@ -24,7 +24,7 @@ pub struct SessionEntry {
     /// Recorded time, gaps excluded.
     pub duration_ms: u64,
     /// The lifecycle state's name: capturing, interrupted, queued,
-    /// processing, blocked, processing_failed, awaiting_destination, landed.
+    /// processing, blocked, processing_failed, awaiting_destination, saved.
     pub state: String,
     /// The stage started last: the running one, or the one a failed
     /// session stopped at.
@@ -56,7 +56,7 @@ pub struct SessionDetail {
     pub summary_problem: Option<String>,
     /// The state machine allows Resume now (R6a).
     pub resumable: bool,
-    pub landed_path: Option<String>,
+    pub home_path: Option<String>,
     /// Where the summary goes, and what is sent: the transcript and notes (R30).
     pub endpoint: Option<EndpointView>,
     pub audio_kept: bool,
@@ -160,7 +160,7 @@ pub fn session_detail(
         let segments = store.segments(&session_id).map_err(|e| e.to_string())?;
         // A completed session has finished landing; only one mid-landing
         // refuses a resume.
-        let saving = record.state != SessionState::Landed
+        let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &session_id).map_err(e)?;
         let audio_intact = pipeline::save::home_intact(&store, &session_id).map_err(e)?;
         (record, segments, saving, audio_intact)
@@ -206,7 +206,7 @@ pub fn session_detail(
     });
 
     let working = capture.working_root().join(&session_id);
-    let (audio_kept, transcript_kept) = match &record.landed_path {
+    let (audio_kept, transcript_kept) = match &record.home_path {
         Some(path) => (
             has_files(&Path::new(path).join("audio")),
             Path::new(path)
@@ -229,7 +229,7 @@ pub fn session_detail(
         message,
         summary_problem,
         resumable,
-        landed_path: record.landed_path.clone(),
+        home_path: record.home_path.clone(),
         endpoint,
         audio_kept,
         transcript_kept,
@@ -260,19 +260,19 @@ pub fn session_document(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
 ) -> Result<SessionDocument, String> {
-    let landed = {
+    let home = {
         let store = capture.shared_store();
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         store
             .session(&session_id)
             .map_err(|e| e.to_string())?
-            .and_then(|r| r.landed_path)
+            .and_then(|r| r.home_path)
             .ok_or_else(|| "this session has not finished processing yet".to_string())?
     };
-    let folder = Path::new(&landed);
+    let folder = Path::new(&home);
     let read = |name: &str| {
         std::fs::read_to_string(folder.join(name))
-            .map_err(|e| format!("could not read {name} in {landed}: {e}"))
+            .map_err(|e| format!("could not read {name} in {home}: {e}"))
     };
     let doc = SessionDoc::parse(&read(pipeline::save::SESSION_FILE)?).map_err(|e| e.to_string())?;
     let transcript =

@@ -1,6 +1,6 @@
--- Working state for unlanded sessions, the processing queue, and one retained
--- row per landed session (KTD10). Every row is rebuildable from the retained
--- destination roots (R25).
+-- Working state for sessions not yet saved, the processing queue, and one
+-- retained row per saved session (KTD10). Every row is rebuildable from the
+-- retained destination roots (R25).
 
 CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,
@@ -11,7 +11,7 @@ CREATE TABLE sessions (
     queue_seq       INTEGER,
     speaker_count   TEXT,                 -- JSON SpeakerCount (R36)
     asr_model       TEXT,                 -- model selected at stop time (R20c)
-    landed_path     TEXT
+    home_path     TEXT
 );
 
 CREATE INDEX sessions_queue ON sessions (queue_seq) WHERE queue_seq IS NOT NULL;

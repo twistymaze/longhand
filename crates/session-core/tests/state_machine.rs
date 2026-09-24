@@ -34,7 +34,7 @@ fn states() -> Vec<SessionState> {
             stopped_at: t(0),
             problem: "unmounted".into(),
         },
-        SessionState::Landed,
+        SessionState::Saved,
         SessionState::Discarded,
     ]
 }
@@ -76,9 +76,9 @@ fn events() -> Vec<Event> {
         Event::StoreUnlocked,
         Event::StageFailed(Stage::Verify),
         Event::Retry,
-        Event::LandingFailed("gone".into()),
-        Event::Landed,
-        Event::LandedEdit,
+        Event::SaveFailed("gone".into()),
+        Event::Saved,
+        Event::SavedEdit,
         Event::ClaimLost,
     ]
 }
@@ -124,12 +124,12 @@ fn expected(state: &SessionState, event: &Event) -> Option<&'static str> {
         (S::ProcessingFailed { .. } | S::AwaitingDestination { .. }, Event::Retry) => {
             Some("processing")
         }
-        (S::Processing { .. }, Event::LandingFailed(_)) => Some("awaiting_destination"),
-        (S::Processing { .. }, Event::Landed) => Some("landed"),
+        (S::Processing { .. }, Event::SaveFailed(_)) => Some("awaiting_destination"),
+        (S::Processing { .. }, Event::Saved) => Some("saved"),
         (S::Processing { .. } | S::Blocked { .. }, Event::ClaimLost) => Some("queued"),
-        (S::Landed, Event::LandedEdit) => Some("landed"),
+        (S::Saved, Event::SavedEdit) => Some("saved"),
         (_, Event::UserResume { .. }) if post_stop => Some("capturing"),
-        (S::Landed, Event::UserResume { .. }) => Some("capturing"),
+        (S::Saved, Event::UserResume { .. }) => Some("capturing"),
         _ => None,
     }
 }
@@ -160,14 +160,14 @@ fn every_state_event_pair_matches_the_diagram() {
 #[test]
 fn a_completed_session_resumes_only_while_its_folder_holds_its_audio() {
     assert_eq!(
-        SessionState::Landed.transition(&resume_ok()).unwrap(),
+        SessionState::Saved.transition(&resume_ok()).unwrap(),
         SessionState::Capturing
     );
     let missing = Event::UserResume {
         space_ok: true,
         audio_intact: false,
     };
-    assert!(SessionState::Landed.transition(&missing).is_err());
+    assert!(SessionState::Saved.transition(&missing).is_err());
     assert!(SessionState::Discarded.transition(&resume_ok()).is_err());
 }
 

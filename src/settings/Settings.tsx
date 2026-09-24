@@ -211,8 +211,8 @@ export function Settings() {
       <main
         className={`min-w-0 flex-1 select-text ${shown ? "overflow-hidden" : "overflow-y-auto"}`}
       >
-        {shown?.state === "landed" && <SessionView key={shown.id} entry={shown} live={sessions.live[shown.id]} />}
-        {shown && shown.state !== "landed" && (
+        {shown?.state === "saved" && <SessionView key={shown.id} entry={shown} live={sessions.live[shown.id]} />}
+        {shown && shown.state !== "saved" && (
           <ProcessingView
             key={shown.id}
             entry={shown}

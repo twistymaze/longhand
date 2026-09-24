@@ -58,7 +58,7 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
       setError(null);
     } else setError(document.error);
     if (detail.status === "ok") {
-      setPath(detail.data.landed_path);
+      setPath(detail.data.home_path);
       setResumable(detail.data.resumable);
     }
   }, [entry.id]);

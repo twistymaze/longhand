@@ -30,7 +30,7 @@ pub const STAGES: &[Stage] = &[
     Stage::Join,
     Stage::Verify,
     Stage::Summarize,
-    Stage::Land,
+    Stage::Save,
 ];
 
 const POLL: Duration = Duration::from_secs(2);
@@ -407,7 +407,7 @@ impl Runner {
         // landing itself is left to finish.
         let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
         for &stage in STAGES {
-            if saving && stage != Stage::Land {
+            if saving && stage != Stage::Save {
                 continue;
             }
             let result = self.run_stage(id, model, stage, cancel.clone()).await;
@@ -428,7 +428,7 @@ impl Runner {
                 Err(StageError::NoDestination(problem)) => {
                     log::info!("{id} waits for its destination: {problem}");
                     if let Err(e) =
-                        lock(&self.env.store).apply(id, &Event::LandingFailed(problem.clone()))
+                        lock(&self.env.store).apply(id, &Event::SaveFailed(problem.clone()))
                     {
                         log::warn!("could not mark {id} awaiting its destination: {e}");
                     }
@@ -591,7 +591,7 @@ fn execute(
         Stage::Assemble => {
             let home = lock(&env.store)
                 .session(id)?
-                .and_then(|record| record.landed_path)
+                .and_then(|record| record.home_path)
                 .map(std::path::PathBuf::from);
             assemble::run(&env.store, id, &dir, segments, home.as_deref(), control).map(|_| ())
         }
@@ -688,7 +688,7 @@ fn execute(
                 },
             )
         }
-        Stage::Land => {
+        Stage::Save => {
             let destination = env.engines.destination();
             let saved = save::run(
                 &env.store,

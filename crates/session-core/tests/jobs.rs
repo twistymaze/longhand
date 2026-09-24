@@ -216,7 +216,7 @@ fn state_survives_reopening_the_database() {
 fn illegal_events_leave_the_store_unchanged() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();
-    assert!(store.apply("s1", &Event::Landed).is_err());
+    assert!(store.apply("s1", &Event::Saved).is_err());
     assert_eq!(
         store.session("s1").unwrap().unwrap().state,
         SessionState::Capturing

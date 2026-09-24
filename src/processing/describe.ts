@@ -3,7 +3,7 @@
 
 import type { SessionDetail, SessionEntry } from "../bindings";
 
-export const STAGES = ["assemble", "diarize", "transcribe", "join", "verify", "summarize", "land"] as const;
+export const STAGES = ["assemble", "diarize", "transcribe", "join", "verify", "summarize", "save"] as const;
 export type StageName = (typeof STAGES)[number];
 
 const stageLabels: Record<StageName, string> = {
@@ -13,7 +13,7 @@ const stageLabels: Record<StageName, string> = {
   join: "Assembling the transcript",
   verify: "Checking the transcript",
   summarize: "Summarizing",
-  land: "Saving to your folder",
+  save: "Saving to your folder",
 };
 
 export function stageLabel(stage: string): string {
@@ -54,7 +54,7 @@ export function entryStatus(entry: SessionEntry, live: string | null): string {
       return "Needs a retry";
     case "awaiting_destination":
       return "Needs a folder";
-    case "landed":
+    case "saved":
       return "Ready";
     default:
       return "";
