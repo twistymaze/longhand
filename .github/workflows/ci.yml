@@ -145,9 +145,43 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: bun tauri build --debug --bundles app
 
+      # The installer carries the VC++ runtime app-local, so Longhand starts
+      # on a machine without a current redistributable. build.rs stages the
+      # DLLs from these dirs, taken from the Visual Studio install that
+      # compiled the native code, as Handy's CI does.
+      - name: Locate the VC++ runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsRoot = & $vswhere -latest -products * -property installationPath
+          if (-not $vsRoot) { throw "vswhere found no Visual Studio installation" }
+          $version = (Get-Content (Join-Path $vsRoot "VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt")).Trim()
+          $archDir = Join-Path $vsRoot "VC\Redist\MSVC\$version\x64"
+          $crt = Get-ChildItem $archDir -Directory -Filter "Microsoft.VC*.CRT" | Sort-Object Name | Select-Object -Last 1
+          if (-not $crt -or -not (Test-Path (Join-Path $crt.FullName "msvcp140.dll"))) {
+            throw "VC++ CRT redist not found under $archDir"
+          }
+          $dirs = $crt.FullName
+          $omp = Get-ChildItem $archDir -Directory -Filter "Microsoft.VC*.OpenMP" | Sort-Object Name | Select-Object -Last 1
+          if ($omp) { $dirs = "$dirs;$($omp.FullName)" }
+          Add-Content -Path $env:GITHUB_ENV -Value "LONGHAND_VC_REDIST_DIRS=$dirs"
+
       - name: Tauri build (Windows installer)
         if: runner.os == 'Windows'
         run: bun tauri build --debug --bundles nsis
+
+      # A runner has the runtime installed, so launching the app here would
+      # not notice it missing; the installer's contents do.
+      - name: Installer carries the VC++ runtime (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          installer=$(ls target/debug/bundle/nsis/*.exe | head -1)
+          listing=$(7z l "$installer")
+          for dll in msvcp140.dll vcruntime140.dll; do
+            grep -qi "$dll" <<<"$listing" || { echo "$installer lacks $dll"; exit 1; }
+          done
 
   # The recorder soak writes 1.4 GB as fast as the disk takes it. On demand
   # rather than nightly, since runner minutes are billed:
