@@ -88,7 +88,17 @@ pub fn run(
         .session(session_id)?
         .and_then(|record| record.landed_path)
         .map(PathBuf::from);
-    if let Some(home) = home {
+    let recorded = checkpoint::get::<LandState>(store, session_id, Stage::Land, STATE)?;
+    // `landed_path` is recorded with `Landed`, before the step loop reaches
+    // `Done`: a first save still in progress finishes through the loop. A
+    // resumed session has no landing state, since resuming clears it.
+    let first_save_in_progress = matches!(
+        recorded,
+        Some(LandState::Copying { .. } | LandState::Staged { .. } | LandState::Landed { .. })
+    );
+    if let Some(home) = home
+        && !first_save_in_progress
+    {
         return update_home(store, session_id, working, segments, &home, control);
     }
     let destination = destination
@@ -105,7 +115,7 @@ pub fn run(
         folder_name: &folder_name,
     };
 
-    let mut state = match checkpoint::get::<LandState>(store, session_id, Stage::Land, STATE)? {
+    let mut state = match recorded {
         Some(state) => state,
         None => {
             control.proceed()?;
@@ -121,7 +131,13 @@ pub fn run(
         }
     }
 
-    let mut copied = false;
+    let mut copied = matches!(
+        state,
+        LandState::Landed {
+            working_retained: true,
+            ..
+        }
+    );
     while !matches!(state, LandState::Done { .. }) {
         let next = match landing::step(&state, &job, fs) {
             Ok(next) => next,

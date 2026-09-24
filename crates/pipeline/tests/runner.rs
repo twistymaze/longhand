@@ -1302,6 +1302,62 @@ async fn a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage() 
     assert!(landed(&r, "s").join("audio/segment-01.opus").exists());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    // Stop just before the move, then take the landing as far as the final
+    // name by hand and record it, as a process killed before `Done` leaves it.
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    *r.script.destination.lock().unwrap() = Some(r.dest.clone());
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    {
+        let mut s = r.store.lock().unwrap();
+        s.apply("s", &session_core::Event::Retry).unwrap();
+    }
+    let job = landing::Job {
+        session_id: "s",
+        working: &r.root.join("s"),
+        destination: &r.dest,
+        folder_name: &landing::naming::folder_name(segments[0].wall_start),
+    };
+    let staged = landing::step(&landing::LandState::Working, &job, &landing::RealFs).unwrap();
+    let landed_state = landing::step(&staged, &job, &landing::RealFs).unwrap();
+    let landing::LandState::Landed { path, .. } = &landed_state else {
+        panic!("{landed_state:?}");
+    };
+    r.store
+        .lock()
+        .unwrap()
+        .set_landed_path("s", &path.to_string_lossy())
+        .unwrap();
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Land,
+        pipeline::land::STATE,
+        &landed_state,
+    )
+    .unwrap();
+    {
+        let mut s = r.store.lock().unwrap();
+        s.apply("s", &session_core::Event::ClaimLost).unwrap();
+    }
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let home = landed(&r, "s");
+    assert!(home.join("audio/segment-01.opus").exists());
+    assert!(!home.join(landing::MARKER).exists());
+}
+
 // ------------------------------------------------------------- progress (U12)
 
 #[tokio::test(flavor = "multi_thread")]

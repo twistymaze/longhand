@@ -28,7 +28,9 @@ pub use rename::{Fs, RealFs};
 pub const LEFT_BEHIND: &[&str] = &["proc", "audio-recovery"];
 
 /// Written into the working directory before it moves, so a staging
-/// directory can be told apart from one this session did not make.
+/// directory can be told apart from one this session did not make. It stays
+/// through the final rename, so a crash before `Landed` is recorded can find
+/// the renamed folder, and is removed in the `Landed` step.
 pub const MARKER: &str = ".longhand-landing";
 
 /// Final-name attempts before giving up on the destination.
@@ -210,7 +212,19 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
             })
         }
         LandState::Staged { staging, copied } => {
+            let root = staging.parent().unwrap_or(job.destination);
             if !exists(staging) {
+                // The final rename happened and its record did not: the
+                // marker, kept through the rename, finds the folder.
+                if let Some(path) = (1..=MAX_NAMES)
+                    .map(|attempt| root.join(naming::candidate(job.folder_name, attempt)))
+                    .find(|path| is_ours(path, job.session_id))
+                {
+                    return Ok(LandState::Landed {
+                        path,
+                        working_retained: *copied,
+                    });
+                }
                 if *copied && exists(job.working) {
                     return Ok(LandState::Working);
                 }
@@ -225,15 +239,11 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                     _ => {}
                 }
             }
-            match std::fs::remove_file(staging.join(MARKER)) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            }
             fsync::sync_dir(staging)?;
             // The final name goes beside the staged copy, a same-volume
             // rename, even if the destination setting has changed since it
-            // was staged: that copy is the complete one (R22b).
-            let root = staging.parent().unwrap_or(job.destination);
+            // was staged: that copy is the complete one (R22b). The marker
+            // goes with it and is removed once `Landed` is recorded.
             for attempt in 1..=MAX_NAMES {
                 let target = root.join(naming::candidate(job.folder_name, attempt));
                 match fs.rename_new(staging, &target) {
@@ -260,6 +270,11 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
             path,
             working_retained,
         } => {
+            match std::fs::remove_file(path.join(MARKER)) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            }
+            fsync::sync_dir(path)?;
             if *working_retained && exists(job.working) {
                 std::fs::remove_dir_all(job.working)?;
             }

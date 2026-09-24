@@ -199,6 +199,39 @@ fn a_kill_between_the_verified_copy_and_the_final_rename_keeps_both_copies_and_r
 }
 
 #[test]
+fn a_final_rename_that_happened_before_its_record_is_found_by_its_marker() {
+    for cross in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (work, dest) = (working(root.path()), destination(root.path()));
+        let job = Job {
+            session_id: "s1",
+            working: &work,
+            destination: &dest,
+            folder_name: NAME,
+        };
+        let fs = CrossDevice {
+            cross: Cell::new(cross),
+        };
+        let mut staged = step(&LandState::Working, &job, &fs).unwrap();
+        if matches!(staged, LandState::Copying { .. }) {
+            staged = step(&staged, &job, &fs).unwrap();
+        }
+        assert!(matches!(staged, LandState::Staged { .. }), "{staged:?}");
+        let landed = step(&staged, &job, &fs).unwrap();
+        // The process dies here; the recorded state is still `staged`.
+        let again = step(&staged, &job, &RealFs).unwrap();
+        assert_eq!(again, landed, "cross-volume: {cross}");
+
+        let states = run(&job, &RealFs, again);
+        assert!(matches!(states.last(), Some(LandState::Done { .. })));
+        assert_eq!(landed_files(&dest.join(NAME)), EXPECTED);
+        assert!(!dest.join(NAME).join(MARKER).exists());
+        assert!(!dest.join(format!("{NAME}-2")).exists());
+        assert!(!work.exists());
+    }
+}
+
+#[test]
 fn a_partial_copy_left_by_a_crash_is_this_sessions_and_is_redone() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
