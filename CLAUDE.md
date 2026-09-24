@@ -18,7 +18,7 @@ Apple's restraint principle matches a product rule already in the plan: the reco
 
 Code identifiers, comments, log text, docs, plans and agent guidance follow ASD-STE100:
 
-- Give each word one meaning, and use one word for each concept. `CONCEPTS.md` holds the terms.
+- Give each word one meaning, and use one word for each concept. `CONCEPTS.md` holds the terms. One meaning is one sense, not one use: "save" means to keep something in a place, whether that place is a folder or Keychain.
 - Write short sentences in the active voice.
 - Use no metaphors. For example, a process does not "land": it saves, finishes or completes. `CONCEPTS.md` lists the terms to avoid.
 
