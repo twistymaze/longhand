@@ -62,7 +62,7 @@ pub enum CaptureError {
     #[error(transparent)]
     Timeline(#[from] session_core::TimelineError),
     #[error("this session is already moving to its destination and can no longer be resumed")]
-    Landing,
+    Save,
     #[error("{0}")]
     Other(String),
 }
@@ -494,10 +494,10 @@ impl CaptureManager {
             let completed = store
                 .session(id)?
                 .is_some_and(|r| r.state == SessionState::Landed);
-            if !completed && pipeline::land::begun(&store, id).map_err(other)? {
-                return Err(CaptureError::Landing);
+            if !completed && pipeline::save::begun(&store, id).map_err(other)? {
+                return Err(CaptureError::Save);
             }
-            let audio_intact = pipeline::land::home_intact(&store, id).map_err(other)?;
+            let audio_intact = pipeline::save::home_intact(&store, id).map_err(other)?;
             store.apply(
                 id,
                 &Event::UserResume {
@@ -667,7 +667,7 @@ impl CaptureManager {
         let mut store = self.store();
         store.edit_note(note_id, text)?;
         if let Some(session_id) = store.note(note_id)?.and_then(|n| n.session_id) {
-            pipeline::land::rewrite_notes(&mut store, &session_id)
+            pipeline::save::rewrite_notes(&mut store, &session_id)
                 .map_err(|e| CaptureError::Other(e.to_string()))?;
         }
         Ok(())

@@ -6,12 +6,12 @@
 //! the destination, so the last step is a same-volume rename on every path.
 //! Getting it there is a rename when the volumes agree and a verified copy
 //! when the rename says they do not; no pre-check decides. Landing advances
-//! one [`LandState`] at a time, and the caller records each state durably
+//! one [`SaveState`] at a time, and the caller records each state durably
 //! before the next step, so a crash anywhere resumes from what is on disk.
 
 pub mod fsync;
+pub mod home_write;
 pub mod naming;
-pub mod post_landing;
 pub mod rename;
 pub mod stage;
 
@@ -29,16 +29,16 @@ pub const LEFT_BEHIND: &[&str] = &["proc", "audio-recovery"];
 
 /// Written into the working directory before it moves, so a staging
 /// directory can be told apart from one this session did not make. It stays
-/// through the final rename, so a crash before `Landed` is recorded can find
-/// the renamed folder, and is removed in the `Landed` step.
-pub const MARKER: &str = ".longhand-landing";
+/// through the final rename, so a crash before `Saved` is recorded can find
+/// the renamed folder, and is removed in the `Saved` step.
+pub const MARKER: &str = ".longhand-saving";
 
 /// Final-name attempts before giving up on the destination.
 const MAX_NAMES: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
-pub enum LandState {
+pub enum SaveState {
     /// Everything is in the working location.
     Working,
     /// The volumes differ: staging is being filled by copy. A partial
@@ -54,7 +54,7 @@ pub enum LandState {
     },
     /// Under the final name. The working copy, if one was kept, goes only
     /// once this is recorded (R22b).
-    Landed {
+    Saved {
         path: PathBuf,
         working_retained: bool,
     },
@@ -72,7 +72,7 @@ pub struct Job<'a> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum LandingError {
+pub enum SaveError {
     /// The destination cannot take the session: it waits for the user
     /// (R22b's awaiting-destination), whole in the working location.
     #[error("the destination folder {} {problem}", path.display())]
@@ -86,8 +86,8 @@ pub enum LandingError {
 }
 
 /// The destination exists, is a folder, and takes a new file (R22b).
-pub fn check_destination(destination: &Path) -> Result<(), LandingError> {
-    let problem = |problem: &str| LandingError::Destination {
+pub fn check_destination(destination: &Path) -> Result<(), SaveError> {
+    let problem = |problem: &str| SaveError::Destination {
         path: destination.to_path_buf(),
         problem: problem.to_string(),
     };
@@ -152,42 +152,42 @@ fn exists(path: &Path) -> bool {
 }
 
 /// Take one landing step from `state`.
-pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, LandingError> {
+pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, SaveError> {
     let staging = job.destination.join(naming::staging_name(job.session_id));
     match state {
-        LandState::Working => {
+        SaveState::Working => {
             if !exists(job.working) {
                 // The move happened and its record did not.
                 if is_ours(&staging, job.session_id) {
-                    return Ok(LandState::Staged {
+                    return Ok(SaveState::Staged {
                         staging,
                         copied: false,
                     });
                 }
-                return Err(LandingError::Lost(format!(
+                return Err(SaveError::Lost(format!(
                     "the working copy at {} is gone and the destination holds no staged copy",
                     job.working.display()
                 )));
             }
             check_destination(job.destination)?;
             if exists(&staging) {
-                return Err(LandingError::StagingTaken(staging));
+                return Err(SaveError::StagingTaken(staging));
             }
             std::fs::write(job.working.join(MARKER), job.session_id)?;
             fsync::sync_tree(job.working)?;
             match fs.rename(job.working, &staging) {
                 Ok(()) => {
                     fsync::sync_dir(job.destination)?;
-                    Ok(LandState::Staged {
+                    Ok(SaveState::Staged {
                         staging,
                         copied: false,
                     })
                 }
                 Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
-                    Ok(LandState::Copying { staging })
+                    Ok(SaveState::Copying { staging })
                 }
                 Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                    Err(LandingError::Destination {
+                    Err(SaveError::Destination {
                         path: job.destination.to_path_buf(),
                         problem: format!("refused the session ({e})"),
                     })
@@ -195,7 +195,7 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                 Err(e) => Err(e.into()),
             }
         }
-        LandState::Copying { staging } => {
+        SaveState::Copying { staging } => {
             // Whatever a crash left here is this session's partial copy.
             if exists(staging) {
                 std::fs::remove_dir_all(staging)?;
@@ -206,12 +206,12 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                 return Err(e.into());
             }
             fsync::sync_dir(job.destination)?;
-            Ok(LandState::Staged {
+            Ok(SaveState::Staged {
                 staging: staging.clone(),
                 copied: true,
             })
         }
-        LandState::Staged { staging, copied } => {
+        SaveState::Staged { staging, copied } => {
             let root = staging.parent().unwrap_or(job.destination);
             if !exists(staging) {
                 // The final rename happened and its record did not: the
@@ -220,15 +220,15 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                     .map(|attempt| root.join(naming::candidate(job.folder_name, attempt)))
                     .find(|path| is_ours(path, job.session_id))
                 {
-                    return Ok(LandState::Landed {
+                    return Ok(SaveState::Saved {
                         path,
                         working_retained: *copied,
                     });
                 }
                 if *copied && exists(job.working) {
-                    return Ok(LandState::Working);
+                    return Ok(SaveState::Working);
                 }
-                return Err(LandingError::Lost(format!(
+                return Err(SaveError::Lost(format!(
                     "the staged copy at {} is gone",
                     staging.display()
                 )));
@@ -243,13 +243,13 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
             // The final name goes beside the staged copy, a same-volume
             // rename, even if the destination setting has changed since it
             // was staged: that copy is the complete one (R22b). The marker
-            // goes with it and is removed once `Landed` is recorded.
+            // goes with it and is removed once `Saved` is recorded.
             for attempt in 1..=MAX_NAMES {
                 let target = root.join(naming::candidate(job.folder_name, attempt));
                 match fs.rename_new(staging, &target) {
                     Ok(()) => {
                         fsync::sync_dir(root)?;
-                        return Ok(LandState::Landed {
+                        return Ok(SaveState::Saved {
                             path: target,
                             working_retained: *copied,
                         });
@@ -258,7 +258,7 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                     Err(e) => return Err(e.into()),
                 }
             }
-            Err(LandingError::Destination {
+            Err(SaveError::Destination {
                 path: job.destination.to_path_buf(),
                 problem: format!(
                     "has no free name for {} after {MAX_NAMES} tries",
@@ -266,7 +266,7 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
                 ),
             })
         }
-        LandState::Landed {
+        SaveState::Saved {
             path,
             working_retained,
         } => {
@@ -278,8 +278,8 @@ pub fn step(state: &LandState, job: &Job, fs: &dyn Fs) -> Result<LandState, Land
             if *working_retained && exists(job.working) {
                 std::fs::remove_dir_all(job.working)?;
             }
-            Ok(LandState::Done { path: path.clone() })
+            Ok(SaveState::Done { path: path.clone() })
         }
-        LandState::Done { path } => Ok(LandState::Done { path: path.clone() }),
+        SaveState::Done { path } => Ok(SaveState::Done { path: path.clone() }),
     }
 }

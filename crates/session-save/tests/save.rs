@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use landing::{Fs, Job, LEFT_BEHIND, LandState, LandingError, MARKER, RealFs, step};
+use session_save::{Fs, Job, LEFT_BEHIND, MARKER, RealFs, SaveError, SaveState, step};
 
 const NAME: &str = "2026-09-22 1400 Longhand session";
 
@@ -46,16 +46,16 @@ impl Fs for CrossDevice {
     }
 }
 
-fn run(job: &Job, fs: &dyn Fs, mut state: LandState) -> Vec<LandState> {
+fn run(job: &Job, fs: &dyn Fs, mut state: SaveState) -> Vec<SaveState> {
     let mut seen = vec![state.clone()];
-    while !matches!(state, LandState::Done { .. }) {
+    while !matches!(state, SaveState::Done { .. }) {
         state = step(&state, job, fs).unwrap();
         seen.push(state.clone());
     }
     seen
 }
 
-fn landed_files(dir: &Path) -> Vec<String> {
+fn saved_files(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for entry in walk(dir) {
         out.push(
@@ -91,7 +91,7 @@ const EXPECTED: [&str; 5] = [
 ];
 
 #[test]
-fn a_same_volume_landing_moves_once_and_leaves_the_raw_audio_behind() {
+fn a_same_volume_save_moves_once_and_leaves_the_raw_audio_behind() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
@@ -116,7 +116,7 @@ fn a_same_volume_landing_moves_once_and_leaves_the_raw_audio_behind() {
             seen
         })
     };
-    let states = run(&job, &RealFs, LandState::Working);
+    let states = run(&job, &RealFs, SaveState::Working);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let seen = watcher.join().unwrap();
     assert!(
@@ -124,11 +124,11 @@ fn a_same_volume_landing_moves_once_and_leaves_the_raw_audio_behind() {
         "{seen:?}"
     );
 
-    assert!(matches!(states[1], LandState::Staged { copied: false, .. }));
+    assert!(matches!(states[1], SaveState::Staged { copied: false, .. }));
     let path = dest.join(NAME);
-    assert_eq!(states.last(), Some(&LandState::Done { path: path.clone() }));
+    assert_eq!(states.last(), Some(&SaveState::Done { path: path.clone() }));
     assert!(!work.exists());
-    assert_eq!(landed_files(&path), EXPECTED);
+    assert_eq!(saved_files(&path), EXPECTED);
     for gone in LEFT_BEHIND {
         assert!(!path.join(gone).exists());
     }
@@ -138,7 +138,7 @@ fn a_same_volume_landing_moves_once_and_leaves_the_raw_audio_behind() {
 }
 
 #[test]
-fn across_volumes_the_copy_is_verified_and_the_working_copy_goes_only_after_landing() {
+fn across_volumes_the_copy_is_verified_and_the_working_copy_goes_only_after_the_save() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
@@ -150,10 +150,10 @@ fn across_volumes_the_copy_is_verified_and_the_working_copy_goes_only_after_land
     let fs = CrossDevice {
         cross: Cell::new(true),
     };
-    let states = run(&job, &fs, LandState::Working);
-    assert!(matches!(states[1], LandState::Copying { .. }));
-    assert!(matches!(states[2], LandState::Staged { copied: true, .. }));
-    let LandState::Landed {
+    let states = run(&job, &fs, SaveState::Working);
+    assert!(matches!(states[1], SaveState::Copying { .. }));
+    assert!(matches!(states[2], SaveState::Staged { copied: true, .. }));
+    let SaveState::Saved {
         working_retained: true,
         ..
     } = &states[3]
@@ -162,7 +162,7 @@ fn across_volumes_the_copy_is_verified_and_the_working_copy_goes_only_after_land
     };
     assert!(!work.exists());
     let path = dest.join(NAME);
-    assert_eq!(landed_files(&path), EXPECTED);
+    assert_eq!(saved_files(&path), EXPECTED);
     assert_eq!(
         std::fs::read(path.join("audio/segment-01.opus")).unwrap(),
         vec![7u8; 300_000]
@@ -182,19 +182,19 @@ fn a_kill_between_the_verified_copy_and_the_final_rename_keeps_both_copies_and_r
     let fs = CrossDevice {
         cross: Cell::new(true),
     };
-    let copying = step(&LandState::Working, &job, &fs).unwrap();
+    let copying = step(&SaveState::Working, &job, &fs).unwrap();
     let staged = step(&copying, &job, &fs).unwrap();
     // The process dies here; the recorded state is `staged`.
     assert!(work.join("audio/segment-01.opus").exists());
-    let LandState::Staged { staging, .. } = &staged else {
+    let SaveState::Staged { staging, .. } = &staged else {
         panic!("{staged:?}");
     };
     assert!(staging.join("audio/segment-01.opus").exists());
 
     // Relaunch: resume from the record, and nothing is lost on the way.
     let states = run(&job, &RealFs, staged);
-    assert!(matches!(states.last(), Some(LandState::Done { .. })));
-    assert_eq!(landed_files(&dest.join(NAME)), EXPECTED);
+    assert!(matches!(states.last(), Some(SaveState::Done { .. })));
+    assert_eq!(saved_files(&dest.join(NAME)), EXPECTED);
     assert!(!work.exists());
 }
 
@@ -212,19 +212,19 @@ fn a_final_rename_that_happened_before_its_record_is_found_by_its_marker() {
         let fs = CrossDevice {
             cross: Cell::new(cross),
         };
-        let mut staged = step(&LandState::Working, &job, &fs).unwrap();
-        if matches!(staged, LandState::Copying { .. }) {
+        let mut staged = step(&SaveState::Working, &job, &fs).unwrap();
+        if matches!(staged, SaveState::Copying { .. }) {
             staged = step(&staged, &job, &fs).unwrap();
         }
-        assert!(matches!(staged, LandState::Staged { .. }), "{staged:?}");
-        let landed = step(&staged, &job, &fs).unwrap();
+        assert!(matches!(staged, SaveState::Staged { .. }), "{staged:?}");
+        let saved = step(&staged, &job, &fs).unwrap();
         // The process dies here; the recorded state is still `staged`.
         let again = step(&staged, &job, &RealFs).unwrap();
-        assert_eq!(again, landed, "cross-volume: {cross}");
+        assert_eq!(again, saved, "cross-volume: {cross}");
 
         let states = run(&job, &RealFs, again);
-        assert!(matches!(states.last(), Some(LandState::Done { .. })));
-        assert_eq!(landed_files(&dest.join(NAME)), EXPECTED);
+        assert!(matches!(states.last(), Some(SaveState::Done { .. })));
+        assert_eq!(saved_files(&dest.join(NAME)), EXPECTED);
         assert!(!dest.join(NAME).join(MARKER).exists());
         assert!(!dest.join(format!("{NAME}-2")).exists());
         assert!(!work.exists());
@@ -244,14 +244,14 @@ fn a_partial_copy_left_by_a_crash_is_this_sessions_and_is_redone() {
     let fs = CrossDevice {
         cross: Cell::new(true),
     };
-    let copying = step(&LandState::Working, &job, &fs).unwrap();
-    let LandState::Copying { staging } = &copying else {
+    let copying = step(&SaveState::Working, &job, &fs).unwrap();
+    let SaveState::Copying { staging } = &copying else {
         panic!("{copying:?}");
     };
     std::fs::create_dir_all(staging.join("audio")).unwrap();
     std::fs::write(staging.join("audio/segment-01.opus"), b"half").unwrap();
     let states = run(&job, &fs, copying);
-    assert!(matches!(states.last(), Some(LandState::Done { .. })));
+    assert!(matches!(states.last(), Some(SaveState::Done { .. })));
     assert_eq!(
         std::fs::read(dest.join(NAME).join("audio/segment-01.opus"))
             .unwrap()
@@ -270,9 +270,9 @@ fn a_rename_that_happened_before_its_record_is_recognised_by_its_marker() {
         destination: &dest,
         folder_name: NAME,
     };
-    let staged = step(&LandState::Working, &job, &RealFs).unwrap();
+    let staged = step(&SaveState::Working, &job, &RealFs).unwrap();
     // The record of `staged` is lost: the store still says `working`.
-    let again = step(&LandState::Working, &job, &RealFs).unwrap();
+    let again = step(&SaveState::Working, &job, &RealFs).unwrap();
     assert_eq!(again, staged);
 }
 
@@ -288,10 +288,10 @@ fn a_taken_name_gets_a_suffix_and_an_empty_folder_is_never_replaced() {
         destination: &dest,
         folder_name: NAME,
     };
-    let states = run(&job, &RealFs, LandState::Working);
+    let states = run(&job, &RealFs, SaveState::Working);
     assert_eq!(
         states.last(),
-        Some(&LandState::Done {
+        Some(&SaveState::Done {
             path: dest.join(format!("{NAME}-3"))
         })
     );
@@ -309,8 +309,8 @@ fn a_staging_folder_this_session_did_not_make_is_refused() {
         destination: &dest,
         folder_name: NAME,
     };
-    let err = step(&LandState::Working, &job, &RealFs).unwrap_err();
-    assert!(matches!(err, LandingError::StagingTaken(_)), "{err:?}");
+    let err = step(&SaveState::Working, &job, &RealFs).unwrap_err();
+    assert!(matches!(err, SaveError::StagingTaken(_)), "{err:?}");
     assert!(work.join("audio/segment-01.opus").exists());
 }
 
@@ -325,8 +325,8 @@ fn a_missing_destination_waits_with_the_session_whole_in_the_working_location() 
         destination: &dest,
         folder_name: NAME,
     };
-    let err = step(&LandState::Working, &job, &RealFs).unwrap_err();
-    let LandingError::Destination { problem, .. } = &err else {
+    let err = step(&SaveState::Working, &job, &RealFs).unwrap_err();
+    let SaveError::Destination { problem, .. } = &err else {
         panic!("{err:?}");
     };
     assert_eq!(problem, "is missing");
@@ -337,13 +337,13 @@ fn a_missing_destination_waits_with_the_session_whole_in_the_working_location() 
 fn folder_names_follow_the_session_start() {
     let started = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:05:09-05:00").unwrap();
     assert_eq!(
-        landing::naming::folder_name(started),
+        session_save::naming::folder_name(started),
         "2026-09-22 1405 Longhand session"
     );
 }
 
 #[test]
-fn a_staged_copy_lands_beside_itself_when_the_destination_has_changed() {
+fn a_staged_copy_is_saved_beside_itself_when_the_destination_has_changed() {
     let root = tempfile::tempdir().unwrap();
     let work = working(root.path());
     let first = destination(root.path());
@@ -353,8 +353,8 @@ fn a_staged_copy_lands_beside_itself_when_the_destination_has_changed() {
         destination: &first,
         folder_name: NAME,
     };
-    let staged = step(&LandState::Working, &job, &RealFs).unwrap();
-    assert!(matches!(staged, LandState::Staged { .. }));
+    let staged = step(&SaveState::Working, &job, &RealFs).unwrap();
+    assert!(matches!(staged, SaveState::Staged { .. }));
 
     // The user chose another folder while the session waited; the staged
     // copy is the complete one, so it completes where it is (R22b).
@@ -364,7 +364,7 @@ fn a_staged_copy_lands_beside_itself_when_the_destination_has_changed() {
         destination: &other,
         ..job
     };
-    let LandState::Landed { path, .. } = step(&staged, &moved, &RealFs).unwrap() else {
+    let SaveState::Saved { path, .. } = step(&staged, &moved, &RealFs).unwrap() else {
         panic!("expected the staged copy to land");
     };
     assert_eq!(path.parent(), Some(first.as_path()));
@@ -383,7 +383,7 @@ fn the_launch_sweep_removes_only_staging_that_completed_sessions_left() {
         std::fs::write(root.path().join(name).join("session.md"), "x").unwrap();
     }
 
-    let removed = landing::sweep_staging(root.path(), |id| id == "done").unwrap();
+    let removed = session_save::sweep_staging(root.path(), |id| id == "done").unwrap();
 
     assert_eq!(removed, vec![root.path().join(".longhand-staging-done")]);
     assert!(root.path().join(".longhand-staging-waiting").exists());
@@ -393,7 +393,7 @@ fn the_launch_sweep_removes_only_staging_that_completed_sessions_left() {
             .exists()
     );
     assert!(
-        landing::sweep_staging(&root.path().join("unmounted"), |_| true)
+        session_save::sweep_staging(&root.path().join("unmounted"), |_| true)
             .unwrap()
             .is_empty()
     );
@@ -413,9 +413,9 @@ fn a_read_only_destination_waits_naming_its_permissions() {
         destination: &dest,
         folder_name: NAME,
     };
-    let err = step(&LandState::Working, &job, &RealFs).unwrap_err();
+    let err = step(&SaveState::Working, &job, &RealFs).unwrap_err();
     std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let LandingError::Destination { problem, .. } = &err else {
+    let SaveError::Destination { problem, .. } = &err else {
         panic!("{err:?}");
     };
     assert!(problem.starts_with("is not writable"), "{problem}");

@@ -151,7 +151,7 @@ pub fn session_detail(
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
-    let (record, segments, landing, audio_intact) = {
+    let (record, segments, saving, audio_intact) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&session_id)
@@ -160,14 +160,14 @@ pub fn session_detail(
         let segments = store.segments(&session_id).map_err(|e| e.to_string())?;
         // A completed session has finished landing; only one mid-landing
         // refuses a resume.
-        let landing = record.state != SessionState::Landed
-            && pipeline::land::begun(&store, &session_id).map_err(e)?;
-        let audio_intact = pipeline::land::home_intact(&store, &session_id).map_err(e)?;
-        (record, segments, landing, audio_intact)
+        let saving = record.state != SessionState::Landed
+            && pipeline::save::begun(&store, &session_id).map_err(e)?;
+        let audio_intact = pipeline::save::home_intact(&store, &session_id).map_err(e)?;
+        (record, segments, saving, audio_intact)
     };
     let snapshot = pipeline::progress::snapshot(&shared, &session_id).map_err(e)?;
 
-    let resumable = !landing
+    let resumable = !saving
         && record
             .state
             .transition(&Event::UserResume {
@@ -193,7 +193,7 @@ pub fn session_detail(
         &shared,
         &session_id,
         Stage::Summarize,
-        pipeline::land::SUMMARY_FAILED,
+        pipeline::save::SUMMARY_FAILED,
     )
     .map_err(e)?;
 
@@ -274,7 +274,7 @@ pub fn session_document(
         std::fs::read_to_string(folder.join(name))
             .map_err(|e| format!("could not read {name} in {landed}: {e}"))
     };
-    let doc = SessionDoc::parse(&read(pipeline::land::SESSION_FILE)?).map_err(|e| e.to_string())?;
+    let doc = SessionDoc::parse(&read(pipeline::save::SESSION_FILE)?).map_err(|e| e.to_string())?;
     let transcript =
         Transcript::parse(&read(pipeline::join::TRANSCRIPT_FILE)?).map_err(|e| e.to_string())?;
     Ok(SessionDocument {

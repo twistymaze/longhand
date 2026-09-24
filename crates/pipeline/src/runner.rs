@@ -16,7 +16,7 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
-use crate::land;
+use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
@@ -126,7 +126,7 @@ pub enum RunnerEvent {
     },
     /// In the destination under its final name. `copied` when the volumes
     /// differed and the session was copied rather than moved in one step.
-    Landed {
+    Saved {
         session_id: String,
         path: PathBuf,
         copied: bool,
@@ -312,7 +312,7 @@ impl Runner {
                 cancel,
                 env: Arc::clone(&env),
             };
-            land::regenerate_summary(
+            save::regenerate_summary(
                 &env.store,
                 &id,
                 endpoint,
@@ -405,9 +405,9 @@ impl Runner {
         let emit = |event| (self.env.events)(event);
         // Once landing has begun, the working directory may be gone: only
         // landing itself is left to finish.
-        let landing = land::begun(&lock(&self.env.store), id).unwrap_or(false);
+        let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
         for &stage in STAGES {
-            if landing && stage != Stage::Land {
+            if saving && stage != Stage::Land {
                 continue;
             }
             let result = self.run_stage(id, model, stage, cancel.clone()).await;
@@ -417,7 +417,7 @@ impl Runner {
                 // lands with a stub naming the failure (KD13, R22).
                 Err(StageError::Failed(message)) if stage == Stage::Summarize => {
                     log::warn!("summarization failed for {id}; landing without it: {message}");
-                    if let Err(e) = land::record_summary_failure(&self.env.store, id, &message) {
+                    if let Err(e) = save::record_summary_failure(&self.env.store, id, &message) {
                         log::error!("could not record the summary failure of {id}: {e}");
                     }
                     emit(RunnerEvent::SummaryUnavailable {
@@ -690,28 +690,28 @@ fn execute(
         }
         Stage::Land => {
             let destination = env.engines.destination();
-            let landed = land::run(
+            let saved = save::run(
                 &env.store,
                 id,
                 &dir,
                 segments,
                 destination.as_deref(),
-                &landing::RealFs,
+                &session_save::RealFs,
                 control,
             )?;
             log::info!(
                 "{id} landed at {}{}",
-                landed.path.display(),
-                if landed.copied {
+                saved.path.display(),
+                if saved.copied {
                     " (copied across volumes)"
                 } else {
                     ""
                 }
             );
-            (env.events)(RunnerEvent::Landed {
+            (env.events)(RunnerEvent::Saved {
                 session_id: id.to_string(),
-                path: landed.path,
-                copied: landed.copied,
+                path: saved.path,
+                copied: saved.copied,
             });
             Ok(())
         }

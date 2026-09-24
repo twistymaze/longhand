@@ -135,7 +135,7 @@ impl From<RunnerEvent> for ProcessingUpdate {
                 session_id,
                 problem,
             } => (session_id, ProcessingStep::AwaitingDestination { problem }),
-            RunnerEvent::Landed {
+            RunnerEvent::Saved {
                 session_id,
                 path,
                 copied,
@@ -263,7 +263,7 @@ fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
             .is_some_and(|r| r.state == session_core::SessionState::Landed)
     };
     for root in roots {
-        match landing::sweep_staging(std::path::Path::new(&root), completed) {
+        match session_save::sweep_staging(std::path::Path::new(&root), completed) {
             Ok(removed) => {
                 for path in removed {
                     log::info!("removed leftover staging folder {}", path.display());
@@ -325,7 +325,7 @@ impl ProcessingManager {
             }),
             suspended: Box::new(move || suspended.is_capturing()),
             events: Box::new(move |event| {
-                if let RunnerEvent::Landed { path, .. } = &event {
+                if let RunnerEvent::Saved { path, .. } = &event {
                     notify_landed(&events, path);
                 }
                 if let Err(e) = ProcessingUpdate::from(event).emit(&events) {

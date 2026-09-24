@@ -280,17 +280,17 @@ async fn a_real_recording_assembles_and_transcribes_end_to_end() {
     *destination.lock().unwrap() = Some(dest.path().to_path_buf());
     let working_bytes = tree_bytes(&dir);
     runner.retry_awaiting().unwrap();
-    let landing = Instant::now();
+    let save_started = Instant::now();
     let (_, outcome) = runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
     let record = store.lock().unwrap().session("e2e").unwrap().unwrap();
-    let landed = std::path::PathBuf::from(record.landed_path.unwrap());
-    assert!(!landed.join(pipeline::PROC_DIR).exists());
-    assert!(!landed.join(pipeline::RECOVERY_DIR).exists());
+    let saved = std::path::PathBuf::from(record.landed_path.unwrap());
+    assert!(!saved.join(pipeline::PROC_DIR).exists());
+    assert!(!saved.join(pipeline::RECOVERY_DIR).exists());
     eprintln!(
         "landed in {:.2} s: {:.1} MB (archive {:.1} MB) from a {:.1} MB working copy",
-        landing.elapsed().as_secs_f64(),
-        tree_bytes(&landed) as f64 / 1e6,
+        save_started.elapsed().as_secs_f64(),
+        tree_bytes(&saved) as f64 / 1e6,
         archive as f64 / 1e6,
         working_bytes as f64 / 1e6
     );
