@@ -144,20 +144,13 @@ pub fn run(
     Err(StageError::Failed(message))
 }
 
-/// The spans carrying decoded text, within the segment. A window without
-/// timestamped segments counts its own span, as the join places it.
+/// The spans carrying decoded text, within the segment: only timestamped
+/// segments count (U20). Text a window decoded without timestamps covers
+/// nothing, since one word would otherwise vouch for the whole window; the
+/// 90% and long-stretch rules tolerate an occasional such window.
 pub fn text_spans(windows: &[&WindowResult]) -> Vec<Span> {
     let mut spans = Vec::new();
     for w in windows {
-        if w.segments.is_empty() {
-            if !w.text.trim().is_empty() {
-                spans.push(Span {
-                    start_ms: w.start_ms,
-                    end_ms: w.end_ms,
-                });
-            }
-            continue;
-        }
         for s in w.segments.iter().filter(|s| !s.text.trim().is_empty()) {
             // A short window is padded before decoding, so a timestamp can
             // fall past the audio it was given.

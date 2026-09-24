@@ -135,3 +135,18 @@ fn text_past_a_padded_window_is_clamped_and_blank_text_covers_nothing() {
     };
     assert_eq!(text_spans(&[&window]), vec![span(10_000, 10_600)]);
 }
+
+#[test]
+fn text_without_timestamps_covers_nothing() {
+    let window = WindowResult {
+        segment: 0,
+        window: 0,
+        start_ms: 0,
+        end_ms: 30_000,
+        text: "hi".into(),
+        segments: vec![],
+    };
+    assert_eq!(text_spans(&[&window]), vec![]);
+    let c = measure(0, &[span(0, 30_000)], &text_spans(&[&window]));
+    assert!(!c.passes(), "{c:?}");
+}
