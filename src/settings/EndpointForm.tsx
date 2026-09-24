@@ -15,7 +15,7 @@ function isPlaintextRemote(baseUrl: string): boolean {
 }
 
 /// A text field that commits on Return or when focus leaves, the way macOS
-/// settings fields apply with no button to confirm.
+/// settings fields apply without a Save button.
 function CommitField({
   value,
   placeholder,
@@ -76,7 +76,7 @@ function Credential({ baseUrl }: { baseUrl: string }) {
     await refresh();
   };
 
-  const store = () =>
+  const save = () =>
     run(async () => {
       const result = await commands.setCredential(baseUrl, secret);
       if (result.status === "ok") setSecret("");
@@ -89,7 +89,7 @@ function Credential({ baseUrl }: { baseUrl: string }) {
       case "present":
         summary = (
           <Status tone="positive">
-            Stored in {isMac ? "Keychain" : "the credential store"} for {status.host} · fingerprint{" "}
+            Saved in {isMac ? "Keychain" : "the credential store"} for {status.host} · fingerprint{" "}
             <code className="text-[0.85rem]">{status.fingerprint}</code>
           </Status>
         );
@@ -120,11 +120,11 @@ function Credential({ baseUrl }: { baseUrl: string }) {
           placeholder={status?.kind === "present" ? "Replace…" : "Paste key"}
           onChange={(e) => setSecret(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && secret) void store();
+            if (e.key === "Enter" && secret) void save();
           }}
         />
-        <Button prominent disabled={!secret} onClick={store}>
-          Store
+        <Button prominent disabled={!secret} onClick={save}>
+          Save
         </Button>
       </Row>
       <Row label={summary ?? <span className="text-label-tertiary">Checking…</span>}>
