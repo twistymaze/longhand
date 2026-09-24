@@ -19,7 +19,28 @@ fn main() {
     // Must run after transcribe staging because that helper recreates transcribe-libs/.
     stage_vc_runtime_dlls();
 
-    tauri_build::build()
+    // On Windows the app manifest goes to the linker rather than into Tauri's
+    // resource file, so every binary in this crate carries it, test binaries
+    // included. Without the Common-Controls v6 dependency it declares, a test
+    // binary that links Tauri cannot start (STATUS_ENTRYPOINT_NOT_FOUND).
+    let windows = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        embed_windows_manifest();
+        tauri_build::WindowsAttributes::new_without_app_manifest()
+    } else {
+        tauri_build::WindowsAttributes::new()
+    };
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("failed to run tauri-build");
+}
+
+/// Pass `windows-app-manifest.xml` (Tauri's default manifest) to the MSVC
+/// linker for every binary this crate links.
+fn embed_windows_manifest() {
+    let manifest = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
 }
 
 /// Stage the MSVC runtime DLLs into `transcribe-libs/` for app-local deployment.
@@ -198,7 +219,6 @@ fn stage_transcribe_runtime_libs() {
              compute devices"
         );
     }
-    println!("cargo:warning=Staged {copied} transcribe-cpp runtime library file(s)");
 }
 
 /// Split a versioned ELF shared-library name into (stem, version depth):
