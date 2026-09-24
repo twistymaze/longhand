@@ -114,6 +114,8 @@ pub struct Client {
     endpoint: Endpoint,
     base: Url,
     http: reqwest::Client,
+    /// The same, with the probe's shorter connect timeout.
+    probe_http: reqwest::Client,
     completion: Limits,
     probe: Limits,
 }
@@ -133,15 +135,20 @@ impl Client {
         if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
             return Err(SummarizeError::BadUrl(endpoint.base_url.clone()));
         }
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(completion.connect)
-            .build()
-            .map_err(|e| SummarizeError::Transport(e.to_string()))?;
+        let client = |connect| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(connect)
+                .build()
+                .map_err(|e| SummarizeError::Transport(e.to_string()))
+        };
+        let http = client(completion.connect)?;
+        let probe_http = client(probe.connect)?;
         Ok(Self {
             endpoint,
             base,
             http,
+            probe_http,
             completion,
             probe,
         })
@@ -180,7 +187,7 @@ impl Client {
     }
 
     pub async fn probe_json(&self, url: &str) -> Result<Value, SummarizeError> {
-        let request = self.authorize(self.http.get(url));
+        let request = self.authorize(self.probe_http.get(url));
         let (status, body) = self.send(request, &self.probe).await?;
         if !status.is_success() {
             return Err(http_error(status.as_u16(), &body));
