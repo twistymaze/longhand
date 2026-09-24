@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use audio::AudioProvider;
@@ -364,21 +364,25 @@ fn write_minute(w: &mut ChunkedWriter, rate: u32) -> Result<(), RecorderError> {
 fn a_slow_chunk_sync_neither_blocks_the_writer_nor_publishes_early() {
     let dir = tempfile::tempdir().unwrap();
     let rate = 16_000;
+    // The sync is held until the test lets it go, up to a bound that fails
+    // the test loudly if the writer waited on it.
+    static RELEASED: AtomicBool = AtomicBool::new(false);
+    const HELD: Duration = Duration::from_secs(10);
     let mut w = writer(dir.path(), 0, 0, rate).with_sync(|_| {
-        std::thread::sleep(Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        while !RELEASED.load(Ordering::SeqCst) && started.elapsed() < HELD {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         Ok(())
     });
     let started = std::time::Instant::now();
     write_minute(&mut w, rate).unwrap();
-    assert!(
-        started.elapsed() < Duration::from_millis(400),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < HELD / 2, "{:?}", started.elapsed());
     assert!(
         list_chunks(dir.path()).unwrap().is_empty(),
         "published before it was synced"
     );
+    RELEASED.store(true, Ordering::SeqCst);
     w.write(&[0.1; 320]).unwrap();
     w.finish().unwrap();
     let chunks = list_chunks(dir.path()).unwrap();
