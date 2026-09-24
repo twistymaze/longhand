@@ -53,7 +53,7 @@ pub struct Settings {
     /// Every folder the user has ever chosen, oldest first (R25a). The index
     /// is rebuilt by scanning these, so a root is never dropped silently.
     pub destination_roots: Vec<String>,
-    /// Where the next session lands (R23). Always one of the roots.
+    /// Where the next session is saved (R23). Always one of the roots.
     pub current_destination: Option<String>,
     /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
     pub endpoint_base_url: String,
@@ -244,8 +244,8 @@ mod tests {
             CURRENT_SETTINGS_SCHEMA_VERSION
         );
 
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert_eq!(settings_from_value(&saved), (settings, false));
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(settings_from_value(&written), (settings, false));
     }
 
     #[test]
@@ -254,9 +254,9 @@ mod tests {
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
         assert_eq!(settings, Settings::default());
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert!(saved.get("probe_value").is_none());
-        assert_eq!(saved["settings_schema_version"], 2);
+        let written = serde_json::to_value(&settings).unwrap();
+        assert!(written.get("probe_value").is_none());
+        assert_eq!(written["settings_schema_version"], 2);
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_field_loads_and_is_dropped_on_save() {
+    fn unknown_field_loads_and_is_dropped_on_the_next_write() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "endpoint_model": "x",
@@ -278,8 +278,8 @@ mod tests {
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated);
         assert_eq!(settings.endpoint_model, "x");
-        let saved = serde_json::to_value(&settings).unwrap();
-        assert!(saved.get("from_the_future").is_none());
+        let written = serde_json::to_value(&settings).unwrap();
+        assert!(written.get("from_the_future").is_none());
     }
 
     #[test]

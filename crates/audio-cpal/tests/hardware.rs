@@ -33,7 +33,7 @@ async fn the_default_device_delivers_a_first_frame_within_500_ms() {
 
 #[tokio::test]
 #[ignore = "needs a real input device"]
-async fn three_seconds_of_the_real_microphone_land_as_a_playable_wav() {
+async fn three_seconds_of_the_real_microphone_arrive_as_a_playable_wav() {
     use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, list_chunks, run_segment};
     use tokio_util::sync::CancellationToken;
 

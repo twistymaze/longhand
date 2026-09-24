@@ -228,7 +228,7 @@ async confirmAlertSound(heard: boolean) : Promise<Result<Settings, string>> {
 }
 },
 /**
- * Summarize a landed session again, replacing its `summary.md` (R19,
+ * Summarize a saved session again, replacing its `summary.md` (R19,
  * AE17). Returns the summary's path.
  */
 async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
@@ -294,7 +294,7 @@ async sessionNotes(sessionId: string) : Promise<Result<NoteView[], string>> {
 }
 },
 /**
- * The landed transcript and summary, read from the session's folder.
+ * The saved transcript and summary, read from the session's folder.
  */
 async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, string>> {
     try {
@@ -421,7 +421,7 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  */
 { kind: "waiting"; what: string } | 
 /**
- * Summarization failed; the session lands with a stub summary.
+ * Summarization failed; the session is saved with a stub summary.
  */
 { kind: "summary_unavailable"; message: string } | 
 /**
@@ -433,7 +433,7 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * In the destination. `copied` when it crossed volumes, so the move
  * was a verified copy rather than one atomic step.
  */
-{ kind: "landed"; path: string; copied: boolean } | { kind: "cancelled" } | { kind: "finished" }
+{ kind: "saved"; path: string; copied: boolean } | { kind: "cancelled" } | { kind: "finished" }
 /**
  * What processing is doing, for the surface.
  */
@@ -442,7 +442,7 @@ export type Readiness = { microphone_authorized: boolean; destination: Destinati
 /**
  * Microphone authorized, a destination chosen, and the chord registered
  * (R1c). A destination that is unreachable right now can be changed
- * before the session lands (R23), so it is shown rather than blocking.
+ * before the session is saved (R23), so it is shown rather than blocking.
  */
 armed: boolean; shortcut: ShortcutStatus; 
 /**
@@ -507,13 +507,13 @@ failed_stage: string | null;
  */
 message: string | null; 
 /**
- * Why the summary is missing, when the session will land with a stub.
+ * Why the summary is missing, when the session will be saved with a stub.
  */
 summary_problem: string | null; 
 /**
  * The state machine allows Resume now (R6a).
  */
-resumable: boolean; landed_path: string | null; 
+resumable: boolean; home_path: string | null; 
 /**
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
@@ -530,7 +530,7 @@ started: string;
 duration_ms: number; 
 /**
  * The lifecycle state's name: capturing, interrupted, queued,
- * processing, blocked, processing_failed, awaiting_destination, landed.
+ * processing, blocked, processing_failed, awaiting_destination, saved.
  */
 state: string; 
 /**
@@ -545,7 +545,7 @@ export type Settings = { settings_schema_version: number; shortcut: string;
  */
 destination_roots: string[]; 
 /**
- * Where the next session lands (R23). Always one of the roots.
+ * Where the next session is saved (R23). Always one of the roots.
  */
 current_destination: string | null; 
 /**

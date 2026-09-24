@@ -2,7 +2,7 @@
 //!
 //! anarlog's `check_storage` less its second limit: anarlog also caps
 //! `audio-recovery/` at 256 MB because it drains that directory as chunks
-//! are acknowledged, while Longhand keeps every chunk until landing, so the
+//! are acknowledged, while Longhand keeps every chunk until the save, so the
 //! cap would stop a session at about 47 minutes (KTD4). Only the volume
 //! floor remains. See PROVENANCE.md.
 

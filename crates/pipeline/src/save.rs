@@ -1,17 +1,17 @@
-//! The land stage (U11, KD4, KD13, R22, R22e, R22f): render the session's
+//! The save stage (U11, KD4, KD13, R22, R22e, R22f): render the session's
 //! markdown beside its audio, then move it into the destination through the
-//! `landing` crate, recording each landing state before the next step so a
+//! `session_save` crate, recording each save state before the next step so a
 //! crash resumes from what is on disk.
 //!
-//! Landing claims the session first, under the store lock: from then on a
+//! Saving claims the session first, under the store lock: from then on a
 //! resume is refused, since the working directory is about to leave. The
-//! claim is released if landing fails before anything moved.
+//! claim is released if saving fails before anything moved.
 
 use std::path::{Path, PathBuf};
 
-use landing::{Fs, Job, LandState, LandingError, post_landing};
 use session_core::folder::{self, NoteLine, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionState, Stage, Store};
+use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
 use crate::join::TRANSCRIPT_FILE;
 use crate::summarize::{self, SUMMARY_FILE, SummaryEndpoint};
@@ -19,24 +19,24 @@ use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
 pub const SESSION_FILE: &str = "session.md";
 pub const NOTES_FILE: &str = "notes.md";
-/// The landing's progress, a [`LandState`]. Its presence means landing has
+/// The save's progress, a [`SaveState`]. Its presence means saving has
 /// begun and the session can no longer be resumed.
 pub const STATE: &str = "state";
-/// Under the summarize stage: why it failed, for the landed stub (KD13).
+/// Under the summarize stage: why it failed, for the saved stub (KD13).
 pub const SUMMARY_FAILED: &str = "failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Landed {
+pub struct Saved {
     pub path: PathBuf,
     /// The destination is on another volume: the session was copied and
     /// verified rather than moved in one step.
     pub copied: bool,
 }
 
-/// Whether landing has begun for `session_id` (a resume must refuse).
+/// Whether saving has begun for `session_id` (a resume must refuse).
 pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
     Ok(store
-        .checkpoints(session_id, Stage::Land)?
+        .checkpoints(session_id, Stage::Save)?
         .iter()
         .any(|(key, _)| key == STATE))
 }
@@ -45,14 +45,14 @@ pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
 /// which is what resuming it needs (R6d). False for a session that has not
 /// completed.
 pub fn home_intact(store: &Store, session_id: &str) -> Result<bool, StageError> {
-    let Some(home) = landed_path(store, session_id)? else {
+    let Some(home) = home_path(store, session_id)? else {
         return Ok(false);
     };
     let segments = store.segments(session_id)?;
     Ok(!segments.is_empty() && segments.iter().all(|s| home.join(&s.audio_file).is_file()))
 }
 
-/// Record why summarization failed; the session lands with a stub.
+/// Record why summarization failed; the session is saved with a stub.
 pub fn record_summary_failure(
     store: &SharedStore,
     session_id: &str,
@@ -76,8 +76,8 @@ pub fn run(
     destination: Option<&Path>,
     fs: &dyn Fs,
     control: &dyn Control,
-) -> Result<Landed, StageError> {
-    // Only a verified transcript lands (KD13).
+) -> Result<Saved, StageError> {
+    // Only a verified transcript is saved (KD13).
     if !checkpoint::is_complete(store, session_id, Stage::Verify, segments.len())? {
         return Err(StageError::Failed(
             "the transcript has not been verified, so the session stays in the working location"
@@ -86,15 +86,15 @@ pub fn run(
     }
     let home = lock(store)
         .session(session_id)?
-        .and_then(|record| record.landed_path)
+        .and_then(|record| record.home_path)
         .map(PathBuf::from);
-    let recorded = checkpoint::get::<LandState>(store, session_id, Stage::Land, STATE)?;
-    // `landed_path` is recorded with `Landed`, before the step loop reaches
+    let recorded = checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)?;
+    // `home_path` is recorded with `Saved`, before the step loop reaches
     // `Done`: a first save still in progress finishes through the loop. A
-    // resumed session has no landing state, since resuming clears it.
+    // resumed session has no save state, since resuming clears it.
     let first_save_in_progress = matches!(
         recorded,
-        Some(LandState::Copying { .. } | LandState::Staged { .. } | LandState::Landed { .. })
+        Some(SaveState::Copying { .. } | SaveState::Staged { .. } | SaveState::Saved { .. })
     );
     if let Some(home) = home
         && !first_save_in_progress
@@ -107,7 +107,7 @@ pub fn run(
         .first()
         .ok_or_else(|| StageError::Failed("the session has no audio".into()))?
         .wall_start;
-    let folder_name = landing::naming::folder_name(started);
+    let folder_name = session_save::naming::folder_name(started);
     let job = Job {
         session_id,
         working,
@@ -120,10 +120,10 @@ pub fn run(
         None => {
             control.proceed()?;
             claim(store, session_id)?;
-            LandState::Working
+            SaveState::Working
         }
     };
-    if state == LandState::Working && working.exists() {
+    if state == SaveState::Working && working.exists() {
         render(store, session_id, working, segments)?;
         if let Err(e) = check_room(working, destination) {
             release(store, session_id);
@@ -133,30 +133,30 @@ pub fn run(
 
     let mut copied = matches!(
         state,
-        LandState::Landed {
+        SaveState::Saved {
             working_retained: true,
             ..
         }
     );
-    while !matches!(state, LandState::Done { .. }) {
-        let next = match landing::step(&state, &job, fs) {
+    while !matches!(state, SaveState::Done { .. }) {
+        let next = match session_save::step(&state, &job, fs) {
             Ok(next) => next,
             Err(e) => {
                 // A failed copy removed its partial staging and left the
                 // working copy whole: start over from it, so a retry after
                 // choosing another folder goes there.
-                if matches!(state, LandState::Copying { .. }) && working.exists() {
-                    checkpoint::put(store, session_id, Stage::Land, STATE, &LandState::Working)?;
-                    state = LandState::Working;
+                if matches!(state, SaveState::Copying { .. }) && working.exists() {
+                    checkpoint::put(store, session_id, Stage::Save, STATE, &SaveState::Working)?;
+                    state = SaveState::Working;
                 }
-                if state == LandState::Working && working.exists() {
+                if state == SaveState::Working && working.exists() {
                     release(store, session_id);
                 }
                 // Every failure but a lost copy waits for the destination
                 // to be fixed or changed (R22b), naming what went wrong.
                 return Err(match e {
-                    LandingError::Lost(_) => StageError::Failed(e.to_string()),
-                    LandingError::Io(io) => StageError::NoDestination(format!(
+                    SaveError::Lost(_) => StageError::Failed(e.to_string()),
+                    SaveError::Io(io) => StageError::NoDestination(format!(
                         "saving to {} failed: {io}",
                         destination.display()
                     )),
@@ -164,49 +164,49 @@ pub fn run(
                 });
             }
         };
-        if let LandState::Landed {
+        if let SaveState::Saved {
             path,
             working_retained,
         } = &next
         {
             copied = *working_retained;
-            lock(store).set_landed_path(session_id, &path.to_string_lossy())?;
+            lock(store).set_home_path(session_id, &path.to_string_lossy())?;
         }
-        checkpoint::put(store, session_id, Stage::Land, STATE, &next)?;
+        checkpoint::put(store, session_id, Stage::Save, STATE, &next)?;
         state = next;
     }
-    let LandState::Done { path } = state else {
+    let SaveState::Done { path } = state else {
         unreachable!("the loop ends on Done");
     };
 
-    // Reopen notes against the landed folder (R22e): anything edited while
-    // landing is in the store, and is written here. Under the lock, so an
-    // edit lands either before this render or after the session is Landed,
+    // Reopen notes against the home folder (R22e): anything edited while
+    // saving is in the store, and is written here. Under the lock, so an
+    // edit comes either before this render or after the session is Saved,
     // where it rewrites the file itself.
     let mut guard = lock(store);
     write_notes(&guard, session_id, &path)?;
     guard.put_checkpoint(
         session_id,
-        Stage::Land,
+        Stage::Save,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone {
             segments: segments.len(),
         })?,
     )?;
-    guard.apply(session_id, &Event::Landed)?;
-    Ok(Landed { path, copied })
+    guard.apply(session_id, &Event::Saved)?;
+    Ok(Saved { path, copied })
 }
 
-/// Room for the session in a destination on another volume, where landing
+/// Room for the session in a destination on another volume, where saving
 /// copies: what leaves the working location, plus a margin (U18). Checked
 /// before the copy starts, so a copy it just validated cannot run out of
-/// space part-way. A same-volume landing is a rename and needs none.
+/// space part-way. A same-volume save is a rename and needs none.
 fn check_room(working: &Path, destination: &Path) -> Result<(), StageError> {
     const MARGIN: u64 = 64 * 1024 * 1024;
     if same_volume(working, destination).unwrap_or(false) {
         return Ok(());
     }
-    let needed = tree_size(working, landing::LEFT_BEHIND)? + MARGIN;
+    let needed = tree_size(working, session_save::LEFT_BEHIND)? + MARGIN;
     match recorder::storage::available_space(destination) {
         Some(free) if free < needed => Err(StageError::NoDestination(format!(
             "the destination folder {} has {:.1} GB free and the session needs about {:.1} GB",
@@ -266,15 +266,15 @@ fn update_home(
     segments: &[Segment],
     home: &Path,
     control: &dyn Control,
-) -> Result<Landed, StageError> {
+) -> Result<Saved, StageError> {
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
             "the session's folder {} is missing; put it back to finish",
             home.display()
         )));
     }
-    let finished = match checkpoint::get::<LandState>(store, session_id, Stage::Land, STATE)? {
-        Some(state) => matches!(state, LandState::Done { .. }),
+    let finished = match checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)? {
+        Some(state) => matches!(state, SaveState::Done { .. }),
         None => {
             control.proceed()?;
             claim(store, session_id)?;
@@ -304,16 +304,16 @@ fn update_home(
                 )));
             };
             std::fs::create_dir_all(dir)?;
-            post_landing::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
+            home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
         }
         for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE, SESSION_FILE] {
             let contents = std::fs::read(working.join(name))?;
-            post_landing::write_atomic(home, name, &contents)?;
+            home_write::write_atomic(home, name, &contents)?;
         }
-        let done = LandState::Done {
+        let done = SaveState::Done {
             path: home.to_path_buf(),
         };
-        checkpoint::put(store, session_id, Stage::Land, STATE, &done)?;
+        checkpoint::put(store, session_id, Stage::Save, STATE, &done)?;
     }
     if working.exists() {
         std::fs::remove_dir_all(working)?;
@@ -323,20 +323,20 @@ fn update_home(
     write_notes(&guard, session_id, home)?;
     guard.put_checkpoint(
         session_id,
-        Stage::Land,
+        Stage::Save,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone {
             segments: segments.len(),
         })?,
     )?;
-    guard.apply(session_id, &Event::Landed)?;
-    Ok(Landed {
+    guard.apply(session_id, &Event::Saved)?;
+    Ok(Saved {
         path: home.to_path_buf(),
         copied: false,
     })
 }
 
-/// Take the session for landing, unless a resume took it first.
+/// Take the session for saving, unless a resume took it first.
 fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     let guard = lock(store);
     let processing = matches!(
@@ -348,17 +348,17 @@ fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     }
     guard.put_checkpoint(
         session_id,
-        Stage::Land,
+        Stage::Save,
         STATE,
-        &serde_json::to_string(&LandState::Working)?,
+        &serde_json::to_string(&SaveState::Working)?,
     )?;
     Ok(())
 }
 
 /// Nothing moved: the session may be resumed again.
 fn release(store: &SharedStore, session_id: &str) {
-    if let Err(e) = lock(store).delete_checkpoint(session_id, Stage::Land, STATE) {
-        log::warn!("could not release the landing claim on {session_id}: {e}");
+    if let Err(e) = lock(store).delete_checkpoint(session_id, Stage::Save, STATE) {
+        log::warn!("could not release the save claim on {session_id}: {e}");
     }
 }
 
@@ -412,9 +412,9 @@ fn render_notes(store: &Store, session_id: &str) -> Result<String, StageError> {
     Ok(folder::render_notes(&notes))
 }
 
-fn write_notes(store: &Store, session_id: &str, landed: &Path) -> Result<(), StageError> {
+fn write_notes(store: &Store, session_id: &str, folder: &Path) -> Result<(), StageError> {
     let notes = render_notes(store, session_id)?;
-    post_landing::write_atomic(landed, NOTES_FILE, notes.as_bytes())?;
+    home_write::write_atomic(folder, NOTES_FILE, notes.as_bytes())?;
     Ok(())
 }
 
@@ -427,28 +427,28 @@ fn write_working(dir: &Path, name: &str, contents: &str) -> Result<(), StageErro
     Ok(())
 }
 
-/// The landed folder of a session, if it has landed.
-fn landed_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
+/// The home folder of a session, if it is saved.
+fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
     Ok(store
         .session(session_id)?
-        .filter(|r| r.state == SessionState::Landed)
-        .and_then(|r| r.landed_path)
+        .filter(|r| r.state == SessionState::Saved)
+        .and_then(|r| r.home_path)
         .map(PathBuf::from))
 }
 
-/// A note of a landed session changed: rewrite its `notes.md` whole
-/// (R22f). Returns false when the session has not landed, so there is no
+/// A note of a saved session changed: rewrite its `notes.md` whole
+/// (R22f). Returns false when the session is not saved, so there is no
 /// file to write yet.
 pub fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
-    let Some(path) = landed_path(store, session_id)? else {
+    let Some(path) = home_path(store, session_id)? else {
         return Ok(false);
     };
     write_notes(store, session_id, &path)?;
-    store.apply(session_id, &Event::LandedEdit)?;
+    store.apply(session_id, &Event::SavedEdit)?;
     Ok(true)
 }
 
-/// Summarize a landed session again and replace its `summary.md` (R19,
+/// Summarize a saved session again and replace its `summary.md` (R19,
 /// AE17): a stub left by a failed summary, or a summary the user wants
 /// redone.
 pub fn regenerate_summary(
@@ -461,7 +461,7 @@ pub fn regenerate_summary(
 ) -> Result<PathBuf, StageError> {
     let (path, segments) = {
         let guard = lock(store);
-        let path = landed_path(&guard, session_id)?.ok_or_else(|| {
+        let path = home_path(&guard, session_id)?.ok_or_else(|| {
             StageError::Failed(
                 "a summary can be regenerated only once the session has finished processing".into(),
             )
@@ -476,11 +476,11 @@ pub fn regenerate_summary(
     let summary = summarize::produce(
         store, session_id, &segments, endpoint, learn, control, progress,
     )?;
-    post_landing::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
+    home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;
     let mut guard = lock(store);
     guard.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;
-    guard.apply(session_id, &Event::LandedEdit)?;
+    guard.apply(session_id, &Event::SavedEdit)?;
     Ok(path.join(SUMMARY_FILE))
 }
 
@@ -496,7 +496,10 @@ mod room_tests {
         std::fs::write(dir.path().join("audio/segment-01.opus"), vec![0u8; 1_000]).unwrap();
         std::fs::write(dir.path().join("session.md"), vec![0u8; 24]).unwrap();
         std::fs::write(dir.path().join("proc/segment-01.wav"), vec![0u8; 50_000]).unwrap();
-        assert_eq!(tree_size(dir.path(), landing::LEFT_BEHIND).unwrap(), 1_024);
+        assert_eq!(
+            tree_size(dir.path(), session_save::LEFT_BEHIND).unwrap(),
+            1_024
+        );
     }
 
     #[test]

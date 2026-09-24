@@ -8,8 +8,8 @@ publish.workspace = true
 [dependencies]
 asr = { path = "../asr" }
 diarize = { path = "../diarize" }
-landing = { path = "../landing" }
 recorder = { path = "../recorder" }
+session-save = { path = "../session-save" }
 session-core = { path = "../session-core" }
 chrono = "0.4"
 hound = "3.5.1"

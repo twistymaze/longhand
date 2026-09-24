@@ -16,7 +16,7 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
-use crate::land;
+use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
@@ -30,7 +30,7 @@ pub const STAGES: &[Stage] = &[
     Stage::Join,
     Stage::Verify,
     Stage::Summarize,
-    Stage::Land,
+    Stage::Save,
 ];
 
 const POLL: Duration = Duration::from_secs(2);
@@ -52,8 +52,8 @@ pub trait EngineProvider: Send + Sync {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
-    /// The destination folder chosen now, read when the session lands, so
-    /// a destination changed during recording lands it in the last (AE7).
+    /// The destination folder chosen now. It is read when the session is saved,
+    /// so a change during recording saves the session in the last one (AE7).
     fn destination(&self) -> Option<PathBuf>;
 }
 
@@ -113,7 +113,7 @@ pub enum RunnerEvent {
         session_id: String,
         what: String,
     },
-    /// Summarization failed; the session lands with a stub summary (KD13).
+    /// Summarization failed; the session is saved with a stub summary (KD13).
     SummaryUnavailable {
         session_id: String,
         message: String,
@@ -126,7 +126,7 @@ pub enum RunnerEvent {
     },
     /// In the destination under its final name. `copied` when the volumes
     /// differed and the session was copied rather than moved in one step.
-    Landed {
+    Saved {
         session_id: String,
         path: PathBuf,
         copied: bool,
@@ -293,7 +293,7 @@ impl Runner {
         Ok(ids)
     }
 
-    /// Summarize a landed session again, replacing its `summary.md` (R19,
+    /// Summarize a saved session again, replacing its `summary.md` (R19,
     /// AE17). Takes its turn with the stages, one at a time (R20c).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
         let _permit = self
@@ -312,7 +312,7 @@ impl Runner {
                 cancel,
                 env: Arc::clone(&env),
             };
-            land::regenerate_summary(
+            save::regenerate_summary(
                 &env.store,
                 &id,
                 endpoint,
@@ -354,7 +354,7 @@ impl Runner {
     pub async fn run(self: Arc<Self>) {
         loop {
             // A session waiting on a model is back at the head of the queue;
-            // claiming it again at once would spin until the model lands.
+            // claiming it again at once would spin until the model download finishes.
             while let Some((_, outcome)) = self.run_next().await
                 && outcome != Outcome::Waiting
             {}
@@ -403,21 +403,21 @@ impl Runner {
 
     async fn run_session(&self, id: &str, model: &str, cancel: CancellationToken) -> Outcome {
         let emit = |event| (self.env.events)(event);
-        // Once landing has begun, the working directory may be gone: only
-        // landing itself is left to finish.
-        let landing = land::begun(&lock(&self.env.store), id).unwrap_or(false);
+        // Once saving has begun, the working directory may be gone: only
+        // the save itself is left to finish.
+        let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
         for &stage in STAGES {
-            if landing && stage != Stage::Land {
+            if saving && stage != Stage::Save {
                 continue;
             }
             let result = self.run_stage(id, model, stage, cancel.clone()).await;
             match result {
                 Ok(()) => {}
                 // A failed summary costs the summary, not the session: it
-                // lands with a stub naming the failure (KD13, R22).
+                // is saved with a stub naming the failure (KD13, R22).
                 Err(StageError::Failed(message)) if stage == Stage::Summarize => {
-                    log::warn!("summarization failed for {id}; landing without it: {message}");
-                    if let Err(e) = land::record_summary_failure(&self.env.store, id, &message) {
+                    log::warn!("summarization failed for {id}; saving without it: {message}");
+                    if let Err(e) = save::record_summary_failure(&self.env.store, id, &message) {
                         log::error!("could not record the summary failure of {id}: {e}");
                     }
                     emit(RunnerEvent::SummaryUnavailable {
@@ -428,7 +428,7 @@ impl Runner {
                 Err(StageError::NoDestination(problem)) => {
                     log::info!("{id} waits for its destination: {problem}");
                     if let Err(e) =
-                        lock(&self.env.store).apply(id, &Event::LandingFailed(problem.clone()))
+                        lock(&self.env.store).apply(id, &Event::SaveFailed(problem.clone()))
                     {
                         log::warn!("could not mark {id} awaiting its destination: {e}");
                     }
@@ -591,7 +591,7 @@ fn execute(
         Stage::Assemble => {
             let home = lock(&env.store)
                 .session(id)?
-                .and_then(|record| record.landed_path)
+                .and_then(|record| record.home_path)
                 .map(std::path::PathBuf::from);
             assemble::run(&env.store, id, &dir, segments, home.as_deref(), control).map(|_| ())
         }
@@ -688,30 +688,30 @@ fn execute(
                 },
             )
         }
-        Stage::Land => {
+        Stage::Save => {
             let destination = env.engines.destination();
-            let landed = land::run(
+            let saved = save::run(
                 &env.store,
                 id,
                 &dir,
                 segments,
                 destination.as_deref(),
-                &landing::RealFs,
+                &session_save::RealFs,
                 control,
             )?;
             log::info!(
-                "{id} landed at {}{}",
-                landed.path.display(),
-                if landed.copied {
+                "{id} saved at {}{}",
+                saved.path.display(),
+                if saved.copied {
                     " (copied across volumes)"
                 } else {
                     ""
                 }
             );
-            (env.events)(RunnerEvent::Landed {
+            (env.events)(RunnerEvent::Saved {
                 session_id: id.to_string(),
-                path: landed.path,
-                copied: landed.copied,
+                path: saved.path,
+                copied: saved.copied,
             });
             Ok(())
         }
@@ -725,7 +725,7 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
     })
 }
 
-/// For work on a landed session: stops on shutdown and waits out capture,
+/// For work on a saved session: stops on shutdown and waits out capture,
 /// with no processing state to be taken back from.
 struct Unattended {
     cancel: CancellationToken,

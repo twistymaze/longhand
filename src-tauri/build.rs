@@ -121,7 +121,7 @@ fn stage_vc_runtime_dlls() {
 /// this is a no-op there. `RUNTIME_DIR` (core libs) and `MODULE_DIR` (dlopen'd
 /// ggml modules) may be the same dir — the `BTreeSet` below dedups them.
 ///
-/// Where the staged dir lands: Windows bundles it beside `longhand.exe` (DLLs resolve
+/// Where the staged dir goes: Windows bundles it beside `longhand.exe` (DLLs resolve
 /// from the exe dir); Linux deb/rpm map it into the app-private an app-private lib dir
 /// and the AppImage into `usr/lib`, both on the binary's rpath.
 fn stage_transcribe_runtime_libs() {

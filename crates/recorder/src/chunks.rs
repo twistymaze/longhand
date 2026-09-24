@@ -42,7 +42,7 @@ pub const FLUSH_SECONDS: u64 = 1;
 #[derive(Debug, thiserror::Error)]
 pub enum RecorderError {
     #[error(
-        "only {available} bytes free where audio is saved; recording stopped at the floor of {floor} bytes"
+        "only {available} bytes free where audio is recorded; recording stopped at the floor of {floor} bytes"
     )]
     LowDisk { available: u64, floor: u64 },
     #[error(transparent)]

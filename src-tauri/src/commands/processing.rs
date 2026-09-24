@@ -6,7 +6,7 @@ use tauri::State;
 
 use crate::managers::processing::ProcessingManager;
 
-/// Summarize a landed session again, replacing its `summary.md` (R19,
+/// Summarize a saved session again, replacing its `summary.md` (R19,
 /// AE17). Returns the summary's path.
 #[tauri::command]
 #[specta::specta]

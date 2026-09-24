@@ -50,7 +50,7 @@ asr = { path = "../crates/asr" }
 # `asr`'s per-platform declarations.
 transcribe-cpp = { version = "0.2.3", default-features = false }
 pipeline = { path = "../crates/pipeline" }
-landing = { path = "../crates/landing" }
+session-save = { path = "../crates/session-save" }
 diarize = { path = "../crates/diarize" }
 session-core = { path = "../crates/session-core" }
 supervisor = { path = "../crates/supervisor" }

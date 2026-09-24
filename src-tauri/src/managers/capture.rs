@@ -62,7 +62,7 @@ pub enum CaptureError {
     #[error(transparent)]
     Timeline(#[from] session_core::TimelineError),
     #[error("this session is already moving to its destination and can no longer be resumed")]
-    Landing,
+    Save,
     #[error("{0}")]
     Other(String),
 }
@@ -484,20 +484,20 @@ impl CaptureManager {
         )
         .is_ok();
         let resumed_at = now();
-        // Under one lock with landing's claim: either landing has begun and
-        // the resume is refused, or the resume wins and landing stops. A
-        // completed session has finished landing and resumes into its folder
+        // Under one lock with the save claim: either saving has begun and
+        // the resume is refused, or the resume wins and saving stops. A
+        // completed session has finished saving and resumes into its folder
         // while that holds its audio (R6d).
         let state = {
             let mut store = self.store();
             let other = |e: pipeline::StageError| CaptureError::Other(e.to_string());
             let completed = store
                 .session(id)?
-                .is_some_and(|r| r.state == SessionState::Landed);
-            if !completed && pipeline::land::begun(&store, id).map_err(other)? {
-                return Err(CaptureError::Landing);
+                .is_some_and(|r| r.state == SessionState::Saved);
+            if !completed && pipeline::save::begun(&store, id).map_err(other)? {
+                return Err(CaptureError::Save);
             }
-            let audio_intact = pipeline::land::home_intact(&store, id).map_err(other)?;
+            let audio_intact = pipeline::save::home_intact(&store, id).map_err(other)?;
             store.apply(
                 id,
                 &Event::UserResume {
@@ -660,14 +660,14 @@ impl CaptureManager {
         }))
     }
 
-    /// Change a note's text. On a landed session the folder's `notes.md` is
-    /// rewritten whole in the same breath (R22f), under the lock landing
+    /// Change a note's text. On a saved session the folder's `notes.md` is
+    /// rewritten whole in the same breath (R22f), under the lock the save stage
     /// takes to write it, so no edit is lost or written twice.
     pub fn edit_note(&self, note_id: i64, text: &str) -> Result<(), CaptureError> {
         let mut store = self.store();
         store.edit_note(note_id, text)?;
         if let Some(session_id) = store.note(note_id)?.and_then(|n| n.session_id) {
-            pipeline::land::rewrite_notes(&mut store, &session_id)
+            pipeline::save::rewrite_notes(&mut store, &session_id)
                 .map_err(|e| CaptureError::Other(e.to_string()))?;
         }
         Ok(())

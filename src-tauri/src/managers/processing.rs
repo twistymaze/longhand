@@ -55,7 +55,7 @@ pub enum ProcessingStep {
     Waiting {
         what: String,
     },
-    /// Summarization failed; the session lands with a stub summary.
+    /// Summarization failed; the session is saved with a stub summary.
     SummaryUnavailable {
         message: String,
     },
@@ -66,7 +66,7 @@ pub enum ProcessingStep {
     },
     /// In the destination. `copied` when it crossed volumes, so the move
     /// was a verified copy rather than one atomic step.
-    Landed {
+    Saved {
         path: String,
         copied: bool,
     },
@@ -135,13 +135,13 @@ impl From<RunnerEvent> for ProcessingUpdate {
                 session_id,
                 problem,
             } => (session_id, ProcessingStep::AwaitingDestination { problem }),
-            RunnerEvent::Landed {
+            RunnerEvent::Saved {
                 session_id,
                 path,
                 copied,
             } => (
                 session_id,
-                ProcessingStep::Landed {
+                ProcessingStep::Saved {
                     path: path.to_string_lossy().into_owned(),
                     copied,
                 },
@@ -203,7 +203,7 @@ impl EngineProvider for Models {
         }
     }
 
-    /// Read when the session lands, so the last destination chosen wins (AE7).
+    /// Read when the session is saved, so the last destination chosen wins (AE7).
     fn destination(&self) -> Option<std::path::PathBuf> {
         settings::get_settings(&self.app)
             .current_destination
@@ -250,7 +250,7 @@ impl EngineProvider for Models {
 /// while the window is in front: the surface already says so.
 /// Remove staging folders that completed sessions left in any destination
 /// ever chosen (U18). Only with the instance lock held, so no other run is
-/// landing into them.
+/// saving into them.
 fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
     let roots = crate::managers::settings::get_settings(app).destination_roots;
     let completed = |id: &str| {
@@ -260,10 +260,10 @@ fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
             .session(id)
             .ok()
             .flatten()
-            .is_some_and(|r| r.state == session_core::SessionState::Landed)
+            .is_some_and(|r| r.state == session_core::SessionState::Saved)
     };
     for root in roots {
-        match landing::sweep_staging(std::path::Path::new(&root), completed) {
+        match session_save::sweep_staging(std::path::Path::new(&root), completed) {
             Ok(removed) => {
                 for path in removed {
                     log::info!("removed leftover staging folder {}", path.display());
@@ -274,7 +274,7 @@ fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
     }
 }
 
-fn notify_landed(app: &AppHandle, path: &std::path::Path) {
+fn notify_saved(app: &AppHandle, path: &std::path::Path) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
     let visible = app
@@ -295,7 +295,7 @@ fn notify_landed(app: &AppHandle, path: &std::path::Path) {
         .body(format!("{folder} has its transcript and summary."))
         .show()
     {
-        log::warn!("could not post the landing notification: {e}");
+        log::warn!("could not post the save notification: {e}");
     }
 }
 
@@ -325,8 +325,8 @@ impl ProcessingManager {
             }),
             suspended: Box::new(move || suspended.is_capturing()),
             events: Box::new(move |event| {
-                if let RunnerEvent::Landed { path, .. } = &event {
-                    notify_landed(&events, path);
+                if let RunnerEvent::Saved { path, .. } = &event {
+                    notify_saved(&events, path);
                 }
                 if let Err(e) = ProcessingUpdate::from(event).emit(&events) {
                     log::warn!("could not emit a processing update: {e}");
@@ -387,7 +387,7 @@ impl ProcessingManager {
         self.runner.unblock(session_id).map_err(|e| e.to_string())
     }
 
-    /// Summarize a landed session again, replacing its `summary.md` (AE17).
+    /// Summarize a saved session again, replacing its `summary.md` (AE17).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
         self.runner
             .regenerate_summary(session_id)

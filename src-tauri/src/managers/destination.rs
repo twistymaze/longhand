@@ -2,7 +2,7 @@
 //! session (R22c display, R23, R25a).
 //!
 //! This is the status the surface shows. The binding checks at stop and
-//! immediately before landing belong to the landing stage (U12), which adds
+//! immediately before saving belong to the save stage (U12), which adds
 //! the session's own size to the floor below.
 
 use std::fs::OpenOptions;

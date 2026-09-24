@@ -47,7 +47,7 @@ struct Script {
     blank_on: Mutex<Vec<usize>>,
     diarize_fails: AtomicBool,
     weights_missing: AtomicBool,
-    /// Where sessions land; unset is no destination chosen.
+    /// Where sessions are saved; unset is no destination chosen.
     destination: Mutex<Option<std::path::PathBuf>>,
 }
 
@@ -247,11 +247,11 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
     }
 }
 
-/// The folder a session landed in.
-fn landed(r: &Rig, id: &str) -> std::path::PathBuf {
+/// The folder that holds a saved session.
+fn saved_folder(r: &Rig, id: &str) -> std::path::PathBuf {
     let record = r.store.lock().unwrap().session(id).unwrap().unwrap();
-    assert_eq!(record.state, SessionState::Landed);
-    std::path::PathBuf::from(record.landed_path.expect("a landed path"))
+    assert_eq!(record.state, SessionState::Saved);
+    std::path::PathBuf::from(record.home_path.expect("a home path"))
 }
 
 async fn rig() -> Rig {
@@ -325,14 +325,14 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
             ("earlier".into(), Stage::Join),
             ("earlier".into(), Stage::Verify),
             ("earlier".into(), Stage::Summarize),
-            ("earlier".into(), Stage::Land),
+            ("earlier".into(), Stage::Save),
             ("later".into(), Stage::Assemble),
             ("later".into(), Stage::Diarize),
             ("later".into(), Stage::Transcribe),
             ("later".into(), Stage::Join),
             ("later".into(), Stage::Verify),
             ("later".into(), Stage::Summarize),
-            ("later".into(), Stage::Land),
+            ("later".into(), Stage::Save),
         ]
     );
     // One engine load serves both sessions.
@@ -529,7 +529,7 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     assert_eq!(outcome, Outcome::Finished);
     // One analysis per segment, clustered together.
     assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
-    let transcript = std::fs::read_to_string(landed(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
     assert!(r.events.lock().unwrap().iter().any(|e| matches!(
         e,
@@ -563,7 +563,7 @@ async fn a_diarization_failure_delivers_the_transcript_without_speakers() {
         e,
         RunnerEvent::SpeakersUnavailable { message, .. } if message.contains("segmentation exploded")
     )));
-    let transcript = std::fs::read_to_string(landed(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
 }
 
@@ -588,7 +588,7 @@ async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
     );
     assert!(r.root.join("s/audio/segment-01.opus").exists());
 
-    // The weights land: it picks up after assembly.
+    // The weights finish downloading: it picks up after assembly.
     r.script.weights_missing.store(false, Ordering::SeqCst);
     r.events.lock().unwrap().clear();
     let (_, outcome) = r.runner.run_next().await.unwrap();
@@ -631,7 +631,7 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
     assert_eq!(r.script.calls.load(Ordering::SeqCst), windows + 1);
-    let transcript = std::fs::read_to_string(landed(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(
         transcript.contains(&format!("call {windows}")),
         "{transcript}"
@@ -714,7 +714,7 @@ async fn a_transcript_that_fits_is_summarized_in_one_call_and_names_host_and_mod
     let calls = chat_calls(&mock);
     assert_eq!(calls.len(), 1);
     assert!(calls[0].contains("<transcript>"));
-    let summary = std::fs::read_to_string(landed(&r, "s").join("summary.md")).unwrap();
+    let summary = std::fs::read_to_string(saved_folder(&r, "s").join("summary.md")).unwrap();
     assert!(summary.contains("endpoint_host: 127.0.0.1"), "{summary}");
     assert!(summary.contains("model: summarizer"), "{summary}");
     assert!(summary.contains("One pass."));
@@ -726,7 +726,7 @@ async fn a_transcript_that_fits_is_summarized_in_one_call_and_names_host_and_mod
     );
     // The credential and the settings are in no file of the session (R24b,
     // R33, AE13): only the host and model the summary names.
-    for file in files_under(&landed(&r, "s")) {
+    for file in files_under(&saved_folder(&r, "s")) {
         let text = String::from_utf8_lossy(&std::fs::read(&file).unwrap()).to_string();
         for secret in [
             "sk-secret-test",
@@ -768,7 +768,7 @@ async fn a_long_transcript_is_summarized_in_parts_and_merged_in_layers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_error_on_part_five_lands_a_stub_and_regenerating_starts_there() {
+async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_starts_there() {
     let r = rig().await;
     let n = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&n);
@@ -789,7 +789,7 @@ async fn a_server_error_on_part_five_lands_a_stub_and_regenerating_starts_there(
         RunnerEvent::SummaryUnavailable { message, .. } if message.contains("part 5 of")
     )));
     assert_eq!(chat_calls(&mock).len(), 5);
-    let path = landed(&r, "s").join("summary.md");
+    let path = saved_folder(&r, "s").join("summary.md");
     let stub =
         session_core::folder::Summary::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(
@@ -819,7 +819,7 @@ async fn a_server_error_on_part_five_lands_a_stub_and_regenerating_starts_there(
         summary.meta,
         session_core::folder::SummaryMeta::Complete { .. }
     ));
-    assert_eq!(state(&r.store, "s"), SessionState::Landed);
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -954,10 +954,10 @@ async fn regenerating_rewrites_the_summary_without_transcribing_again() {
     let transcribed = r.script.calls.load(Ordering::SeqCst);
     let path = r.runner.regenerate_summary("s").await.unwrap();
     assert_eq!(r.script.calls.load(Ordering::SeqCst), transcribed);
-    assert_eq!(path, landed(&r, "s").join("summary.md"));
+    assert_eq!(path, saved_folder(&r, "s").join("summary.md"));
     let summary = std::fs::read_to_string(&path).unwrap();
     assert!(summary.contains("Version 1."), "{summary}");
-    let names: Vec<String> = std::fs::read_dir(landed(&r, "s"))
+    let names: Vec<String> = std::fs::read_dir(saved_folder(&r, "s"))
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
@@ -983,12 +983,12 @@ async fn an_unannotated_decision_survives_the_layers_to_the_final_summary() {
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
-    let summary = std::fs::read_to_string(landed(&r, "s").join("summary.md")).unwrap();
+    let summary = std::fs::read_to_string(saved_folder(&r, "s").join("summary.md")).unwrap();
     assert!(summary.contains("We decided to meet on Friday instead."));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn no_endpoint_lands_the_session_with_a_stub_naming_the_setting() {
+async fn no_endpoint_saves_the_session_with_a_stub_naming_the_setting() {
     let r = rig().await;
     *r.script.summary.lock().unwrap() = None;
     queue_session(
@@ -1001,7 +1001,7 @@ async fn no_endpoint_lands_the_session_with_a_stub_naming_the_setting() {
     );
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
-    let folder = landed(&r, "s");
+    let folder = saved_folder(&r, "s");
     assert!(folder.join(TRANSCRIPT_FILE).exists());
     let summary = std::fs::read_to_string(folder.join("summary.md")).unwrap();
     assert!(summary.contains("status: stub"), "{summary}");
@@ -1031,7 +1031,7 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
     assert!(r.script.learned.lock().unwrap().is_empty());
 }
 
-// ------------------------------------------------------------- landing (U11)
+// -------------------------------------------------------------- saving (U11)
 
 fn add_notes(store: &SharedStore, id: &str) -> Vec<i64> {
     let s = store.lock().unwrap();
@@ -1051,7 +1051,7 @@ fn add_notes(store: &SharedStore, id: &str) -> Vec<i64> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_processed_session_lands_once_as_a_folder_that_parses_back() {
+async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
     use session_core::folder::{self, SessionDoc, Transcript};
     let r = rig().await;
     queue_session(
@@ -1066,11 +1066,11 @@ async fn a_processed_session_lands_once_as_a_folder_that_parses_back() {
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
 
-    let folder = landed(&r, "s");
+    let folder = saved_folder(&r, "s");
     assert_eq!(folder.parent(), Some(r.dest.as_path()));
     assert_eq!(
         folder.file_name().unwrap().to_string_lossy(),
-        landing::naming::folder_name(common::at(0))
+        session_save::naming::folder_name(common::at(0))
     );
     assert!(!r.root.join("s").exists(), "the working copy is gone");
     let mut names: Vec<String> = std::fs::read_dir(&folder)
@@ -1111,12 +1111,12 @@ async fn a_processed_session_lands_once_as_a_folder_that_parses_back() {
 
     assert!(r.events.lock().unwrap().iter().any(|e| matches!(
         e,
-        RunnerEvent::Landed { path, copied: false, .. } if *path == folder
+        RunnerEvent::Saved { path, copied: false, .. } if *path == folder
     )));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_note_edited_after_landing_rewrites_the_landed_file_whole() {
+async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1128,12 +1128,12 @@ async fn a_note_edited_after_landing_rewrites_the_landed_file_whole() {
     );
     let ids = add_notes(&r.store, "s");
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let folder = landed(&r, "s");
+    let folder = saved_folder(&r, "s");
 
     {
         let mut s = r.store.lock().unwrap();
         s.edit_note(ids[1], "bring more snacks").unwrap();
-        assert!(pipeline::land::rewrite_notes(&mut s, "s").unwrap());
+        assert!(pipeline::save::rewrite_notes(&mut s, "s").unwrap());
     }
     let notes = std::fs::read_to_string(folder.join("notes.md")).unwrap();
     assert_eq!(notes.matches("bring more snacks").count(), 1, "{notes}");
@@ -1144,11 +1144,11 @@ async fn a_note_edited_after_landing_rewrites_the_landed_file_whole() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
-    assert_eq!(state(&r.store, "s"), SessionState::Landed);
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn without_a_destination_the_session_waits_whole_and_lands_in_the_last_one_chosen() {
+async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_one_chosen() {
     let r = rig().await;
     *r.script.destination.lock().unwrap() = None;
     queue_session(
@@ -1172,7 +1172,7 @@ async fn without_a_destination_the_session_waits_whole_and_lands_in_the_last_one
     assert!(r.root.join("s/audio/segment-01.opus").exists());
     assert!(r.root.join("s/proc").exists());
     // Nothing moved, so the session can still be resumed.
-    assert!(!pipeline::land::begun(&r.store.lock().unwrap(), "s").unwrap());
+    assert!(!pipeline::save::begun(&r.store.lock().unwrap(), "s").unwrap());
 
     // A destination that has gone missing waits the same way.
     let gone = r.dest.join("unplugged");
@@ -1184,8 +1184,8 @@ async fn without_a_destination_the_session_waits_whole_and_lands_in_the_last_one
         "{outcome:?}"
     );
 
-    // An edit made while waiting reaches the landed file, and the session
-    // lands in the destination chosen last (AE7).
+    // An edit made while waiting reaches the saved file, and the session
+    // is saved in the destination chosen last (AE7).
     r.store
         .lock()
         .unwrap()
@@ -1198,7 +1198,7 @@ async fn without_a_destination_the_session_waits_whole_and_lands_in_the_last_one
     let transcribed = r.script.calls.load(Ordering::SeqCst);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(r.script.calls.load(Ordering::SeqCst), transcribed);
-    let folder = landed(&r, "s");
+    let folder = saved_folder(&r, "s");
     assert_eq!(folder.parent(), Some(last.as_path()));
     assert!(!gone.exists());
     let notes = std::fs::read_to_string(folder.join("notes.md")).unwrap();
@@ -1209,7 +1209,11 @@ async fn without_a_destination_the_session_waits_whole_and_lands_in_the_last_one
 #[tokio::test(flavor = "multi_thread")]
 async fn a_taken_folder_name_gets_a_suffix() {
     let r = rig().await;
-    std::fs::create_dir(r.dest.join(landing::naming::folder_name(common::at(0)))).unwrap();
+    std::fs::create_dir(
+        r.dest
+            .join(session_save::naming::folder_name(common::at(0))),
+    )
+    .unwrap();
     queue_session(
         &r.store,
         &r.root,
@@ -1220,13 +1224,13 @@ async fn a_taken_folder_name_gets_a_suffix() {
     );
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
-        landed(&r, "s").file_name().unwrap().to_string_lossy(),
-        format!("{}-2", landing::naming::folder_name(common::at(0)))
+        saved_folder(&r, "s").file_name().unwrap().to_string_lossy(),
+        format!("{}-2", session_save::naming::folder_name(common::at(0)))
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_unverified_transcript_is_refused_landing() {
+async fn an_unverified_transcript_is_not_saved() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1237,13 +1241,13 @@ async fn an_unverified_transcript_is_refused_landing() {
         &[(16_000, speech())],
     );
     let segments = r.store.lock().unwrap().segments("s").unwrap();
-    let err = pipeline::land::run(
+    let err = pipeline::save::run(
         &r.store,
         "s",
         &r.root.join("s"),
         &segments,
         Some(&r.dest),
-        &landing::RealFs,
+        &session_save::RealFs,
         &pipeline::Unattended,
     )
     .unwrap_err();
@@ -1253,7 +1257,7 @@ async fn an_unverified_transcript_is_refused_landing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage() {
+async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1263,7 +1267,7 @@ async fn a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage() 
         Some("m"),
         &[(16_000, speech())],
     );
-    // Land into a missing folder to stop just before the move, then move
+    // Save into a missing folder to stop just before the move, then move
     // the session into staging by hand, as a killed process would leave it.
     *r.script.destination.lock().unwrap() = None;
     r.runner.run_next().await.unwrap();
@@ -1273,14 +1277,19 @@ async fn a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage() 
         let mut s = r.store.lock().unwrap();
         s.apply("s", &session_core::Event::Retry).unwrap();
     }
-    let job = landing::Job {
+    let job = session_save::Job {
         session_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
-        folder_name: &landing::naming::folder_name(segments[0].wall_start),
+        folder_name: &session_save::naming::folder_name(segments[0].wall_start),
     };
-    let staged = landing::step(&landing::LandState::Working, &job, &landing::RealFs).unwrap();
-    checkpoint::put(&r.store, "s", Stage::Land, pipeline::land::STATE, &staged).unwrap();
+    let staged = session_save::step(
+        &session_save::SaveState::Working,
+        &job,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    checkpoint::put(&r.store, "s", Stage::Save, pipeline::save::STATE, &staged).unwrap();
     {
         let mut s = r.store.lock().unwrap();
         s.apply("s", &session_core::Event::ClaimLost).unwrap();
@@ -1298,8 +1307,8 @@ async fn a_relaunch_after_the_move_finishes_landing_without_redoing_any_stage() 
             _ => None,
         })
         .collect();
-    assert_eq!(started, vec![Stage::Land]);
-    assert!(landed(&r, "s").join("audio/segment-01.opus").exists());
+    assert_eq!(started, vec![Stage::Save]);
+    assert!(saved_folder(&r, "s").join("audio/segment-01.opus").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1313,7 +1322,7 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
         Some("m"),
         &[(16_000, speech())],
     );
-    // Stop just before the move, then take the landing as far as the final
+    // Stop just before the move, then take the save as far as the final
     // name by hand and record it, as a process killed before `Done` leaves it.
     *r.script.destination.lock().unwrap() = None;
     r.runner.run_next().await.unwrap();
@@ -1323,28 +1332,33 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
         let mut s = r.store.lock().unwrap();
         s.apply("s", &session_core::Event::Retry).unwrap();
     }
-    let job = landing::Job {
+    let job = session_save::Job {
         session_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
-        folder_name: &landing::naming::folder_name(segments[0].wall_start),
+        folder_name: &session_save::naming::folder_name(segments[0].wall_start),
     };
-    let staged = landing::step(&landing::LandState::Working, &job, &landing::RealFs).unwrap();
-    let landed_state = landing::step(&staged, &job, &landing::RealFs).unwrap();
-    let landing::LandState::Landed { path, .. } = &landed_state else {
-        panic!("{landed_state:?}");
+    let staged = session_save::step(
+        &session_save::SaveState::Working,
+        &job,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    let saved_state = session_save::step(&staged, &job, &session_save::RealFs).unwrap();
+    let session_save::SaveState::Saved { path, .. } = &saved_state else {
+        panic!("{saved_state:?}");
     };
     r.store
         .lock()
         .unwrap()
-        .set_landed_path("s", &path.to_string_lossy())
+        .set_home_path("s", &path.to_string_lossy())
         .unwrap();
     checkpoint::put(
         &r.store,
         "s",
-        Stage::Land,
-        pipeline::land::STATE,
-        &landed_state,
+        Stage::Save,
+        pipeline::save::STATE,
+        &saved_state,
     )
     .unwrap();
     {
@@ -1353,9 +1367,9 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
     }
 
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let home = landed(&r, "s");
+    let home = saved_folder(&r, "s");
     assert!(home.join("audio/segment-01.opus").exists());
-    assert!(!home.join(landing::MARKER).exists());
+    assert!(!home.join(session_save::MARKER).exists());
 }
 
 // ------------------------------------------------------------- progress (U12)
@@ -1444,7 +1458,7 @@ async fn a_resumed_completed_session_updates_its_folder_in_place() {
         &[(16_000, speech()), (16_000, speech())],
     );
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let folder = landed(&r, "s");
+    let folder = saved_folder(&r, "s");
     let before: Vec<Vec<u8>> = ["audio/segment-01.opus", "audio/segment-02.opus"]
         .iter()
         .map(|f| std::fs::read(folder.join(f)).unwrap())
@@ -1455,7 +1469,7 @@ async fn a_resumed_completed_session_updates_its_folder_in_place() {
     resume_completed(&r, "s", &speech());
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
 
-    assert_eq!(landed(&r, "s"), folder, "the same folder");
+    assert_eq!(saved_folder(&r, "s"), folder, "the same folder");
     assert_eq!(std::fs::read_dir(&r.dest).unwrap().count(), 1);
     assert!(!r.root.join("s").exists(), "the working copy is gone");
     for (file, bytes) in ["audio/segment-01.opus", "audio/segment-02.opus"]
@@ -1511,7 +1525,7 @@ async fn a_resumed_session_whose_folder_went_missing_names_it_and_retries_once_i
         &[(16_000, speech())],
     );
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let folder = landed(&r, "s");
+    let folder = saved_folder(&r, "s");
 
     resume_completed(&r, "s", &speech());
     let moved = r.dest.join("moved");
@@ -1601,7 +1615,7 @@ fn one_stage_process(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn killed_after_every_stage_the_session_lands_once_with_the_same_transcript() {
+async fn killed_after_every_stage_the_session_is_saved_once_with_the_same_transcript() {
     // The uninterrupted run to compare against.
     let clean = rig().await;
     queue_session(
@@ -1613,7 +1627,8 @@ async fn killed_after_every_stage_the_session_lands_once_with_the_same_transcrip
         &[(16_000, conversation())],
     );
     assert_eq!(clean.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let expected = std::fs::read_to_string(landed(&clean, "s").join(TRANSCRIPT_FILE)).unwrap();
+    let expected =
+        std::fs::read_to_string(saved_folder(&clean, "s").join(TRANSCRIPT_FILE)).unwrap();
 
     let root = tempfile::tempdir().unwrap();
     let dest = tempfile::tempdir().unwrap();
@@ -1649,8 +1664,8 @@ async fn killed_after_every_stage_the_session_lands_once_with_the_same_transcrip
         .collect();
     assert_eq!(folders.len(), 1, "{folders:?}");
     let record = store.lock().unwrap().session("s").unwrap().unwrap();
-    assert_eq!(record.state, SessionState::Landed);
-    let folder = std::path::PathBuf::from(record.landed_path.unwrap());
+    assert_eq!(record.state, SessionState::Saved);
+    let folder = std::path::PathBuf::from(record.home_path.unwrap());
     let transcript = std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap();
     assert_eq!(transcript, expected);
     assert!(!root.path().join("s").exists());

@@ -152,7 +152,7 @@ fn three_overlapping_chunks_and_a_part_tail_become_one_continuous_segment() {
 }
 
 #[test]
-fn a_44_1_khz_device_lands_its_rate_in_the_archive_header_and_16_khz_in_proc() {
+fn a_44_1_khz_device_writes_its_rate_to_the_archive_header_and_16_khz_to_proc() {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("s2");
     let segment = write_segment(&dir, 0, 0, 44_100, &tone(44_100, 7.5), false);

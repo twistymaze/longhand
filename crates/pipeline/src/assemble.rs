@@ -1,6 +1,6 @@
 //! The assemble stage (KTD4, KD16): a segment's overlapping native-rate
 //! chunks become one continuous stream, written twice — the full-band Opus
-//! archive that lands with the session, and the 16 kHz mono f32 tap that
+//! archive that is saved with the session, and the 16 kHz mono f32 tap that
 //! recognition and diarization read. Audio streams through in blocks; no
 //! segment is ever held in memory (R7).
 

@@ -1,5 +1,5 @@
 //! The verify stage (R17a, R20): a transcript that misses voiced audio is
-//! caught before it lands. Per segment, the VAD's voiced spans are measured
+//! caught before it is saved. Per segment, the VAD's voiced spans are measured
 //! against the spans the recognizer actually put text on (its timestamped
 //! segments, not the request windows around them), so a window that decoded
 //! one word does not count its whole length as covered.

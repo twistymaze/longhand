@@ -12,7 +12,7 @@ const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   message: null,
   summary_problem: null,
   resumable: false,
-  landed_path: null,
+  home_path: null,
   endpoint: null,
   audio_kept: true,
   transcript_kept: false,

@@ -121,7 +121,7 @@ impl Timeline {
     }
 
     /// The index the next opened segment takes. A dropped sub-second segment
-    /// gives its index back, so landed audio files number without holes.
+    /// gives its index back, so saved audio files number without holes.
     fn next_index(&self) -> u32 {
         let closed = self.segments.last().map(|s| s.index + 1).unwrap_or(0);
         closed.max(self.open.as_ref().map(|o| o.index + 1).unwrap_or(0))

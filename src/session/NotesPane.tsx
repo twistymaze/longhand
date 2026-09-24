@@ -56,7 +56,7 @@ function Line({
         value={text}
         onChange={(e) => {
           setText(e.target.value);
-          // Written through, so a landed folder's notes.md follows (R22f).
+          // Written through, so a home folder's notes.md follows (R22f).
           void commands
             .editNote(note.id, e.target.value)
             .then((r) => onError(r.status === "error" ? r.error : null));

@@ -79,7 +79,7 @@ function SpeakerCount({ settings, onSettings }: { settings: Settings; onSettings
     setMode(stored ? stored.kind : "automatic");
   }, [stored]);
 
-  const save = async (next: SpeakerCountSetting | null) => {
+  const apply = async (next: SpeakerCountSetting | null) => {
     const result = await commands.setDefaultSpeakerCount(next);
     if (result.status === "error") setError(result.error);
     else {
@@ -90,9 +90,9 @@ function SpeakerCount({ settings, onSettings }: { settings: Settings; onSettings
 
   const choose = (next: CountMode) => {
     setMode(next);
-    if (next === "automatic") void save(null);
-    else if (next === "exact") void save({ kind: "exact", count: exact });
-    else void save({ kind: "range", min, max });
+    if (next === "automatic") void apply(null);
+    else if (next === "exact") void apply({ kind: "exact", count: exact });
+    else void apply({ kind: "range", min, max });
   };
 
   const number = (value: number, set: (n: number) => void, commit: (n: number) => void, label: string) => (
@@ -142,14 +142,14 @@ function SpeakerCount({ settings, onSettings }: { settings: Settings; onSettings
       </Row>
       {mode === "exact" && (
         <Row label="Speakers">
-          {number(exact, setExact, (n) => void save({ kind: "exact", count: n }), "Exact speaker count")}
+          {number(exact, setExact, (n) => void apply({ kind: "exact", count: n }), "Exact speaker count")}
         </Row>
       )}
       {mode === "range" && (
         <Row label="Speakers">
-          {number(min, setMin, (n) => void save({ kind: "range", min: n, max }), "Fewest speakers")}
+          {number(min, setMin, (n) => void apply({ kind: "range", min: n, max }), "Fewest speakers")}
           <span className="text-label-secondary">to</span>
-          {number(max, setMax, (n) => void save({ kind: "range", min, max: n }), "Most speakers")}
+          {number(max, setMax, (n) => void apply({ kind: "range", min, max: n }), "Most speakers")}
         </Row>
       )}
       {error && <ErrorText>{error}</ErrorText>}

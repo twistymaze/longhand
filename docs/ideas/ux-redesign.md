@@ -21,7 +21,7 @@ Nothing in the UI is broken (the one broken item, the sidebar dropping sessions,
 - **Sessions in a sidebar list.** Anarlog does it this way; the user does not like that Anarlog does it.
 - **The completed-session view squeezes the notes into a side column.**
 - **Note-taking.** The timestamped stream came from choosing "stick timestamps on things" during planning, but it was never meant to be a timestamped stream of consciousness. The intent was a real note-taking experience, more like Anarlog's: type markdown, go back, edit, rearrange. A timestamped quick-entry mode could still be useful, as a separate mode.
-- **The word "landed".** It must never appear in the user experience. Use plain words: saved, completed, processed. (Applied to current copy in f51e668.)
+- **No metaphor for the save step.** The user experience must use plain words for the step that saves a session: saved, completed, processed. (Applied to current copy in f51e668.)
 
 ## Reference: Wispr Flow's notetaker
 

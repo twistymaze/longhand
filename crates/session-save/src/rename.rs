@@ -7,7 +7,7 @@
 use std::io;
 use std::path::Path;
 
-/// The filesystem operations landing is built on, so a test can make a
+/// The filesystem operations that saving is built on, so a test can make a
 /// rename cross devices.
 pub trait Fs {
     /// Move `from` to `to`; may replace an empty `to` (the staging rename).

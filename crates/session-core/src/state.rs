@@ -34,7 +34,7 @@ pub enum Stage {
     Join,
     Verify,
     Summarize,
-    Land,
+    Save,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ pub enum SessionState {
         stopped_at: DateTime<FixedOffset>,
         problem: String,
     },
-    Landed,
+    Saved,
     Discarded,
 }
 
@@ -110,10 +110,10 @@ pub enum Event {
     StoreUnlocked,
     StageFailed(Stage),
     Retry,
-    LandingFailed(String),
-    Landed,
-    /// A note edit or a regenerated summary on a landed session.
-    LandedEdit,
+    SaveFailed(String),
+    Saved,
+    /// A note edit or a regenerated summary on a saved session.
+    SavedEdit,
     /// Launch sweep: this session was processing in a process that is gone.
     ClaimLost,
 }
@@ -135,7 +135,7 @@ impl SessionState {
             SessionState::Blocked { .. } => "blocked",
             SessionState::ProcessingFailed { .. } => "processing_failed",
             SessionState::AwaitingDestination { .. } => "awaiting_destination",
-            SessionState::Landed => "landed",
+            SessionState::Saved => "saved",
             SessionState::Discarded => "discarded",
         }
     }
@@ -168,7 +168,7 @@ impl SessionState {
     }
 
     pub fn is_final(&self) -> bool {
-        matches!(self, SessionState::Landed | SessionState::Discarded)
+        matches!(self, SessionState::Saved | SessionState::Discarded)
     }
 
     pub fn transition(&self, event: &Event) -> Result<SessionState, IllegalTransition> {
@@ -252,21 +252,21 @@ impl SessionState {
             | (S::AwaitingDestination { stopped_at, .. }, Event::Retry) => Some(S::Processing {
                 stopped_at: *stopped_at,
             }),
-            (S::Processing { stopped_at }, Event::LandingFailed(problem)) => {
+            (S::Processing { stopped_at }, Event::SaveFailed(problem)) => {
                 Some(S::AwaitingDestination {
                     stopped_at: *stopped_at,
                     problem: problem.clone(),
                 })
             }
-            (S::Processing { .. }, Event::Landed) => Some(S::Landed),
+            (S::Processing { .. }, Event::Saved) => Some(S::Saved),
             (S::Processing { stopped_at }, Event::ClaimLost)
             | (S::Blocked { stopped_at }, Event::ClaimLost) => Some(S::Queued {
                 stopped_at: *stopped_at,
             }),
-            (S::Landed, Event::LandedEdit) => Some(S::Landed),
+            (S::Saved, Event::SavedEdit) => Some(S::Saved),
 
             (_, Event::UserResume { .. }) if self.is_stopped() => Some(S::Capturing),
-            (S::Landed, Event::UserResume { audio_intact, .. }) if *audio_intact => {
+            (S::Saved, Event::UserResume { audio_intact, .. }) if *audio_intact => {
                 Some(S::Capturing)
             }
 

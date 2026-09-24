@@ -2646,20 +2646,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "landing"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "libc",
- "log",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2792,7 +2778,6 @@ dependencies = [
  "audio-cpal",
  "chrono",
  "diarize",
- "landing",
  "log",
  "models",
  "pipeline",
@@ -2802,6 +2787,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session-core",
+ "session-save",
  "sfx",
  "sha2 0.10.9",
  "specta",
@@ -3764,7 +3750,6 @@ dependencies = [
  "chrono",
  "diarize",
  "hound",
- "landing",
  "log",
  "ogg",
  "opus",
@@ -3773,6 +3758,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session-core",
+ "session-save",
  "summarize",
  "tempfile",
  "thiserror 2.0.20",
@@ -4805,6 +4791,20 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "session-save"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
 ]

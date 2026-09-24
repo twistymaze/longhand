@@ -75,7 +75,7 @@ fn note_cost(note: &Note) -> usize {
 
 /// The turn a note was typed during: the last turn starting at or before
 /// it. A gap-anchored note sits at the end of the segment before the gap,
-/// so it lands on that segment's last turn.
+/// so it belongs to that segment's last turn.
 fn owning_turn(turns: &[Turn], position_ms: u64) -> usize {
     turns
         .partition_point(|t| t.position_ms <= position_ms)

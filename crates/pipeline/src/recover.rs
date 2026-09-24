@@ -16,7 +16,7 @@ use session_core::{Event, InterruptReason, MIN_SEGMENT_MS, Segment, SessionState
 
 use crate::{RECOVERY_DIR, SharedStore, StageError, lock};
 
-/// Where a segment's archive lands in the session folder.
+/// Where a segment's archive goes in the session folder.
 pub fn segment_audio_file(index: u32) -> String {
     format!("audio/segment-{:02}.opus", index + 1)
 }

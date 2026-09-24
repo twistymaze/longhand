@@ -139,7 +139,7 @@ pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 }
 
 /// The summarize stage: produce the summary and write it into the working
-/// directory, where landing picks it up.
+/// directory, where the save stage picks it up.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
