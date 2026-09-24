@@ -79,6 +79,10 @@ export function Scratchpad({ sessionId, recording }: { sessionId: string | null;
       });
     } else {
       void pending.current.then((id) => id !== null && write(id, text));
+      // An erased line is finished, like one ended with Return: the next
+      // keystroke starts a new note in whichever session is open then. A
+      // line still being typed stays with the session it was begun in.
+      if (text === "") pending.current = null;
     }
   };
 
