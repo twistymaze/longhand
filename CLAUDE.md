@@ -14,6 +14,20 @@ Before designing, building, or reviewing any UI surface (the probe window, setti
 
 Apple's restraint principle matches a product rule already in the plan: the recording surface must not pull a participant's attention back to the screen (U7's two-tier rail). When the two seem to conflict, the plan's attention budget wins over added motion or ornament.
 
+## Language
+
+Code identifiers, comments, log text, docs, plans and agent guidance follow ASD-STE100:
+
+- Give each word one meaning, and use one word for each concept. `CONCEPTS.md` holds the terms.
+- Write short sentences in the active voice.
+- Use no metaphors. For example, a process does not "land": it saves, finishes or completes. `CONCEPTS.md` lists the terms to avoid.
+
+UI text is plain language, not STE:
+
+- Keep it short and direct.
+- Use one term for each concept on every screen.
+- Use no metaphors and no jargon. STE's controlled vocabulary does not apply.
+
 ## Working in this repo
 
 - Python only through `uv`. `bun` is the only JavaScript package manager. Rust is pinned to 1.94.0.
