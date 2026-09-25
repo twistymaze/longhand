@@ -381,3 +381,252 @@ fn tick_queues_only_interruptions_past_their_window() {
     assert_eq!(store.tick(t(32)).unwrap(), ["s1"]);
     assert_eq!(store.queue().unwrap(), ["s1"]);
 }
+
+// ------------------------------------------------------------ delete (U9)
+
+use session_core::jobs::{DeleteError, delete_session};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// A saved session "s" with a home folder and a working directory on disk.
+struct Deletable {
+    store: Mutex<Store>,
+    home: PathBuf,
+    working: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+fn saved_session() -> Deletable {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("dest").join("2026-09-22 Budget review");
+    let working = dir.path().join("working").join("s");
+    std::fs::create_dir_all(home.join("audio")).unwrap();
+    std::fs::write(home.join("transcript.md"), "x").unwrap();
+    std::fs::create_dir_all(&working).unwrap();
+    std::fs::write(working.join("recovery.wav"), "x").unwrap();
+
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s", t(0), None).unwrap();
+    store.put_segment("s", &segment(0, 0)).unwrap();
+    stop(&mut store, "s", 5);
+    store.dequeue("run", t(6)).unwrap();
+    store
+        .put_checkpoint("s", Stage::Transcribe, "w", "{}")
+        .unwrap();
+    store.apply("s", &Event::Saved).unwrap();
+    store.set_home_path("s", home.to_str().unwrap()).unwrap();
+    // A second session, which a delete leaves alone.
+    store.create_session("other", t(20), None).unwrap();
+    Deletable {
+        store: Mutex::new(store),
+        home,
+        working,
+        _dir: dir,
+    }
+}
+
+/// A remover that records each call and removes the directory, as the
+/// Trash would move it away.
+fn recording(calls: &mut Vec<PathBuf>) -> impl FnMut(&Path) -> Result<(), String> + '_ {
+    |path| {
+        calls.push(path.to_path_buf());
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+    }
+}
+
+fn rows_gone(store: &Mutex<Store>) -> bool {
+    let store = store.lock().unwrap();
+    store.session("s").unwrap().is_none()
+        && store.segments("s").unwrap().is_empty()
+        && store
+            .checkpoints("s", Stage::Transcribe)
+            .unwrap()
+            .is_empty()
+        && store.session("other").unwrap().is_some()
+}
+
+#[test]
+fn a_saved_session_is_deleted_home_folder_first_then_working_directory_then_rows() {
+    let d = saved_session();
+    let mut calls = Vec::new();
+    delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap();
+    assert_eq!(calls, vec![d.home.clone(), d.working.clone()]);
+    assert!(!d.home.exists() && !d.working.exists());
+    assert!(rows_gone(&d.store));
+    let listed: Vec<String> = d
+        .store
+        .lock()
+        .unwrap()
+        .sessions()
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(listed, ["other"]);
+}
+
+#[test]
+fn a_busy_session_is_refused_and_nothing_changes() {
+    let d = saved_session();
+    // Resume makes it capture again; stop queues it; dequeue processes it.
+    let mut store = d.store.lock().unwrap();
+    store
+        .apply(
+            "s",
+            &Event::UserResume {
+                space_ok: true,
+                audio_intact: true,
+            },
+        )
+        .unwrap();
+    drop(store);
+    let busy = |d: &Deletable, want: &str| {
+        let mut calls = Vec::new();
+        let err =
+            delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap_err();
+        assert!(
+            matches!(&err, DeleteError::Busy { state } if *state == want),
+            "{err:?}"
+        );
+        assert!(calls.is_empty());
+        assert!(d.home.exists() && d.working.exists());
+        assert!(d.store.lock().unwrap().session("s").unwrap().is_some());
+    };
+    busy(&d, "capturing");
+    d.store
+        .lock()
+        .unwrap()
+        .apply(
+            "s",
+            &Event::CaptureLost {
+                reason: InterruptReason::Device,
+                at: t(30),
+            },
+        )
+        .unwrap();
+    busy(&d, "interrupted");
+    stop(&mut d.store.lock().unwrap(), "s", 31);
+    busy(&d, "queued");
+    d.store.lock().unwrap().dequeue("run", t(32)).unwrap();
+    // Covers AE5.
+    busy(&d, "processing");
+}
+
+#[test]
+fn a_session_whose_summary_is_regenerating_is_refused() {
+    let d = saved_session();
+    let mut calls = Vec::new();
+    let err = delete_session(&d.store, "s", &d.working, true, recording(&mut calls)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DeleteError::Busy {
+                state: "regenerating"
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(calls.is_empty());
+    assert!(d.store.lock().unwrap().session("s").unwrap().is_some());
+}
+
+#[test]
+fn a_failure_on_the_home_folder_leaves_everything_in_place() {
+    // Covers AE10.
+    let d = saved_session();
+    let mut calls = Vec::new();
+    let err = delete_session(&d.store, "s", &d.working, false, |path: &Path| {
+        calls.push(path.to_path_buf());
+        Err("the volume has no Trash".to_string())
+    })
+    .unwrap_err();
+    match err {
+        DeleteError::Remove { path, message } => {
+            assert_eq!(path, d.home);
+            assert_eq!(message, "the volume has no Trash");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(calls, vec![d.home.clone()]);
+    assert!(d.home.exists() && d.working.exists());
+    assert!(d.store.lock().unwrap().session("s").unwrap().is_some());
+}
+
+#[test]
+fn a_failure_on_the_working_directory_keeps_the_rows() {
+    let d = saved_session();
+    let working = d.working.clone();
+    let err = delete_session(&d.store, "s", &d.working, false, |path: &Path| {
+        if path == working {
+            return Err("busy".to_string());
+        }
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+    })
+    .unwrap_err();
+    assert!(matches!(err, DeleteError::Remove { ref path, .. } if *path == d.working));
+    assert!(!d.home.exists());
+    assert!(d.store.lock().unwrap().session("s").unwrap().is_some());
+    // A second try, with the home folder already gone, completes.
+    let mut calls = Vec::new();
+    delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap();
+    assert_eq!(calls, vec![d.working.clone()]);
+    assert!(rows_gone(&d.store));
+}
+
+#[test]
+fn a_session_never_saved_deletes_its_working_directory_only() {
+    let d = saved_session();
+    {
+        let mut store = d.store.lock().unwrap();
+        store.create_session("n", t(40), None).unwrap();
+        store
+            .apply(
+                "n",
+                &Event::UserStop {
+                    at: t(41),
+                    retained_audio: false,
+                },
+            )
+            .unwrap();
+    }
+    let working = d.working.with_file_name("n");
+    std::fs::create_dir_all(&working).unwrap();
+    let mut calls = Vec::new();
+    delete_session(&d.store, "n", &working, false, recording(&mut calls)).unwrap();
+    assert_eq!(calls, vec![working.clone()]);
+    assert!(d.store.lock().unwrap().session("n").unwrap().is_none());
+    assert!(d.home.exists());
+}
+
+#[test]
+fn a_retry_after_a_crash_with_both_directories_gone_deletes_the_rows() {
+    let d = saved_session();
+    std::fs::remove_dir_all(&d.home).unwrap();
+    std::fs::remove_dir_all(&d.working).unwrap();
+    let mut calls = Vec::new();
+    delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap();
+    assert!(calls.is_empty());
+    assert!(rows_gone(&d.store));
+}
+
+#[test]
+fn a_remover_that_fails_on_a_directory_already_gone_counts_it_as_removed() {
+    // Another process removed the folder between the check and the call.
+    let d = saved_session();
+    delete_session(&d.store, "s", &d.working, false, |path: &Path| {
+        std::fs::remove_dir_all(path).unwrap();
+        Err("the item could not be found".to_string())
+    })
+    .unwrap();
+    assert!(rows_gone(&d.store));
+}
+
+#[test]
+fn deleting_no_such_session_is_an_error() {
+    let d = saved_session();
+    let err = delete_session(&d.store, "nope", &d.working, false, |_: &Path| Ok(())).unwrap_err();
+    assert!(
+        matches!(err, DeleteError::Store(StoreError::NoSuchSession(_))),
+        "{err:?}"
+    );
+}

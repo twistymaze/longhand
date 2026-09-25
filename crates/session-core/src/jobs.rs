@@ -692,3 +692,99 @@ fn apply_queue_effects(
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------- delete
+
+/// Why a delete did not complete (KTD9).
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteError {
+    /// The session records, waits to resume, waits in the queue, is
+    /// processed, or has its summary regenerated. Nothing changed.
+    #[error("the session is {state}")]
+    Busy { state: &'static str },
+    /// A directory could not be removed. The directories before it are
+    /// removed; the directories after it and the rows remain.
+    #[error("could not remove {}: {message}", path.display())]
+    Remove {
+        path: std::path::PathBuf,
+        message: String,
+    },
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+/// The state name when `state` refuses a delete (R8): capture or
+/// processing can still write to the session.
+pub fn delete_refusal(state: &SessionState) -> Option<&'static str> {
+    match state {
+        SessionState::Capturing
+        | SessionState::Interrupted { .. }
+        | SessionState::Queued { .. }
+        | SessionState::Processing { .. } => Some(state.name()),
+        _ => None,
+    }
+}
+
+/// Delete a session (R8, R33): remove its home folder (when it has one),
+/// then its working directory, then its rows. Child rows cascade.
+///
+/// `remove` moves a directory to the Trash or deletes it permanently. The
+/// store is not locked while it runs. A directory that is already missing
+/// counts as removed, so a delete that stopped part way completes when it
+/// is tried again. `regenerating` is true while the session's summary is
+/// regenerated, which also refuses the delete.
+pub fn delete_session<R>(
+    store: &std::sync::Mutex<Store>,
+    id: &str,
+    working_dir: &Path,
+    regenerating: bool,
+    mut remove: R,
+) -> std::result::Result<(), DeleteError>
+where
+    R: FnMut(&Path) -> std::result::Result<(), String>,
+{
+    let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
+    let record = lock().require(id)?;
+    if let Some(state) = delete_refusal(&record.state) {
+        return Err(DeleteError::Busy { state });
+    }
+    if regenerating {
+        return Err(DeleteError::Busy {
+            state: "regenerating",
+        });
+    }
+    let home = record.home_path.as_deref().map(Path::new);
+    for dir in home.into_iter().chain([working_dir]) {
+        remove_dir(dir, &mut remove)?;
+    }
+    let store = lock();
+    // The state can change while the directories are removed; check again.
+    let record = store.require(id)?;
+    if let Some(state) = delete_refusal(&record.state) {
+        return Err(DeleteError::Busy { state });
+    }
+    store
+        .conn
+        .execute("DELETE FROM sessions WHERE id = ?1", [id])
+        .map_err(StoreError::from)?;
+    Ok(())
+}
+
+fn remove_dir<R>(dir: &Path, remove: &mut R) -> std::result::Result<(), DeleteError>
+where
+    R: FnMut(&Path) -> std::result::Result<(), String>,
+{
+    let missing = |dir: &Path| matches!(std::fs::symlink_metadata(dir), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+    if missing(dir) {
+        return Ok(());
+    }
+    match remove(dir) {
+        Ok(()) => Ok(()),
+        // Something else removed it first.
+        Err(_) if missing(dir) => Ok(()),
+        Err(message) => Err(DeleteError::Remove {
+            path: dir.to_path_buf(),
+            message,
+        }),
+    }
+}

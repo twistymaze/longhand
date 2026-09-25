@@ -387,6 +387,12 @@ impl ProcessingManager {
         self.runner.unblock(session_id).map_err(|e| e.to_string())
     }
 
+    /// True while the session has its summary regenerated or waits to. A
+    /// delete refuses it (R8).
+    pub fn is_regenerating(&self, session_id: &str) -> bool {
+        self.runner.is_regenerating(session_id)
+    }
+
     /// Summarize a saved session again, replacing its `summary.md` (AE17).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
         self.runner

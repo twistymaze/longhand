@@ -1998,3 +1998,36 @@ async fn killed_after_every_stage_the_session_is_saved_once_with_the_same_transc
     assert_eq!(transcript, expected);
     assert!(!root.path().join("s").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_counts_as_regenerating_only_while_its_summary_is_regenerated() {
+    let r = rig().await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runner = Arc::clone(&r.runner);
+    let record = Arc::clone(&seen);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        record.lock().unwrap().push(runner.is_regenerating("s"));
+        (200, http::completion("A summary."))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    // The first summary is part of processing, not a regeneration.
+    assert!(seen.lock().unwrap().iter().all(|s| !s));
+    seen.lock().unwrap().clear();
+    r.runner.regenerate_summary("s").await.unwrap();
+    let during = seen.lock().unwrap().clone();
+    assert!(
+        !during.is_empty() && during.iter().all(|s| *s),
+        "{during:?}"
+    );
+    assert!(!r.runner.is_regenerating("s"));
+    assert!(!r.runner.is_regenerating("other"));
+}

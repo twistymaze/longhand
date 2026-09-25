@@ -13,7 +13,7 @@ use specta::Type;
 use tauri::{AppHandle, State};
 
 use crate::managers::capture::CaptureManager;
-use crate::managers::processing::stage_name;
+use crate::managers::processing::{ProcessingManager, stage_name};
 use crate::managers::settings;
 
 #[derive(Serialize, Clone, Type)]
@@ -367,6 +367,216 @@ fn summary_view(summary: Summary) -> SummaryView {
             host: None,
             model: None,
         },
+    }
+}
+
+/// Why a delete did not complete (R8, R33). Nothing after the failed step
+/// changed.
+#[derive(Debug, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeleteSessionError {
+    /// The session records, is processed, or has its summary regenerated.
+    /// Nothing changed.
+    Busy { message: String },
+    /// `path` cannot go to the Trash (R33). It and the session remain, and
+    /// `delete_session_permanently` can delete them. When `path` is the home
+    /// folder, which goes first, nothing changed.
+    CannotMoveToTrash { path: String, reason: String },
+    /// A permanent delete or the store failed.
+    Failed { message: String },
+}
+
+fn busy_message(state: &str) -> String {
+    match state {
+        "capturing" => "This session is recording. Stop the recording before you delete it.",
+        "interrupted" => {
+            "This session's recording was interrupted. Stop it before you delete the session."
+        }
+        "queued" => {
+            "This session is waiting to be processed. You can delete it when processing is done."
+        }
+        "regenerating" => {
+            "This session's summary is being made again. You can delete it when that is done."
+        }
+        _ => "This session is being processed. You can delete it when processing is done.",
+    }
+    .to_string()
+}
+
+/// How a delete removes a directory.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Removal {
+    Trash,
+    Permanent,
+}
+
+fn delete_error(error: session_core::DeleteError, removal: Removal) -> DeleteSessionError {
+    use session_core::DeleteError;
+    match error {
+        DeleteError::Busy { state } => DeleteSessionError::Busy {
+            message: busy_message(state),
+        },
+        DeleteError::Remove { path, message } if removal == Removal::Trash => {
+            DeleteSessionError::CannotMoveToTrash {
+                path: path.to_string_lossy().into_owned(),
+                reason: message,
+            }
+        }
+        DeleteError::Remove { path, message } => DeleteSessionError::Failed {
+            message: format!("Could not delete {}: {message}", path.display()),
+        },
+        DeleteError::Store(e) => DeleteSessionError::Failed {
+            message: e.to_string(),
+        },
+    }
+}
+
+/// Move a directory to the Trash (KTD9). On macOS, NSFileManager does it:
+/// the default Finder method runs AppleScript and asks for Automation
+/// permission.
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let context = {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut context = trash::TrashContext::default();
+        context.set_delete_method(DeleteMethod::NsFileManager);
+        context
+    };
+    #[cfg(not(target_os = "macos"))]
+    let context = trash::TrashContext::default();
+    context.delete(path).map_err(|e| match e {
+        trash::Error::Unknown { description } | trash::Error::Os { description, .. } => description,
+        other => other.to_string(),
+    })
+}
+
+fn remove_permanently(path: &Path) -> Result<(), String> {
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+}
+
+/// Remove a session on a blocking thread: the Trash call on Windows uses
+/// COM, and a folder on a network volume can be slow.
+async fn delete(
+    capture: &CaptureManager,
+    processing: &ProcessingManager,
+    session_id: String,
+    removal: Removal,
+) -> Result<(), DeleteSessionError> {
+    let store = capture.shared_store();
+    let working = capture.working_root().join(&session_id);
+    let regenerating = processing.is_regenerating(&session_id);
+    let remove = match removal {
+        Removal::Trash => move_to_trash,
+        Removal::Permanent => remove_permanently,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        session_core::jobs::delete_session(&store, &session_id, &working, regenerating, remove)
+            .inspect(|()| log::info!("deleted session {session_id} ({removal:?})"))
+    })
+    .await
+    .map_err(|e| DeleteSessionError::Failed {
+        message: e.to_string(),
+    })?
+    .map_err(|e| delete_error(e, removal))
+}
+
+/// Move the session's folder to the Trash and remove the session from
+/// Longhand (R8). Refused while it records or is processed.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_session(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<(), DeleteSessionError> {
+    delete(&capture, &processing, session_id, Removal::Trash).await
+}
+
+/// Delete the session's folder permanently, for a folder that cannot go
+/// to the Trash (R33).
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_session_permanently(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<(), DeleteSessionError> {
+    delete(&capture, &processing, session_id, Removal::Permanent).await
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+    use session_core::DeleteError;
+
+    #[test]
+    fn a_trash_failure_is_a_typed_error_naming_the_folder() {
+        let e = delete_error(
+            DeleteError::Remove {
+                path: "/d/Budget review".into(),
+                message: "no Trash on this volume".into(),
+            },
+            Removal::Trash,
+        );
+        assert!(
+            matches!(&e, DeleteSessionError::CannotMoveToTrash { path, reason }
+                if path == "/d/Budget review" && reason == "no Trash on this volume"),
+            "{e:?}"
+        );
+        let e = delete_error(
+            DeleteError::Remove {
+                path: "/d/x".into(),
+                message: "denied".into(),
+            },
+            Removal::Permanent,
+        );
+        assert!(matches!(e, DeleteSessionError::Failed { .. }), "{e:?}");
+    }
+
+    #[test]
+    fn a_refusal_says_why_in_plain_words() {
+        for (state, word) in [
+            ("capturing", "recording"),
+            ("interrupted", "interrupted"),
+            ("queued", "waiting"),
+            ("processing", "processed"),
+            ("regenerating", "summary"),
+        ] {
+            match delete_error(DeleteError::Busy { state }, Removal::Trash) {
+                DeleteSessionError::Busy { message } => {
+                    assert!(message.contains(word), "{state}: {message}")
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_permanent_delete_removes_the_folder_and_the_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let working = dir.path().join("working");
+        std::fs::create_dir_all(home.join("audio")).unwrap();
+        std::fs::write(home.join("audio").join("segment-01.opus"), "x").unwrap();
+        std::fs::create_dir_all(&working).unwrap();
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        let created = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:00:00+00:00").unwrap();
+        store.create_session("s", created, None).unwrap();
+        store
+            .apply(
+                "s",
+                &session_core::Event::UserStop {
+                    at: created,
+                    retained_audio: false,
+                },
+            )
+            .unwrap();
+        store.set_home_path("s", home.to_str().unwrap()).unwrap();
+        let store = std::sync::Mutex::new(store);
+        session_core::jobs::delete_session(&store, "s", &working, false, remove_permanently)
+            .unwrap();
+        assert!(!home.exists() && !working.exists());
+        assert!(store.lock().unwrap().session("s").unwrap().is_none());
     }
 }
 

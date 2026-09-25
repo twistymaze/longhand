@@ -291,6 +291,30 @@ async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, strin
 }
 },
 /**
+ * Move the session's folder to the Trash and remove the session from
+ * Longhand (R8). Refused while it records or is processed.
+ */
+async deleteSession(sessionId: string) : Promise<Result<null, DeleteSessionError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_session", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the session's folder permanently, for a folder that cannot go
+ * to the Trash (R33).
+ */
+async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteSessionError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_session_permanently", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Show the Settings window, and build it first when it is not open. Async
  * because a synchronous command that builds a window deadlocks on Windows.
  */
@@ -360,6 +384,26 @@ export type CredentialStatus = { kind: "present"; host: string; length: number; 
  * Locked or refused: the user can recover it (R20b).
  */
 { kind: "needs_unlock"; message: string } | { kind: "failed"; message: string }
+/**
+ * Why a delete did not complete (R8, R33). Nothing after the failed step
+ * changed.
+ */
+export type DeleteSessionError = 
+/**
+ * The session records, is processed, or has its summary regenerated.
+ * Nothing changed.
+ */
+{ kind: "busy"; message: string } | 
+/**
+ * `path` cannot go to the Trash (R33). It and the session remain, and
+ * `delete_session_permanently` can delete them. When `path` is the home
+ * folder, which goes first, nothing changed.
+ */
+{ kind: "cannot_move_to_trash"; path: string; reason: string } | 
+/**
+ * A permanent delete or the store failed.
+ */
+{ kind: "failed"; message: string }
 export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: string; free_bytes: number | null } | 
 /**
  * Deleted, renamed, or on a volume that is not mounted.
