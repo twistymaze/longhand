@@ -19,7 +19,7 @@ use tauri_plugin_store::StoreExt;
 pub const SETTINGS_STORE_PATH: &str = "settings.json";
 const SETTINGS_KEY: &str = "settings";
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
 
 /// The Base URL that Longhand uses when the user never saved one (R1, KD3).
 pub const DEFAULT_ENDPOINT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -98,9 +98,9 @@ pub struct Settings {
     /// Where the next session is saved (R23). Always one of the roots.
     pub current_destination: Option<String>,
     /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
-    /// `None` means that the user never saved one, and
+    /// `None` means a new install that has no settings yet, and
     /// [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
-    /// user cleared it (KTD4).
+    /// user cleared it, or that an existing install never set it (R2, KTD4).
     pub endpoint_base_url: Option<String>,
     pub endpoint_model: String,
     /// Overrides the probed context budget when set (KTD16).
@@ -491,7 +491,12 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
     }
     if stored_version < 2 {
         // Version 1 carried only the Phase 2a probe field, which is dropped;
-        // every real field takes its default.
+        // every real field takes its default. The Base URL default applies
+        // only to a new install, so an existing store keeps an empty Base
+        // URL (R2). Version 0 is a store with no version at all.
+        if stored_version >= 1 {
+            settings.endpoint_base_url = Some(String::new());
+        }
         updated = true;
     }
     if stored_version < 3 {
@@ -505,16 +510,6 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
         // default (R3, KTD11). Version 0 is a store with no version at all.
         if stored_version >= 1 && stored.get("asr_model").is_none() {
             settings.asr_model = PREVIOUS_DEFAULT_ASR_MODEL.to_string();
-        }
-        updated = true;
-    }
-    if stored_version < 5 {
-        // Before version 5, an empty Base URL was the value of a new install
-        // and also the value that a user cleared. The two cannot be told
-        // apart, so an empty value becomes "never saved", and the default
-        // applies (R2, KTD4). Every other value stays.
-        if stored.get("endpoint_base_url").and_then(Value::as_str) == Some("") {
-            settings.endpoint_base_url = None;
         }
         updated = true;
     }
@@ -677,12 +672,13 @@ mod tests {
         let stored = json!({ "settings_schema_version": 1, "probe_value": "Test" });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        // The install existed before the default changed, so it keeps the
-        // model it read before (KTD11).
+        // The install existed before the defaults changed, so it keeps the
+        // model it read before (KTD11) and an empty Base URL (R2).
         assert_eq!(
             settings,
             Settings {
                 asr_model: PREVIOUS_DEFAULT_ASR_MODEL.to_string(),
+                endpoint_base_url: Some(String::new()),
                 ..Settings::default()
             }
         );
@@ -1121,7 +1117,8 @@ mod tests {
     }
 
     #[test]
-    fn the_migration_makes_an_empty_base_url_never_saved() {
+    fn an_existing_store_keeps_an_empty_base_url() {
+        // The OpenAI default applies only to a new install (R2).
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION - 1,
             "endpoint_base_url": "",
@@ -1129,12 +1126,9 @@ mod tests {
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings.endpoint_base_url, None);
+        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
+        assert_eq!(settings.effective_endpoint_base_url(), "");
         assert_eq!(settings.endpoint_model, "gpt-4o");
-        assert_eq!(
-            settings.settings_schema_version,
-            CURRENT_SETTINGS_SCHEMA_VERSION
-        );
         let written = serde_json::to_value(&settings).unwrap();
         assert_eq!(settings_from_value(&written), (settings, false));
     }

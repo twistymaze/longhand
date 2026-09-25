@@ -894,9 +894,9 @@ destination_roots: string[];
 current_destination: string | null; 
 /**
  * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
- * `None` means that the user never saved one, and
+ * `None` means a new install that has no settings yet, and
  * [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
- * user cleared it (KTD4).
+ * user cleared it, or that an existing install never set it (R2, KTD4).
  */
 endpoint_base_url: string | null; endpoint_model: string; 
 /**
