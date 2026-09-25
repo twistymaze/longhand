@@ -615,7 +615,35 @@ fn a_streamed_fixture_matches_batch_word_times_and_a_pause_cut_keeps_its_words()
     );
     assert_eq!(whole.len(), 1);
     assert_eq!(cut.len(), 2, "the stream is cut at the pause");
-    assert!(count(&whole).abs_diff(count(&cut)) <= 1);
+
+    // The part before the cut keeps every word that one stream of the
+    // speech alone gives. Case and punctuation can change at a part end.
+    let plain = |words: &[LiveWord]| -> Vec<String> {
+        words
+            .iter()
+            .map(|w| {
+                w.text
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '\'')
+                    .collect::<String>()
+                    .to_lowercase()
+            })
+            .collect()
+    };
+    assert_eq!(
+        plain(&cut[0].words),
+        plain(&streamed),
+        "words before the cut"
+    );
+    // The second copy of the speech follows other audio, and some models
+    // decode it with a few different words, with or without a cut. So the
+    // part after the cut is compared by count only.
+    assert!(
+        cut[1].words.len().abs_diff(streamed.len()) * 10 <= streamed.len(),
+        "the part after the cut has {} words, the speech alone {}",
+        cut[1].words.len(),
+        streamed.len()
+    );
 }
 
 #[test]
