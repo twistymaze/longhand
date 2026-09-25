@@ -173,6 +173,69 @@ describe("Home", () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
+  // Covers AE10: the second question deletes the session for good.
+  test("a Trash failure offers Delete Permanently, which deletes the session and its row", async () => {
+    let entries = [entry("s", { title: "Budget review" })];
+    const tauri = mockTauri({
+      session_document: () => document("Text."),
+      session_detail: () => detail(entry("s"), "/x/Budget review"),
+      delete_session: () => {
+        throw { kind: "cannot_move_to_trash", path: "/x/Budget review", reason: "the volume has no Trash" };
+      },
+      delete_session_permanently: () => {
+        entries = [];
+        return null;
+      },
+    });
+    const homeWith = (list: SessionEntry[]) => (
+      <Home
+        entries={list}
+        stages={{}}
+        recording={null}
+        readiness={null}
+        chord="⌥⇧L"
+        onOpen={() => {}}
+        onChanged={() => {}}
+        now={now}
+      />
+    );
+    // The list reads the sessions again when Home says they changed.
+    const view = renderHome({ entries, onChanged: () => view.rerender(homeWith(entries)) });
+    const user = userEvent.setup();
+    await user.click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    const permanent = await screen.findByRole("alertdialog", { name: /can’t be moved to the Trash/ });
+    await user.click(within(permanent).getByRole("button", { name: "Delete Permanently" }));
+    await act(async () => {});
+    expect(tauri.calls.filter((c) => c.cmd === "delete_session_permanently").map((c) => c.args)).toEqual([
+      { sessionId: "s" },
+    ]);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("option", { name: /Budget review/ })).toBeNull();
+  });
+
+  test("a delete that fails for another reason shows why, and keeps the row", async () => {
+    const tauri = mockTauri({
+      session_document: () => document("Text."),
+      session_detail: () => detail(entry("s"), null),
+      delete_session: () => {
+        throw { kind: "failed", message: "the store is locked" };
+      },
+    });
+    const onChanged = mock(() => {});
+    renderHome({ entries: [entry("s", { title: "Budget review" })], onChanged });
+    const user = userEvent.setup();
+    await user.click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    expect(await screen.findByText("The store is locked.")).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(row("Budget review")).toBeTruthy();
+    expect(tauri.calls.some((c) => c.cmd === "delete_session_permanently")).toBe(false);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
   test("Rename commits on Return, and Escape cancels", async () => {
     const tauri = mockTauri({
       session_document: () => document("Text."),

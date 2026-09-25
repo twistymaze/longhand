@@ -128,8 +128,13 @@ export function SessionPage({
 
   const version = sessions.version[id] ?? 0;
   const state = entry?.state;
+  // Each read has a number. The page ignores a response from an older read,
+  // so a late response never replaces a newer one.
+  const detailRead = useRef(0);
   const loadDetail = useCallback(async () => {
+    const read = ++detailRead.current;
     const result = await commands.sessionDetail(id);
+    if (read !== detailRead.current) return;
     if (result.status === "ok") setDetail(result.data);
   }, [id]);
   useEffect(() => {
@@ -137,8 +142,11 @@ export function SessionPage({
     void loadDetail();
   }, [loadDetail, version, state]);
 
+  const documentRead = useRef(0);
   const loadDocument = useCallback(async () => {
+    const read = ++documentRead.current;
     const result = await commands.sessionDocument(id);
+    if (read !== documentRead.current) return;
     if (result.status === "ok") {
       setDoc(result.data);
       setError(null);

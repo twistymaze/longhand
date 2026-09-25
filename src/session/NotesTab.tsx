@@ -3,7 +3,7 @@
 // types; each document goes to the store, and on a saved session to the
 // folder's notes.md.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import { NoteEditor } from "../editor/NoteEditor";
 
@@ -36,9 +36,33 @@ export function NotesTab({
     // `onMarkdown` is read when the notes arrive, not watched.
   }, [sessionId]);
 
+  // One save at a time, so that an older document never replaces a newer
+  // one. While a save runs, only the latest document waits. Each document
+  // keeps the session id it was typed for, and a document that waits when
+  // the tab closes is still sent.
+  const saving = useRef<{ busy: boolean; next: { id: string; markdown: string } | null }>({
+    busy: false,
+    next: null,
+  });
+  const save = (id: string, markdown: string) => {
+    const s = saving.current;
+    if (s.busy) {
+      s.next = { id, markdown };
+      return;
+    }
+    s.busy = true;
+    void commands.setSessionNotes(id, markdown).then((r) => {
+      setError(r.status === "error" ? r.error : null);
+      s.busy = false;
+      const next = s.next;
+      s.next = null;
+      if (next) save(next.id, next.markdown);
+    });
+  };
+
   const send = (next: string) => {
     onMarkdown?.(next);
-    void commands.setSessionNotes(sessionId, next).then((r) => setError(r.status === "error" ? r.error : null));
+    save(sessionId, next);
   };
 
   return (

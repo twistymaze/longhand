@@ -404,4 +404,23 @@ describe("SessionPage", () => {
     expect(screen.getByText("3 speakers · 35:48")).toBeTruthy();
     expect(screen.getByText("Hello.")).toBeTruthy();
   });
+
+  test("a late session detail never replaces a newer one", async () => {
+    const e = entry("s");
+    let release: (d: SessionDetail) => void = () => {};
+    const late = new Promise<SessionDetail>((r) => {
+      release = r;
+    });
+    let n = 0;
+    mockPage(e, {}, { session_detail: () => (n++ === 0 ? late : detail(e, { resumable: true })) });
+    const sessions = sessionsOf([e]);
+    const view = renderPage({ id: "s", sessions });
+    await act(async () => {});
+    // A change to the session reads the detail again, and that read ends first.
+    view.rerenderWith(captureOf(), { ...sessions, version: { s: 1 } });
+    await act(async () => {});
+    await act(async () => release(detail(e, { resumable: false })));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Resume Recording" }).hasAttribute("disabled")).toBe(false);
+  });
 });

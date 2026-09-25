@@ -11,11 +11,14 @@ import {
   type Readiness,
   type Settings,
 } from "../bindings";
+import { sentence } from "../processing/describe";
 
 export type AppSettings = {
   settings: Settings | null;
   readiness: Readiness | null;
   models: ModelStatus[];
+  /// Why the last read failed, or null. The last values read stay.
+  error: string | null;
   refresh: () => Promise<void>;
   setSettings: (next: Settings) => void;
 };
@@ -24,16 +27,23 @@ export function useAppSettings(): AppSettings {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [models, setModels] = useState<ModelStatus[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [s, r, m] = await Promise.all([
-      commands.getSettings(),
-      commands.readiness(),
-      commands.modelStatuses(),
-    ]);
-    setSettings(s);
-    if (r.status === "ok") setReadiness(r.data);
-    setModels(m);
+    try {
+      const [s, r, m] = await Promise.all([
+        commands.getSettings(),
+        commands.readiness(),
+        commands.modelStatuses(),
+      ]);
+      setSettings(s);
+      if (r.status === "ok") setReadiness(r.data);
+      setModels(m);
+      setError(r.status === "error" ? sentence(r.error) : null);
+    } catch (e) {
+      // The commands without a Result reject with the error text.
+      setError(sentence(typeof e === "string" ? e : e instanceof Error ? e.message : "The settings could not be read"));
+    }
   }, []);
 
   useEffect(() => {
@@ -49,5 +59,5 @@ export function useAppSettings(): AppSettings {
     };
   }, [refresh]);
 
-  return { settings, readiness, models, refresh, setSettings };
+  return { settings, readiness, models, error, refresh, setSettings };
 }

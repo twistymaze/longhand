@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness, RecordingStatus, SessionEntry, Settings } from "./bindings";
 import App from "./App";
@@ -95,5 +95,81 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "← Back" })).toBeNull();
     await act(() => tauri.emit("show-session", { session_id: "rec" }));
     expect(await screen.findByRole("button", { name: "← Back" })).toBeTruthy();
+  });
+
+  // A page that opens in place of another starts again, so an edit on the
+  // first page never goes to the second session.
+  test("a title typed on one page is not given to the session that opens in its place", async () => {
+    const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
+    const entries = [saved("a", "Alpha"), saved("b", "Beta")];
+    const tauri = mockTauri({
+      get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+      readiness: () => readiness,
+      model_statuses: () => [],
+      recording_status: () => idle,
+      list_sessions: () => entries,
+      alert_check: () => ({ reason: null }),
+      session_notes: () => "",
+      session_detail: ({ sessionId }) => ({
+        entry: entries.find((e) => e.id === sessionId),
+        done: [],
+        current: null,
+        resumable: false,
+      }),
+      session_document: () => ({ has_speakers: false, lines: [], transcript_markdown: "", summary: null }),
+      rename_session: () => ({ kind: "later" }),
+    });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeTruthy();
+    await screen.findByRole("option", { name: /Alpha/ });
+
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    const first = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+    expect(first.value).toBe("Alpha");
+    const user = userEvent.setup();
+    await user.click(first);
+    await user.keyboard(" draft");
+
+    await act(() => tauri.emit("show-session", { session_id: "b" }));
+    const second = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.blur(second);
+    });
+    expect(second.value).toBe("Beta");
+    expect(tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args)).toEqual([]);
+  });
+
+  test("the Settings window shows an error that reads the settings", async () => {
+    setURL("http://localhost/?window=settings");
+    mockTauri({
+      get_settings: () => {
+        throw "the settings file is damaged";
+      },
+      readiness: () => readiness,
+      model_statuses: () => [],
+    });
+    render(<App />);
+    expect(await screen.findByText("The settings file is damaged.")).toBeTruthy();
+  });
+
+  test("a read that fails when the Settings window comes back keeps the panes and shows the error", async () => {
+    setURL("http://localhost/?window=settings");
+    let fail = false;
+    mockTauri({
+      get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+      readiness: () => readiness,
+      model_statuses: () => {
+        if (fail) throw "the models folder cannot be read";
+        return [];
+      },
+    });
+    render(<App />);
+    expect(await screen.findByRole("tab", { name: "Status" })).toBeTruthy();
+    fail = true;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await screen.findByText("The models folder cannot be read.")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Status" })).toBeTruthy();
   });
 });

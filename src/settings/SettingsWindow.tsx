@@ -9,7 +9,7 @@ import { EndpointForm } from "./EndpointForm";
 import { Licences } from "./Licences";
 import { Models } from "./Models";
 import { type PaneId, StatusPane } from "./Status";
-import { Status, type Tone } from "./ui";
+import { ErrorText, Status, type Tone } from "./ui";
 import { useAppSettings } from "./useAppSettings";
 
 const panes: { id: PaneId; label: string }[] = [
@@ -37,7 +37,7 @@ function paneTone(id: PaneId, readiness: Readiness): Tone | null {
 
 export function SettingsWindow() {
   const [pane, setPane] = useState<PaneId>("status");
-  const { settings, readiness, models, refresh, setSettings } = useAppSettings();
+  const { settings, readiness, models, error, refresh, setSettings } = useAppSettings();
   const [live, setLive] = useState<Record<string, DownloadUpdate>>({});
 
   useEffect(() => {
@@ -69,7 +69,9 @@ export function SettingsWindow() {
     cancel: () => void commands.cancelModelDownloads(),
   };
 
-  if (!settings || !readiness) return <div className="h-screen bg-window" />;
+  if (!settings || !readiness) {
+    return <div className="h-screen bg-window pt-3">{error && <ErrorText>{error}</ErrorText>}</div>;
+  }
 
   return (
     <div className="flex h-screen flex-col bg-window">
@@ -102,6 +104,11 @@ export function SettingsWindow() {
           );
         })}
       </nav>
+      {error && (
+        <div className="shrink-0 pt-2">
+          <ErrorText>{error}</ErrorText>
+        </div>
+      )}
       <main role="tabpanel" className="min-h-0 flex-1 overflow-y-auto">
         {pane === "status" && <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={setPane} />}
         {pane === "destination" && (

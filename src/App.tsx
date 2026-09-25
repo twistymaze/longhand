@@ -59,11 +59,14 @@ function MainWindow() {
   };
 
   // Home stays mounted under a session page, so "← Back" returns to the same
-  // selection and scroll position.
+  // selection and scroll position. The key gives each session a new page:
+  // a title edit, a notice or an open tab of one session never goes to the
+  // session that opens in its place.
   return (
     <div className="h-screen bg-window">
       {view.kind === "session" && (
         <SessionPage
+          key={view.id}
           id={view.id}
           capture={capture}
           sessions={sessions}
