@@ -168,7 +168,7 @@ pub fn session_detail(
         let record = store
             .session(&session_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no session {session_id}"))?;
+            .ok_or_else(|| format!("no note {session_id}"))?;
         let segments = store.segments(&session_id).map_err(|e| e.to_string())?;
         // A completed session has finished saving; only one still saving
         // refuses a resume.
@@ -344,7 +344,7 @@ pub fn session_document(
             .session(&session_id)
             .map_err(|e| e.to_string())?
             .and_then(|r| r.home_path)
-            .ok_or_else(|| "this session has not finished processing yet".to_string())?
+            .ok_or_else(|| "this note has not finished processing yet".to_string())?
     };
     let folder = Path::new(&home);
     let read = |name: &str| {
@@ -442,17 +442,17 @@ pub enum DeleteSessionError {
 
 fn busy_message(state: &str) -> String {
     match state {
-        "capturing" => "This session is recording. Stop the recording before you delete it.",
+        "capturing" => "This note is recording. Stop the recording before you delete it.",
         "interrupted" => {
-            "This session's recording was interrupted. Stop it before you delete the session."
+            "This note's recording was interrupted. Stop it before you delete the note."
         }
         "queued" => {
-            "This session is waiting to be processed. You can delete it when processing is done."
+            "This note is waiting to be processed. You can delete it when processing is done."
         }
         "regenerating" => {
-            "This session's summary is being made again. You can delete it when that is done."
+            "This note's summary is being made again. You can delete it when that is done."
         }
-        _ => "This session is being processed. You can delete it when processing is done.",
+        _ => "This note is being processed. You can delete it when processing is done.",
     }
     .to_string()
 }

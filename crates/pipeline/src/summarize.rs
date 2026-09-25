@@ -258,7 +258,7 @@ pub fn produce(
     };
     let text = if turns.is_empty() {
         // Nothing was said (AE16): there is nothing to send.
-        String::from("Nothing was transcribed in this session.")
+        String::from("Nothing was transcribed in this note.")
     } else {
         loop {
             match calls.summarize(&turns, &plan) {

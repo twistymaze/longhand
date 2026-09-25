@@ -304,7 +304,7 @@ impl Runner {
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
         let _claim = self.claims.regenerate(session_id).ok_or_else(|| {
             StageError::Failed(
-                "This session is being deleted, so its summary cannot be made again.".into(),
+                "This note is being deleted, so its summary cannot be made again.".into(),
             )
         })?;
         let _permit = self

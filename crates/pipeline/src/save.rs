@@ -88,7 +88,7 @@ pub fn run(
     // Only a verified transcript is saved (KD13).
     if !checkpoint::is_complete(store, session_id, Stage::Verify, segments.len())? {
         return Err(StageError::Failed(
-            "the transcript has not been verified, so the session stays in the working location"
+            "the transcript has not been verified, so the note stays in the working location"
                 .into(),
         ));
     }
@@ -113,7 +113,7 @@ pub fn run(
         .ok_or_else(|| StageError::NoDestination("no destination folder is set".into()))?;
     let started = segments
         .first()
-        .ok_or_else(|| StageError::Failed("the session has no audio".into()))?
+        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?
         .wall_start;
     let (mut state, folder_name) = match recorded {
         Some(state) => {
@@ -221,7 +221,7 @@ fn check_room(working: &Path, destination: &Path) -> Result<(), StageError> {
     let needed = tree_size(working, session_save::LEFT_BEHIND)? + MARGIN;
     match recorder::storage::available_space(destination) {
         Some(free) if free < needed => Err(StageError::NoDestination(format!(
-            "the destination folder {} has {:.1} GB free and the session needs about {:.1} GB",
+            "the destination folder {} has {:.1} GB free and the note needs about {:.1} GB",
             destination.display(),
             free as f64 / 1e9,
             needed as f64 / 1e9
@@ -282,7 +282,7 @@ fn update_home(
 ) -> Result<Saved, StageError> {
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
-            "the session's folder {} is missing; put it back to finish",
+            "the note's folder {} is missing; put it back to finish",
             home.display()
         )));
     }
@@ -439,7 +439,7 @@ fn render(
 /// The contents of `session.md`, with the session's title.
 pub fn session_doc(record: &SessionRecord, segments: &[Segment]) -> Result<SessionDoc, StageError> {
     let mut doc = SessionDoc::new(&record.id, record.speaker_count, segments)
-        .ok_or_else(|| StageError::Failed("the session has no audio".into()))?;
+        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?;
     doc.title = record.title.as_ref().map(|t| t.text.clone());
     Ok(doc)
 }
@@ -480,7 +480,7 @@ pub fn stub(why: &str) -> Summary {
             failed_stage: "summarize".into(),
         },
         body: format!(
-            "# Summary\n\nNo summary was produced: {why}\n\nThe transcript and notes are complete. Regenerate the summary from the session in Longhand."
+            "# Summary\n\nNo summary was produced: {why}\n\nThe transcript and notes are complete. Regenerate the summary from the note in Longhand."
         ),
     }
 }
@@ -565,7 +565,7 @@ fn summarize_again(
 ) -> Result<PathBuf, StageError> {
     let not_saved = || {
         StageError::Failed(
-            "a summary can be regenerated only once the session has finished processing".into(),
+            "a summary can be regenerated only once the note has finished processing".into(),
         )
     };
     let segments = {
