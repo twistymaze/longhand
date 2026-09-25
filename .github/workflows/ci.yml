@@ -3,10 +3,28 @@ name: CI
 # The repository is private, so runner minutes are billed, macOS and
 # Windows at a multiple. Local checks gate day-to-day work
 # (scripts/check-windows.sh included); CI runs when a branch asks to merge,
-# and on demand: `gh workflow run ci.yml --ref <branch>`.
+# when a change that is not only docs is pushed to main, and on demand:
+# `gh workflow run ci.yml --ref <branch>`.
 on:
   pull_request:
     branches: [main]
+  # A run on main saves a cache that every pull request can restore. A pull
+  # request cannot restore the cache of another pull request, so without a
+  # cache from main, the first run of each pull request compiles everything.
+  # Docs cannot change what the checks test, so a push of only docs runs
+  # nothing. Docs are every Markdown file (plans, ideas, solutions, agent
+  # guidance, READMEs) and the agent config folders. PROVENANCE.md is the
+  # exception: the provenance check reads it. A later pattern overrides an
+  # earlier one.
+  push:
+    branches: [main]
+    paths:
+      - "**"
+      - "!**.md"
+      - "!docs/**"
+      - "!.claude/**"
+      - "!.compound-engineering/**"
+      - "**/PROVENANCE.md"
   workflow_dispatch:
     inputs:
       soak:
@@ -14,9 +32,11 @@ on:
         type: boolean
         default: false
 
+# A new push to a pull request stops its old run. Runs on main all
+# complete, so that each one saves its cache.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -25,7 +45,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        # Windows runs on the org's larger runner (8 cores, 32 GB, Windows
+        # Server 2025, the windows-latest image). `os` stays windows-latest
+        # because the job name is a required check in the main ruleset.
+        include:
+          - os: macos-latest
+            runner: macos-latest
+          - os: windows-latest
+            runner: windows-8core
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         shell: bash
@@ -41,6 +69,25 @@ jobs:
           git config --system core.longpaths true
 
       - uses: actions/checkout@v7
+
+      # A Dev Drive (ReFS on a VHDX) makes the build's many small reads and
+      # writes faster than NTFS on the runner's disk. A trusted Dev Drive also
+      # stops Defender from scanning each file. The workspace, the target dir,
+      # CARGO_HOME and RUSTUP_HOME all move onto it, so the steps that build
+      # run in DEV_DRIVE_WORKSPACE. The drive is dynamic: the size is a limit,
+      # and the VHDX takes only the space that the build writes. This step
+      # must come before rust-cache: post steps run in reverse order, so
+      # rust-cache saves the cache before this action dismounts the drive.
+      - name: Set up a Dev Drive (Windows)
+        if: runner.os == 'Windows'
+        uses: samypr100/setup-dev-drive@v4
+        with:
+          drive-size: 40GB
+          workspace-copy: true
+          trusted-dev-drive: true
+          env-mapping: |
+            CARGO_HOME,{{ DEV_DRIVE }}/.cargo
+            RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
 
       # The Windows x64 build links ggml's Vulkan backend (KTD6), which needs
       # the SDK's headers and glslc at build time. Version as Handy pins it.
@@ -83,10 +130,12 @@ jobs:
         with:
           prefix-key: v2-rust
           cache-on-failure: true
+          workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
 
       - uses: oven-sh/setup-bun@v2
 
       - name: Install frontend dependencies
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun install --frozen-lockfile
 
       # The two jobs run side by side, so the run lasts as long as the slower
@@ -121,6 +170,7 @@ jobs:
       # test binaries start on Windows because build.rs embeds the app
       # manifest in every binary the app crate links.
       - name: tests
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: cargo test --workspace
 
       # The tests just regenerated src/bindings.ts (`export_bindings`).
@@ -170,18 +220,27 @@ jobs:
 
       - name: Tauri build (Windows installer)
         if: runner.os == 'Windows'
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun tauri build --debug --bundles nsis
 
       # A runner has the runtime installed, so launching the app here would
       # not notice it missing; the installer's contents do.
       - name: Installer carries the VC++ runtime (Windows)
         if: runner.os == 'Windows'
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: |
           installer=$(ls target/debug/bundle/nsis/*.exe | head -1)
           listing=$(7z l "$installer")
           for dll in msvcp140.dll vcruntime140.dll; do
             grep -qi "$dll" <<<"$listing" || { echo "$installer lacks $dll"; exit 1; }
           done
+
+      # Shows how much of the Dev Drive and the runner's disks the job used,
+      # to check the drive size.
+      - name: Disk use (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: Get-PSDrive -PSProvider FileSystem
 
   # The recorder soak writes 1.4 GB as fast as the disk takes it. On demand
   # rather than nightly, since runner minutes are billed:
