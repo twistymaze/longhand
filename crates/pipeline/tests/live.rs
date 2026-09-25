@@ -847,6 +847,35 @@ fn two_saved_parts_and_a_lost_third_transcribe_only_the_third_parts_windows() {
 }
 
 #[test]
+fn a_dropped_span_shorter_than_the_slack_between_two_parts_gets_a_gap_fill() {
+    // The frames from 25.0 to 25.6 s were dropped. The slack of the live
+    // words at 24 s and 26 s covers the span, but no saved part does.
+    let g = Gaps::new(&[
+        (0, 25_000, live_words(0, 25)),
+        (25_600, 60_000, live_words(26, 60)),
+    ]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![2]);
+    assert_eq!(g.calls(), 1);
+    // The gap-fill word at 25 s is kept; its repeats of 24 s and 26 s are not.
+    let starts: Vec<u64> = g.words().iter().map(|w| w.start_ms).collect();
+    assert_eq!(starts, (0..60).map(|s| s * 1_000).collect::<Vec<_>>());
+    g.verify().unwrap();
+}
+
+#[test]
+fn parts_that_overlap_by_the_replay_run_no_batch_window() {
+    // A part cut at its length limit: the next part starts 2 s earlier.
+    let g = Gaps::new(&[
+        (0, 32_000, live_words(0, 32)),
+        (30_000, 60_000, live_words(32, 60)),
+    ]);
+    g.transcribe();
+    assert_eq!(g.calls(), 0);
+    assert!(g.filled().is_empty());
+}
+
+#[test]
 fn speech_that_a_part_heard_but_gave_no_text_gets_a_gap_fill() {
     // The part spans the whole segment, but its words stop at 30 s.
     let g = Gaps::new(&[(0, 60_000, live_words(0, 30))]);
@@ -894,7 +923,7 @@ fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_windo
 #[test]
 fn the_merge_keeps_gap_words_and_drops_repeats_and_words_outside_the_gaps() {
     let live = vec![word(9_000, 9_400, "before"), word(30_000, 30_400, "after")];
-    let gaps = transcribe::gaps(&[span(0, 31_000)], &live);
+    let gaps = transcribe::gaps(&[span(0, 31_000)], &[span(0, 31_000)], &live);
     // Voiced time more than the slack away from the live words is a gap.
     assert_eq!(gaps, vec![span(0, 8_000), span(10_400, 29_000)]);
     let batch = vec![

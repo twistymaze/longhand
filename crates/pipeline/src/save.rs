@@ -32,6 +32,10 @@ pub const STATE: &str = session_core::jobs::SAVE_STATE;
 pub const FOLDER_NAME: &str = "folder_name";
 /// Under the summarize stage: why it failed, for the saved stub (KD13).
 pub const SUMMARY_FAILED: &str = "failed";
+/// Recorded before a save replaces the first document in a home folder:
+/// from then on the folder holds the new documents, and a failure does not
+/// return a Transcribe Again run to its previous checkpoints.
+pub const HOME_CHANGED: &str = "home_changed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
@@ -47,6 +51,15 @@ pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
         .checkpoints(session_id, Stage::Save)?
         .iter()
         .any(|(key, _)| key == STATE))
+}
+
+/// Whether this save has begun to replace the documents in the session's
+/// home folder.
+pub fn home_changed(store: &Store, session_id: &str) -> Result<bool, StageError> {
+    Ok(store
+        .checkpoints(session_id, Stage::Save)?
+        .iter()
+        .any(|(key, _)| key == HOME_CHANGED))
 }
 
 /// Whether a completed session's folder still holds every segment's audio,
@@ -336,6 +349,7 @@ fn update_home(
             std::fs::create_dir_all(dir)?;
             home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
         }
+        checkpoint::put(store, session_id, Stage::Save, HOME_CHANGED, &true)?;
         for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE, SESSION_FILE] {
             if name == SUMMARY_FILE && summary_error.is_some() {
                 continue;

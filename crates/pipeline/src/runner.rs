@@ -553,9 +553,14 @@ impl Runner {
                 }
                 // A Transcribe Again run that fails keeps the saved files
                 // (R19). Speaker separation failing costs the speaker
-                // marks only, as for any run.
+                // marks only, as for any run. A save that has replaced a
+                // document in the folder fails as for any run: a retry
+                // writes the folder again and then finishes the run.
                 Err(StageError::Failed(message) | StageError::NoDestination(message))
-                    if again && stage != Stage::Diarize =>
+                    if again
+                        && stage != Stage::Diarize
+                        && !(stage == Stage::Save
+                            && save::home_changed(&lock(&self.env.store), id).unwrap_or(true)) =>
                 {
                     return self.fail_transcribe_again(id, stage, message);
                 }

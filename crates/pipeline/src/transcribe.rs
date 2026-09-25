@@ -19,7 +19,7 @@ use session_core::{Segment, Stage};
 use crate::assemble::open_proc;
 use crate::live::{self, LiveRow};
 use crate::verify::{self, SLACK_MS};
-use crate::{Control, SharedStore, StageError, checkpoint};
+use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
 const READ_BLOCK: usize = 16_000;
 
@@ -142,6 +142,7 @@ pub fn run(
     // The live worker saved its last part before processing started (KTD9),
     // so the live rows do not change during this stage.
     let live_rows = live::rows(store, session_id)?;
+    let again = lock(store).transcribe_again_marks(session_id)?.model;
     for segment in segments {
         let done_key = checkpoint::segment_done_key(segment.index);
         if checkpoint::get::<bool>(store, session_id, Stage::Transcribe, &done_key)?.is_some() {
@@ -158,10 +159,10 @@ pub fn run(
             None => {
                 let cuts = turn_cuts.get(&segment.index).map_or(&[][..], Vec::as_slice);
                 let plan = plan_segment(session_dir, segment, cuts)?;
-                checkpoint::put(
+                put_for_run(
                     store,
                     session_id,
-                    Stage::Transcribe,
+                    again.as_deref(),
                     &checkpoint::plan_key(segment.index),
                     &plan,
                 )?;
@@ -182,8 +183,15 @@ pub fn run(
             } else {
                 &plan.voiced
             };
+            let parts: Vec<Span> = rows
+                .iter()
+                .map(|r| Span {
+                    start_ms: r.start_ms,
+                    end_ms: r.end_ms,
+                })
+                .collect();
             GapFill {
-                gaps: gaps(voiced, &words),
+                gaps: gaps(voiced, &parts, &words),
                 words,
             }
         });
@@ -245,7 +253,7 @@ pub fn run(
                     segment.index, i, window.start_ms, window.end_ms
                 ))
             })?;
-            checkpoint::put(store, session_id, Stage::Transcribe, &key, &result)?;
+            put_for_run(store, session_id, again.as_deref(), &key, &result)?;
             done += 1;
             progress(Progress {
                 segment: segment.index,
@@ -253,9 +261,38 @@ pub fn run(
                 windows_total: total,
             });
         }
-        checkpoint::put(store, session_id, Stage::Transcribe, &done_key, &true)?;
+        put_for_run(store, session_id, again.as_deref(), &done_key, &true)?;
     }
-    checkpoint::mark_complete(store, session_id, Stage::Transcribe, segments.len())?;
+    put_for_run(
+        store,
+        session_id,
+        again.as_deref(),
+        checkpoint::DONE,
+        &checkpoint::StageDone {
+            segments: segments.len(),
+        },
+    )?;
+    Ok(())
+}
+
+/// Write a checkpoint of this stage. When a resume ended the Transcribe
+/// Again run (`again`, its model) while a window was recognized, the
+/// resume restored the previous checkpoints: the write stops the stage
+/// instead of replacing them (KTD14). Checked under the store lock that
+/// the resume takes.
+fn put_for_run<T: Serialize>(
+    store: &SharedStore,
+    session_id: &str,
+    again: Option<&str>,
+    key: &str,
+    value: &T,
+) -> Result<(), StageError> {
+    let payload = serde_json::to_string(value)?;
+    let guard = lock(store);
+    if again.is_some() && guard.transcribe_again_marks(session_id)?.model.as_deref() != again {
+        return Err(StageError::Cancelled);
+    }
+    guard.put_checkpoint(session_id, Stage::Transcribe, key, &payload)?;
     Ok(())
 }
 
@@ -298,9 +335,59 @@ fn recognize(
 
 /// The stretches of voiced time that no live word covers, by the rule and
 /// the slack that Verify uses (KTD6), so Verify passes after a gap fill
-/// that recognizes the speech.
-pub fn gaps(voiced: &[Span], live: &[LiveWord]) -> Vec<Span> {
-    verify::measure(0, voiced, &verify::word_spans(live)).uncovered
+/// that recognizes the speech. Voiced time that no saved part covers
+/// (`parts`) is also a gap, however near the live words are: the live
+/// worker did not hear it.
+pub fn gaps(voiced: &[Span], parts: &[Span], live: &[LiveWord]) -> Vec<Span> {
+    let mut all = verify::measure(0, voiced, &verify::word_spans(live)).uncovered;
+    all.extend(unheard(voiced, parts));
+    union(all)
+}
+
+/// A part span that ends this near the next part span, or the voiced time,
+/// is not a gap: the part bounds round to the millisecond.
+const PART_GAP_MIN_MS: u64 = 10;
+
+/// The voiced time outside every part span.
+fn unheard(voiced: &[Span], parts: &[Span]) -> Vec<Span> {
+    let heard = union(parts.to_vec());
+    let mut out = Vec::new();
+    for v in voiced {
+        let mut at = v.start_ms;
+        for p in heard
+            .iter()
+            .filter(|p| p.end_ms > v.start_ms && p.start_ms < v.end_ms)
+        {
+            if p.start_ms > at {
+                out.push(Span {
+                    start_ms: at,
+                    end_ms: p.start_ms,
+                });
+            }
+            at = at.max(p.end_ms);
+        }
+        if v.end_ms > at {
+            out.push(Span {
+                start_ms: at,
+                end_ms: v.end_ms,
+            });
+        }
+    }
+    out.retain(|s| s.duration_ms() >= PART_GAP_MIN_MS);
+    out
+}
+
+/// `spans` sorted, with the spans that overlap or touch made one.
+fn union(mut spans: Vec<Span>) -> Vec<Span> {
+    spans.sort_by_key(|s| (s.start_ms, s.end_ms));
+    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
+    for s in spans {
+        match out.last_mut() {
+            Some(last) if s.start_ms <= last.end_ms => last.end_ms = last.end_ms.max(s.end_ms),
+            _ => out.push(s),
+        }
+    }
+    out
 }
 
 /// The numbers of the windows that overlap a gap.

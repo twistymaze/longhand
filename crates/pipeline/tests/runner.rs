@@ -3304,3 +3304,115 @@ async fn a_resumed_transcribe_again_that_then_fails_is_a_normal_failure_that_kee
     // The note keeps its model: the run did not save.
     assert_eq!(asr_model(&r).as_deref(), Some("m"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_save_that_fails_after_a_home_write_keeps_the_run_and_a_retry_finishes_it()
+ {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let transcript = read(&folder, TRANSCRIPT_FILE);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    // A directory at summary.md stops the save after it replaced
+    // transcript.md.
+    std::fs::remove_file(folder.join("summary.md")).unwrap();
+    std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Save,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    let replaced = read(&folder, TRANSCRIPT_FILE);
+    assert_ne!(replaced, transcript, "the new transcript is in the folder");
+    assert!(
+        !r.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, RunnerEvent::TranscribeAgainFailed { .. }))
+    );
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    // The run keeps its marker and its checkpoints until the save finishes.
+    assert_eq!(marks(&r).model.as_deref(), Some("tdt"));
+    assert_eq!(marks(&r).error, None);
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+    assert!(
+        r.root.join("s").exists(),
+        "the working copy stays for a retry"
+    );
+
+    std::fs::remove_dir_all(folder.join("summary.md")).unwrap();
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.retry("s").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        r.script.calls.load(Ordering::SeqCst),
+        calls,
+        "no window ran again"
+    );
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_eq!(read(&folder, TRANSCRIPT_FILE), replaced);
+    assert!(summary_is_complete(&folder));
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_while_transcribe_again_recognizes_a_window_keeps_the_restored_transcription() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    saved_note(&r, None).await;
+    let before = transcribe::results(&r.store, "s").unwrap();
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    // The resume comes while the run's first window is recognized.
+    *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+
+    assert_eq!(state(&r.store, "s"), SessionState::Capturing);
+    assert_eq!(marks(&r).model, None);
+    assert_eq!(
+        transcribe::results(&r.store, "s").unwrap(),
+        before,
+        "the window recognized during the resume is not written"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_diarization_failure_during_transcribe_again_saves_the_new_transcript_without_speakers() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let transcript = read(&folder, TRANSCRIPT_FILE);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    r.script.diarize_fails.store(true, Ordering::SeqCst);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+    assert_eq!(
+        pipeline::diarize::speakers(&r.store, "s").unwrap(),
+        pipeline::diarize::Speakers::Unavailable
+    );
+    let events = r.events.lock().unwrap();
+    assert!(events.iter().any(
+        |e| matches!(e, RunnerEvent::SpeakersUnavailable { session_id, .. } if session_id == "s")
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, RunnerEvent::TranscribeAgainFailed { .. }))
+    );
+}
