@@ -5,6 +5,8 @@ pub mod chunks;
 pub mod storage;
 pub mod wav;
 
+use std::sync::Arc;
+
 use audio::{CaptureStream, Error as AudioError};
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -51,10 +53,24 @@ pub struct SegmentOutcome {
 /// cadence is the frames' own: when frames stop arriving, ticks stop too. File writes block, so run this on a thread of its own (the capture
 /// manager does), not on a shared async worker.
 pub async fn run_segment(
+    stream: CaptureStream,
+    writer: ChunkedWriter,
+    stop: CancellationToken,
+    on_tick: impl FnMut(Tick),
+) -> SegmentOutcome {
+    run_segment_with(stream, writer, stop, on_tick, |_, _: &Arc<[f32]>| {}).await
+}
+
+/// [`run_segment`], and `on_frame` gets each frame after it is written, with
+/// the segment's sample count before the frame (KTD3). The live worker
+/// receives its copy of the audio this way. `on_frame` must never wait: a
+/// full channel drops the frame, and the recording continues.
+pub async fn run_segment_with(
     mut stream: CaptureStream,
     mut writer: ChunkedWriter,
     stop: CancellationToken,
     mut on_tick: impl FnMut(Tick),
+    mut on_frame: impl FnMut(u64, &Arc<[f32]>),
 ) -> SegmentOutcome {
     let tick_len = (writer.sample_rate() / TICKS_PER_SECOND).max(1) as usize;
     let mut tick_samples = 0usize;
@@ -71,6 +87,7 @@ pub async fn run_segment(
                     if let Err(e) = writer.write(&frame.raw_mic) {
                         break SegmentEnd::Storage(e);
                     }
+                    on_frame(seen, &frame.raw_mic);
                     for &s in frame.raw_mic.iter() {
                         tick_peak = tick_peak.max(s.abs());
                         tick_samples += 1;

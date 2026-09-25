@@ -53,6 +53,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::set_session_notes,
             commands::session::rename_session,
             commands::session::session_document,
+            commands::session::live_transcript,
             commands::session::delete_session,
             commands::session::delete_session_permanently,
             commands::window::open_settings,
@@ -64,6 +65,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
             managers::processing::ProcessingUpdate,
+            managers::live::LiveTranscriptEvent,
+            managers::live::LivePartSaved,
+            managers::live::LiveTranscriptStatus,
             tray::ShowSession,
         ])
 }
@@ -201,9 +205,16 @@ pub fn run() {
                 }
             });
             app.manage(std::sync::Mutex::new(watch));
+            // Managed before anything records: capture starts a live worker
+            // for each segment of a note in live mode.
+            let live = std::sync::Arc::new(managers::live::LiveManager::new(
+                std::sync::Arc::clone(&models),
+            ));
+            app.manage(std::sync::Arc::clone(&live));
             let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
                 &handle,
                 &capture,
+                &live,
                 models,
                 secret_store,
                 liveness,
@@ -243,7 +254,8 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app, event| match event {
-        // Free the recognition engine before static destructors run.
+        // Stop the live workers and free the recognition engine before
+        // static destructors run.
         tauri::RunEvent::Exit => {
             if let Some(processing) =
                 app.try_state::<std::sync::Arc<managers::processing::ProcessingManager>>()

@@ -208,6 +208,8 @@ pub struct Parts {
     /// words of the part before it.
     floor_ms: Option<u64>,
     cut: Option<Cut>,
+    /// Voiced time of every part so far, for the stall rule (KTD3).
+    voiced_ms: u64,
 }
 
 impl Parts {
@@ -239,12 +241,19 @@ impl Parts {
             replay: Vec::new(),
             floor_ms: None,
             cut: None,
+            voiced_ms: 0,
         }
     }
 
     /// Segment time of the open part's first sample.
     pub fn part_start_ms(&self) -> u64 {
         self.start_ms
+    }
+
+    /// The voiced time that every part so far has heard, the replay
+    /// included. A new part and [`Parts::restart_at`] do not reset it.
+    pub fn voiced_ms(&self) -> u64 {
+        self.voiced_ms
     }
 
     /// Feed the next segment audio into `stream`. The first feed after a
@@ -291,6 +300,7 @@ impl Parts {
             rest = &rest[take..];
             if self.frame.len() == FRAME_SAMPLES {
                 self.silence_ms = if (self.classify)(&self.frame) {
+                    self.voiced_ms += FRAME_MS;
                     0
                 } else {
                     self.silence_ms + FRAME_MS

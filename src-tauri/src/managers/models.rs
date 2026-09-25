@@ -219,7 +219,7 @@ impl ModelsManager {
         Ok(Self::at(app.path().app_data_dir()?.join("models")))
     }
 
-    fn at(dir: PathBuf) -> Self {
+    pub(crate) fn at(dir: PathBuf) -> Self {
         Self {
             dir,
             active: Mutex::new(HashMap::new()),
@@ -233,10 +233,6 @@ impl ModelsManager {
 
     /// Record the model that the live worker uses, or `None` when it stops.
     /// Delete refuses that model.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the live worker (U6) sets the model")
-    )]
     pub fn set_live_model(&self, model: Option<String>) {
         *self.live_model.lock().unwrap_or_else(|e| e.into_inner()) = model;
     }

@@ -55,6 +55,10 @@ struct Script {
     streaming: AtomicBool,
     /// Where sessions are saved; unset is no destination chosen.
     destination: Mutex<Option<std::path::PathBuf>>,
+    /// The model of each transcribe call, in order.
+    models_called: Mutex<Vec<String>>,
+    /// Set this flag, as capture starts, after the given number of calls.
+    capture_after: Mutex<Option<(usize, Arc<AtomicBool>)>>,
 }
 
 /// Analyses without finding anyone: the stage runs, no speaker turns come out.
@@ -104,6 +108,12 @@ impl Recognizer for Fake {
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
         let n = s.calls.fetch_add(1, Ordering::SeqCst);
+        s.models_called.lock().unwrap().push(self.model.clone());
+        if let Some((after, flag)) = s.capture_after.lock().unwrap().as_ref()
+            && n + 1 == *after
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
         s.running.fetch_sub(1, Ordering::SeqCst);
         if s.fail_on.lock().unwrap().take_if(|f| *f == n).is_some() {
             return Err(AsrError::Run("decoder exploded".into()));
@@ -561,6 +571,62 @@ async fn nothing_starts_while_capture_is_active() {
     assert!(matches!(state(&store, "s"), SessionState::Queued { .. }));
     capturing.store(false, Ordering::SeqCst);
     assert_eq!(runner.run_next().await.unwrap().1, Outcome::Finished);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recording_during_the_transcribe_stage_leaves_the_other_note_its_own_model() {
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let capturing = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&capturing);
+    let script: Arc<Script> = Arc::default();
+    with_summaries(&script).await;
+    let dest = tempfile::tempdir().unwrap();
+    *script.destination.lock().unwrap() = Some(dest.path().to_path_buf());
+    // A recording starts after the first window.
+    *script.capture_after.lock().unwrap() = Some((1, Arc::clone(&capturing)));
+    let runner = Runner::new(Environment {
+        store: Arc::clone(&store),
+        working_root: root.path().to_path_buf(),
+        engines: Box::new(Provider(Arc::clone(&script))),
+        suspended: Box::new(move || flag.load(Ordering::SeqCst)),
+        events: Box::new(|_| {}),
+    });
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("batch"),
+        &[(16_000, conversation())],
+    );
+
+    // The live worker takes the slot while the stage waits out the
+    // recording, and loads the recording's model into it (KTD9).
+    let access = runner.engine_access();
+    let recording = Arc::clone(&capturing);
+    let worker = std::thread::spawn(move || {
+        while !recording.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let held = access.hold("live").unwrap().expect("not shut down");
+        assert_eq!(held.as_ref().unwrap().model_id(), "live");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(held);
+        // Stop: the worker saved its last part and released the slot.
+        recording.store(false, Ordering::SeqCst);
+    });
+
+    let (_, outcome) = runner.run_next().await.unwrap();
+    worker.join().unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let called = script.models_called.lock().unwrap().clone();
+    assert!(called.len() >= 2, "{called:?}");
+    assert!(called.iter().all(|m| m == "batch"), "{called:?}");
+    assert_eq!(
+        *script.loads.lock().unwrap(),
+        vec!["batch".to_string(), "live".into(), "batch".into()]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

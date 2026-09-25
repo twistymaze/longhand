@@ -413,3 +413,73 @@ fn a_failed_chunk_sync_stops_the_writer_and_leaves_the_chunk_recoverable() {
     assert!(chunks[0].end_ms >= 60_000);
     assert_eq!(chunks[1].start_ms, 60_000);
 }
+
+#[tokio::test(start_paused = true)]
+async fn each_frame_goes_to_the_frame_callback_with_its_sample_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 48_000;
+    let mock = MockAudio::tone(440.0, rate, Duration::from_secs(3));
+    let stream = mock.open_mic_capture(None, rate, 960).unwrap();
+    let mut frames = Vec::new();
+    let outcome = recorder::run_segment_with(
+        stream,
+        writer(dir.path(), 0, 0, rate),
+        CancellationToken::new(),
+        |_| {},
+        |index, pcm: &Arc<[f32]>| frames.push((index, pcm.len())),
+    )
+    .await;
+    assert_eq!(outcome.span.unwrap().end_ms, 3_000);
+    assert_eq!(frames.len(), 150);
+    // The index is the segment's sample count before the frame.
+    for (n, &(index, len)) in frames.iter().enumerate() {
+        assert_eq!((index, len), (n as u64 * 960, 960));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_frame_consumer_never_blocks_the_recorder() {
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 48_000;
+    let seconds = 130;
+    let mock = MockAudio::tone(440.0, rate, Duration::from_secs(seconds));
+    let stream = mock.open_mic_capture(None, rate, 960).unwrap();
+    // A live worker that takes 5 ms for each frame, behind a bounded
+    // channel that the callback never waits on.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<u64>(250);
+    let received = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&received);
+    let worker = std::thread::spawn(move || {
+        while rx.recv().is_ok() {
+            std::thread::sleep(Duration::from_millis(5));
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    let dropped = Arc::new(AtomicU64::new(0));
+    let drops = Arc::clone(&dropped);
+    let started = std::time::Instant::now();
+    let outcome = recorder::run_segment_with(
+        stream,
+        writer(dir.path(), 0, 0, rate),
+        CancellationToken::new(),
+        |_| {},
+        move |index, _: &Arc<[f32]>| {
+            if tx.try_send(index).is_err() {
+                drops.fetch_add(1, Ordering::SeqCst);
+            }
+        },
+    )
+    .await;
+    let elapsed = started.elapsed();
+    // 6,500 frames at 5 ms each would take more than 30 s.
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    assert_eq!(outcome.span.unwrap().end_ms, seconds * 1_000);
+    let chunks = list_chunks(dir.path()).unwrap();
+    assert_eq!(chunks.last().unwrap().end_ms, seconds * 1_000);
+    assert!(dropped.load(Ordering::SeqCst) > 0, "the channel filled");
+    worker.join().unwrap();
+    assert_eq!(
+        received.load(Ordering::SeqCst) + dropped.load(Ordering::SeqCst),
+        seconds * 50
+    );
+}

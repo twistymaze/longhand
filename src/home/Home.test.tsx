@@ -33,6 +33,8 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   endpoint: null,
   audio_kept: true,
   transcript_kept: true,
+  asr_model: null,
+  live_transcript: false,
 });
 
 const document = (body: string): SessionDocument => ({

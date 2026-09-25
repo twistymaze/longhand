@@ -339,6 +339,19 @@ async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, strin
 }
 },
 /**
+ * The live transcript of a note so far: its saved parts and the text of
+ * the open part (KTD10). The Transcript tab reads it when it opens during
+ * recording, and then follows the live events.
+ */
+async liveTranscript(sessionId: string) : Promise<Result<LiveTranscript, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("live_transcript", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Move the session's folder to the Trash and remove the session from
  * Longhand (R8). Refused while it records or is processed.
  */
@@ -377,6 +390,9 @@ async openSettings() : Promise<void> {
 export const events = __makeEvents__<{
 captureEnded: CaptureEnded,
 captureTick: CaptureTick,
+livePartSaved: LivePartSaved,
+liveTranscriptEvent: LiveTranscriptEvent,
+liveTranscriptStatus: LiveTranscriptStatus,
 modelDownloadEvent: ModelDownloadEvent,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
@@ -385,6 +401,9 @@ showSession: ShowSession
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
+livePartSaved: "live-part-saved",
+liveTranscriptEvent: "live-transcript-event",
+liveTranscriptStatus: "live-transcript-status",
 modelDownloadEvent: "model-download-event",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
@@ -501,6 +520,54 @@ export type Interruption = { headline: string;
  */
 disk: boolean }
 export type LicenceInfo = { name: string; url: string; attribution: string }
+/**
+ * The text of the part that is open now.
+ */
+export type LiveCurrent = { segment: number; part: number; committed: string; tentative: string }
+/**
+ * A part of the live transcript was saved. The open part of the next
+ * event starts after it.
+ */
+export type LivePartSaved = { session_id: string; segment: number; part: number; start_ms: number; end_ms: number; text: string }
+/**
+ * One saved part of the live transcript.
+ */
+export type LivePartText = { segment: number; part: number; start_ms: number; end_ms: number; text: string }
+export type LiveState = 
+/**
+ * The model loads, or the worker waits for the engine.
+ */
+"starting" | "running" | 
+/**
+ * A gap started: the missing audio is transcribed after Stop.
+ */
+"paused" | 
+/**
+ * No live transcript for this segment: it is transcribed after Stop.
+ */
+"unavailable" | "ended"
+/**
+ * The live transcript so far: the catch-up for a tab that opens during
+ * recording (KTD10).
+ */
+export type LiveTranscript = { parts: LivePartText[]; 
+/**
+ * `None` when no worker of this note has text open.
+ */
+current: LiveCurrent | null; 
+/**
+ * `None` when no worker of this note ran in this process.
+ */
+state: LiveState | null }
+/**
+ * The text of the open part changed (KTD10). `committed` does not change
+ * again; `tentative` can change with the next event.
+ */
+export type LiveTranscriptEvent = { session_id: string; segment: number; part: number; committed: string; tentative: string }
+/**
+ * What the live worker does now, for the lines of the live view (U8).
+ */
+export type LiveTranscriptStatus = { session_id: string; segment: number; state: LiveState }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
@@ -632,7 +699,17 @@ resumable: boolean; home_path: string | null;
 /**
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
-endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean }
+endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean; 
+/**
+ * The recognition model that the note recorded when it started
+ * (KTD2). `None` for a note that started before the update.
+ */
+asr_model: string | null; 
+/**
+ * The note records a live transcript (R8, R18). The Transcript tab
+ * reads this, not the model selected now (R9).
+ */
+live_transcript: boolean }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).

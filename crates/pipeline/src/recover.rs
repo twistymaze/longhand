@@ -79,6 +79,7 @@ fn recover_one(
         let duration_ms = last.end_ms.saturating_sub(offset_ms);
         if duration_ms < MIN_SEGMENT_MS {
             recorder::remove_segment(&dir, index)?;
+            crate::live::delete_segment(store, id, index)?;
             log::info!("segment {index} of {id} was under a second and was dropped");
             continue;
         }

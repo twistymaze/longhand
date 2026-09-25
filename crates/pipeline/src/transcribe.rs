@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use asr::{AsrSegment, Recognizer, SAMPLES_PER_MS, Span, Voicing};
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,41 @@ pub struct Progress {
 /// until diarization runs ahead of transcription (U9).
 pub type TurnCuts = BTreeMap<u32, Vec<u64>>;
 
+/// Loads a recognition model by its catalog id.
+pub type Load<'a> = dyn Fn(&str) -> Result<Box<dyn Recognizer>, String> + 'a;
+
+/// The runner's engine slot, which the live worker shares (KTD9), and the
+/// model that the session recorded.
+pub struct Slot<'a> {
+    pub slot: &'a Mutex<Option<Box<dyn Recognizer>>>,
+    pub model: &'a str,
+    pub load: &'a Load<'a>,
+}
+
+impl Slot<'_> {
+    /// Lock the slot for one window, after [`Control::proceed`] returns, so
+    /// no wait for a suspension holds the lock. A live worker may have
+    /// loaded another model in the meantime: the session's model is loaded
+    /// again then.
+    fn hold(
+        &self,
+        control: &dyn Control,
+    ) -> Result<MutexGuard<'_, Option<Box<dyn Recognizer>>>, StageError> {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        // Checked under the lock, so a shutdown that freed the engine is
+        // never followed by loading it again.
+        if control.is_cancelled() {
+            return Err(StageError::Cancelled);
+        }
+        // A queued session keeps the model it recorded (KTD2).
+        if slot.as_ref().map(|e| e.model_id()) != Some(self.model) {
+            *slot = None;
+            *slot = Some((self.load)(self.model).map_err(StageError::Failed)?);
+        }
+        Ok(slot)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
@@ -59,7 +95,7 @@ pub fn run(
     session_dir: &Path,
     segments: &[Segment],
     turn_cuts: &TurnCuts,
-    recognizer: &mut dyn Recognizer,
+    engine: &Slot<'_>,
     control: &dyn Control,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), StageError> {
@@ -113,7 +149,12 @@ pub fn run(
             }
             control.proceed()?;
             let pcm = read_span(&mut reader, *window)?;
-            let text = recognizer.transcribe(&pcm).map_err(|e| {
+            let text = {
+                let mut slot = engine.hold(control)?;
+                let recognizer = slot.as_deref_mut().expect("hold loads the model");
+                recognizer.transcribe(&pcm)
+            };
+            let text = text.map_err(|e| {
                 StageError::Failed(format!(
                     "segment {}, window {} ({}–{} ms): {e}",
                     segment.index, i, window.start_ms, window.end_ms

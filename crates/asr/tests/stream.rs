@@ -617,3 +617,29 @@ fn a_streamed_fixture_matches_batch_word_times_and_a_pause_cut_keeps_its_words()
     assert_eq!(cut.len(), 2, "the stream is cut at the pause");
     assert!(count(&whole).abs_diff(count(&cut)) <= 1);
 }
+
+#[test]
+fn the_parts_count_voiced_time_across_parts_for_the_stall_rule() {
+    let mut recognizer = Scripted::new(vec![]);
+    let mut parts = Parts::with_classifier(
+        0,
+        PartPolicy::default(),
+        voiced_except(vec![(1_000, 2_000)]),
+    );
+    {
+        let mut stream = recognizer.start_stream().unwrap().unwrap();
+        for f in clock(0, 5_000).chunks(FRAME) {
+            parts.feed(&mut *stream, f).unwrap();
+        }
+        assert_eq!(parts.voiced_ms(), 4_000);
+        parts.finish(&mut *stream).unwrap();
+    }
+    parts.restart_at(6_000);
+    let mut stream = recognizer.start_stream().unwrap().unwrap();
+    for f in clock(6_000, 7_000).chunks(FRAME) {
+        parts.feed(&mut *stream, f).unwrap();
+    }
+    // The count does not restart. The VAD decides in frames of 16 ms, so
+    // a frame that is not full when the test stops is not counted.
+    assert_eq!(parts.voiced_ms(), 4_000 + 62 * 16);
+}

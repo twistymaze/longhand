@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use audio::AudioProvider;
 use audio_cpal::{CpalAudio, Inputs};
 use chrono::{DateTime, FixedOffset, Local};
+use pipeline::live::{LiveEnd, LiveWorker};
 use pipeline::recover::segment_audio_file;
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, SegmentOutcome};
@@ -36,6 +37,7 @@ use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::managers::alerts::{self, AlertsManager};
+use crate::managers::live::LiveManager;
 use crate::managers::models::ModelsManager;
 use crate::managers::settings::{self, Settings};
 
@@ -134,6 +136,8 @@ struct ActiveSegment {
     stop: CancellationToken,
     outcome: std_mpsc::Receiver<SegmentOutcome>,
     thread: JoinHandle<()>,
+    /// The segment's live worker, when the note is in live mode (U6).
+    live: Option<LiveWorker>,
 }
 
 /// The session whose timeline this process has been measuring.
@@ -371,7 +375,9 @@ impl CaptureManager {
         let started = now();
         let mut timeline = Timeline::new();
         let index = timeline.open(0, started)?;
-        let active = match self.open_segment(app, &mut inner, &id, index, 0) {
+        let model = recording_model(&settings::get_settings(app));
+        let live = model.live_transcript.then_some(model.asr_model.as_str());
+        let active = match self.open_segment(app, &mut inner, &id, index, 0, live) {
             Ok(active) => active,
             Err(e) => {
                 // The session this press ended is already closed: stop and
@@ -389,7 +395,6 @@ impl CaptureManager {
                 return Err(e);
             }
         };
-        let model = recording_model(&settings::get_settings(app));
         let stopped = match self
             .store()
             .start_session(&id, started, speaker_count, &model)
@@ -573,7 +578,8 @@ impl CaptureManager {
             now.checked_sub(Duration::from_millis(offset))
                 .unwrap_or(now)
         });
-        let active = match self.open_segment(app, &mut inner, id, index, offset) {
+        let live = self.live_model(id);
+        let active = match self.open_segment(app, &mut inner, id, index, offset, live.as_deref()) {
             Ok(active) => active,
             Err(e) => {
                 // The store already says Capturing: put the session back to
@@ -983,7 +989,8 @@ impl CaptureManager {
             let offset = (clock.epoch.elapsed().as_millis() as u64).max(last_end);
             (clock.timeline.open(offset, now())?, offset)
         };
-        match self.open_segment(app, inner, id, index, offset) {
+        let live = self.live_model(id);
+        match self.open_segment(app, inner, id, index, offset, live.as_deref()) {
             Ok(active) => {
                 inner.active = Some(active);
                 log::info!("session {id} reopened as segment {index} at {offset} ms");
@@ -998,6 +1005,22 @@ impl CaptureManager {
         }
     }
 
+    /// The model of a note in live mode, from the store (KTD2). `None` when
+    /// the note is not in live mode.
+    fn live_model(&self, id: &str) -> Option<String> {
+        match self.store().session(id) {
+            Ok(Some(record)) if record.live_transcript == Some(true) => record.asr_model,
+            Ok(_) => None,
+            Err(e) => {
+                log::warn!("could not read the live mode of {id}: {e}");
+                None
+            }
+        }
+    }
+
+    /// Open the next segment. With `live`, the model of a note in live mode,
+    /// a live worker streams the segment (U6); a worker that cannot start
+    /// leaves the segment to a full pass after Stop.
     fn open_segment(
         &self,
         app: &AppHandle,
@@ -1005,6 +1028,7 @@ impl CaptureManager {
         session_id: &str,
         segment: u32,
         offset_ms: u64,
+        live: Option<&str>,
     ) -> Result<ActiveSegment, CaptureError> {
         let rate = match inner.sample_rate {
             Some(rate) => rate,
@@ -1040,13 +1064,19 @@ impl CaptureManager {
             sample_rate: rate,
             floor_bytes: DISK_RESERVE_BYTES,
         })?;
+        let (tap, live) = live
+            .and_then(|model| {
+                app.state::<Arc<LiveManager>>()
+                    .start(app, session_id, segment, model, rate)
+            })
+            .unzip();
 
         let stop = CancellationToken::new();
         let (tx, outcome) = std_mpsc::channel();
         let thread_stop = stop.clone();
         let thread_app = app.clone();
         let thread_session = session_id.to_string();
-        let thread = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name(format!("longhand-segment-{segment}"))
             .spawn(move || {
                 // Held by this thread for exactly as long as it records (R4, R5d).
@@ -1063,7 +1093,7 @@ impl CaptureManager {
                 };
                 let tick_app = thread_app.clone();
                 let tick_session = thread_session.clone();
-                let result = runtime.block_on(recorder::run_segment(
+                let result = runtime.block_on(recorder::run_segment_with(
                     stream,
                     writer,
                     thread_stop,
@@ -1077,6 +1107,12 @@ impl CaptureManager {
                             recorded_ms,
                         }
                         .emit(&tick_app);
+                    },
+                    // Never waits: a full channel drops the frame (KTD3).
+                    move |index, pcm: &Arc<[f32]>| {
+                        if let Some(tap) = &tap {
+                            tap.offer(index, pcm);
+                        }
                     },
                 ));
                 let loss = Loss::of(&result.end);
@@ -1099,18 +1135,30 @@ impl CaptureManager {
                     }
                 }
             })
-            .map_err(|e| CaptureError::Other(e.to_string()))?;
+            .map_err(|e| CaptureError::Other(e.to_string()));
+        let thread = match spawned {
+            Ok(thread) => thread,
+            Err(e) => {
+                if let Some(live) = live {
+                    live.end(LiveEnd::Discard);
+                }
+                return Err(e);
+            }
+        };
         Ok(ActiveSegment {
             session_id: session_id.to_string(),
             segment,
             stop,
             outcome,
             thread,
+            live,
         })
     }
 
     /// Stop the segment, then keep it on the timeline and in the store, or
-    /// drop it and its audio when it ran under a second (R35).
+    /// drop it and its audio when it ran under a second (R35). The live
+    /// worker then saves its last part, or deletes the parts of a dropped
+    /// segment, on its own thread: processing waits for it (KTD9).
     fn close_segment(&self, inner: &mut Inner, active: ActiveSegment) -> Result<(), CaptureError> {
         let ActiveSegment {
             session_id,
@@ -1118,7 +1166,15 @@ impl CaptureManager {
             stop,
             outcome,
             thread,
+            live,
         } = active;
+        // A close that fails before it decides keeps the live parts: the
+        // worker reads a dropped end as a kept segment.
+        let end_live = |how: LiveEnd| {
+            if let Some(live) = live {
+                live.end(how);
+            }
+        };
         stop.cancel();
         let outcome = outcome.recv();
         let _ = thread.join();
@@ -1146,8 +1202,12 @@ impl CaptureManager {
             .timeline
             .close(end_ms, now(), segment_audio_file(index))?
         {
-            Closed::Kept(segment) => self.store().put_segment(&session_id, &segment)?,
+            Closed::Kept(segment) => {
+                end_live(LiveEnd::Keep);
+                self.store().put_segment(&session_id, &segment)?
+            }
             Closed::Discarded => {
+                end_live(LiveEnd::Discard);
                 recorder::remove_segment(&dir, index).map_err(recorder::RecorderError::from)?;
                 log::info!("segment {index} of {session_id} was under a second and was dropped");
             }
@@ -1235,6 +1295,9 @@ fn abandon(active: ActiveSegment) {
     active.stop.cancel();
     let _ = active.outcome.recv();
     let _ = active.thread.join();
+    if let Some(live) = active.live {
+        live.end(LiveEnd::Discard);
+    }
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
 use crate::folder_rename::{self, FolderRename};
+use crate::live::{EngineAccess, EngineSlot};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
@@ -155,8 +156,9 @@ pub struct Runner {
     wake: Notify,
     current: Mutex<Option<(String, CancellationToken)>>,
     shutdown: CancellationToken,
-    /// The one loaded engine, kept across sessions (KTD6).
-    engine: Arc<Mutex<Option<Box<dyn Recognizer>>>>,
+    /// The one loaded engine, kept across sessions (KTD6) and shared with
+    /// the live worker (KTD9).
+    engine: EngineSlot,
     /// One stage of one session at a time, whoever asks (R20c).
     permit: Arc<Semaphore>,
     /// Summary regenerations and deletes that run on a session. They
@@ -384,6 +386,8 @@ impl Runner {
     /// destructor if a model is still loaded then, and the abort reads as a
     /// crash on every quit after a session was transcribed. Handy unloads on
     /// exit for the same reason. Waits for a window in progress to end.
+    /// Stop the live workers first ([`crate::live::Workers::shutdown`]): a
+    /// worker holds the engine slot while it streams.
     pub fn shutdown(&self) {
         self.shutdown.cancel();
         if let Some((_, token)) = self
@@ -395,6 +399,17 @@ impl Runner {
             token.cancel();
         }
         self.engine.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    /// The live worker's way to the engine slot (KTD9). After
+    /// [`Runner::shutdown`], it loads nothing.
+    pub fn engine_access(&self) -> EngineAccess {
+        let env = Arc::clone(&self.env);
+        EngineAccess::new(
+            Arc::clone(&self.engine),
+            Arc::new(move |model| env.engines.load(model)),
+            self.shutdown.clone(),
+        )
     }
 
     /// Free the loaded engine when it holds `model`, so that the model file
@@ -692,23 +707,21 @@ fn execute(
                     .collect(),
                 Speakers::Unavailable => TurnCuts::new(),
             };
-            let mut slot = engine.lock().unwrap_or_else(|e| e.into_inner());
-            // Checked under the engine's lock, so a shutdown that freed the
-            // engine is never followed by loading it again.
-            control.proceed()?;
-            // A queued session keeps the model selected when it stopped (R20c).
-            if slot.as_ref().map(|e| e.model_id()) != Some(model) {
-                *slot = None;
-                *slot = Some(env.engines.load(model).map_err(StageError::Failed)?);
-            }
-            let recognizer = slot.as_mut().expect("loaded above");
+            // The stage locks the slot for each window only, so a live
+            // worker can take the slot while the stage waits out a
+            // suspension (KTD9).
+            let slot = transcribe::Slot {
+                slot: engine,
+                model,
+                load: &|model| env.engines.load(model),
+            };
             transcribe::run(
                 &env.store,
                 id,
                 &dir,
                 segments,
                 &cuts,
-                recognizer.as_mut(),
+                &slot,
                 control,
                 &mut |p| {
                     (env.events)(RunnerEvent::Progress {

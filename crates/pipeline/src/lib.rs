@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod diarize;
 pub mod folder_rename;
 pub mod join;
+pub mod live;
 pub mod progress;
 pub mod recover;
 pub mod resample;
