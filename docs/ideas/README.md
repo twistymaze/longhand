@@ -65,7 +65,6 @@ This folder is our own convention, not something compound engineering defines, s
 | [Summary kinds chosen by folder](summary-kind-per-folder.md) | open | A recap for Pathfinder, decisions and follow-ups for work |
 | [Participant names for a session](participant-names.md) | open | The user lists who was present so the summary can use names |
 | [Custom vocabulary per folder](custom-vocabulary.md) | open | A word list that corrects names and jargon |
-| [Live transcript while recording](live-transcript-view.md) | in-progress | Offered only when the selected model streams (KD8) |
 | [Carry context from the previous session](session-to-session-context.md) | open | "Previously on" for recurring sessions |
 | [A diarization evaluation loop](diarization-evaluation-loop.md) | open | Measure speaker turns on real sessions, repeatedly |
 | [Alternative diarization architectures](alternative-diarization-architectures.md) | parked | MOSS or Sortformer, or speaker labels from the recognition model |
@@ -90,19 +89,20 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [Choose the recognition model](recognition-model-picker.md) | in-progress | A Settings picker for nine models from Handy's catalog |
 | [Choose the summary model from the server's list](summary-model-picker.md) | in-progress | A searchable Model picker, a connection status line, and OpenAI as the default |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 | [Choose the shortcuts](custom-shortcuts.md) | in-progress | Set, reset or clear the recording shortcut; an optional shortcut that shows the window |
 
 ## Done
 
-Ideas from the original list that the walking skeleton ended up building.
+Ideas that shipped: first those from the original list that the walking skeleton built, then later plans.
 
 - **Timestamps in the summarization prompt.** Every transcript turn and note reaches the summarizer with its clock position, so a summary can say when something happened.
 - **Finer-grained checkpointing.** Transcription checkpoints each window, so a restart redoes only unfinished windows.
 - **[UX redesign](ux-redesign.md).** One main window with a Home list and one tabbed session page, a Settings window, markdown notes, titles that name the session folder, and delete to the Trash (`docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`).
 - **A speaker count per session.** An optional count or range per session, with an app-wide default (KD15, R36). What remains is the per-folder default above.
+- **[Choose the recognition model](recognition-model-picker.md).** A Settings picker for nine models from Handy's catalog, with pick-to-download and delete (`docs/plans/2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md`).
+- **[Live transcript while recording](live-transcript-view.md).** A streaming model shows the transcript in the Transcript tab during recording; after Stop only the gaps get a batch pass, and "Transcribe Again…" redoes a saved note (same plan).
 
 ## Ruled out
 
