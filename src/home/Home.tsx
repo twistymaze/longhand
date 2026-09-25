@@ -41,8 +41,9 @@ export function Home({
   recording: RecordingNow | null;
   /// Null until it is read; Home then offers no New Note button.
   readiness: Readiness | null;
-  /// The recording shortcut as this platform writes it.
-  chord: string;
+  /// The recording shortcut as this platform writes it, or null when the
+  /// user cleared it (R14).
+  chord: string | null;
   onOpen: (id: string) => void;
   /// Read the list again after a rename or a delete.
   onChanged: () => void;
@@ -257,7 +258,7 @@ export function Home({
   );
 }
 
-function EmptyState({ chord }: { chord: string }) {
+function EmptyState({ chord }: { chord: string | null }) {
   return (
     <div className="flex h-full min-h-64 flex-col items-center justify-center px-6 pb-10 text-center">
       <div className="mb-4 flex size-14 items-center justify-center rounded-[14px] bg-group text-label-tertiary shadow-[0_0_0_0.5px_var(--separator),0_2px_8px_rgb(0_0_0/0.06)]">
@@ -265,7 +266,13 @@ function EmptyState({ chord }: { chord: string }) {
       </div>
       <p className="text-[1rem] font-semibold tracking-[-0.01em]">No notes yet</p>
       <p className="mt-1 max-w-72 leading-[1.5] text-label-secondary">
-        Press <kbd className="kbd">{chord}</kbd> in any app to start a new note.
+        {chord ? (
+          <>
+            Press <kbd className="kbd">{chord}</kbd> in any app to start a new note.
+          </>
+        ) : (
+          "Select New Note to start a new note."
+        )}
       </p>
     </div>
   );
