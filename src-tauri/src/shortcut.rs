@@ -1,43 +1,104 @@
-//! The global shortcut: one chord that starts a session and stops it (R1).
+//! The global shortcuts: the recording chord, which starts a session and
+//! stops it (R1), and the optional chord that shows or hides the main
+//! window (R5, R6).
 //!
-//! Registration follows Handy's `shortcut/tauri_impl.rs`: the chord is
-//! registered once at launch from settings, and a press is handled on
-//! `Pressed` only. A press when the shortcut is not armed does nothing — no
-//! dialog, no prompt — because the surface already says what is missing
-//! (R1a). See PROVENANCE.md.
+//! Registration follows Handy's `shortcut/tauri_impl.rs`, and a change
+//! follows its `change_binding`: a press is handled on `Pressed` only, and a
+//! refused chord leaves the previous chord registered. A press when the
+//! recording shortcut is not armed does nothing — no dialog, no prompt —
+//! because the surface already says what is missing (R1a). See
+//! PROVENANCE.md.
 
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::managers::capture::CaptureManager;
-use crate::managers::settings::{self, SpeakerCountSetting};
+use crate::managers::settings::{self, Settings, SpeakerCountSetting};
 
-#[derive(Default)]
-pub struct ShortcutRegistration {
-    chord: Mutex<Option<String>>,
-    error: Mutex<Option<String>>,
+/// Which of the two shortcuts a command acts on.
+#[derive(Serialize, Deserialize, Type, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutKind {
+    Recording,
+    ShowWindow,
 }
 
-#[derive(Serialize, Type, Clone, Debug)]
+impl ShortcutKind {
+    fn saved(self, settings: &Settings) -> Option<String> {
+        match self {
+            Self::Recording => settings.shortcut.clone(),
+            Self::ShowWindow => settings.show_window_shortcut.clone(),
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Recording => Self::ShowWindow,
+            Self::ShowWindow => Self::Recording,
+        }
+    }
+}
+
+/// One shortcut's state (KTD7): off when `chord` is `None`, registered, or
+/// failed with a reason in `error`.
+#[derive(Serialize, Type, Clone, Debug, Default, PartialEq)]
 pub struct ShortcutStatus {
-    pub chord: String,
+    pub chord: Option<String>,
     pub registered: bool,
     pub error: Option<String>,
 }
 
+impl ShortcutStatus {
+    /// No chord is a choice, not a fault (R13).
+    pub fn is_ok(&self) -> bool {
+        self.chord.is_none() || self.registered
+    }
+}
+
+#[derive(Serialize, Type, Clone, Debug)]
+pub struct ShortcutStatuses {
+    pub recording: ShortcutStatus,
+    pub show_window: ShortcutStatus,
+}
+
+#[derive(Default)]
+pub struct ShortcutRegistration {
+    /// Held across every register, change, suspend and resume, so their
+    /// plugin calls never interleave. Never taken on the main thread: the
+    /// plugin sends each call to the main thread and waits for it.
+    changes: Mutex<()>,
+    recording: Mutex<ShortcutStatus>,
+    show_window: Mutex<ShortcutStatus>,
+}
+
 impl ShortcutRegistration {
-    pub fn status(&self) -> ShortcutStatus {
-        let chord = self.chord.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let error = self.error.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        ShortcutStatus {
-            registered: chord.is_some() && error.is_none(),
-            chord: chord.unwrap_or_default(),
-            error,
+    fn slot(&self, kind: ShortcutKind) -> &Mutex<ShortcutStatus> {
+        match kind {
+            ShortcutKind::Recording => &self.recording,
+            ShortcutKind::ShowWindow => &self.show_window,
         }
+    }
+
+    pub fn status(&self, kind: ShortcutKind) -> ShortcutStatus {
+        self.slot(kind)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn statuses(&self) -> ShortcutStatuses {
+        ShortcutStatuses {
+            recording: self.status(ShortcutKind::Recording),
+            show_window: self.status(ShortcutKind::ShowWindow),
+        }
+    }
+
+    fn set_status(&self, kind: ShortcutKind, status: ShortcutStatus) {
+        *self.slot(kind).lock().unwrap_or_else(|e| e.into_inner()) = status;
     }
 }
 
@@ -89,26 +150,186 @@ pub fn same_chord(a: &str, b: &str) -> bool {
     }
 }
 
-pub fn register(app: &AppHandle) {
-    let registration = ShortcutRegistration::default();
-    let chord = settings::get_settings(app).shortcut.unwrap_or_default();
-    let result = app
-        .global_shortcut()
-        .on_shortcut(chord.as_str(), |app, _shortcut, event| {
+/// The shown reason when the system refuses a chord (R10).
+const NOT_AVAILABLE: &str = "Another app uses these keys. Choose different keys.";
+const TAKEN_BY_OTHER: &str = "The other Longhand shortcut uses these keys.";
+
+/// Change one shortcut from `old` to `new` (KTD4). The chord is checked
+/// before anything is unregistered. When the new chord is refused, the old
+/// chord is registered again. The caller saves only after `Ok`.
+pub fn apply_change(
+    old: Option<&str>,
+    new: Option<&str>,
+    other: Option<&str>,
+    mut unregister: impl FnMut(&str),
+    mut register: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(new) = new {
+        check_chord(new)?;
+        if other.is_some_and(|other| same_chord(new, other)) {
+            return Err(TAKEN_BY_OTHER.into());
+        }
+        if old.is_some_and(|old| same_chord(new, old)) {
+            return Ok(());
+        }
+    }
+    if let Some(old) = old {
+        unregister(old);
+    }
+    let Some(new) = new else {
+        return Ok(());
+    };
+    if let Err(e) = register(new) {
+        log::warn!("shortcut {new} was refused: {e}");
+        if let Some(old) = old
+            && let Err(e) = register(old)
+        {
+            log::error!("failed to register {old} again: {e}");
+        }
+        return Err(NOT_AVAILABLE.into());
+    }
+    Ok(())
+}
+
+fn register_chord(app: &AppHandle, kind: ShortcutKind, chord: &str) -> Result<(), String> {
+    let handler =
+        move |app: &AppHandle, _: &Shortcut, event: tauri_plugin_global_shortcut::ShortcutEvent| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { toggle(app).await });
-        })
-        .map_err(|e| e.to_string());
-    match &result {
-        Ok(()) => log::info!("shortcut {chord} registered"),
-        Err(e) => log::error!("shortcut {chord} failed to register: {e}"),
+            match kind {
+                ShortcutKind::Recording => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move { toggle(app).await });
+                }
+                ShortcutKind::ShowWindow => crate::window::toggle_main_window(app),
+            }
+        };
+    app.global_shortcut()
+        .on_shortcut(chord, handler)
+        .map_err(|e| e.to_string())
+}
+
+fn unregister_chord(app: &AppHandle, chord: &str) {
+    if let Err(e) = app.global_shortcut().unregister(chord) {
+        log::warn!("failed to unregister shortcut {chord}: {e}");
     }
-    *registration.chord.lock().unwrap_or_else(|e| e.into_inner()) = Some(chord);
-    *registration.error.lock().unwrap_or_else(|e| e.into_inner()) = result.err();
+}
+
+/// Register `kind`'s saved chord and record its status.
+fn register_saved(app: &AppHandle, registration: &ShortcutRegistration, kind: ShortcutKind) {
+    let chord = kind.saved(&settings::get_settings(app));
+    let status = match &chord {
+        None => ShortcutStatus::default(),
+        Some(chord) => match register_chord(app, kind, chord) {
+            Ok(()) => {
+                log::info!("shortcut {chord} registered");
+                ShortcutStatus {
+                    chord: Some(chord.clone()),
+                    registered: true,
+                    error: None,
+                }
+            }
+            Err(e) => {
+                log::error!("shortcut {chord} failed to register: {e}");
+                ShortcutStatus {
+                    chord: Some(chord.clone()),
+                    registered: false,
+                    error: Some(NOT_AVAILABLE.into()),
+                }
+            }
+        },
+    };
+    registration.set_status(kind, status);
+}
+
+/// Register both saved chords at launch (R12).
+pub fn register(app: &AppHandle) {
+    let registration = ShortcutRegistration::default();
+    register_saved(app, &registration, ShortcutKind::Recording);
+    register_saved(app, &registration, ShortcutKind::ShowWindow);
     app.manage(registration);
+}
+
+/// Set, change or clear one shortcut (R1–R3, R5, R9, R10). Returns both
+/// statuses on success, or the reason the chord was refused.
+pub fn set_shortcut(
+    app: &AppHandle,
+    kind: ShortcutKind,
+    chord: Option<String>,
+) -> Result<ShortcutStatuses, String> {
+    let registration = app.state::<ShortcutRegistration>();
+    let _one_at_a_time = registration
+        .changes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // Only a registered chord needs unregistering: during capture both are
+    // suspended, and a failed chord was never registered.
+    let status = registration.status(kind);
+    let old = status.chord.filter(|_| status.registered);
+    let other = kind.other().saved(&settings::get_settings(app));
+    apply_change(
+        old.as_deref(),
+        chord.as_deref(),
+        other.as_deref(),
+        |c| unregister_chord(app, c),
+        |c| register_chord(app, kind, c),
+    )?;
+    settings::update_settings(app, |s| {
+        match kind {
+            ShortcutKind::Recording => s.shortcut = chord.clone(),
+            ShortcutKind::ShowWindow => s.show_window_shortcut = chord.clone(),
+        }
+        Ok(())
+    })?;
+    registration.set_status(
+        kind,
+        ShortcutStatus {
+            registered: chord.is_some(),
+            chord,
+            error: None,
+        },
+    );
+    Ok(registration.statuses())
+}
+
+/// Unregister both chords while the user presses keys for a new one, so the
+/// keys start nothing (R11).
+pub fn suspend(app: &AppHandle) {
+    let registration = app.state::<ShortcutRegistration>();
+    let _one_at_a_time = registration
+        .changes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for kind in [ShortcutKind::Recording, ShortcutKind::ShowWindow] {
+        let status = registration.status(kind);
+        if let (Some(chord), true) = (&status.chord, status.registered) {
+            unregister_chord(app, chord);
+            registration.set_status(
+                kind,
+                ShortcutStatus {
+                    registered: false,
+                    ..status
+                },
+            );
+        }
+    }
+}
+
+/// Register the saved chords again after capture ends (KTD6). A chord that
+/// is already registered stays as it is, so this is safe to call more than
+/// once.
+pub fn resume(app: &AppHandle) {
+    let registration = app.state::<ShortcutRegistration>();
+    let _one_at_a_time = registration
+        .changes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for kind in [ShortcutKind::Recording, ShortcutKind::ShowWindow] {
+        if !registration.status(kind).registered {
+            register_saved(app, &registration, kind);
+        }
+    }
 }
 
 /// Stop a recording session, or start one when armed (R1a, R1c): the
@@ -185,6 +406,118 @@ mod tests {
         assert!(check_chord("Fn+KeyR").is_err());
         assert!(check_chord("Super+Shift+NotAKey").is_err());
         assert!(check_chord("").is_err());
+    }
+
+    /// Records the plugin calls `apply_change` makes, and refuses the chords
+    /// in `refused`.
+    #[derive(Default)]
+    struct Plugin {
+        calls: Vec<String>,
+        refused: Vec<&'static str>,
+    }
+
+    fn change(
+        plugin: &mut Plugin,
+        old: Option<&str>,
+        new: Option<&str>,
+        other: Option<&str>,
+    ) -> Result<(), String> {
+        let refused = plugin.refused.clone();
+        let calls = std::cell::RefCell::new(Vec::new());
+        let result = apply_change(
+            old,
+            new,
+            other,
+            |c| calls.borrow_mut().push(format!("unregister {c}")),
+            |c| {
+                calls.borrow_mut().push(format!("register {c}"));
+                if refused.contains(&c) {
+                    Err("held".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        plugin.calls = calls.into_inner();
+        result
+    }
+
+    #[test]
+    fn a_change_unregisters_the_old_chord_and_registers_the_new() {
+        let mut plugin = Plugin::default();
+        let result = change(&mut plugin, Some("Super+KeyA"), Some("Super+KeyB"), None);
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            plugin.calls,
+            ["unregister Super+KeyA", "register Super+KeyB"]
+        );
+    }
+
+    #[test]
+    fn a_refused_chord_registers_the_old_chord_again() {
+        let mut plugin = Plugin {
+            refused: vec!["Super+KeyB"],
+            ..Default::default()
+        };
+        let result = change(&mut plugin, Some("Super+KeyA"), Some("Super+KeyB"), None);
+        assert_eq!(result, Err(NOT_AVAILABLE.to_string()));
+        assert_eq!(
+            plugin.calls,
+            [
+                "unregister Super+KeyA",
+                "register Super+KeyB",
+                "register Super+KeyA"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_other_shortcuts_chord_is_refused_before_anything_changes() {
+        let mut plugin = Plugin::default();
+        let result = change(
+            &mut plugin,
+            Some("Super+KeyA"),
+            Some("Command+KeyL"),
+            Some("Super+KeyL"),
+        );
+        assert_eq!(result, Err(TAKEN_BY_OTHER.to_string()));
+        assert!(plugin.calls.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_chord_is_refused_before_anything_changes() {
+        let mut plugin = Plugin::default();
+        assert!(change(&mut plugin, Some("Super+KeyA"), Some("KeyB"), None).is_err());
+        assert!(plugin.calls.is_empty());
+    }
+
+    #[test]
+    fn a_clear_unregisters_the_old_chord() {
+        let mut plugin = Plugin::default();
+        assert_eq!(change(&mut plugin, Some("Super+KeyA"), None, None), Ok(()));
+        assert_eq!(plugin.calls, ["unregister Super+KeyA"]);
+    }
+
+    #[test]
+    fn a_clear_with_no_chord_changes_nothing() {
+        let mut plugin = Plugin::default();
+        assert_eq!(change(&mut plugin, None, None, None), Ok(()));
+        assert!(plugin.calls.is_empty());
+    }
+
+    #[test]
+    fn setting_the_same_keys_again_changes_nothing() {
+        let mut plugin = Plugin::default();
+        let result = change(&mut plugin, Some("Super+KeyA"), Some("Command+KeyA"), None);
+        assert_eq!(result, Ok(()));
+        assert!(plugin.calls.is_empty());
+    }
+
+    #[test]
+    fn a_first_chord_is_registered_when_none_was_set() {
+        let mut plugin = Plugin::default();
+        assert_eq!(change(&mut plugin, None, Some("Super+KeyB"), None), Ok(()));
+        assert_eq!(plugin.calls, ["register Super+KeyB"]);
     }
 
     #[test]

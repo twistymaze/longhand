@@ -195,6 +195,11 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         // was the last visible window.
         WindowEvent::Destroyed if window.label() == SETTINGS_WINDOW => {
             hide_dock_icon_if_no_window(window);
+            // A capture that was in progress when the window closed must not
+            // leave the shortcuts paused (KTD6). Off the main thread, since a
+            // change in progress holds the lock and waits on the main thread.
+            let app = window.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || crate::shortcut::resume(&app));
         }
         _ => {}
     }
