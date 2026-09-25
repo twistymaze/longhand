@@ -2781,6 +2781,7 @@ dependencies = [
  "diarize",
  "log",
  "models",
+ "objc2",
  "pipeline",
  "power",
  "recorder",
