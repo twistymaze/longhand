@@ -68,6 +68,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
 const doc: SessionDocument = {
   has_speakers: true,
   lines: [{ kind: "turn", position_ms: 0, speaker: 1, text: "Hello." }],
+  transcript_markdown: "# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n",
   summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m" },
 };
 
@@ -345,5 +346,62 @@ describe("SessionPage", () => {
     await user.click(tab("Transcript"));
     view.rerenderWith(captureOf(), sessionsOf([{ ...p, state: "saved" }]));
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("Copy writes the open tab's markdown: the transcript file, or the notes", async () => {
+    const e = entry("s", { title: "Budget review" });
+    mockTauri({
+      session_notes: () => "# Agenda\n\n- ask about headcount",
+      set_session_notes: () => null,
+      session_detail: () => detail(e),
+      session_document: () => doc,
+    });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    const user = userEvent.setup();
+    // After setup, which puts its own clipboard in place.
+    const writeText = mock(async (_t: string) => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    await screen.findByText("We agreed the budget.");
+    await user.click(tab("Transcript"));
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenLastCalledWith("# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n");
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    await user.click(tab("My notes"));
+    await screen.findByRole("textbox", { name: "My notes" });
+    await user.click(screen.getByRole("button", { name: /^Cop/ }));
+    expect(writeText).toHaveBeenLastCalledWith("# Agenda\n\n- ask about headcount");
+  });
+
+  test("a stub summary shows its text and Regenerate, which summarizes again", async () => {
+    const e = entry("s");
+    const stub = {
+      ...doc,
+      summary: {
+        body: "# Summary\n\nNo summary was produced: the endpoint did not answer",
+        stub: true,
+        host: null,
+        model: null,
+      },
+    };
+    const tauri = mockPage(e, {}, { session_document: () => stub, regenerate_summary: () => "/x/summary.md" });
+    const sessions = sessionsOf([e]);
+    renderPage({ id: "s", sessions });
+    expect(await screen.findByText(/No summary was produced/)).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Regenerate Summary" }));
+    await act(async () => {});
+    expect(tauri.calls.filter((c) => c.cmd === "regenerate_summary").map((c) => c.args)).toEqual([
+      { sessionId: "s" },
+    ]);
+    expect(sessions.refresh).toHaveBeenCalled();
+  });
+
+  test("the Transcript tab of a saved session shows the header and the turns", async () => {
+    const e = entry("s");
+    mockPage(e);
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    await screen.findByText("We agreed the budget.");
+    await userEvent.setup().click(tab("Transcript"));
+    expect(screen.getByText("3 speakers · 35:48")).toBeTruthy();
+    expect(screen.getByText("Hello.")).toBeTruthy();
   });
 });

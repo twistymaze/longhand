@@ -3,7 +3,8 @@
 // - recording: My notes, with the recording bar below (R11, R12);
 // - processing: the stages on Summary and Transcript (R14);
 // - saved: the summary, the transcript and the notes (R15).
-// The toolbar has "← Back", the tabs and the "…" menu. The tabs change at
+// The toolbar has "← Back", the tabs, Copy for the open tab (R17) and the
+// "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,10 +23,11 @@ import { useDeleteSession } from "./DeleteSession";
 import { NotesTab } from "./NotesTab";
 import { ProcessingStatus } from "./ProcessingStatus";
 import { RecordingBar } from "./RecordingBar";
+import { copyText, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
-import { SummaryPane } from "./SummaryPane";
+import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
-import { TranscriptPane } from "./TranscriptPane";
+import { TranscriptTab } from "./TranscriptTab";
 import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
@@ -106,6 +108,8 @@ export function SessionPage({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [speakers, setSpeakers] = useState(false);
+  const [notes, setNotes] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const title = useRef<TitleFieldHandle>(null);
   const notesPanel = useRef<HTMLDivElement>(null);
 
@@ -236,10 +240,30 @@ export function SessionPage({
     if (error) return <p className="text-negative">{error}</p>;
     if (!doc) return null;
     return which === "summary" ? (
-      <SummaryPane summary={doc.summary} regenerate={regenerateControl} />
+      <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
     ) : (
-      <TranscriptPane lines={doc.lines} hasSpeakers={doc.has_speakers} target={null} />
+      <TranscriptTab
+        lines={doc.lines}
+        hasSpeakers={doc.has_speakers}
+        foundSpeakers={entry?.found_speakers ?? null}
+        durationMs={entry?.duration_ms ?? 0}
+      />
     );
+  };
+
+  // The summary and the transcript exist only once the session is saved.
+  const copyable = tabMarkdown(tab, phase === "saved" ? doc : null, notes);
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+  useEffect(() => setCopied(false), [tab]);
+  const copy = async () => {
+    if (copyable === null) return;
+    const done = await copyText(copyable);
+    setNotice(done ? null : { tone: "negative", text: "The text could not be copied to the clipboard." });
+    setCopied(done);
+    clearTimeout(copyTimer.current);
+    // "Copied" stays long enough to read, then the button is Copy again.
+    if (done) copyTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
   const subtitle = entry
@@ -261,7 +285,15 @@ export function SessionPage({
           </button>
         </div>
         <Tabs tab={tab} onTab={setTab} />
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button"
+            disabled={copyable === null}
+            onClick={() => void copy()}
+            className="rounded-md px-2 py-[3px] text-label-secondary enabled:hover:bg-fill enabled:active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:text-label-tertiary"
+          >
+            {copied ? "Copied" : "Copy"}
+          </button>
           <SessionMenu items={items} />
         </div>
       </header>
@@ -295,7 +327,12 @@ export function SessionPage({
         {/* My notes stays mounted, so the editor keeps its document, cursor
             and undo history while another tab shows. */}
         <div ref={notesPanel} role="tabpanel" hidden={tab !== "notes"}>
-          <NotesTab key={id} sessionId={id} autoFocus={tab === "notes" && phase === "recording"} />
+          <NotesTab
+            key={id}
+            sessionId={id}
+            autoFocus={tab === "notes" && phase === "recording"}
+            onMarkdown={setNotes}
+          />
         </div>
       </main>
       {open && (

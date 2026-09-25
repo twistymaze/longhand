@@ -1,5 +1,6 @@
-// The saved summary, or the stub a failed summary left, with Regenerate
-// (R19, AE17). The body is rendered from parsed blocks, never as HTML.
+// The Summary tab of a saved session: the summary, or the stub that a
+// failed summary left, with Regenerate (R19, AE17). The body is rendered
+// from parsed blocks, never as HTML.
 
 import type { ReactNode } from "react";
 import type { SummaryView } from "../bindings";
@@ -67,32 +68,27 @@ function Body({ markdown }: { markdown: string }) {
   );
 }
 
-export function SummaryPane({
+export function SummaryTab({
   summary,
   regenerate,
 }: {
   summary: SummaryView | null;
-  /// The Regenerate control and its progress, from the view.
+  /// The Regenerate control and its progress, from the page.
   regenerate: ReactNode;
 }) {
+  // A stub says why no summary was produced (U5); Regenerate is the way on.
   if (!summary || summary.stub) {
     return (
-      <div className="px-6 py-4">
-        <div className="mb-4 rounded-[10px] bg-group px-3 py-2.5 shadow-[0_0_0_0.5px_var(--separator)]">
-          <p className="font-semibold text-caution">No summary yet</p>
-          <p className="text-label-secondary">
-            The transcript and notes were saved; the summary was not. Regenerate once the endpoint is reachable.
-          </p>
-          <div className="mt-2">{regenerate}</div>
-        </div>
-        {summary && <Body markdown={summary.body} />}
+      <div className="rounded-[10px] bg-group px-4 py-3 shadow-[0_0_0_0.5px_var(--separator)]">
+        {summary ? <Body markdown={summary.body} /> : <p>This session has no summary.</p>}
+        <div className="mt-3">{regenerate}</div>
       </div>
     );
   }
   return (
-    <div className="px-6 py-4">
+    <div>
       <Body markdown={summary.body} />
-      <footer className="mt-6 flex items-center gap-3 border-t border-separator pt-3 text-[0.85rem] text-label-secondary">
+      <footer className="mt-8 flex items-center gap-3 border-t border-separator pt-3 text-[0.85rem] text-label-secondary">
         <span className="min-w-0 flex-1">
           Summarized by {summary.model} on {summary.host}
         </span>

@@ -589,7 +589,11 @@ resumable: boolean; home_path: string | null;
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
 endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean }
-export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; summary: SummaryView | null }
+export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
+/**
+ * The text of `transcript.md`, which the Transcript tab copies (R17).
+ */
+transcript_markdown: string; summary: SummaryView | null }
 export type SessionEntry = { id: string; 
 /**
  * When the first segment began (RFC 3339), or when the session was made.

@@ -103,6 +103,8 @@ pub struct SummaryView {
 pub struct SessionDocument {
     pub has_speakers: bool,
     pub lines: Vec<DocLine>,
+    /// The text of `transcript.md`, which the Transcript tab copies (R17).
+    pub transcript_markdown: String,
     pub summary: Option<SummaryView>,
 }
 
@@ -350,11 +352,12 @@ pub fn session_document(
             .map_err(|e| format!("could not read {name} in {home}: {e}"))
     };
     let doc = SessionDoc::parse(&read(pipeline::save::SESSION_FILE)?).map_err(|e| e.to_string())?;
-    let transcript =
-        Transcript::parse(&read(pipeline::join::TRANSCRIPT_FILE)?).map_err(|e| e.to_string())?;
+    let transcript_markdown = read(pipeline::join::TRANSCRIPT_FILE)?;
+    let transcript = Transcript::parse(&transcript_markdown).map_err(|e| e.to_string())?;
     Ok(SessionDocument {
         has_speakers: transcript.has_speakers,
         lines: doc_lines(&doc, transcript),
+        transcript_markdown,
         summary: read(pipeline::summarize::SUMMARY_FILE)
             .ok()
             .and_then(|text| Summary::parse(&text).ok())

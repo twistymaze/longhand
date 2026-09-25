@@ -91,29 +91,12 @@ html {
   }
 }
 
-/* An exception or a one-time sentence arrives with a short fade, nothing
-   more: the rail must not pull eyes to the screen. */
+/* A dialog arrives with a short fade, nothing more. */
 .fade-in {
   transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1);
   @starting-style {
     opacity: 0;
   }
-}
-
-/* A note followed into the transcript tints its turn, holds, and fades, so
-   the eye finds it. Colour only: reduced motion keeps it. */
-@keyframes followed {
-  0%,
-  35% {
-    background-color: color-mix(in srgb, var(--accent) 18%, transparent);
-  }
-  100% {
-    background-color: transparent;
-  }
-}
-
-.followed {
-  animation: followed 1800ms linear;
 }
 
 /* The live dot's brightness follows the input level. With reduced motion

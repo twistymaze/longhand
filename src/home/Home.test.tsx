@@ -38,6 +38,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
 const document = (body: string): SessionDocument => ({
   has_speakers: true,
   lines: [],
+  transcript_markdown: "",
   summary: { body, stub: false, host: null, model: null },
 });
 
