@@ -13,8 +13,8 @@ pub const SETTINGS_WINDOW: &str = "settings";
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
         .title("Longhand")
-        .inner_size(720.0, 600.0)
-        .min_inner_size(560.0, 480.0)
+        .inner_size(780.0, 600.0)
+        .min_inner_size(600.0, 460.0)
         .visible(false)
         .build()?;
     Ok(())
@@ -70,8 +70,8 @@ pub fn open_settings(app: &AppHandle) {
                 WebviewUrl::App("index.html?window=settings".into()),
             )
             .title("Settings")
-            .inner_size(560.0, 520.0)
-            .resizable(false)
+            .inner_size(760.0, 540.0)
+            .min_inner_size(640.0, 440.0)
             .maximizable(false)
             .minimizable(false)
             .center()

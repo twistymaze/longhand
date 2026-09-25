@@ -1,24 +1,37 @@
-// The Settings window (R2, KTD3): a toolbar of panes above the selected
-// pane, as in a standard macOS Settings window. It holds settings only; the
-// sessions are in the main window.
+// The Settings window (R2, KTD3): a sidebar of panes on the left and the
+// selected pane on the right, as in a standard macOS settings window. It
+// holds settings only; the notes are in the main window.
 
-import { useCallback, useEffect, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
 import { EndpointForm } from "./EndpointForm";
+import { AppIcon, BadgeIcon, FolderIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
 import { Licences } from "./Licences";
 import { Models } from "./Models";
 import { type PaneId, StatusPane } from "./Status";
-import { ErrorText, Status, type Tone } from "./ui";
+import { ErrorText, type Tone } from "./ui";
 import { useAppSettings } from "./useAppSettings";
 
-const panes: { id: PaneId; label: string }[] = [
-  { id: "status", label: "Status" },
-  { id: "destination", label: "Destination" },
-  { id: "summarization", label: "Summarization" },
-  { id: "recognition", label: "Recognition" },
-  { id: "licences", label: "Licences" },
+type PaneEntry = { id: PaneId; label: string; icon: ReactNode };
+
+const sections: { label: string; panes: PaneEntry[] }[] = [
+  {
+    label: "Settings",
+    panes: [
+      { id: "status", label: "General", icon: <SlidersIcon /> },
+      { id: "destination", label: "Storage", icon: <FolderIcon /> },
+      { id: "summarization", label: "Summaries", icon: <SparkleIcon /> },
+      { id: "recognition", label: "Transcription", icon: <TranscriptIcon /> },
+    ],
+  },
+  {
+    label: "About",
+    panes: [{ id: "licences", label: "Licences", icon: <BadgeIcon /> }],
+  },
 ];
+
+const order = sections.flatMap((s) => s.panes.map((p) => p.id));
 
 function paneTone(id: PaneId, readiness: Readiness): Tone | null {
   switch (id) {
@@ -35,10 +48,19 @@ function paneTone(id: PaneId, readiness: Readiness): Tone | null {
   }
 }
 
+const badgeClass: Record<Tone, string> = {
+  positive: "bg-positive",
+  caution: "bg-caution",
+  negative: "bg-negative",
+  neutral: "bg-label-tertiary",
+};
+
 export function SettingsWindow() {
   const [pane, setPane] = useState<PaneId>("status");
   const { settings, readiness, models, error, refresh, setSettings } = useAppSettings();
   const [live, setLive] = useState<Record<string, DownloadUpdate>>({});
+  const nav = useRef<HTMLDivElement>(null);
+  const main = useRef<HTMLElement>(null);
 
   useEffect(() => {
     const unlisten = events.modelDownloadEvent.listen(({ payload }) => {
@@ -57,6 +79,12 @@ export function SettingsWindow() {
     [setSettings, refresh],
   );
 
+  // A new pane starts at its top.
+  const show = (id: PaneId) => {
+    setPane(id);
+    main.current?.scrollTo({ top: 0 });
+  };
+
   const actions = {
     download: (ids: string[]) => {
       setLive((l) => {
@@ -69,56 +97,90 @@ export function SettingsWindow() {
     cancel: () => void commands.cancelModelDownloads(),
   };
 
+  // The up and down arrows move through the panes, as in a sidebar.
+  const onNavKey = (e: KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const at = order.indexOf(pane);
+    const next = order[Math.min(order.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)))];
+    show(next);
+    requestAnimationFrame(() => nav.current?.querySelector<HTMLElement>(`[data-pane="${next}"]`)?.focus());
+  };
+
   if (!settings || !readiness) {
-    return <div className="h-screen bg-window pt-3">{error && <ErrorText>{error}</ErrorText>}</div>;
+    return <div className="h-screen bg-pane pt-3">{error && <ErrorText>{error}</ErrorText>}</div>;
   }
 
   return (
-    <div className="flex h-screen flex-col bg-window">
-      <nav
-        aria-label="Settings"
-        role="tablist"
-        className="flex shrink-0 justify-center gap-1 border-b border-separator bg-sidebar px-3 py-2 select-none"
-      >
-        {panes.map((p) => {
-          const tone = paneTone(p.id, readiness);
-          const selected = pane === p.id;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              onClick={() => setPane(p.id)}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 ${
-                selected ? "bg-fill-pressed text-label" : "text-label-secondary active:bg-fill-pressed"
-              } outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
-            >
-              {p.label}
-              {tone && (
-                <Status tone={tone}>
-                  <span className="sr-only">needs attention</span>
-                </Status>
-              )}
-            </button>
-          );
-        })}
-      </nav>
-      {error && (
-        <div className="shrink-0 pt-2">
-          <ErrorText>{error}</ErrorText>
+    <div className="flex h-screen bg-pane">
+      <div className="flex w-[13.5rem] shrink-0 flex-col border-r border-separator bg-sidebar select-none">
+        <div className="flex items-center gap-2 px-4 pt-4 pb-3">
+          <AppIcon className="size-7" />
+          <span className="text-[0.95rem] font-semibold tracking-[-0.01em]">Longhand</span>
         </div>
-      )}
-      <main role="tabpanel" className="min-h-0 flex-1 overflow-y-auto">
-        {pane === "status" && <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={setPane} />}
-        {pane === "destination" && (
-          <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
+        <div
+          ref={nav}
+          role="tablist"
+          aria-label="Settings"
+          aria-orientation="vertical"
+          onKeyDown={onNavKey}
+          className="flex-1 overflow-y-auto px-2.5 pb-3"
+        >
+          {sections.map((section) => (
+            <div key={section.label} role="presentation" className="pt-2">
+              <div
+                role="presentation"
+                className="px-2 pt-1.5 pb-1 text-[0.7rem] font-semibold tracking-[0.07em] text-label-tertiary uppercase"
+              >
+                {section.label}
+              </div>
+              {section.panes.map((p) => {
+                const tone = paneTone(p.id, readiness);
+                const selected = pane === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    role="tab"
+                    data-pane={p.id}
+                    aria-selected={selected}
+                    tabIndex={selected ? 0 : -1}
+                    onClick={() => show(p.id)}
+                    className={`mb-px flex w-full items-center gap-2.5 rounded-[7px] px-2 py-[5px] text-left ${
+                      selected ? "bg-sidebar-selected font-medium text-label" : "text-label hover:bg-row-hover"
+                    } outline-offset-0 focus-visible:outline-2 focus-visible:outline-accent`}
+                  >
+                    <span className={selected ? "text-accent" : "text-label-secondary"}>{p.icon}</span>
+                    <span className="min-w-0 flex-1 truncate">{p.label}</span>
+                    {tone && (
+                      <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${badgeClass[tone]}`} />
+                    )}
+                    {tone && <span className="sr-only">needs attention</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <main ref={main} role="tabpanel" className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+        {error && (
+          <div className="pt-3">
+            <ErrorText>{error}</ErrorText>
+          </div>
         )}
-        {pane === "summarization" && <EndpointForm settings={settings} onSettings={onSettings} />}
-        {pane === "recognition" && (
-          <Models models={models} live={live} actions={actions} settings={settings} onSettings={onSettings} />
-        )}
-        {pane === "licences" && <Licences models={models} />}
+        <div>
+          {pane === "status" && <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={show} />}
+          {pane === "destination" && (
+            <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
+          )}
+          {pane === "summarization" && <EndpointForm settings={settings} onSettings={onSettings} />}
+          {pane === "recognition" && (
+            <Models models={models} live={live} actions={actions} settings={settings} onSettings={onSettings} />
+          )}
+          {pane === "licences" && <Licences models={models} />}
+        </div>
       </main>
     </div>
   );

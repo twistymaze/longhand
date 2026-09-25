@@ -60,11 +60,11 @@ describe("App", () => {
     setURL("http://localhost/?window=settings");
     mockApp({ current: idle }, { current: [] });
     render(<App />);
-    expect(await screen.findByRole("tab", { name: "Status" })).toBeTruthy();
-    for (const name of ["Destination", "Summarization", "Recognition", "Licences"]) {
+    expect(await screen.findByRole("tab", { name: "General" })).toBeTruthy();
+    for (const name of ["Storage", "Summaries", "Transcription", "Licences"]) {
       expect(screen.getByRole("tab", { name: new RegExp(name) })).toBeTruthy();
     }
-    expect(screen.queryByText("Sessions")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
   });
 
   // Covers AE6 and KTD2.
@@ -73,7 +73,7 @@ describe("App", () => {
     const entries = { current: [] as SessionEntry[] };
     const tauri = mockApp(status, entries);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
 
     status.current = { ...idle, session_id: "rec", state: "capturing", recording: true };
     entries.current = [recordingEntry];
@@ -82,7 +82,7 @@ describe("App", () => {
 
     await userEvent.setup().click(back);
     expect(screen.getByRole("button", { name: /Recording/ })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
   });
 
   // Covers R3: the tray's "Open Longhand" during a recording.
@@ -91,7 +91,7 @@ describe("App", () => {
     const entries = { current: [recordingEntry] };
     const tauri = mockApp(status, entries);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     await act(() => tauri.emit("show-session", { session_id: "rec" }));
     expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
@@ -120,7 +120,7 @@ describe("App", () => {
       rename_session: () => ({ kind: "later" }),
     });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
     await screen.findByRole("option", { name: /Alpha/ });
 
     await act(() => tauri.emit("show-session", { session_id: "a" }));
@@ -164,12 +164,12 @@ describe("App", () => {
       },
     });
     render(<App />);
-    expect(await screen.findByRole("tab", { name: "Status" })).toBeTruthy();
+    expect(await screen.findByRole("tab", { name: "General" })).toBeTruthy();
     fail = true;
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
     });
     expect(await screen.findByText("The models folder cannot be read.")).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Status" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "General" })).toBeTruthy();
   });
 });

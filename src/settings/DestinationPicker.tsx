@@ -55,10 +55,10 @@ export function DestinationPicker({
   const earlier = settings.destination_roots.filter((root) => root !== current);
 
   return (
-    <Pane title="Destination">
+    <Pane title="Storage">
       <Group
-        header="Sessions are saved to"
-        footer="You can change this at any time, including while recording — a session is saved wherever this points when it finishes processing."
+        header="Notes are saved to"
+        footer="You can change this at any time, including while recording — a note is saved wherever this points when it finishes processing."
       >
         <Row
           label={current ? folderName(current) : "No folder chosen"}
@@ -75,7 +75,7 @@ export function DestinationPicker({
       {earlier.length > 0 && (
         <Group
           header="Earlier folders"
-          footer="Every folder you have chosen is remembered, so sessions already saved there stay findable."
+          footer="Every folder you have chosen is remembered, so notes already saved there stay findable."
         >
           {earlier.map((root) => (
             <Row key={root} label={folderName(root)} detail={root}>
