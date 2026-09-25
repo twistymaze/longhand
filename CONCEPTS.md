@@ -15,7 +15,7 @@ The app's own storage, where a session lives while it records and processes: its
 Some of what it holds never leaves it: the processing audio and the raw recovery chunks stay behind when the session moves to its Destination.
 
 ### Destination
-The folder the user chose to receive finished sessions, possibly on another volume or in a synced cloud folder that several computers share. Nothing partial ever appears in it.
+The folder the user chose to receive finished sessions, possibly on another volume or in a synced cloud folder that several computers share. Nothing partial ever appears in it. The UI calls it "Storage" (Settings > Storage); "Destination" is the term in code and docs only.
 
 ### Save
 The step that moves a finished, verified session from the Working location into the Destination under its final folder name. Its end state is Saved. At every moment, exactly one location holds a complete copy. After a crash at any point, Save continues from what is on disk. It does not start again and it does not lose the session.

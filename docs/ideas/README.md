@@ -82,7 +82,7 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Library and browsing](library-and-browsing.md) | open | Search and a wider index; the list, preview, rename and delete shipped |
-| [One library across computers](cross-machine-library.md) | open | A shared destination listed as one library |
+| [One library across computers](cross-machine-library.md) | in-progress | A shared storage folder listed as one library |
 | [Obsidian vault sync](obsidian-vault-sync.md) | open | Keep sessions in step with a vault |
 | [A local CLI](local-cli.md) | open | Command-line access to the session store |
 
