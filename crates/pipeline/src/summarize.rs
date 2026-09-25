@@ -387,9 +387,10 @@ struct Calls<'a> {
 
 impl Calls<'_> {
     fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<String, Outcome> {
+        let text = prompt_text();
         let room = plan.room(0);
         let notes = fit_notes(room, self.notes);
-        let whole = prompts::whole(turns, &notes);
+        let whole = prompts::whole(turns, &notes, &text);
         if tokens::with_margin(cost(&whole)) + room.reserve as usize <= room.limit as usize {
             return self.call(0, 0, &whole, room, 1);
         }
@@ -411,7 +412,7 @@ impl Calls<'_> {
             return self.call(
                 1,
                 0,
-                &prompts::merge(&only, true, &fit_notes(room, self.notes)),
+                &prompts::merge(&only, true, &fit_notes(room, self.notes), &text),
                 room,
                 1,
             );
@@ -433,7 +434,7 @@ impl Calls<'_> {
                 next.push(self.call(
                     layer,
                     i,
-                    &prompts::merge(&parts, last, &notes),
+                    &prompts::merge(&parts, last, &notes, &text),
                     room,
                     groups.len(),
                 )?);
@@ -464,7 +465,7 @@ impl Calls<'_> {
         self.control.proceed()?;
         let allowance = tokens::prompt_allowance(room.limit, room.reserve)
             .saturating_sub(tokens::estimate(summary));
-        let messages = prompts::title(summary, &prompts::fit_notes(self.notes, allowance));
+        let messages = prompts::title(summary, &prompts::fit_notes(self.notes, allowance, ""));
         let reply = self
             .runtime
             .block_on(self.client.complete(&messages, room.reserve), self.control)?;
@@ -542,17 +543,29 @@ fn cost(messages: &[Message]) -> usize {
     tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
 }
 
+/// The text of the summary prompt. Until U2 takes a snapshot of the active
+/// prompt, every run uses the "Topic summary" built-in.
+fn prompt_text() -> String {
+    prompts::built_in(prompts::TOPIC_SUMMARY_ID)
+        .map(|p| p.text)
+        .unwrap_or_default()
+}
+
 /// The notes document, cut when it would take too much of what `room`
 /// lets a prompt use.
 fn fit_notes(room: Room, notes: &str) -> String {
-    prompts::fit_notes(notes, tokens::prompt_allowance(room.limit, room.reserve))
+    prompts::fit_notes(
+        notes,
+        tokens::prompt_allowance(room.limit, room.reserve),
+        &prompt_text(),
+    )
 }
 
 /// What is left for the transcript or the summaries in one call, after the
 /// prompt's fixed parts and the notes.
 fn chunk_allowance(room: Room, notes: &str) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
-        .saturating_sub(prompts::overhead(notes))
+        .saturating_sub(prompts::overhead(notes, &prompt_text()))
         .max(1)
 }
 
