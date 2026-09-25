@@ -394,10 +394,10 @@ impl ProcessingManager {
         self.runner.unblock(session_id).map_err(|e| e.to_string())
     }
 
-    /// True while the session has its summary regenerated or waits to. A
-    /// delete refuses it (R8).
-    pub fn is_regenerating(&self, session_id: &str) -> bool {
-        self.runner.is_regenerating(session_id)
+    /// The claims that a delete takes: a summary regeneration and a delete
+    /// exclude each other, and a folder rename waits for both (R8).
+    pub fn claims(&self) -> session_core::jobs::Claims {
+        self.runner.claims().clone()
     }
 
     /// Rename a session (R9). The title changes at once; see

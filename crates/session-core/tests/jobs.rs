@@ -384,7 +384,7 @@ fn tick_queues_only_interruptions_past_their_window() {
 
 // ------------------------------------------------------------ delete (U9)
 
-use session_core::jobs::{DeleteError, delete_session};
+use session_core::jobs::{Claims, DeleteError, delete_session};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -449,7 +449,14 @@ fn rows_gone(store: &Mutex<Store>) -> bool {
 fn a_saved_session_is_deleted_home_folder_first_then_working_directory_then_rows() {
     let d = saved_session();
     let mut calls = Vec::new();
-    delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap();
+    delete_session(
+        &d.store,
+        "s",
+        &d.working,
+        &Claims::default(),
+        recording(&mut calls),
+    )
+    .unwrap();
     assert_eq!(calls, vec![d.home.clone(), d.working.clone()]);
     assert!(!d.home.exists() && !d.working.exists());
     assert!(rows_gone(&d.store));
@@ -482,8 +489,14 @@ fn a_busy_session_is_refused_and_nothing_changes() {
     drop(store);
     let busy = |d: &Deletable, want: &str| {
         let mut calls = Vec::new();
-        let err =
-            delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap_err();
+        let err = delete_session(
+            &d.store,
+            "s",
+            &d.working,
+            &Claims::default(),
+            recording(&mut calls),
+        )
+        .unwrap_err();
         assert!(
             matches!(&err, DeleteError::Busy { state } if *state == want),
             "{err:?}"
@@ -516,7 +529,10 @@ fn a_busy_session_is_refused_and_nothing_changes() {
 fn a_session_whose_summary_is_regenerating_is_refused() {
     let d = saved_session();
     let mut calls = Vec::new();
-    let err = delete_session(&d.store, "s", &d.working, true, recording(&mut calls)).unwrap_err();
+    let claims = Claims::default();
+    let _regeneration = claims.regenerate("s").unwrap();
+    let err =
+        delete_session(&d.store, "s", &d.working, &claims, recording(&mut calls)).unwrap_err();
     assert!(
         matches!(
             err,
@@ -531,14 +547,52 @@ fn a_session_whose_summary_is_regenerating_is_refused() {
 }
 
 #[test]
+fn a_regeneration_and_a_delete_exclude_each_other_until_the_claim_is_dropped() {
+    let claims = Claims::default();
+    let regeneration = claims.regenerate("s").unwrap();
+    assert!(claims.delete("s").is_none());
+    assert!(claims.delete("other").is_some());
+    assert!(claims.busy("s") && claims.is_regenerating("s"));
+    drop(regeneration);
+    assert!(!claims.busy("s"));
+    let delete = claims.delete("s").unwrap();
+    assert!(claims.regenerate("s").is_none());
+    assert!(claims.busy("s") && !claims.is_regenerating("s"));
+    drop(delete);
+    assert!(!claims.busy("s"));
+    assert!(claims.regenerate("s").is_some());
+}
+
+#[test]
+fn a_delete_releases_its_claim_when_it_ends() {
+    let d = saved_session();
+    let claims = Claims::default();
+    let mut calls = Vec::new();
+    delete_session(&d.store, "s", &d.working, &claims, |path: &Path| {
+        // A regeneration that starts while the folder is removed is refused.
+        assert!(claims.regenerate("s").is_none());
+        recording(&mut calls)(path)
+    })
+    .unwrap();
+    assert!(!claims.busy("s"));
+    assert!(rows_gone(&d.store));
+}
+
+#[test]
 fn a_failure_on_the_home_folder_leaves_everything_in_place() {
     // Covers AE10.
     let d = saved_session();
     let mut calls = Vec::new();
-    let err = delete_session(&d.store, "s", &d.working, false, |path: &Path| {
-        calls.push(path.to_path_buf());
-        Err("the volume has no Trash".to_string())
-    })
+    let err = delete_session(
+        &d.store,
+        "s",
+        &d.working,
+        &Claims::default(),
+        |path: &Path| {
+            calls.push(path.to_path_buf());
+            Err("the volume has no Trash".to_string())
+        },
+    )
     .unwrap_err();
     match err {
         DeleteError::Remove { path, message } => {
@@ -556,19 +610,32 @@ fn a_failure_on_the_home_folder_leaves_everything_in_place() {
 fn a_failure_on_the_working_directory_keeps_the_rows() {
     let d = saved_session();
     let working = d.working.clone();
-    let err = delete_session(&d.store, "s", &d.working, false, |path: &Path| {
-        if path == working {
-            return Err("busy".to_string());
-        }
-        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
-    })
+    let err = delete_session(
+        &d.store,
+        "s",
+        &d.working,
+        &Claims::default(),
+        |path: &Path| {
+            if path == working {
+                return Err("busy".to_string());
+            }
+            std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+        },
+    )
     .unwrap_err();
     assert!(matches!(err, DeleteError::Remove { ref path, .. } if *path == d.working));
     assert!(!d.home.exists());
     assert!(d.store.lock().unwrap().session("s").unwrap().is_some());
     // A second try, with the home folder already gone, completes.
     let mut calls = Vec::new();
-    delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap();
+    delete_session(
+        &d.store,
+        "s",
+        &d.working,
+        &Claims::default(),
+        recording(&mut calls),
+    )
+    .unwrap();
     assert_eq!(calls, vec![d.working.clone()]);
     assert!(rows_gone(&d.store));
 }
@@ -592,7 +659,14 @@ fn a_session_never_saved_deletes_its_working_directory_only() {
     let working = d.working.with_file_name("n");
     std::fs::create_dir_all(&working).unwrap();
     let mut calls = Vec::new();
-    delete_session(&d.store, "n", &working, false, recording(&mut calls)).unwrap();
+    delete_session(
+        &d.store,
+        "n",
+        &working,
+        &Claims::default(),
+        recording(&mut calls),
+    )
+    .unwrap();
     assert_eq!(calls, vec![working.clone()]);
     assert!(d.store.lock().unwrap().session("n").unwrap().is_none());
     assert!(d.home.exists());
@@ -604,7 +678,14 @@ fn a_retry_after_a_crash_with_both_directories_gone_deletes_the_rows() {
     std::fs::remove_dir_all(&d.home).unwrap();
     std::fs::remove_dir_all(&d.working).unwrap();
     let mut calls = Vec::new();
-    delete_session(&d.store, "s", &d.working, false, recording(&mut calls)).unwrap();
+    delete_session(
+        &d.store,
+        "s",
+        &d.working,
+        &Claims::default(),
+        recording(&mut calls),
+    )
+    .unwrap();
     assert!(calls.is_empty());
     assert!(rows_gone(&d.store));
 }
@@ -613,10 +694,16 @@ fn a_retry_after_a_crash_with_both_directories_gone_deletes_the_rows() {
 fn a_remover_that_fails_on_a_directory_already_gone_counts_it_as_removed() {
     // Another process removed the folder between the check and the call.
     let d = saved_session();
-    delete_session(&d.store, "s", &d.working, false, |path: &Path| {
-        std::fs::remove_dir_all(path).unwrap();
-        Err("the item could not be found".to_string())
-    })
+    delete_session(
+        &d.store,
+        "s",
+        &d.working,
+        &Claims::default(),
+        |path: &Path| {
+            std::fs::remove_dir_all(path).unwrap();
+            Err("the item could not be found".to_string())
+        },
+    )
     .unwrap();
     assert!(rows_gone(&d.store));
 }
@@ -624,7 +711,14 @@ fn a_remover_that_fails_on_a_directory_already_gone_counts_it_as_removed() {
 #[test]
 fn deleting_no_such_session_is_an_error() {
     let d = saved_session();
-    let err = delete_session(&d.store, "nope", &d.working, false, |_: &Path| Ok(())).unwrap_err();
+    let err = delete_session(
+        &d.store,
+        "nope",
+        &d.working,
+        &Claims::default(),
+        |_: &Path| Ok(()),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, DeleteError::Store(StoreError::NoSuchSession(_))),
         "{err:?}"

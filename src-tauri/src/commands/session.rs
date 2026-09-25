@@ -518,13 +518,13 @@ async fn delete(
 ) -> Result<(), DeleteSessionError> {
     let store = capture.shared_store();
     let working = capture.working_root().join(&session_id);
-    let regenerating = processing.is_regenerating(&session_id);
+    let claims = processing.claims();
     let remove = match removal {
         Removal::Trash => move_to_trash,
         Removal::Permanent => remove_permanently,
     };
     tauri::async_runtime::spawn_blocking(move || {
-        session_core::jobs::delete_session(&store, &session_id, &working, regenerating, remove)
+        session_core::jobs::delete_session(&store, &session_id, &working, &claims, remove)
             .inspect(|()| log::info!("deleted session {session_id} ({removal:?})"))
     })
     .await
@@ -627,7 +627,8 @@ mod delete_tests {
             .unwrap();
         store.set_home_path("s", home.to_str().unwrap()).unwrap();
         let store = std::sync::Mutex::new(store);
-        session_core::jobs::delete_session(&store, "s", &working, false, remove_permanently)
+        let claims = session_core::jobs::Claims::default();
+        session_core::jobs::delete_session(&store, "s", &working, &claims, remove_permanently)
             .unwrap();
         assert!(!home.exists() && !working.exists());
         assert!(store.lock().unwrap().session("s").unwrap().is_none());

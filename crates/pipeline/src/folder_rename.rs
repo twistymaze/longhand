@@ -26,8 +26,8 @@ use crate::{SharedStore, StageError, lock};
 pub enum FolderRename {
     /// The folder already has the name its title gives.
     Unchanged,
-    /// The session is busy: it records, is queued, processes or
-    /// regenerates its summary. The folder takes the name when that ends.
+    /// The session is busy: it records, is queued, processes, regenerates
+    /// its summary or is deleted. The folder takes the name when that ends.
     Later,
     /// The folder has the new name at this path.
     Moved(PathBuf),
@@ -38,28 +38,29 @@ pub enum FolderRename {
 
 /// Whether a session is too busy for a folder rename (KTD8). This is the
 /// one busy check: every reconcile calls it. A session that records, is
-/// queued or processes is not in the saved state. `regenerating` is true
-/// while the session's summary is regenerated; the caller reads it under
-/// the store lock, so a regeneration that starts later reads the renamed
+/// queued or processes is not in the saved state. `claimed` is true while
+/// a summary regeneration or a delete holds a claim on the session
+/// (`session_core::jobs::Claims`); the caller reads it under the store
+/// lock, so a regeneration or a delete that starts later reads the renamed
 /// folder.
-pub fn busy(record: &SessionRecord, regenerating: bool) -> bool {
-    record.state != SessionState::Saved || record.home_path.is_none() || regenerating
+pub fn busy(record: &SessionRecord, claimed: bool) -> bool {
+    record.state != SessionState::Saved || record.home_path.is_none() || claimed
 }
 
 /// The user's rename (R9, R35): store `title` as the user's title, which
-/// changes it at once, then run the reconcile. `regenerating` tells
-/// whether the session's summary is regenerated now.
+/// changes it at once, then run the reconcile. `claimed` tells whether a
+/// summary regeneration or a delete holds a claim on the session now.
 pub fn rename_session(
     store: &SharedStore,
     session_id: &str,
     title: &str,
-    regenerating: &dyn Fn(&str) -> bool,
+    claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
     let guard = lock(store);
     guard.set_title(session_id, title, TitleSource::User)?;
-    let regenerating = regenerating(session_id);
-    reconcile(&guard, session_id, regenerating, true, fs)
+    let claimed = claimed(session_id);
+    reconcile(&guard, session_id, claimed, true, fs)
 }
 
 /// Compare a saved, idle session's folder name with the name its title
@@ -70,12 +71,12 @@ pub fn rename_session(
 pub fn reconcile(
     store: &Store,
     session_id: &str,
-    regenerating: bool,
+    claimed: bool,
     check_document: bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
     let record = require(store, session_id)?;
-    if busy(&record, regenerating) {
+    if busy(&record, claimed) {
         return Ok(FolderRename::Later);
     }
     // An intent that an earlier failure left is settled first, so the
@@ -148,10 +149,10 @@ pub fn reconcile(
 pub fn reconcile_shared(
     store: &SharedStore,
     session_id: &str,
-    regenerating: bool,
+    claimed: bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    reconcile(&lock(store), session_id, regenerating, true, fs)
+    reconcile(&lock(store), session_id, claimed, true, fs)
 }
 
 /// At launch, settle every rename intent that a crash left. Returns the

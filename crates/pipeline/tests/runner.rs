@@ -1581,8 +1581,20 @@ fn set_title(store: &SharedStore, id: &str, title: &str) {
 }
 
 /// Run a titled session up to the save, then run the save stage by hand
-/// with `fs`, which fails it at the final rename.
+/// with `fs`, which fails it at the final rename. The session goes back to
+/// the queue.
 async fn save_fails_at_the_final_rename(r: &Rig, after_the_rename: bool) {
+    stage_then_fail_the_final_rename(r, after_the_rename).await;
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::ClaimLost)
+        .unwrap();
+}
+
+/// [`save_fails_at_the_final_rename`] without the last step: the session
+/// stays in processing with the `Staged` save state.
+async fn stage_then_fail_the_final_rename(r: &Rig, after_the_rename: bool) {
     queue_session(
         &r.store,
         &r.root,
@@ -1626,11 +1638,6 @@ async fn save_fails_at_the_final_rename(r: &Rig, after_the_rename: bool) {
         .unwrap(),
         Some(session_save::SaveState::Staged { .. })
     ));
-    r.store
-        .lock()
-        .unwrap()
-        .apply("s", &session_core::Event::ClaimLost)
-        .unwrap();
 }
 
 fn destination_entries(r: &Rig) -> Vec<String> {
@@ -2694,4 +2701,104 @@ async fn a_notes_document_longer_than_the_budget_is_cut_and_every_request_fits()
             content.len()
         );
     }
+}
+
+// ------------------------------------------------------------- delete (U9)
+
+/// A remover that removes the directory, as the Trash would move it away.
+fn remove_now(path: &std::path::Path) -> Result<(), String> {
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_while_a_delete_removes_the_folder_leaves_no_folder() {
+    let r = rig().await;
+    let home = saved_session(&r, None).await;
+    let working = r.root.join("s");
+    let mut renamed = None;
+    let claims = r.runner.claims().clone();
+    session_core::jobs::delete_session(&r.store, "s", &working, &claims, |path| {
+        // The title commits after the delete read the home folder and
+        // before the delete removes it.
+        if path == home {
+            renamed = Some(r.runner.rename_session("s", "Budget review").unwrap());
+        }
+        remove_now(path)
+    })
+    .unwrap();
+    assert_eq!(renamed, Some(FolderRename::Later));
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_while_a_delete_removes_the_folder_is_refused() {
+    let r = rig().await;
+    let home = saved_session(&r, None).await;
+    let store = Arc::clone(&r.store);
+    let runner = Arc::clone(&r.runner);
+    let working = r.root.join("s");
+    let handle = tokio::runtime::Handle::current();
+    let regenerated = tokio::task::spawn_blocking(move || {
+        let mut regenerated = None;
+        let claims = runner.claims().clone();
+        session_core::jobs::delete_session(&store, "s", &working, &claims, |path| {
+            if path == home {
+                regenerated = Some(handle.block_on(runner.regenerate_summary("s")));
+            }
+            remove_now(path)
+        })
+        .unwrap();
+        regenerated
+    })
+    .await
+    .unwrap();
+    let regenerated = regenerated.expect("the remover ran on the home folder");
+    assert!(regenerated.is_err(), "{regenerated:?}");
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_session_whose_save_stopped_when_staged_removes_the_staged_copy() {
+    let r = rig().await;
+    stage_then_fail_the_final_rename(&r, false).await;
+    r.store
+        .lock()
+        .unwrap()
+        .apply(
+            "s",
+            &session_core::Event::SaveFailed("the process stopped".into()),
+        )
+        .unwrap();
+    let Some(session_save::SaveState::Staged { staging, .. }) =
+        checkpoint::get::<session_save::SaveState>(
+            &r.store,
+            "s",
+            Stage::Save,
+            pipeline::save::STATE,
+        )
+        .unwrap()
+    else {
+        panic!("the save stopped when staged");
+    };
+    assert!(staging.join("audio/segment-01.opus").exists());
+    let claims = r.runner.claims().clone();
+    session_core::jobs::delete_session(&r.store, "s", &r.root.join("s"), &claims, remove_now)
+        .unwrap();
+    assert!(!staging.exists());
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
 }

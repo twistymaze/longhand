@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use asr::Recognizer;
 use chrono::{DateTime, FixedOffset, Local};
+use session_core::jobs::Claims;
 use session_core::{Event, SessionState, Stage};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -158,9 +159,9 @@ pub struct Runner {
     engine: Arc<Mutex<Option<Box<dyn Recognizer>>>>,
     /// One stage of one session at a time, whoever asks (R20c).
     permit: Arc<Semaphore>,
-    /// Sessions whose summary is regenerated now or waits for its turn,
-    /// once for each request. A delete refuses them (R8).
-    regenerating: Arc<Mutex<Vec<String>>>,
+    /// Summary regenerations and deletes that run on a session. They
+    /// exclude each other, and a folder rename waits for both (R8, KTD8).
+    claims: Claims,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -217,7 +218,7 @@ impl Runner {
             shutdown: CancellationToken::new(),
             engine: Arc::new(Mutex::new(None)),
             permit: Arc::new(Semaphore::new(1)),
-            regenerating: Arc::default(),
+            claims: Claims::default(),
         })
     }
 
@@ -301,7 +302,11 @@ impl Runner {
     /// Summarize a saved session again, replacing its `summary.md` (R19,
     /// AE17). Takes its turn with the stages, one at a time (R20c).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
-        let _regenerating = Regenerating::begin(&self.regenerating, session_id);
+        let _claim = self.claims.regenerate(session_id).ok_or_else(|| {
+            StageError::Failed(
+                "This session is being deleted, so its summary cannot be made again.".into(),
+            )
+        })?;
         let _permit = self
             .permit
             .clone()
@@ -341,11 +346,13 @@ impl Runner {
 
     /// True while `session_id` has its summary regenerated or waits to.
     pub fn is_regenerating(&self, session_id: &str) -> bool {
-        self.regenerating
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|id| id == session_id)
+        self.claims.is_regenerating(session_id)
+    }
+
+    /// The claims that a delete takes (R8): see
+    /// [`session_core::jobs::delete_session`].
+    pub fn claims(&self) -> &Claims {
+        &self.claims
     }
 
     /// The user's rename (R9): the title changes at once, and a saved, idle
@@ -360,7 +367,7 @@ impl Runner {
             &self.env.store,
             session_id,
             title,
-            &|id| self.is_regenerating(id),
+            &|id| self.claims.busy(id),
             &session_save::RealFs,
         )
     }
@@ -786,33 +793,5 @@ impl Control for Unattended {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
-    }
-}
-
-/// Marks a session as regenerating until it is dropped, also when the
-/// regeneration fails or its future is dropped.
-struct Regenerating {
-    set: Arc<Mutex<Vec<String>>>,
-    session_id: String,
-}
-
-impl Regenerating {
-    fn begin(set: &Arc<Mutex<Vec<String>>>, session_id: &str) -> Self {
-        set.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(session_id.to_string());
-        Self {
-            set: Arc::clone(set),
-            session_id: session_id.to_string(),
-        }
-    }
-}
-
-impl Drop for Regenerating {
-    fn drop(&mut self) {
-        let mut set = self.set.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(i) = set.iter().position(|id| *id == self.session_id) {
-            set.swap_remove(i);
-        }
     }
 }

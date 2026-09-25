@@ -24,7 +24,7 @@ pub const SESSION_FILE: &str = "session.md";
 pub const NOTES_FILE: &str = "notes.md";
 /// The save's progress, a [`SaveState`]. Its presence means saving has
 /// begun and the session can no longer be resumed.
-pub const STATE: &str = "state";
+pub const STATE: &str = session_core::jobs::SAVE_STATE;
 /// The destination folder name, a string, recorded with the claim so that
 /// every later run of the save uses the same name (KTD7). A title that
 /// changes during the save cannot then send the final rename, or the scan

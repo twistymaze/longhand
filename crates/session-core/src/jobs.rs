@@ -796,36 +796,146 @@ pub fn delete_refusal(state: &SessionState) -> Option<&'static str> {
     }
 }
 
+/// Work on a session that its state does not show: a summary that is
+/// regenerated and a delete that removes the session's directories. The
+/// two exclude each other, and a folder rename waits for both (R8, KTD8).
+/// Each claim is taken and checked under one lock, so a regeneration or a
+/// delete that starts later sees the claim that came first.
+#[derive(Clone, Default)]
+pub struct Claims {
+    set: std::sync::Arc<std::sync::Mutex<ClaimSet>>,
+}
+
+#[derive(Default)]
+struct ClaimSet {
+    /// One entry for each regeneration that runs or waits for its turn.
+    regenerating: Vec<String>,
+    /// One entry for each delete that runs.
+    deleting: Vec<String>,
+}
+
+/// Which work a [`Claim`] is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaimKind {
+    Regenerate,
+    Delete,
+}
+
+/// A claim on a session, released when it is dropped, also when the work
+/// fails or its future is dropped.
+pub struct Claim {
+    claims: Claims,
+    session_id: String,
+    kind: ClaimKind,
+}
+
+impl Claims {
+    fn set(&self) -> std::sync::MutexGuard<'_, ClaimSet> {
+        self.set.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Claim the session for a summary regeneration. None while a delete
+    /// runs on it.
+    pub fn regenerate(&self, session_id: &str) -> Option<Claim> {
+        let mut set = self.set();
+        if set.deleting.iter().any(|id| id == session_id) {
+            return None;
+        }
+        set.regenerating.push(session_id.to_string());
+        Some(self.claim(session_id, ClaimKind::Regenerate))
+    }
+
+    /// Claim the session for a delete. None while its summary is
+    /// regenerated or waits to be.
+    pub fn delete(&self, session_id: &str) -> Option<Claim> {
+        let mut set = self.set();
+        if set.regenerating.iter().any(|id| id == session_id) {
+            return None;
+        }
+        set.deleting.push(session_id.to_string());
+        Some(self.claim(session_id, ClaimKind::Delete))
+    }
+
+    fn claim(&self, session_id: &str, kind: ClaimKind) -> Claim {
+        Claim {
+            claims: self.clone(),
+            session_id: session_id.to_string(),
+            kind,
+        }
+    }
+
+    /// True while the session's summary is regenerated or waits to be.
+    pub fn is_regenerating(&self, session_id: &str) -> bool {
+        self.set().regenerating.iter().any(|id| id == session_id)
+    }
+
+    /// True while a regeneration or a delete holds a claim on the session.
+    /// A folder rename then waits (KTD8).
+    pub fn busy(&self, session_id: &str) -> bool {
+        let set = self.set();
+        set.regenerating
+            .iter()
+            .chain(&set.deleting)
+            .any(|id| id == session_id)
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let mut set = self.claims.set();
+        let ids = match self.kind {
+            ClaimKind::Regenerate => &mut set.regenerating,
+            ClaimKind::Delete => &mut set.deleting,
+        };
+        if let Some(i) = ids.iter().position(|id| *id == self.session_id) {
+            ids.swap_remove(i);
+        }
+    }
+}
+
 /// Delete a session (R8, R33): remove its home folder (when it has one),
-/// then its working directory, then its rows. Child rows cascade.
+/// then the staging directory of a save that stopped before its final
+/// rename (when there is one), then its working directory, then its rows.
+/// Child rows cascade.
 ///
 /// `remove` moves a directory to the Trash or deletes it permanently. The
 /// store is not locked while it runs. A directory that is already missing
 /// counts as removed, so a delete that stopped part way completes when it
-/// is tried again. `regenerating` is true while the session's summary is
-/// regenerated, which also refuses the delete.
+/// is tried again. The delete holds a claim in `claims` from before it
+/// reads the home folder until it deletes the rows: a folder rename waits
+/// for it, and a summary regeneration refuses it and is refused by it.
 pub fn delete_session<R>(
     store: &std::sync::Mutex<Store>,
     id: &str,
     working_dir: &Path,
-    regenerating: bool,
+    claims: &Claims,
     mut remove: R,
 ) -> std::result::Result<(), DeleteError>
 where
     R: FnMut(&Path) -> std::result::Result<(), String>,
 {
     let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
-    let record = lock().require(id)?;
-    if let Some(state) = delete_refusal(&record.state) {
-        return Err(DeleteError::Busy { state });
-    }
-    if regenerating {
+    // The claim comes before the home folder is read. A rename that holds
+    // the store lock now completes first, and the read gets its new path.
+    let Some(_claim) = claims.delete(id) else {
         return Err(DeleteError::Busy {
             state: "regenerating",
         });
+    };
+    let (record, staging) = {
+        let store = lock();
+        let record = store.require(id)?;
+        (record, store.save_staging(id)?)
+    };
+    if let Some(state) = delete_refusal(&record.state) {
+        return Err(DeleteError::Busy { state });
     }
     let home = record.home_path.as_deref().map(Path::new);
-    for dir in home.into_iter().chain([working_dir]) {
+    for dir in home
+        .into_iter()
+        .chain(staging.as_deref())
+        .chain([working_dir])
+    {
         remove_dir(dir, &mut remove)?;
     }
     let store = lock();
@@ -840,6 +950,28 @@ where
         .map_err(StoreError::from)?;
     Ok(())
 }
+
+impl Store {
+    /// The staging directory that the save stage recorded for a save that
+    /// stopped before its final rename: the save state names a `staging`
+    /// path only while it copies or holds a complete staged copy.
+    fn save_staging(&self, id: &str) -> Result<Option<std::path::PathBuf>> {
+        #[derive(serde::Deserialize)]
+        struct Staging {
+            staging: Option<std::path::PathBuf>,
+        }
+        Ok(self
+            .checkpoints(id, Stage::Save)?
+            .into_iter()
+            .filter(|(key, _)| key == SAVE_STATE)
+            .find_map(|(_, payload)| serde_json::from_str::<Staging>(&payload).ok())
+            .and_then(|s| s.staging))
+    }
+}
+
+/// The key of the save stage's checkpoint that holds its state
+/// (`pipeline::save::STATE`).
+pub const SAVE_STATE: &str = "state";
 
 fn remove_dir<R>(dir: &Path, remove: &mut R) -> std::result::Result<(), DeleteError>
 where
