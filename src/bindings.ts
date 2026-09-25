@@ -367,9 +367,10 @@ export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: strin
 { kind: "missing"; path: string } | { kind: "not_a_directory"; path: string } | { kind: "not_writable"; path: string; message: string } | { kind: "low_space"; path: string; free_bytes: number; floor_bytes: number }
 export type DocLine = { kind: "turn"; position_ms: number; speaker: number | null; text: string } | 
 /**
- * Between segments; `at_ms` is where the earlier segment ends.
+ * Between segments; `at_ms` is where the earlier segment ends, and
+ * `wall_start` (RFC 3339) is when the next segment started (KTD12).
  */
-{ kind: "gap"; at_ms: number; duration_ms: number } | { kind: "silence"; duration_ms: number }
+{ kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
 export type EndpointView = { host: string; model: string; 
 /**
@@ -525,7 +526,16 @@ state: string;
  * The stage started last: the running one, or the one a failed
  * session stopped at.
  */
-stage: string | null }
+stage: string | null; 
+/**
+ * The proposed or typed title, if the session has one (R28).
+ */
+title: string | null; 
+/**
+ * The number of speakers that processing found (KTD11). `None` before
+ * the join, or when the transcript has no speaker marks.
+ */
+found_speakers: number | null }
 export type Settings = { settings_schema_version: number; shortcut: string; 
 /**
  * Every folder the user has ever chosen, oldest first (R25a). The index

@@ -29,6 +29,11 @@ pub struct SessionEntry {
     /// The stage started last: the running one, or the one a failed
     /// session stopped at.
     pub stage: Option<String>,
+    /// The proposed or typed title, if the session has one (R28).
+    pub title: Option<String>,
+    /// The number of speakers that processing found (KTD11). `None` before
+    /// the join, or when the transcript has no speaker marks.
+    pub found_speakers: Option<u32>,
 }
 
 #[derive(Serialize, Type)]
@@ -71,10 +76,12 @@ pub enum DocLine {
         speaker: Option<u32>,
         text: String,
     },
-    /// Between segments; `at_ms` is where the earlier segment ends.
+    /// Between segments; `at_ms` is where the earlier segment ends, and
+    /// `wall_start` (RFC 3339) is when the next segment started (KTD12).
     Gap {
         at_ms: u64,
         duration_ms: u64,
+        wall_start: Option<String>,
     },
     Silence {
         duration_ms: u64,
@@ -117,6 +124,8 @@ fn entry(
         duration_ms: segments.iter().map(|s| s.duration_ms).sum(),
         state: record.state.name().to_string(),
         stage: stage.map(stage_name),
+        title: record.title.as_ref().map(|t| t.text.clone()),
+        found_speakers: record.found_speakers,
     }
 }
 
@@ -302,15 +311,17 @@ pub fn session_document(
     })
 }
 
-/// Transcript lines, each gap placed at the end of the segment before it.
+/// Transcript lines, each gap placed at the end of the segment before it
+/// and given the wall-clock start of the segment after it.
 fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
-    let mut ends: Vec<u64> = doc
-        .segments
-        .iter()
-        .map(|s| s.offset_ms + s.duration_ms)
-        .collect();
-    ends.sort_unstable();
-    let mut gaps = ends.into_iter();
+    let mut ordered: Vec<_> = doc.segments.iter().collect();
+    ordered.sort_by_key(|s| s.offset_ms);
+    let mut gaps = ordered.windows(2).map(|pair| {
+        (
+            pair[0].offset_ms + pair[0].duration_ms,
+            pair[1].wall_start.to_rfc3339(),
+        )
+    });
     transcript
         .lines
         .into_iter()
@@ -324,10 +335,15 @@ fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
                 speaker,
                 text,
             },
-            TranscriptLine::Gap { duration_ms } => DocLine::Gap {
-                at_ms: gaps.next().unwrap_or_default(),
-                duration_ms,
-            },
+            TranscriptLine::Gap { duration_ms } => {
+                let (at_ms, wall_start) =
+                    gaps.next().map_or((0, None), |(at, wall)| (at, Some(wall)));
+                DocLine::Gap {
+                    at_ms,
+                    duration_ms,
+                    wall_start,
+                }
+            }
             TranscriptLine::Silence { duration_ms } => DocLine::Silence { duration_ms },
         })
         .collect()
@@ -382,11 +398,51 @@ mod tests {
         };
         let lines = doc_lines(&doc, transcript);
         assert!(matches!(
-            lines[1],
+            &lines[1],
             DocLine::Gap {
                 at_ms: 600_000,
-                duration_ms: 600_000
-            }
+                duration_ms: 600_000,
+                wall_start: Some(w),
+            } if w == "2026-09-22T14:20:00+00:00"
         ));
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+    use session_core::{Title, TitleSource};
+
+    #[test]
+    fn an_entry_carries_the_title_and_the_found_speaker_count() {
+        let created = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:00:00+00:00").unwrap();
+        let record = SessionRecord {
+            id: "s".into(),
+            created_at: created,
+            state: SessionState::Saved,
+            queue_seq: None,
+            speaker_count: None,
+            asr_model: None,
+            home_path: None,
+            title: Some(Title {
+                text: "Budget review".into(),
+                source: TitleSource::Proposed,
+            }),
+            found_speakers: Some(3),
+        };
+        let e = entry(&record, &[], None);
+        assert_eq!(e.title.as_deref(), Some("Budget review"));
+        assert_eq!(e.found_speakers, Some(3));
+        let e = entry(
+            &SessionRecord {
+                title: None,
+                found_speakers: None,
+                ..record
+            },
+            &[],
+            None,
+        );
+        assert_eq!(e.title, None);
+        assert_eq!(e.found_speakers, None);
     }
 }

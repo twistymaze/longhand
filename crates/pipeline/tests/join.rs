@@ -4,7 +4,7 @@ use asr::AsrSegment;
 use chrono::{DateTime, FixedOffset};
 use diarize::Turn;
 use pipeline::diarize::Speakers;
-use pipeline::join::{SILENCE_MARK_MS, build};
+use pipeline::join::{SILENCE_MARK_MS, build, found_speakers};
 use pipeline::transcribe::WindowResult;
 use session_core::Segment;
 use session_core::folder::TranscriptLine;
@@ -150,13 +150,24 @@ fn a_long_silence_inside_a_segment_is_marked_and_splits_the_turn() {
             duration_ms: SILENCE_MARK_MS
         }
     );
-    // A shorter pause is not marked.
+    // A shorter pause is not marked. It still starts a new paragraph (KTD10).
     let windows = [
         window(0, 0, &[(0, 1_000, "hello")]),
         window(0, SILENCE_MARK_MS, &[(0, 1_000, "again")]),
     ];
     let t = build(&segments, &windows, &speakers);
-    assert_eq!(turns_of(&t.lines), vec![(0, Some(1), "hello again".into())]);
+    assert!(
+        !t.lines
+            .iter()
+            .any(|l| matches!(l, TranscriptLine::Silence { .. }))
+    );
+    assert_eq!(
+        turns_of(&t.lines),
+        vec![
+            (0, Some(1), "hello".into()),
+            (SILENCE_MARK_MS, Some(1), "again".into())
+        ]
+    );
 }
 
 #[test]
@@ -237,4 +248,175 @@ fn a_window_without_timestamped_segments_uses_its_own_span() {
     let speakers = Speakers::Turns(vec![turn(0, 0, 3_500, 1), turn(0, 3_500, 10_000, 2)]);
     let t = build(&segments, &windows, &speakers);
     assert_eq!(turns_of(&t.lines), vec![(2_000, Some(1), "whole".into())]);
+}
+
+/// A sentence of `len` characters that ends with a full stop.
+fn sentence(n: usize, len: usize) -> String {
+    let head = format!("Sentence {n} says");
+    let mut s = head.clone();
+    while s.len() < len - 1 {
+        s.push_str(" more");
+    }
+    s.truncate(len - 1);
+    s.push('.');
+    s
+}
+
+#[test]
+fn a_long_turn_splits_into_paragraphs_at_sentence_starts() {
+    let sentences: Vec<String> = (0..6).map(|n| sentence(n, 200)).collect();
+    // Six sentences of 200 characters, 5 s each, with no pause between them.
+    let pieces: Vec<(u64, u64, &str)> = sentences
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i as u64 * 5_000, (i as u64 + 1) * 5_000, s.as_str()))
+        .collect();
+    let segments = [segment(0, 10_000, 60_000)];
+    let windows = [window(0, 0, &pieces)];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 60_000, 1)]);
+    let turns = turns_of(&build(&segments, &windows, &speakers).lines);
+    assert!(turns.len() >= 3, "{turns:?}");
+    for (position_ms, speaker, text) in &turns {
+        assert_eq!(*speaker, Some(1));
+        let i = sentences
+            .iter()
+            .position(|s| text.starts_with(s.as_str()))
+            .expect("each turn starts at a sentence start");
+        assert_eq!(*position_ms, 10_000 + i as u64 * 5_000);
+        assert!(text.ends_with('.'), "{text}");
+    }
+    let joined: Vec<String> = turns.into_iter().map(|t| t.2).collect();
+    assert_eq!(joined.join(" "), sentences.join(" "));
+}
+
+#[test]
+fn a_long_turn_does_not_split_in_the_middle_of_a_sentence() {
+    let long = sentence(0, 450);
+    let long = long.trim_end_matches('.');
+    let windows = [window(
+        0,
+        0,
+        &[(0, 5_000, long), (5_000, 6_000, "and the end.")],
+    )];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 10_000, 1)]);
+    let turns = turns_of(&build(&[segment(0, 0, 10_000)], &windows, &speakers).lines);
+    assert_eq!(turns.len(), 1, "{turns:?}");
+}
+
+#[test]
+fn a_pause_of_three_seconds_starts_a_new_turn() {
+    let windows = [window(0, 0, &[(0, 1_000, "one"), (4_000, 5_000, "two")])];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 10_000, 1)]);
+    let turns = turns_of(&build(&[segment(0, 0, 10_000)], &windows, &speakers).lines);
+    assert_eq!(
+        turns,
+        vec![(0, Some(1), "one".into()), (4_000, Some(1), "two".into())]
+    );
+    // Without speakers the pause splits the text too.
+    let turns = turns_of(&build(&[segment(0, 0, 10_000)], &windows, &Speakers::Unavailable).lines);
+    assert_eq!(turns.len(), 2);
+}
+
+#[test]
+fn a_short_same_speaker_run_stays_one_turn() {
+    let windows = [window(
+        0,
+        0,
+        &[
+            (0, 1_000, "One."),
+            (2_500, 3_000, "Two."),
+            (4_000, 5_000, "Three."),
+        ],
+    )];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 10_000, 1)]);
+    let turns = turns_of(&build(&[segment(0, 0, 10_000)], &windows, &speakers).lines);
+    assert_eq!(turns, vec![(0, Some(1), "One. Two. Three.".into())]);
+}
+
+#[test]
+fn the_found_speaker_count_is_the_number_of_distinct_speakers() {
+    let segments = [segment(0, 0, 20_000)];
+    let windows = [window(
+        0,
+        0,
+        &[
+            (0, 1_000, "a"),
+            (5_000, 6_000, "b"),
+            (10_000, 11_000, "c"),
+            (15_000, 16_000, "d"),
+        ],
+    )];
+    let speakers = Speakers::Turns(vec![
+        turn(0, 0, 5_000, 7),
+        turn(0, 5_000, 10_000, 4),
+        turn(0, 10_000, 15_000, 9),
+        turn(0, 15_000, 20_000, 7),
+    ]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(found_speakers(&t), Some(3));
+    // No speaker marks (R20a): no count.
+    let t = build(&segments, &windows, &Speakers::Unavailable);
+    assert_eq!(found_speakers(&t), None);
+    // Speakers found, but nothing said: no marks, so no count.
+    let t = build(&segments, &[], &speakers);
+    assert_eq!(found_speakers(&t), None);
+}
+
+fn stored(windows: &[WindowResult], speakers: &Speakers) -> pipeline::SharedStore {
+    let mut store = session_core::Store::open_in_memory().unwrap();
+    store.create_session("s", wall(), None).unwrap();
+    let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+    for w in windows {
+        pipeline::checkpoint::put(
+            &store,
+            "s",
+            session_core::Stage::Transcribe,
+            &pipeline::checkpoint::window_key(w.segment, w.window),
+            w,
+        )
+        .unwrap();
+    }
+    match speakers {
+        Speakers::Turns(turns) => pipeline::checkpoint::put(
+            &store,
+            "s",
+            session_core::Stage::Diarize,
+            pipeline::diarize::TURNS,
+            turns,
+        )
+        .unwrap(),
+        Speakers::Unavailable => {
+            pipeline::diarize::record_failure(&store, "s", 1, "no speakers").unwrap()
+        }
+    }
+    store
+}
+
+#[test]
+fn the_join_stage_stores_the_found_speaker_count() {
+    let segments = [segment(0, 0, 20_000)];
+    let windows = [window(
+        0,
+        0,
+        &[(0, 1_000, "a"), (5_000, 6_000, "b"), (10_000, 11_000, "c")],
+    )];
+    let speakers = Speakers::Turns(vec![
+        turn(0, 0, 5_000, 2),
+        turn(0, 5_000, 10_000, 1),
+        turn(0, 10_000, 15_000, 3),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let store = stored(&windows, &speakers);
+    pipeline::join::run(&store, "s", dir.path(), &segments).unwrap();
+    assert_eq!(store.lock().unwrap().found_speakers("s").unwrap(), Some(3));
+
+    // A run without speaker marks records none, and replaces an earlier count.
+    let store = stored(&windows, &Speakers::Unavailable);
+    store
+        .lock()
+        .unwrap()
+        .set_found_speakers("s", Some(2))
+        .unwrap();
+    pipeline::join::run(&store, "s", dir.path(), &segments).unwrap();
+    assert_eq!(store.lock().unwrap().found_speakers("s").unwrap(), None);
 }

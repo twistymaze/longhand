@@ -1,4 +1,4 @@
-//! The runner end to end over real chunk files, with a scripted recognizer.
+//! The runer end to end over real chunk files, with a scripted recognizer.
 
 mod common;
 #[path = "../../summarize/tests/common/mod.rs"]
@@ -531,6 +531,10 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
+    // The join records the number of speakers it found (KTD11).
+    let parsed = session_core::folder::Transcript::parse(&transcript).unwrap();
+    let found = r.store.lock().unwrap().found_speakers("s").unwrap();
+    assert_eq!(found, pipeline::join::found_speakers(&parsed));
     assert!(r.events.lock().unwrap().iter().any(|e| matches!(
         e,
         RunnerEvent::Progress {
@@ -565,6 +569,8 @@ async fn a_diarization_failure_delivers_the_transcript_without_speakers() {
     )));
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
+    // No speaker marks (R20a): no found speaker count.
+    assert_eq!(r.store.lock().unwrap().found_speakers("s").unwrap(), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
