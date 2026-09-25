@@ -227,6 +227,156 @@ describe("SummaryPrompts", () => {
     expect(textArea().value).toBe("Short recap");
   });
 
+  test("a failed save on a change of prompt keeps the text and the error with its prompt", async () => {
+    let fail = true;
+    const tauri = backend({
+      set_summary_prompt_text: () => {
+        if (fail) throw "The prompt text cannot be saved.";
+        return baseSettings;
+      },
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await user.click(row("Topic summary"));
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+    expect(textArea().value).toBe("Topic text");
+    expect(screen.queryByText("The prompt text cannot be saved.")).toBeNull();
+
+    await user.click(row("Game recap"));
+    expect(textArea().value).toBe("Changed");
+    expect(screen.getByText("The prompt text cannot be saved.")).toBeTruthy();
+
+    // A later edit saves again.
+    fail = false;
+    fireEvent.change(textArea(), { target: { value: "Changed again" } });
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(textCalls(tauri)[1]).toEqual({ id: "c1", text: "Changed again" }));
+    await waitFor(() => expect(screen.queryByText("The prompt text cannot be saved.")).toBeNull());
+  });
+
+  test("New and Duplicate stop when the save of the selected prompt fails", async () => {
+    const tauri = backend({
+      set_summary_prompt_text: () => {
+        throw "The prompt text cannot be saved.";
+      },
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await user.click(screen.getByRole("button", { name: "New Prompt" }));
+    expect(await screen.findByText("The prompt text cannot be saved.")).toBeTruthy();
+    await user.click(button("Duplicate"));
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+    expect(tauri.calls.some((c) => c.cmd === "create_summary_prompt")).toBe(false);
+    expect(tauri.calls.some((c) => c.cmd === "duplicate_summary_prompt")).toBe(false);
+    expect(row("Game recap").getAttribute("aria-checked")).toBe("true");
+    expect(textArea().value).toBe("Changed");
+  });
+
+  test("pagehide saves the text before the timer", async () => {
+    const tauri = backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Short recap" } });
+    act(() => void window.dispatchEvent(new Event("pagehide")));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short recap" }]), { timeout: 500 });
+  });
+
+  test("beforeunload saves the text before the timer", async () => {
+    const tauri = backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Short recap" } });
+    act(() => void window.dispatchEvent(new Event("beforeunload")));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short recap" }]), { timeout: 500 });
+  });
+
+  test("a window close waits for the save, then closes the window and asks nothing", async () => {
+    // The save command waits until the test calls `finish`.
+    let finish: () => void = () => {};
+    const saved = new Promise<void>((r) => (finish = r));
+    const tauri = backend({
+      set_summary_prompt_text: async () => {
+        await saved;
+        return baseSettings;
+      },
+      "plugin:window|destroy": () => null,
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    // The mock handles `plugin:event|listen` itself, so the call is not in
+    // `calls`. Let the listener register.
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+
+    await tauri.emit("tauri://close-requested");
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]));
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+    expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+
+    await act(async () => finish());
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+  });
+
+  test("a window close still closes the window when the save fails", async () => {
+    const tauri = backend({
+      set_summary_prompt_text: () => {
+        throw "The prompt text cannot be saved.";
+      },
+      "plugin:window|destroy": () => null,
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+
+    await tauri.emit("tauri://close-requested");
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+    expect(textCalls(tauri)).toHaveLength(1);
+  });
+
+  test("Delete waits for a save of the same prompt that already started", async () => {
+    // The save command waits until the test calls `finish`.
+    let finish: () => void = () => {};
+    const saved = new Promise<void>((r) => (finish = r));
+    let done = false;
+    let savedFirst = false;
+    const tauri = backend({
+      set_summary_prompt_text: async () => {
+        await saved;
+        done = true;
+        return baseSettings;
+      },
+      delete_summary_prompt: () => {
+        savedFirst = done;
+        return baseSettings;
+      },
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    fireEvent.blur(textArea());
+    await user.click(button("Delete"));
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+    expect(textCalls(tauri)).toHaveLength(1);
+    expect(tauri.calls.some((c) => c.cmd === "delete_summary_prompt")).toBe(false);
+
+    await act(async () => finish());
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "delete_summary_prompt")).toBe(true));
+    expect(savedFirst).toBe(true);
+  });
+
   test("two saves apply in the order typed", async () => {
     // The first save waits until the test calls `release`.
     let release: () => void = () => {};

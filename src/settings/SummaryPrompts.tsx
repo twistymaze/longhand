@@ -4,6 +4,7 @@
 // prompt text as the user types: one second after the last change, and at
 // once on blur or a change of prompt or pane.
 
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } from "./ui";
@@ -75,20 +76,32 @@ function PromptRow({
 
 type Edit = { id: string; text: string };
 
+/// A copy of `map` with no entry for `id`.
+function without<T>(map: Record<string, T>, id: string): Record<string, T> {
+  if (!(id in map)) return map;
+  const { [id]: _, ...rest } = map;
+  return rest;
+}
+
 export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => void }) {
   const [list, setList] = useState<SummaryPromptList | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // The unsaved text of one prompt, or null when the editor shows the saved text.
-  const [edit, setEdit] = useState<Edit | null>(null);
+  // The unsaved text of each prompt, by id. A prompt with no entry shows its
+  // saved text.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [listError, setListError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
+  // The error of the last failed text save, by prompt id. The editor shows
+  // it only for that prompt.
+  const [saveErrors, setSaveErrors] = useState<Record<string, string>>({});
   const { ask, dialog } = useConfirm();
   // The valid text that waits for the timer, the timer, and the last save
   // that started. Each save waits for the save before it, so the saves apply
-  // in the order typed.
+  // in the order typed. `failed` holds the ids whose last text save failed.
   const pending = useRef<Edit | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saving = useRef<Promise<void>>(Promise.resolve());
+  const failed = useRef(new Set<string>());
   const onSettingsRef = useRef(onSettings);
   onSettingsRef.current = onSettings;
 
@@ -110,41 +123,74 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
   }, []);
 
   // Starts the save of the pending text at once. Resolves when all saves
-  // that started are complete.
-  const flush = useCallback(() => {
-    const sent = pending.current;
-    cancel();
-    if (sent) {
-      saving.current = saving.current
-        .then(async () => {
-          const result = await commands.setSummaryPromptText(sent.id, sent.text);
-          if (result.status === "error") {
-            setEditorError(result.error);
-            return;
-          }
-          setEditorError(null);
-          onSettingsRef.current(result.data);
-          await load();
-          // Clear the edit only if it still holds the sent text, so that text
-          // typed during the save stays for the next save.
-          setEdit((e) => (e && e.id === sent.id && e.text === sent.text ? null : e));
-        })
-        .catch((e: unknown) => {
-          // A failed save must not stop the saves after it.
-          console.error("The prompt text could not be saved:", e);
-          setEditorError("The prompt text could not be saved.");
-        });
-    }
-    return saving.current;
-  }, [cancel, load]);
+  // that started are complete: to false if the last text save of prompt
+  // `id` failed, or with no `id`, if the last text save of a prompt failed.
+  const flush = useCallback(
+    (id?: string) => {
+      const sent = pending.current;
+      cancel();
+      if (sent) {
+        const fail = (error: string) => {
+          failed.current.add(sent.id);
+          setSaveErrors((m) => ({ ...m, [sent.id]: error }));
+        };
+        saving.current = saving.current
+          .then(async () => {
+            const result = await commands.setSummaryPromptText(sent.id, sent.text);
+            if (result.status === "error") {
+              fail(result.error);
+              return;
+            }
+            failed.current.delete(sent.id);
+            setSaveErrors((m) => without(m, sent.id));
+            onSettingsRef.current(result.data);
+            await load();
+            // Clear the draft only if it still holds the sent text, so that
+            // text typed during the save stays for the next save.
+            setDrafts((m) => (m[sent.id] === sent.text ? without(m, sent.id) : m));
+          })
+          .catch((e: unknown) => {
+            // A failed save must not stop the saves after it.
+            console.error("The prompt text could not be saved:", e);
+            fail("The prompt text could not be saved.");
+          });
+      }
+      return saving.current.then(() => (id === undefined ? failed.current.size === 0 : !failed.current.has(id)));
+    },
+    [cancel, load],
+  );
 
-  // A pane change or a window close unmounts the pane. The save then runs
-  // with no wait. The page events also start it when the page closes.
+  // A pane change unmounts the pane, and the save then runs with no wait.
+  // A window close destroys the page but does not unmount the pane, so the
+  // close waits for the save. The window closes also if the save fails, and
+  // the close asks nothing. When the app quits, the page events start the
+  // save, but nothing waits for it.
   useEffect(() => {
     const onHide = () => void flush();
     window.addEventListener("pagehide", onHide);
     window.addEventListener("beforeunload", onHide);
+    const win = getCurrentWindow();
+    let stop: (() => void) | undefined;
+    let gone = false;
+    win
+      .onCloseRequested(async (event) => {
+        event.preventDefault();
+        if (!(await flush())) console.error("The Settings window closes with prompt text that is not saved.");
+        try {
+          await win.destroy();
+        } catch (e) {
+          console.error("The Settings window could not close:", e);
+        }
+      })
+      .then((f) => {
+        // The pane can unmount before the listener is registered.
+        if (gone) f();
+        else stop = f;
+      })
+      .catch((e: unknown) => console.error("The close listener could not be registered:", e));
     return () => {
+      gone = true;
+      stop?.();
       window.removeEventListener("pagehide", onHide);
       window.removeEventListener("beforeunload", onHide);
       void flush();
@@ -154,10 +200,11 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
-  const draft = selected && edit?.id === selected.id ? edit.text : (selected?.text ?? "");
+  const draft = selected && selected.id in drafts ? drafts[selected.id] : (selected?.text ?? "");
   const count = [...draft].length;
   const limit = list?.text_limit ?? 0;
   const name = selected?.name ?? "";
+  const valid = (text: string) => text.trim() !== "" && [...text].length <= limit;
 
   const run = async (
     op: () => Promise<Result<Settings, string>>,
@@ -176,7 +223,6 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
   };
 
   const show = (id: string | null) => {
-    setEdit(null);
     setEditorError(null);
     setSelectedId(id);
   };
@@ -188,14 +234,19 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
   };
 
   // Text that is not valid is not saved, and a change of prompt drops it.
+  // Valid text stays until its save is complete. If the save fails, the text
+  // and the error stay with their prompt.
   const select = (id: string) => {
-    if (id === selected?.id) return;
+    if (!selected || id === selected.id) return;
+    const from = selected.id;
+    if (from in drafts && !valid(drafts[from])) setDrafts((m) => without(m, from));
     void flush();
     show(id);
   };
 
+  // New and Duplicate stop if the save of the selected prompt fails.
   const create = async () => {
-    await flush();
+    if (selected && !(await flush(selected.id))) return;
     await run(() => commands.createSummaryPrompt(), setListError, showNewest);
   };
 
@@ -209,23 +260,31 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
 
   const id = selected.id;
   const empty = !selected.built_in && draft.trim() === "";
+  const saveError = saveErrors[id] ?? null;
   // The copy gets the text that the editor shows.
   const duplicate = async () => {
-    await flush();
+    if (!(await flush(id))) return;
     await run(() => commands.duplicateSummaryPrompt(id), setEditorError, showNewest);
   };
+  // A save of the same prompt that already started completes first.
   const remove = async () => {
     const yes = await ask({ title: `Delete “${name}”?`, message: "This can’t be undone.", action: "Delete" });
     if (!yes) return;
     if (pending.current?.id === id) cancel();
-    await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => show(null));
+    await saving.current;
+    await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => {
+      failed.current.delete(id);
+      setDrafts((m) => without(m, id));
+      setSaveErrors((m) => without(m, id));
+      show(null);
+    });
   };
   // The text stays editable while a save runs. Only valid text waits for
   // the timer; the last valid text stays saved.
   const change = (text: string) => {
-    setEdit({ id, text });
+    setDrafts((m) => ({ ...m, [id]: text }));
     cancel();
-    if (text.trim() === "" || [...text].length > limit) return;
+    if (!valid(text)) return;
     pending.current = { id, text };
     timer.current = setTimeout(() => void flush(), saveDelay);
   };
@@ -302,6 +361,7 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
           </div>
         </div>
         {empty && <ErrorText>A prompt can’t be empty.</ErrorText>}
+        {saveError && <ErrorText>{saveError}</ErrorText>}
         {editorError && <ErrorText>{editorError}</ErrorText>}
       </Group>
       {dialog}
