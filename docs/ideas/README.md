@@ -76,6 +76,7 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Schedule processing around power and thermals](power-aware-processing.md) | open | Wait for idle and plugged in before heavy compute |
+| [Follow-ups from the live transcript review](live-transcript-review-follow-ups.md) | open | Eight small residual risks from the PR #8 review; a stuck live-model mark and a lost re-pick first |
 
 ## Library and sharing
 
