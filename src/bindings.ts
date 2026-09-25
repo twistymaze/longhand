@@ -196,6 +196,19 @@ async repairKeychainAccess() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * List the models of the effective endpoint (R5). The command reads the
+ * key itself, so the webview never holds it. It sends no request when the
+ * request gate refuses one (R4, R16, R17).
+ */
+async listEndpointModels() : Promise<Result<EndpointModels, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_endpoint_models") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async modelStatuses() : Promise<ModelStatus[]> {
     return await TAURI_INVOKE("model_statuses");
 },
@@ -579,6 +592,12 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
  */
 { kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
+/**
+ * The result of a model list request, for the Summaries pane (KTD2). It
+ * has every `ModelList` outcome, and `NotRequested` when the request gate
+ * sends no request (KTD3).
+ */
+export type EndpointModels = { kind: "listed"; ids: string[] } | { kind: "key-needed" } | { kind: "key-rejected" } | { kind: "key-cannot-list" } | { kind: "not-listed" } | { kind: "redirected"; host: string | null } | { kind: "server-error"; status: number | null } | { kind: "unreachable" } | { kind: "not-requested"; reason: ListNotRequested }
 export type EndpointView = { host: string; model: string; 
 /**
  * False when the transcript would cross the network unencrypted.
@@ -612,6 +631,10 @@ export type Interruption = { headline: string;
  */
 disk: boolean }
 export type LicenceInfo = { name: string; url: string; attribution: string }
+/**
+ * Why Longhand sent no model list request (R4, R16, R17).
+ */
+export type ListNotRequested = "no-base-url" | "keychain-locked" | "keychain-failed" | "key-needed"
 /**
  * The text of the part that is open now.
  */

@@ -37,6 +37,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_credential,
             commands::settings::delete_credential,
             commands::settings::repair_keychain_access,
+            commands::settings::list_endpoint_models,
             commands::models::model_statuses,
             commands::models::download_models,
             commands::models::cancel_model_downloads,
