@@ -138,6 +138,7 @@ function renderPage({
 }
 
 const tab = (name: string) => screen.getByRole("tab", { name });
+type Tab = "summary" | "transcript";
 
 describe("SessionPage", () => {
   test("a page opened for a recording shows My Notes with the cursor in the editor", async () => {
@@ -499,6 +500,102 @@ describe("SessionPage", () => {
     expect(sessions.refresh).toHaveBeenCalled();
   });
 
+  describe("Regenerate Summary", () => {
+    const endpoint = { host: "api.example.com", model: "m", encrypted: true };
+    const newDoc = { ...doc, summary: { ...doc.summary!, body: "The launch moves to May 12." } };
+
+    /// A regenerate_summary that completes only when the test says.
+    function pending() {
+      let finish: (fail?: string) => void = () => {};
+      const run = () =>
+        new Promise((resolve, reject) => {
+          finish = (fail) => (fail ? reject(fail) : resolve("/x/summary.md"));
+        });
+      return { run, finish: (fail?: string) => finish(fail) };
+    }
+
+    async function start(first: Tab = "summary") {
+      const e = entry("s");
+      const regen = pending();
+      let current = doc;
+      mockPage(e, { endpoint }, { session_document: () => current, regenerate_summary: regen.run });
+      const sessions = sessionsOf([e]);
+      const page = renderPage({ id: "s", sessions });
+      await screen.findByText("We agreed the budget.");
+      const user = userEvent.setup();
+      if (first === "transcript") await user.click(tab("Transcript"));
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Regenerate Summary" }));
+      return {
+        e,
+        page,
+        user,
+        sessions,
+        succeed: async () => {
+          current = newDoc;
+          await act(async () => regen.finish());
+        },
+        fail: async () => act(async () => regen.finish("The endpoint did not answer.")),
+      };
+    }
+
+    test("the summarize stage shows in place of the summary, and Transcript still shows", async () => {
+      const { user } = await start();
+      expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+      expect(screen.getByText(/Sends the transcript and notes to api\.example\.com \(m\)/)).toBeTruthy();
+      expect(screen.queryByText("We agreed the budget.")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Regenerate Summary" })).toBeNull();
+      await user.click(tab("Transcript"));
+      expect(await screen.findByText("Hello.")).toBeTruthy();
+      await user.click(tab("Summary"));
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+    });
+
+    test("a summary in more than one part shows its progress", async () => {
+      const { e, page } = await start();
+      expect(screen.queryByRole("progressbar")).toBeNull();
+      const live = { s: { stage: "summarize", segment: 0, done: 1, total: 3 } };
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), live }));
+      expect(screen.getByText("33%")).toBeTruthy();
+      expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("33");
+    });
+
+    test("the progress of an earlier run does not show", async () => {
+      const e = entry("s");
+      const live = { s: { stage: "summarize", segment: 0, done: 3, total: 3 } };
+      mockPage(e, { endpoint }, { regenerate_summary: pending().run });
+      renderPage({ id: "s", sessions: { ...sessionsOf([e]), live } });
+      await screen.findByText("We agreed the budget.");
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Regenerate Summary" }));
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+      expect(screen.queryByRole("progressbar")).toBeNull();
+    });
+
+    test("Regenerate from the menu on Transcript moves the page to Summary", async () => {
+      await start("transcript");
+      expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+    });
+
+    test("when it completes, the new summary shows", async () => {
+      const { succeed } = await start();
+      await succeed();
+      expect(await screen.findByText("The launch moves to May 12.")).toBeTruthy();
+      expect(screen.queryByText("Summarizing")).toBeNull();
+      expect(screen.getByRole("button", { name: "Regenerate Summary" })).toBeTruthy();
+    });
+
+    test("when it fails, the previous summary shows again with the error", async () => {
+      const { fail } = await start();
+      await fail();
+      expect(await screen.findByText("We agreed the budget.")).toBeTruthy();
+      expect(screen.getByText("The endpoint did not answer.")).toBeTruthy();
+      expect(screen.queryByText("Summarizing")).toBeNull();
+    });
+  });
+
   describe("Transcribe Again", () => {
     const models = [
       { id: "tdt", name: "Parakeet TDT 1.1B", state: { state: "present" } },
@@ -600,10 +697,10 @@ describe("SessionPage", () => {
   // Covers AE6.
   test("the summary footer shows the name of the prompt that made the summary", async () => {
     const e = entry("s");
-    const named = { ...doc, summary: { ...doc.summary!, prompt: "Game recap" } };
+    const named = { ...doc, summary: { ...doc.summary!, prompt: "Team sync" } };
     mockPage(e, {}, { session_document: () => named });
     renderPage({ id: "s", sessions: sessionsOf([e]) });
-    expect(await screen.findByText("Game recap · Summarized by m on api.example.com")).toBeTruthy();
+    expect(await screen.findByText("Team sync · Summarized by m on api.example.com")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Regenerate Summary" })).toBeTruthy();
   });
 
@@ -619,14 +716,14 @@ describe("SessionPage", () => {
     const e = entry("s");
     const nested = {
       ...doc,
-      summary: { ...doc.summary!, body: "*   **Loot:** coins\n    *   40 gold\n    *   a ring\n*   **Documents:** a map" },
+      summary: { ...doc.summary!, body: "*   **Budget:** costs\n    *   $40,000\n    *   two contractors\n*   **Decision:** launch on May 12" },
     };
     mockPage(e, {}, { session_document: () => nested });
     renderPage({ id: "s", sessions: sessionsOf([e]) });
-    const gold = await screen.findByText("40 gold");
-    const inner = gold.closest("ul")!;
+    const amount = await screen.findByText("$40,000");
+    const inner = amount.closest("ul")!;
     const outerItem = inner.parentElement!.closest("li")!;
-    expect(outerItem.textContent).toContain("Loot:");
+    expect(outerItem.textContent).toContain("Budget:");
     expect(within(inner).getAllByRole("listitem")).toHaveLength(2);
     expect(outerItem.closest("ul")!.querySelectorAll(":scope > li")).toHaveLength(2);
   });

@@ -2,11 +2,12 @@
 // Summary and Transcript tabs: each stage with its status, what the summary
 // stage sends and to whom, and the one action each exception needs. The
 // page reads the detail again whenever the session moves (AE4). The only
-// motion is a progress bar that fills.
+// motion is a progress bar that fills. Regenerate Summary on a saved note
+// shows the summarize stage in the same form.
 
 import { useState } from "react";
 import { commands, type SessionDetail } from "../bindings";
-import { type StageRow, sentence, stageRows, stoppedAt } from "../processing/describe";
+import { type StageRow, sentence, stageLabel, stageRows, stoppedAt } from "../processing/describe";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
 import type { Live } from "./useSessions";
 
@@ -40,13 +41,12 @@ function progressOf(row: StageRow, detail: SessionDetail, live: Live | undefined
   return null;
 }
 
-function SummarizeDetail({ detail }: { detail: SessionDetail }) {
+function SummarizeDetail({ detail, sent }: { detail: SessionDetail; sent: boolean }) {
   if (detail.summary_problem) {
     return <Status tone="caution">Skipped. {sentence(detail.summary_problem)}</Status>;
   }
   const endpoint = detail.endpoint;
   if (!endpoint) return <>No endpoint is set, so the note is saved without a summary.</>;
-  const sent = detail.done.includes("summarize");
   return (
     <>
       {sent ? "Sent" : "Sends"} the transcript and notes to {endpoint.host} ({endpoint.model})
@@ -149,35 +149,67 @@ export function ProcessingStatus({
       )}
       <Exception detail={detail} onDone={onChanged} />
       <Group>
-        {stageRows(detail).map((row) => {
-          const fraction = progressOf(row, detail, live);
-          return (
-            <Row
-              key={row.stage}
-              label={
-                <span className="flex items-center gap-2">
-                  <StageIcon status={row.status} />
-                  <span className={row.status === "pending" ? "text-label-secondary" : undefined}>{row.label}</span>
-                </span>
-              }
-              detail={
-                row.stage === "summarize" ? (
-                  <span className="ml-6 block">
-                    <SummarizeDetail detail={detail} />
-                  </span>
-                ) : undefined
-              }
-            >
-              {fraction !== null && (
-                <>
-                  <span className="text-label-secondary tabular-nums">{Math.round(fraction * 100)}%</span>
-                  <ProgressBar fraction={fraction} />
-                </>
-              )}
-            </Row>
-          );
-        })}
+        {stageRows(detail).map((row) => (
+          <StageLine
+            key={row.stage}
+            row={row}
+            detail={detail}
+            fraction={progressOf(row, detail, live)}
+            sent={detail.done.includes("summarize")}
+          />
+        ))}
       </Group>
     </div>
+  );
+}
+
+/// One stage with its status, and its progress while it runs.
+function StageLine({
+  row,
+  detail,
+  fraction,
+  sent,
+}: {
+  row: StageRow;
+  detail: SessionDetail;
+  fraction: number | null;
+  sent: boolean;
+}) {
+  return (
+    <Row
+      label={
+        <span className="flex items-center gap-2">
+          <StageIcon status={row.status} />
+          <span className={row.status === "pending" ? "text-label-secondary" : undefined}>{row.label}</span>
+        </span>
+      }
+      detail={
+        row.stage === "summarize" ? (
+          <span className="ml-6 block">
+            <SummarizeDetail detail={detail} sent={sent} />
+          </span>
+        ) : undefined
+      }
+    >
+      {fraction !== null && (
+        <>
+          <span className="text-label-secondary tabular-nums">{Math.round(fraction * 100)}%</span>
+          <ProgressBar fraction={fraction} />
+        </>
+      )}
+    </Row>
+  );
+}
+
+/// A saved note whose summary is written again: the summarize stage alone,
+/// as the processing view shows it. The progress shows only when the
+/// transcript is summarized in more than one part.
+export function RegenerateStatus({ detail, live }: { detail: SessionDetail; live: Live | undefined }) {
+  const row: StageRow = { stage: "summarize", label: stageLabel("summarize"), status: "running" };
+  const fraction = live && live.stage === "summarize" && live.total > 1 ? live.done / live.total : null;
+  return (
+    <Group>
+      <StageLine row={row} detail={{ ...detail, summary_problem: null }} fraction={fraction} sent={false} />
+    </Group>
   );
 }
