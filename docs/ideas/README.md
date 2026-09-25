@@ -91,6 +91,7 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Choose the recognition model](recognition-model-picker.md) | in-progress | A Settings picker for nine models from Handy's catalog |
+| [Choose the summary model from the server's list](summary-model-picker.md) | in-progress | A searchable Model picker, a connection status line, and OpenAI as the default |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 
 ## Done
