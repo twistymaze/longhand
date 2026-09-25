@@ -88,7 +88,6 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [UX redesign](ux-redesign.md) | in-progress | Settings window, session list home, one tabbed session page |
 | [Choose the recognition model](recognition-model-picker.md) | open | A Settings picker and a second engine |
 
 ## Done
@@ -97,6 +96,7 @@ Ideas from the original list that the walking skeleton ended up building.
 
 - **Timestamps in the summarization prompt.** Every transcript turn and note reaches the summarizer with its clock position, so a summary can say when something happened.
 - **Finer-grained checkpointing.** Transcription checkpoints each window, so a restart redoes only unfinished windows.
+- **[UX redesign](ux-redesign.md).** One main window with a Home list and one tabbed session page, a Settings window, markdown notes, titles that name the session folder, and delete to the Trash (`docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`).
 - **A speaker count per session.** An optional count or range per session, with an app-wide default (KD15, R36). What remains is the per-folder default above.
 
 ## Ruled out

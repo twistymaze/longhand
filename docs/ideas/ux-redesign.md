@@ -1,6 +1,6 @@
 ---
 title: UX redesign
-status: in-progress
+status: done
 area: interface
 added: 2026-09-23
 source: "Phase 2b checkpoint feedback on the walking skeleton"
