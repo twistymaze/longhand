@@ -344,6 +344,10 @@ pub enum SummaryMeta {
     Complete {
         endpoint_host: String,
         model: String,
+        /// The name of the summary prompt that made the summary (R11). A
+        /// summary made before prompts were recorded has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_name: Option<String>,
     },
     /// Summarization failed; the session was saved anyway (R22).
     Stub { failed_stage: String },

@@ -4,7 +4,7 @@
 
 import type { ReactNode } from "react";
 import type { SummaryView } from "../bindings";
-import { type Inline, parseMarkdown } from "./markdown";
+import { type Inline, type ListBlock, parseMarkdown } from "./markdown";
 
 function Runs({ content }: { content: Inline[] }) {
   return (
@@ -29,6 +29,25 @@ function Runs({ content }: { content: Inline[] }) {
   );
 }
 
+/// A list and its child lists. A child list has the same styles, indented
+/// below its item.
+function List({ list, nested = false }: { list: ListBlock; nested?: boolean }) {
+  const items = list.items.map((item, j) => (
+    <li key={j}>
+      <Runs content={item.content} />
+      {item.children.map((child, k) => (
+        <List key={k} list={child} nested />
+      ))}
+    </li>
+  ));
+  const space = nested ? "mt-1 " : "";
+  return list.ordered ? (
+    <ol className={`${space}grid list-decimal gap-1 pl-5`}>{items}</ol>
+  ) : (
+    <ul className={`${space}grid list-disc gap-1 pl-5`}>{items}</ul>
+  );
+}
+
 function Body({ markdown }: { markdown: string }) {
   const blocks = parseMarkdown(markdown);
   return (
@@ -42,22 +61,7 @@ function Body({ markdown }: { markdown: string }) {
             </h3>
           );
         }
-        if (block.kind === "list") {
-          const items = block.items.map((item, j) => (
-            <li key={j}>
-              <Runs content={item} />
-            </li>
-          ));
-          return block.ordered ? (
-            <ol key={i} className="grid list-decimal gap-1 pl-5">
-              {items}
-            </ol>
-          ) : (
-            <ul key={i} className="grid list-disc gap-1 pl-5">
-              {items}
-            </ul>
-          );
-        }
+        if (block.kind === "list") return <List key={i} list={block} />;
         return (
           <p key={i}>
             <Runs content={block.content} />
@@ -90,7 +94,7 @@ export function SummaryTab({
       <Body markdown={summary.body} />
       <footer className="mt-8 flex items-center gap-3 border-t border-separator pt-3 text-[0.85rem] text-label-secondary">
         <span className="min-w-0 flex-1">
-          Summarized by {summary.model} on {summary.host}
+          {summary.prompt ? `${summary.prompt} · ` : ""}Summarized by {summary.model} on {summary.host}
         </span>
         {regenerate}
       </footer>

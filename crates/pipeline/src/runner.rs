@@ -52,6 +52,10 @@ pub trait EngineProvider: Send + Sync {
     /// The summarization endpoint, read fresh for each summarize stage so a
     /// settings change applies to the next session to reach it.
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
+    /// A snapshot of the active summary prompt, read fresh for each
+    /// summarize stage like the endpoint. A run that saved a snapshot
+    /// before uses its saved one (KTD4).
+    fn summary_prompt(&self) -> summarize::Prompt;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
     /// The destination folder chosen now. It is read when the session is saved,
@@ -327,6 +331,7 @@ impl Runner {
                 &env.store,
                 &id,
                 endpoint,
+                env.engines.summary_prompt(),
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 &control,
                 &mut |done, total| {
@@ -721,6 +726,7 @@ fn execute(
                 &dir,
                 segments,
                 endpoint,
+                env.engines.summary_prompt(),
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 control,
                 &mut |done, total| {

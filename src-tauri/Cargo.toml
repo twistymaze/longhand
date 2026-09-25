@@ -52,6 +52,7 @@ asr = { path = "../crates/asr" }
 transcribe-cpp = { version = "0.2.3", default-features = false }
 pipeline = { path = "../crates/pipeline" }
 session-save = { path = "../crates/session-save" }
+summarize = { path = "../crates/summarize" }
 diarize = { path = "../crates/diarize" }
 session-core = { path = "../crates/session-core" }
 supervisor = { path = "../crates/supervisor" }

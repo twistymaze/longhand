@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { commands, type CredentialStatus, type Settings } from "../bindings";
-import { Button, ErrorText, Group, Pane, Row, Status, fieldClass } from "./ui";
+import { SummaryPrompts } from "./SummaryPrompts";
+import { Button, CommitField, ErrorText, Group, Pane, Row, Status, fieldClass } from "./ui";
 
 const isMac = navigator.userAgent.includes("Mac");
 
@@ -12,48 +13,6 @@ function isPlaintextRemote(baseUrl: string): boolean {
   } catch {
     return false;
   }
-}
-
-/// A text field that commits on Return or when focus leaves, the way macOS
-/// settings fields apply without a Save button.
-function CommitField({
-  value,
-  placeholder,
-  onCommit,
-  inputMode,
-  width = "w-64",
-  label,
-}: {
-  value: string;
-  placeholder?: string;
-  onCommit: (v: string) => void;
-  inputMode?: "numeric";
-  width?: string;
-  label: string;
-}) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  const commit = () => {
-    if (draft !== value) onCommit(draft);
-  };
-  return (
-    <input
-      aria-label={label}
-      className={`${fieldClass} ${width}`}
-      value={draft}
-      placeholder={placeholder}
-      inputMode={inputMode}
-      spellCheck={false}
-      autoCapitalize="off"
-      autoCorrect="off"
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") setDraft(value);
-      }}
-    />
-  );
 }
 
 function Credential({ baseUrl }: { baseUrl: string }) {
@@ -213,6 +172,8 @@ export function EndpointForm({
       </Group>
 
       {baseUrl && <Credential key={baseUrl} baseUrl={baseUrl} />}
+
+      <SummaryPrompts onSettings={onSettings} />
 
       <Group
         header="Context"

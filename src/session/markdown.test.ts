@@ -11,7 +11,128 @@ describe("summary markdown", () => {
 
   test("a wrapped list item stays one item", () => {
     const [list] = parseMarkdown("- a long item\n  that wraps\n- next");
-    expect(list).toMatchObject({ kind: "list", items: [[{ text: "a long item that wraps" }], [{ text: "next" }]] });
+    expect(list).toMatchObject({
+      kind: "list",
+      items: [{ content: [{ text: "a long item that wraps" }] }, { content: [{ text: "next" }] }],
+    });
+  });
+
+  // Covers AE1.
+  test("a bold-label bullet with indented children gives one item with a child list", () => {
+    const blocks = parseMarkdown(
+      [
+        "## Camp Office Encounter",
+        "",
+        "The party searched the office.",
+        "",
+        "*   **Loot:** coins and gear",
+        "    *   40 gold pieces",
+        "    *   a silver ring",
+        "    *   two healing potions",
+        "*   **Documents:** a map",
+      ].join("\n"),
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(["heading", "paragraph", "list"]);
+    const list = blocks[2];
+    if (list.kind !== "list") throw new Error("not a list");
+    expect(list.items).toHaveLength(2);
+    expect(list.items[0].content).toEqual([
+      { kind: "strong", text: "Loot:" },
+      { kind: "text", text: " coins and gear" },
+    ]);
+    expect(list.items[0].children).toHaveLength(1);
+    expect(list.items[0].children[0]).toMatchObject({
+      kind: "list",
+      ordered: false,
+      items: [
+        { content: [{ text: "40 gold pieces" }], children: [] },
+        { content: [{ text: "a silver ring" }], children: [] },
+        { content: [{ text: "two healing potions" }], children: [] },
+      ],
+    });
+    expect(list.items[1]).toMatchObject({ content: [{ text: "Documents:" }, { text: " a map" }], children: [] });
+  });
+
+  test("a wrapped, indented continuation line joins its item and starts no child list", () => {
+    const [list] = parseMarkdown("- parent item\n    - child item\n      that wraps\n  parent text again\n- next");
+    expect(list).toMatchObject({
+      kind: "list",
+      items: [
+        {
+          content: [{ text: "parent item parent text again" }],
+          children: [{ items: [{ content: [{ text: "child item that wraps" }], children: [] }] }],
+        },
+        { content: [{ text: "next" }], children: [] },
+      ],
+    });
+  });
+
+  test("a numbered list inside a bullet list is an ordered child", () => {
+    const [list] = parseMarkdown("- steps\n    1. first\n    2. second\n- after");
+    expect(list).toMatchObject({
+      kind: "list",
+      ordered: false,
+      items: [
+        { content: [{ text: "steps" }], children: [{ ordered: true, items: [{ content: [{ text: "first" }] }, { content: [{ text: "second" }] }] }] },
+        { content: [{ text: "after" }] },
+      ],
+    });
+  });
+
+  test("a bullet list inside a numbered list is an unordered child", () => {
+    const blocks = parseMarkdown("1. one\n   - a\n   - b\n2. two");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: "list",
+      ordered: true,
+      items: [
+        { content: [{ text: "one" }], children: [{ ordered: false, items: [{ content: [{ text: "a" }] }, { content: [{ text: "b" }] }] }] },
+        { content: [{ text: "two" }], children: [] },
+      ],
+    });
+  });
+
+  test("lists nest three levels deep and a shallower bullet closes the deeper lists", () => {
+    const [list] = parseMarkdown("- a\n    - b\n        - c\n    - d\n- e");
+    expect(list).toMatchObject({
+      items: [
+        {
+          content: [{ text: "a" }],
+          children: [
+            {
+              items: [
+                { content: [{ text: "b" }], children: [{ items: [{ content: [{ text: "c" }], children: [] }] }] },
+                { content: [{ text: "d" }], children: [] },
+              ],
+            },
+          ],
+        },
+        { content: [{ text: "e" }], children: [] },
+      ],
+    });
+  });
+
+  test("a tab counts as four spaces of indent", () => {
+    const [list] = parseMarkdown("- a\n\t- b\n- c");
+    expect(list).toMatchObject({
+      items: [{ content: [{ text: "a" }], children: [{ items: [{ content: [{ text: "b" }] }] }] }, { content: [{ text: "c" }] }],
+    });
+  });
+
+  test("a blank line between nested items keeps them in one child list", () => {
+    const blocks = parseMarkdown("- a\n    - x\n\n    - y\n- b\n\nAfter the list.");
+    expect(blocks.map((b) => b.kind)).toEqual(["list", "paragraph"]);
+    expect(blocks[0]).toMatchObject({
+      items: [
+        { content: [{ text: "a" }], children: [{ items: [{ content: [{ text: "x" }] }, { content: [{ text: "y" }] }] }] },
+        { content: [{ text: "b" }], children: [] },
+      ],
+    });
+  });
+
+  test("a heading after a list closes the list", () => {
+    const blocks = parseMarkdown("- a\n    - b\n## Next\n- c");
+    expect(blocks.map((b) => b.kind)).toEqual(["list", "heading", "list"]);
   });
 
   test("bold, italic and code runs are kept and everything else is text", () => {

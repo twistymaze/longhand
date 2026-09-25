@@ -193,6 +193,10 @@ impl EngineProvider for Models {
         })
     }
 
+    fn summary_prompt(&self) -> summarize::Prompt {
+        settings::get_settings(&self.app).active_summary_prompt_snapshot()
+    }
+
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {
         let key = settings::learned_limit_key(base_url, model);
         if let Err(e) = settings::update_settings(&self.app, |s| {

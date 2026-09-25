@@ -9,6 +9,10 @@
 //! The notes document goes whole with every call (KTD6), as it was when the
 //! run started (R36). After the final summary, one more call proposes a
 //! title, unless the user set one (KTD7).
+//!
+//! A run takes a snapshot of the active summary prompt before its first
+//! call and keeps it to the end, also after a resume (KTD4). The snapshot's
+//! text goes into the final call, and `summary.md` records its name.
 
 use std::path::Path;
 use std::time::Duration;
@@ -24,8 +28,23 @@ use crate::diarize::speakers;
 use crate::transcribe::results;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
+pub use summarize::Prompt;
+
 pub const SUMMARY_FILE: &str = "summary.md";
-const PLAN: &str = "plan";
+/// The layer structure that the run committed to, a `Plan`.
+pub const PLAN: &str = "plan";
+/// The snapshot of the summary prompt that the run uses, a [`Prompt`]
+/// (KTD4). It is saved next to the plan, before the first call, and a
+/// resumed run uses it in place of the active prompt.
+pub const PROMPT: &str = "prompt";
+/// The result of the whole-transcript call. The key is not a part note's
+/// key, so a run that decides the fit again never uses one result for the
+/// other (KTD5).
+pub const WHOLE: &str = "whole";
+/// The error when the fixed parts of the final call and the prompt text
+/// leave too little of the model's context for the transcript (KTD8).
+const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
+shorten the prompt in Settings or choose a model with a larger context";
 /// The proposed title, a string, once the title call has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
@@ -178,12 +197,13 @@ pub fn run(
     session_dir: &Path,
     segments: &[Segment],
     endpoint: SummaryEndpoint,
+    active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
-        store, session_id, segments, endpoint, learn, control, progress,
+        store, session_id, segments, endpoint, active, learn, control, progress,
     )?;
     let path = session_dir.join(SUMMARY_FILE);
     let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
@@ -194,12 +214,15 @@ pub fn run(
 }
 
 /// Summarize the session from its checkpoints, resuming any calls already
-/// made. Writes nothing but checkpoints.
+/// made. Writes nothing but checkpoints. `active` is the active summary
+/// prompt, which the run uses only when it saved no snapshot before.
+#[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
     session_id: &str,
     segments: &[Segment],
     endpoint: SummaryEndpoint,
+    active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
@@ -219,6 +242,19 @@ pub fn produce(
         );
     }
     let runtime = Runtime::new()?;
+
+    let prompt = match checkpoint::get::<Prompt>(store, session_id, Stage::Summarize, PROMPT)? {
+        Some(saved) => saved,
+        None => {
+            // A run from before prompts were saved can have a plan and
+            // cached calls made with another prompt. Remove them, so that
+            // no result goes out under the name of the active prompt. The
+            // stage's completion and failure records stay.
+            forget_calls(store, session_id)?;
+            checkpoint::put(store, session_id, Stage::Summarize, PROMPT, &active)?;
+            active
+        }
+    };
 
     let mut plan = match checkpoint::get::<Plan>(store, session_id, Stage::Summarize, PLAN)? {
         Some(plan) => plan,
@@ -254,6 +290,7 @@ pub fn produce(
         runtime: &runtime,
         control,
         notes: &notes,
+        text: &prompt.text,
         progress: &mut *progress,
     };
     let text = if turns.is_empty() {
@@ -330,9 +367,22 @@ pub fn produce(
         meta: SummaryMeta::Complete {
             endpoint_host: client.host(),
             model: endpoint.model.clone(),
+            // The name comes from the snapshot, so it always matches the
+            // text that was sent (R11). With nothing said, no prompt made
+            // the summary.
+            prompt_name: (!turns.is_empty()).then(|| prompt.name.clone()),
         },
         body: text,
     })
+}
+
+/// Remove the plan, every cached call and the title proposal.
+fn forget_calls(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
+    forget_layers_from(store, session_id, 0)?;
+    let guard = lock(store);
+    guard.delete_checkpoint(session_id, Stage::Summarize, PLAN)?;
+    guard.delete_checkpoint(session_id, Stage::Summarize, TITLE)?;
+    Ok(())
 }
 
 fn forget_layers_from(
@@ -342,10 +392,14 @@ fn forget_layers_from(
 ) -> Result<(), StageError> {
     let guard = lock(store);
     for (key, _) in guard.checkpoints(session_id, Stage::Summarize)? {
-        let at = key
-            .strip_prefix('l')
-            .and_then(|k| k.get(..2))
-            .and_then(|l| l.parse::<usize>().ok());
+        // The whole call is in layer 0.
+        let at = if key == WHOLE {
+            Some(0)
+        } else {
+            key.strip_prefix('l')
+                .and_then(|k| k.get(..2))
+                .and_then(|l| l.parse::<usize>().ok())
+        };
         if at.is_some_and(|l| l >= layer) {
             guard.delete_checkpoint(session_id, Stage::Summarize, &key)?;
         }
@@ -382,20 +436,34 @@ struct Calls<'a> {
     control: &'a dyn Control,
     /// The notes document as it was when the run started (R36).
     notes: &'a str,
+    /// The text of the run's prompt snapshot (KTD4).
+    text: &'a str,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
 impl Calls<'_> {
     fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<String, Outcome> {
+        let text = self.text;
         let room = plan.room(0);
-        let notes = fit_notes(room, self.notes);
-        let whole = prompts::whole(turns, &notes);
+        // The final call's fixed parts and the prompt text must leave at
+        // least half of the prompt allowance for the transcript (KTD8).
+        if prompts::overhead("", text) * 2 > tokens::prompt_allowance(room.limit, room.reserve) {
+            // Remove the plan, so that the next run takes the budget from
+            // the endpoint again. A model with a larger context can then
+            // run the same prompt.
+            lock(self.store)
+                .delete_checkpoint(self.session_id, Stage::Summarize, PLAN)
+                .map_err(StageError::from)?;
+            return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
+        }
+        let notes = fit_notes(room, self.notes, text);
+        let whole = prompts::whole(turns, &notes, text);
         if tokens::with_margin(cost(&whole)) + room.reserve as usize <= room.limit as usize {
-            return self.call(0, 0, &whole, room, 1);
+            return self.call_as(WHOLE.into(), 0, 0, &whole, room, 1);
         }
 
         // Too long for one call: parts, then merges until one remains.
-        let allowance = chunk_allowance(room, &notes);
+        let allowance = chunk_allowance(room, &notes, text);
         let chunks: Vec<Chunk> = chunk::chunk(turns, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
@@ -411,15 +479,15 @@ impl Calls<'_> {
             return self.call(
                 1,
                 0,
-                &prompts::merge(&only, true, &fit_notes(room, self.notes)),
+                &prompts::merge(&only, true, &fit_notes(room, self.notes, text), text),
                 room,
                 1,
             );
         }
         while summaries.len() > 1 {
             let room = plan.room(layer);
-            let notes = fit_notes(room, self.notes);
-            let allowance = chunk_allowance(room, &notes);
+            let notes = fit_notes(room, self.notes, text);
+            let allowance = chunk_allowance(room, &notes, text);
             let costs: Vec<usize> = summaries.iter().map(|s| tokens::estimate(s) + 8).collect();
             let groups = chunk::merge_groups(&costs, allowance);
             let last = groups.len() == 1;
@@ -433,7 +501,7 @@ impl Calls<'_> {
                 next.push(self.call(
                     layer,
                     i,
-                    &prompts::merge(&parts, last, &notes),
+                    &prompts::merge(&parts, last, &notes, text),
                     room,
                     groups.len(),
                 )?);
@@ -464,7 +532,7 @@ impl Calls<'_> {
         self.control.proceed()?;
         let allowance = tokens::prompt_allowance(room.limit, room.reserve)
             .saturating_sub(tokens::estimate(summary));
-        let messages = prompts::title(summary, &prompts::fit_notes(self.notes, allowance));
+        let messages = prompts::title(summary, &prompts::fit_notes(self.notes, allowance, ""));
         let reply = self
             .runtime
             .block_on(self.client.complete(&messages, room.reserve), self.control)?;
@@ -499,7 +567,19 @@ impl Calls<'_> {
         room: Room,
         total: usize,
     ) -> Result<String, Outcome> {
-        let key = call_key(layer, index);
+        self.call_as(call_key(layer, index), layer, index, messages, room, total)
+    }
+
+    /// One call, with its result saved under `key`.
+    fn call_as(
+        &mut self,
+        key: String,
+        layer: usize,
+        index: usize,
+        messages: &[Message],
+        room: Room,
+        total: usize,
+    ) -> Result<String, Outcome> {
         if let Some(done) =
             checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, &key)?
         {
@@ -543,16 +623,20 @@ fn cost(messages: &[Message]) -> usize {
 }
 
 /// The notes document, cut when it would take too much of what `room`
-/// lets a prompt use.
-fn fit_notes(room: Room, notes: &str) -> String {
-    prompts::fit_notes(notes, tokens::prompt_allowance(room.limit, room.reserve))
+/// lets a prompt use with the prompt `text`.
+fn fit_notes(room: Room, notes: &str, text: &str) -> String {
+    prompts::fit_notes(
+        notes,
+        tokens::prompt_allowance(room.limit, room.reserve),
+        text,
+    )
 }
 
 /// What is left for the transcript or the summaries in one call, after the
-/// prompt's fixed parts and the notes.
-fn chunk_allowance(room: Room, notes: &str) -> usize {
+/// prompt's fixed parts, the notes and the prompt `text`.
+fn chunk_allowance(room: Room, notes: &str, text: &str) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
-        .saturating_sub(prompts::overhead(notes))
+        .saturating_sub(prompts::overhead(notes, text))
         .max(1)
 }
 
