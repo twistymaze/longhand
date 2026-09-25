@@ -2,6 +2,11 @@
 
 Shared domain vocabulary for this project — entities, named processes, and status concepts with project-specific meaning. Seeded with core domain vocabulary, then accretes as ce-compound and ce-compound-refresh process learnings; direct edits are fine. Glossary only, not a spec or catch-all.
 
+## Sessions
+
+### Session
+One recording and everything made from it: the audio, the user's notes, the transcript and the summary. The UI calls a session a "note" ("New Note", the Notes list); "session" is the term in code and docs only.
+
 ## Saving a session
 
 ### Working location
