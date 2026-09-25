@@ -126,3 +126,49 @@ fn existing_sessions_have_no_title_and_no_found_speakers() {
     assert_eq!(record.title, None);
     assert_eq!(record.found_speakers, None);
 }
+
+/// A database as the rename work left it: migrations 0001 to 0003 applied.
+fn version_three(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 3)
+        .unwrap();
+    conn
+}
+
+#[test]
+fn migration_four_keeps_existing_sessions_and_their_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_three(&path);
+        add_session(&conn, "s1");
+        conn.execute(
+            "UPDATE sessions SET asr_model = 'whisper-large-v3-turbo-q5km', title = 'Budget',
+               title_source = 'user', notes = '- agenda' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.state, session_core::SessionState::Saved);
+    assert_eq!(
+        record.asr_model.as_deref(),
+        Some("whisper-large-v3-turbo-q5km")
+    );
+    assert_eq!(record.title.unwrap().text, "Budget");
+    assert_eq!(store.notes("s1").unwrap(), "- agenda");
+    // A session from before the migration has no recorded live mode.
+    assert_eq!(record.live_transcript, None);
+    drop(store);
+    let conn = Connection::open(&path).unwrap();
+    let marks: (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT transcribe_again_model, transcribe_again_error FROM sessions WHERE id = 's1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(marks, (None, None));
+}

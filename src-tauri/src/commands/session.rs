@@ -694,6 +694,7 @@ mod entry_tests {
                 source: TitleSource::Proposed,
             }),
             found_speakers: Some(3),
+            live_transcript: None,
         };
         let e = entry(&record, &[], None);
         assert_eq!(e.title.as_deref(), Some("Budget review"));

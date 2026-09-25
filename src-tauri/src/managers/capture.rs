@@ -26,7 +26,9 @@ use pipeline::recover::segment_audio_file;
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, SegmentOutcome};
 use serde::Serialize;
-use session_core::{Closed, Event, InterruptReason, SessionState, SpeakerCount, Store, Timeline};
+use session_core::{
+    Closed, Event, InterruptReason, RecordingModel, SessionState, SpeakerCount, Store, Timeline,
+};
 use specta::Type;
 use supervisor::{RestartTracker, SOURCE_RESTART_BUDGET};
 use tauri::{AppHandle, Manager};
@@ -34,6 +36,8 @@ use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::managers::alerts::{self, AlertsManager};
+use crate::managers::models::ModelsManager;
+use crate::managers::settings::{self, Settings};
 
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
 /// enough to keep per-frame overhead negligible.
@@ -256,6 +260,31 @@ pub fn resume_offset(
     }
 }
 
+/// The model and the live mode that a session records when it starts
+/// (KTD2). The live mode is true only when the selected model streams and
+/// the Live transcript switch is on (R18).
+pub fn recording_model(settings: &Settings) -> RecordingModel {
+    let streams = models::model(&settings.asr_model).is_some_and(|m| m.streaming);
+    RecordingModel {
+        asr_model: settings.asr_model.clone(),
+        live_transcript: streams && settings.live_transcript,
+    }
+}
+
+/// The model that a resume records (KTD2). A session keeps its model while
+/// that model is downloaded, and then this returns `None`. Otherwise the
+/// session gets the selected model.
+pub fn model_at_resume(
+    recorded: Option<&str>,
+    settings: &Settings,
+    is_present: impl Fn(&str) -> bool,
+) -> Option<RecordingModel> {
+    match recorded {
+        Some(model) if is_present(model) => None,
+        _ => Some(recording_model(settings)),
+    }
+}
+
 impl CaptureManager {
     pub fn new(app: &AppHandle) -> Result<Self, CaptureError> {
         let data = app
@@ -360,7 +389,11 @@ impl CaptureManager {
                 return Err(e);
             }
         };
-        let stopped = match self.store().start_session(&id, started, speaker_count) {
+        let model = recording_model(&settings::get_settings(app));
+        let stopped = match self
+            .store()
+            .start_session(&id, started, speaker_count, &model)
+        {
             Ok(stopped) => stopped,
             Err(e) => {
                 abandon(active);
@@ -374,7 +407,11 @@ impl CaptureManager {
         }
         inner.active = Some(active);
         inner.clock = Some(Clock::new(&id, timeline, Instant::now()));
-        log::info!("session {id} recording");
+        log::info!(
+            "session {id} recording with {} (live transcript: {})",
+            model.asr_model,
+            model.live_transcript
+        );
         changed(app, Some(&id));
         Ok(id)
     }
@@ -429,11 +466,42 @@ impl CaptureManager {
         Ok(state)
     }
 
-    /// A queued session keeps the model selected when it stopped (R20c).
+    /// A session keeps the model that it recorded at its start (KTD2). Only
+    /// a session with no recorded model, one that started before the
+    /// update, gets the model selected now.
     fn record_model_at_stop(&self, app: &AppHandle, id: &str) {
-        let model = crate::managers::settings::get_settings(app).asr_model;
-        if let Err(e) = self.store().set_asr_model(id, &model) {
-            log::warn!("could not record the model for {id}: {e}");
+        let model = settings::get_settings(app).asr_model;
+        match self.store().record_model_if_unset(id, &model) {
+            Ok(true) => log::info!("session {id} had no model and records {model} at stop"),
+            Ok(false) => {}
+            Err(e) => log::warn!("could not record the model for {id}: {e}"),
+        }
+    }
+
+    /// A resume keeps the session's model while that model is downloaded.
+    /// Otherwise the session records the selected model and live mode
+    /// (KTD2).
+    fn record_model_at_resume(&self, app: &AppHandle, id: &str) {
+        let recorded = match self.store().session(id) {
+            Ok(record) => record.and_then(|r| r.asr_model),
+            Err(e) => {
+                log::warn!("could not read the model of {id}: {e}");
+                return;
+            }
+        };
+        let models = app.state::<Arc<ModelsManager>>();
+        let settings = settings::get_settings(app);
+        let Some(model) = model_at_resume(recorded.as_deref(), &settings, |m| models.is_present(m))
+        else {
+            return;
+        };
+        match self.store().set_recording_model(id, &model) {
+            Ok(()) => log::info!(
+                "session {id} resumes with {} (live transcript: {}) in place of {recorded:?}",
+                model.asr_model,
+                model.live_transcript
+            ),
+            Err(e) => log::warn!("could not record the model for {id}: {e}"),
         }
     }
 
@@ -479,6 +547,7 @@ impl CaptureManager {
         if !matches!(state, SessionState::Capturing) {
             return Ok(state);
         }
+        self.record_model_at_resume(app, id);
         inner.supersede();
         let held = inner
             .clock
@@ -1277,5 +1346,70 @@ mod tests {
     fn segment_audio_files_number_from_one() {
         assert_eq!(segment_audio_file(0), "audio/segment-01.opus");
         assert_eq!(segment_audio_file(11), "audio/segment-12.opus");
+    }
+
+    const PARAKEET: &str = "parakeet-unified-en-0.6b-q80";
+    const WHISPER: &str = "whisper-large-v3-turbo-q5km";
+
+    fn selected(model: &str, live_transcript: bool) -> Settings {
+        Settings {
+            asr_model: model.into(),
+            live_transcript,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_streaming_model_with_the_switch_on_records_live_mode() {
+        assert_eq!(
+            recording_model(&selected(PARAKEET, true)),
+            RecordingModel {
+                asr_model: PARAKEET.into(),
+                live_transcript: true,
+            }
+        );
+    }
+
+    #[test]
+    fn the_switch_off_or_a_model_that_does_not_stream_records_no_live_mode() {
+        assert!(!recording_model(&selected(PARAKEET, false)).live_transcript);
+        let whisper = recording_model(&selected(WHISPER, true));
+        assert_eq!(whisper.asr_model, WHISPER);
+        assert!(!whisper.live_transcript);
+    }
+
+    #[test]
+    fn a_model_that_is_not_in_the_catalog_records_no_live_mode() {
+        assert!(!recording_model(&selected("no-such-model", true)).live_transcript);
+    }
+
+    #[test]
+    fn a_resume_keeps_the_sessions_model_when_it_is_downloaded() {
+        let settings = selected(WHISPER, true);
+        assert_eq!(model_at_resume(Some(PARAKEET), &settings, |_| true), None);
+    }
+
+    #[test]
+    fn a_resume_records_the_selected_model_when_the_sessions_model_is_gone() {
+        let settings = selected(PARAKEET, true);
+        assert_eq!(
+            model_at_resume(Some(WHISPER), &settings, |id| id != WHISPER),
+            Some(RecordingModel {
+                asr_model: PARAKEET.into(),
+                live_transcript: true,
+            })
+        );
+    }
+
+    #[test]
+    fn a_resume_records_the_selected_model_when_the_session_has_none() {
+        let settings = selected(WHISPER, true);
+        assert_eq!(
+            model_at_resume(None, &settings, |_| true),
+            Some(RecordingModel {
+                asr_model: WHISPER.into(),
+                live_transcript: false,
+            })
+        );
     }
 }

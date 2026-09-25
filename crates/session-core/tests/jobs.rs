@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::jobs::Liveness;
 use session_core::{
-    Event, InterruptReason, SessionState, SpeakerCount, Stage, Store, StoreError, Title,
-    TitleSource,
+    Event, InterruptReason, RecordingModel, SessionState, SpeakerCount, Stage, Store, StoreError,
+    Title, TitleSource,
 };
 
 fn t(minutes: i64) -> DateTime<FixedOffset> {
@@ -340,7 +340,12 @@ fn the_shortcut_queues_the_open_session_and_starts_a_new_one() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();
     store.put_segment("s1", &segment(0, 0)).unwrap();
-    assert_eq!(store.start_session("s2", t(5), None).unwrap(), ["s1"]);
+    assert_eq!(
+        store
+            .start_session("s2", t(5), None, &parakeet_live())
+            .unwrap(),
+        ["s1"]
+    );
     assert!(matches!(
         store.session("s1").unwrap().unwrap().state,
         SessionState::Queued { .. }
@@ -355,7 +360,9 @@ fn the_shortcut_queues_the_open_session_and_starts_a_new_one() {
 fn the_shortcut_discards_an_open_session_that_kept_no_audio() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();
-    store.start_session("s2", t(5), None).unwrap();
+    store
+        .start_session("s2", t(5), None, &parakeet_live())
+        .unwrap();
     assert_eq!(
         store.session("s1").unwrap().unwrap().state,
         SessionState::Discarded
@@ -751,4 +758,100 @@ fn a_rename_intent_is_kept_until_it_is_cleared_and_goes_with_its_session() {
     store.clear_rename_intent("s1").unwrap();
     assert!(store.rename_intents().unwrap().is_empty());
     assert!(store.set_rename_intent("nobody", &first).is_err());
+}
+
+const PARAKEET: &str = "parakeet-unified-en-0.6b-q80";
+const WHISPER: &str = "whisper-large-v3-turbo-q5km";
+
+fn parakeet_live() -> RecordingModel {
+    RecordingModel {
+        asr_model: PARAKEET.into(),
+        live_transcript: true,
+    }
+}
+
+fn whisper() -> RecordingModel {
+    RecordingModel {
+        asr_model: WHISPER.into(),
+        live_transcript: false,
+    }
+}
+
+#[test]
+fn a_session_records_its_model_and_live_mode_at_start() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live())
+        .unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
+    assert_eq!(record.live_transcript, Some(true));
+}
+
+#[test]
+fn a_model_change_during_recording_does_not_change_the_session() {
+    // AE6: the stop offers the model selected now, Whisper. The session
+    // keeps the model it started with.
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live())
+        .unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    stop(&mut store, "s1", 5);
+    assert!(!store.record_model_if_unset("s1", WHISPER).unwrap());
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
+    assert_eq!(record.live_transcript, Some(true));
+}
+
+#[test]
+fn a_session_with_no_model_at_stop_gets_the_selected_model_and_no_live_mode() {
+    // A recording that was in progress at the update has no model.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model, None);
+    assert_eq!(record.live_transcript, None);
+    assert!(store.record_model_if_unset("s1", WHISPER).unwrap());
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(WHISPER));
+    assert_eq!(record.live_transcript, Some(false));
+}
+
+#[test]
+fn a_recording_model_replaces_the_model_and_the_live_mode() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live())
+        .unwrap();
+    store.set_recording_model("s1", &whisper()).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(WHISPER));
+    assert_eq!(record.live_transcript, Some(false));
+}
+
+#[test]
+fn a_session_stopped_by_a_new_session_keeps_its_model() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live())
+        .unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    assert_eq!(
+        store.start_session("s2", t(5), None, &whisper()).unwrap(),
+        ["s1"]
+    );
+    assert!(!store.record_model_if_unset("s1", WHISPER).unwrap());
+    let s1 = store.session("s1").unwrap().unwrap();
+    assert_eq!(s1.asr_model.as_deref(), Some(PARAKEET));
+    let s2 = store.session("s2").unwrap().unwrap();
+    assert_eq!(s2.asr_model.as_deref(), Some(WHISPER));
+    assert_eq!(s2.live_transcript, Some(false));
+}
+
+#[test]
+fn model_writes_for_no_session_are_errors() {
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.set_recording_model("nobody", &whisper()).is_err());
+    assert!(store.record_model_if_unset("nobody", WHISPER).is_err());
 }

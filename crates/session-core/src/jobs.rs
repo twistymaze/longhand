@@ -37,11 +37,25 @@ pub struct SessionRecord {
     pub state: SessionState,
     pub queue_seq: Option<i64>,
     pub speaker_count: Option<SpeakerCount>,
+    /// The recognition model that the session records when it starts, or at
+    /// Stop for a session that started before the update (KTD2).
     pub asr_model: Option<String>,
     pub home_path: Option<String>,
     pub title: Option<Title>,
     /// The number of speakers that processing found (KTD11).
     pub found_speakers: Option<u32>,
+    /// The session transcribes during recording (R18, KTD2). `None` for a
+    /// session from before migration 0004.
+    pub live_transcript: Option<bool>,
+}
+
+/// The recognition model and the live mode that a session records when it
+/// starts (KTD2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingModel {
+    pub asr_model: String,
+    /// True only when the model streams and the Live transcript switch is on.
+    pub live_transcript: bool,
 }
 
 /// Where a title came from (KTD7).
@@ -99,7 +113,7 @@ fn stage_key(stage: Stage) -> String {
 
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
-     home_path, title, title_source, found_speakers";
+     home_path, title, title_source, found_speakers, live_transcript";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -133,15 +147,27 @@ impl Store {
 
     // ------------------------------------------------------------ sessions
 
-    /// Create a capturing session with an empty notes document.
+    /// Create a capturing session with an empty notes document and no
+    /// recorded model.
     pub fn create_session(
         &mut self,
         id: &str,
         created_at: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<()> {
+        self.insert_session(id, created_at, speaker_count, None)
+    }
+
+    fn insert_session(
+        &mut self,
+        id: &str,
+        created_at: DateTime<FixedOffset>,
+        speaker_count: Option<SpeakerCount>,
+        model: Option<&RecordingModel>,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, created_at, state, speaker_count) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -149,6 +175,8 @@ impl Store {
                 speaker_count
                     .map(|c| serde_json::to_string(&c))
                     .transpose()?,
+                model.map(|m| m.asr_model.as_str()),
+                model.map(|m| m.live_transcript),
             ],
         )?;
         Ok(())
@@ -156,12 +184,13 @@ impl Store {
 
     /// Start a new session from the shortcut (R6c): any session still capturing
     /// or interrupted is stopped and queued first (or discarded if it kept no
-    /// audio), then the new one is created.
+    /// audio), then the new one is created with `model` (KTD2).
     pub fn start_session(
         &mut self,
         id: &str,
         now: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
+        model: &RecordingModel,
     ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
@@ -177,7 +206,7 @@ impl Store {
                 stopped.push(record.id);
             }
         }
-        self.create_session(id, now, speaker_count)?;
+        self.insert_session(id, now, speaker_count, Some(model))?;
         Ok(stopped)
     }
 
@@ -224,13 +253,40 @@ impl Store {
         Ok(())
     }
 
-    /// Record the recognition model selected when the session stopped (R20c).
+    /// Record the recognition model of the session.
     pub fn set_asr_model(&self, id: &str, model: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE sessions SET asr_model = ?2 WHERE id = ?1",
             params![id, model],
         )?;
         Ok(())
+    }
+
+    /// Record the model and the live mode of the session. A resume uses
+    /// this when the session's model is no longer downloaded (KTD2).
+    pub fn set_recording_model(&self, id: &str, model: &RecordingModel) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET asr_model = ?2, live_transcript = ?3 WHERE id = ?1",
+            params![id, model.asr_model, model.live_transcript],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Record `model` for a session that has no recorded model: one that
+    /// started before the update (KTD2). Such a session did not transcribe
+    /// during recording, so its live mode becomes false. Returns false and
+    /// changes nothing when the session already has a model.
+    pub fn record_model_if_unset(&self, id: &str, model: &str) -> Result<bool> {
+        self.require(id)?;
+        let changed = self.conn.execute(
+            "UPDATE sessions SET asr_model = ?2, live_transcript = COALESCE(live_transcript, 0)
+             WHERE id = ?1 AND asr_model IS NULL",
+            params![id, model],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn set_home_path(&self, id: &str, path: &str) -> Result<()> {
@@ -665,6 +721,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let title: Option<String> = r.get(7)?;
     let title_source: Option<String> = r.get(8)?;
     let found_speakers: Option<u32> = r.get(9)?;
+    let live_transcript: Option<bool> = r.get(10)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -687,6 +744,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
             home_path,
             title,
             found_speakers,
+            live_transcript,
         })
     })())
 }

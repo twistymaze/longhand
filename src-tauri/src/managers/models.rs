@@ -633,6 +633,7 @@ mod tests {
             home_path: None,
             title: None,
             found_speakers: None,
+            live_transcript: None,
         }
     }
 
