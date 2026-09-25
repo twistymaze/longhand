@@ -63,10 +63,10 @@ This folder is our own convention, not something compound engineering defines, s
 |---|---|---|
 | [Summary kinds chosen by folder](summary-kind-per-folder.md) | open | A recap for Pathfinder, decisions and follow-ups for work |
 | [Custom vocabulary per folder](custom-vocabulary.md) | open | A word list that corrects names and jargon |
-| [Live transcript while recording](live-transcript-view.md) | open | Offered only when the selected model streams (KD8) |
+| [Live transcript while recording](live-transcript-view.md) | in-progress | Offered only when the selected model streams (KD8) |
 | [Carry context from the previous session](session-to-session-context.md) | open | "Previously on" for recurring sessions |
 | [A diarization evaluation loop](diarization-evaluation-loop.md) | open | Measure speaker turns on real sessions, repeatedly |
-| [Alternative diarization architectures](alternative-diarization-architectures.md) | parked | MOSS or Sortformer if pyannote disappoints |
+| [Alternative diarization architectures](alternative-diarization-architectures.md) | parked | MOSS or Sortformer, or speaker labels from the recognition model |
 | [Transcript review and correction](transcript-review-and-correction.md) | open | Seek, merge and split turns, fix mangled names |
 
 ## Processing
@@ -88,7 +88,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [Choose the recognition model](recognition-model-picker.md) | open | A Settings picker and a second engine |
+| [Choose the recognition model](recognition-model-picker.md) | in-progress | A Settings picker for nine models from Handy's catalog |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 
 ## Done
