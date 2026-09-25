@@ -1379,7 +1379,7 @@ async fn stub_after_part_five(r: &Rig) -> (http::Mock, std::path::PathBuf) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_whole_transcript_run_sends_the_active_prompt_and_records_its_name() {
     let r = rig().await;
-    let recap = custom_prompt("Game recap", "RECAP-MARKER");
+    let recap = custom_prompt("Team sync", "RECAP-MARKER");
     use_prompt(&r, &recap);
     let mock = summaries_from(
         &r,
@@ -1400,9 +1400,9 @@ async fn a_whole_transcript_run_sends_the_active_prompt_and_records_its_name() {
     assert_eq!(calls.len(), 1);
     assert!(calls[0].0.contains("RECAP-MARKER"), "{}", calls[0].0);
     let path = saved_folder(&r, "s").join("summary.md");
-    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+    assert_eq!(prompt_name(&path), Some("Team sync".into()));
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains("prompt_name: Game recap"), "{text}");
+    assert!(text.contains("prompt_name: Team sync"), "{text}");
     // The snapshot is saved next to the plan, and the whole call has its
     // own key, apart from the first part note's.
     let saved: summarize::Prompt =
@@ -1454,7 +1454,7 @@ async fn a_run_resumed_after_the_active_prompt_changes_keeps_its_first_snapshot(
     let root = tempfile::tempdir().unwrap();
     let store = store();
     let first = rig_with(Arc::clone(&store), root, Arc::default());
-    use_prompt(&first, &custom_prompt("Game recap", "FIRST-MARKER"));
+    use_prompt(&first, &custom_prompt("Team sync", "FIRST-MARKER"));
     // The process stops after two part notes.
     let runner = Arc::clone(&first.runner);
     let count = Arc::new(AtomicUsize::new(0));
@@ -1494,7 +1494,7 @@ async fn a_run_resumed_after_the_active_prompt_changes_keeps_its_first_snapshot(
         assert!(calls.iter().all(|(_, u)| !u.contains(done)), "{done}");
     }
     let path = saved_folder(&second, "s").join("summary.md");
-    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+    assert_eq!(prompt_name(&path), Some("Team sync".into()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1518,13 +1518,13 @@ async fn regenerating_a_complete_summary_uses_the_prompt_active_now_and_records_
     let path = saved_folder(&r, "s").join("summary.md");
     assert_eq!(prompt_name(&path), Some("Topic summary".into()));
     // A change of the active prompt leaves the saved summary as it is.
-    use_prompt(&r, &custom_prompt("Game recap", "RECAP-MARKER"));
+    use_prompt(&r, &custom_prompt("Team sync", "RECAP-MARKER"));
     assert_eq!(prompt_name(&path), Some("Topic summary".into()));
     assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
     let calls = chat_messages(&mock);
     assert_eq!(calls.len(), 2);
     assert!(calls[1].0.contains("RECAP-MARKER"));
-    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+    assert_eq!(prompt_name(&path), Some("Team sync".into()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1545,7 +1545,7 @@ async fn regenerating_a_stub_with_the_same_prompt_reuses_its_part_notes() {
 async fn regenerating_a_stub_after_the_prompt_changes_makes_every_call_again() {
     let r = rig().await;
     let (mock, path) = stub_after_part_five(&r).await;
-    use_prompt(&r, &custom_prompt("Game recap", "RECAP-MARKER"));
+    use_prompt(&r, &custom_prompt("Team sync", "RECAP-MARKER"));
     assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
     let calls = chat_messages(&mock);
     assert!(
@@ -1554,13 +1554,13 @@ async fn regenerating_a_stub_after_the_prompt_changes_makes_every_call_again() {
         &calls[5].1[..80]
     );
     assert!(calls.last().unwrap().0.contains("RECAP-MARKER"));
-    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+    assert_eq!(prompt_name(&path), Some("Team sync".into()));
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn regenerating_a_stub_with_a_changed_text_under_the_same_id_makes_every_call_again() {
     let r = rig().await;
-    let before = custom_prompt("Game recap", "FIRST-MARKER");
+    let before = custom_prompt("Team sync", "FIRST-MARKER");
     use_prompt(&r, &before);
     let (mock, path) = stub_after_part_five(&r).await;
     use_prompt(
@@ -1600,7 +1600,7 @@ async fn regenerating_a_stub_with_no_saved_prompt_makes_every_call_again() {
 async fn regenerating_a_stub_after_its_prompt_is_renamed_reuses_the_calls_and_records_the_new_name()
 {
     let r = rig().await;
-    let before = custom_prompt("Game recap", "RECAP-MARKER");
+    let before = custom_prompt("Team sync", "RECAP-MARKER");
     use_prompt(&r, &before);
     let (mock, path) = stub_after_part_five(&r).await;
     use_prompt(

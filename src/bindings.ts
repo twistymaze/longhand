@@ -494,6 +494,28 @@ async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteS
  */
 async openSettings() : Promise<void> {
     await TAURI_INVOKE("open_settings");
+},
+/**
+ * Destroy the Settings window that calls this. The page calls this when its
+ * own destroy call fails, so that the window still closes. The call needs
+ * no window permission, and it does not send a close request that a
+ * listener can stop. It acts only on the calling window, so a late call
+ * cannot close a Settings window that opened after it.
+ */
+async closeSettingsWindow() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("close_settings_window") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Write one line from the webview to the app log. Async, so that the line
+ * does not wait for the main thread.
+ */
+async logFromWebview(level: WebviewLogLevel, message: string) : Promise<void> {
+    await TAURI_INVOKE("log_from_webview", { level, message });
 }
 }
 
@@ -1009,6 +1031,7 @@ stub: boolean; host: string | null; model: string | null;
  * prompts had names, and a stub, have none.
  */
 prompt: string | null }
+export type WebviewLogLevel = "error" | "warn" | "info"
 
 /** tauri-specta globals **/
 

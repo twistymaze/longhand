@@ -44,13 +44,13 @@ Start with a short overview paragraph of two or three sentences.
 
 Then write one section for each topic, with a \"## \" heading that names it. \
 Start the section with one line that sets up the topic. Then write bullets \
-that each start with a short bold label, such as \"**Loot:**\" or \
-\"**Decision:**\". Put the specific details in bullets nested below.
+that each start with a short bold label, such as \"**Decision:**\" or \
+\"**Budget:**\". Put the specific details in bullets nested below.
 
-State the facts, not that people talked about them. Write \"they found 15 \
-gold pieces and an invisibility potion\", not \"the group discussed the \
-loot\". Keep numbers, amounts, names, dates and specific items. Leave out \
-small talk.
+State the facts, not that people talked about them. Write \"the launch \
+moves to May 12 and the budget rises to $40,000\", not \"the team discussed \
+the schedule\". Keep numbers, amounts, names, dates and specific items. \
+Leave out small talk.
 
 The notes are what the person who recorded the session found important. \
 Give their subjects more weight and more detail, but also cover every other \

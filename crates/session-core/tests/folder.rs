@@ -136,7 +136,7 @@ fn summary_md_round_trips_both_forms_and_never_holds_a_credential() {
             meta: SummaryMeta::Complete {
                 endpoint_host: "litellm.example.com".into(),
                 model: "gpt-5".into(),
-                prompt_name: Some("Game recap".into()),
+                prompt_name: Some("Team sync".into()),
             },
             body: "## Decisions\n\n- Ship Friday.".into(),
         },
@@ -182,12 +182,12 @@ fn a_summary_md_records_the_prompt_name_in_its_frontmatter() {
         meta: SummaryMeta::Complete {
             endpoint_host: "litellm.example.com".into(),
             model: "gpt-5".into(),
-            prompt_name: Some("Game recap".into()),
+            prompt_name: Some("Team sync".into()),
         },
         body: "## Decisions".into(),
     };
     let text = summary.render();
-    assert!(text.contains("\nprompt_name: Game recap\n"), "{text}");
+    assert!(text.contains("\nprompt_name: Team sync\n"), "{text}");
 }
 
 #[test]

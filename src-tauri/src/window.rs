@@ -3,6 +3,9 @@
 //! Adapted from Handy's `lib.rs` (`show_main_window`, the `CloseRequested`
 //! handler); see src-tauri/PROVENANCE.md.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use tauri::{
     AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window, WindowEvent,
 };
@@ -141,6 +144,11 @@ pub fn open_settings(app: &AppHandle) {
         app.get_webview_window(SETTINGS_WINDOW),
         |window| front(app, window),
         || {
+            // Before the build, so that the window's delegate has the method
+            // when AppKit reads it.
+            #[cfg(target_os = "macos")]
+            crate::zoom::stop_zoom_of_windows_that_cannot_maximize();
+            SETTINGS_OPENS.opened();
             WebviewWindowBuilder::new(
                 app,
                 SETTINGS_WINDOW,
@@ -161,6 +169,45 @@ pub fn open_settings(app: &AppHandle) {
         Err(e) => log::error!("failed to open the settings window: {e}"),
     }
 }
+
+/// The time from a close request of the Settings window to the destroy
+/// here. The page's close takes at most 5 s (2 s for the save and 1 s for
+/// each of three later steps), so this limit applies only when the page did
+/// not close the window.
+///
+/// The page's close listener is the usual cause. Tauri 2.11 keeps the
+/// listener records of a webview after the webview is destroyed, and it
+/// stops the close of each later window with the same label that has a
+/// record. The page removes its listener before it closes the window, but
+/// a page that stops (a crash, a reload) cannot.
+const SETTINGS_CLOSE_LIMIT: Duration = Duration::from_secs(6);
+
+/// Counts the Settings windows that were built, so that a late destroy does
+/// not close a new window that opened after the close request.
+struct OpenCount(AtomicU64);
+
+impl OpenCount {
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    /// Record a new window.
+    fn opened(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The number of the window that is open now.
+    fn current(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Whether window `number` is still the last window built.
+    fn is_current(&self, number: u64) -> bool {
+        self.current() == number
+    }
+}
+
+static SETTINGS_OPENS: OpenCount = OpenCount::new();
 
 /// Show and focus `window`. A visible window keeps the Dock icon, so the app
 /// becomes Regular again if a hide made it Accessory.
@@ -191,8 +238,31 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             api.prevent_close();
             hide_main_window(window);
         }
-        // The Settings window closes normally; the Dock icon goes when it
-        // was the last visible window.
+        // The Settings page stops the close while it saves, and then
+        // destroys the window. If the window is open after
+        // `SETTINGS_CLOSE_LIMIT`, it is destroyed here.
+        WindowEvent::CloseRequested { .. } if window.label() == SETTINGS_WINDOW => {
+            let open = SETTINGS_OPENS.current();
+            let app = window.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(SETTINGS_CLOSE_LIMIT).await;
+                if !SETTINGS_OPENS.is_current(open) {
+                    return;
+                }
+                let Some(window) = app.get_webview_window(SETTINGS_WINDOW) else {
+                    return;
+                };
+                log::warn!(
+                    "the Settings window is open {} s after a close request; destroying it",
+                    SETTINGS_CLOSE_LIMIT.as_secs()
+                );
+                if let Err(e) = window.destroy() {
+                    log::error!("failed to destroy the settings window: {e}");
+                }
+            });
+        }
+        // The Dock icon goes when the Settings window was the last visible
+        // window.
         WindowEvent::Destroyed if window.label() == SETTINGS_WINDOW => {
             hide_dock_icon_if_no_window(window);
             // A capture that was in progress when the window closed must not
@@ -273,6 +343,16 @@ mod tests {
     fn a_hidden_window_is_shown_whatever_its_focus_reads() {
         assert_eq!(toggle_action(false, false), ToggleAction::Show);
         assert_eq!(toggle_action(false, true), ToggleAction::Show);
+    }
+
+    #[test]
+    fn a_window_that_opens_after_a_close_request_is_not_the_closed_window() {
+        let opens = OpenCount::new();
+        opens.opened();
+        let closing = opens.current();
+        assert!(opens.is_current(closing));
+        opens.opened();
+        assert!(!opens.is_current(closing));
     }
 
     #[test]

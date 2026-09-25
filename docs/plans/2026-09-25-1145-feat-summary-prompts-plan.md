@@ -65,7 +65,7 @@ The current summary has one fixed shape: an overview, then "Key points" with a `
 **The built-in prompts**
 
 - R8. The "Topic summary" is grouped by topic, not in time order. It starts with a short overview paragraph. Then comes one section for each topic, with a one-line setup, bullets with bold labels, and the specific details nested below them. It ends with "Open questions" and with follow-ups and their owners, but only when there are any. It shows no times and adds no title.
-- R9. The "Topic summary" states concrete facts, not descriptions of the conversation. It writes "they found 15 gold pieces and an invisibility potion", not "the participants discussed the loot". It keeps numbers, amounts, names and specific items.
+- R9. The "Topic summary" states concrete facts, not descriptions of the conversation. It writes "the launch moves to May 12 and the budget rises to $40,000", not "the team discussed the schedule". The examples in the built-in text are general, so that they fit work meetings, 1:1s, classes, interviews and other conversations. It keeps numbers, amounts, names and specific items.
 - R12. The "Play-by-play summary" keeps today's shape: an overview, then "Key points" in time order with a `[hh:mm:ss]` time on each point, then "Decisions" and "Open questions and follow-ups" when there are any. It follows the naming rule in R7, so it does not label people "Speaker N".
 
 **Existing summaries and Regenerate**
@@ -79,8 +79,8 @@ The current summary has one fixed shape: an overview, then "Key points" with a `
 - AE2. **Covers R8, R7.** Given the 1:1 behind Appendix example B, when the session is summarized with the "Topic summary" prompt, the summary has sections such as UserWeb login, QA throughput, Internal Projects and training billing. It has no `[hh:mm:ss]` references and no "Speaker 1" or "Speaker 2".
 - AE3. **Covers R5, R6.** Given a custom prompt that asks for times on each point, when a session is summarized with it, the summary shows times.
 - AE4. **Covers R7.** Given a custom prompt that says "give each speaker a plausible name", when a session is summarized, the summary still uses only names that the transcript makes clear.
-- AE5. **Covers R4.** Given the active prompt is "Game recap", when the user deletes "Game recap", then "Topic summary" becomes active.
-- AE6. **Covers R10, R11.** Given a note that was summarized with the "Topic summary" prompt, when the user makes "Game recap" active, the note's summary does not change. After the user presses Regenerate Summary, the summary is rewritten with "Game recap" and the note shows "Game recap".
+- AE5. **Covers R4.** Given the active prompt is "Team sync", when the user deletes "Team sync", then "Topic summary" becomes active.
+- AE6. **Covers R10, R11.** Given a note that was summarized with the "Topic summary" prompt, when the user makes "Team sync" active, the note's summary does not change. After the user presses Regenerate Summary, the summary is rewritten with "Team sync" and the note shows "Team sync".
 - AE7. **Covers R12, R7.** Given the 1:1 behind Appendix example B, when the session is summarized with "Play-by-play summary", the summary has the shape of example B with its times, but it has no "Speaker 1" or "Speaker 2".
 - AE8. **Covers R5.** Given a transcript too long for one call and a custom prompt, when the session is summarized, the part notes are written as they are today, and the custom prompt shapes only the final merge.
 - AE9. **Covers R7, R9.** Given the RPG session behind Appendix example A, summarized with a context limit small enough to split it into parts, when it is summarized with "Topic summary", the summary still has the loot amounts and items, and it has no times.
@@ -305,7 +305,7 @@ flowchart TB
   - Covers AE1. The parser turns input shaped like Appendix example A into nested lists: a bold-label bullet with three indented children gives one item with a child list of three.
   - A wrapped, indented continuation line still joins its item and does not start a child list.
   - A numbered list inside a bullet list renders as an ordered child.
-  - Covers AE6. The footer shows "Game recap" when the summary records it.
+  - Covers AE6. The footer shows "Team sync" when the summary records it.
   - A summary with no prompt name shows the footer with no prompt name.
 - **Verification:** `bun run test` passes, and `src/bindings.ts` matches the export.
 
