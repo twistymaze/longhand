@@ -1486,6 +1486,88 @@ async fn a_prompt_too_long_for_the_context_fails_the_summary_before_any_call() {
     assert!(r.script.learned.lock().unwrap().is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_prompt_too_long_stub_after_a_larger_context_is_set_finishes() {
+    let r = rig().await;
+    let text: String = "Keep every detail that was said. "
+        .repeat(200)
+        .chars()
+        .take(summarize::prompts::PROMPT_TEXT_LIMIT)
+        .collect();
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            id: "custom-long".into(),
+            name: "Long".into(),
+            text,
+        },
+    );
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("A summary.")),
+        Some(2_048),
+    )
+    .await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(chat_calls(&mock).is_empty(), "no call is made");
+    // The same prompt, with a model that has a larger context.
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(32_000),
+        ..endpoint(&mock.base)
+    }));
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert!(!chat_calls(&mock).is_empty(), "the summary calls are made");
+    assert_eq!(prompt_name(&path), Some("Long".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_run_with_no_saved_prompt_makes_its_calls_again() {
+    let r = rig().await;
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("A new summary.")),
+        Some(32_000),
+    )
+    .await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    // A run from before prompts were saved: a plan and a cached result,
+    // and no prompt snapshot.
+    let reserve = summarize::tokens::reply_reserve(32_000);
+    let plan = serde_json::json!({
+        "budget": { "limit": 32_000, "source": "user" },
+        "layers": [{ "limit": 32_000, "reserve": reserve }],
+    });
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Summarize,
+        pipeline::summarize::PLAN,
+        &plan,
+    )
+    .unwrap();
+    for key in [pipeline::summarize::WHOLE, "l00-00000"] {
+        checkpoint::put(&r.store, "s", Stage::Summarize, key, &"An old summary.").unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(chat_calls(&mock).len(), 1, "the model is called again");
+    let path = saved_folder(&r, "s").join("summary.md");
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("A new summary."), "{body}");
+    assert!(!body.contains("An old summary."), "{body}");
+    assert!(
+        !summarize_keys(&r).iter().any(|k| k == "l00-00000"),
+        "the old part note is gone"
+    );
+}
+
 // -------------------------------------------------------------- saving (U11)
 
 const NOTES: &str = "- [00:00:01] the rules changed\n- bring snacks\n";

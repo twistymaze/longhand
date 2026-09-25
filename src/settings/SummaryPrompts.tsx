@@ -212,7 +212,16 @@ export function SummaryPrompts({
     const yes = await ask({ title: `Delete “${name}”?`, message: "This can’t be undone.", action: "Delete" });
     if (yes) await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => show(null));
   };
-  const save = () => run(() => commands.setSummaryPromptText(id, draft), setEditorError, () => setEdit(null));
+  // The text stays editable while the save runs. Clear the edit only if it
+  // still holds the saved text, so that text typed after Save stays unsaved.
+  const save = () => {
+    const sent = draft;
+    return run(
+      () => commands.setSummaryPromptText(id, sent),
+      setEditorError,
+      () => setEdit((e) => (e && e.id === id && e.text === sent ? null : e)),
+    );
+  };
 
   return (
     <>

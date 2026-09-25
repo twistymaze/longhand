@@ -246,6 +246,11 @@ pub fn produce(
     let prompt = match checkpoint::get::<Prompt>(store, session_id, Stage::Summarize, PROMPT)? {
         Some(saved) => saved,
         None => {
+            // A run from before prompts were saved can have a plan and
+            // cached calls made with another prompt. Remove them, so that
+            // no result goes out under the name of the active prompt. The
+            // stage's completion and failure records stay.
+            forget_calls(store, session_id)?;
             checkpoint::put(store, session_id, Stage::Summarize, PROMPT, &active)?;
             active
         }
@@ -371,6 +376,15 @@ pub fn produce(
     })
 }
 
+/// Remove the plan, every cached call and the title proposal.
+fn forget_calls(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
+    forget_layers_from(store, session_id, 0)?;
+    let guard = lock(store);
+    guard.delete_checkpoint(session_id, Stage::Summarize, PLAN)?;
+    guard.delete_checkpoint(session_id, Stage::Summarize, TITLE)?;
+    Ok(())
+}
+
 fn forget_layers_from(
     store: &SharedStore,
     session_id: &str,
@@ -434,6 +448,12 @@ impl Calls<'_> {
         // The final call's fixed parts and the prompt text must leave at
         // least half of the prompt allowance for the transcript (KTD8).
         if prompts::overhead("", text) * 2 > tokens::prompt_allowance(room.limit, room.reserve) {
+            // Remove the plan, so that the next run takes the budget from
+            // the endpoint again. A model with a larger context can then
+            // run the same prompt.
+            lock(self.store)
+                .delete_checkpoint(self.session_id, Stage::Summarize, PLAN)
+                .map_err(StageError::from)?;
             return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
         }
         let notes = fit_notes(room, self.notes, text);

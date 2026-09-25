@@ -188,6 +188,51 @@ describe("SummaryPrompts", () => {
     expect(textArea().value).toBe("Short recap");
   });
 
+  test("text typed while Save runs stays in the editor and stays unsaved", async () => {
+    // The save command waits until the test calls `finish`.
+    let finish: () => void = () => {};
+    const saved = new Promise<void>((r) => (finish = r));
+    let text = "Recap text";
+    backend({
+      set_summary_prompt_text: async (args) => {
+        await saved;
+        text = args.text as string;
+        return { ...baseSettings, summary_prompts: [{ id: "c1", name: "Game recap", text }] };
+      },
+      summary_prompts: () => ({
+        prompts: [
+          { id: "topic-summary", name: "Topic summary", text: "Topic text", built_in: true },
+          { id: "play-by-play", name: "Play-by-play summary", text: "Play text", built_in: true },
+          { id: "c1", name: "Game recap", text, built_in: false },
+        ],
+        active: "topic-summary",
+        text_limit: 4000,
+      }),
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Short recap" } });
+    await user.click(button("Save"));
+    fireEvent.change(textArea(), { target: { value: "Short recap, longer" } });
+    await act(async () => finish());
+    await waitFor(() => expect(text).toBe("Short recap"));
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+    expect(textArea().value).toBe("Short recap, longer");
+    expect((button("Save") as HTMLButtonElement).disabled).toBe(false);
+    expect((button("Revert") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("a list read error shows inline", async () => {
+    backend({
+      summary_prompts: () => {
+        throw "The settings file could not be read.";
+      },
+    });
+    renderPrompts();
+    expect(await screen.findByText("The settings file could not be read.")).toBeTruthy();
+  });
+
   test("a rename error shows inline", async () => {
     backend({
       rename_summary_prompt: () => {
