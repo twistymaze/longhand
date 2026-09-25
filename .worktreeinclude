@@ -1,0 +1,17 @@
+# Gitignored files that Claude Code copies into each new worktree.
+# The syntax is the same as .gitignore. Only files that git ignores are copied.
+
+# Upstream clones (anarlog, Handy). Research and PROVENANCE records read them.
+reference-source/
+
+# Local secrets and settings.
+.env
+
+# Reference screenshots for idea briefs.
+/docs/ideas/*-screenshots/
+
+# Not copied:
+# - fixtures/, sample.m4a, sample.txt, manual-tests/: large, and tests read them
+#   through absolute paths in LONGHAND_* variables, so the main checkout's copy works.
+# - target/, node_modules/, dist/, src-tauri/gen/, src-tauri/transcribe-libs/:
+#   build output. Each worktree builds its own.
