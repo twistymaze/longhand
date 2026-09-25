@@ -462,10 +462,11 @@ async openSettings() : Promise<void> {
     await TAURI_INVOKE("open_settings");
 },
 /**
- * Destroy the Settings window. The page calls this when its own destroy
- * call fails, so that the window still closes. The call needs no window
- * permission, and it does not send a close request that a listener can
- * stop.
+ * Destroy the Settings window that calls this. The page calls this when its
+ * own destroy call fails, so that the window still closes. The call needs
+ * no window permission, and it does not send a close request that a
+ * listener can stop. It acts only on the calling window, so a late call
+ * cannot close a Settings window that opened after it.
  */
 async closeSettingsWindow() : Promise<Result<null, string>> {
     try {

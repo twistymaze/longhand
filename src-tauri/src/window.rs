@@ -128,25 +128,17 @@ pub fn open_settings(app: &AppHandle) {
     }
 }
 
-/// Destroy the Settings window, if it is open. A destroy sends no close
-/// request, so no listener can stop it.
-pub fn destroy_settings_window(app: &AppHandle) -> tauri::Result<()> {
-    match app.get_webview_window(SETTINGS_WINDOW) {
-        Some(window) => window.destroy(),
-        None => Ok(()),
-    }
-}
-
 /// The time from a close request of the Settings window to the destroy
-/// here. The page waits at most 2 s for a save before it closes the window,
-/// so this limit applies only when the page did not close it.
+/// here. The page's close takes at most 5 s (2 s for the save and 1 s for
+/// each of three later steps), so this limit applies only when the page did
+/// not close the window.
 ///
 /// The page's close listener is the usual cause. Tauri 2.11 keeps the
 /// listener records of a webview after the webview is destroyed, and it
 /// stops the close of each later window with the same label that has a
 /// record. The page removes its listener before it closes the window, but
 /// a page that stops (a crash, a reload) cannot.
-const SETTINGS_CLOSE_LIMIT: Duration = Duration::from_secs(4);
+const SETTINGS_CLOSE_LIMIT: Duration = Duration::from_secs(6);
 
 /// Counts the Settings windows that were built, so that a late destroy does
 /// not close a new window that opened after the close request.

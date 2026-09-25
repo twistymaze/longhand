@@ -208,13 +208,22 @@ export function SessionPage({
     // The status shows on Summary, so the page moves there, as it does
     // after Stop.
     setTab("summary");
-    void commands.regenerateSummary(id).then(async (r) => {
-      if (r.status === "error") setNotice({ tone: "negative", text: sentence(r.error) });
-      await loadDocument();
-      setRegenerating(false);
+    // A rejected call must also end the status, or the tab shows it with
+    // no end.
+    void (async () => {
+      try {
+        const r = await commands.regenerateSummary(id);
+        if (r.status === "error") setNotice({ tone: "negative", text: sentence(r.error) });
+        await loadDocument();
+      } catch (e) {
+        console.error("Regenerate failed:", e);
+        setNotice({ tone: "negative", text: "The summary could not be updated." });
+      } finally {
+        setRegenerating(false);
+      }
       // Regenerate can propose a new title (R31).
       void sessions.refresh();
-    });
+    })();
   };
 
   const deletion = useDeleteSession({

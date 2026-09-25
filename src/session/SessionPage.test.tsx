@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
@@ -506,12 +506,12 @@ describe("SessionPage", () => {
 
     /// A regenerate_summary that completes only when the test says.
     function pending() {
-      let finish: (fail?: string) => void = () => {};
+      let finish: (fail?: string | Error) => void = () => {};
       const run = () =>
         new Promise((resolve, reject) => {
           finish = (fail) => (fail ? reject(fail) : resolve("/x/summary.md"));
         });
-      return { run, finish: (fail?: string) => finish(fail) };
+      return { run, finish: (fail?: string | Error) => finish(fail) };
     }
 
     async function start(first: Tab = "summary") {
@@ -536,6 +536,8 @@ describe("SessionPage", () => {
           await act(async () => regen.finish());
         },
         fail: async () => act(async () => regen.finish("The endpoint did not answer.")),
+        // The binding throws an Error (an IPC failure) instead of returning it.
+        crash: async () => act(async () => regen.finish(new Error("IPC failed"))),
       };
     }
 
@@ -592,6 +594,16 @@ describe("SessionPage", () => {
       await fail();
       expect(await screen.findByText("We agreed the budget.")).toBeTruthy();
       expect(screen.getByText("The endpoint did not answer.")).toBeTruthy();
+      expect(screen.queryByText("Summarizing")).toBeNull();
+    });
+
+    test("when the call throws, the previous summary shows again with an error", async () => {
+      const { crash } = await start();
+      const quiet = spyOn(console, "error").mockImplementation(() => {});
+      await crash();
+      quiet.mockRestore();
+      expect(await screen.findByText("We agreed the budget.")).toBeTruthy();
+      expect(screen.getByText("The summary could not be updated.")).toBeTruthy();
       expect(screen.queryByText("Summarizing")).toBeNull();
     });
   });
