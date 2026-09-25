@@ -430,10 +430,19 @@ fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageEr
         .map(PathBuf::from))
 }
 
-/// A note of a saved session changed: rewrite its `notes.md` whole
-/// (R22f). Returns false when the session is not saved, so there is no
-/// file to write yet.
-pub fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
+/// Replace a session's notes document (KTD5, R20). On a saved session the
+/// home folder's `notes.md` is rewritten whole in the same call (R22f).
+/// The caller holds the store lock for the whole call, which is the lock
+/// the save stage takes to write `notes.md` after `Done`: an edit comes
+/// either before that write or after the session is saved, so no edit is
+/// lost. Returns false when the session is not saved, so there is no file
+/// to write yet.
+pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<bool, StageError> {
+    store.set_notes(session_id, document)?;
+    rewrite_notes(store, session_id)
+}
+
+fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
     let Some(path) = home_path(store, session_id)? else {
         return Ok(false);
     };

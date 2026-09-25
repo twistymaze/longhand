@@ -158,33 +158,6 @@ async recordingStatus() : Promise<Result<RecordingStatus, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Called at a line's first keystroke; the anchor is fixed now (R12).
- */
-async beginNote(text: string) : Promise<Result<NoteView, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("begin_note", { text }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async editNote(noteId: number, text: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("edit_note", { noteId, text }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async scratchpadNotes() : Promise<Result<NoteView[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("scratchpad_notes") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_session_speaker_count", { count }) };
@@ -283,11 +256,24 @@ async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> 
 }
 },
 /**
- * A session's notes, editable whatever its state (R11a).
+ * A session's notes document, editable whatever its state (R20).
  */
-async sessionNotes(sessionId: string) : Promise<Result<NoteView[], string>> {
+async sessionNotes(sessionId: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("session_notes", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace a session's notes document. The editor sends the whole
+ * document; on a saved session the home folder's `notes.md` follows (R20).
+ * The write runs off the main thread, since it can reach a synced folder.
+ */
+async setSessionNotes(sessionId: string, markdown: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_session_notes", { sessionId, markdown }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -409,11 +395,6 @@ streaming: boolean; size_bytes: number;
  * both diarization weights.
  */
 required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo }
-export type NoteView = { id: number; text: string; 
-/**
- * Position on the session timeline; `None` when un-anchored (R13).
- */
-position_ms: number | null; gap_anchored: boolean }
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
  * The secret store holding the endpoint credential is locked (R20b).

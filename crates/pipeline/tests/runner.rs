@@ -1036,7 +1036,8 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
 const NOTES: &str = "- [00:00:01] the rules changed\n- bring snacks\n";
 
 fn add_notes(store: &SharedStore, id: &str) {
-    store.lock().unwrap().set_notes(id, NOTES).unwrap();
+    let mut s = store.lock().unwrap();
+    assert!(!pipeline::save::set_notes(&mut s, id, NOTES).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1106,7 +1107,27 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
+async fn a_document_set_while_recording_is_in_notes_md_after_the_save() {
+    let r = rig().await;
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    add_notes(&r.store, "s");
+    common::stop_session(&r.store, "s", 100);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        std::fs::read_to_string(saved_folder(&r, "s").join("notes.md")).unwrap(),
+        NOTES
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_set_after_the_save_rewrites_the_saved_file_whole() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1120,15 +1141,16 @@ async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     let folder = saved_folder(&r, "s");
 
+    let edited = "# Plan\n\n- bring more snacks\n";
     {
         let mut s = r.store.lock().unwrap();
-        s.set_notes("s", &NOTES.replace("bring snacks", "bring more snacks"))
-            .unwrap();
-        assert!(pipeline::save::rewrite_notes(&mut s, "s").unwrap());
+        assert!(pipeline::save::set_notes(&mut s, "s", edited).unwrap());
+        assert_eq!(s.notes("s").unwrap(), edited);
     }
-    let notes = std::fs::read_to_string(folder.join("notes.md")).unwrap();
-    assert_eq!(notes.matches("bring more snacks").count(), 1, "{notes}");
-    assert!(!notes.contains("- bring snacks"));
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+        edited
+    );
     let names: Vec<String> = std::fs::read_dir(&folder)
         .unwrap()
         .flatten()
@@ -1136,6 +1158,111 @@ async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
         .collect();
     assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
+}
+
+/// A filesystem that sets the notes document at its first rename, as the
+/// editor can while the save stage runs.
+struct EditsWhileSaving {
+    store: SharedStore,
+    document: &'static str,
+    edited: AtomicBool,
+}
+
+impl session_save::Fs for EditsWhileSaving {
+    fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        self.edit();
+        session_save::RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        self.edit();
+        session_save::RealFs.rename_new(from, to)
+    }
+}
+
+impl EditsWhileSaving {
+    fn edit(&self) {
+        if !self.edited.swap(true, Ordering::SeqCst) {
+            let mut s = self.store.lock().unwrap();
+            // Not saved yet: there is no home folder to write.
+            assert!(!pipeline::save::set_notes(&mut s, "s", self.document).unwrap());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_set_while_the_save_runs_is_in_notes_md_once() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    add_notes(&r.store, "s");
+    // Stop just before the save, then run the save stage by hand with a
+    // filesystem that edits the notes part-way through it.
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::Retry)
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let edited = "- the rules changed twice\n- bring snacks\n";
+    let fs = EditsWhileSaving {
+        store: Arc::clone(&r.store),
+        document: edited,
+        edited: AtomicBool::new(false),
+    };
+    let saved = pipeline::save::run(
+        &r.store,
+        "s",
+        &r.root.join("s"),
+        &segments,
+        Some(&r.dest),
+        &fs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    assert!(fs.edited.load(Ordering::SeqCst));
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_eq!(
+        std::fs::read_to_string(saved.path.join("notes.md")).unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn notes_for_an_unknown_session_are_refused_and_change_nothing() {
+    let store = store();
+    common::queue_session(
+        &store,
+        tempfile::tempdir().unwrap().path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let mut s = store.lock().unwrap();
+    s.set_notes("s", NOTES).unwrap();
+    let err = pipeline::save::set_notes(&mut s, "gone", "- lost\n").unwrap_err();
+    assert!(err.to_string().contains("gone"), "{err}");
+    assert!(s.session("gone").unwrap().is_none());
+    assert_eq!(s.notes("s").unwrap(), NOTES);
+}
+
+#[test]
+fn with_no_session_no_notes_are_accepted() {
+    // The app keeps no notes outside a session (R27): every notes call
+    // names a session, and an empty store has none to take them.
+    let store = store();
+    let mut s = store.lock().unwrap();
+    assert!(pipeline::save::set_notes(&mut s, "", "- stray\n").is_err());
+    assert!(pipeline::save::set_notes(&mut s, "s", "- stray\n").is_err());
+    assert!(s.sessions().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

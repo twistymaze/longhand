@@ -12,7 +12,7 @@ use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
 
-use crate::managers::capture::{CaptureManager, NoteView};
+use crate::managers::capture::CaptureManager;
 use crate::managers::processing::stage_name;
 use crate::managers::settings;
 
@@ -236,16 +236,36 @@ pub fn session_detail(
     })
 }
 
-/// A session's notes, editable whatever its state (R11a).
+/// A session's notes document, editable whatever its state (R20).
 #[tauri::command]
 #[specta::specta]
 pub fn session_notes(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
-) -> Result<Vec<NoteView>, String> {
+) -> Result<String, String> {
     capture
         .session_notes(&session_id)
         .map_err(|e| e.to_string())
+}
+
+/// Replace a session's notes document. The editor sends the whole
+/// document; on a saved session the home folder's `notes.md` follows (R20).
+/// The write runs off the main thread, since it can reach a synced folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_session_notes(
+    capture: State<'_, Arc<CaptureManager>>,
+    session_id: String,
+    markdown: String,
+) -> Result<(), String> {
+    let capture = Arc::clone(&capture);
+    tauri::async_runtime::spawn_blocking(move || {
+        capture
+            .set_session_notes(&session_id, &markdown)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// The saved transcript and summary, read from the session's folder.

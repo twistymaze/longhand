@@ -1,33 +1,16 @@
 //! The line form of notes from before the notes document (R26): each note is
 //! one `- [hh:mm:ss] text`, `- [hh:mm:ss ~gap] text` or `- text` line.
 //!
-//! Until the editor sends the whole document (U4) and the summarizer reads it
-//! whole (U5), the note commands and the summarizer read and write the
+//! Until the summarizer reads the notes document whole (U5), it reads the
 //! document in this form, one line for each note.
 
 use session_core::Anchor;
-use session_core::folder::{format_position, parse_position};
+use session_core::folder::parse_position;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteLine {
     pub anchor: Anchor,
     pub text: String,
-}
-
-/// One note as a line, with no line end. The text goes on one line.
-pub fn render(anchor: Anchor, text: &str) -> String {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match anchor {
-        Anchor::Unanchored => format!("- {text}"),
-        Anchor::At {
-            position_ms,
-            gap_anchored: false,
-        } => format!("- [{}] {text}", format_position(position_ms)),
-        Anchor::At {
-            position_ms,
-            gap_anchored: true,
-        } => format!("- [{} ~gap] {text}", format_position(position_ms)),
-    }
 }
 
 /// Read one line of the document as a note. `None` for a blank line. A line
@@ -78,21 +61,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_form_round_trips() {
-        for anchor in [
-            Anchor::Unanchored,
-            Anchor::At {
-                position_ms: 760_000,
-                gap_anchored: false,
-            },
-            Anchor::At {
-                position_ms: 3_723_000,
-                gap_anchored: true,
-            },
+    fn each_form_is_read() {
+        for (line, anchor) in [
+            ("- [bracketed] thought", Anchor::Unanchored),
+            (
+                "- [00:12:40] [bracketed] thought",
+                Anchor::At {
+                    position_ms: 760_000,
+                    gap_anchored: false,
+                },
+            ),
+            (
+                "- [01:02:03 ~gap] [bracketed] thought",
+                Anchor::At {
+                    position_ms: 3_723_000,
+                    gap_anchored: true,
+                },
+            ),
         ] {
-            let line = render(anchor, "[bracketed] thought");
             assert_eq!(
-                parse(&line),
+                parse(line),
                 Some(NoteLine {
                     anchor,
                     text: "[bracketed] thought".into()
@@ -112,7 +100,7 @@ mod tests {
             anchor,
             text: String::new(),
         };
-        assert_eq!(parse(&render(anchor, "")), Some(empty));
-        assert_eq!(parse(&render(Anchor::Unanchored, "")).unwrap().text, "");
+        assert_eq!(parse("- [00:00:01] "), Some(empty));
+        assert_eq!(parse("-").unwrap().text, "");
     }
 }

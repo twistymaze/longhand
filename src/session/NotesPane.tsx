@@ -1,102 +1,58 @@
-// A session's notes beside its processing or its documents, editable in
-// every state (R11a). An anchored note's position is a link into the
-// transcript once there is one (R12); an un-anchored note has none.
+// A session's notes document, editable in every state (R20). A plain text
+// area until the markdown editor replaces it (U13). The whole document is
+// sent 500 ms after the last keystroke, and at once when the pane closes,
+// so a crash loses at most the last second of typing (R23).
 
-import { useCallback, useEffect, useState } from "react";
-import { commands, type NoteView } from "../bindings";
-import { formatPosition } from "../lib/timeline";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { commands } from "../bindings";
 
-function Anchor({ note, onFollow }: { note: NoteView; onFollow?: (note: NoteView) => void }) {
-  const base = "w-[5.25rem] shrink-0 text-left tabular-nums";
-  if (note.position_ms === null) {
-    return (
-      <span className={`${base} text-label-tertiary`} title="Typed outside a recording: no position">
-        —
-      </span>
-    );
-  }
-  // "~" marks a note typed between segments, placed at the earlier one's end.
-  const text = (
-    <>
-      {note.gap_anchored && <span className="text-label-tertiary">~</span>}
-      {formatPosition(note.position_ms)}
-    </>
-  );
-  if (!onFollow) return <span className={`${base} text-label-secondary`}>{text}</span>;
-  return (
-    <button
-      type="button"
-      onClick={() => onFollow(note)}
-      aria-label={`Show ${formatPosition(note.position_ms)} in the transcript`}
-      title={note.gap_anchored ? "Typed between segments: shows the end of the one before" : "Show in the transcript"}
-      className={`${base} rounded-sm text-accent active:opacity-60 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
-    >
-      {text}
-    </button>
-  );
-}
+const SEND_DELAY_MS = 500;
 
-function Line({
-  note,
-  onFollow,
-  onError,
-}: {
-  note: NoteView;
-  onFollow?: (note: NoteView) => void;
-  onError: (message: string | null) => void;
-}) {
-  const [text, setText] = useState(note.text);
-  return (
-    <li className="flex items-baseline gap-1.5 px-3 py-1">
-      <Anchor note={note} onFollow={onFollow} />
-      <textarea
-        aria-label="Note"
-        rows={1}
-        className="field-sizing-content min-w-0 flex-1 resize-none bg-transparent outline-none"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          // Written through, so a home folder's notes.md follows (R22f).
-          void commands
-            .editNote(note.id, e.target.value)
-            .then((r) => onError(r.status === "error" ? r.error : null));
-        }}
-      />
-    </li>
-  );
-}
-
-export function NotesPane({
-  sessionId,
-  onFollow,
-}: {
-  sessionId: string;
-  onFollow?: (note: NoteView) => void;
-}) {
-  const [notes, setNotes] = useState<NoteView[] | null>(null);
+export function NotesPane({ sessionId, autoFocus = false }: { sessionId: string; autoFocus?: boolean }) {
+  const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const unsent = useRef<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const load = useCallback(async () => {
-    const result = await commands.sessionNotes(sessionId);
-    if (result.status === "ok") setNotes(result.data);
-    else setError(result.error);
-  }, [sessionId]);
-
-  // Read once per session: re-reading on progress would reset a line
+  // Read once per session: re-reading on progress would reset the text
   // being typed, and nothing else edits these notes.
   useEffect(() => {
-    void load();
-  }, [load]);
+    void commands.sessionNotes(sessionId).then((r) => {
+      if (r.status === "ok") setText(r.data);
+      else setError(r.error);
+    });
+  }, [sessionId]);
+
+  const send = useCallback(() => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+    const markdown = unsent.current;
+    if (markdown === null) return;
+    unsent.current = null;
+    void commands.setSessionNotes(sessionId, markdown).then((r) => setError(r.status === "error" ? r.error : null));
+  }, [sessionId]);
+
+  useEffect(() => send, [send]);
 
   return (
-    <section aria-label="Notes" className="flex min-h-0 flex-col">
-      <h2 className="px-3 pt-3 pb-1 text-[0.85rem] font-semibold text-label-secondary">Notes</h2>
-      <ol className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {notes?.length === 0 && <li className="px-3 py-1 text-label-tertiary">No notes in this session.</li>}
-        {notes?.map((note) => (
-          <Line key={note.id} note={note} onFollow={onFollow} onError={setError} />
-        ))}
-      </ol>
+    <section aria-label="My notes" className="flex min-h-0 flex-1 flex-col">
+      <h2 className="px-3 pt-3 pb-1 text-[0.85rem] font-semibold text-label-secondary">My notes</h2>
+      {text !== null && (
+        <textarea
+          aria-label="My notes"
+          autoFocus={autoFocus}
+          className="min-h-0 flex-1 resize-none bg-transparent px-3 py-1 outline-none placeholder:text-label-tertiary"
+          placeholder="Type your notes…"
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            unsent.current = e.target.value;
+            if (timer.current !== null) clearTimeout(timer.current);
+            timer.current = setTimeout(send, SEND_DELAY_MS);
+          }}
+          onBlur={send}
+        />
+      )}
       {error && <p className="px-3 pb-2 text-[0.85rem] text-negative">{error}</p>}
     </section>
   );

@@ -1,13 +1,11 @@
 // A completed session (F4): notes on the left, as while processing, beside a
-// pane that switches between the summary and the transcript. Following a
-// note switches to the transcript at its passage (R12). Resume records more
-// into it while its folder holds its audio (R6d).
+// pane that switches between the summary and the transcript. Resume records
+// more into it while its folder holds its audio (R6d).
 
 import { useCallback, useEffect, useState } from "react";
-import { commands, type NoteView, type SessionDocument, type SessionEntry } from "../bindings";
+import { commands, type SessionDocument, type SessionEntry } from "../bindings";
 import { formatDuration, sessionTitle } from "../processing/describe";
 import { Button } from "../settings/ui";
-import { targetLine } from "./navigate";
 import { NotesPane } from "./NotesPane";
 import { SummaryPane } from "./SummaryPane";
 import { TranscriptPane } from "./TranscriptPane";
@@ -44,7 +42,6 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("summary");
-  const [target, setTarget] = useState<{ index: number; nonce: number } | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
 
@@ -66,14 +63,6 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
   useEffect(() => {
     void load();
   }, [load]);
-
-  const follow = (note: NoteView) => {
-    if (!doc) return;
-    const index = targetLine(doc.lines, note);
-    if (index === null) return;
-    setMode("transcript");
-    setTarget((t) => ({ index, nonce: (t?.nonce ?? 0) + 1 }));
-  };
 
   const resume = () =>
     void commands.resumeRecording(entry.id).then((r) => {
@@ -104,7 +93,7 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
   return (
     <div className="flex h-full min-h-0">
       <aside className="flex w-60 shrink-0 flex-col border-r border-separator">
-        <NotesPane key={entry.id} sessionId={entry.id} onFollow={doc ? follow : undefined} />
+        <NotesPane key={entry.id} sessionId={entry.id} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 pt-4 pb-3">
@@ -123,7 +112,7 @@ export function SessionView({ entry, live }: { entry: SessionEntry; live: Live |
           {error && <p className="px-6 py-4 text-negative">{error}</p>}
           {doc && mode === "summary" && <SummaryPane summary={doc.summary} regenerate={regenerateControl} />}
           {doc && mode === "transcript" && (
-            <TranscriptPane lines={doc.lines} hasSpeakers={doc.has_speakers} target={target} />
+            <TranscriptPane lines={doc.lines} hasSpeakers={doc.has_speakers} target={null} />
           )}
         </div>
       </div>

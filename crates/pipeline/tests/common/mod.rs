@@ -83,6 +83,19 @@ pub fn queue_session(
     model: Option<&str>,
     segments: &[(u32, Vec<f32>)],
 ) {
+    record_session(store, root, id, stopped_at, model, segments);
+    stop_session(store, id, stopped_at);
+}
+
+/// A session that is still recording, with the given segments on disk.
+pub fn record_session(
+    store: &SharedStore,
+    root: &Path,
+    id: &str,
+    stopped_at: i64,
+    model: Option<&str>,
+    segments: &[(u32, Vec<f32>)],
+) {
     let dir = root.join(id);
     let mut s = store.lock().unwrap();
     s.create_session(id, at(stopped_at - 100), None).unwrap();
@@ -102,12 +115,19 @@ pub fn queue_session(
     if let Some(model) = model {
         s.set_asr_model(id, model).unwrap();
     }
-    s.apply(
-        id,
-        &Event::UserStop {
-            at: at(stopped_at),
-            retained_audio: true,
-        },
-    )
-    .unwrap();
+}
+
+/// Stop a recording session, which queues it.
+pub fn stop_session(store: &SharedStore, id: &str, stopped_at: i64) {
+    store
+        .lock()
+        .unwrap()
+        .apply(
+            id,
+            &Event::UserStop {
+                at: at(stopped_at),
+                retained_audio: true,
+            },
+        )
+        .unwrap();
 }

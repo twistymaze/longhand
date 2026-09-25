@@ -26,10 +26,7 @@ export function RecordingPane({
         chord={formatChord(settings.shortcut, isMac)}
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[10px] bg-group shadow-[0_0_0_0.5px_var(--separator)]">
-        <Scratchpad
-          sessionId={capture.status?.session_id ?? null}
-          recording={capture.status?.recording ?? false}
-        />
+        <Scratchpad sessionId={capture.status?.session_id ?? null} />
       </div>
     </div>
   );

@@ -36,9 +36,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::stop_recording,
             commands::capture::resume_recording,
             commands::capture::recording_status,
-            commands::capture::begin_note,
-            commands::capture::edit_note,
-            commands::capture::scratchpad_notes,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
             commands::alerts::alert_check,
@@ -50,6 +47,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::list_sessions,
             commands::session::session_detail,
             commands::session::session_notes,
+            commands::session::set_session_notes,
             commands::session::session_document,
             commands::window::open_settings,
         ])
