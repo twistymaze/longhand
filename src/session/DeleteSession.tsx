@@ -3,79 +3,14 @@
 // folder, a second question offers a permanent delete, and Cancel changes
 // nothing.
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { commands, type SessionEntry } from "../bindings";
+import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { sentence } from "../processing/describe";
 
 type Confirm =
   | { kind: "trash"; entry: SessionEntry }
   | { kind: "permanent"; entry: SessionEntry; reason: string };
-
-/// A question before an action that the user can't undo. `destructive`
-/// colours the action red: it removes something. An action that replaces
-/// something uses the accent colour.
-export function ConfirmDialog({
-  title,
-  message,
-  action,
-  busy,
-  destructive = true,
-  onConfirm,
-  onCancel,
-}: {
-  title: string;
-  message: ReactNode;
-  action: string;
-  busy: boolean;
-  destructive?: boolean;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const cancel = useRef<HTMLButtonElement>(null);
-  useEffect(() => cancel.current?.focus(), []);
-  // Cancel has the focus: Return must not delete by accident.
-  return (
-    <div className="fixed inset-0 z-20 flex items-start justify-center bg-black/20 pt-[18vh]">
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-        aria-describedby="confirm-message"
-        onKeyDown={(e) => {
-          if (e.key === "Escape") onCancel();
-        }}
-        className="fade-in w-[19rem] rounded-xl bg-group p-4 shadow-[0_0_0_0.5px_var(--separator),0_12px_40px_rgb(0_0_0/0.25)]"
-      >
-        <h2 id="confirm-title" className="font-semibold break-words">
-          {title}
-        </h2>
-        <div id="confirm-message" className="mt-1 grid gap-1.5 text-[0.85rem] text-label-secondary">
-          {message}
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            ref={cancel}
-            type="button"
-            onClick={onCancel}
-            className="rounded-md bg-fill px-2.5 py-[3px] text-label active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onConfirm}
-            className={`rounded-md px-2.5 py-[3px] text-white active:opacity-80 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 ${
-              destructive ? "bg-negative" : "bg-accent"
-            }`}
-          >
-            {action}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /// The delete questions for one surface. `ask` shows the first question;
 /// `dialog` is the question to render, or null.

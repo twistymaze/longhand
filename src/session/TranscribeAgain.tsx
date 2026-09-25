@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { commands } from "../bindings";
 import { sentence } from "../processing/describe";
-import { ConfirmDialog } from "./DeleteSession";
+import { ConfirmDialog } from "../lib/ConfirmDialog";
 
 /// The model that Transcribe Again uses: the model selected now.
 type Choice = {

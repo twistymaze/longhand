@@ -112,6 +112,9 @@ pub struct SummaryView {
     pub stub: bool,
     pub host: Option<String>,
     pub model: Option<String>,
+    /// The name of the prompt that made the summary. A summary made before
+    /// prompts had names, and a stub, have none.
+    pub prompt: Option<String>,
 }
 
 #[derive(Serialize, Type)]
@@ -445,17 +448,20 @@ fn summary_view(summary: Summary) -> SummaryView {
         SummaryMeta::Complete {
             endpoint_host,
             model,
+            prompt_name,
         } => SummaryView {
             body,
             stub: false,
             host: Some(endpoint_host),
             model: Some(model),
+            prompt: prompt_name,
         },
         SummaryMeta::Stub { .. } => SummaryView {
             body,
             stub: true,
             host: None,
             model: None,
+            prompt: None,
         },
     }
 }
@@ -706,6 +712,22 @@ mod tests {
                 wall_start: Some(w),
             } if w == "2026-09-22T14:20:00+00:00"
         ));
+    }
+
+    #[test]
+    fn a_summary_view_carries_the_recorded_prompt_name() {
+        let complete = |prompt_name: Option<&str>| Summary {
+            meta: SummaryMeta::Complete {
+                endpoint_host: "api.example.com".into(),
+                model: "m".into(),
+                prompt_name: prompt_name.map(Into::into),
+            },
+            body: "We agreed.".into(),
+        };
+        let named = summary_view(complete(Some("Game recap")));
+        assert_eq!(named.prompt.as_deref(), Some("Game recap"));
+        assert_eq!(named.host.as_deref(), Some("api.example.com"));
+        assert!(summary_view(complete(None)).prompt.is_none());
     }
 }
 

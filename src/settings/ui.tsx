@@ -2,7 +2,16 @@
 // title and a description on the left and the control on the right, and
 // footnotes under a group.
 
-import type { MouseEvent, ReactNode, Ref } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  type Ref,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { ConfirmDialog } from "../lib/ConfirmDialog";
 
 export function Pane({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -195,4 +204,89 @@ export function formatBytes(bytes: number): string {
 export function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+export type Question = { title: string; message: string; action: string };
+
+/// `ask` shows a question and resolves to true when the user confirms.
+/// `dialog` is the question to render, or null. A new question cancels the
+/// question that is open.
+export function useConfirm() {
+  type Pending = Question & { answer: (yes: boolean) => void };
+  const [pending, setPending] = useState<Pending | null>(null);
+  const open = useRef<Pending | null>(null);
+  const ask = useCallback(
+    (question: Question) =>
+      new Promise<boolean>((resolve) => {
+        open.current?.answer(false);
+        const next: Pending = {
+          ...question,
+          answer: (yes) => {
+            if (open.current === next) {
+              open.current = null;
+              setPending(null);
+            }
+            resolve(yes);
+          },
+        };
+        open.current = next;
+        setPending(next);
+      }),
+    [],
+  );
+  const dialog = pending && (
+    <ConfirmDialog
+      title={pending.title}
+      message={pending.message}
+      action={pending.action}
+      onConfirm={() => pending.answer(true)}
+      onCancel={() => pending.answer(false)}
+    />
+  );
+  return { ask, dialog };
+}
+
+/// A text field that commits on Return or when focus leaves, the way macOS
+/// settings fields apply without a Save button.
+export function CommitField({
+  value,
+  placeholder,
+  onCommit,
+  inputMode,
+  width = "w-64",
+  label,
+  disabled,
+}: {
+  value: string;
+  placeholder?: string;
+  onCommit: (v: string) => void;
+  inputMode?: "numeric";
+  width?: string;
+  label: string;
+  disabled?: boolean;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = () => {
+    if (draft !== value) onCommit(draft);
+  };
+  return (
+    <input
+      aria-label={label}
+      className={`${fieldClass} ${width} disabled:text-label-secondary`}
+      value={draft}
+      disabled={disabled}
+      placeholder={placeholder}
+      inputMode={inputMode}
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") setDraft(value);
+      }}
+    />
+  );
 }

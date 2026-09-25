@@ -17,7 +17,7 @@ use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
 use crate::folder_rename::{self, FolderRename};
 use crate::join::TRANSCRIPT_FILE;
-use crate::summarize::{self, SUMMARY_FILE, SummaryEndpoint};
+use crate::summarize::{self, Prompt, SUMMARY_FILE, SummaryEndpoint};
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
 pub const SESSION_FILE: &str = "session.md";
@@ -579,11 +579,14 @@ pub fn regenerate_summary(
     store: &SharedStore,
     session_id: &str,
     endpoint: SummaryEndpoint,
+    active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
-    let regenerated = summarize_again(store, session_id, endpoint, learn, control, progress);
+    let regenerated = summarize_again(
+        store, session_id, endpoint, active, learn, control, progress,
+    );
     // The regeneration has ended, and the caller holds the one processing
     // permit, so no other regeneration runs.
     let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
@@ -595,6 +598,7 @@ fn summarize_again(
     store: &SharedStore,
     session_id: &str,
     endpoint: SummaryEndpoint,
+    active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
@@ -609,16 +613,30 @@ fn summarize_again(
         home_path(&guard, session_id)?.ok_or_else(not_saved)?;
         guard.segments(session_id)?
     };
-    // A stub resumes from the calls made before the failure; a complete
-    // summary starts over. The title call always runs again, so a new
-    // proposal follows (R31). A title that the user set stays.
-    if checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
+    // A stub resumes from the calls made before the failure, but only when
+    // they were made with the active prompt's text (KTD5). A complete
+    // summary, or a stub made with another prompt or with no saved prompt,
+    // starts over. The title call always runs again, so a new proposal
+    // follows (R31). A title that the user set stays.
+    let complete = checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())?;
+    let saved = checkpoint::get::<Prompt>(store, session_id, Stage::Summarize, summarize::PROMPT)?;
+    let same_prompt = saved.is_some_and(|p| p.id == active.id && p.text == active.text);
+    if complete || !same_prompt {
         summarize::clear(store, session_id)?;
     } else {
         lock(store).delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
+        // The text is the same, so the cached calls stand. The name can
+        // be new after a rename, and the summary records the name now.
+        checkpoint::put(
+            store,
+            session_id,
+            Stage::Summarize,
+            summarize::PROMPT,
+            &active,
+        )?;
     }
     let summary = summarize::produce(
-        store, session_id, &segments, endpoint, learn, control, progress,
+        store, session_id, &segments, endpoint, active, learn, control, progress,
     )?;
     // The home folder is read again under the lock, just before the write,
     // and the lock is held through the write.

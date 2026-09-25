@@ -75,7 +75,7 @@ const doc: SessionDocument = {
   has_speakers: true,
   lines: [{ kind: "turn", position_ms: 0, speaker: 1, text: "Hello." }],
   transcript_markdown: "# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n",
-  summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m" },
+  summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m", prompt: null },
 };
 
 function captureOf(over: Partial<Capture> = {}): Capture {
@@ -484,6 +484,7 @@ describe("SessionPage", () => {
         stub: true,
         host: null,
         model: null,
+        prompt: null,
       },
     };
     const tauri = mockPage(e, {}, { session_document: () => stub, regenerate_summary: () => "/x/summary.md" });
@@ -594,6 +595,40 @@ describe("SessionPage", () => {
       await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
       expect(screen.queryByRole("menuitem", { name: "Transcribe Again…" })).toBeNull();
     });
+  });
+
+  // Covers AE6.
+  test("the summary footer shows the name of the prompt that made the summary", async () => {
+    const e = entry("s");
+    const named = { ...doc, summary: { ...doc.summary!, prompt: "Game recap" } };
+    mockPage(e, {}, { session_document: () => named });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Game recap · Summarized by m on api.example.com")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Regenerate Summary" })).toBeTruthy();
+  });
+
+  test("a summary with no prompt name shows the footer with no prompt name", async () => {
+    const e = entry("s");
+    mockPage(e);
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Summarized by m on api.example.com")).toBeTruthy();
+    expect(document.body.textContent).not.toContain(" · Summarized by");
+  });
+
+  test("a summary with nested bullets renders the children as nested lists", async () => {
+    const e = entry("s");
+    const nested = {
+      ...doc,
+      summary: { ...doc.summary!, body: "*   **Loot:** coins\n    *   40 gold\n    *   a ring\n*   **Documents:** a map" },
+    };
+    mockPage(e, {}, { session_document: () => nested });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    const gold = await screen.findByText("40 gold");
+    const inner = gold.closest("ul")!;
+    const outerItem = inner.parentElement!.closest("li")!;
+    expect(outerItem.textContent).toContain("Loot:");
+    expect(within(inner).getAllByRole("listitem")).toHaveLength(2);
+    expect(outerItem.closest("ul")!.querySelectorAll(":scope > li")).toHaveLength(2);
   });
 
   test("the Transcript tab of a saved session shows the header and the turns", async () => {

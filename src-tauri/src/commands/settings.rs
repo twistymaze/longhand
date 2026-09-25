@@ -15,7 +15,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::managers::models::{self as model_manager, ModelsManager};
 use crate::managers::processing::ProcessingManager;
 use crate::managers::secrets::SecretsManager;
-use crate::managers::settings::{self, Settings, SpeakerCountSetting};
+use crate::managers::settings::{self, Settings, SpeakerCountSetting, SummaryPromptList};
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -138,6 +138,61 @@ pub fn set_live_transcript(app: AppHandle, enabled: bool) -> Result<Settings, St
         s.live_transcript = enabled;
         Ok(())
     })
+}
+
+/// The built-in summary prompts first, then the custom prompts (R1, R2).
+#[tauri::command]
+#[specta::specta]
+pub fn summary_prompts(app: AppHandle) -> SummaryPromptList {
+    settings::get_settings(&app).summary_prompt_list()
+}
+
+/// Add a summary prompt named "New prompt" with the Topic summary text (R3).
+#[tauri::command]
+#[specta::specta]
+pub fn create_summary_prompt(app: AppHandle) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| {
+        s.create_summary_prompt();
+        Ok(())
+    })
+}
+
+/// Add a copy of a summary prompt, named "X copy" (R3).
+#[tauri::command]
+#[specta::specta]
+pub fn duplicate_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.duplicate_summary_prompt(&id).map(drop))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn rename_summary_prompt(app: AppHandle, id: String, name: String) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.rename_summary_prompt(&id, &name))
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_summary_prompt_text(
+    app: AppHandle,
+    id: String,
+    text: String,
+) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.set_summary_prompt_text(&id, &text))
+}
+
+/// Delete a custom summary prompt. The Topic summary becomes active when the
+/// deleted prompt was active (R4).
+#[tauri::command]
+#[specta::specta]
+pub fn delete_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.delete_summary_prompt(&id))
+}
+
+/// Make a summary prompt the one that the next summary uses (R1).
+#[tauri::command]
+#[specta::specta]
+pub fn activate_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.activate_summary_prompt(&id))
 }
 
 /// Pick a folder with the system dialog, make it current, and retain it as a

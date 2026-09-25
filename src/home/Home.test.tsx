@@ -44,7 +44,7 @@ const document = (body: string): SessionDocument => ({
   has_speakers: true,
   lines: [],
   transcript_markdown: "",
-  summary: { body, stub: false, host: null, model: null },
+  summary: { body, stub: false, host: null, model: null, prompt: null },
 });
 
 function renderHome({
