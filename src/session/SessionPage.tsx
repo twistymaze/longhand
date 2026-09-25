@@ -71,7 +71,7 @@ function Tabs({ tab, onTab, meter }: { tab: Tab; onTab: (t: Tab) => void; meter:
           onClick={() => onTab(t.value)}
           className={`flex items-center justify-center gap-1.5 rounded-[5px] px-4 py-[3px] whitespace-nowrap ${
             tab === t.value
-              ? "bg-white text-label shadow-[0_0.5px_1.5px_rgb(0_0_0/0.18),0_0_0_0.5px_rgb(0_0_0/0.04)] dark:bg-white/[0.2] dark:shadow-[0_0.5px_1px_rgb(0_0_0/0.4)]"
+              ? "bg-group text-label shadow-[0_0.5px_1.5px_rgb(0_0_0/0.18),0_0_0_0.5px_rgb(0_0_0/0.04)] dark:bg-white/[0.2] dark:shadow-[0_0.5px_1px_rgb(0_0_0/0.4)]"
               : "text-label-secondary hover:text-label active:bg-fill-pressed"
           } outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
         >
@@ -114,9 +114,10 @@ export function SessionPage({
   onBack: () => void;
 }) {
   const entry = sessions.entries.find((e) => e.id === id);
-  // The list can lag a recording that just started, so the capture status
-  // decides whether this session records.
-  const open = capture.status?.session_id === id;
+  // A recording that just started can be known first to the capture status
+  // or first to the list. Either one makes the page open as a recording, so
+  // it never opens on Summary and then moves to My Notes.
+  const open = capture.status?.session_id === id || entry?.state === "capturing";
   const phase: Phase = open ? "recording" : !entry ? "missing" : entry.state === "saved" ? "saved" : "processing";
 
   const [tab, setTab] = useState<Tab>(phase === "recording" ? "notes" : "summary");
@@ -306,11 +307,12 @@ export function SessionPage({
   return (
     <div className="flex h-full min-h-0 flex-col bg-window">
       <header
-        className={`grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-3 py-2 select-none ${
+        data-tauri-drag-region
+        className={`toolbar grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-3 select-none ${
           scrolled ? "border-separator" : "border-transparent"
         }`}
       >
-        <div>
+        <div data-tauri-drag-region>
           <button
             type="button"
             onClick={onBack}
@@ -325,7 +327,7 @@ export function SessionPage({
           onTab={setTab}
           meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
         />
-        <div className="flex items-center justify-end gap-1">
+        <div data-tauri-drag-region className="flex items-center justify-end gap-1">
           <button
             type="button"
             disabled={copyable === null}
@@ -339,7 +341,7 @@ export function SessionPage({
         </div>
       </header>
       <main
-        className="min-h-0 flex-1 overflow-y-auto select-text"
+        className="min-h-0 flex-1 overflow-y-auto bg-pane select-text"
         // The header shows its bottom line only while content is under it.
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
       >

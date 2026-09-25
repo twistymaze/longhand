@@ -144,6 +144,17 @@ describe("SessionPage", () => {
     expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(true);
   });
 
+  test("a recording that the list knows before the capture status opens on My Notes and stays there", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0, found_speakers: null });
+    mockPage(e);
+    const sessions = sessionsOf([e]);
+    const page = renderPage({ id: "rec", sessions });
+    const selected = () => tab("My Notes").getAttribute("aria-selected");
+    expect(selected()).toBe("true");
+    await act(async () => page.rerenderWith(recordingCapture("rec"), sessions));
+    expect(selected()).toBe("true");
+  });
+
   test("the tabs follow the order things happen: My Notes, Transcript, Summary", () => {
     const e = entry("s");
     mockPage(e);

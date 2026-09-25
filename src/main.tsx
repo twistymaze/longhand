@@ -4,6 +4,10 @@ import App from "./App";
 import { commands } from "./bindings";
 import "./index.css";
 
+// On macOS the main window has no title bar, and its toolbar leaves space
+// for the window buttons (see index.css).
+if (navigator.userAgent.includes("Mac")) document.documentElement.classList.add("mac");
+
 // On macOS the app menu holds Settings… (⌘,). Windows has no app menu, so
 // Ctrl+, opens Settings from any window (KTD3).
 if (!navigator.userAgent.includes("Mac")) {

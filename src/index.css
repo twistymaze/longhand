@@ -1,51 +1,52 @@
 @import "tailwindcss";
 
 /* Semantic tokens after macOS's system colours, so light and dark are one
-   decision made here rather than in every component. */
+   decision made here rather than in every component. The neutrals are warm:
+   beige and brown-black, not grey. */
 :root {
   color-scheme: light dark;
-  --window: #f2f2f4;
-  --sidebar: #e6e6ea;
-  --group: #ffffff;
-  --separator: rgb(0 0 0 / 0.09);
-  --label: rgb(0 0 0 / 0.86);
-  --label-secondary: rgb(0 0 0 / 0.52);
-  --label-tertiary: rgb(0 0 0 / 0.3);
-  --fill: rgb(0 0 0 / 0.05);
-  --fill-pressed: rgb(0 0 0 / 0.12);
-  --control: #ffffff;
-  --control-border: rgb(0 0 0 / 0.14);
+  --window: #f3f1ec;
+  --sidebar: #eae6de;
+  --group: #fffdfa;
+  --separator: rgb(60 45 20 / 0.1);
+  --label: rgb(34 28 20 / 0.9);
+  --label-secondary: rgb(52 42 28 / 0.58);
+  --label-tertiary: rgb(52 42 28 / 0.34);
+  --fill: rgb(70 50 20 / 0.055);
+  --fill-pressed: rgb(70 50 20 / 0.12);
+  --control: #fffdfa;
+  --control-border: rgb(60 45 20 / 0.16);
   --accent: #007aff;
   --accent-pressed: #0062cc;
   --positive: #1e8e3e;
   --caution: #b85c00;
   --negative: #d70015;
-  --row-hover: rgb(0 0 0 / 0.045);
-  --sidebar-selected: rgb(0 0 0 / 0.075);
-  --pane: #fbfbfc;
+  --row-hover: rgb(70 50 20 / 0.05);
+  --sidebar-selected: rgb(70 50 20 / 0.085);
+  --pane: #faf9f6;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --window: #1e1e20;
-    --sidebar: #2a2a2d;
-    --group: #2c2c2f;
-    --separator: rgb(255 255 255 / 0.09);
-    --label: rgb(255 255 255 / 0.88);
-    --label-secondary: rgb(255 255 255 / 0.56);
-    --label-tertiary: rgb(255 255 255 / 0.3);
-    --fill: rgb(255 255 255 / 0.08);
-    --fill-pressed: rgb(255 255 255 / 0.16);
-    --control: rgb(255 255 255 / 0.07);
-    --control-border: rgb(255 255 255 / 0.14);
+    --window: #1d1b18;
+    --sidebar: #282521;
+    --group: #2c2925;
+    --separator: rgb(255 245 225 / 0.09);
+    --label: rgb(255 250 240 / 0.9);
+    --label-secondary: rgb(255 245 228 / 0.58);
+    --label-tertiary: rgb(255 245 228 / 0.32);
+    --fill: rgb(255 245 225 / 0.08);
+    --fill-pressed: rgb(255 245 225 / 0.16);
+    --control: rgb(255 245 225 / 0.07);
+    --control-border: rgb(255 245 225 / 0.15);
     --accent: #0a84ff;
     --accent-pressed: #3a9bff;
     --positive: #32d74b;
     --caution: #ff9f0a;
     --negative: #ff453a;
-    --row-hover: rgb(255 255 255 / 0.055);
-    --sidebar-selected: rgb(255 255 255 / 0.1);
-    --pane: #232326;
+    --row-hover: rgb(255 245 225 / 0.055);
+    --sidebar-selected: rgb(255 245 225 / 0.1);
+    --pane: #22201c;
   }
 }
 
@@ -85,8 +86,20 @@ html {
   -webkit-font-smoothing: antialiased;
   background: var(--window);
   color: var(--label);
-  /* A desktop window, not a document: no rubber-band on the whole page. */
+  /* A desktop window, not a document: no rubber-band on the whole page,
+     and no scroll bars on it. Each pane scrolls on its own. */
   overscroll-behavior: none;
+  overflow: hidden;
+}
+
+/* The main window's toolbar. On macOS it is the window's top edge: it is
+   as tall as a unified title bar, and it leaves space for the window
+   buttons at its left. */
+.toolbar {
+  min-height: 52px;
+}
+.mac .toolbar {
+  padding-left: 84px;
 }
 
 /* Only the download bar moves, and only to report progress. */

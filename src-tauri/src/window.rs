@@ -11,12 +11,19 @@ pub const MAIN_WINDOW: &str = "main";
 pub const SETTINGS_WINDOW: &str = "settings";
 
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
-    WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
+    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
         .title("Longhand")
         .inner_size(780.0, 600.0)
         .min_inner_size(600.0, 460.0)
-        .visible(false)
-        .build()?;
+        .visible(false);
+    // On macOS the window shows no title bar. The page's toolbar is under
+    // the window buttons, which are centred in its 52-point height.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(20.0, 19.0));
+    builder.build()?;
     Ok(())
 }
 

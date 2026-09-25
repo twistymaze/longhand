@@ -75,7 +75,7 @@ export function PreviewPanel({
       aria-label="Preview"
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
-      className="preview-in flex w-[22rem] shrink-0 flex-col overflow-y-auto border-l border-separator bg-sidebar/60 px-5 pt-5 pb-6 select-text"
+      className="preview-in flex w-[22rem] shrink-0 flex-col overflow-x-hidden overflow-y-auto border-l border-separator bg-sidebar/60 px-5 pt-5 pb-6 select-text"
     >
       <h2 className="text-[1.15rem] leading-[1.25] font-semibold tracking-[-0.015em] break-words">
         {rowTitle(entry, now)}

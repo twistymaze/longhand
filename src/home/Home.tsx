@@ -136,9 +136,14 @@ export function Home({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-        <header className="flex shrink-0 items-center gap-2.5 border-b border-separator px-5 pt-3 pb-3 select-none">
-          <AppIcon className="size-8 drop-shadow-[0_1px_1.5px_rgb(0_0_0/0.18)] dark:drop-shadow-[0_0_0.5px_rgb(255_255_255/0.55)]" />
-          <span className="min-w-0 flex-1 text-[0.95rem] font-semibold tracking-[-0.01em]">Longhand</span>
+        <header
+          data-tauri-drag-region
+          className="toolbar flex shrink-0 items-center gap-2 border-b border-separator pr-4 pl-4 select-none"
+        >
+          <AppIcon className="pointer-events-none size-6 drop-shadow-[0_1px_1px_rgb(0_0_0/0.18)] dark:drop-shadow-[0_0_0.5px_rgb(255_255_255/0.55)]" />
+          <span data-tauri-drag-region className="min-w-0 flex-1 text-[0.95rem] font-semibold tracking-[-0.01em]">
+            Longhand
+          </span>
           {readiness && !recording && (
             <Button prominent disabled={starting || !readiness.armed} onClick={() => void record()}>
               <span className="inline-flex items-center gap-1.5">
@@ -148,7 +153,9 @@ export function Home({
             </Button>
           )}
         </header>
-      <div className="flex min-h-0 flex-1">
+      {/* The preview panel changes the list's width, so nothing here may
+          scroll sideways, and the panel's motion stays inside this row. */}
+      <div className="flex min-h-0 flex-1 overflow-hidden bg-pane">
       <div className="flex min-w-0 flex-1 flex-col">
 
         <div className="flex shrink-0 items-baseline gap-2.5 px-5 pt-5 pb-2 select-none">
@@ -180,7 +187,7 @@ export function Home({
           </p>
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-1 pb-4 select-none">
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 pt-1 pb-4 select-none">
           {recording && (
             <div className="px-2 pt-1 pb-3">
               <RecordingRow recording={recording} onOpen={open} />
