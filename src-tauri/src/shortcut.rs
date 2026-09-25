@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use specta::Type;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::managers::capture::CaptureManager;
 use crate::managers::settings::{self, SpeakerCountSetting};
@@ -48,9 +48,50 @@ pub fn speaker_count(setting: Option<SpeakerCountSetting>) -> Option<session_cor
     })
 }
 
+/// The modifier names a chord may use, as the plugin parses them.
+const MODIFIERS: &[&str] = &[
+    "option",
+    "alt",
+    "control",
+    "ctrl",
+    "command",
+    "cmd",
+    "super",
+    "shift",
+    "commandorcontrol",
+    "commandorctrl",
+    "cmdorctrl",
+    "cmdorcontrol",
+];
+
+/// Check that `raw` is a chord Longhand can register (R8): one or more
+/// modifiers and one other key. The plugin refuses a modifier key or fn as
+/// the main key, so a successful parse with a modifier is enough.
+pub fn check_chord(raw: &str) -> Result<Shortcut, String> {
+    let parts: Vec<String> = raw.split('+').map(|p| p.trim().to_lowercase()).collect();
+    if parts.iter().all(|p| MODIFIERS.contains(&p.as_str())) {
+        return Err("Add a key that is not a modifier, such as a letter.".into());
+    }
+    let shortcut: Shortcut = raw
+        .parse()
+        .map_err(|_| "Longhand can't use that key combination.".to_string())?;
+    if shortcut.mods.is_empty() {
+        return Err("Add a modifier key: Command, Control, Option or Shift.".into());
+    }
+    Ok(shortcut)
+}
+
+/// Whether two chords are the same keys, whatever names they use (R9).
+pub fn same_chord(a: &str, b: &str) -> bool {
+    match (a.parse::<Shortcut>(), b.parse::<Shortcut>()) {
+        (Ok(a), Ok(b)) => a.mods == b.mods && a.key == b.key,
+        _ => false,
+    }
+}
+
 pub fn register(app: &AppHandle) {
     let registration = ShortcutRegistration::default();
-    let chord = settings::get_settings(app).shortcut;
+    let chord = settings::get_settings(app).shortcut.unwrap_or_default();
     let result = app
         .global_shortcut()
         .on_shortcut(chord.as_str(), |app, _shortcut, event| {
@@ -114,4 +155,43 @@ async fn toggle(app: AppHandle) {
         }
     })
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_modifier_and_a_key_is_a_chord() {
+        assert!(check_chord("Super+Shift+KeyR").is_ok());
+        assert!(check_chord("CommandOrControl+Alt+Shift+L").is_ok());
+        assert!(check_chord("Control+Digit1").is_ok());
+    }
+
+    #[test]
+    fn a_key_with_no_modifier_is_refused() {
+        let reason = check_chord("KeyR").unwrap_err();
+        assert!(reason.contains("modifier key"), "{reason}");
+    }
+
+    #[test]
+    fn modifiers_with_no_key_are_refused() {
+        let reason = check_chord("Shift+Alt").unwrap_err();
+        assert!(reason.contains("not a modifier"), "{reason}");
+    }
+
+    #[test]
+    fn fn_and_unparseable_chords_are_refused() {
+        assert!(check_chord("Fn+KeyR").is_err());
+        assert!(check_chord("Super+Shift+NotAKey").is_err());
+        assert!(check_chord("").is_err());
+    }
+
+    #[test]
+    fn two_names_for_the_same_keys_are_the_same_chord() {
+        assert!(same_chord("Super+KeyR", "Command+KeyR"));
+        assert!(same_chord("Shift+Alt+KeyL", "Option+Shift+L"));
+        assert!(!same_chord("Super+KeyR", "Super+KeyT"));
+        assert!(!same_chord("Super+KeyR", "not a chord"));
+    }
 }

@@ -841,7 +841,17 @@ title: string | null;
  * the join, or when the transcript has no speaker marks.
  */
 found_speakers: number | null }
-export type Settings = { settings_schema_version: number; shortcut: string; 
+export type Settings = { settings_schema_version: number; 
+/**
+ * The chord that starts and stops a recording. `None` when the user
+ * cleared it (R3). A stored string reads as `Some`, so no migration is
+ * needed (KTD3).
+ */
+shortcut: string | null; 
+/**
+ * The chord that shows or hides the main window. Off by default (R5).
+ */
+show_window_shortcut: string | null; 
 /**
  * Every folder the user has ever chosen, oldest first (R25a). The index
  * is rebuilt by scanning these, so a root is never dropped silently.

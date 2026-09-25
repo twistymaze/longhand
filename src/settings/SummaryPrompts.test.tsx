@@ -10,6 +10,7 @@ import { SummaryPrompts } from "./SummaryPrompts";
 const baseSettings: Settings = {
   settings_schema_version: 4,
   shortcut: "Alt+Shift+L",
+  show_window_shortcut: null,
   destination_roots: [],
   current_destination: null,
   endpoint_base_url: "",

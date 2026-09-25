@@ -88,7 +88,12 @@ const BUILT_IN_PROMPT: &str = "A built-in prompt can't be changed. Duplicate it 
 #[serde(default)]
 pub struct Settings {
     pub settings_schema_version: u32,
-    pub shortcut: String,
+    /// The chord that starts and stops a recording. `None` when the user
+    /// cleared it (R3). A stored string reads as `Some`, so no migration is
+    /// needed (KTD3).
+    pub shortcut: Option<String>,
+    /// The chord that shows or hides the main window. Off by default (R5).
+    pub show_window_shortcut: Option<String>,
     /// Every folder the user has ever chosen, oldest first (R25a). The index
     /// is rebuilt by scanning these, so a root is never dropped silently.
     pub destination_roots: Vec<String>,
@@ -135,7 +140,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             settings_schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
-            shortcut: DEFAULT_SHORTCUT.to_string(),
+            shortcut: Some(DEFAULT_SHORTCUT.to_string()),
+            show_window_shortcut: None,
             destination_roots: Vec::new(),
             current_destination: None,
             endpoint_base_url: String::new(),
@@ -623,6 +629,44 @@ mod tests {
         let (settings, _) = settings_from_value(&picker_only);
         assert_eq!(settings.asr_model, "nemotron-speech-streaming-en-0.6b-q80");
         assert_eq!(settings.active_summary_prompt, TOPIC_SUMMARY_ID);
+    }
+
+    #[test]
+    fn a_stored_chord_reads_as_set_with_no_rewrite() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "shortcut": "CommandOrControl+Alt+Shift+L",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(
+            settings.shortcut.as_deref(),
+            Some("CommandOrControl+Alt+Shift+L")
+        );
+    }
+
+    #[test]
+    fn missing_chords_take_their_defaults() {
+        let stored = json!({ "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.shortcut.as_deref(), Some(DEFAULT_SHORTCUT));
+        assert_eq!(settings.show_window_shortcut, None);
+    }
+
+    #[test]
+    fn a_stored_null_chord_reads_as_cleared() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "shortcut": null,
+            "show_window_shortcut": "Super+Shift+KeyL",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(settings.shortcut, None);
+        assert_eq!(
+            settings.show_window_shortcut.as_deref(),
+            Some("Super+Shift+KeyL")
+        );
     }
 
     #[test]
