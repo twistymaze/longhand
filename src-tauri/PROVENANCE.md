@@ -18,7 +18,7 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Source paths: `src-tauri/src/lib.rs` (`show_main_window`, the `CloseRequested` handler)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, LICENSES/Handy-MIT.txt
-- Status: modified — settings-driven tray visibility removed; the window always hides to the tray
+- Status: modified — settings-driven tray visibility removed; the window always hides to the tray; the Settings window and the Dock-icon rule for it are Longhand's own
 
 ## `src/tray.rs`
 
@@ -27,7 +27,7 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Source paths: `src-tauri/src/lib.rs` (tray builder, Windows click convention)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, LICENSES/Handy-MIT.txt
-- Status: modified — menu reduced to open and quit
+- Status: modified — menu reduced to open, Settings and quit; the recording-time title is Longhand's own
 
 ## `src/managers/settings.rs`
 

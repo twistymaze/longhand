@@ -1,5 +1,7 @@
 mod commands;
 mod managers;
+#[cfg(target_os = "macos")]
+mod menu;
 mod shortcut;
 mod tray;
 mod window;
@@ -49,6 +51,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::session_detail,
             commands::session::session_notes,
             commands::session::session_document,
+            commands::window::open_settings,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
@@ -207,6 +210,8 @@ pub fn run() {
 
             window::create_main_window(&handle)?;
             tray::create_tray(&handle)?;
+            #[cfg(target_os = "macos")]
+            menu::set_app_menu(&handle)?;
             shortcut::register(&handle);
             // After the tray exists, so the restored alert can mark it.
             alerts.restore(&handle, &capture);

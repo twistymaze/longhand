@@ -303,6 +303,13 @@ async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, strin
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Show the Settings window, and build it first when it is not open. Async
+ * because a synchronous command that builds a window deadlocks on Windows.
+ */
+async openSettings() : Promise<void> {
+    await TAURI_INVOKE("open_settings");
 }
 }
 

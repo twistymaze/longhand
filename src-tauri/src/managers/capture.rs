@@ -1070,11 +1070,13 @@ impl CaptureManager {
                     writer,
                     thread_stop,
                     move |tick| {
+                        let recorded_ms = recorded_before + tick.segment_ms;
+                        crate::tray::recording_tick(&tick_app, &tick_session, recorded_ms);
                         let _ = CaptureTick {
                             session_id: tick_session.clone(),
                             peak: tick.peak,
                             position_ms: tick.position_ms,
-                            recorded_ms: recorded_before + tick.segment_ms,
+                            recorded_ms,
                         }
                         .emit(&tick_app);
                     },
@@ -1157,6 +1159,7 @@ impl CaptureManager {
 }
 
 fn changed(app: &AppHandle, session_id: Option<&str>) {
+    crate::tray::recording_changed(app, session_id);
     let _ = RecordingChanged {
         session_id: session_id.map(str::to_string),
     }

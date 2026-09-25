@@ -1,10 +1,14 @@
-//! Main window lifecycle: closing hides rather than exits (KTD11).
+//! Window lifecycle: closing the main window hides it rather than exits
+//! (KTD11), and Settings opens in a second window (KTD3).
 //! Adapted from Handy's `lib.rs` (`show_main_window`, the `CloseRequested`
 //! handler); see src-tauri/PROVENANCE.md.
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent};
+use tauri::{
+    AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window, WindowEvent,
+};
 
 pub const MAIN_WINDOW: &str = "main";
+pub const SETTINGS_WINDOW: &str = "settings";
 
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
@@ -24,39 +28,161 @@ pub fn show_main_window(app: &AppHandle) {
     if let Err(e) = window.unminimize() {
         log::error!("failed to unminimize main window: {e}");
     }
+    front(app, &window);
+}
+
+/// How `open_or_build` got the window.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Opened {
+    /// The window was open, and was shown and focused.
+    Focused,
+    /// No window was open, so a new one was built.
+    Built,
+}
+
+/// Focus `existing` when there is one, or else build a new window. A second
+/// call while the window is open thus makes no second window.
+pub fn open_or_build<W, E>(
+    existing: Option<W>,
+    focus: impl FnOnce(&W),
+    build: impl FnOnce() -> Result<W, E>,
+) -> Result<(W, Opened), E> {
+    match existing {
+        Some(window) => {
+            focus(&window);
+            Ok((window, Opened::Focused))
+        }
+        None => Ok((build()?, Opened::Built)),
+    }
+}
+
+/// Show the Settings window, and build it first when it is not open (KTD3).
+/// It loads the same page as the main window, with a query that tells the
+/// page which window it is in.
+pub fn open_settings(app: &AppHandle) {
+    let opened = open_or_build(
+        app.get_webview_window(SETTINGS_WINDOW),
+        |window| front(app, window),
+        || {
+            WebviewWindowBuilder::new(
+                app,
+                SETTINGS_WINDOW,
+                WebviewUrl::App("index.html?window=settings".into()),
+            )
+            .title("Settings")
+            .inner_size(560.0, 520.0)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .center()
+            .build()
+        },
+    );
+    match opened {
+        Ok((window, Opened::Built)) => front(app, &window),
+        Ok((_, Opened::Focused)) => {}
+        Err(e) => log::error!("failed to open the settings window: {e}"),
+    }
+}
+
+/// Show and focus `window`. A visible window keeps the Dock icon, so the app
+/// becomes Regular again if a hide made it Accessory.
+fn front(app: &AppHandle, window: &WebviewWindow) {
     if let Err(e) = window.show() {
-        log::error!("failed to show main window: {e}");
+        log::error!("failed to show the {} window: {e}", window.label());
     }
     if let Err(e) = window.set_focus() {
-        log::error!("failed to focus main window: {e}");
+        log::error!("failed to focus the {} window: {e}", window.label());
     }
-    // Hiding demoted the app to Accessory (no Dock icon); showing promotes it
-    // back, which is the direction Apple supports at runtime.
+    // Showing promotes the app from Accessory to Regular, which is the
+    // direction Apple supports at runtime.
     #[cfg(target_os = "macos")]
     if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
         log::error!("failed to set activation policy to Regular: {e}");
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 pub fn on_window_event(window: &Window, event: &WindowEvent) {
-    if let WindowEvent::CloseRequested { api, .. } = event {
-        if window.label() != MAIN_WINDOW {
+    match event {
+        WindowEvent::CloseRequested { api, .. } if window.label() == MAIN_WINDOW => {
+            // The process stays alive in the tray. This is an optimization only:
+            // processing survives a real quit through checkpoints, not through this.
+            // `RunEvent::ExitRequested` + `prevent_exit()` is deliberately not used
+            // (tauri-apps/tauri#13511: it makes the app unkillable).
+            api.prevent_close();
+            if let Err(e) = window.hide() {
+                log::error!("failed to hide main window: {e}");
+            }
+            hide_dock_icon_if_no_window(window);
+        }
+        // The Settings window closes normally; the Dock icon goes when it
+        // was the last visible window.
+        WindowEvent::Destroyed if window.label() == SETTINGS_WINDOW => {
+            hide_dock_icon_if_no_window(window);
+        }
+        _ => {}
+    }
+}
+
+/// Make the app Accessory (no Dock icon) when no window other than `closing`
+/// is visible. The activation policy stays Regular while any window is
+/// visible.
+fn hide_dock_icon_if_no_window(closing: &Window) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = closing.app_handle();
+        let other_visible = app
+            .webview_windows()
+            .values()
+            .any(|w| w.label() != closing.label() && w.is_visible().unwrap_or(false));
+        if other_visible {
             return;
         }
-        // The process stays alive in the tray. This is an optimization only:
-        // processing survives a real quit through checkpoints, not through this.
-        // `RunEvent::ExitRequested` + `prevent_exit()` is deliberately not used
-        // (tauri-apps/tauri#13511: it makes the app unkillable).
-        api.prevent_close();
-        if let Err(e) = window.hide() {
-            log::error!("failed to hide main window: {e}");
-        }
-        #[cfg(target_os = "macos")]
-        if let Err(e) = window
-            .app_handle()
-            .set_activation_policy(tauri::ActivationPolicy::Accessory)
-        {
+        if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Accessory) {
             log::error!("failed to set activation policy to Accessory: {e}");
         }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = closing;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+
+    use super::*;
+
+    /// A stand-in for the app's window set: a second open call focuses the
+    /// window the first call built.
+    #[test]
+    fn a_second_open_focuses_the_window_and_builds_no_second_one() {
+        let windows: RefCell<Vec<u32>> = RefCell::new(Vec::new());
+        let builds = Cell::new(0);
+        let focuses = Cell::new(0);
+        let open = || {
+            let existing = windows.borrow().first().copied();
+            open_or_build(
+                existing,
+                |_| focuses.set(focuses.get() + 1),
+                || {
+                    builds.set(builds.get() + 1);
+                    windows.borrow_mut().push(7);
+                    Ok::<_, ()>(7)
+                },
+            )
+        };
+        assert_eq!(open(), Ok((7, Opened::Built)));
+        assert_eq!(open(), Ok((7, Opened::Focused)));
+        assert_eq!(builds.get(), 1);
+        assert_eq!(focuses.get(), 1);
+        assert_eq!(windows.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_build_error_returns_the_error() {
+        let result = open_or_build(None::<u32>, |_| {}, || Err("no window"));
+        assert_eq!(result, Err("no window"));
     }
 }
