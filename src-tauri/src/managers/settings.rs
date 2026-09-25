@@ -491,12 +491,7 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
     }
     if stored_version < 2 {
         // Version 1 carried only the Phase 2a probe field, which is dropped;
-        // every real field takes its default. The Base URL default applies
-        // only to a new install, so an existing store keeps an empty Base
-        // URL (R2). Version 0 is a store with no version at all.
-        if stored_version >= 1 {
-            settings.endpoint_base_url = Some(String::new());
-        }
+        // every real field takes its default.
         updated = true;
     }
     if stored_version < 3 {
@@ -672,13 +667,12 @@ mod tests {
         let stored = json!({ "settings_schema_version": 1, "probe_value": "Test" });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        // The install existed before the defaults changed, so it keeps the
-        // model it read before (KTD11) and an empty Base URL (R2).
+        // The install existed before the default changed, so it keeps the
+        // model it read before (KTD11).
         assert_eq!(
             settings,
             Settings {
                 asr_model: PREVIOUS_DEFAULT_ASR_MODEL.to_string(),
-                endpoint_base_url: Some(String::new()),
                 ..Settings::default()
             }
         );
