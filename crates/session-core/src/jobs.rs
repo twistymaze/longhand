@@ -10,7 +10,6 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::anchors::Anchor;
 use crate::folder::SpeakerCount;
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
@@ -27,8 +26,6 @@ pub enum StoreError {
     Illegal(#[from] IllegalTransition),
     #[error("no session {0}")]
     NoSuchSession(String),
-    #[error("no note {0}")]
-    NoSuchNote(i64),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -42,14 +39,24 @@ pub struct SessionRecord {
     pub speaker_count: Option<SpeakerCount>,
     pub asr_model: Option<String>,
     pub home_path: Option<String>,
+    pub title: Option<Title>,
+    /// The number of speakers that processing found (KTD11).
+    pub found_speakers: Option<u32>,
+}
+
+/// Where a title came from (KTD7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleSource {
+    /// Processing proposed it.
+    Proposed,
+    /// The user typed it. A proposal never replaces it (R31).
+    User,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Note {
-    pub id: i64,
-    pub session_id: Option<String>,
+pub struct Title {
     pub text: String,
-    pub anchor: Anchor,
+    pub source: TitleSource,
 }
 
 /// How long a claim's heartbeat may be quiet before its owner, when it
@@ -109,16 +116,14 @@ impl Store {
 
     // ------------------------------------------------------------ sessions
 
-    /// Create a capturing session and adopt every pending note as one of its
-    /// un-anchored notes (R13).
+    /// Create a capturing session with an empty notes document.
     pub fn create_session(
         &mut self,
         id: &str,
         created_at: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.execute(
+        self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count) VALUES (?1, ?2, ?3, ?4)",
             params![
                 id,
@@ -129,17 +134,12 @@ impl Store {
                     .transpose()?,
             ],
         )?;
-        tx.execute(
-            "UPDATE notes SET session_id = ?1, anchor = ?2 WHERE session_id IS NULL",
-            params![id, serde_json::to_string(&Anchor::Unanchored)?],
-        )?;
-        tx.commit()?;
         Ok(())
     }
 
     /// Start a new session from the shortcut (R6c): any session still capturing
     /// or interrupted is stopped and queued first (or discarded if it kept no
-    /// audio), then the new one is created and adopts the pending notes.
+    /// audio), then the new one is created.
     pub fn start_session(
         &mut self,
         id: &str,
@@ -186,7 +186,8 @@ impl Store {
     pub fn session(&self, id: &str) -> Result<Option<SessionRecord>> {
         self.conn
             .query_row(
-                "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
+                "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path,
+                        title, title_source, found_speakers
                  FROM sessions WHERE id = ?1",
                 [id],
                 read_session,
@@ -240,7 +241,8 @@ impl Store {
     /// Every session, oldest first.
     pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
+            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path,
+                        title, title_source, found_speakers
              FROM sessions ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([], read_session)?;
@@ -253,7 +255,8 @@ impl Store {
 
     pub fn sessions_in(&self, state_name: &str) -> Result<Vec<SessionRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
+            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path,
+                        title, title_source, found_speakers
              FROM sessions ORDER BY created_at, rowid",
         )?;
         let rows = stmt.query_map([], read_session)?;
@@ -317,92 +320,79 @@ impl Store {
         Ok(out)
     }
 
+    // ------------------------------------------------------------ title
+
+    /// Set the session's title. Returns false when the store refuses it: a
+    /// proposal never replaces a title that the user set (R31), and an empty
+    /// proposal is not a title. An empty title from the user clears the title
+    /// and its source, so processing can propose one later (R35).
+    pub fn set_title(&self, id: &str, title: &str, source: TitleSource) -> Result<bool> {
+        self.require(id)?;
+        let title = title.trim();
+        let changed = match source {
+            TitleSource::User if title.is_empty() => self.conn.execute(
+                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?1",
+                [id],
+            )?,
+            TitleSource::User => self.conn.execute(
+                "UPDATE sessions SET title = ?2, title_source = 'user' WHERE id = ?1",
+                params![id, title],
+            )?,
+            TitleSource::Proposed if title.is_empty() => 0,
+            TitleSource::Proposed => self.conn.execute(
+                "UPDATE sessions SET title = ?2, title_source = 'proposed'
+                 WHERE id = ?1 AND title_source IS NOT 'user'",
+                params![id, title],
+            )?,
+        };
+        Ok(changed > 0)
+    }
+
+    pub fn title(&self, id: &str) -> Result<Option<Title>> {
+        Ok(self.require(id)?.title)
+    }
+
     // ------------------------------------------------------------ notes
 
-    /// A note typed while no session is open (R13).
-    pub fn add_pending_note(&self, text: &str) -> Result<i64> {
-        self.insert_note(None, text, Anchor::Unanchored)
+    /// The session's notes: one markdown document (KTD5).
+    pub fn notes(&self, id: &str) -> Result<String> {
+        self.conn
+            .query_row("SELECT notes FROM sessions WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
     }
 
-    pub fn add_note(&self, session_id: &str, text: &str, anchor: Anchor) -> Result<i64> {
-        self.insert_note(Some(session_id), text, anchor)
-    }
-
-    fn insert_note(&self, session_id: Option<&str>, text: &str, anchor: Anchor) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO notes (session_id, text, anchor) VALUES (?1, ?2, ?3)",
-            params![session_id, text, serde_json::to_string(&anchor)?],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Change a note's text. Its anchor never moves (R12).
-    pub fn edit_note(&self, note_id: i64, text: &str) -> Result<()> {
+    /// Replace the session's notes document with `document`, unchanged.
+    pub fn set_notes(&self, id: &str, document: &str) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE notes SET text = ?2 WHERE id = ?1",
-            params![note_id, text],
+            "UPDATE sessions SET notes = ?2 WHERE id = ?1",
+            params![id, document],
         )?;
         if changed == 0 {
-            return Err(StoreError::NoSuchNote(note_id));
+            return Err(StoreError::NoSuchSession(id.to_string()));
         }
         Ok(())
     }
 
-    pub fn notes(&self, session_id: &str) -> Result<Vec<Note>> {
-        self.query_notes(
-            "SELECT id, session_id, text, anchor FROM notes WHERE session_id = ?1 ORDER BY id",
-            Some(session_id),
-        )
+    // ------------------------------------------------------------ speakers
+
+    /// Record the number of speakers that processing found (KTD11). It is
+    /// separate from the user's bound on the speaker count (R36).
+    pub fn set_found_speakers(&self, id: &str, count: Option<u32>) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET found_speakers = ?2 WHERE id = ?1",
+            params![id, count],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
     }
 
-    pub fn note(&self, note_id: i64) -> Result<Option<Note>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT session_id FROM notes WHERE id = ?1")?;
-        let session_id: Option<Option<String>> = stmt
-            .query_map([note_id], |r| r.get::<_, Option<String>>(0))?
-            .next()
-            .transpose()?;
-        let notes = match session_id {
-            None => return Ok(None),
-            Some(Some(session_id)) => self.notes(&session_id)?,
-            Some(None) => self.pending_notes()?,
-        };
-        Ok(notes.into_iter().find(|n| n.id == note_id))
-    }
-
-    pub fn pending_notes(&self) -> Result<Vec<Note>> {
-        self.query_notes(
-            "SELECT id, session_id, text, anchor FROM notes WHERE session_id IS NULL ORDER BY id",
-            None,
-        )
-    }
-
-    fn query_notes(&self, sql: &str, session_id: Option<&str>) -> Result<Vec<Note>> {
-        let mut stmt = self.conn.prepare(sql)?;
-        let map = |r: &rusqlite::Row| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        };
-        let rows = match session_id {
-            Some(id) => stmt.query_map([id], map)?.collect::<Vec<_>>(),
-            None => stmt.query_map([], map)?.collect::<Vec<_>>(),
-        };
-        rows.into_iter()
-            .map(|row| {
-                let (id, session_id, text, anchor) = row?;
-                Ok(Note {
-                    id,
-                    session_id,
-                    text,
-                    anchor: serde_json::from_str(&anchor)?,
-                })
-            })
-            .collect()
+    pub fn found_speakers(&self, id: &str) -> Result<Option<u32>> {
+        Ok(self.require(id)?.found_speakers)
     }
 
     // ------------------------------------------------------------ queue
@@ -601,6 +591,18 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let speaker_count: Option<String> = r.get(4)?;
     let asr_model: Option<String> = r.get(5)?;
     let home_path: Option<String> = r.get(6)?;
+    let title: Option<String> = r.get(7)?;
+    let title_source: Option<String> = r.get(8)?;
+    let found_speakers: Option<u32> = r.get(9)?;
+    let title = title.map(|text| Title {
+        text,
+        // The store writes a title only together with its source. A title
+        // with no source counts as a proposal, which a user title replaces.
+        source: match title_source.as_deref() {
+            Some("user") => TitleSource::User,
+            _ => TitleSource::Proposed,
+        },
+    });
     Ok((|| {
         Ok(SessionRecord {
             id,
@@ -612,6 +614,8 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
                 .transpose()?,
             asr_model,
             home_path,
+            title,
+            found_speakers,
         })
     })())
 }

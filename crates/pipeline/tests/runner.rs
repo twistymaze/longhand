@@ -1033,26 +1033,15 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
 
 // -------------------------------------------------------------- saving (U11)
 
-fn add_notes(store: &SharedStore, id: &str) -> Vec<i64> {
-    let s = store.lock().unwrap();
-    vec![
-        s.add_note(
-            id,
-            "the rules changed",
-            session_core::Anchor::At {
-                position_ms: 1_000,
-                gap_anchored: false,
-            },
-        )
-        .unwrap(),
-        s.add_note(id, "bring snacks", session_core::Anchor::Unanchored)
-            .unwrap(),
-    ]
+const NOTES: &str = "- [00:00:01] the rules changed\n- bring snacks\n";
+
+fn add_notes(store: &SharedStore, id: &str) {
+    store.lock().unwrap().set_notes(id, NOTES).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
-    use session_core::folder::{self, SessionDoc, Transcript};
+    use session_core::folder::{SessionDoc, Transcript};
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1101,10 +1090,11 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
         doc.timeline_segments(),
         r.store.lock().unwrap().segments("s").unwrap()
     );
-    let notes =
-        folder::parse_notes(&std::fs::read_to_string(folder.join("notes.md")).unwrap()).unwrap();
-    let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
-    assert_eq!(texts, ["the rules changed", "bring snacks"]);
+    // notes.md is the notes document byte for byte (R25).
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+        NOTES
+    );
     let transcript =
         Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap()).unwrap();
     assert!(!transcript.lines.is_empty());
@@ -1126,13 +1116,14 @@ async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
         Some("m"),
         &[(16_000, speech())],
     );
-    let ids = add_notes(&r.store, "s");
+    add_notes(&r.store, "s");
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     let folder = saved_folder(&r, "s");
 
     {
         let mut s = r.store.lock().unwrap();
-        s.edit_note(ids[1], "bring more snacks").unwrap();
+        s.set_notes("s", &NOTES.replace("bring snacks", "bring more snacks"))
+            .unwrap();
         assert!(pipeline::save::rewrite_notes(&mut s, "s").unwrap());
     }
     let notes = std::fs::read_to_string(folder.join("notes.md")).unwrap();
@@ -1159,7 +1150,7 @@ async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_
         Some("m"),
         &[(16_000, speech())],
     );
-    let ids = add_notes(&r.store, "s");
+    add_notes(&r.store, "s");
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(
         matches!(&outcome, Outcome::AwaitingDestination { problem } if problem.contains("no destination")),
@@ -1189,7 +1180,10 @@ async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_
     r.store
         .lock()
         .unwrap()
-        .edit_note(ids[0], "the rules changed twice")
+        .set_notes(
+            "s",
+            &NOTES.replace("the rules changed", "the rules changed twice"),
+        )
         .unwrap();
     let last = r.dest.join("chosen-last");
     std::fs::create_dir(&last).unwrap();

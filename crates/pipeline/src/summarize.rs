@@ -118,9 +118,11 @@ pub fn transcript_turns(
         .collect())
 }
 
+/// Each line of the notes document as a note, with the position that its
+/// `[hh:mm:ss]` prefix gives, if it has one.
 fn session_notes(store: &SharedStore, session_id: &str) -> Result<Vec<Note>, StageError> {
-    Ok(lock(store)
-        .notes(session_id)?
+    let document = lock(store).notes(session_id)?;
+    Ok(crate::note_lines::parse_all(&document)
         .into_iter()
         .filter(|n| !n.text.trim().is_empty())
         .map(|n| Note {

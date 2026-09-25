@@ -1,6 +1,9 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::jobs::Liveness;
-use session_core::{Anchor, Event, InterruptReason, SessionState, Stage, Store};
+use session_core::{
+    Event, InterruptReason, SessionState, SpeakerCount, Stage, Store, StoreError, Title,
+    TitleSource,
+};
 
 fn t(minutes: i64) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339("2026-09-22T10:00:00-05:00").unwrap() + TimeDelta::minutes(minutes)
@@ -157,31 +160,129 @@ fn resume_keeps_transcription_and_drops_summary_checkpoints() {
 }
 
 #[test]
-fn pending_notes_are_adopted_by_the_next_session() {
+fn a_proposal_never_replaces_a_title_the_user_set() {
     let mut store = Store::open_in_memory().unwrap();
-    store.add_pending_note("agenda: budget").unwrap();
-    store.add_pending_note("ask about hiring").unwrap();
     store.create_session("s1", t(0), None).unwrap();
-
-    assert!(store.pending_notes().unwrap().is_empty());
-    let notes = store.notes("s1").unwrap();
-    assert_eq!(notes.len(), 2);
-    assert!(notes.iter().all(|n| n.anchor == Anchor::Unanchored));
+    assert!(
+        store
+            .set_title("s1", "Budget review", TitleSource::User)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .set_title("s1", "Weekly sync", TitleSource::Proposed)
+            .unwrap()
+    );
+    assert_eq!(
+        store.title("s1").unwrap(),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User
+        })
+    );
+    // The user can still change it.
+    assert!(store.set_title("s1", "Budget", TitleSource::User).unwrap());
+    assert_eq!(store.title("s1").unwrap().unwrap().text, "Budget");
 }
 
 #[test]
-fn editing_a_note_never_moves_its_anchor() {
+fn a_proposal_replaces_an_earlier_proposal() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();
-    let anchor = Anchor::At {
-        position_ms: 95_000,
-        gap_anchored: false,
-    };
-    let id = store.add_note("s1", "first draft", anchor).unwrap();
-    store.edit_note(id, "rewritten entirely").unwrap();
-    let note = &store.notes("s1").unwrap()[0];
-    assert_eq!(note.text, "rewritten entirely");
-    assert_eq!(note.anchor, anchor);
+    assert_eq!(store.title("s1").unwrap(), None);
+    assert!(
+        store
+            .set_title("s1", "First", TitleSource::Proposed)
+            .unwrap()
+    );
+    assert!(
+        store
+            .set_title("s1", "Second", TitleSource::Proposed)
+            .unwrap()
+    );
+    assert_eq!(
+        store.session("s1").unwrap().unwrap().title,
+        Some(Title {
+            text: "Second".into(),
+            source: TitleSource::Proposed
+        })
+    );
+}
+
+#[test]
+fn an_empty_user_title_clears_the_title_and_a_later_proposal_is_kept() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store
+        .set_title("s1", "Budget review", TitleSource::User)
+        .unwrap();
+    assert!(store.set_title("s1", "  ", TitleSource::User).unwrap());
+    assert_eq!(store.title("s1").unwrap(), None);
+    assert!(
+        store
+            .set_title("s1", "Weekly sync", TitleSource::Proposed)
+            .unwrap()
+    );
+    assert_eq!(
+        store.title("s1").unwrap(),
+        Some(Title {
+            text: "Weekly sync".into(),
+            source: TitleSource::Proposed
+        })
+    );
+}
+
+#[test]
+fn an_empty_proposal_is_refused() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store
+        .set_title("s1", "First", TitleSource::Proposed)
+        .unwrap();
+    assert!(!store.set_title("s1", "", TitleSource::Proposed).unwrap());
+    assert_eq!(store.title("s1").unwrap().unwrap().text, "First");
+}
+
+#[test]
+fn a_title_for_no_session_is_an_error() {
+    let store = Store::open_in_memory().unwrap();
+    assert!(matches!(
+        store.set_title("gone", "x", TitleSource::User),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn the_notes_document_is_kept_as_written() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.notes("s1").unwrap(), "");
+    let document = "# Agenda\n\n- [ ] budget\n- [x] hiring\n\n```\ncode  kept\n```\n";
+    store.set_notes("s1", document).unwrap();
+    assert_eq!(store.notes("s1").unwrap(), document);
+    assert!(matches!(
+        store.set_notes("gone", document),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.notes("gone"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn the_found_speaker_count_is_kept_apart_from_the_bound() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .create_session("s1", t(0), Some(SpeakerCount::Exact(3)))
+        .unwrap();
+    assert_eq!(store.found_speakers("s1").unwrap(), None);
+    store.set_found_speakers("s1", Some(4)).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.found_speakers, Some(4));
+    assert_eq!(record.speaker_count, Some(SpeakerCount::Exact(3)));
+    store.set_found_speakers("s1", None).unwrap();
+    assert_eq!(store.found_speakers("s1").unwrap(), None);
 }
 
 #[test]

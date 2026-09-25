@@ -7,7 +7,6 @@
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
-use crate::anchors::Anchor;
 use crate::timeline::Segment;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -81,6 +80,9 @@ fn yaml_error(file: &'static str) -> impl Fn(serde_yaml::Error) -> FolderError {
 pub struct SessionDoc {
     pub session_id: String,
     pub started: DateTime<FixedOffset>,
+    /// `None` until processing proposes a title or the user sets one (R28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speaker_count: Option<SpeakerCount>,
     pub segments: Vec<SegmentRecord>,
@@ -132,6 +134,7 @@ impl SessionDoc {
         Some(Self {
             session_id: session_id.into(),
             started: first.wall_start,
+            title: None,
             speaker_count,
             segments: segments.iter().map(SegmentRecord::from).collect(),
         })
@@ -143,7 +146,8 @@ impl SessionDoc {
 
     pub fn render(&self) -> String {
         let yaml = serde_yaml::to_string(self).expect("session frontmatter serializes");
-        let mut out = format!("---\n{yaml}---\n\n# Longhand session\n\n");
+        let heading = self.title.as_deref().unwrap_or("Longhand session");
+        let mut out = format!("---\n{yaml}---\n\n# {heading}\n\n");
         out.push_str(&format!(
             "Started {}.\n\n",
             self.started.format("%Y-%m-%d %H:%M")
@@ -325,68 +329,10 @@ fn one_line(text: &str) -> String {
 
 // ---------------------------------------------------------------- notes.md
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteLine {
-    pub anchor: Anchor,
-    pub text: String,
-}
-
-pub fn render_notes(notes: &[NoteLine]) -> String {
-    let mut out = String::from("# Notes\n\n");
-    for note in notes {
-        let text = one_line(&note.text);
-        match note.anchor {
-            Anchor::Unanchored => out.push_str(&format!("- {text}\n")),
-            Anchor::At {
-                position_ms,
-                gap_anchored: false,
-            } => out.push_str(&format!("- [{}] {text}\n", format_position(position_ms))),
-            Anchor::At {
-                position_ms,
-                gap_anchored: true,
-            } => out.push_str(&format!(
-                "- [{} ~gap] {text}\n",
-                format_position(position_ms)
-            )),
-        }
-    }
-    out
-}
-
-pub fn parse_notes(text: &str) -> Result<Vec<NoteLine>, FolderError> {
-    let mut notes = Vec::new();
-    for (i, raw) in text.lines().enumerate() {
-        let line = raw.trim_end();
-        if line.is_empty() || line.starts_with("# ") {
-            continue;
-        }
-        let rest = line.strip_prefix("- ").ok_or_else(|| FolderError::Line {
-            file: "notes.md",
-            line: i + 1,
-            message: "expected a `- ` list item".to_string(),
-        })?;
-        let anchored = rest
-            .strip_prefix('[')
-            .and_then(|r| r.split_once("] "))
-            .and_then(|(tag, text)| {
-                let (time, gap_anchored) = match tag.strip_suffix(" ~gap") {
-                    Some(time) => (time, true),
-                    None => (tag, false),
-                };
-                parse_position(time).map(|position_ms| NoteLine {
-                    anchor: Anchor::At {
-                        position_ms,
-                        gap_anchored,
-                    },
-                    text: text.to_string(),
-                })
-            });
-        notes.push(anchored.unwrap_or_else(|| NoteLine {
-            anchor: Anchor::Unanchored,
-            text: rest.to_string(),
-        }));
-    }
-    Ok(notes)
+/// `notes.md` is the notes document as the user typed it (R25): no heading
+/// is added and no line changes.
+pub fn render_notes(document: &str) -> String {
+    document.to_string()
 }
 
 // ---------------------------------------------------------------- summary.md

@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use session_core::folder::{self, NoteLine, SessionDoc, Summary, SummaryMeta};
+use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionState, Stage, Store};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
@@ -370,15 +370,17 @@ fn render(
     working: &Path,
     segments: &[Segment],
 ) -> Result<(), StageError> {
-    let (speaker_count, notes) = {
+    let (record, notes) = {
         let guard = lock(store);
         let record = guard
             .session(session_id)?
             .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
-        (record.speaker_count, render_notes(&guard, session_id)?)
+        let notes = render_notes(&guard, session_id)?;
+        (record, notes)
     };
-    let doc = SessionDoc::new(session_id, speaker_count, segments)
+    let mut doc = SessionDoc::new(session_id, record.speaker_count, segments)
         .ok_or_else(|| StageError::Failed("the session has no audio".into()))?;
+    doc.title = record.title.map(|t| t.text);
     write_working(working, SESSION_FILE, &doc.render())?;
     write_working(working, NOTES_FILE, &notes)?;
     if !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
@@ -401,15 +403,7 @@ pub fn stub(why: &str) -> Summary {
 }
 
 fn render_notes(store: &Store, session_id: &str) -> Result<String, StageError> {
-    let notes: Vec<NoteLine> = store
-        .notes(session_id)?
-        .into_iter()
-        .map(|n| NoteLine {
-            anchor: n.anchor,
-            text: n.text,
-        })
-        .collect();
-    Ok(folder::render_notes(&notes))
+    Ok(folder::render_notes(&store.notes(session_id)?))
 }
 
 fn write_notes(store: &Store, session_id: &str, folder: &Path) -> Result<(), StageError> {

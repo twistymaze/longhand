@@ -243,14 +243,9 @@ pub fn session_notes(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
 ) -> Result<Vec<NoteView>, String> {
-    let store = capture.shared_store();
-    let store = store.lock().unwrap_or_else(|e| e.into_inner());
-    Ok(store
-        .notes(&session_id)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(NoteView::from)
-        .collect())
+    capture
+        .session_notes(&session_id)
+        .map_err(|e| e.to_string())
 }
 
 /// The saved transcript and summary, read from the session's folder.

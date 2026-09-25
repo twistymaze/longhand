@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use audio::AudioProvider;
 use audio_cpal::{CpalAudio, Inputs};
 use chrono::{DateTime, FixedOffset, Local};
+use pipeline::note_lines::{self, NoteLine};
 use pipeline::recover::segment_audio_file;
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{ChunkedWriter, SegmentArgs, SegmentEnd, SegmentOutcome};
@@ -98,8 +99,8 @@ pub struct NoteView {
     pub gap_anchored: bool,
 }
 
-impl From<session_core::Note> for NoteView {
-    fn from(note: session_core::Note) -> Self {
+impl NoteView {
+    fn new(id: i64, note: NoteLine) -> Self {
         let (position_ms, gap_anchored) = match note.anchor {
             Anchor::Unanchored => (None, false),
             Anchor::At {
@@ -108,7 +109,7 @@ impl From<session_core::Note> for NoteView {
             } => (Some(position_ms), gap_anchored),
         };
         Self {
-            id: note.id,
+            id,
             text: note.text,
             position_ms,
             gap_anchored,
@@ -261,6 +262,39 @@ pub struct CaptureManager {
     /// through one connection.
     store: pipeline::SharedStore,
     inner: Mutex<Inner>,
+    note_ids: Mutex<NoteIds>,
+}
+
+/// The ids that the note commands give to the lines of notes documents,
+/// until the editor sends the whole document (U4). An id names one line of
+/// one session's document and lasts for this run.
+#[derive(Default)]
+struct NoteIds {
+    /// The id is the index.
+    lines: Vec<(String, usize)>,
+}
+
+impl NoteIds {
+    fn id(&mut self, session_id: &str, line: usize) -> i64 {
+        let index = match self
+            .lines
+            .iter()
+            .position(|(s, l)| s == session_id && *l == line)
+        {
+            Some(index) => index,
+            None => {
+                self.lines.push((session_id.to_string(), line));
+                self.lines.len() - 1
+            }
+        };
+        index as i64
+    }
+
+    fn line(&self, id: i64) -> Option<(String, usize)> {
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| self.lines.get(i).cloned())
+    }
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -299,11 +333,16 @@ impl CaptureManager {
             working_root: data.join("sessions"),
             store: Arc::new(Mutex::new(store)),
             inner: Mutex::new(Inner::default()),
+            note_ids: Mutex::new(NoteIds::default()),
         })
     }
 
     fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn note_ids(&self) -> std::sync::MutexGuard<'_, NoteIds> {
+        self.note_ids.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn store(&self) -> std::sync::MutexGuard<'_, Store> {
@@ -625,19 +664,13 @@ impl CaptureManager {
         })
     }
 
-    /// Record a note at its first keystroke (R12, R12a, R13). The anchor is
-    /// resolved here, on the capture clock, and never moves afterwards.
+    /// Add a note to the open session's notes document at its first
+    /// keystroke (R12, R12a). The anchor is resolved here, on the capture
+    /// clock, and never moves afterwards. With no session open, the note is
+    /// refused: the app keeps no notes outside a session (R27).
     pub fn begin_note(&self, text: &str) -> Result<NoteView, CaptureError> {
         let inner = self.inner();
-        let Some((session_id, _)) = self.open_session()? else {
-            let id = self.store().add_pending_note(text)?;
-            return Ok(NoteView {
-                id,
-                text: text.to_string(),
-                position_ms: None,
-                gap_anchored: false,
-            });
-        };
+        let (session_id, _) = self.open_session()?.ok_or(CaptureError::NotCapturing)?;
         let anchor = match inner.clock.as_ref().filter(|c| c.session_id == session_id) {
             Some(clock) => session_core::resolve(
                 &clock.timeline,
@@ -651,35 +684,69 @@ impl CaptureManager {
                 session_core::resolve(&timeline, Some(u64::MAX), DEFAULT_LOOKBACK_MS)
             }
         };
-        let id = self.store().add_note(&session_id, text, anchor)?;
-        Ok(NoteView::from(session_core::Note {
+        drop(inner);
+        let line = {
+            let store = self.store();
+            let mut document = store.notes(&session_id)?;
+            if !document.is_empty() && !document.ends_with('\n') {
+                document.push('\n');
+            }
+            let line = document.lines().count();
+            document.push_str(&note_lines::render(anchor, text));
+            document.push('\n');
+            store.set_notes(&session_id, &document)?;
+            line
+        };
+        let id = self.note_ids().id(&session_id, line);
+        Ok(NoteView::new(
             id,
-            session_id: Some(session_id),
-            text: text.to_string(),
-            anchor,
-        }))
+            NoteLine {
+                anchor,
+                text: text.to_string(),
+            },
+        ))
     }
 
     /// Change a note's text. On a saved session the folder's `notes.md` is
     /// rewritten whole in the same breath (R22f), under the lock the save stage
     /// takes to write it, so no edit is lost or written twice.
     pub fn edit_note(&self, note_id: i64, text: &str) -> Result<(), CaptureError> {
+        let no_note = || CaptureError::Other(format!("no note {note_id}"));
+        let (session_id, index) = self.note_ids().line(note_id).ok_or_else(no_note)?;
         let mut store = self.store();
-        store.edit_note(note_id, text)?;
-        if let Some(session_id) = store.note(note_id)?.and_then(|n| n.session_id) {
-            pipeline::save::rewrite_notes(&mut store, &session_id)
-                .map_err(|e| CaptureError::Other(e.to_string()))?;
-        }
+        let document = store.notes(&session_id)?;
+        let mut lines: Vec<String> = document.lines().map(str::to_string).collect();
+        let line = lines.get_mut(index).ok_or_else(no_note)?;
+        let anchor = note_lines::parse(line).map_or(Anchor::Unanchored, |n| n.anchor);
+        *line = note_lines::render(anchor, text);
+        let mut document = lines.join("\n");
+        document.push('\n');
+        store.set_notes(&session_id, &document)?;
+        pipeline::save::rewrite_notes(&mut store, &session_id)
+            .map_err(|e| CaptureError::Other(e.to_string()))?;
         Ok(())
     }
 
-    /// The open session's notes, or the pending buffer when none is open.
+    /// The open session's notes. With no session open there are none (R27).
     pub fn notes(&self) -> Result<Vec<NoteView>, CaptureError> {
-        let notes = match self.open_session()? {
-            Some((id, _)) => self.store().notes(&id)?,
-            None => self.store().pending_notes()?,
-        };
-        Ok(notes.into_iter().map(NoteView::from).collect())
+        match self.open_session()? {
+            Some((id, _)) => self.session_notes(&id),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Each line of a session's notes document as a note.
+    pub fn session_notes(&self, session_id: &str) -> Result<Vec<NoteView>, CaptureError> {
+        let document = self.store().notes(session_id)?;
+        let mut ids = self.note_ids();
+        Ok(document
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                let note = note_lines::parse(line)?;
+                Some(NoteView::new(ids.id(session_id, i), note))
+            })
+            .collect())
     }
 
     /// Bound the open session's diarization (R36).
