@@ -80,7 +80,7 @@ export function SummaryTab({
   if (!summary || summary.stub) {
     return (
       <div className="rounded-[10px] bg-group px-4 py-3 shadow-[0_0_0_0.5px_var(--separator)]">
-        {summary ? <Body markdown={summary.body} /> : <p>This session has no summary.</p>}
+        {summary ? <Body markdown={summary.body} /> : <p>This note has no summary.</p>}
         <div className="mt-3">{regenerate}</div>
       </div>
     );

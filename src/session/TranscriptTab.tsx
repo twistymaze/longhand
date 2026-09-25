@@ -89,7 +89,7 @@ export function TranscriptTab({
       <p className="text-[0.85rem] text-label-secondary">{header}</p>
       {!hasSpeakers && (
         <p className="mt-2 text-[0.85rem] text-label-secondary">
-          Speaker separation failed for this session, so the transcript has no speaker marks.
+          Speaker separation failed for this note, so the transcript has no speaker marks.
         </p>
       )}
       {lines.length === 0 && <p className="mt-4 text-label-tertiary">Nothing was transcribed.</p>}

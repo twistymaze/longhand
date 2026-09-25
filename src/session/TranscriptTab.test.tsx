@@ -60,7 +60,7 @@ describe("TranscriptTab", () => {
 
   test("a transcript with no speaker marks says why and shows no labels", () => {
     renderTab([turn(0, null, "Hello.")], { hasSpeakers: false, speakers: null });
-    expect(screen.getByText(/no speaker marks/)).toBeTruthy();
+    expect(screen.getByText(/no speaker marks/).textContent).toContain("this note");
     expect(screen.queryByText(/^Speaker \d/)).toBeNull();
   });
 

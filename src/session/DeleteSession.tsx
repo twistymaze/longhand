@@ -111,8 +111,8 @@ export function useDeleteSession({
   const dialog =
     confirm === null ? null : confirm.kind === "trash" ? (
       <ConfirmDialog
-        title={`Delete “${title}”?`}
-        message="Its folder moves to the Trash."
+        title="Delete note?"
+        message={`“${title}” moves to the Trash.`}
         action="Delete"
         busy={busy}
         onConfirm={() => void remove(confirm)}
@@ -120,8 +120,8 @@ export function useDeleteSession({
       />
     ) : (
       <ConfirmDialog
-        title={`“${title}” can’t be moved to the Trash`}
-        message={`${sentence(confirm.reason)} Delete it permanently? You can’t undo this.`}
+        title="This note can’t be moved to the Trash"
+        message={`${sentence(confirm.reason)} Delete “${title}” permanently? You can’t undo this.`}
         action="Delete Permanently"
         busy={busy}
         onConfirm={() => void remove(confirm)}

@@ -45,7 +45,7 @@ function SummarizeDetail({ detail }: { detail: SessionDetail }) {
     return <Status tone="caution">Skipped. {sentence(detail.summary_problem)}</Status>;
   }
   const endpoint = detail.endpoint;
-  if (!endpoint) return <>No endpoint is set, so the session is saved without a summary.</>;
+  if (!endpoint) return <>No endpoint is set, so the note is saved without a summary.</>;
   const sent = detail.done.includes("summarize");
   return (
     <>
@@ -145,7 +145,7 @@ export function ProcessingStatus({
   return (
     <div className="grid gap-5">
       {waiting && waitsForRecording && (
-        <p className="text-label-secondary">Processing waits while another session records.</p>
+        <p className="text-label-secondary">Processing starts when the current recording stops.</p>
       )}
       <Exception detail={detail} onDone={onChanged} />
       <Group>
