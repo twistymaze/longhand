@@ -31,6 +31,7 @@ BORROWED_DIRS=(
   crates/supervisor
   crates/vad
   src-tauri
+  src/editor
 )
 
 FIELDS=("Repository" "Revision" "Source paths" "Copyright" "Licence" "Status")

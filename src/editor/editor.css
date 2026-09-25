@@ -1,0 +1,43 @@
+/* Styles for NoteEditor: ProseMirror's own rules, the copied editor rules in
+   styles/, and the rules that Longhand adds. The copied rules use the tokens
+   of src/index.css. */
+@import "prosemirror-view/style/prosemirror.css";
+@import "prosemirror-gapcursor/style/gapcursor.css";
+@import "./styles/base.css";
+@import "./styles/task-list.css";
+@import "./styles/note-typography.css";
+
+:root {
+  --editor-highlight: #fef08a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --editor-highlight: rgb(250 204 21 / 0.32);
+  }
+}
+
+/* The placeholder of an empty block. */
+.ProseMirror .is-editor-empty:first-child::before,
+.ProseMirror .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  pointer-events: none;
+  height: 0;
+}
+
+/* IME composition paints glyphs in the DOM before ProseMirror state updates,
+   so empty-node placeholder decorations would otherwise overlap them. */
+.ProseMirror.is-composing .is-editor-empty:first-child::before,
+.ProseMirror.is-composing .is-empty::before {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-typography input.task-checkbox,
+  .note-typography ul[data-type="taskList"] > li > div > p,
+  .note-typography.prosemirror-editor > *,
+  .note-typography.prosemirror-editor li {
+    transition: none;
+  }
+}

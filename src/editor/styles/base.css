@@ -1,0 +1,39 @@
+/* Editor base rules. See PROVENANCE.md. */
+.prosemirror-editor-root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.prosemirror-editor-root .prosemirror-editor {
+  flex: 1 1 auto;
+  min-height: 100%;
+}
+
+.prosemirror-editor {
+  font-variant-ligatures: common-ligatures contextual;
+  font-feature-settings: "liga" 1, "calt" 1;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  hyphens: auto;
+  padding-bottom: 24px;
+  caret-color: var(--label);
+  min-height: 100%;
+
+  :first-child {
+    margin-top: 0;
+  }
+
+  /* focus states */
+  &:focus {
+    outline: none;
+    box-shadow: none;
+  }
+
+  p {
+    margin-bottom: 0.25rem;
+    text-wrap: wrap;
+    line-height: 20px;
+  }
+}
