@@ -97,6 +97,10 @@ fn stage_key(stage: Stage) -> String {
         .expect("stage serializes to a string")
 }
 
+/// The `sessions` columns that [`read_session`] reads, in its order.
+const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
+     home_path, title, title_source, found_speakers";
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -199,9 +203,7 @@ impl Store {
     pub fn session(&self, id: &str) -> Result<Option<SessionRecord>> {
         self.conn
             .query_row(
-                "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path,
-                        title, title_source, found_speakers
-                 FROM sessions WHERE id = ?1",
+                &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
                 [id],
                 read_session,
             )
@@ -253,11 +255,9 @@ impl Store {
 
     /// Every session, oldest first.
     pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path,
-                        title, title_source, found_speakers
-             FROM sessions ORDER BY created_at, rowid",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY created_at, rowid"
+        ))?;
         let rows = stmt.query_map([], read_session)?;
         let mut out = Vec::new();
         for row in rows {
@@ -267,11 +267,9 @@ impl Store {
     }
 
     pub fn sessions_in(&self, state_name: &str) -> Result<Vec<SessionRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path,
-                        title, title_source, found_speakers
-             FROM sessions ORDER BY created_at, rowid",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY created_at, rowid"
+        ))?;
         let rows = stmt.query_map([], read_session)?;
         let mut out = Vec::new();
         for row in rows {

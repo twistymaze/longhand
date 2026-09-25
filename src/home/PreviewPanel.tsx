@@ -44,9 +44,9 @@ export function PreviewPanel({
     void Promise.all([
       saved ? commands.sessionDocument(id) : Promise.resolve(null),
       commands.sessionDetail(id),
-    ]).then(([document, detail]) => {
+    ]).then(([doc, detail]) => {
       if (!current) return;
-      const body = document?.status === "ok" ? document.data.summary?.body : undefined;
+      const body = doc?.status === "ok" ? doc.data.summary?.body : undefined;
       setLoaded({
         id,
         overview: body ? firstParagraph(body) : null,

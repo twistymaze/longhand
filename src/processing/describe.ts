@@ -101,12 +101,22 @@ export function stageRows(detail: SessionDetail): StageRow[] {
   }));
 }
 
+/// "14:05": the local clock time of `iso`.
+export function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/// The number of local calendar days from `date` to `now`: 0 on the same day.
+export function daysBefore(date: Date, now: Date): number {
+  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Math.round((midnight(now) - midnight(date)) / 86_400_000);
+}
+
 /// "Today, 14:05", "Yesterday, 09:10", or "Mon 21 Sep, 14:05".
 export function sessionTitle(startedIso: string, now: Date = new Date()): string {
   const started = new Date(startedIso);
-  const time = started.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(now) - day(started)) / 86_400_000);
+  const time = clockTime(startedIso);
+  const days = daysBefore(started, now);
   if (days === 0) return `Today, ${time}`;
   if (days === 1) return `Yesterday, ${time}`;
   const date = started.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });

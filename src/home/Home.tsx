@@ -4,7 +4,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { commands, type Readiness, type SessionEntry } from "../bindings";
-import { isOpen, missingPreconditions, sentence } from "../processing/describe";
+import { clockTime, isOpen, missingPreconditions, sentence } from "../processing/describe";
 import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
 import { Button } from "../settings/ui";
@@ -91,9 +91,6 @@ export function Home({
     setNotice(result.status === "error" ? { tone: "negative", text: sentence(result.error) } : null);
   };
 
-  const time = (iso: string) =>
-    new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-
   const missing = readiness ? missingPreconditions(readiness) : "";
 
   return (
@@ -156,7 +153,7 @@ export function Home({
                       key={entry.id}
                       entry={entry}
                       title={rowTitle(entry, now)}
-                      time={time(entry.started)}
+                      time={clockTime(entry.started)}
                       stage={stages[entry.id] ?? null}
                       selected={entry.id === selectedId}
                       focusable={selected ? entry.id === selected.id : entry.id === order[0]?.id}

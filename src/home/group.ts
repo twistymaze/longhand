@@ -1,18 +1,16 @@
 // Home's list: sessions in groups of one local day, newest first (R5).
 
 import type { SessionEntry } from "../bindings";
-import { sessionTitle } from "../processing/describe";
+import { daysBefore, sessionTitle } from "../processing/describe";
 
 export type DayGroup = { key: string; label: string; entries: SessionEntry[] };
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 
-const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-
 /// "Today", "Yesterday", "Monday 21 September", or with the year when it is
 /// not this year.
 export function dayLabel(date: Date, now: Date = new Date()): string {
-  const days = Math.round((midnight(now) - midnight(date)) / 86_400_000);
+  const days = daysBefore(date, now);
   if (days === 0) return "Today";
   if (days === 1) return "Yesterday";
   return date.toLocaleDateString(undefined, {

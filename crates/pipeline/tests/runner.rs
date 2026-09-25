@@ -1,4 +1,4 @@
-//! The runer end to end over real chunk files, with a scripted recognizer.
+//! The runner end to end over real chunk files, with a scripted recognizer.
 
 mod common;
 #[path = "../../summarize/tests/common/mod.rs"]
