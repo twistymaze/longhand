@@ -24,4 +24,7 @@ The hidden, session-specific folder inside the Destination. Save assembles the s
 A staging folder is removed at launch only when its session is recorded as completed: until then it may hold the only complete copy.
 
 ### Home folder
-The folder that Save put a session into. A session keeps its home folder for life. When a saved session is resumed, recorded into and processed again, the app updates its home folder in place (it adds new audio next to the old audio and replaces the documents). It does not save a second copy.
+The folder that Save put a session into. A session keeps its home folder for life. A rename of the session changes the folder's name, not the folder: the session still has one home folder. When a saved session is resumed, recorded into and processed again, the app updates its home folder in place (it adds new audio next to the old audio and replaces the documents). It does not save a second copy.
+
+### Title
+The name of a session, shown on Home, on the session page and in the home folder's name. Processing proposes it. The user can rename it at any time, and a title the user set is never replaced automatically. A session with no title yet shows its start time.

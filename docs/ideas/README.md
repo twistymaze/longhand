@@ -88,7 +88,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [UX redesign](ux-redesign.md) | open | Settings window, session list home, one tabbed session page |
+| [UX redesign](ux-redesign.md) | in-progress | Settings window, session list home, one tabbed session page |
 | [Choose the recognition model](recognition-model-picker.md) | open | A Settings picker and a second engine |
 
 ## Done
