@@ -673,6 +673,31 @@ Manual checks on the signed bundle (microphone, Keychain, menus and the Trash ne
 
 ---
 
+## Completion record
+
+**Shipped 2026-09-25** in PR #4 (merge commit 3e72045). Units U1–U14 are implemented. A code review found 7 actionable findings, and all 7 are fixed.
+
+**The user's review of the signed bundle** made these changes after the units:
+
+- The UI calls a session a "note" ("New Note", the Notes list, "Delete note"). "Session" stays the term in code and docs, and `CONCEPTS.md` records the rule.
+- Home has a header with the app icon, the name and New Note. A pointer on a row shows its summary in a preview pane, which shows only while a row is under the pointer. One click opens a note.
+- The tabs are in the order the parts come into being: My Notes, Transcript, Summary. Stop moves the page to Summary, which shows the processing. Four level bars next to "Transcript" follow the microphone input while recording.
+- Settings has a sidebar of panes, as macOS System Settings does. Licences is one row per model, and a click on a row shows its details.
+- The colours are warm beiges in light mode and warm charcoals in dark mode, not greys.
+- On macOS the main window has no title bar. An empty strip holds the window buttons, and a drag on it moves the window. Windows keeps its standard title bar. The main window opens at 960 × 680, and then at the size and place it had when the app quit (`tauri-plugin-window-state`).
+
+**Verification.** All the gates in the Verification Contract pass. The bundle was built signed and notarized. The user recorded a note with the notarized bundle on this Mac and on a second Mac. The six manual checks were not reported one by one.
+
+**Deferred findings** (from the PR):
+
+- P2: `crates/pipeline/src/folder_rename.rs`. A crash after a title change whose folder name does not change can leave `session.md` with the old title, until the next rename or regeneration corrects it.
+- P3: `src/session/NotesTab.tsx`. A failed notes save shows an error but does not try again.
+- P3: No test covers a failed regeneration with a rename pending, or a store-write failure in the middle of a rename.
+
+**Parked:** Settings as a window attached to the main window (`docs/ideas/settings-attached-to-main-window.md`).
+
+---
+
 ## Appendix
 
 **Editor files to copy** (from `reference-source/anarlog/packages/editor/src/`, revision `39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e`, MIT, Fastrepl, Inc.):

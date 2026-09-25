@@ -14,4 +14,4 @@ Find the session from three weeks ago: list, preview, search, rename, delete.
 
 ## Notes
 - Depends on the skeleton for the on-disk shape (R24, R24a), the retained destination roots (R25a), and the rule any index must satisfy (R25). The index itself is built with this track, including what a rebuild does when a retained root is missing or unmounted.
-- The UX redesign input brings a small library back in (home as a session list with previews) and asks how much of it the redesign takes on. The 16-second test sessions sit in the list with no way to remove them.
+- The UX redesign (`docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`, shipped 2026-09-25 in PR #4) built the list, the preview, rename and delete: Home lists every session by day, a pointer on a row shows its summary, and a session can be renamed (the folder follows) or moved to the Trash. What remains for this track is search, and an index that covers more than the sessions this computer recorded (see [One library across computers](cross-machine-library.md)).

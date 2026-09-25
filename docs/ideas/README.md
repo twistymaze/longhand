@@ -79,7 +79,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [Library and browsing](library-and-browsing.md) | open | Find, preview, search and tidy past sessions |
+| [Library and browsing](library-and-browsing.md) | open | Search and a wider index; the list, preview, rename and delete shipped |
 | [One library across computers](cross-machine-library.md) | open | A shared destination listed as one library |
 | [Obsidian vault sync](obsidian-vault-sync.md) | open | Keep sessions in step with a vault |
 | [A local CLI](local-cli.md) | open | Command-line access to the session store |
@@ -89,6 +89,7 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Choose the recognition model](recognition-model-picker.md) | open | A Settings picker and a second engine |
+| [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 
 ## Done
 
