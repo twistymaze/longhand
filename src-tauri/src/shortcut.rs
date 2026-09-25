@@ -106,8 +106,11 @@ async fn toggle(app: AppHandle) {
     }
     let count = speaker_count(current.default_speaker_count);
     let _ = tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = manager.start_session(&app, count) {
-            log::error!("shortcut start failed: {e}");
+        match manager.start_session(&app, count) {
+            // The main window comes forward and opens the new session's
+            // page on the recording-changed event (KTD2).
+            Ok(_) => crate::window::show_main_window(&app),
+            Err(e) => log::error!("shortcut start failed: {e}"),
         }
     })
     .await;

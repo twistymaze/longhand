@@ -1,4 +1,4 @@
-// The session switcher's state. The store is the truth: the list is read on
+// The session list's state. The store is the truth: the list is read on
 // mount, on focus and on every lifecycle event, and runner events only
 // refine it between reads (AE4). A view asks for its session again when
 // that session's `version` moves.

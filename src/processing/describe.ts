@@ -1,5 +1,5 @@
 // Plain-language wording for a session's lifecycle and stages, shared by the
-// switcher and the processing view so each state reads the same everywhere.
+// Home and the processing view so each state reads the same everywhere.
 
 import type { SessionDetail, SessionEntry } from "../bindings";
 
@@ -20,7 +20,7 @@ export function stageLabel(stage: string): string {
   return stageLabels[stage as StageName] ?? stage;
 }
 
-/// Sessions the scratchpad stands for rather than the switcher.
+/// Sessions that Home shows as the recording row, not in its list.
 export function isOpen(state: string): boolean {
   return state === "capturing" || state === "interrupted";
 }
@@ -37,7 +37,7 @@ export function sentence(message: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".");
 }
 
-/// The switcher's second line for a session. `live` is the stage an event
+/// A session's status on Home. `live` is the stage an event
 /// named since the list was read.
 export function entryStatus(entry: SessionEntry, live: string | null): string {
   const stage = live ?? entry.stage;
@@ -49,7 +49,7 @@ export function entryStatus(entry: SessionEntry, live: string | null): string {
     case "blocked":
       return "Needs the keychain";
     case "processing_failed":
-      // The view says where it stopped; the sidebar says what it needs,
+      // The view says where it stopped; Home says what it needs,
       // like its neighbours.
       return "Needs a retry";
     case "awaiting_destination":
