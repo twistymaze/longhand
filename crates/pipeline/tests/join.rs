@@ -1,6 +1,6 @@
 //! The join: ASR text onto speaker turns, in session time.
 
-use asr::AsrSegment;
+use asr::{AsrSegment, LiveWord};
 use chrono::{DateTime, FixedOffset};
 use diarize::Turn;
 use pipeline::diarize::Speakers;
@@ -41,6 +41,8 @@ fn window(segment: u32, start_ms: u64, pieces: &[(u64, u64, &str)]) -> WindowRes
                 text: t.into(),
             })
             .collect(),
+        words: None,
+        live: false,
     }
 }
 
@@ -244,6 +246,8 @@ fn a_window_without_timestamped_segments_uses_its_own_span() {
         end_ms: 4_000,
         text: "whole".into(),
         segments: vec![],
+        words: None,
+        live: false,
     }];
     let speakers = Speakers::Turns(vec![turn(0, 0, 3_500, 1), turn(0, 3_500, 10_000, 2)]);
     let t = build(&segments, &windows, &speakers);
@@ -419,4 +423,83 @@ fn the_join_stage_stores_the_found_speaker_count() {
         .unwrap();
     pipeline::join::run(&store, "s", dir.path(), &segments).unwrap();
     assert_eq!(store.lock().unwrap().found_speakers("s").unwrap(), None);
+}
+
+/// A live part whose words are (start, end, text) within the segment.
+fn live_part(segment: u32, part: u32, words: &[(u64, u64, &str)]) -> WindowResult {
+    let words: Vec<LiveWord> = words
+        .iter()
+        .map(|&(start_ms, end_ms, text)| LiveWord {
+            start_ms,
+            end_ms,
+            text: text.into(),
+        })
+        .collect();
+    WindowResult::from_live(pipeline::live::LiveRow {
+        segment,
+        part,
+        start_ms: words.first().map_or(0, |w| w.start_ms),
+        end_ms: words.last().map_or(0, |w| w.end_ms),
+        words,
+    })
+}
+
+#[test]
+fn a_live_phrase_that_crosses_a_speaker_change_becomes_two_lines() {
+    let segments = [segment(0, 10_000, 20_000)];
+    let windows = [live_part(
+        0,
+        0,
+        &[
+            (0, 400, "Are"),
+            (500, 900, "you"),
+            (1_000, 1_400, "sure?"),
+            // Mostly inside speaker 2's turn.
+            (1_700, 2_300, "Yes,"),
+            (2_400, 2_800, "quite."),
+        ],
+    )];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 1_800, 7), turn(0, 1_800, 5_000, 4)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        turns_of(&t.lines),
+        vec![
+            (10_000, Some(1), "Are you sure?".into()),
+            (11_700, Some(2), "Yes, quite.".into()),
+        ]
+    );
+}
+
+#[test]
+fn live_words_and_gap_fill_words_join_in_time_order_and_unspaced_words_join_without_spaces() {
+    let segments = [segment(0, 0, 20_000)];
+    let mut gap = live_part(0, 0, &[(3_000, 3_300, "日"), (3_300, 3_600, "は")]);
+    gap.live = false;
+    gap.window = 4;
+    let windows = [
+        live_part(0, 0, &[(1_000, 1_300, "今")]),
+        gap,
+        live_part(0, 1, &[(4_000, 4_300, "晴れ")]),
+    ];
+    let t = build(&segments, &windows, &Speakers::Unavailable);
+    assert_eq!(turns_of(&t.lines), vec![(1_000, None, "今日は晴れ".into())]);
+}
+
+#[test]
+fn the_join_stage_reads_the_saved_live_rows() {
+    let segments = [segment(0, 0, 20_000)];
+    let dir = tempfile::tempdir().unwrap();
+    let store = stored(&[], &Speakers::Unavailable);
+    let part = asr::LivePart {
+        start_ms: 0,
+        end_ms: 20_000,
+        words: vec![LiveWord {
+            start_ms: 2_000,
+            end_ms: 2_400,
+            text: "hello".into(),
+        }],
+    };
+    pipeline::live::save_part(&store, "s", 0, 0, &part).unwrap();
+    let t = pipeline::join::run(&store, "s", dir.path(), &segments).unwrap();
+    assert_eq!(turns_of(&t.lines), vec![(2_000, None, "hello".into())]);
 }

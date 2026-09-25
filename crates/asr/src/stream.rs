@@ -72,7 +72,7 @@ pub trait LiveStream: Send {
 
 /// Characters of scripts that put no spaces between words: CJK
 /// punctuation, kana, CJK ideographs and full-width forms.
-fn unspaced(c: char) -> bool {
+pub fn unspaced(c: char) -> bool {
     matches!(
         c,
         '\u{3000}'..='\u{30FF}'

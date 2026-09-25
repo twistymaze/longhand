@@ -438,28 +438,29 @@ impl Runner {
         }
     }
 
-    /// Claim the head of the queue and run its stages. `None` when nothing
-    /// can start: the queue is empty, capture is active, or the head
-    /// session's models are not on disk yet (it keeps its place).
+    /// Claim the first queued session whose models are on disk and run its
+    /// stages. A session that waits for its model keeps its place, and the
+    /// sessions after it go first (KTD13). `None` when nothing can start:
+    /// the queue is empty, capture is active, or no queued session has its
+    /// models.
     pub async fn run_next(&self) -> Option<(String, Outcome)> {
         if self.shutdown.is_cancelled() || (self.env.suspended)() {
             return None;
         }
         let (id, model) = {
             let mut store = lock(&self.env.store);
-            let head = store.queue().ok()?.into_iter().next()?;
-            let record = store.session(&head).ok()??;
-            let model = record
-                .asr_model
-                .unwrap_or_else(|| self.env.engines.default_model());
-            if !self.env.engines.ready(&model) {
-                return None;
-            }
-            let id = match store.dequeue(&self.owner, now()) {
+            let (next, model) = store.queue().ok()?.into_iter().find_map(|id| {
+                let record = store.session(&id).ok()??;
+                let model = record
+                    .asr_model
+                    .unwrap_or_else(|| self.env.engines.default_model());
+                self.env.engines.ready(&model).then_some((id, model))
+            })?;
+            let id = match store.dequeue_session(&next, &self.owner, now()) {
                 Ok(Some(id)) => id,
                 Ok(None) => return None,
                 Err(e) => {
-                    log::error!("could not claim {head}: {e}");
+                    log::error!("could not claim {next}: {e}");
                     return None;
                 }
             };

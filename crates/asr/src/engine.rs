@@ -51,12 +51,39 @@ pub trait Recognizer: Send {
     fn model_id(&self) -> &str;
     /// Transcribe one window of mono 16 kHz audio.
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError>;
+    /// Transcribe one window with token times, in milliseconds from the
+    /// start of the window, for a gap fill after Stop (KTD6). Build words
+    /// with [`words_from_tokens`](crate::words_from_tokens). The default
+    /// divides the time of each segment of [`Recognizer::transcribe`]
+    /// equally between the segment's words.
+    fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
+        Ok(segment_tokens(&self.transcribe(pcm)?.segments))
+    }
     /// Start a live stream of mono 16 kHz audio (KTD5). `None` when the
     /// model does not stream. The stream borrows the recognizer, so the
     /// recognizer does no batch work while a stream is open.
     fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
         Ok(None)
     }
+}
+
+/// One token for each word of `segments`, each word with an equal part of
+/// its segment's time.
+fn segment_tokens(segments: &[AsrSegment]) -> Vec<TimedToken> {
+    let mut tokens = Vec::new();
+    for segment in segments {
+        let words: Vec<&str> = segment.text.split_whitespace().collect();
+        let n = words.len() as u64;
+        let length = segment.end_ms.saturating_sub(segment.start_ms);
+        for (i, word) in (0u64..).zip(&words) {
+            tokens.push(TimedToken {
+                text: format!(" {word}"),
+                start_ms: segment.start_ms + length * i / n,
+                end_ms: segment.start_ms + length * (i + 1) / n,
+            });
+        }
+    }
+    tokens
 }
 
 /// Zero-pad `pcm` to [`MIN_WINDOW_MS`]; longer input is returned unchanged.
@@ -271,6 +298,10 @@ impl Recognizer for Engine {
         })
     }
 
+    fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
+        self.transcribe_timed(pcm)
+    }
+
     fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
         if !self.streaming {
             return Ok(None);
@@ -304,5 +335,36 @@ mod tests {
             pad_to_minimum(&long),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn segment_tokens_divide_each_segment_equally_between_its_words() {
+        let segment = |start_ms, end_ms, text: &str| AsrSegment {
+            start_ms,
+            end_ms,
+            text: text.into(),
+        };
+        let segments = [
+            segment(1_000, 1_900, "one two three"),
+            segment(3_000, 3_400, " four "),
+            segment(4_000, 4_000, ""),
+        ];
+        let tokens = segment_tokens(&segments);
+        let times: Vec<(&str, u64, u64)> = tokens
+            .iter()
+            .map(|t| (t.text.as_str(), t.start_ms, t.end_ms))
+            .collect();
+        assert_eq!(
+            times,
+            vec![
+                (" one", 1_000, 1_300),
+                (" two", 1_300, 1_600),
+                (" three", 1_600, 1_900),
+                (" four", 3_000, 3_400),
+            ]
+        );
+        let words = crate::words_from_tokens(&tokens, 10_000);
+        assert_eq!(words[0].start_ms, 11_000);
+        assert_eq!(crate::join_words(&words), "one two three four");
     }
 }

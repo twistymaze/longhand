@@ -528,7 +528,31 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
-        let Some(id) = next else {
+        match next {
+            Some(id) => self.dequeue_session(&id, owner, now),
+            None => Ok(None),
+        }
+    }
+
+    /// Take the queued session `id` and claim it for `owner`, whatever its
+    /// place in the queue: the runner takes a later session when the head
+    /// session waits for its model (KTD13). `None` when `id` is not queued.
+    pub fn dequeue_session(
+        &mut self,
+        id: &str,
+        owner: &str,
+        now: DateTime<FixedOffset>,
+    ) -> Result<Option<String>> {
+        let queued: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM sessions WHERE id = ?1 AND queue_seq IS NOT NULL
+                 AND json_extract(state, '$.state') = 'queued'",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(id) = queued else {
             return Ok(None);
         };
         self.apply(&id, &Event::Dequeued)?;

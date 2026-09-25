@@ -9,13 +9,17 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use asr::{AsrError, LiveStream, LiveText, PartPolicy, Parts, Recognizer, TimedToken, WindowText};
+use asr::{
+    AsrError, AsrSegment, LiveStream, LiveText, LiveWord, PartPolicy, Parts, Recognizer, Span,
+    TimedToken, WindowText,
+};
 use common::{store, write_segment};
 use pipeline::live::{
     self, EngineAccess, EngineSlot, Inputs, LiveConfig, LiveEnd, LiveFrame, LiveRow, LiveSink,
     LiveStatus, Workers,
 };
-use pipeline::{RECOVERY_DIR, SharedStore, Unattended, assemble, checkpoint};
+use pipeline::transcribe::{self, WindowPlan};
+use pipeline::{RECOVERY_DIR, SharedStore, Unattended, assemble, checkpoint, verify};
 use session_core::Stage;
 use tokio_util::sync::CancellationToken;
 
@@ -494,11 +498,11 @@ fn live_rows_have_their_own_keys_and_never_count_as_windows() {
         .collect();
     assert_eq!(keys, vec!["seg-0003-live-0007".to_string()]);
     assert!(!keys[0].starts_with(&checkpoint::window_prefix(3)));
-    assert!(
-        pipeline::transcribe::results(&r.store, ID)
-            .unwrap()
-            .is_empty()
-    );
+    // The results read the live row on purpose, as a live part (KTD7).
+    let results = pipeline::transcribe::results(&r.store, ID).unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].live);
+    assert_eq!((results[0].segment, results[0].window), (3, 7));
     assert_eq!(live::segment_rows(&r.store, ID, 3).unwrap().len(), 1);
     assert!(live::segment_rows(&r.store, ID, 2).unwrap().is_empty());
 }
@@ -633,4 +637,290 @@ fn a_quit_stops_the_worker_and_frees_the_slot_without_saving_the_open_part() {
     assert!(engine.hold("streams").unwrap().is_none());
     assert_eq!(r.script.loads.lock().unwrap().len(), 1);
     drop(tap);
+}
+
+// ------------------------------------------------------------ gap fill (U7)
+
+/// A batch recognizer that says one word in each second of a window, at
+/// 0–300 ms of that second. It counts its calls, and the calls in `blank_on`
+/// (0-based) decode nothing. Gap-fill tokens come from the trait's default.
+struct Batch {
+    calls: Arc<AtomicUsize>,
+    blank_on: Arc<Mutex<Vec<usize>>>,
+}
+
+impl Recognizer for Batch {
+    fn model_id(&self) -> &str {
+        "streams"
+    }
+
+    fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.blank_on.lock().unwrap().contains(&call) {
+            return Ok(WindowText::default());
+        }
+        let segments: Vec<AsrSegment> = (0..pcm.len() as u64 / 16_000)
+            .map(|n| AsrSegment {
+                start_ms: n * 1_000,
+                end_ms: n * 1_000 + 300,
+                text: format!("b{call}x{n}"),
+            })
+            .collect();
+        let text: Vec<&str> = segments.iter().map(|s| s.text.as_str()).collect();
+        Ok(WindowText {
+            text: text.join(" "),
+            segments,
+        })
+    }
+}
+
+/// One live word in each second from `from_s` to `to_s`, at 0–300 ms.
+fn live_words(from_s: u64, to_s: u64) -> Vec<LiveWord> {
+    (from_s..to_s)
+        .map(|s| word(s * 1_000, s * 1_000 + 300, &format!("live{s}")))
+        .collect()
+}
+
+fn word(start_ms: u64, end_ms: u64, text: &str) -> LiveWord {
+    LiveWord {
+        start_ms,
+        end_ms,
+        text: text.into(),
+    }
+}
+
+fn span(start_ms: u64, end_ms: u64) -> Span {
+    Span { start_ms, end_ms }
+}
+
+/// A stopped segment of 60 s, assembled, with a plan of six 10 s windows
+/// over one voiced span, and the given live parts saved.
+struct Gaps {
+    r: Run,
+    dir: tempfile::TempDir,
+    segment: session_core::Segment,
+    calls: Arc<AtomicUsize>,
+    blank_on: Arc<Mutex<Vec<usize>>>,
+}
+
+impl Gaps {
+    fn new(parts: &[(u64, u64, Vec<LiveWord>)]) -> Self {
+        let r = Run::new();
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.0; 60 * 16_000];
+        let segment = write_segment(dir.path(), 0, 0, 16_000, &audio, false);
+        assemble::assemble_segment(
+            &dir.path().join(RECOVERY_DIR),
+            dir.path(),
+            &segment,
+            &Unattended,
+        )
+        .unwrap();
+        let plan = WindowPlan {
+            segment: 0,
+            duration_ms: 60_000,
+            voiced_ms: 60_000,
+            voiced: vec![span(0, 60_000)],
+            windows: (0..6).map(|i| span(i * 10_000, (i + 1) * 10_000)).collect(),
+        };
+        let key = checkpoint::plan_key(0);
+        checkpoint::put(&r.store, ID, Stage::Transcribe, &key, &plan).unwrap();
+        for (part, (start_ms, end_ms, words)) in (0u32..).zip(parts) {
+            let live = asr::LivePart {
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+                words: words.clone(),
+            };
+            live::save_part(&r.store, ID, 0, part, &live).unwrap();
+        }
+        Self {
+            r,
+            dir,
+            segment,
+            calls: Arc::default(),
+            blank_on: Arc::default(),
+        }
+    }
+
+    fn transcribe(&self) {
+        let slot: Mutex<Option<Box<dyn Recognizer>>> = Mutex::new(None);
+        let (calls, blank_on) = (Arc::clone(&self.calls), Arc::clone(&self.blank_on));
+        let load = move |_: &str| {
+            Ok(Box::new(Batch {
+                calls: Arc::clone(&calls),
+                blank_on: Arc::clone(&blank_on),
+            }) as Box<dyn Recognizer>)
+        };
+        let slot = transcribe::Slot {
+            slot: &slot,
+            model: "streams",
+            load: &load,
+        };
+        transcribe::run(
+            &self.r.store,
+            ID,
+            self.dir.path(),
+            std::slice::from_ref(&self.segment),
+            &Default::default(),
+            &slot,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+
+    fn verify(&self) -> Result<(), pipeline::StageError> {
+        verify::run(
+            &self.r.store,
+            ID,
+            self.dir.path(),
+            std::slice::from_ref(&self.segment),
+        )
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    /// The numbers of the windows that were transcribed.
+    fn filled(&self) -> Vec<usize> {
+        transcribe::results(&self.r.store, ID)
+            .unwrap()
+            .into_iter()
+            .filter(|w| !w.live)
+            .map(|w| w.window)
+            .collect()
+    }
+
+    /// Every word of the results, in the order that Join reads them.
+    fn words(&self) -> Vec<LiveWord> {
+        transcribe::results(&self.r.store, ID)
+            .unwrap()
+            .into_iter()
+            .flat_map(|w| w.words.expect("timed words"))
+            .collect()
+    }
+}
+
+#[test]
+fn a_segment_that_the_live_text_covers_runs_no_batch_window() {
+    // Covers AE3.
+    let g = Gaps::new(&[
+        (0, 30_000, live_words(0, 30)),
+        (30_000, 60_000, live_words(30, 60)),
+    ]);
+    g.transcribe();
+    assert_eq!(g.calls(), 0);
+    assert!(g.filled().is_empty());
+    assert_eq!(g.words(), live_words(0, 60));
+    g.verify().unwrap();
+}
+
+#[test]
+fn one_uncovered_span_of_twenty_seconds_transcribes_only_the_windows_that_overlap_it() {
+    let g = Gaps::new(&[
+        (0, 20_000, live_words(0, 20)),
+        (40_000, 60_000, live_words(40, 60)),
+    ]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![2, 3]);
+    assert_eq!(g.calls(), 2);
+    // Live words and gap-fill words in time order, each second once.
+    let starts: Vec<u64> = g.words().iter().map(|w| w.start_ms).collect();
+    assert_eq!(starts, (0..60).map(|s| s * 1_000).collect::<Vec<_>>());
+    // Verify passes after the gap fill.
+    g.verify().unwrap();
+}
+
+#[test]
+fn two_saved_parts_and_a_lost_third_transcribe_only_the_third_parts_windows() {
+    // Covers AE4: the app quit 40 s into the segment.
+    let g = Gaps::new(&[
+        (0, 20_000, live_words(0, 20)),
+        (20_000, 40_000, live_words(20, 40)),
+    ]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![4, 5]);
+    assert_eq!(g.calls(), 2);
+    assert_eq!(g.words().len(), 60);
+    g.verify().unwrap();
+}
+
+#[test]
+fn speech_that_a_part_heard_but_gave_no_text_gets_a_gap_fill() {
+    // The part spans the whole segment, but its words stop at 30 s.
+    let g = Gaps::new(&[(0, 60_000, live_words(0, 30))]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![3, 4, 5]);
+    g.verify().unwrap();
+}
+
+#[test]
+fn a_segment_with_no_live_rows_transcribes_every_window() {
+    let g = Gaps::new(&[]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(g.calls(), 6);
+    let results = transcribe::results(&g.r.store, ID).unwrap();
+    assert!(
+        results
+            .iter()
+            .all(|w| w.words.is_none() && !w.segments.is_empty())
+    );
+}
+
+#[test]
+fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_window() {
+    let g = Gaps::new(&[
+        (0, 20_000, live_words(0, 20)),
+        (40_000, 60_000, live_words(40, 60)),
+    ]);
+    // The second gap-fill window decodes nothing.
+    g.blank_on.lock().unwrap().push(1);
+    g.transcribe();
+    assert_eq!(g.calls(), 2);
+    assert!(g.verify().is_err());
+    let rows = live::rows(&g.r.store, ID).unwrap();
+
+    assert!(verify::prepare_retry(&g.r.store, ID).unwrap());
+    assert_eq!(live::rows(&g.r.store, ID).unwrap(), rows);
+    assert_eq!(g.filled(), vec![2]);
+    g.transcribe();
+    assert_eq!(g.calls(), 3, "only window 3 is transcribed again");
+    assert_eq!(g.filled(), vec![2, 3]);
+    g.verify().unwrap();
+}
+
+#[test]
+fn the_merge_keeps_gap_words_and_drops_repeats_and_words_outside_the_gaps() {
+    let live = vec![word(9_000, 9_400, "before"), word(30_000, 30_400, "after")];
+    let gaps = transcribe::gaps(&[span(0, 31_000)], &live);
+    // Voiced time more than the slack away from the live words is a gap.
+    assert_eq!(gaps, vec![span(0, 8_000), span(10_400, 29_000)]);
+    let batch = vec![
+        // Within 150 ms of a live word: the same word again.
+        word(9_450, 9_700, "before"),
+        // Between the live word and the gap: the live text missed it.
+        word(9_700, 10_000, "missed"),
+        word(15_000, 15_400, "inside"),
+        // In the slack before the live word "after", but not near it.
+        word(29_500, 29_800, "late"),
+        // Outside every gap: the live text covers this time.
+        word(31_600, 31_900, "outside"),
+    ];
+    let kept: Vec<String> = transcribe::merge(batch, &gaps, &live)
+        .into_iter()
+        .map(|w| w.text)
+        .collect();
+    assert_eq!(kept, vec!["missed", "inside", "late"]);
+}
+
+#[test]
+fn windows_in_finds_the_windows_that_overlap_a_gap() {
+    let windows = [span(0, 10_000), span(10_000, 20_000), span(20_000, 30_000)];
+    assert_eq!(
+        transcribe::windows_in(&windows, &[span(12_000, 21_000)]),
+        vec![1, 2]
+    );
+    assert!(transcribe::windows_in(&windows, &[]).is_empty());
 }

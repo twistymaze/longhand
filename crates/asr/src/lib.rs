@@ -9,7 +9,7 @@ pub mod windows;
 pub use engine::{AsrError, AsrSegment, Engine, Recognizer, WindowText, pad_to_minimum};
 pub use stream::{
     Cut, Fed, LivePart, LiveStream, LiveText, LiveWord, PartPolicy, Parts, TimedToken, join_words,
-    stream_all, words_from_tokens,
+    stream_all, unspaced, words_from_tokens,
 };
 pub use windows::{MAX_WINDOW_MS, Span, Voicing, plan_windows, voiced_ms};
 

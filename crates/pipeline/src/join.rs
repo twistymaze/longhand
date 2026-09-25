@@ -4,6 +4,10 @@
 //! within-segment to session positions. The result is `transcript.md` in the
 //! session's working directory, and the store records the number of
 //! speakers found (KTD11).
+//!
+//! A live part and a gap-fill window have timed words, not segments: each
+//! word goes to the speaker turn it overlaps most, so live text splits at
+//! speaker changes (KTD8).
 
 use std::path::Path;
 
@@ -79,6 +83,17 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
 
         let mut pieces: Vec<Piece> = Vec::new();
         for window in windows.iter().filter(|w| w.segment == segment.index) {
+            // Each timed word is its own piece, so a phrase that crosses a
+            // speaker change splits at the change (KTD8). Word times are
+            // within the segment already.
+            if let Some(words) = &window.words {
+                pieces.extend(words.iter().map(|w| Piece {
+                    start_ms: w.start_ms,
+                    end_ms: w.end_ms.max(w.start_ms),
+                    text: &w.text,
+                }));
+                continue;
+            }
             if window.segments.is_empty() && !window.text.is_empty() {
                 pieces.push(Piece {
                     start_ms: window.start_ms,
@@ -122,8 +137,13 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
                 Some((current, _, text))
                     if *current == speaker && !paused && !paragraph_full(text) =>
                 {
-                    text.push(' ');
-                    text.push_str(piece.text.trim());
+                    let next = piece.text.trim();
+                    // A script without spaces gets no space between pieces,
+                    // as in `asr::join_words`.
+                    if !text.ends_with(asr::unspaced) && !next.starts_with(asr::unspaced) {
+                        text.push(' ');
+                    }
+                    text.push_str(next);
                 }
                 _ => {
                     flush(&mut open, &mut lines);

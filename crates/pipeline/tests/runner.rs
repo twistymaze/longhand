@@ -59,6 +59,8 @@ struct Script {
     models_called: Mutex<Vec<String>>,
     /// Set this flag, as capture starts, after the given number of calls.
     capture_after: Mutex<Option<(usize, Arc<AtomicBool>)>>,
+    /// Models that are not on disk.
+    missing: Mutex<Vec<String>>,
 }
 
 /// Analyses without finding anyone: the stage runs, no speaker turns come out.
@@ -206,8 +208,8 @@ impl LiveStream for FakeStream {
 struct Provider(Arc<Script>);
 
 impl EngineProvider for Provider {
-    fn ready(&self, _: &str) -> bool {
-        true
+    fn ready(&self, model_id: &str) -> bool {
+        !self.0.missing.lock().unwrap().iter().any(|m| m == model_id)
     }
     fn load(&self, model_id: &str) -> Result<Box<dyn Recognizer>, String> {
         self.0.loads.lock().unwrap().push(model_id.to_string());
@@ -777,6 +779,78 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
     assert!(
         transcript.contains(&format!("call {windows}")),
         "{transcript}"
+    );
+}
+
+// ------------------------------------------------------------- gap fill (U7)
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streamed_session_is_saved_from_its_live_text_without_a_batch_window() {
+    // Covers AE3 through the runner.
+    let r = rig().await;
+    let audio = speech();
+    let duration_ms = audio.len() as u64 / 16;
+    queue_session(&r.store, &r.root, "s", 100, Some("m"), &[(16_000, audio)]);
+    // The live worker saved one part with a word in every second.
+    let words = (0..=duration_ms / 1_000)
+        .map(|s| asr::LiveWord {
+            start_ms: s * 1_000,
+            end_ms: s * 1_000 + 300,
+            text: format!("live{s}"),
+        })
+        .collect();
+    let part = asr::LivePart {
+        start_ms: 0,
+        end_ms: duration_ms,
+        words,
+    };
+    pipeline::live::save_part(&r.store, "s", 0, 0, &part).unwrap();
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), 0);
+    assert!(r.script.analyses.load(Ordering::SeqCst) > 0, "speakers ran");
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(transcript.contains("live0 live1 live2"), "{transcript}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_waits_for_its_model_lets_the_next_ready_session_go_first() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "waits",
+        100,
+        Some("downloading"),
+        &[(16_000, speech())],
+    );
+    queue_session(
+        &r.store,
+        &r.root,
+        "ready",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.script.missing.lock().unwrap().push("downloading".into());
+
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("ready", Outcome::Finished));
+    // The waiting session keeps its place, and nothing else can start.
+    assert!(matches!(
+        state(&r.store, "waits"),
+        SessionState::Queued { .. }
+    ));
+    assert!(r.runner.run_next().await.is_none());
+
+    // The model finishes downloading: the waiting session processes.
+    r.script.missing.lock().unwrap().clear();
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("waits", Outcome::Finished));
+    assert_eq!(
+        *r.script.loads.lock().unwrap(),
+        vec!["m".to_string(), "downloading".into()]
     );
 }
 
