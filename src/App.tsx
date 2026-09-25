@@ -63,7 +63,9 @@ function MainWindow() {
   // a title edit, a notice or an open tab of one session never goes to the
   // session that opens in its place.
   return (
-    <div className="h-screen bg-window">
+    <div className="flex h-screen flex-col bg-window">
+      <div data-tauri-drag-region className="title-strip" />
+      <div className="min-h-0 flex-1">
       {view.kind === "session" && (
         <SessionPage
           key={view.id}
@@ -85,6 +87,7 @@ function MainWindow() {
           onOpen={(id) => setView({ kind: "session", id })}
           onChanged={() => void sessions.refresh()}
         />
+      </div>
       </div>
     </div>
   );

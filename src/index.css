@@ -92,14 +92,17 @@ html {
   overflow: hidden;
 }
 
-/* The main window's toolbar. On macOS it is the window's top edge: it is
-   as tall as a unified title bar, and it leaves space for the window
-   buttons at its left. */
-.toolbar {
-  min-height: 52px;
+/* On macOS the main window has no title bar of its own. This strip takes
+   its place: it is empty, it has the window's colour, it holds the window
+   buttons (centred by window.rs), and a drag on it moves the window.
+   Windows keeps its own title bar, so there the strip does not show. */
+.title-strip {
+  display: none;
 }
-.mac .toolbar {
-  padding-left: 84px;
+.mac .title-strip {
+  display: block;
+  flex-shrink: 0;
+  height: 44px;
 }
 
 /* Only the download bar moves, and only to report progress. */

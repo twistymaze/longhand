@@ -13,18 +13,46 @@ pub const SETTINGS_WINDOW: &str = "settings";
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
         .title("Longhand")
-        .inner_size(780.0, 600.0)
-        .min_inner_size(600.0, 460.0)
+        .inner_size(960.0, 680.0)
+        .min_inner_size(640.0, 480.0)
         .visible(false);
-    // On macOS the window shows no title bar. The page's toolbar is under
-    // the window buttons, which are centred in its 52-point height.
+    // On macOS the title bar is empty and has the window's colour: the page
+    // draws a strip under it, and the window buttons are centred in that
+    // strip (`.title-strip` in index.css). Windows keeps its own title bar.
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(20.0, 19.0));
+        .traffic_light_position(tauri::LogicalPosition::new(20.0, window_button_inset()));
     builder.build()?;
     Ok(())
+}
+
+/// The inset that centres the window buttons in the page's 44-point title
+/// strip. macOS 26 moved the buttons in their frame, so the same position
+/// needs a larger inset there. Anarlog uses 25 and 19 for its 48-point
+/// window header; the strip here is 4 points shorter, so each inset is 2
+/// points less.
+#[cfg(target_os = "macos")]
+fn window_button_inset() -> f64 {
+    if macos_major_version().is_some_and(|major| major >= 26) {
+        23.0
+    } else {
+        17.0
+    }
+}
+
+/// The major version of macOS, from the system's version file.
+#[cfg(target_os = "macos")]
+fn macos_major_version() -> Option<u32> {
+    let plist = std::fs::read_to_string("/System/Library/CoreServices/SystemVersion.plist").ok()?;
+    let after_key = plist.split("<key>ProductVersion</key>").nth(1)?;
+    let version = after_key
+        .split("<string>")
+        .nth(1)?
+        .split("</string>")
+        .next()?;
+    version.trim().split('.').next()?.parse().ok()
 }
 
 pub fn show_main_window(app: &AppHandle) {

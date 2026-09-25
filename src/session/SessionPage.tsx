@@ -308,7 +308,7 @@ export function SessionPage({
     <div className="flex h-full min-h-0 flex-col bg-window">
       <header
         data-tauri-drag-region
-        className={`toolbar grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-3 select-none ${
+        className={`grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-[16px] pt-0.5 pb-2.5 select-none ${
           scrolled ? "border-separator" : "border-transparent"
         }`}
       >

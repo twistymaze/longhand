@@ -4,8 +4,8 @@ import App from "./App";
 import { commands } from "./bindings";
 import "./index.css";
 
-// On macOS the main window has no title bar, and its toolbar leaves space
-// for the window buttons (see index.css).
+// On macOS the main window has no title bar, and the page shows a strip in
+// its place (`.title-strip` in index.css).
 if (navigator.userAgent.includes("Mac")) document.documentElement.classList.add("mac");
 
 // On macOS the app menu holds Settings… (⌘,). Windows has no app menu, so

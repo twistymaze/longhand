@@ -138,9 +138,9 @@ export function Home({
     <div className="flex h-full min-h-0 flex-col">
         <header
           data-tauri-drag-region
-          className="toolbar flex shrink-0 items-center gap-2 border-b border-separator pr-4 pl-4 select-none"
+          className="flex shrink-0 items-center gap-2.5 border-b border-separator px-[24px] pt-1 pb-3.5 select-none"
         >
-          <AppIcon className="pointer-events-none size-6 drop-shadow-[0_1px_1px_rgb(0_0_0/0.18)] dark:drop-shadow-[0_0_0.5px_rgb(255_255_255/0.55)]" />
+          <AppIcon className="pointer-events-none size-8 drop-shadow-[0_1px_1.5px_rgb(0_0_0/0.18)] dark:drop-shadow-[0_0_0.5px_rgb(255_255_255/0.55)]" />
           <span data-tauri-drag-region className="min-w-0 flex-1 text-[0.95rem] font-semibold tracking-[-0.01em]">
             Longhand
           </span>
@@ -158,7 +158,7 @@ export function Home({
       <div className="flex min-h-0 flex-1 overflow-hidden bg-pane">
       <div className="flex min-w-0 flex-1 flex-col">
 
-        <div className="flex shrink-0 items-baseline gap-2.5 px-5 pt-5 pb-2 select-none">
+        <div className="flex shrink-0 items-baseline gap-2.5 px-[24px] pt-6 pb-2 select-none">
           <h1 className="text-[1.75rem] leading-none font-bold tracking-[-0.025em]">Notes</h1>
           {count > 0 && (
             <span className="text-[0.85rem] text-label-tertiary tabular-nums">
@@ -168,7 +168,7 @@ export function Home({
         </div>
 
         {readiness && !readiness.armed && !recording && (
-          <div className="mx-5 mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
+          <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
             <CautionIcon className="size-4 text-caution" />
             <span className="min-w-0 flex-1">
               {missing ? `To record, ${missing} in Settings.` : "Not ready to record."}
@@ -179,7 +179,7 @@ export function Home({
         {notice && (
           <p
             role="status"
-            className={`mx-5 mt-1 mb-2 rounded-[10px] px-3 py-2 text-[0.85rem] ${
+            className={`mx-[24px] mt-1 mb-2 rounded-[10px] px-3 py-2 text-[0.85rem] ${
               notice.tone === "caution" ? "bg-caution/10 text-caution" : "bg-negative/10 text-negative"
             }`}
           >
@@ -187,7 +187,7 @@ export function Home({
           </p>
         )}
 
-        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-3 pt-1 pb-4 select-none">
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-[16px] pt-1 pb-6 select-none">
           {recording && (
             <div className="px-2 pt-1 pb-3">
               <RecordingRow recording={recording} onOpen={open} />
