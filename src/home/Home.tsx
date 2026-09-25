@@ -164,7 +164,7 @@ export function Home({
           <div className="mx-5 mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
             <CautionIcon className="size-4 text-caution" />
             <span className="min-w-0 flex-1">
-              {missing ? `Not ready to record: ${missing}.` : "Not ready to record."}
+              {missing ? `To record, ${missing} in Settings.` : "Not ready to record."}
             </span>
             <Button onClick={() => void commands.openSettings()}>Open Settings…</Button>
           </div>

@@ -138,9 +138,9 @@ export function startedAt(iso: string): string {
 /// What stands between the shortcut and a recording (R1a).
 export function missingPreconditions(readiness: Readiness): string {
   const missing: string[] = [];
-  if (!readiness.microphone_authorized) missing.push("microphone access");
-  if (readiness.destination.kind === "unset") missing.push("a destination folder");
-  if (!readiness.shortcut.registered) missing.push("the shortcut could not be registered");
+  if (!readiness.microphone_authorized) missing.push("allow microphone access");
+  if (readiness.destination.kind === "unset") missing.push("choose a folder for notes");
+  if (!readiness.shortcut.registered) missing.push("choose a different shortcut");
   return missing.join(", ");
 }
 
