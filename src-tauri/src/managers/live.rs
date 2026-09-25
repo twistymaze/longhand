@@ -171,8 +171,7 @@ impl LiveManager {
         model: &str,
         sample_rate: u32,
     ) -> Option<(LiveTap, LiveWorker)> {
-        let workers = self.workers.get()?;
-        let sink = AppSink {
+        let sink = || AppSink {
             app: app.clone(),
             models: Arc::clone(&self.models),
             now: Arc::clone(&self.now),
@@ -180,14 +179,26 @@ impl LiveManager {
             segment,
             part: 0,
         };
+        let Some(workers) = self.workers.get() else {
+            log::warn!("no live workers are attached; {session_id} is transcribed after Stop");
+            sink().status(LiveStatus::Unavailable);
+            return None;
+        };
         let config = LiveConfig::new(session_id, segment, model, sample_rate);
-        match workers.start(config, Parts::new(0, PartPolicy::default()), Box::new(sink)) {
+        match workers.start(
+            config,
+            Parts::new(0, PartPolicy::default()),
+            Box::new(sink()),
+        ) {
             Ok(started) => {
                 log::info!("live transcript of {session_id} starts for segment {segment}");
                 Some(started)
             }
             Err(e) => {
                 log::warn!("the live worker for {session_id} did not start: {e}");
+                // The surface shows that the transcript comes after Stop,
+                // not a start that never finishes.
+                sink().status(LiveStatus::Unavailable);
                 None
             }
         }
