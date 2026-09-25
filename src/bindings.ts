@@ -526,7 +526,7 @@ showSession: "show-session"
 
 /** user-defined constants **/
 
-
+export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 /** user-defined types **/
 

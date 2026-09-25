@@ -145,7 +145,7 @@ pub fn check_chord(raw: &str) -> Result<Shortcut, String> {
 /// Whether two chords are the same keys, whatever names they use (R9).
 pub fn same_chord(a: &str, b: &str) -> bool {
     match (a.parse::<Shortcut>(), b.parse::<Shortcut>()) {
-        (Ok(a), Ok(b)) => a.mods == b.mods && a.key == b.key,
+        (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
 }
@@ -217,8 +217,13 @@ fn unregister_chord(app: &AppHandle, chord: &str) {
 }
 
 /// Register `kind`'s saved chord and record its status.
-fn register_saved(app: &AppHandle, registration: &ShortcutRegistration, kind: ShortcutKind) {
-    let chord = kind.saved(&settings::get_settings(app));
+fn register_saved(
+    app: &AppHandle,
+    registration: &ShortcutRegistration,
+    saved: &settings::Settings,
+    kind: ShortcutKind,
+) {
+    let chord = kind.saved(saved);
     let status = match &chord {
         None => ShortcutStatus::default(),
         Some(chord) => match register_chord(app, kind, chord) {
@@ -246,8 +251,9 @@ fn register_saved(app: &AppHandle, registration: &ShortcutRegistration, kind: Sh
 /// Register both saved chords at launch (R12).
 pub fn register(app: &AppHandle) {
     let registration = ShortcutRegistration::default();
-    register_saved(app, &registration, ShortcutKind::Recording);
-    register_saved(app, &registration, ShortcutKind::ShowWindow);
+    let saved = settings::get_settings(app);
+    register_saved(app, &registration, &saved, ShortcutKind::Recording);
+    register_saved(app, &registration, &saved, ShortcutKind::ShowWindow);
     app.manage(registration);
 }
 
@@ -325,9 +331,10 @@ pub fn resume(app: &AppHandle) {
         .changes
         .lock()
         .unwrap_or_else(|e| e.into_inner());
+    let saved = settings::get_settings(app);
     for kind in [ShortcutKind::Recording, ShortcutKind::ShowWindow] {
         if !registration.status(kind).registered {
-            register_saved(app, &registration, kind);
+            register_saved(app, &registration, &saved, kind);
         }
     }
 }

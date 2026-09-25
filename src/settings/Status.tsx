@@ -1,13 +1,9 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { commands, type Readiness, type ShortcutStatuses } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
-
-/// The chord a fresh install records with; `DEFAULT_SHORTCUT` in
-/// `managers/settings.rs`.
-const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L";
 
 const isMac = navigator.userAgent.includes("Mac");
 
@@ -28,14 +24,14 @@ export function StatusPane({
 }) {
   const [asking, setAsking] = useState(false);
   const destination = describeDestination(readiness.destination);
-  const [shortcuts, setShortcuts] = useState<ShortcutStatuses | null>(null);
+  // Readiness holds the recording shortcut; only the show shortcut is read here.
+  const recording = readiness.shortcut;
+  const [showWindow, setShowWindow] = useState<ShortcutStatus>({ chord: null, registered: false, error: null });
   useEffect(() => {
-    void commands.shortcutStatus().then(setShortcuts);
+    void commands.shortcutStatus().then((s) => setShowWindow(s.show_window));
   }, []);
-  const recording = shortcuts?.recording ?? readiness.shortcut;
-  const showWindow = shortcuts?.show_window ?? { chord: null, registered: false, error: null };
   const onShortcutsChanged = (next: ShortcutStatuses) => {
-    setShortcuts(next);
+    setShowWindow(next.show_window);
     // Ready to record depends on the recording shortcut (R13).
     void onRefresh();
   };

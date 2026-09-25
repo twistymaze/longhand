@@ -81,6 +81,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,
         ])
+        .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)
 }
 
 pub fn export_bindings(builder: &Builder<tauri::Wry>) {
