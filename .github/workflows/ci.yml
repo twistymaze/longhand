@@ -45,7 +45,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        # Windows runs on the org's larger runner (8 cores, 32 GB, Windows
+        # Server 2025, the windows-latest image). `os` stays windows-latest
+        # because the job name is a required check in the main ruleset.
+        include:
+          - os: macos-latest
+            runner: macos-latest
+          - os: windows-latest
+            runner: windows-8core
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         shell: bash
