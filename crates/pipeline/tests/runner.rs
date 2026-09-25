@@ -198,11 +198,12 @@ fn endpoint(base: &str) -> SummaryEndpoint {
     }
 }
 
-/// An endpoint that answers every completion with the same summary.
+/// An endpoint that answers every completion with the same summary, and
+/// fails every title call, so a session keeps the title it has.
 async fn with_summaries(script: &Arc<Script>) -> http::Mock {
     let mock = http::serve(std::collections::HashMap::from([(
         "/v1/chat/completions",
-        http::Reply::Json(200, http::completion("A short summary.")),
+        without_titles(http::Reply::Json(200, http::completion("A short summary."))),
     )]))
     .await;
     *script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
@@ -654,21 +655,66 @@ fn user_content(body: &str) -> String {
         .to_string()
 }
 
-fn chat_calls(mock: &http::Mock) -> Vec<String> {
+/// Whether a completion request is the title call.
+fn is_title_call(body: &str) -> bool {
+    user_content(body).contains("Propose a title")
+}
+
+fn completions(mock: &http::Mock) -> Vec<String> {
     mock.seen
         .lock()
         .unwrap()
         .iter()
         .filter(|s| s.path == "/v1/chat/completions")
-        .map(|s| user_content(&s.body))
+        .map(|s| s.body.clone())
         .collect()
 }
 
-/// Point the script's summaries at `reply`, with an optional context setting.
+/// The summary calls, without the title call.
+fn chat_calls(mock: &http::Mock) -> Vec<String> {
+    completions(mock)
+        .iter()
+        .filter(|b| !is_title_call(b))
+        .map(|b| user_content(b))
+        .collect()
+}
+
+fn title_calls(mock: &http::Mock) -> Vec<String> {
+    completions(mock)
+        .iter()
+        .filter(|b| is_title_call(b))
+        .map(|b| user_content(b))
+        .collect()
+}
+
+/// `reply` for the summary calls, and a server error for the title call.
+fn without_titles(reply: http::Reply) -> http::Reply {
+    let failed = || (500, r#"{"error":"no titles here"}"#.to_string());
+    match reply {
+        http::Reply::Json(status, body) => http::Reply::With(Arc::new(move |b: &str| {
+            if is_title_call(b) {
+                failed()
+            } else {
+                (status, body.clone())
+            }
+        })),
+        http::Reply::With(f) => {
+            http::Reply::With(Arc::new(
+                move |b: &str| {
+                    if is_title_call(b) { failed() } else { f(b) }
+                },
+            ))
+        }
+        other => other,
+    }
+}
+
+/// Point the script's summaries at `reply`, with an optional context
+/// setting. The title call fails.
 async fn summaries_from(r: &Rig, reply: http::Reply, context_limit: Option<u32>) -> http::Mock {
     let mock = http::serve(std::collections::HashMap::from([(
         "/v1/chat/completions",
-        reply,
+        without_titles(reply),
     )]))
     .await;
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
@@ -2411,4 +2457,241 @@ async fn a_title_change_that_keeps_the_folder_name_rewrites_session_md() {
     );
     assert_eq!(saved_folder(&r, "s"), folder);
     assert_eq!(document_title(&folder).as_deref(), Some("Budget review?"));
+}
+
+// ------------------------------------------------- notes and titles (U5)
+
+use session_core::{Title, TitleSource};
+
+/// The reply that the next title call gets, as a status and a body.
+type TitleReply = Arc<Mutex<(u16, String)>>;
+
+fn title_reply(text: &str) -> TitleReply {
+    Arc::new(Mutex::new((200, http::completion(text))))
+}
+
+/// Summary calls answered by `summary`, and title calls by what `title`
+/// holds when they arrive.
+async fn summaries_and_titles(
+    r: &Rig,
+    summary: http::Responder,
+    title: &TitleReply,
+    context_limit: Option<u32>,
+) -> http::Mock {
+    let title = Arc::clone(title);
+    let reply = http::Reply::With(Arc::new(move |b: &str| {
+        if is_title_call(b) {
+            title.lock().unwrap().clone()
+        } else {
+            summary(b)
+        }
+    }));
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit,
+        ..endpoint(&mock.base)
+    }));
+    mock
+}
+
+fn a_summary() -> http::Responder {
+    Arc::new(|_| (200, http::completion("A short summary.")))
+}
+
+fn title_of(r: &Rig) -> Option<Title> {
+    r.store.lock().unwrap().title("s").unwrap()
+}
+
+fn proposed(text: &str) -> Option<Title> {
+    Some(Title {
+        text: text.into(),
+        source: TitleSource::Proposed,
+    })
+}
+
+fn summary_is_complete(folder: &std::path::Path) -> bool {
+    let text = std::fs::read_to_string(folder.join("summary.md")).unwrap();
+    matches!(
+        session_core::folder::Summary::parse(&text).unwrap().meta,
+        session_core::folder::SummaryMeta::Complete { .. }
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proposed_title_is_cleaned_and_names_the_saved_folder() {
+    let r = rig().await;
+    let title = title_reply("  \"Budget Review.\"  ");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r), proposed("Budget Review"));
+    assert_eq!(folder, r.dest.join(name_for(Some("Budget Review"))));
+    assert_eq!(document_title(&folder).as_deref(), Some("Budget Review"));
+    // The title call carries the summary.
+    assert!(title_calls(&mock)[0].contains("A short summary."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_proposed_title_is_cut_to_the_folder_name_length() {
+    let r = rig().await;
+    let long = "word ".repeat(100);
+    let title = title_reply(&format!("{long}\nA second line"));
+    summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    let stored = title_of(&r).unwrap().text;
+    assert!(stored.chars().count() <= session_save::naming::MAX_TITLE_CHARS);
+    assert!(stored.starts_with("word word"), "{stored}");
+    assert!(!stored.contains("second"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_a_user_title_makes_no_title_call() {
+    // Covers AE9.
+    let r = rig().await;
+    let title = title_reply("Something else");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(chat_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(folder, r.dest.join(name_for(Some("Budget review"))));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_title_call_leaves_no_title_and_the_summary_complete() {
+    let r = rig().await;
+    let title: TitleReply = Arc::new(Mutex::new((500, r#"{"error":"overloaded"}"#.into())));
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r), None);
+    assert_eq!(folder, r.dest.join(name_for(None)));
+    assert!(summary_is_complete(&folder));
+    assert!(
+        !r.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, RunnerEvent::SummaryUnavailable { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_proposed_title_proposes_again_and_renames_the_folder() {
+    // Covers AE4.
+    let r = rig().await;
+    let title = title_reply("First");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(old, r.dest.join(name_for(Some("First"))));
+
+    *title.lock().unwrap() = (200, http::completion("Second"));
+    let summary = r.runner.regenerate_summary("s").await.unwrap();
+    let new = r.dest.join(name_for(Some("Second")));
+    assert_eq!(title_calls(&mock).len(), 2);
+    assert_eq!(title_of(&r), proposed("Second"));
+    assert_eq!(summary, new.join("summary.md"));
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
+    assert_eq!(document_title(&new).as_deref(), Some("Second"));
+    assert!(summary_is_complete(&new));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_user_title_keeps_the_title() {
+    // Covers AE3.
+    let r = rig().await;
+    let title = title_reply("Proposed");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(title_of(&r).unwrap().source, TitleSource::User);
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(saved_folder(&r, "s"), folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_session_saved_with_no_title_proposes_one_and_renames_the_folder() {
+    // R32: a session saved before titles has no title.
+    let r = rig().await;
+    let title: TitleReply = Arc::new(Mutex::new((500, "{}".into())));
+    summaries_and_titles(&r, a_summary(), &title, None).await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(old, r.dest.join(name_for(None)));
+
+    *title.lock().unwrap() = (200, http::completion("Budget review"));
+    r.runner.regenerate_summary("s").await.unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(title_of(&r), proposed("Budget review"));
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+const DOCUMENT: &str = "# Plan\n\n- [00:00:01] the rules changed\n- **bring snacks**\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_after_the_run_starts_reaches_no_request_of_that_run() {
+    // R36, and each request carries the notes document once.
+    let r = rig().await;
+    let store = Arc::clone(&r.store);
+    let summary: http::Responder = Arc::new(move |_| {
+        let mut s = store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", "an edit made later").unwrap();
+        (200, http::completion("Notes on a part."))
+    });
+    let title = title_reply("Plan");
+    let mock = summaries_and_titles(&r, summary, &title, Some(2_048)).await;
+    long_session(&r);
+    {
+        let mut s = r.store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", DOCUMENT).unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls
+            .iter()
+            .filter(|c| c.contains("<transcript part="))
+            .count()
+            > 2
+    );
+    let titles = title_calls(&mock);
+    assert_eq!(titles.len(), 1);
+    for c in calls.iter().chain(&titles) {
+        assert_eq!(c.matches(DOCUMENT).count(), 1, "{c}");
+        assert!(!c.contains("an edit made later"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_document_longer_than_the_budget_is_cut_and_every_request_fits() {
+    let r = rig().await;
+    let title = title_reply("Plan");
+    let mock = summaries_and_titles(&r, a_summary(), &title, Some(2_048)).await;
+    long_session(&r);
+    let long: String = (0..1_000)
+        .map(|i| format!("- note {i} about something the user found important\n"))
+        .collect();
+    {
+        let mut s = r.store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", &long).unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let all = completions(&mock);
+    assert!(all.len() > 2);
+    for body in &all {
+        let content = user_content(body);
+        assert!(content.contains(summarize::prompts::NOTES_CUT), "{content}");
+        assert!(
+            summarize::tokens::estimate(&content) < 2_048,
+            "{}",
+            content.len()
+        );
+    }
 }

@@ -5,14 +5,18 @@
 //! checkpointed, so a quit resumes at the first missing one; a rejection
 //! showing the model's context is smaller than assumed shrinks the budget,
 //! learns it for the endpoint, and re-chunks that layer.
+//!
+//! The notes document goes whole with every call (KTD6), as it was when the
+//! run started (R36). After the final summary, one more call proposes a
+//! title, unless the user set one (KTD7).
 
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, TranscriptLine};
-use session_core::{Anchor, Segment, Stage};
-use summarize::chunk::{self, Chunk, Note, Turn};
+use session_core::{Segment, Stage, TitleSource};
+use summarize::chunk::{self, Chunk, Turn};
 use summarize::client::Message;
 use summarize::{Budget, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
@@ -22,6 +26,9 @@ use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
 pub const SUMMARY_FILE: &str = "summary.md";
 const PLAN: &str = "plan";
+/// The proposed title, a string, once the title call has run. An empty
+/// string means that the reply held no title.
+pub const TITLE: &str = "title";
 /// How far a context rejection shrinks the budget, and the floor below
 /// which a model is too small to summarize with.
 const SHRINK: f64 = 0.7;
@@ -118,24 +125,46 @@ pub fn transcript_turns(
         .collect())
 }
 
-/// Each line of the notes document as a note, with the position that its
-/// `[hh:mm:ss]` prefix gives, if it has one.
-fn session_notes(store: &SharedStore, session_id: &str) -> Result<Vec<Note>, StageError> {
-    let document = lock(store).notes(session_id)?;
-    Ok(crate::note_lines::parse_all(&document)
-        .into_iter()
-        .filter(|n| !n.text.trim().is_empty())
-        .map(|n| Note {
-            position_ms: match n.anchor {
-                Anchor::At { position_ms, .. } => Some(position_ms),
-                Anchor::Unanchored => None,
-            },
-            text: n.text,
-        })
-        .collect())
+/// The notes document as it is now. A run reads it once, when it starts,
+/// and sends that copy with every call (R36).
+fn session_notes(store: &SharedStore, session_id: &str) -> Result<String, StageError> {
+    Ok(lock(store).notes(session_id)?)
 }
 
-/// Forget a summary so the stage runs again from the transcript (R19).
+/// The title call's reply as a title: its first line with text, with no
+/// heading marks, no `Title:` label, no quotes around it and no full stop
+/// at the end, cut to the length that a folder name keeps (KTD7).
+pub fn clean_title(reply: &str) -> String {
+    const MARKS: &[char] = &['"', '\'', '`', '*', '“', '”', '‘', '’', '«', '»'];
+    let line = reply
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let mut title = line.trim_start_matches('#').trim();
+    if title
+        .get(..6)
+        .is_some_and(|label| label.eq_ignore_ascii_case("title:"))
+    {
+        title = title[6..].trim();
+    }
+    loop {
+        let next = title.trim_end_matches('.').trim_matches(MARKS).trim();
+        if next == title {
+            break;
+        }
+        title = next;
+    }
+    let words = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = words
+        .chars()
+        .take(session_save::naming::MAX_TITLE_CHARS)
+        .collect();
+    cut.trim_end().to_string()
+}
+
+/// Forget a summary and its title proposal, so the stage runs again from
+/// the transcript (R19, R31).
 pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     Ok(lock(store).clear_checkpoints(session_id, Stage::Summarize)?)
 }
@@ -177,8 +206,6 @@ pub fn produce(
 ) -> Result<Summary, StageError> {
     let turns = transcript_turns(store, session_id, segments)?;
     let notes = session_notes(store, session_id)?;
-    let (anchored, general): (Vec<Note>, Vec<Note>) =
-        notes.into_iter().partition(|n| n.position_ms.is_some());
     let client = Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
@@ -220,21 +247,21 @@ pub fn produce(
     };
 
     let mut shrinks = 0;
+    let mut calls = Calls {
+        store,
+        session_id,
+        client: &client,
+        runtime: &runtime,
+        control,
+        notes: &notes,
+        progress: &mut *progress,
+    };
     let text = if turns.is_empty() {
         // Nothing was said (AE16): there is nothing to send.
         String::from("Nothing was transcribed in this session.")
     } else {
         loop {
-            let mut calls = Calls {
-                store,
-                session_id,
-                client: &client,
-                runtime: &runtime,
-                control,
-                general: &general,
-                progress: &mut *progress,
-            };
-            match calls.summarize(&turns, &anchored, &plan) {
+            match calls.summarize(&turns, &plan) {
                 Ok(text) => break text,
                 Err(Pressure { layer, room }) if shrinks < MAX_SHRINKS => {
                     shrinks += 1;
@@ -294,6 +321,10 @@ pub fn produce(
             }
         }
     };
+    if !turns.is_empty() {
+        let room = *plan.layers.last().expect("a plan has a layer");
+        calls.propose_title(&text, room)?;
+    }
 
     Ok(Summary {
         meta: SummaryMeta::Complete {
@@ -349,53 +380,46 @@ struct Calls<'a> {
     client: &'a Client,
     runtime: &'a Runtime,
     control: &'a dyn Control,
-    general: &'a [Note],
+    /// The notes document as it was when the run started (R36).
+    notes: &'a str,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
 impl Calls<'_> {
-    fn summarize(
-        &mut self,
-        turns: &[Turn],
-        anchored: &[Note],
-        plan: &Plan,
-    ) -> Result<String, Outcome> {
+    fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<String, Outcome> {
         let room = plan.room(0);
-        let whole = prompts::whole(turns, anchored, self.general);
+        let notes = fit_notes(room, self.notes);
+        let whole = prompts::whole(turns, &notes);
         if tokens::with_margin(cost(&whole)) + room.reserve as usize <= room.limit as usize {
             return self.call(0, 0, &whole, room, 1);
         }
 
         // Too long for one call: parts, then merges until one remains.
-        let allowance = chunk_allowance(room, self.general);
-        let chunks: Vec<Chunk> = chunk::chunk(turns, anchored, allowance);
+        let allowance = chunk_allowance(room, &notes);
+        let chunks: Vec<Chunk> = chunk::chunk(turns, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
         for (i, c) in chunks.iter().enumerate() {
-            summaries.push(self.call(
-                0,
-                i,
-                &prompts::part(c, i, total, self.general),
-                room,
-                total,
-            )?);
+            summaries.push(self.call(0, i, &prompts::part(c, i, total, &notes), room, total)?);
         }
         let mut layer = 1;
         if summaries.len() == 1 {
             // The margins let one chunk hold what one whole call could not:
             // its notes still need the summary's shape.
             let only = [summaries[0].as_str()];
+            let room = plan.room(1);
             return self.call(
                 1,
                 0,
-                &prompts::merge(&only, true, self.general),
-                plan.room(1),
+                &prompts::merge(&only, true, &fit_notes(room, self.notes)),
+                room,
                 1,
             );
         }
         while summaries.len() > 1 {
             let room = plan.room(layer);
-            let allowance = chunk_allowance(room, self.general);
+            let notes = fit_notes(room, self.notes);
+            let allowance = chunk_allowance(room, &notes);
             let costs: Vec<usize> = summaries.iter().map(|s| tokens::estimate(s) + 8).collect();
             let groups = chunk::merge_groups(&costs, allowance);
             let last = groups.len() == 1;
@@ -409,7 +433,7 @@ impl Calls<'_> {
                 next.push(self.call(
                     layer,
                     i,
-                    &prompts::merge(&parts, last, self.general),
+                    &prompts::merge(&parts, last, &notes),
                     room,
                     groups.len(),
                 )?);
@@ -418,6 +442,53 @@ impl Calls<'_> {
             layer += 1;
         }
         Ok(summaries.pop().unwrap_or_default())
+    }
+
+    /// Propose a title from the final summary and the notes (KTD7), unless
+    /// the user set a title. The proposal never replaces a title that the
+    /// user sets during the call (R31). A failed call leaves the session
+    /// with the title it has, and the summary still completes. Only a
+    /// cancel stops the stage.
+    fn propose_title(&mut self, summary: &str, room: Room) -> Result<(), StageError> {
+        if checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, TITLE)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let user_title = lock(self.store)
+            .title(self.session_id)?
+            .is_some_and(|t| t.source == TitleSource::User);
+        if user_title {
+            return Ok(());
+        }
+        self.control.proceed()?;
+        let allowance = tokens::prompt_allowance(room.limit, room.reserve)
+            .saturating_sub(tokens::estimate(summary));
+        let messages = prompts::title(summary, &prompts::fit_notes(self.notes, allowance));
+        let reply = self
+            .runtime
+            .block_on(self.client.complete(&messages, room.reserve), self.control)?;
+        let title = match reply {
+            Ok(completion) => clean_title(&completion.text),
+            Err(e) => {
+                log::warn!(
+                    "proposing a title for {} failed: {e}; the session keeps the title it has",
+                    self.session_id
+                );
+                return Ok(());
+            }
+        };
+        // The title and its checkpoint change together, so a resumed run
+        // does not propose again over an edit the user made after.
+        let guard = lock(self.store);
+        guard.set_title(self.session_id, &title, TitleSource::Proposed)?;
+        guard.put_checkpoint(
+            self.session_id,
+            Stage::Summarize,
+            TITLE,
+            &serde_json::to_string(&title)?,
+        )?;
+        Ok(())
     }
 
     fn call(
@@ -471,9 +542,17 @@ fn cost(messages: &[Message]) -> usize {
     tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
 }
 
-fn chunk_allowance(room: Room, general: &[Note]) -> usize {
+/// The notes document, cut when it would take too much of what `room`
+/// lets a prompt use.
+fn fit_notes(room: Room, notes: &str) -> String {
+    prompts::fit_notes(notes, tokens::prompt_allowance(room.limit, room.reserve))
+}
+
+/// What is left for the transcript or the summaries in one call, after the
+/// prompt's fixed parts and the notes.
+fn chunk_allowance(room: Room, notes: &str) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
-        .saturating_sub(prompts::overhead(general))
+        .saturating_sub(prompts::overhead(notes))
         .max(1)
 }
 
@@ -521,5 +600,20 @@ impl Runtime {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_title;
+
+    #[test]
+    fn a_reply_is_cleaned_to_a_plain_title() {
+        assert_eq!(clean_title("  \"Budget Review.\"  "), "Budget Review");
+        assert_eq!(clean_title("\"Budget Review\"."), "Budget Review");
+        assert_eq!(clean_title("\n# Title: **Q3 plan**\nmore"), "Q3 plan");
+        assert_eq!(clean_title("“Hiring  and\tbudget”"), "Hiring and budget");
+        assert_eq!(clean_title("Plan v2.0"), "Plan v2.0");
+        assert_eq!(clean_title(" \n \"\" "), "");
     }
 }

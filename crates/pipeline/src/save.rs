@@ -563,24 +563,35 @@ fn summarize_again(
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
-    let (path, segments) = {
+    let not_saved = || {
+        StageError::Failed(
+            "a summary can be regenerated only once the session has finished processing".into(),
+        )
+    };
+    let segments = {
         let guard = lock(store);
-        let path = home_path(&guard, session_id)?.ok_or_else(|| {
-            StageError::Failed(
-                "a summary can be regenerated only once the session has finished processing".into(),
-            )
-        })?;
-        (path, guard.segments(session_id)?)
+        home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        guard.segments(session_id)?
     };
     // A stub resumes from the calls made before the failure; a complete
-    // summary starts over.
+    // summary starts over. The title call always runs again, so a new
+    // proposal follows (R31). A title that the user set stays.
     if checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
         summarize::clear(store, session_id)?;
+    } else {
+        lock(store).delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
     }
     let summary = summarize::produce(
         store, session_id, &segments, endpoint, learn, control, progress,
     )?;
-    home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
+    // The home folder is read again under the lock, just before the write,
+    // and the lock is held through the write.
+    let path = {
+        let guard = lock(store);
+        let path = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
+        path
+    };
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;
     let mut guard = lock(store);
     guard.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;
