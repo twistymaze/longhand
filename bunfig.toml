@@ -1,0 +1,4 @@
+[test]
+# Register a DOM (happy-dom) before each test file, so that component tests
+# can render React.
+preload = ["./src/test/setup.ts"]
