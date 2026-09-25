@@ -15,4 +15,4 @@ When several computers save to the same synced destination (for example OneDrive
 ## Notes
 - Saving works today: both computers' folders sit side by side, and each only writes to folders it created. Names clash only if both start a session in the same minute (a `-2` suffix, or a cloud conflict copy if the other folder has not synced yet).
 - Would have to settle whether one computer may resume or re-summarize a session another computer recorded.
-- Picked up in `docs/plans/2026-09-25-1217-feat-one-library-across-computers-plan.md`: one person on several computers, a complete `session.md`, live folder watching, and every action except Resume on a note from another computer.
+- Picked up in `docs/plans/2026-09-25-1217-feat-one-library-across-computers-plan.md`: one person on several computers, a complete `session.md`, live folder watching, the folder as the authority on every computer, and every action (Resume included) on every computer.
