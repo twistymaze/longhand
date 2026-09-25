@@ -10,7 +10,6 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   commands,
-  type ModelStatus,
   type Readiness,
   type SessionDetail,
   type SessionDocument,
@@ -29,6 +28,7 @@ import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
+import { LiveTranscript, type LiveMode, READY_AFTER_STOP } from "./LiveTranscript";
 import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
@@ -42,6 +42,14 @@ const tabs: { value: Tab; label: string }[] = [
 ];
 
 type Phase = "recording" | "processing" | "saved" | "missing";
+
+/// The states after Stop in which Transcript keeps the live text, and how
+/// it reads in each. The other states need an action on the stages.
+const afterLive: Record<string, LiveMode> = {
+  interrupted: "interrupted",
+  queued: "processing",
+  processing: "processing",
+};
 
 /// A segmented control. The segments have one width, so the control keeps
 /// its shape when the level bars show on Transcript.
@@ -103,14 +111,12 @@ export function SessionPage({
   capture,
   sessions,
   readiness,
-  models,
   onBack,
 }: {
   id: string;
   capture: Capture;
   sessions: Sessions;
   readiness: Readiness | null;
-  models: ModelStatus[];
   onBack: () => void;
 }) {
   const entry = sessions.entries.find((e) => e.id === id);
@@ -132,6 +138,7 @@ export function SessionPage({
   const [scrolled, setScrolled] = useState(false);
   const title = useRef<TitleFieldHandle>(null);
   const notesPanel = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLElement>(null);
 
   // A recording shows My Notes (R11). Stop shows Summary, where the
   // processing stages show. A session that completes shows Summary (F2),
@@ -242,7 +249,9 @@ export function SessionPage({
     </Button>
   );
 
-  const asr = models.find((m) => m.role === "recognition" && m.required);
+  // The note's own live mode decides, not the model selected now (R9).
+  const liveMode = detail?.live_transcript ?? false;
+  const liveView = (mode: LiveMode) => <LiveTranscript sessionId={id} mode={mode} scroller={scroller} />;
   const processing =
     detail && phase === "processing" ? (
       <ProcessingStatus
@@ -258,17 +267,20 @@ export function SessionPage({
     if (phase === "recording") {
       return which === "summary" ? (
         <AfterStop>The summary is written after you stop recording.</AfterStop>
+      ) : !detail ? null : liveMode ? (
+        liveView(capture.status?.recording ? "recording" : "interrupted")
       ) : (
-        <AfterStop>
-          {asr?.streaming
-            ? "The transcript is ready after you stop recording. A live transcript is possible with this model, but this version does not show one."
-            : "The transcript is ready after you stop recording."}
-        </AfterStop>
+        <AfterStop>{READY_AFTER_STOP}</AfterStop>
       );
     }
-    if (phase === "processing") return processing;
+    if (phase === "processing") {
+      // The live text stays until the saved transcript is ready. A note
+      // that needs an action shows the stages, where the action is.
+      if (which === "transcript" && liveMode && state && afterLive[state]) return liveView(afterLive[state]);
+      return processing;
+    }
     if (error) return <p className="text-negative">{error}</p>;
-    if (!doc) return null;
+    if (!doc) return which === "transcript" && liveMode ? liveView("loading") : null;
     return which === "summary" ? (
       <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
     ) : (
@@ -341,6 +353,7 @@ export function SessionPage({
         </div>
       </header>
       <main
+        ref={scroller}
         className="min-h-0 flex-1 overflow-y-auto bg-pane select-text"
         // The header shows its bottom line only while content is under it.
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
