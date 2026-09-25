@@ -764,7 +764,12 @@ body: string;
 /**
  * Summarization failed and this stands in for it.
  */
-stub: boolean; host: string | null; model: string | null }
+stub: boolean; host: string | null; model: string | null; 
+/**
+ * The name of the prompt that made the summary. A summary made before
+ * prompts had names, and a stub, have none.
+ */
+prompt: string | null }
 
 /** tauri-specta globals **/
 
