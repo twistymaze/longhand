@@ -9,16 +9,16 @@ Borrowed material in this crate, one record per file (R27). The weights themselv
 - Source paths: `src-tauri/src/catalog/mod.rs`
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, LICENSES/Handy-MIT.txt
-- Status: modified — the compiled-in JSON catalog and its revision pinning kept; mirrors, quant lists, languages, scores and ranking removed; one file per entry with kind, upstream URL, size, SHA-256 and licence
+- Status: modified — the compiled-in JSON catalog and its revision pinning kept; mirrors, quant lists, scores and ranking removed; one file per entry with kind, upstream URL, size, SHA-256, licence, language codes and a recommended flag
 
 ## `catalog.json`
 
 - Repository: https://github.com/cjpais/Handy
 - Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
-- Source paths: `src-tauri/src/catalog/catalog.json` (the Whisper large-v3-turbo Q5_K_M entry: repository, revision, size, SHA-256)
+- Source paths: `src-tauri/src/catalog/catalog.json` (nine recognition entries: `parakeet-unified-en-0.6b`, `nemotron-speech-streaming-en-0.6b`, `nemotron-3.5-asr-streaming-0.6b`, `multitalker-parakeet-streaming-0.6b-v1`, `parakeet-tdt-0.6b-v2`, `parakeet-tdt-0.6b-v3`, `parakeet-tdt-1.1b`, `moss-transcribe-diarize` and `whisper-large-v3-turbo`: repository, revision, file name, size, SHA-256, streaming, timestamp level, languages and licence id)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, LICENSES/Handy-MIT.txt
-- Status: modified — one recognition entry reshaped to this schema; the two diarization entries are new, pinned to their publishers' revisions
+- Status: modified — the recognition entries are reshaped to this schema, one file for each entry. `scripts/refresh-catalog.py` (Longhand's own code) makes eight of them from Handy's file: Handy's default quant, the plain file and not the `bundle/` file, and a Hugging Face URL at the pinned revision instead of Handy's mirror. The Whisper entry keeps its Q5_K_M file, with Handy's language codes added. Names and descriptions are Longhand's. Handy's licence id "other" becomes the licence that each Hugging Face model card names: the NVIDIA Open Model License, or OpenMDW-1.1 for Nemotron 3.5 ASR Streaming. The two diarization entries are new, pinned to their publishers' revisions
 
 ## `src/download.rs`
 

@@ -657,6 +657,8 @@ fn model_for(url: String, body: &[u8], sha256: String) -> crate::catalog::Catalo
         description: String::new(),
         streaming: false,
         timestamps: None,
+        languages: Vec::new(),
+        recommended: false,
         repository: String::new(),
         revision: "0".repeat(40),
         filename: "weights.onnx".into(),
