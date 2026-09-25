@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness, RecordingStatus, SessionEntry, Settings } from "./bindings";
 import App from "./App";
-import { mockTauri } from "./test/tauri";
+import { mockTauri, shortcutStatuses } from "./test/tauri";
 
 const readiness: Readiness = {
   microphone_authorized: true,
@@ -40,6 +40,7 @@ function mockApp(status: { current: RecordingStatus }, entries: { current: Sessi
   return mockTauri({
     get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
     readiness: () => readiness,
+    shortcut_status: () => shortcutStatuses,
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     recording_status: () => status.current,
@@ -106,6 +107,7 @@ describe("App", () => {
     const tauri = mockTauri({
       get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
       readiness: () => readiness,
+      shortcut_status: () => shortcutStatuses,
       model_statuses: () => [],
       recording_status: () => idle,
       list_sessions: () => entries,
@@ -147,6 +149,7 @@ describe("App", () => {
         throw "the settings file is damaged";
       },
       readiness: () => readiness,
+      shortcut_status: () => shortcutStatuses,
       model_statuses: () => [],
     });
     render(<App />);
@@ -159,6 +162,7 @@ describe("App", () => {
     mockTauri({
       get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
       readiness: () => readiness,
+      shortcut_status: () => shortcutStatuses,
       model_statuses: () => {
         if (fail) throw "the models folder cannot be read";
         return [];

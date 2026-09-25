@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { commands, type Readiness } from "../bindings";
-import { formatChord } from "../lib/timeline";
+import { commands, type Readiness, type ShortcutStatuses } from "../bindings";
 import { describeDestination } from "./DestinationPicker";
+import { ShortcutField } from "./ShortcutField";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
+
+/// The chord a fresh install records with; `DEFAULT_SHORTCUT` in
+/// `managers/settings.rs`.
+const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L";
 
 const isMac = navigator.userAgent.includes("Mac");
 
@@ -24,6 +28,17 @@ export function StatusPane({
 }) {
   const [asking, setAsking] = useState(false);
   const destination = describeDestination(readiness.destination);
+  const [shortcuts, setShortcuts] = useState<ShortcutStatuses | null>(null);
+  useEffect(() => {
+    void commands.shortcutStatus().then(setShortcuts);
+  }, []);
+  const recording = shortcuts?.recording ?? readiness.shortcut;
+  const showWindow = shortcuts?.show_window ?? { chord: null, registered: false, error: null };
+  const onShortcutsChanged = (next: ShortcutStatuses) => {
+    setShortcuts(next);
+    // Ready to record depends on the recording shortcut (R13).
+    void onRefresh();
+  };
 
   const askForMicrophone = async () => {
     setAsking(true);
@@ -45,9 +60,11 @@ export function StatusPane({
       <Group
         header="Recording"
         footer={
-          readiness.armed
-            ? "The shortcut starts recording immediately, with nothing to answer first."
-            : "Set these up ahead of time, so the shortcut never stops to ask a question when you start a note."
+          !readiness.armed
+            ? "Set these up ahead of time, so a new note never stops to ask a question."
+            : recording.registered
+              ? "The shortcut starts recording immediately, with nothing to answer first."
+              : "New Note starts recording immediately, with nothing to answer first."
         }
       >
         <Row
@@ -58,18 +75,22 @@ export function StatusPane({
             {readiness.armed ? "Ready" : "Not ready"}
           </StatusText>
         </Row>
-        <Row
-          label={`Shortcut ${formatChord(readiness.shortcut.chord, isMac)}`}
+        <ShortcutField
+          kind="recording"
+          label="Recording shortcut"
+          status={recording}
+          resetTo={DEFAULT_SHORTCUT}
           detail={
-            readiness.shortcut.registered
-              ? "Starts and stops a recording from any app"
-              : readiness.shortcut.error
+            !recording.chord ? (
+              <StatusText tone="neutral">Off — New Note still starts a recording</StatusText>
+            ) : recording.registered ? (
+              "Starts and stops a recording from any app"
+            ) : (
+              <StatusText tone="negative">{recording.error ?? "Not registered"}</StatusText>
+            )
           }
-        >
-          <StatusText tone={readiness.shortcut.registered ? "positive" : "negative"}>
-            {readiness.shortcut.registered ? "Registered" : "Not registered"}
-          </StatusText>
-        </Row>
+          onChanged={onShortcutsChanged}
+        />
         <Row
           label="Microphone"
           detail={readiness.microphone_authorized ? "Access granted" : "Longhand needs permission to hear the room"}
@@ -91,6 +112,27 @@ export function StatusPane({
             </GoTo>
           )}
         </Row>
+      </Group>
+
+      <Group
+        header="Window"
+        footer="Closing the window keeps Longhand running in the menu bar. This shortcut brings the window back from any app, and hides it again when it is in front."
+      >
+        <ShortcutField
+          kind="show_window"
+          label="Show Longhand"
+          status={showWindow}
+          detail={
+            !showWindow.chord ? (
+              <StatusText tone="neutral">Off</StatusText>
+            ) : showWindow.registered ? (
+              "Shows or hides the Longhand window from any app"
+            ) : (
+              <StatusText tone="negative">{showWindow.error ?? "Not registered"}</StatusText>
+            )
+          }
+          onChanged={onShortcutsChanged}
+        />
       </Group>
 
       <Group

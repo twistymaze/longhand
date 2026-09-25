@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { SessionDetail } from "../bindings";
-import { entryStatus, formatDuration, sentence, sessionTitle, stageRows, stoppedAt } from "./describe";
+import type { Readiness, SessionDetail } from "../bindings";
+import {
+  entryStatus,
+  formatDuration,
+  missingPreconditions,
+  sentence,
+  sessionTitle,
+  stageRows,
+  stoppedAt,
+} from "./describe";
 
 const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing", stage: null, title: null, found_speakers: null },
@@ -73,5 +81,29 @@ describe("wording", () => {
     expect(formatDuration(72 * 60_000)).toBe("1 h 12 min");
     expect(formatDuration(42 * 60_000)).toBe("42 min");
     expect(formatDuration(20_000)).toBe("under a minute");
+  });
+});
+
+describe("missingPreconditions", () => {
+  const readiness = (over: Partial<Readiness>): Readiness => ({
+    microphone_authorized: true,
+    destination: { kind: "ready", path: "/notes", free_bytes: null },
+    armed: true,
+    shortcut: { chord: "Super+KeyR", registered: true, error: null },
+    missing_models: [],
+    endpoint_configured: true,
+    ...over,
+  });
+
+  test("a cleared shortcut is not a missing step", () => {
+    const r = readiness({ microphone_authorized: false, shortcut: { chord: null, registered: false, error: null } });
+    expect(missingPreconditions(r)).toBe("allow microphone access");
+  });
+
+  test("a shortcut that failed to register is a missing step", () => {
+    const r = readiness({
+      shortcut: { chord: "Super+KeyR", registered: false, error: "Another app uses these keys." },
+    });
+    expect(missingPreconditions(r)).toBe("choose a different shortcut");
   });
 });

@@ -32,4 +32,11 @@ describe("formatChord", () => {
   test("names elsewhere", () => {
     expect(formatChord("CommandOrControl+Alt+Shift+L", false)).toBe("Ctrl+Alt+Shift+L");
   });
+  test("a captured key code shows its key", () => {
+    expect(formatChord("Shift+Super+KeyR", true)).toBe("⇧⌘R");
+    expect(formatChord("Shift+Super+KeyR", false)).toBe("Win+Shift+R");
+    expect(formatChord("Control+Digit1", true)).toBe("⌃1");
+    expect(formatChord("Option+Space", true)).toBe("⌥Space");
+    expect(formatChord("Control+Alt+Comma", false)).toBe("Ctrl+Alt+,");
+  });
 });
