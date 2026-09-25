@@ -10,6 +10,7 @@ import { AppIcon, BadgeIcon, FolderIcon, SlidersIcon, SparkleIcon, TranscriptIco
 import { Licences } from "./Licences";
 import { Models } from "./Models";
 import { type PaneId, StatusPane } from "./Status";
+import type { Guard } from "./SummaryPrompts";
 import { ErrorText, type Tone } from "./ui";
 import { useAppSettings } from "./useAppSettings";
 
@@ -79,10 +80,18 @@ export function SettingsWindow() {
     [setSettings, refresh],
   );
 
-  // A new pane starts at its top.
-  const show = (id: PaneId) => {
+  // A pane with unsaved changes asks before the pane changes (KTD11).
+  const guard = useRef<Guard | null>(null);
+  const setGuard = useCallback((g: Guard | null) => {
+    guard.current = g;
+  }, []);
+
+  // A new pane starts at its top. Resolves to false when the pane stays.
+  const show = async (id: PaneId) => {
+    if (id !== pane && guard.current && !(await guard.current())) return false;
     setPane(id);
     main.current?.scrollTo({ top: 0 });
+    return true;
   };
 
   const actions = {
@@ -103,8 +112,11 @@ export function SettingsWindow() {
     e.preventDefault();
     const at = order.indexOf(pane);
     const next = order[Math.min(order.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)))];
-    show(next);
-    requestAnimationFrame(() => nav.current?.querySelector<HTMLElement>(`[data-pane="${next}"]`)?.focus());
+    void show(next).then((changed) => {
+      if (changed) {
+        requestAnimationFrame(() => nav.current?.querySelector<HTMLElement>(`[data-pane="${next}"]`)?.focus());
+      }
+    });
   };
 
   if (!settings || !readiness) {
@@ -145,7 +157,7 @@ export function SettingsWindow() {
                     data-pane={p.id}
                     aria-selected={selected}
                     tabIndex={selected ? 0 : -1}
-                    onClick={() => show(p.id)}
+                    onClick={() => void show(p.id)}
                     className={`mb-px flex w-full items-center gap-2.5 rounded-[7px] px-2 py-[5px] text-left ${
                       selected ? "bg-sidebar-selected font-medium text-label" : "text-label hover:bg-row-hover"
                     } outline-offset-0 focus-visible:outline-2 focus-visible:outline-accent`}
@@ -171,11 +183,15 @@ export function SettingsWindow() {
           </div>
         )}
         <div>
-          {pane === "status" && <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={show} />}
+          {pane === "status" && (
+            <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={(p) => void show(p)} />
+          )}
           {pane === "destination" && (
             <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
           )}
-          {pane === "summarization" && <EndpointForm settings={settings} onSettings={onSettings} />}
+          {pane === "summarization" && (
+            <EndpointForm settings={settings} onSettings={onSettings} onGuard={setGuard} />
+          )}
           {pane === "recognition" && (
             <Models models={models} live={live} actions={actions} settings={settings} onSettings={onSettings} />
           )}
