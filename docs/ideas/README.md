@@ -61,7 +61,9 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
+| [Saved summary prompts](summary-prompts.md) | in-progress | Named prompts for the summary; "Topic summary" and "Play-by-play summary" built in |
 | [Summary kinds chosen by folder](summary-kind-per-folder.md) | open | A recap for Pathfinder, decisions and follow-ups for work |
+| [Participant names for a session](participant-names.md) | open | The user lists who was present so the summary can use names |
 | [Custom vocabulary per folder](custom-vocabulary.md) | open | A word list that corrects names and jargon |
 | [Live transcript while recording](live-transcript-view.md) | in-progress | Offered only when the selected model streams (KD8) |
 | [Carry context from the previous session](session-to-session-context.md) | open | "Previously on" for recurring sessions |

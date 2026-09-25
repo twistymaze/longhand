@@ -14,3 +14,6 @@ Derive the summary's shape from the destination folder: a Pathfinder folder reca
 
 ## Why
 Cut from the walking skeleton because one summary shape got to a usable app faster.
+
+## Notes / Current state
+Saved summary prompts (`summary-prompts.md`) give a list of named prompts with one app-wide active prompt. This idea becomes a folder setting that selects one of those prompts.
