@@ -6,18 +6,24 @@ import { ShortcutField } from "./ShortcutField";
 
 const registered = (chord: string): ShortcutStatus => ({ chord, registered: true, error: null });
 const off: ShortcutStatus = { chord: null, registered: false, error: null };
+const resumed: ShortcutStatuses = { recording: registered("CommandOrControl+Alt+Shift+L"), show_window: off };
+
+function mockField(handlers: Record<string, (args: Record<string, unknown>) => unknown> = {}) {
+  return mockTauri({
+    suspend_shortcuts: () => null,
+    resume_shortcuts: () => null,
+    shortcut_status: () => resumed,
+    set_shortcut: (args) => ({ recording: registered(args.chord as string), show_window: off }),
+    ...handlers,
+  });
+}
 
 function renderField(
   status: ShortcutStatus,
   handlers: Record<string, (args: Record<string, unknown>) => unknown> = {},
 ) {
   const changed: ShortcutStatuses[] = [];
-  const tauri = mockTauri({
-    suspend_shortcuts: () => null,
-    resume_shortcuts: () => null,
-    set_shortcut: (args) => ({ recording: registered(args.chord as string), show_window: off }),
-    ...handlers,
-  });
+  const tauri = mockField(handlers);
   render(
     <ShortcutField
       kind="recording"
@@ -33,8 +39,8 @@ function renderField(
 
 const names = (tauri: ReturnType<typeof mockTauri>) => tauri.calls.map((c) => c.cmd);
 
-async function capture() {
-  const button = screen.getByRole("button", { name: /Recording shortcut/ });
+async function capture(name: RegExp = /Recording shortcut/) {
+  const button = screen.getByRole("button", { name });
   await act(async () => {
     fireEvent.click(button);
   });
@@ -49,13 +55,14 @@ describe("ShortcutField", () => {
     await act(async () => {
       fireEvent.keyDown(button, { key: "r", code: "KeyR", metaKey: true, shiftKey: true });
     });
-    expect(names(tauri)).toEqual(["suspend_shortcuts", "set_shortcut", "resume_shortcuts"]);
+    expect(names(tauri)).toEqual(["suspend_shortcuts", "set_shortcut", "resume_shortcuts", "shortcut_status"]);
     expect(tauri.calls[1].args).toEqual({ kind: "recording", chord: "Shift+Super+KeyR" });
-    expect(changed).toHaveLength(1);
+    // The pane gets the statuses read after the resume, not the paused ones.
+    expect(changed).toEqual([resumed]);
   });
 
   test("a refused chord shows the reason and keeps the old chord", async () => {
-    const { tauri, changed } = renderField(registered("CommandOrControl+Alt+Shift+L"), {
+    const { tauri } = renderField(registered("CommandOrControl+Alt+Shift+L"), {
       set_shortcut: () => {
         throw "Another app uses these keys. Choose different keys.";
       },
@@ -65,8 +72,7 @@ describe("ShortcutField", () => {
       fireEvent.keyDown(button, { key: " ", code: "Space", metaKey: true, shiftKey: true });
     });
     expect(screen.getByText("Another app uses these keys. Choose different keys.")).toBeTruthy();
-    expect(changed).toHaveLength(0);
-    expect(names(tauri)).toEqual(["suspend_shortcuts", "set_shortcut", "resume_shortcuts"]);
+    expect(names(tauri)).toEqual(["suspend_shortcuts", "set_shortcut", "resume_shortcuts", "shortcut_status"]);
   });
 
   test("a modifier key alone waits for the rest of the chord", async () => {
@@ -85,8 +91,45 @@ describe("ShortcutField", () => {
     await act(async () => {
       fireEvent.keyDown(button, { key: "Escape", code: "Escape" });
     });
-    expect(names(tauri)).toEqual(["suspend_shortcuts", "resume_shortcuts"]);
+    expect(names(tauri)).toEqual(["suspend_shortcuts", "resume_shortcuts", "shortcut_status"]);
     expect(screen.getByText("At rest")).toBeTruthy();
+  });
+
+  test("a blur during the pause resumes once, after the pause", async () => {
+    let unpause = () => {};
+    const { tauri } = renderField(registered("CommandOrControl+Alt+Shift+L"), {
+      suspend_shortcuts: () => new Promise<null>((r) => (unpause = () => r(null))),
+    });
+    const button = await capture();
+    await act(async () => {
+      fireEvent.blur(button);
+    });
+    expect(names(tauri)).toEqual(["suspend_shortcuts"]);
+    await act(async () => {
+      unpause();
+    });
+    expect(names(tauri)).toEqual(["suspend_shortcuts", "resume_shortcuts", "shortcut_status"]);
+    expect(screen.getByText("At rest")).toBeTruthy();
+  });
+
+  test("one row's finish does not resume the shortcuts while the other row captures", async () => {
+    const tauri = mockField();
+    render(
+      <>
+        <ShortcutField kind="recording" label="Recording shortcut" status={off} detail="" onChanged={() => {}} />
+        <ShortcutField kind="show_window" label="Show Longhand" status={off} detail="" onChanged={() => {}} />
+      </>,
+    );
+    const first = await capture(/Recording shortcut/);
+    await capture(/Show Longhand/);
+    await act(async () => {
+      fireEvent.keyDown(first, { key: "Escape", code: "Escape" });
+    });
+    expect(names(tauri)).not.toContain("resume_shortcuts");
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("button", { name: /Show Longhand/ }), { key: "Escape", code: "Escape" });
+    });
+    expect(names(tauri).filter((n) => n.endsWith("_shortcuts"))).toEqual(["suspend_shortcuts", "resume_shortcuts"]);
   });
 
   test("Clear sends no chord", async () => {

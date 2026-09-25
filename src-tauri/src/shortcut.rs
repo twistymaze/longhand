@@ -281,21 +281,23 @@ pub fn set_shortcut(
         |c| unregister_chord(app, c),
         |c| register_chord(app, kind, c),
     )?;
-    settings::update_settings(app, |s| {
-        match kind {
-            ShortcutKind::Recording => s.shortcut = chord.clone(),
-            ShortcutKind::ShowWindow => s.show_window_shortcut = chord.clone(),
-        }
-        Ok(())
-    })?;
+    // Record the new registration before the save, so the status stays true
+    // to the plugin when the save fails.
     registration.set_status(
         kind,
         ShortcutStatus {
             registered: chord.is_some(),
-            chord,
+            chord: chord.clone(),
             error: None,
         },
     );
+    settings::update_settings(app, |s| {
+        match kind {
+            ShortcutKind::Recording => s.shortcut = chord,
+            ShortcutKind::ShowWindow => s.show_window_shortcut = chord,
+        }
+        Ok(())
+    })?;
     Ok(registration.statuses())
 }
 

@@ -5,7 +5,7 @@
 // so a refused chord never looks accepted. Escape cancels; Tab or a click
 // away ends capture with no change. See PROVENANCE.md.
 
-import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { commands, type ShortcutKind, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
 import { formatChord } from "../lib/timeline";
 import { chordFromKey } from "./chord";
@@ -14,6 +14,25 @@ import { Button, Row } from "./ui";
 const isMac = navigator.userAgent.includes("Mac");
 
 type Mode = "rest" | "preparing" | "capturing" | "pending";
+
+// Both rows share one pause. The first row that captures pauses the
+// shortcuts and the last row that finishes resumes them, so one row's finish
+// never resumes them while the other row captures. The calls go through one
+// chain, so a resume never overtakes the pause it follows.
+let holders = 0;
+let calls: Promise<unknown> = Promise.resolve();
+
+function holdPause(): Promise<unknown> {
+  holders += 1;
+  if (holders === 1) calls = calls.then(() => commands.suspendShortcuts());
+  return calls;
+}
+
+function releasePause(): Promise<unknown> {
+  holders -= 1;
+  if (holders === 0) calls = calls.then(() => commands.resumeShortcuts());
+  return calls;
+}
 
 export function ShortcutField({
   kind,
@@ -37,22 +56,41 @@ export function ShortcutField({
   // Each capture has a number, so a pause that returns after the capture
   // ended does not start capturing again.
   const attempt = useRef(0);
+  // True while this row holds the shared pause.
+  const holding = useRef(false);
+  // A row that closes during capture gives its hold back.
+  useEffect(
+    () => () => {
+      if (holding.current) {
+        holding.current = false;
+        void releasePause();
+      }
+    },
+    [],
+  );
 
+  /// Send the chord. Returns the statuses when the backend accepts it.
   const save = async (chord: string | null) => {
     setMode("pending");
     const result = await commands.setShortcut(kind, chord);
     if (result.status === "ok") {
       setRefusal(null);
-      onChanged(result.data);
-    } else {
-      setRefusal(result.error);
+      return result.data;
     }
+    setRefusal(result.error);
+    return null;
   };
 
   const finish = async () => {
     attempt.current += 1;
     setMode("rest");
-    await commands.resumeShortcuts();
+    if (!holding.current) return;
+    holding.current = false;
+    await releasePause();
+    // Read the statuses after the resume, so the pane does not show the
+    // paused shortcuts as not registered.
+    const statuses = await commands.shortcutStatus();
+    onChanged(statuses);
   };
 
   const start = async () => {
@@ -60,12 +98,9 @@ export function ShortcutField({
     const mine = ++attempt.current;
     setRefusal(null);
     setMode("preparing");
-    await commands.suspendShortcuts();
-    if (attempt.current !== mine) {
-      // The capture ended while the pause was in progress.
-      await commands.resumeShortcuts();
-      return;
-    }
+    holding.current = true;
+    await holdPause();
+    if (attempt.current !== mine) return; // The capture ended during the pause.
     setMode("capturing");
   };
 
@@ -92,8 +127,9 @@ export function ShortcutField({
   };
 
   const act = async (chord: string | null) => {
-    await save(chord);
+    const statuses = await save(chord);
     setMode("rest");
+    if (statuses) onChanged(statuses);
   };
 
   const listening = mode !== "rest";
