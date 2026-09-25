@@ -70,3 +70,9 @@ export function parseInline(text: string): Inline[] {
   if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
   return out;
 }
+
+/// The first paragraph as plain text: the overview in Home's preview (R6).
+export function firstParagraph(text: string): string | null {
+  const block = parseMarkdown(text).find((b) => b.kind === "paragraph");
+  return block && block.kind === "paragraph" ? block.content.map((i) => i.text).join("") : null;
+}

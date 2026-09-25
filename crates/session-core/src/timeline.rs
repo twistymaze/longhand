@@ -237,8 +237,8 @@ impl Timeline {
                     None => Location::BeforeStart,
                 };
             }
-            // A segment's end instant belongs to it, so an anchor snapped to
-            // the end of a segment locates inside that segment.
+            // A segment's end instant belongs to it, so a position at the
+            // end of a segment locates inside that segment.
             if position_ms <= segment.end_ms() {
                 return Location::InSegment {
                     index: segment.index,
@@ -251,10 +251,5 @@ impl Timeline {
             Some(p) => Location::InGap { after: p.index },
             None => Location::BeforeStart,
         }
-    }
-
-    /// End of the segment `index` on the session timeline.
-    pub fn segment_end(&self, index: u32) -> Result<u64, TimelineError> {
-        Ok(self.segment(index)?.end_ms())
     }
 }

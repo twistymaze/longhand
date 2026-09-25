@@ -158,33 +158,6 @@ async recordingStatus() : Promise<Result<RecordingStatus, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Called at a line's first keystroke; the anchor is fixed now (R12).
- */
-async beginNote(text: string) : Promise<Result<NoteView, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("begin_note", { text }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async editNote(noteId: number, text: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("edit_note", { noteId, text }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async scratchpadNotes() : Promise<Result<NoteView[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("scratchpad_notes") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_session_speaker_count", { count }) };
@@ -283,11 +256,38 @@ async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> 
 }
 },
 /**
- * A session's notes, editable whatever its state (R11a).
+ * A session's notes document, editable whatever its state (R20).
  */
-async sessionNotes(sessionId: string) : Promise<Result<NoteView[], string>> {
+async sessionNotes(sessionId: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("session_notes", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace a session's notes document. The editor sends the whole
+ * document; on a saved session the home folder's `notes.md` follows (R20).
+ * The write runs off the main thread, since it can reach a synced folder.
+ */
+async setSessionNotes(sessionId: string, markdown: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_session_notes", { sessionId, markdown }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Rename a session (R9, R35): `title` is stored as the user's title, and
+ * an empty title clears it. The folder of a saved, idle session takes
+ * the new name now; any other session's folder takes it later. The rename
+ * runs off the main thread, since it can reach a synced folder.
+ */
+async renameSession(sessionId: string, title: string) : Promise<Result<FolderRenameResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_session", { sessionId, title }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -303,6 +303,37 @@ async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, strin
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Move the session's folder to the Trash and remove the session from
+ * Longhand (R8). Refused while it records or is processed.
+ */
+async deleteSession(sessionId: string) : Promise<Result<null, DeleteSessionError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_session", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the session's folder permanently, for a folder that cannot go
+ * to the Trash (R33).
+ */
+async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteSessionError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_session_permanently", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Show the Settings window, and build it first when it is not open. Async
+ * because a synchronous command that builds a window deadlocks on Windows.
+ */
+async openSettings() : Promise<void> {
+    await TAURI_INVOKE("open_settings");
 }
 }
 
@@ -314,13 +345,15 @@ captureEnded: CaptureEnded,
 captureTick: CaptureTick,
 modelDownloadEvent: ModelDownloadEvent,
 processingUpdate: ProcessingUpdate,
-recordingChanged: RecordingChanged
+recordingChanged: RecordingChanged,
+showSession: ShowSession
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
 modelDownloadEvent: "model-download-event",
 processingUpdate: "processing-update",
-recordingChanged: "recording-changed"
+recordingChanged: "recording-changed",
+showSession: "show-session"
 })
 
 /** user-defined constants **/
@@ -367,6 +400,26 @@ export type CredentialStatus = { kind: "present"; host: string; length: number; 
  * Locked or refused: the user can recover it (R20b).
  */
 { kind: "needs_unlock"; message: string } | { kind: "failed"; message: string }
+/**
+ * Why a delete did not complete (R8, R33). Nothing after the failed step
+ * changed.
+ */
+export type DeleteSessionError = 
+/**
+ * The session records, is processed, or has its summary regenerated.
+ * Nothing changed.
+ */
+{ kind: "busy"; message: string } | 
+/**
+ * `path` cannot go to the Trash (R33). It and the session remain, and
+ * `delete_session_permanently` can delete them. When `path` is the home
+ * folder, which goes first, nothing changed.
+ */
+{ kind: "cannot_move_to_trash"; path: string; reason: string } | 
+/**
+ * A permanent delete or the store failed.
+ */
+{ kind: "failed"; message: string }
 export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: string; free_bytes: number | null } | 
 /**
  * Deleted, renamed, or on a volume that is not mounted.
@@ -374,15 +427,38 @@ export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: strin
 { kind: "missing"; path: string } | { kind: "not_a_directory"; path: string } | { kind: "not_writable"; path: string; message: string } | { kind: "low_space"; path: string; free_bytes: number; floor_bytes: number }
 export type DocLine = { kind: "turn"; position_ms: number; speaker: number | null; text: string } | 
 /**
- * Between segments; `at_ms` is where the earlier segment ends.
+ * Between segments; `at_ms` is where the earlier segment ends, and
+ * `wall_start` (RFC 3339) is when the next segment started (KTD12).
  */
-{ kind: "gap"; at_ms: number; duration_ms: number } | { kind: "silence"; duration_ms: number }
+{ kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
 export type EndpointView = { host: string; model: string; 
 /**
  * False when the transcript would cross the network unencrypted.
  */
 encrypted: boolean }
+/**
+ * What a rename did to the session's folder. The title changes in every
+ * case.
+ */
+export type FolderRenameResult = 
+/**
+ * The folder already has the name the title gives.
+ */
+{ kind: "unchanged" } | 
+/**
+ * The session records, waits, processes or regenerates its summary:
+ * the folder takes the new name when that ends.
+ */
+{ kind: "later" } | 
+/**
+ * The folder has the new name at `path`.
+ */
+{ kind: "moved"; path: string } | 
+/**
+ * The folder could not be renamed and keeps its old name.
+ */
+{ kind: "kept"; message: string }
 export type Interruption = { headline: string; 
 /**
  * A disk interruption resumes only once space is freed (R7a).
@@ -402,11 +478,6 @@ streaming: boolean; size_bytes: number;
  * both diarization weights.
  */
 required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo }
-export type NoteView = { id: number; text: string; 
-/**
- * Position on the session timeline; `None` when un-anchored (R13).
- */
-position_ms: number | null; gap_anchored: boolean }
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
  * The secret store holding the endpoint credential is locked (R20b).
@@ -518,7 +589,11 @@ resumable: boolean; home_path: string | null;
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
 endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean }
-export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; summary: SummaryView | null }
+export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
+/**
+ * The text of `transcript.md`, which the Transcript tab copies (R17).
+ */
+transcript_markdown: string; summary: SummaryView | null }
 export type SessionEntry = { id: string; 
 /**
  * When the first segment began (RFC 3339), or when the session was made.
@@ -537,7 +612,16 @@ state: string;
  * The stage started last: the running one, or the one a failed
  * session stopped at.
  */
-stage: string | null }
+stage: string | null; 
+/**
+ * The proposed or typed title, if the session has one (R28).
+ */
+title: string | null; 
+/**
+ * The number of speakers that processing found (KTD11). `None` before
+ * the join, or when the transcript has no speaker marks.
+ */
+found_speakers: number | null }
 export type Settings = { settings_schema_version: number; shortcut: string; 
 /**
  * Every folder the user has ever chosen, oldest first (R25a). The index
@@ -570,6 +654,10 @@ learned_context_limits: Partial<{ [key in string]: number }>;
  */
 alert_tone_heard: boolean }
 export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
+/**
+ * The main window must show the page of this session (R3).
+ */
+export type ShowSession = { session_id: string }
 /**
  * An optional bound on how many people are speaking (R36).
  */

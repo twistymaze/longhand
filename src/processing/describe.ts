@@ -1,7 +1,7 @@
 // Plain-language wording for a session's lifecycle and stages, shared by the
-// switcher and the processing view so each state reads the same everywhere.
+// Home and the processing view so each state reads the same everywhere.
 
-import type { SessionDetail, SessionEntry } from "../bindings";
+import type { Readiness, SessionDetail, SessionEntry } from "../bindings";
 
 export const STAGES = ["assemble", "diarize", "transcribe", "join", "verify", "summarize", "save"] as const;
 export type StageName = (typeof STAGES)[number];
@@ -20,7 +20,7 @@ export function stageLabel(stage: string): string {
   return stageLabels[stage as StageName] ?? stage;
 }
 
-/// Sessions the scratchpad stands for rather than the switcher.
+/// Sessions that Home shows as the recording row, not in its list.
 export function isOpen(state: string): boolean {
   return state === "capturing" || state === "interrupted";
 }
@@ -37,7 +37,7 @@ export function sentence(message: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".");
 }
 
-/// The switcher's second line for a session. `live` is the stage an event
+/// A session's status on Home. `live` is the stage an event
 /// named since the list was read.
 export function entryStatus(entry: SessionEntry, live: string | null): string {
   const stage = live ?? entry.stage;
@@ -49,7 +49,7 @@ export function entryStatus(entry: SessionEntry, live: string | null): string {
     case "blocked":
       return "Needs the keychain";
     case "processing_failed":
-      // The view says where it stopped; the sidebar says what it needs,
+      // The view says where it stopped; Home says what it needs,
       // like its neighbours.
       return "Needs a retry";
     case "awaiting_destination":
@@ -101,16 +101,47 @@ export function stageRows(detail: SessionDetail): StageRow[] {
   }));
 }
 
+/// "14:05": the local clock time of `iso`.
+export function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/// The number of local calendar days from `date` to `now`: 0 on the same day.
+export function daysBefore(date: Date, now: Date): number {
+  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Math.round((midnight(now) - midnight(date)) / 86_400_000);
+}
+
 /// "Today, 14:05", "Yesterday, 09:10", or "Mon 21 Sep, 14:05".
 export function sessionTitle(startedIso: string, now: Date = new Date()): string {
   const started = new Date(startedIso);
-  const time = started.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(now) - day(started)) / 86_400_000);
+  const time = clockTime(startedIso);
+  const days = daysBefore(started, now);
   if (days === 0) return `Today, ${time}`;
   if (days === 1) return `Yesterday, ${time}`;
   const date = started.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
   return `${date}, ${time}`;
+}
+
+/// "Thursday 24 September 2026, 14:05": the date and start time in full.
+export function startedAt(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/// What stands between the shortcut and a recording (R1a).
+export function missingPreconditions(readiness: Readiness): string {
+  const missing: string[] = [];
+  if (!readiness.microphone_authorized) missing.push("allow microphone access");
+  if (readiness.destination.kind === "unset") missing.push("choose a folder for notes");
+  if (!readiness.shortcut.registered) missing.push("choose a different shortcut");
+  return missing.join(", ");
 }
 
 /// "1 h 12 min", "42 min", "under a minute".

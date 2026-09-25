@@ -85,3 +85,29 @@ pub fn is_taken(e: &io::Error) -> bool {
         io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty
     ) || (cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied)
 }
+
+/// Whether a rename of a home folder failed because another process holds
+/// the folder or a file in it (KTD8). Windows reports a sharing violation
+/// or `PermissionDenied`; a sync client on macOS can report
+/// `PermissionDenied` too, and Linux reports `EBUSY`. A home folder rename
+/// retries these and never takes them for a name that is taken, unlike
+/// [`is_taken`], which the first save uses.
+pub fn is_in_use(e: &io::Error) -> bool {
+    /// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`.
+    const WINDOWS_IN_USE: [i32; 2] = [32, 33];
+    matches!(
+        e.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ResourceBusy
+    ) || (cfg!(windows)
+        && e.raw_os_error()
+            .is_some_and(|c| WINDOWS_IN_USE.contains(&c)))
+}
+
+/// Whether a home folder rename failed because the name is taken. Only
+/// these two kinds: `PermissionDenied` is [`is_in_use`].
+pub fn is_name_taken(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty
+    )
+}

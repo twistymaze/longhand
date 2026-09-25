@@ -10,7 +10,6 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::anchors::Anchor;
 use crate::folder::SpeakerCount;
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
@@ -27,8 +26,6 @@ pub enum StoreError {
     Illegal(#[from] IllegalTransition),
     #[error("no session {0}")]
     NoSuchSession(String),
-    #[error("no note {0}")]
-    NoSuchNote(i64),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -42,14 +39,37 @@ pub struct SessionRecord {
     pub speaker_count: Option<SpeakerCount>,
     pub asr_model: Option<String>,
     pub home_path: Option<String>,
+    pub title: Option<Title>,
+    /// The number of speakers that processing found (KTD11).
+    pub found_speakers: Option<u32>,
+}
+
+/// Where a title came from (KTD7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleSource {
+    /// Processing proposed it.
+    Proposed,
+    /// The user typed it. A proposal never replaces it (R31).
+    User,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Note {
-    pub id: i64,
-    pub session_id: Option<String>,
+pub struct Title {
     pub text: String,
-    pub anchor: Anchor,
+    pub source: TitleSource,
+}
+
+/// A folder move that a rename recorded before it renamed the home folder
+/// (KTD8). The paths are absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameIntent {
+    /// The home folder before the rename.
+    pub from: String,
+    /// The home folder after the rename.
+    pub to: String,
+    /// The temporary name of a change of case alone, which moves the
+    /// folder in two steps: `from` to `temp`, then `temp` to `to`.
+    pub temp: Option<String>,
 }
 
 /// How long a claim's heartbeat may be quiet before its owner, when it
@@ -76,6 +96,10 @@ fn stage_key(stage: Stage) -> String {
         .and_then(|v| v.as_str().map(str::to_string))
         .expect("stage serializes to a string")
 }
+
+/// The `sessions` columns that [`read_session`] reads, in its order.
+const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
+     home_path, title, title_source, found_speakers";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -109,16 +133,14 @@ impl Store {
 
     // ------------------------------------------------------------ sessions
 
-    /// Create a capturing session and adopt every pending note as one of its
-    /// un-anchored notes (R13).
+    /// Create a capturing session with an empty notes document.
     pub fn create_session(
         &mut self,
         id: &str,
         created_at: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.execute(
+        self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count) VALUES (?1, ?2, ?3, ?4)",
             params![
                 id,
@@ -129,17 +151,12 @@ impl Store {
                     .transpose()?,
             ],
         )?;
-        tx.execute(
-            "UPDATE notes SET session_id = ?1, anchor = ?2 WHERE session_id IS NULL",
-            params![id, serde_json::to_string(&Anchor::Unanchored)?],
-        )?;
-        tx.commit()?;
         Ok(())
     }
 
     /// Start a new session from the shortcut (R6c): any session still capturing
     /// or interrupted is stopped and queued first (or discarded if it kept no
-    /// audio), then the new one is created and adopts the pending notes.
+    /// audio), then the new one is created.
     pub fn start_session(
         &mut self,
         id: &str,
@@ -186,8 +203,7 @@ impl Store {
     pub fn session(&self, id: &str) -> Result<Option<SessionRecord>> {
         self.conn
             .query_row(
-                "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
-                 FROM sessions WHERE id = ?1",
+                &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
                 [id],
                 read_session,
             )
@@ -239,10 +255,9 @@ impl Store {
 
     /// Every session, oldest first.
     pub fn sessions(&self) -> Result<Vec<SessionRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
-             FROM sessions ORDER BY created_at, rowid",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY created_at, rowid"
+        ))?;
         let rows = stmt.query_map([], read_session)?;
         let mut out = Vec::new();
         for row in rows {
@@ -252,10 +267,9 @@ impl Store {
     }
 
     pub fn sessions_in(&self, state_name: &str) -> Result<Vec<SessionRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, state, queue_seq, speaker_count, asr_model, home_path
-             FROM sessions ORDER BY created_at, rowid",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions ORDER BY created_at, rowid"
+        ))?;
         let rows = stmt.query_map([], read_session)?;
         let mut out = Vec::new();
         for row in rows {
@@ -317,92 +331,131 @@ impl Store {
         Ok(out)
     }
 
+    // ------------------------------------------------------------ title
+
+    /// Set the session's title. Returns false when the store refuses it: a
+    /// proposal never replaces a title that the user set (R31), and an empty
+    /// proposal is not a title. An empty title from the user clears the title
+    /// and its source, so processing can propose one later (R35).
+    pub fn set_title(&self, id: &str, title: &str, source: TitleSource) -> Result<bool> {
+        self.require(id)?;
+        let title = title.trim();
+        let changed = match source {
+            TitleSource::User if title.is_empty() => self.conn.execute(
+                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?1",
+                [id],
+            )?,
+            TitleSource::User => self.conn.execute(
+                "UPDATE sessions SET title = ?2, title_source = 'user' WHERE id = ?1",
+                params![id, title],
+            )?,
+            TitleSource::Proposed if title.is_empty() => 0,
+            TitleSource::Proposed => self.conn.execute(
+                "UPDATE sessions SET title = ?2, title_source = 'proposed'
+                 WHERE id = ?1 AND title_source IS NOT 'user'",
+                params![id, title],
+            )?,
+        };
+        Ok(changed > 0)
+    }
+
+    pub fn title(&self, id: &str) -> Result<Option<Title>> {
+        Ok(self.require(id)?.title)
+    }
+
+    // ------------------------------------------------------------ rename intent
+
+    /// Record the folder move that a rename is about to make (KTD8). A
+    /// second record for the session replaces the first.
+    pub fn set_rename_intent(&self, id: &str, intent: &RenameIntent) -> Result<()> {
+        self.require(id)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO rename_intents (session_id, from_path, to_path, temp_path)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, intent.from, intent.to, intent.temp],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_intent(&self, id: &str) -> Result<Option<RenameIntent>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT from_path, to_path, temp_path FROM rename_intents WHERE session_id = ?1",
+                [id],
+                read_intent,
+            )
+            .optional()?)
+    }
+
+    /// Every recorded intent, with its session id.
+    pub fn rename_intents(&self) -> Result<Vec<(String, RenameIntent)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, from_path, to_path, temp_path FROM rename_intents
+             ORDER BY session_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    RenameIntent {
+                        from: r.get(1)?,
+                        to: r.get(2)?,
+                        temp: r.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    pub fn clear_rename_intent(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM rename_intents WHERE session_id = ?1", [id])?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ notes
 
-    /// A note typed while no session is open (R13).
-    pub fn add_pending_note(&self, text: &str) -> Result<i64> {
-        self.insert_note(None, text, Anchor::Unanchored)
+    /// The session's notes: one markdown document (KTD5).
+    pub fn notes(&self, id: &str) -> Result<String> {
+        self.conn
+            .query_row("SELECT notes FROM sessions WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
     }
 
-    pub fn add_note(&self, session_id: &str, text: &str, anchor: Anchor) -> Result<i64> {
-        self.insert_note(Some(session_id), text, anchor)
-    }
-
-    fn insert_note(&self, session_id: Option<&str>, text: &str, anchor: Anchor) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO notes (session_id, text, anchor) VALUES (?1, ?2, ?3)",
-            params![session_id, text, serde_json::to_string(&anchor)?],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Change a note's text. Its anchor never moves (R12).
-    pub fn edit_note(&self, note_id: i64, text: &str) -> Result<()> {
+    /// Replace the session's notes document with `document`, unchanged.
+    pub fn set_notes(&self, id: &str, document: &str) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE notes SET text = ?2 WHERE id = ?1",
-            params![note_id, text],
+            "UPDATE sessions SET notes = ?2 WHERE id = ?1",
+            params![id, document],
         )?;
         if changed == 0 {
-            return Err(StoreError::NoSuchNote(note_id));
+            return Err(StoreError::NoSuchSession(id.to_string()));
         }
         Ok(())
     }
 
-    pub fn notes(&self, session_id: &str) -> Result<Vec<Note>> {
-        self.query_notes(
-            "SELECT id, session_id, text, anchor FROM notes WHERE session_id = ?1 ORDER BY id",
-            Some(session_id),
-        )
+    // ------------------------------------------------------------ speakers
+
+    /// Record the number of speakers that processing found (KTD11). It is
+    /// separate from the user's bound on the speaker count (R36).
+    pub fn set_found_speakers(&self, id: &str, count: Option<u32>) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET found_speakers = ?2 WHERE id = ?1",
+            params![id, count],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
     }
 
-    pub fn note(&self, note_id: i64) -> Result<Option<Note>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT session_id FROM notes WHERE id = ?1")?;
-        let session_id: Option<Option<String>> = stmt
-            .query_map([note_id], |r| r.get::<_, Option<String>>(0))?
-            .next()
-            .transpose()?;
-        let notes = match session_id {
-            None => return Ok(None),
-            Some(Some(session_id)) => self.notes(&session_id)?,
-            Some(None) => self.pending_notes()?,
-        };
-        Ok(notes.into_iter().find(|n| n.id == note_id))
-    }
-
-    pub fn pending_notes(&self) -> Result<Vec<Note>> {
-        self.query_notes(
-            "SELECT id, session_id, text, anchor FROM notes WHERE session_id IS NULL ORDER BY id",
-            None,
-        )
-    }
-
-    fn query_notes(&self, sql: &str, session_id: Option<&str>) -> Result<Vec<Note>> {
-        let mut stmt = self.conn.prepare(sql)?;
-        let map = |r: &rusqlite::Row| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        };
-        let rows = match session_id {
-            Some(id) => stmt.query_map([id], map)?.collect::<Vec<_>>(),
-            None => stmt.query_map([], map)?.collect::<Vec<_>>(),
-        };
-        rows.into_iter()
-            .map(|row| {
-                let (id, session_id, text, anchor) = row?;
-                Ok(Note {
-                    id,
-                    session_id,
-                    text,
-                    anchor: serde_json::from_str(&anchor)?,
-                })
-            })
-            .collect()
+    pub fn found_speakers(&self, id: &str) -> Result<Option<u32>> {
+        Ok(self.require(id)?.found_speakers)
     }
 
     // ------------------------------------------------------------ queue
@@ -593,6 +646,14 @@ fn parse_time(text: &str) -> Result<DateTime<FixedOffset>> {
     })
 }
 
+fn read_intent(r: &rusqlite::Row) -> rusqlite::Result<RenameIntent> {
+    Ok(RenameIntent {
+        from: r.get(0)?,
+        to: r.get(1)?,
+        temp: r.get(2)?,
+    })
+}
+
 fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let id: String = r.get(0)?;
     let created_at: String = r.get(1)?;
@@ -601,6 +662,18 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let speaker_count: Option<String> = r.get(4)?;
     let asr_model: Option<String> = r.get(5)?;
     let home_path: Option<String> = r.get(6)?;
+    let title: Option<String> = r.get(7)?;
+    let title_source: Option<String> = r.get(8)?;
+    let found_speakers: Option<u32> = r.get(9)?;
+    let title = title.map(|text| Title {
+        text,
+        // The store writes a title only together with its source. A title
+        // with no source counts as a proposal, which a user title replaces.
+        source: match title_source.as_deref() {
+            Some("user") => TitleSource::User,
+            _ => TitleSource::Proposed,
+        },
+    });
     Ok((|| {
         Ok(SessionRecord {
             id,
@@ -612,6 +685,8 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
                 .transpose()?,
             asr_model,
             home_path,
+            title,
+            found_speakers,
         })
     })())
 }
@@ -687,4 +762,232 @@ fn apply_queue_effects(
         _ => {}
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- delete
+
+/// Why a delete did not complete (KTD9).
+#[derive(Debug, thiserror::Error)]
+pub enum DeleteError {
+    /// The session records, waits to resume, waits in the queue, is
+    /// processed, or has its summary regenerated. Nothing changed.
+    #[error("the session is {state}")]
+    Busy { state: &'static str },
+    /// A directory could not be removed. The directories before it are
+    /// removed; the directories after it and the rows remain.
+    #[error("could not remove {}: {message}", path.display())]
+    Remove {
+        path: std::path::PathBuf,
+        message: String,
+    },
+    #[error(transparent)]
+    Store(#[from] StoreError),
+}
+
+/// The state name when `state` refuses a delete (R8): capture or
+/// processing can still write to the session.
+pub fn delete_refusal(state: &SessionState) -> Option<&'static str> {
+    match state {
+        SessionState::Capturing
+        | SessionState::Interrupted { .. }
+        | SessionState::Queued { .. }
+        | SessionState::Processing { .. } => Some(state.name()),
+        _ => None,
+    }
+}
+
+/// Work on a session that its state does not show: a summary that is
+/// regenerated and a delete that removes the session's directories. The
+/// two exclude each other, and a folder rename waits for both (R8, KTD8).
+/// Each claim is taken and checked under one lock, so a regeneration or a
+/// delete that starts later sees the claim that came first.
+#[derive(Clone, Default)]
+pub struct Claims {
+    set: std::sync::Arc<std::sync::Mutex<ClaimSet>>,
+}
+
+#[derive(Default)]
+struct ClaimSet {
+    /// One entry for each regeneration that runs or waits for its turn.
+    regenerating: Vec<String>,
+    /// One entry for each delete that runs.
+    deleting: Vec<String>,
+}
+
+/// Which work a [`Claim`] is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaimKind {
+    Regenerate,
+    Delete,
+}
+
+/// A claim on a session, released when it is dropped, also when the work
+/// fails or its future is dropped.
+pub struct Claim {
+    claims: Claims,
+    session_id: String,
+    kind: ClaimKind,
+}
+
+impl Claims {
+    fn set(&self) -> std::sync::MutexGuard<'_, ClaimSet> {
+        self.set.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Claim the session for a summary regeneration. None while a delete
+    /// runs on it.
+    pub fn regenerate(&self, session_id: &str) -> Option<Claim> {
+        let mut set = self.set();
+        if set.deleting.iter().any(|id| id == session_id) {
+            return None;
+        }
+        set.regenerating.push(session_id.to_string());
+        Some(self.claim(session_id, ClaimKind::Regenerate))
+    }
+
+    /// Claim the session for a delete. None while its summary is
+    /// regenerated or waits to be.
+    pub fn delete(&self, session_id: &str) -> Option<Claim> {
+        let mut set = self.set();
+        if set.regenerating.iter().any(|id| id == session_id) {
+            return None;
+        }
+        set.deleting.push(session_id.to_string());
+        Some(self.claim(session_id, ClaimKind::Delete))
+    }
+
+    fn claim(&self, session_id: &str, kind: ClaimKind) -> Claim {
+        Claim {
+            claims: self.clone(),
+            session_id: session_id.to_string(),
+            kind,
+        }
+    }
+
+    /// True while the session's summary is regenerated or waits to be.
+    pub fn is_regenerating(&self, session_id: &str) -> bool {
+        self.set().regenerating.iter().any(|id| id == session_id)
+    }
+
+    /// True while a regeneration or a delete holds a claim on the session.
+    /// A folder rename then waits (KTD8).
+    pub fn busy(&self, session_id: &str) -> bool {
+        let set = self.set();
+        set.regenerating
+            .iter()
+            .chain(&set.deleting)
+            .any(|id| id == session_id)
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let mut set = self.claims.set();
+        let ids = match self.kind {
+            ClaimKind::Regenerate => &mut set.regenerating,
+            ClaimKind::Delete => &mut set.deleting,
+        };
+        if let Some(i) = ids.iter().position(|id| *id == self.session_id) {
+            ids.swap_remove(i);
+        }
+    }
+}
+
+/// Delete a session (R8, R33): remove its home folder (when it has one),
+/// then the staging directory of a save that stopped before its final
+/// rename (when there is one), then its working directory, then its rows.
+/// Child rows cascade.
+///
+/// `remove` moves a directory to the Trash or deletes it permanently. The
+/// store is not locked while it runs. A directory that is already missing
+/// counts as removed, so a delete that stopped part way completes when it
+/// is tried again. The delete holds a claim in `claims` from before it
+/// reads the home folder until it deletes the rows: a folder rename waits
+/// for it, and a summary regeneration refuses it and is refused by it.
+pub fn delete_session<R>(
+    store: &std::sync::Mutex<Store>,
+    id: &str,
+    working_dir: &Path,
+    claims: &Claims,
+    mut remove: R,
+) -> std::result::Result<(), DeleteError>
+where
+    R: FnMut(&Path) -> std::result::Result<(), String>,
+{
+    let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
+    // The claim comes before the home folder is read. A rename that holds
+    // the store lock now completes first, and the read gets its new path.
+    let Some(_claim) = claims.delete(id) else {
+        return Err(DeleteError::Busy {
+            state: "regenerating",
+        });
+    };
+    let (record, staging) = {
+        let store = lock();
+        let record = store.require(id)?;
+        (record, store.save_staging(id)?)
+    };
+    if let Some(state) = delete_refusal(&record.state) {
+        return Err(DeleteError::Busy { state });
+    }
+    let home = record.home_path.as_deref().map(Path::new);
+    for dir in home
+        .into_iter()
+        .chain(staging.as_deref())
+        .chain([working_dir])
+    {
+        remove_dir(dir, &mut remove)?;
+    }
+    let store = lock();
+    // The state can change while the directories are removed; check again.
+    let record = store.require(id)?;
+    if let Some(state) = delete_refusal(&record.state) {
+        return Err(DeleteError::Busy { state });
+    }
+    store
+        .conn
+        .execute("DELETE FROM sessions WHERE id = ?1", [id])
+        .map_err(StoreError::from)?;
+    Ok(())
+}
+
+impl Store {
+    /// The staging directory that the save stage recorded for a save that
+    /// stopped before its final rename: the save state names a `staging`
+    /// path only while it copies or holds a complete staged copy.
+    fn save_staging(&self, id: &str) -> Result<Option<std::path::PathBuf>> {
+        #[derive(serde::Deserialize)]
+        struct Staging {
+            staging: Option<std::path::PathBuf>,
+        }
+        Ok(self
+            .checkpoints(id, Stage::Save)?
+            .into_iter()
+            .filter(|(key, _)| key == SAVE_STATE)
+            .find_map(|(_, payload)| serde_json::from_str::<Staging>(&payload).ok())
+            .and_then(|s| s.staging))
+    }
+}
+
+/// The key of the save stage's checkpoint that holds its state
+/// (`pipeline::save::STATE`).
+pub const SAVE_STATE: &str = "state";
+
+fn remove_dir<R>(dir: &Path, remove: &mut R) -> std::result::Result<(), DeleteError>
+where
+    R: FnMut(&Path) -> std::result::Result<(), String>,
+{
+    let missing = |dir: &Path| matches!(std::fs::symlink_metadata(dir), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+    if missing(dir) {
+        return Ok(());
+    }
+    match remove(dir) {
+        Ok(()) => Ok(()),
+        // Something else removed it first.
+        Err(_) if missing(dir) => Ok(()),
+        Err(message) => Err(DeleteError::Remove {
+            path: dir.to_path_buf(),
+            message,
+        }),
+    }
 }

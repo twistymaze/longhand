@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { inputStatus, STALL_AFTER_MS } from "./inputStatus";
+import { inputStatus, QUIET_TICKS, STALL_AFTER_MS } from "./inputStatus";
 
 const base = { recording: true, lostReason: null, startedAt: 0 };
 
@@ -36,4 +36,16 @@ test("a reported stream error is lost, whatever the ticks say", () => {
 
 test("nothing recording is idle", () => {
   expect(inputStatus({ ...base, recording: false, lastTickAt: null, now: 0 })).toBe("idle");
+});
+
+test("frames that carry almost no sound for a long time read as quiet", () => {
+  const ticks = { ...base, lastTickAt: 100_000, now: 100_100 };
+  const silent = Array.from({ length: QUIET_TICKS }, () => 0);
+  expect(inputStatus({ ...ticks, levels: silent })).toBe("quiet");
+  // A pause in the talk is shorter than the window.
+  expect(inputStatus({ ...ticks, levels: silent.slice(1) })).toBe("capturing");
+  // One tick with sound in the window is enough.
+  expect(inputStatus({ ...ticks, levels: [...silent.slice(1), 0.05] })).toBe("capturing");
+  // A stalled stream is stalled, not quiet.
+  expect(inputStatus({ ...ticks, now: 100_000 + STALL_AFTER_MS + 1, levels: silent })).toBe("stalled");
 });

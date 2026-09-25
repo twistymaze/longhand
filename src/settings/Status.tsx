@@ -7,7 +7,7 @@ import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
 
 const isMac = navigator.userAgent.includes("Mac");
 
-export type PaneId = "scratchpad" | "status" | "destination" | "summarization" | "recognition" | "licences";
+export type PaneId = "status" | "destination" | "summarization" | "recognition" | "licences";
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
@@ -41,21 +41,21 @@ export function StatusPane({
   const missing = readiness.missing_models.length;
 
   return (
-    <Pane title="Status">
+    <Pane title="General">
       <Group
         header="Recording"
         footer={
           readiness.armed
             ? "The shortcut starts recording immediately, with nothing to answer first."
-            : "Both of these are settled here, ahead of time, so the first press of a session never asks a question."
+            : "Set these up ahead of time, so the shortcut never stops to ask a question when you start a note."
         }
       >
         <Row
-          label="Shortcut"
-          detail={readiness.armed ? "Ready to record" : "Not ready — finish the steps below"}
+          label="Ready to record"
+          detail={readiness.armed ? "Everything below is set up" : "Not yet — finish the steps below"}
         >
           <StatusText tone={readiness.armed ? "positive" : "caution"}>
-            {readiness.armed ? "Armed" : "Not armed"}
+            {readiness.armed ? "Ready" : "Not ready"}
           </StatusText>
         </Row>
         <Row
@@ -84,7 +84,7 @@ export function StatusPane({
             )
           )}
         </Row>
-        <Row label="Destination" detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
+        <Row label="Storage" detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
           {readiness.destination.kind !== "ready" && (
             <GoTo pane="destination" onNavigate={onNavigate}>
               {readiness.destination.kind === "unset" ? "Choose…" : "Fix…"}
@@ -95,7 +95,7 @@ export function StatusPane({
 
       <Group
         header="Processing"
-        footer="Recording never waits on these. A session recorded before they are ready is processed once they are."
+        footer="Recording never waits on these. A note recorded before they are ready is processed once they are."
       >
         <Row
           label="Models"
@@ -110,7 +110,7 @@ export function StatusPane({
           )}
         </Row>
         <Row
-          label="Summarization"
+          label="Summaries"
           detail={readiness.endpoint_configured ? "Endpoint configured" : "No endpoint yet — summaries wait until one is set up"}
         >
           {readiness.endpoint_configured ? (

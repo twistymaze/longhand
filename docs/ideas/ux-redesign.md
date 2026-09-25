@@ -1,6 +1,6 @@
 ---
 title: UX redesign
-status: open
+status: done
 area: interface
 added: 2026-09-23
 source: "Phase 2b checkpoint feedback on the walking skeleton"
@@ -9,7 +9,7 @@ related: [library-and-browsing, live-transcript-view, recognition-model-picker, 
 
 # UX redesign
 
-Captured 2026-09-23 at the Phase 2b checkpoint of the walking-skeleton plan (`docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`), after the user ran three replayed recordings through the signed bundle. It was first kept as `docs/brainstorms/2026-09-23-ux-redesign-input.md`, the path the plan still cites. Nothing here has been brainstormed yet: it is the brief to hand `ce-brainstorm` when the redesign is picked up. The skeleton's current surfaces stay until that brainstorm produces requirements and a plan.
+Brainstormed 2026-09-24 into `docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`, which supersedes this brief where they differ. Captured 2026-09-23 at the Phase 2b checkpoint of the walking-skeleton plan (`docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`), after the user ran three replayed recordings through the signed bundle. It was first kept as `docs/brainstorms/2026-09-23-ux-redesign-input.md`, the path the plan still cites. It was the brief handed to `ce-brainstorm`.
 
 ## The verdict
 

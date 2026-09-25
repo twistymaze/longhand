@@ -337,7 +337,7 @@ fn a_missing_destination_waits_with_the_session_whole_in_the_working_location() 
 fn folder_names_follow_the_session_start() {
     let started = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:05:09-05:00").unwrap();
     assert_eq!(
-        session_save::naming::folder_name(started),
+        session_save::naming::folder_name(started, None),
         "2026-09-22 1405 Longhand session"
     );
 }

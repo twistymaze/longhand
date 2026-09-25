@@ -9,10 +9,13 @@
 
 use std::path::{Path, PathBuf};
 
-use session_core::folder::{self, NoteLine, SessionDoc, Summary, SummaryMeta};
-use session_core::{Event, Segment, SessionState, Stage, Store};
+use chrono::{DateTime, FixedOffset};
+
+use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
+use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
+use crate::folder_rename::{self, FolderRename};
 use crate::join::TRANSCRIPT_FILE;
 use crate::summarize::{self, SUMMARY_FILE, SummaryEndpoint};
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
@@ -21,7 +24,12 @@ pub const SESSION_FILE: &str = "session.md";
 pub const NOTES_FILE: &str = "notes.md";
 /// The save's progress, a [`SaveState`]. Its presence means saving has
 /// begun and the session can no longer be resumed.
-pub const STATE: &str = "state";
+pub const STATE: &str = session_core::jobs::SAVE_STATE;
+/// The destination folder name, a string, recorded with the claim so that
+/// every later run of the save uses the same name (KTD7). A title that
+/// changes during the save cannot then send the final rename, or the scan
+/// for a folder whose rename was not recorded, to another name.
+pub const FOLDER_NAME: &str = "folder_name";
 /// Under the summarize stage: why it failed, for the saved stub (KD13).
 pub const SUMMARY_FAILED: &str = "failed";
 
@@ -80,7 +88,7 @@ pub fn run(
     // Only a verified transcript is saved (KD13).
     if !checkpoint::is_complete(store, session_id, Stage::Verify, segments.len())? {
         return Err(StageError::Failed(
-            "the transcript has not been verified, so the session stays in the working location"
+            "the transcript has not been verified, so the note stays in the working location"
                 .into(),
         ));
     }
@@ -99,29 +107,32 @@ pub fn run(
     if let Some(home) = home
         && !first_save_in_progress
     {
-        return update_home(store, session_id, working, segments, &home, control);
+        return update_home(store, session_id, working, segments, &home, fs, control);
     }
     let destination = destination
         .ok_or_else(|| StageError::NoDestination("no destination folder is set".into()))?;
     let started = segments
         .first()
-        .ok_or_else(|| StageError::Failed("the session has no audio".into()))?
+        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?
         .wall_start;
-    let folder_name = session_save::naming::folder_name(started);
+    let (mut state, folder_name) = match recorded {
+        Some(state) => {
+            // A save that began before names were recorded used the
+            // no-title name.
+            let name = checkpoint::get::<String>(store, session_id, Stage::Save, FOLDER_NAME)?
+                .unwrap_or_else(|| session_save::naming::folder_name(started, None));
+            (state, name)
+        }
+        None => {
+            control.proceed()?;
+            (SaveState::Working, claim_named(store, session_id, started)?)
+        }
+    };
     let job = Job {
         session_id,
         working,
         destination,
         folder_name: &folder_name,
-    };
-
-    let mut state = match recorded {
-        Some(state) => state,
-        None => {
-            control.proceed()?;
-            claim(store, session_id)?;
-            SaveState::Working
-        }
     };
     if state == SaveState::Working && working.exists() {
         render(store, session_id, working, segments)?;
@@ -194,6 +205,7 @@ pub fn run(
         })?,
     )?;
     guard.apply(session_id, &Event::Saved)?;
+    let path = reconcile_after_done(&guard, session_id, path, fs);
     Ok(Saved { path, copied })
 }
 
@@ -209,7 +221,7 @@ fn check_room(working: &Path, destination: &Path) -> Result<(), StageError> {
     let needed = tree_size(working, session_save::LEFT_BEHIND)? + MARGIN;
     match recorder::storage::available_space(destination) {
         Some(free) if free < needed => Err(StageError::NoDestination(format!(
-            "the destination folder {} has {:.1} GB free and the session needs about {:.1} GB",
+            "the destination folder {} has {:.1} GB free and the note needs about {:.1} GB",
             destination.display(),
             free as f64 / 1e9,
             needed as f64 / 1e9
@@ -265,11 +277,12 @@ fn update_home(
     working: &Path,
     segments: &[Segment],
     home: &Path,
+    fs: &dyn Fs,
     control: &dyn Control,
 ) -> Result<Saved, StageError> {
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
-            "the session's folder {} is missing; put it back to finish",
+            "the note's folder {} is missing; put it back to finish",
             home.display()
         )));
     }
@@ -330,8 +343,9 @@ fn update_home(
         })?,
     )?;
     guard.apply(session_id, &Event::Saved)?;
+    let path = reconcile_after_done(&guard, session_id, home.to_path_buf(), fs);
     Ok(Saved {
-        path: home.to_path_buf(),
+        path,
         copied: false,
     })
 }
@@ -339,14 +353,43 @@ fn update_home(
 /// Take the session for saving, unless a resume took it first.
 fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     let guard = lock(store);
-    let processing = matches!(
-        guard.session(session_id)?.map(|r| r.state),
-        Some(SessionState::Processing { .. })
-    );
-    if !processing {
-        return Err(StageError::Cancelled);
-    }
+    processing(&guard, session_id)?;
+    put_working(&guard, session_id)
+}
+
+/// Take the session for a first save and record its folder name, from the
+/// title it has now. The name is recorded before the claim, under the same
+/// lock, so a recorded claim always has its name.
+fn claim_named(
+    store: &SharedStore,
+    session_id: &str,
+    started: DateTime<FixedOffset>,
+) -> Result<String, StageError> {
+    let guard = lock(store);
+    let record = processing(&guard, session_id)?;
+    let title = record.title.map(|t| t.text);
+    let name = session_save::naming::folder_name(started, title.as_deref());
     guard.put_checkpoint(
+        session_id,
+        Stage::Save,
+        FOLDER_NAME,
+        &serde_json::to_string(&name)?,
+    )?;
+    put_working(&guard, session_id)?;
+    Ok(name)
+}
+
+/// The session's record, if it is still processing; a resume took it
+/// otherwise.
+fn processing(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {
+    match store.session(session_id)? {
+        Some(record) if matches!(record.state, SessionState::Processing { .. }) => Ok(record),
+        _ => Err(StageError::Cancelled),
+    }
+}
+
+fn put_working(store: &Store, session_id: &str) -> Result<(), StageError> {
+    store.put_checkpoint(
         session_id,
         Stage::Save,
         STATE,
@@ -355,10 +398,14 @@ fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     Ok(())
 }
 
-/// Nothing moved: the session may be resumed again.
+/// Nothing moved: the session may be resumed again, and the next claim
+/// records a name from the title it has then.
 fn release(store: &SharedStore, session_id: &str) {
-    if let Err(e) = lock(store).delete_checkpoint(session_id, Stage::Save, STATE) {
-        log::warn!("could not release the save claim on {session_id}: {e}");
+    let guard = lock(store);
+    for key in [STATE, FOLDER_NAME] {
+        if let Err(e) = guard.delete_checkpoint(session_id, Stage::Save, key) {
+            log::warn!("could not release the save claim on {session_id}: {e}");
+        }
     }
 }
 
@@ -370,15 +417,15 @@ fn render(
     working: &Path,
     segments: &[Segment],
 ) -> Result<(), StageError> {
-    let (speaker_count, notes) = {
+    let (record, notes) = {
         let guard = lock(store);
         let record = guard
             .session(session_id)?
             .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
-        (record.speaker_count, render_notes(&guard, session_id)?)
+        let notes = render_notes(&guard, session_id)?;
+        (record, notes)
     };
-    let doc = SessionDoc::new(session_id, speaker_count, segments)
-        .ok_or_else(|| StageError::Failed("the session has no audio".into()))?;
+    let doc = session_doc(&record, segments)?;
     write_working(working, SESSION_FILE, &doc.render())?;
     write_working(working, NOTES_FILE, &notes)?;
     if !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
@@ -389,27 +436,57 @@ fn render(
     Ok(())
 }
 
+/// The contents of `session.md`, with the session's title.
+pub fn session_doc(record: &SessionRecord, segments: &[Segment]) -> Result<SessionDoc, StageError> {
+    let mut doc = SessionDoc::new(&record.id, record.speaker_count, segments)
+        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?;
+    doc.title = record.title.as_ref().map(|t| t.text.clone());
+    Ok(doc)
+}
+
+/// After the save records `Done`: the save used the folder name it
+/// recorded when it began (KTD7). A title that changed since then renames
+/// the folder now (KTD8). Returns the folder's path. A failed rename does
+/// not fail the save: the reconcile at the next launch tries again. No
+/// regeneration runs, because the stage holds the one processing permit.
+fn reconcile_after_done(store: &Store, session_id: &str, path: PathBuf, fs: &dyn Fs) -> PathBuf {
+    moved_to(
+        session_id,
+        folder_rename::reconcile(store, session_id, false, true, fs),
+    )
+    .unwrap_or(path)
+}
+
+/// The folder's new path when a reconcile moved it. A reconcile that
+/// failed is logged, and the folder keeps its path.
+fn moved_to(session_id: &str, reconciled: Result<FolderRename, StageError>) -> Option<PathBuf> {
+    match reconciled {
+        Ok(FolderRename::Moved(folder)) => Some(folder),
+        Ok(FolderRename::Kept(why)) => {
+            log::warn!("the folder of {session_id} keeps its name: {why}");
+            None
+        }
+        Ok(FolderRename::Unchanged | FolderRename::Later) => None,
+        Err(e) => {
+            log::warn!("could not reconcile the folder of {session_id}: {e}");
+            None
+        }
+    }
+}
+
 pub fn stub(why: &str) -> Summary {
     Summary {
         meta: SummaryMeta::Stub {
             failed_stage: "summarize".into(),
         },
         body: format!(
-            "# Summary\n\nNo summary was produced: {why}\n\nThe transcript and notes are complete. Regenerate the summary from the session in Longhand."
+            "# Summary\n\nNo summary was produced: {why}\n\nThe transcript and notes are complete. Regenerate the summary from the note in Longhand."
         ),
     }
 }
 
 fn render_notes(store: &Store, session_id: &str) -> Result<String, StageError> {
-    let notes: Vec<NoteLine> = store
-        .notes(session_id)?
-        .into_iter()
-        .map(|n| NoteLine {
-            anchor: n.anchor,
-            text: n.text,
-        })
-        .collect();
-    Ok(folder::render_notes(&notes))
+    Ok(folder::render_notes(&store.notes(session_id)?))
 }
 
 fn write_notes(store: &Store, session_id: &str, folder: &Path) -> Result<(), StageError> {
@@ -436,10 +513,19 @@ fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageEr
         .map(PathBuf::from))
 }
 
-/// A note of a saved session changed: rewrite its `notes.md` whole
-/// (R22f). Returns false when the session is not saved, so there is no
-/// file to write yet.
-pub fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
+/// Replace a session's notes document (KTD5, R20). On a saved session the
+/// home folder's `notes.md` is rewritten whole in the same call (R22f).
+/// The caller holds the store lock for the whole call, which is the lock
+/// the save stage takes to write `notes.md` after `Done`: an edit comes
+/// either before that write or after the session is saved, so no edit is
+/// lost. Returns false when the session is not saved, so there is no file
+/// to write yet.
+pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<bool, StageError> {
+    store.set_notes(session_id, document)?;
+    rewrite_notes(store, session_id)
+}
+
+fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
     let Some(path) = home_path(store, session_id)? else {
         return Ok(false);
     };
@@ -450,7 +536,9 @@ pub fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageE
 
 /// Summarize a saved session again and replace its `summary.md` (R19,
 /// AE17): a stub left by a failed summary, or a summary the user wants
-/// redone.
+/// redone. A rename that waited for the regeneration then moves the
+/// folder, whether the regeneration succeeded or not (KTD8). The returned
+/// path is in the folder under its name after that rename.
 pub fn regenerate_summary(
     store: &SharedStore,
     session_id: &str,
@@ -459,24 +547,51 @@ pub fn regenerate_summary(
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
-    let (path, segments) = {
+    let regenerated = summarize_again(store, session_id, endpoint, learn, control, progress);
+    // The regeneration has ended, and the caller holds the one processing
+    // permit, so no other regeneration runs.
+    let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
+    let path = regenerated?;
+    Ok(moved_to(session_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
+}
+
+fn summarize_again(
+    store: &SharedStore,
+    session_id: &str,
+    endpoint: SummaryEndpoint,
+    learn: &dyn Fn(u32),
+    control: &dyn Control,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<PathBuf, StageError> {
+    let not_saved = || {
+        StageError::Failed(
+            "a summary can be regenerated only once the note has finished processing".into(),
+        )
+    };
+    let segments = {
         let guard = lock(store);
-        let path = home_path(&guard, session_id)?.ok_or_else(|| {
-            StageError::Failed(
-                "a summary can be regenerated only once the session has finished processing".into(),
-            )
-        })?;
-        (path, guard.segments(session_id)?)
+        home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        guard.segments(session_id)?
     };
     // A stub resumes from the calls made before the failure; a complete
-    // summary starts over.
+    // summary starts over. The title call always runs again, so a new
+    // proposal follows (R31). A title that the user set stays.
     if checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
         summarize::clear(store, session_id)?;
+    } else {
+        lock(store).delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
     }
     let summary = summarize::produce(
         store, session_id, &segments, endpoint, learn, control, progress,
     )?;
-    home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
+    // The home folder is read again under the lock, just before the write,
+    // and the lock is held through the write.
+    let path = {
+        let guard = lock(store);
+        let path = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
+        path
+    };
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;
     let mut guard = lock(store);
     guard.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;

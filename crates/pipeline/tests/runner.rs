@@ -198,11 +198,12 @@ fn endpoint(base: &str) -> SummaryEndpoint {
     }
 }
 
-/// An endpoint that answers every completion with the same summary.
+/// An endpoint that answers every completion with the same summary, and
+/// fails every title call, so a session keeps the title it has.
 async fn with_summaries(script: &Arc<Script>) -> http::Mock {
     let mock = http::serve(std::collections::HashMap::from([(
         "/v1/chat/completions",
-        http::Reply::Json(200, http::completion("A short summary.")),
+        without_titles(http::Reply::Json(200, http::completion("A short summary."))),
     )]))
     .await;
     *script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
@@ -531,6 +532,10 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
+    // The join records the number of speakers it found (KTD11).
+    let parsed = session_core::folder::Transcript::parse(&transcript).unwrap();
+    let found = r.store.lock().unwrap().found_speakers("s").unwrap();
+    assert_eq!(found, pipeline::join::found_speakers(&parsed));
     assert!(r.events.lock().unwrap().iter().any(|e| matches!(
         e,
         RunnerEvent::Progress {
@@ -565,6 +570,8 @@ async fn a_diarization_failure_delivers_the_transcript_without_speakers() {
     )));
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
+    // No speaker marks (R20a): no found speaker count.
+    assert_eq!(r.store.lock().unwrap().found_speakers("s").unwrap(), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -648,21 +655,66 @@ fn user_content(body: &str) -> String {
         .to_string()
 }
 
-fn chat_calls(mock: &http::Mock) -> Vec<String> {
+/// Whether a completion request is the title call.
+fn is_title_call(body: &str) -> bool {
+    user_content(body).contains("Propose a title")
+}
+
+fn completions(mock: &http::Mock) -> Vec<String> {
     mock.seen
         .lock()
         .unwrap()
         .iter()
         .filter(|s| s.path == "/v1/chat/completions")
-        .map(|s| user_content(&s.body))
+        .map(|s| s.body.clone())
         .collect()
 }
 
-/// Point the script's summaries at `reply`, with an optional context setting.
+/// The summary calls, without the title call.
+fn chat_calls(mock: &http::Mock) -> Vec<String> {
+    completions(mock)
+        .iter()
+        .filter(|b| !is_title_call(b))
+        .map(|b| user_content(b))
+        .collect()
+}
+
+fn title_calls(mock: &http::Mock) -> Vec<String> {
+    completions(mock)
+        .iter()
+        .filter(|b| is_title_call(b))
+        .map(|b| user_content(b))
+        .collect()
+}
+
+/// `reply` for the summary calls, and a server error for the title call.
+fn without_titles(reply: http::Reply) -> http::Reply {
+    let failed = || (500, r#"{"error":"no titles here"}"#.to_string());
+    match reply {
+        http::Reply::Json(status, body) => http::Reply::With(Arc::new(move |b: &str| {
+            if is_title_call(b) {
+                failed()
+            } else {
+                (status, body.clone())
+            }
+        })),
+        http::Reply::With(f) => {
+            http::Reply::With(Arc::new(
+                move |b: &str| {
+                    if is_title_call(b) { failed() } else { f(b) }
+                },
+            ))
+        }
+        other => other,
+    }
+}
+
+/// Point the script's summaries at `reply`, with an optional context
+/// setting. The title call fails.
 async fn summaries_from(r: &Rig, reply: http::Reply, context_limit: Option<u32>) -> http::Mock {
     let mock = http::serve(std::collections::HashMap::from([(
         "/v1/chat/completions",
-        reply,
+        without_titles(reply),
     )]))
     .await;
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
@@ -1033,26 +1085,16 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
 
 // -------------------------------------------------------------- saving (U11)
 
-fn add_notes(store: &SharedStore, id: &str) -> Vec<i64> {
-    let s = store.lock().unwrap();
-    vec![
-        s.add_note(
-            id,
-            "the rules changed",
-            session_core::Anchor::At {
-                position_ms: 1_000,
-                gap_anchored: false,
-            },
-        )
-        .unwrap(),
-        s.add_note(id, "bring snacks", session_core::Anchor::Unanchored)
-            .unwrap(),
-    ]
+const NOTES: &str = "- [00:00:01] the rules changed\n- bring snacks\n";
+
+fn add_notes(store: &SharedStore, id: &str) {
+    let mut s = store.lock().unwrap();
+    assert!(!pipeline::save::set_notes(&mut s, id, NOTES).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
-    use session_core::folder::{self, SessionDoc, Transcript};
+    use session_core::folder::{SessionDoc, Transcript};
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1070,7 +1112,7 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
     assert_eq!(folder.parent(), Some(r.dest.as_path()));
     assert_eq!(
         folder.file_name().unwrap().to_string_lossy(),
-        session_save::naming::folder_name(common::at(0))
+        session_save::naming::folder_name(common::at(0), None)
     );
     assert!(!r.root.join("s").exists(), "the working copy is gone");
     let mut names: Vec<String> = std::fs::read_dir(&folder)
@@ -1101,10 +1143,11 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
         doc.timeline_segments(),
         r.store.lock().unwrap().segments("s").unwrap()
     );
-    let notes =
-        folder::parse_notes(&std::fs::read_to_string(folder.join("notes.md")).unwrap()).unwrap();
-    let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
-    assert_eq!(texts, ["the rules changed", "bring snacks"]);
+    // notes.md is the notes document byte for byte (R25).
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+        NOTES
+    );
     let transcript =
         Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap()).unwrap();
     assert!(!transcript.lines.is_empty());
@@ -1116,7 +1159,27 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
+async fn a_document_set_while_recording_is_in_notes_md_after_the_save() {
+    let r = rig().await;
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    add_notes(&r.store, "s");
+    common::stop_session(&r.store, "s", 100);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        std::fs::read_to_string(saved_folder(&r, "s").join("notes.md")).unwrap(),
+        NOTES
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_set_after_the_save_rewrites_the_saved_file_whole() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1126,18 +1189,20 @@ async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
         Some("m"),
         &[(16_000, speech())],
     );
-    let ids = add_notes(&r.store, "s");
+    add_notes(&r.store, "s");
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     let folder = saved_folder(&r, "s");
 
+    let edited = "# Plan\n\n- bring more snacks\n";
     {
         let mut s = r.store.lock().unwrap();
-        s.edit_note(ids[1], "bring more snacks").unwrap();
-        assert!(pipeline::save::rewrite_notes(&mut s, "s").unwrap());
+        assert!(pipeline::save::set_notes(&mut s, "s", edited).unwrap());
+        assert_eq!(s.notes("s").unwrap(), edited);
     }
-    let notes = std::fs::read_to_string(folder.join("notes.md")).unwrap();
-    assert_eq!(notes.matches("bring more snacks").count(), 1, "{notes}");
-    assert!(!notes.contains("- bring snacks"));
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+        edited
+    );
     let names: Vec<String> = std::fs::read_dir(&folder)
         .unwrap()
         .flatten()
@@ -1145,6 +1210,111 @@ async fn a_note_edited_after_the_save_rewrites_the_saved_file_whole() {
         .collect();
     assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
+}
+
+/// A filesystem that sets the notes document at its first rename, as the
+/// editor can while the save stage runs.
+struct EditsWhileSaving {
+    store: SharedStore,
+    document: &'static str,
+    edited: AtomicBool,
+}
+
+impl session_save::Fs for EditsWhileSaving {
+    fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        self.edit();
+        session_save::RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        self.edit();
+        session_save::RealFs.rename_new(from, to)
+    }
+}
+
+impl EditsWhileSaving {
+    fn edit(&self) {
+        if !self.edited.swap(true, Ordering::SeqCst) {
+            let mut s = self.store.lock().unwrap();
+            // Not saved yet: there is no home folder to write.
+            assert!(!pipeline::save::set_notes(&mut s, "s", self.document).unwrap());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_set_while_the_save_runs_is_in_notes_md_once() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    add_notes(&r.store, "s");
+    // Stop just before the save, then run the save stage by hand with a
+    // filesystem that edits the notes part-way through it.
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::Retry)
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let edited = "- the rules changed twice\n- bring snacks\n";
+    let fs = EditsWhileSaving {
+        store: Arc::clone(&r.store),
+        document: edited,
+        edited: AtomicBool::new(false),
+    };
+    let saved = pipeline::save::run(
+        &r.store,
+        "s",
+        &r.root.join("s"),
+        &segments,
+        Some(&r.dest),
+        &fs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    assert!(fs.edited.load(Ordering::SeqCst));
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_eq!(
+        std::fs::read_to_string(saved.path.join("notes.md")).unwrap(),
+        edited
+    );
+}
+
+#[test]
+fn notes_for_an_unknown_session_are_refused_and_change_nothing() {
+    let store = store();
+    common::queue_session(
+        &store,
+        tempfile::tempdir().unwrap().path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let mut s = store.lock().unwrap();
+    s.set_notes("s", NOTES).unwrap();
+    let err = pipeline::save::set_notes(&mut s, "gone", "- lost\n").unwrap_err();
+    assert!(err.to_string().contains("gone"), "{err}");
+    assert!(s.session("gone").unwrap().is_none());
+    assert_eq!(s.notes("s").unwrap(), NOTES);
+}
+
+#[test]
+fn with_no_session_no_notes_are_accepted() {
+    // The app keeps no notes outside a session (R27): every notes call
+    // names a session, and an empty store has none to take them.
+    let store = store();
+    let mut s = store.lock().unwrap();
+    assert!(pipeline::save::set_notes(&mut s, "", "- stray\n").is_err());
+    assert!(pipeline::save::set_notes(&mut s, "s", "- stray\n").is_err());
+    assert!(s.sessions().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1159,7 +1329,7 @@ async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_
         Some("m"),
         &[(16_000, speech())],
     );
-    let ids = add_notes(&r.store, "s");
+    add_notes(&r.store, "s");
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(
         matches!(&outcome, Outcome::AwaitingDestination { problem } if problem.contains("no destination")),
@@ -1189,7 +1359,10 @@ async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_
     r.store
         .lock()
         .unwrap()
-        .edit_note(ids[0], "the rules changed twice")
+        .set_notes(
+            "s",
+            &NOTES.replace("the rules changed", "the rules changed twice"),
+        )
         .unwrap();
     let last = r.dest.join("chosen-last");
     std::fs::create_dir(&last).unwrap();
@@ -1211,7 +1384,7 @@ async fn a_taken_folder_name_gets_a_suffix() {
     let r = rig().await;
     std::fs::create_dir(
         r.dest
-            .join(session_save::naming::folder_name(common::at(0))),
+            .join(session_save::naming::folder_name(common::at(0), None)),
     )
     .unwrap();
     queue_session(
@@ -1225,7 +1398,10 @@ async fn a_taken_folder_name_gets_a_suffix() {
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
         saved_folder(&r, "s").file_name().unwrap().to_string_lossy(),
-        format!("{}-2", session_save::naming::folder_name(common::at(0)))
+        format!(
+            "{}-2",
+            session_save::naming::folder_name(common::at(0), None)
+        )
     );
 }
 
@@ -1281,7 +1457,7 @@ async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage()
         session_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
-        folder_name: &session_save::naming::folder_name(segments[0].wall_start),
+        folder_name: &session_save::naming::folder_name(segments[0].wall_start, None),
     };
     let staged = session_save::step(
         &session_save::SaveState::Working,
@@ -1336,7 +1512,7 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
         session_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
-        folder_name: &session_save::naming::folder_name(segments[0].wall_start),
+        folder_name: &session_save::naming::folder_name(segments[0].wall_start, None),
     };
     let staged = session_save::step(
         &session_save::SaveState::Working,
@@ -1370,6 +1546,234 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
     let home = saved_folder(&r, "s");
     assert!(home.join("audio/segment-01.opus").exists());
     assert!(!home.join(session_save::MARKER).exists());
+}
+
+// ------------------------------------------------------- folder names (U7)
+
+/// A filesystem whose first final rename fails: before the rename, or after
+/// it, as a process killed before it records `Saved` leaves it.
+struct FailsFinalRename {
+    after_the_rename: bool,
+    failed: AtomicBool,
+}
+
+impl session_save::Fs for FailsFinalRename {
+    fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        session_save::RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        if self.failed.swap(true, Ordering::SeqCst) {
+            return session_save::RealFs.rename_new(from, to);
+        }
+        if self.after_the_rename {
+            session_save::RealFs.rename_new(from, to)?;
+        }
+        Err(std::io::Error::other("the process stopped"))
+    }
+}
+
+fn set_title(store: &SharedStore, id: &str, title: &str) {
+    store
+        .lock()
+        .unwrap()
+        .set_title(id, title, session_core::TitleSource::User)
+        .unwrap();
+}
+
+/// Run a titled session up to the save, then run the save stage by hand
+/// with `fs`, which fails it at the final rename. The session goes back to
+/// the queue.
+async fn save_fails_at_the_final_rename(r: &Rig, after_the_rename: bool) {
+    stage_then_fail_the_final_rename(r, after_the_rename).await;
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::ClaimLost)
+        .unwrap();
+}
+
+/// [`save_fails_at_the_final_rename`] without the last step: the session
+/// stays in processing with the `Staged` save state.
+async fn stage_then_fail_the_final_rename(r: &Rig, after_the_rename: bool) {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    set_title(&r.store, "s", "First");
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    *r.script.destination.lock().unwrap() = Some(r.dest.clone());
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::Retry)
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let fs = FailsFinalRename {
+        after_the_rename,
+        failed: AtomicBool::new(false),
+    };
+    pipeline::save::run(
+        &r.store,
+        "s",
+        &r.root.join("s"),
+        &segments,
+        Some(&r.dest),
+        &fs,
+        &pipeline::Unattended,
+    )
+    .unwrap_err();
+    assert!(fs.failed.load(Ordering::SeqCst));
+    assert!(matches!(
+        checkpoint::get::<session_save::SaveState>(
+            &r.store,
+            "s",
+            Stage::Save,
+            pipeline::save::STATE
+        )
+        .unwrap(),
+        Some(session_save::SaveState::Staged { .. })
+    ));
+}
+
+fn destination_entries(r: &Rig) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(&r.dest)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_titled_session_is_saved_under_its_title() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    set_title(&r.store, "s", "Budget: Q3 / review?");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        destination_entries(&r),
+        [session_save::naming::folder_name(
+            common::at(0),
+            Some("Budget Q3 review")
+        )]
+    );
+}
+
+/// Where the save stage put the folder, before any rename after `Done`.
+fn saved_at(r: &Rig) -> std::path::PathBuf {
+    match checkpoint::get::<session_save::SaveState>(
+        &r.store,
+        "s",
+        Stage::Save,
+        pipeline::save::STATE,
+    )
+    .unwrap()
+    {
+        Some(session_save::SaveState::Done { path }) => path,
+        other => panic!("the save is not done: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_changed_between_two_save_runs_saves_under_the_first_name_then_renames() {
+    let r = rig().await;
+    save_fails_at_the_final_rename(&r, false).await;
+    set_title(&r.store, "s", "Second");
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let first = session_save::naming::folder_name(common::at(0), Some("First"));
+    let second = session_save::naming::folder_name(common::at(0), Some("Second"));
+    assert_eq!(saved_at(&r), r.dest.join(&first));
+    // The reconcile after Done gives the folder the new title's name (KTD8).
+    assert_eq!(destination_entries(&r), [second.as_str()]);
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&second));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_final_rename_whose_record_was_lost_is_found_by_the_recorded_name() {
+    let r = rig().await;
+    save_fails_at_the_final_rename(&r, true).await;
+    // The rename happened: the folder has the first name, and a new title
+    // must not send the scan for the marker to another name.
+    let first = session_save::naming::folder_name(common::at(0), Some("First"));
+    assert!(r.dest.join(&first).join(session_save::MARKER).exists());
+    set_title(&r.store, "s", "Second");
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_at(&r), r.dest.join(&first));
+    let second = session_save::naming::folder_name(common::at(0), Some("Second"));
+    assert_eq!(destination_entries(&r), [second.as_str()]);
+    let home = saved_folder(&r, "s");
+    assert_eq!(home, r.dest.join(&second));
+    assert!(home.join("audio/segment-01.opus").exists());
+    assert!(!home.join(session_save::MARKER).exists());
+    assert!(!r.root.join("s").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_begun_with_no_recorded_name_finishes_under_the_no_title_name() {
+    // A save that began before names were recorded used the no-title name.
+    // Its final rename happened and its record was lost; the session has a
+    // title now.
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    *r.script.destination.lock().unwrap() = Some(r.dest.clone());
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::Retry)
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let old = session_save::naming::folder_name(segments[0].wall_start, None);
+    let job = session_save::Job {
+        session_id: "s",
+        working: &r.root.join("s"),
+        destination: &r.dest,
+        folder_name: &old,
+    };
+    let staged = session_save::step(
+        &session_save::SaveState::Working,
+        &job,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    session_save::step(&staged, &job, &session_save::RealFs).unwrap();
+    checkpoint::put(&r.store, "s", Stage::Save, pipeline::save::STATE, &staged).unwrap();
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::ClaimLost)
+        .unwrap();
+    set_title(&r.store, "s", "Later title");
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_at(&r), r.dest.join(&old));
+    // The reconcile after Done then gives the folder the title's name.
+    let titled = session_save::naming::folder_name(segments[0].wall_start, Some("Later title"));
+    assert_eq!(destination_entries(&r), [titled.as_str()]);
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&titled));
 }
 
 // ------------------------------------------------------------- progress (U12)
@@ -1669,4 +2073,732 @@ async fn killed_after_every_stage_the_session_is_saved_once_with_the_same_transc
     let transcript = std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap();
     assert_eq!(transcript, expected);
     assert!(!root.path().join("s").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_counts_as_regenerating_only_while_its_summary_is_regenerated() {
+    let r = rig().await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let runner = Arc::clone(&r.runner);
+    let record = Arc::clone(&seen);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        record.lock().unwrap().push(runner.is_regenerating("s"));
+        (200, http::completion("A summary."))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    // The first summary is part of processing, not a regeneration.
+    assert!(seen.lock().unwrap().iter().all(|s| !s));
+    seen.lock().unwrap().clear();
+    r.runner.regenerate_summary("s").await.unwrap();
+    let during = seen.lock().unwrap().clone();
+    assert!(
+        !during.is_empty() && during.iter().all(|s| *s),
+        "{during:?}"
+    );
+    assert!(!r.runner.is_regenerating("s"));
+    assert!(!r.runner.is_regenerating("other"));
+}
+
+// ------------------------------------------------------------- folder rename (U8)
+
+use pipeline::folder_rename::{self, FolderRename};
+use session_core::RenameIntent;
+
+/// A session processed and saved, titled `title` before processing.
+async fn saved_session(r: &Rig, title: Option<&str>) -> std::path::PathBuf {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    if let Some(title) = title {
+        set_title(&r.store, "s", title);
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    saved_folder(r, "s")
+}
+
+fn name_for(title: Option<&str>) -> String {
+    session_save::naming::folder_name(common::at(0), title)
+}
+
+fn document_title(folder: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(folder.join(pipeline::save::SESSION_FILE)).unwrap();
+    session_core::folder::SessionDoc::parse(&text)
+        .unwrap()
+        .title
+}
+
+fn intent(r: &Rig) -> Option<RenameIntent> {
+    r.store.lock().unwrap().rename_intent("s").unwrap()
+}
+
+/// Record a move as the rename does before it takes it.
+fn record_intent(r: &Rig, from: &std::path::Path, to: &std::path::Path, temp: Option<&str>) {
+    r.store
+        .lock()
+        .unwrap()
+        .set_rename_intent(
+            "s",
+            &RenameIntent {
+                from: from.to_string_lossy().into_owned(),
+                to: to.to_string_lossy().into_owned(),
+                temp: temp.map(|t| r.dest.join(t).to_string_lossy().into_owned()),
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_session_renamed_has_one_folder_under_the_new_name() {
+    // Covers AE2.
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(old, r.dest.join(name_for(None)));
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert!(new.join("audio/segment-01.opus").exists());
+    assert_eq!(intent(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_during_processing_changes_the_title_at_once_and_the_folder_after_done() {
+    // Covers AE1.
+    let r = rig().await;
+    save_fails_at_the_final_rename(&r, false).await;
+    assert_eq!(
+        r.runner.rename_session("s", "Second").unwrap(),
+        FolderRename::Later
+    );
+    assert_eq!(
+        r.store.lock().unwrap().title("s").unwrap().unwrap().text,
+        "Second"
+    );
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let second = r.dest.join(name_for(Some("Second")));
+    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
+    assert_eq!(saved_folder(&r, "s"), second);
+    assert_eq!(document_title(&second).as_deref(), Some("Second"));
+    // The save itself used the name it recorded when it began.
+    assert_eq!(
+        checkpoint::get::<session_save::SaveState>(
+            &r.store,
+            "s",
+            Stage::Save,
+            pipeline::save::STATE
+        )
+        .unwrap(),
+        Some(session_save::SaveState::Done {
+            path: r.dest.join(name_for(Some("First")))
+        })
+    );
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::Saved { path, .. } if *path == second
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_the_intent_and_before_the_rename_resolves_at_launch_to_the_old_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    record_intent(&r, &old, &new, None);
+
+    assert_eq!(
+        folder_rename::resolve_intents(&r.store, &session_save::RealFs).unwrap(),
+        ["s"]
+    );
+    assert_eq!(saved_folder(&r, "s"), old);
+    assert_eq!(intent(&r), None);
+    assert_eq!(destination_entries(&r), [name_for(None)]);
+
+    // The reconcile at launch then completes the rename.
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_the_rename_and_before_home_path_resolves_at_launch_to_the_new_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    record_intent(&r, &old, &new, None);
+    std::fs::rename(&old, &new).unwrap();
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_session_md_and_before_home_path_resolves_at_launch_to_the_new_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    record_intent(&r, &old, &new, None);
+    std::fs::rename(&old, &new).unwrap();
+    let text = std::fs::read_to_string(new.join("session.md")).unwrap();
+    let mut doc = session_core::folder::SessionDoc::parse(&text).unwrap();
+    doc.title = Some("Budget review".into());
+    std::fs::write(new.join("session.md"), doc.render()).unwrap();
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_home_path_and_before_the_intent_is_cleared_keeps_the_new_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let first = r.runner.rename_session("s", "Budget review").unwrap();
+    let FolderRename::Moved(new) = first else {
+        panic!("{first:?}");
+    };
+    // The record that the rename ended is lost.
+    record_intent(&r, &old, &new, None);
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_to_a_name_another_folder_uses_takes_the_next_suffix() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let taken = name_for(Some("Budget review"));
+    std::fs::create_dir(r.dest.join(&taken)).unwrap();
+
+    let suffixed = format!("{taken}-2");
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review").unwrap(),
+        FolderRename::Moved(r.dest.join(&suffixed))
+    );
+    assert_eq!(destination_entries(&r), [taken.clone(), suffixed.clone()]);
+    // The suffixed folder has its name: a launch does not move it again.
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&suffixed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_that_changes_only_the_case_ends_with_the_new_case() {
+    let r = rig().await;
+    saved_session(&r, Some("budget review")).await;
+    assert_eq!(destination_entries(&r), [name_for(Some("budget review"))]);
+
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review").unwrap(),
+        FolderRename::Moved(new.clone())
+    );
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_of_case_stopped_at_the_temporary_name_resolves_at_launch_to_the_new_name() {
+    let r = rig().await;
+    let old = saved_session(&r, Some("budget review")).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    let temp = session_save::rename_home::temp_name("s");
+    record_intent(&r, &old, &new, Some(&temp));
+    std::fs::rename(&old, r.dest.join(&temp)).unwrap();
+    assert_eq!(destination_entries(&r), [temp]);
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_done_and_before_a_deferred_rename_ends_renames_at_the_next_launch() {
+    let r = rig().await;
+    saved_session(&r, Some("First")).await;
+    // The title changed while the session was busy, and the process
+    // stopped before the reconcile after Done ran.
+    set_title(&r.store, "s", "Second");
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    let second = r.dest.join(name_for(Some("Second")));
+    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
+    assert_eq!(saved_folder(&r, "s"), second);
+    assert_eq!(document_title(&second).as_deref(), Some("Second"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_during_a_regeneration_moves_the_folder_after_it() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(
+        folder_rename::rename_session(
+            &r.store,
+            "s",
+            "Budget review",
+            &|_| true,
+            &session_save::RealFs
+        )
+        .unwrap(),
+        FolderRename::Later
+    );
+    assert_eq!(saved_folder(&r, "s"), old);
+
+    let summary = r.runner.regenerate_summary("s").await.unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(summary, new.join("summary.md"));
+    assert!(summary.exists());
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+/// Refuses every rename as `PermissionDenied`, as Windows does while
+/// another process holds a file in the folder.
+struct AlwaysInUse(AtomicUsize);
+
+impl session_save::Fs for AlwaysInUse {
+    fn rename(&self, _: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+    fn rename_new(&self, _: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_in_use_keeps_its_old_name_and_the_new_title() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let fs = AlwaysInUse(AtomicUsize::new(0));
+    let result =
+        folder_rename::rename_session(&r.store, "s", "Budget review", &|_| false, &fs).unwrap();
+    let FolderRename::Kept(message) = result else {
+        panic!("{result:?}");
+    };
+    assert!(message.contains("in use"), "{message}");
+    assert!(!message.contains("no free name"), "{message}");
+    assert_eq!(
+        fs.0.load(Ordering::SeqCst),
+        1 + session_save::rename_home::IN_USE_RETRIES
+    );
+    assert_eq!(
+        r.store.lock().unwrap().title("s").unwrap().unwrap().text,
+        "Budget review"
+    );
+    assert_eq!(saved_folder(&r, "s"), old);
+    assert_eq!(destination_entries(&r), [name_for(None)]);
+    assert_eq!(intent(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_a_rename_notes_and_a_resume_write_into_the_renamed_folder() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let FolderRename::Moved(new) = r.runner.rename_session("s", "Budget review").unwrap() else {
+        panic!("not moved");
+    };
+
+    pipeline::save::set_notes(&mut r.store.lock().unwrap(), "s", "- after the rename\n").unwrap();
+    let notes = std::fs::read_to_string(new.join(pipeline::save::NOTES_FILE)).unwrap();
+    assert!(notes.contains("after the rename"), "{notes}");
+
+    resume_completed(&r, "s", &speech());
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert!(new.join("audio/segment-02.opus").exists());
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_title_names_the_folder_by_its_start_time_again() {
+    let r = rig().await;
+    saved_session(&r, Some("Budget review")).await;
+    let old = r.dest.join(name_for(None));
+    assert_eq!(
+        r.runner.rename_session("s", "  ").unwrap(),
+        FolderRename::Moved(old.clone())
+    );
+    assert_eq!(r.store.lock().unwrap().title("s").unwrap(), None);
+    assert_eq!(document_title(&old), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_change_that_keeps_the_folder_name_rewrites_session_md() {
+    let r = rig().await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review?").unwrap(),
+        FolderRename::Unchanged
+    );
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert_eq!(document_title(&folder).as_deref(), Some("Budget review?"));
+}
+
+// ------------------------------------------------- notes and titles (U5)
+
+use session_core::{Title, TitleSource};
+
+/// The reply that the next title call gets, as a status and a body.
+type TitleReply = Arc<Mutex<(u16, String)>>;
+
+fn title_reply(text: &str) -> TitleReply {
+    Arc::new(Mutex::new((200, http::completion(text))))
+}
+
+/// Summary calls answered by `summary`, and title calls by what `title`
+/// holds when they arrive.
+async fn summaries_and_titles(
+    r: &Rig,
+    summary: http::Responder,
+    title: &TitleReply,
+    context_limit: Option<u32>,
+) -> http::Mock {
+    let title = Arc::clone(title);
+    let reply = http::Reply::With(Arc::new(move |b: &str| {
+        if is_title_call(b) {
+            title.lock().unwrap().clone()
+        } else {
+            summary(b)
+        }
+    }));
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit,
+        ..endpoint(&mock.base)
+    }));
+    mock
+}
+
+fn a_summary() -> http::Responder {
+    Arc::new(|_| (200, http::completion("A short summary.")))
+}
+
+fn title_of(r: &Rig) -> Option<Title> {
+    r.store.lock().unwrap().title("s").unwrap()
+}
+
+fn proposed(text: &str) -> Option<Title> {
+    Some(Title {
+        text: text.into(),
+        source: TitleSource::Proposed,
+    })
+}
+
+fn summary_is_complete(folder: &std::path::Path) -> bool {
+    let text = std::fs::read_to_string(folder.join("summary.md")).unwrap();
+    matches!(
+        session_core::folder::Summary::parse(&text).unwrap().meta,
+        session_core::folder::SummaryMeta::Complete { .. }
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proposed_title_is_cleaned_and_names_the_saved_folder() {
+    let r = rig().await;
+    let title = title_reply("  \"Budget Review.\"  ");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r), proposed("Budget Review"));
+    assert_eq!(folder, r.dest.join(name_for(Some("Budget Review"))));
+    assert_eq!(document_title(&folder).as_deref(), Some("Budget Review"));
+    // The title call carries the summary.
+    assert!(title_calls(&mock)[0].contains("A short summary."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_proposed_title_is_cut_to_the_folder_name_length() {
+    let r = rig().await;
+    let long = "word ".repeat(100);
+    let title = title_reply(&format!("{long}\nA second line"));
+    summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    let stored = title_of(&r).unwrap().text;
+    assert!(stored.chars().count() <= session_save::naming::MAX_TITLE_CHARS);
+    assert!(stored.starts_with("word word"), "{stored}");
+    assert!(!stored.contains("second"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_a_user_title_makes_no_title_call() {
+    // Covers AE9.
+    let r = rig().await;
+    let title = title_reply("Something else");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(chat_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(folder, r.dest.join(name_for(Some("Budget review"))));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_title_call_leaves_no_title_and_the_summary_complete() {
+    let r = rig().await;
+    let title: TitleReply = Arc::new(Mutex::new((500, r#"{"error":"overloaded"}"#.into())));
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r), None);
+    assert_eq!(folder, r.dest.join(name_for(None)));
+    assert!(summary_is_complete(&folder));
+    assert!(
+        !r.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, RunnerEvent::SummaryUnavailable { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_proposed_title_proposes_again_and_renames_the_folder() {
+    // Covers AE4.
+    let r = rig().await;
+    let title = title_reply("First");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(old, r.dest.join(name_for(Some("First"))));
+
+    *title.lock().unwrap() = (200, http::completion("Second"));
+    let summary = r.runner.regenerate_summary("s").await.unwrap();
+    let new = r.dest.join(name_for(Some("Second")));
+    assert_eq!(title_calls(&mock).len(), 2);
+    assert_eq!(title_of(&r), proposed("Second"));
+    assert_eq!(summary, new.join("summary.md"));
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
+    assert_eq!(document_title(&new).as_deref(), Some("Second"));
+    assert!(summary_is_complete(&new));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_user_title_keeps_the_title() {
+    // Covers AE3.
+    let r = rig().await;
+    let title = title_reply("Proposed");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(title_of(&r).unwrap().source, TitleSource::User);
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(saved_folder(&r, "s"), folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_session_saved_with_no_title_proposes_one_and_renames_the_folder() {
+    // R32: a session saved before titles has no title.
+    let r = rig().await;
+    let title: TitleReply = Arc::new(Mutex::new((500, "{}".into())));
+    summaries_and_titles(&r, a_summary(), &title, None).await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(old, r.dest.join(name_for(None)));
+
+    *title.lock().unwrap() = (200, http::completion("Budget review"));
+    r.runner.regenerate_summary("s").await.unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(title_of(&r), proposed("Budget review"));
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+const DOCUMENT: &str = "# Plan\n\n- [00:00:01] the rules changed\n- **bring snacks**\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_after_the_run_starts_reaches_no_request_of_that_run() {
+    // R36, and each request carries the notes document once.
+    let r = rig().await;
+    let store = Arc::clone(&r.store);
+    let summary: http::Responder = Arc::new(move |_| {
+        let mut s = store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", "an edit made later").unwrap();
+        (200, http::completion("Notes on a part."))
+    });
+    let title = title_reply("Plan");
+    let mock = summaries_and_titles(&r, summary, &title, Some(2_048)).await;
+    long_session(&r);
+    {
+        let mut s = r.store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", DOCUMENT).unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls
+            .iter()
+            .filter(|c| c.contains("<transcript part="))
+            .count()
+            > 2
+    );
+    let titles = title_calls(&mock);
+    assert_eq!(titles.len(), 1);
+    for c in calls.iter().chain(&titles) {
+        assert_eq!(c.matches(DOCUMENT).count(), 1, "{c}");
+        assert!(!c.contains("an edit made later"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_document_longer_than_the_budget_is_cut_and_every_request_fits() {
+    let r = rig().await;
+    let title = title_reply("Plan");
+    let mock = summaries_and_titles(&r, a_summary(), &title, Some(2_048)).await;
+    long_session(&r);
+    let long: String = (0..1_000)
+        .map(|i| format!("- note {i} about something the user found important\n"))
+        .collect();
+    {
+        let mut s = r.store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", &long).unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let all = completions(&mock);
+    assert!(all.len() > 2);
+    for body in &all {
+        let content = user_content(body);
+        assert!(content.contains(summarize::prompts::NOTES_CUT), "{content}");
+        assert!(
+            summarize::tokens::estimate(&content) < 2_048,
+            "{}",
+            content.len()
+        );
+    }
+}
+
+// ------------------------------------------------------------- delete (U9)
+
+/// A remover that removes the directory, as the Trash would move it away.
+fn remove_now(path: &std::path::Path) -> Result<(), String> {
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_while_a_delete_removes_the_folder_leaves_no_folder() {
+    let r = rig().await;
+    let home = saved_session(&r, None).await;
+    let working = r.root.join("s");
+    let mut renamed = None;
+    let claims = r.runner.claims().clone();
+    session_core::jobs::delete_session(&r.store, "s", &working, &claims, |path| {
+        // The title commits after the delete read the home folder and
+        // before the delete removes it.
+        if path == home {
+            renamed = Some(r.runner.rename_session("s", "Budget review").unwrap());
+        }
+        remove_now(path)
+    })
+    .unwrap();
+    assert_eq!(renamed, Some(FolderRename::Later));
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_while_a_delete_removes_the_folder_is_refused() {
+    let r = rig().await;
+    let home = saved_session(&r, None).await;
+    let store = Arc::clone(&r.store);
+    let runner = Arc::clone(&r.runner);
+    let working = r.root.join("s");
+    let handle = tokio::runtime::Handle::current();
+    let regenerated = tokio::task::spawn_blocking(move || {
+        let mut regenerated = None;
+        let claims = runner.claims().clone();
+        session_core::jobs::delete_session(&store, "s", &working, &claims, |path| {
+            if path == home {
+                regenerated = Some(handle.block_on(runner.regenerate_summary("s")));
+            }
+            remove_now(path)
+        })
+        .unwrap();
+        regenerated
+    })
+    .await
+    .unwrap();
+    let regenerated = regenerated.expect("the remover ran on the home folder");
+    assert!(regenerated.is_err(), "{regenerated:?}");
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_a_session_whose_save_stopped_when_staged_removes_the_staged_copy() {
+    let r = rig().await;
+    stage_then_fail_the_final_rename(&r, false).await;
+    r.store
+        .lock()
+        .unwrap()
+        .apply(
+            "s",
+            &session_core::Event::SaveFailed("the process stopped".into()),
+        )
+        .unwrap();
+    let Some(session_save::SaveState::Staged { staging, .. }) =
+        checkpoint::get::<session_save::SaveState>(
+            &r.store,
+            "s",
+            Stage::Save,
+            pipeline::save::STATE,
+        )
+        .unwrap()
+    else {
+        panic!("the save stopped when staged");
+    };
+    assert!(staging.join("audio/segment-01.opus").exists());
+    let claims = r.runner.claims().clone();
+    session_core::jobs::delete_session(&r.store, "s", &r.root.join("s"), &claims, remove_now)
+        .unwrap();
+    assert!(!staging.exists());
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
 }

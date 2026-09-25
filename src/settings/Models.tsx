@@ -120,7 +120,7 @@ function SpeakerCount({ settings, onSettings }: { settings: Settings; onSettings
   return (
     <Group
       header="Speakers"
-      footer="A count is never an identity: sessions record how many voices to expect, not who they are. Each session can override this before it is processed."
+      footer="Longhand counts voices; it does not identify people. Each note can change this before it is processed."
     >
       <Row label="Default number of speakers">
         <div role="radiogroup" aria-label="Speaker count" className="flex rounded-md bg-fill p-0.5">
@@ -175,13 +175,13 @@ export function Models({
   const remaining = missing.reduce((sum, m) => sum + m.size_bytes, 0);
 
   return (
-    <Pane title="Recognition">
+    <Pane title="Transcription">
       <Group
         header="Models"
         footer={
           missing.length > 0
             ? `Recognition and speaker detection run on this machine, so these weights are downloaded once from their publishers (${formatBytes(remaining)}). Recording works without them; processing waits until they are here.`
-            : "Recognition and speaker detection run entirely on this machine. Session audio never leaves it."
+            : "Recognition and speaker detection run entirely on this machine. Your audio never leaves it."
         }
       >
         {required.map((m) => (

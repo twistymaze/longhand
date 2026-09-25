@@ -1,9 +1,8 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
-    NoteLine, SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine, format_position,
-    parse_notes, render_notes,
+    SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine, format_position, render_notes,
 };
-use session_core::{Anchor, Segment, SpeakerCount, Timeline};
+use session_core::{Segment, SpeakerCount, Timeline};
 
 fn wall(minutes: i64) -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339("2026-09-22T09:00:00-05:00").unwrap() + TimeDelta::minutes(minutes)
@@ -101,33 +100,33 @@ fn transcript_without_speakers_says_so_and_round_trips() {
 }
 
 #[test]
-fn notes_md_round_trips() {
-    let notes = vec![
-        NoteLine {
-            anchor: Anchor::Unanchored,
-            text: "agenda: budget".into(),
-        },
-        NoteLine {
-            anchor: Anchor::At {
-                position_ms: 95_000,
-                gap_anchored: false,
-            },
-            text: "decision: ship Friday".into(),
-        },
-        NoteLine {
-            anchor: Anchor::At {
-                position_ms: 5_400_000,
-                gap_anchored: true,
-            },
-            text: "[bracketed] thought".into(),
-        },
-    ];
-    let text = render_notes(&notes);
-    assert!(
-        text.contains("- [01:30:00 ~gap] [bracketed] thought"),
-        "{text}"
-    );
-    assert_eq!(parse_notes(&text).unwrap(), notes);
+fn session_md_round_trips_with_a_title() {
+    let segments = vec![Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 60_000,
+        wall_start: wall(0),
+        wall_end: wall(1),
+        audio_file: "audio/segment-01.opus".into(),
+    }];
+    let mut doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
+    assert_eq!(doc.title, None);
+    let untitled = doc.render();
+    assert!(!untitled.contains("title:"), "{untitled}");
+    assert_eq!(SessionDoc::parse(&untitled).unwrap(), doc);
+
+    doc.title = Some("Budget review: Q3 \"plan\"".into());
+    let text = doc.render();
+    assert!(text.contains("# Budget review: Q3 \"plan\""), "{text}");
+    assert_eq!(SessionDoc::parse(&text).unwrap(), doc);
+}
+
+#[test]
+fn notes_md_is_the_notes_document_byte_for_byte() {
+    let document = "# Agenda\n\n## Budget\n\n- [ ] ask about Q3\n- [x] confirm date\n\n\
+                    ```rust\nfn main() {}\n```\n\n- [00:12:40] an earlier note\n\ttabbed  text \n";
+    assert_eq!(render_notes(document), document);
+    assert_eq!(render_notes(""), "");
 }
 
 #[test]

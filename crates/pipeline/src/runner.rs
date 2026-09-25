@@ -11,11 +11,13 @@ use std::time::Duration;
 
 use asr::Recognizer;
 use chrono::{DateTime, FixedOffset, Local};
+use session_core::jobs::Claims;
 use session_core::{Event, SessionState, Stage};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
+use crate::folder_rename::{self, FolderRename};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
@@ -157,6 +159,9 @@ pub struct Runner {
     engine: Arc<Mutex<Option<Box<dyn Recognizer>>>>,
     /// One stage of one session at a time, whoever asks (R20c).
     permit: Arc<Semaphore>,
+    /// Summary regenerations and deletes that run on a session. They
+    /// exclude each other, and a folder rename waits for both (R8, KTD8).
+    claims: Claims,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -213,6 +218,7 @@ impl Runner {
             shutdown: CancellationToken::new(),
             engine: Arc::new(Mutex::new(None)),
             permit: Arc::new(Semaphore::new(1)),
+            claims: Claims::default(),
         })
     }
 
@@ -296,6 +302,11 @@ impl Runner {
     /// Summarize a saved session again, replacing its `summary.md` (R19,
     /// AE17). Takes its turn with the stages, one at a time (R20c).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
+        let _claim = self.claims.regenerate(session_id).ok_or_else(|| {
+            StageError::Failed(
+                "This note is being deleted, so its summary cannot be made again.".into(),
+            )
+        })?;
         let _permit = self
             .permit
             .clone()
@@ -331,6 +342,41 @@ impl Runner {
         })
         .await
         .map_err(|e| StageError::Failed(format!("the summary stopped unexpectedly: {e}")))?
+    }
+
+    /// True while `session_id` has its summary regenerated or waits to.
+    pub fn is_regenerating(&self, session_id: &str) -> bool {
+        self.claims.is_regenerating(session_id)
+    }
+
+    /// The claims that a delete takes (R8): see
+    /// [`session_core::jobs::delete_session`].
+    pub fn claims(&self) -> &Claims {
+        &self.claims
+    }
+
+    /// The user's rename (R9): the title changes at once, and a saved, idle
+    /// session's folder takes the new name now. A busy session's folder
+    /// takes it when the work ends.
+    pub fn rename_session(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<FolderRename, StageError> {
+        folder_rename::rename_session(
+            &self.env.store,
+            session_id,
+            title,
+            &|id| self.claims.busy(id),
+            &session_save::RealFs,
+        )
+    }
+
+    /// At launch, before [`Runner::run`]: settle the folder renames that a
+    /// crash left, then give every saved folder the name its title gives
+    /// (KTD8).
+    pub fn recover_folders(&self) -> Result<(), StageError> {
+        folder_rename::recover(&self.env.store, &session_save::RealFs)
     }
 
     /// Stop at the next window and free the recognition engine. Called as

@@ -1,0 +1,93 @@
+import { describe, expect, test } from "bun:test";
+import { render, screen } from "@testing-library/react";
+import type { DocLine } from "../bindings";
+import { formatClock, TranscriptTab } from "./TranscriptTab";
+
+const turn = (position_ms: number, speaker: number | null, text: string): DocLine => ({
+  kind: "turn",
+  position_ms,
+  speaker,
+  text,
+});
+
+function renderTab(lines: DocLine[], { hasSpeakers = true, speakers = 3 as number | null, durationMs = 35 * 60_000 + 48_000 } = {}) {
+  return render(
+    <TranscriptTab lines={lines} hasSpeakers={hasSpeakers} foundSpeakers={speakers} durationMs={durationMs} />,
+  );
+}
+
+describe("TranscriptTab", () => {
+  test("consecutive turns of one speaker show one label and one block each", () => {
+    renderTab([
+      turn(0, 1, "First paragraph."),
+      turn(9_000, 1, "Second paragraph."),
+      turn(18_000, 1, "Third paragraph."),
+      turn(27_000, 2, "A reply."),
+    ]);
+    expect(screen.getAllByText("Speaker 1")).toHaveLength(1);
+    expect(screen.getAllByText("Speaker 2")).toHaveLength(1);
+    for (const text of ["First paragraph.", "Second paragraph.", "Third paragraph."]) {
+      expect(screen.getByText(text).tagName).toBe("P");
+    }
+  });
+
+  test("the time of a paragraph is there for the pointer", () => {
+    renderTab([turn(0, 1, "Hello."), turn(83_000, 1, "Later.")]);
+    expect(screen.getByText("Later.").parentElement?.textContent).toBe("00:01:23Later.");
+  });
+
+  // Covers AE8.
+  test("a gap with the next segment's start shows when the recording resumed", () => {
+    renderTab([
+      turn(0, 1, "Before."),
+      { kind: "gap", at_ms: 9_000, duration_ms: 3_600_000, wall_start: new Date(2026, 8, 30, 10, 2).toISOString() },
+      turn(9_000, 1, "After."),
+    ]);
+    expect(screen.getByText(/^Resumed (30 Sep|Sep 30), 10:02/)).toBeTruthy();
+    // A resume starts a new group, so the speaker label shows again.
+    expect(screen.getAllByText("Speaker 1")).toHaveLength(2);
+  });
+
+  test("a gap with no start time says that time was not recorded", () => {
+    renderTab([turn(0, 1, "Before."), { kind: "gap", at_ms: 9_000, duration_ms: 65_000, wall_start: null }]);
+    expect(screen.getByText(/Not recorded/)).toBeTruthy();
+  });
+
+  test("the header shows the speaker count and the duration", () => {
+    renderTab([turn(0, 1, "Hello.")]);
+    expect(screen.getByText("3 speakers · 35:48")).toBeTruthy();
+  });
+
+  test("a transcript with no speaker marks says why and shows no labels", () => {
+    renderTab([turn(0, null, "Hello.")], { hasSpeakers: false, speakers: null });
+    expect(screen.getByText(/no speaker marks/).textContent).toContain("this note");
+    expect(screen.queryByText(/^Speaker \d/)).toBeNull();
+  });
+
+  test("the tab opens at the end of the transcript", () => {
+    const shown: Element[] = [];
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+      shown.push(this);
+    };
+    try {
+      const lines = Array.from({ length: 200 }, (_, i) => turn(i * 9_000, (i % 3) + 1, `Paragraph ${i}.`));
+      renderTab(lines);
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+    expect(shown).toHaveLength(1);
+    const last = screen.getByText("Paragraph 199.");
+    // The element shown is the end of the transcript: nothing follows it.
+    expect(last.compareDocumentPosition(shown[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(shown[0].nextElementSibling).toBeNull();
+  });
+});
+
+describe("formatClock", () => {
+  test("shows minutes and seconds, and hours when there are any", () => {
+    expect(formatClock(35 * 60_000 + 48_000)).toBe("35:48");
+    expect(formatClock(5_000)).toBe("0:05");
+    expect(formatClock(4 * 3_600_000 + 2 * 60_000 + 3_000)).toBe("4:02:03");
+  });
+});

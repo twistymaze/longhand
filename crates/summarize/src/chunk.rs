@@ -1,8 +1,9 @@
 //! Chunking a transcript that does not fit one call (KTD16). Whole turns
-//! are packed under the allowance with about 10% overlap by turns; each note
-//! travels with the chunk that owns the turn it was typed during (R18). A
-//! turn longer than the allowance on its own is split at sentence
-//! boundaries, each part keeping the speaker label and start time.
+//! are packed under the allowance with about 10% overlap by turns. The
+//! notes document goes whole with every call (KTD6), so the caller takes
+//! its size from the allowance first. A turn longer than the allowance on
+//! its own is split at sentence boundaries, each part keeping the speaker
+//! label and start time.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,14 +18,6 @@ pub struct Turn {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Note {
-    /// `None` for a note typed outside any recording; it applies to the
-    /// whole session and goes with every call.
-    pub position_ms: Option<u64>,
-    pub text: String,
-}
-
 /// The share of a chunk's turns repeated at the start of the next.
 pub const OVERLAP: f64 = 0.10;
 
@@ -33,8 +26,6 @@ pub struct Chunk {
     pub turns: Vec<Turn>,
     /// `turns[..first_new]` repeat the end of the previous chunk.
     pub first_new: usize,
-    /// The anchored notes whose turn this chunk owns.
-    pub notes: Vec<Note>,
 }
 
 pub fn format_clock(ms: u64) -> String {
@@ -53,13 +44,6 @@ pub fn render_turn(turn: &Turn) -> String {
     }
 }
 
-pub fn render_note(note: &Note) -> String {
-    match note.position_ms {
-        Some(ms) => format!("[{}] {}", format_clock(ms), note.text),
-        None => note.text.clone(),
-    }
-}
-
 /// A line's cost inside a prompt: its text and its newline.
 fn line_cost(line: &str) -> usize {
     estimate(line) + 1
@@ -67,19 +51,6 @@ fn line_cost(line: &str) -> usize {
 
 fn turn_cost(turn: &Turn) -> usize {
     line_cost(&render_turn(turn))
-}
-
-fn note_cost(note: &Note) -> usize {
-    line_cost(&render_note(note))
-}
-
-/// The turn a note was typed during: the last turn starting at or before
-/// it. A gap-anchored note sits at the end of the segment before the gap,
-/// so it belongs to that segment's last turn.
-fn owning_turn(turns: &[Turn], position_ms: u64) -> usize {
-    turns
-        .partition_point(|t| t.position_ms <= position_ms)
-        .saturating_sub(1)
 }
 
 /// Split turns that cannot fit a chunk on their own.
@@ -164,25 +135,14 @@ fn sentences(text: &str) -> Vec<String> {
     out
 }
 
-/// Pack `turns` into chunks whose rendered turns and notes each cost at
-/// most `allowance` tokens.
-pub fn chunk(turns: &[Turn], notes: &[Note], allowance: usize) -> Vec<Chunk> {
+/// Pack `turns` into chunks whose rendered turns each cost at most
+/// `allowance` tokens.
+pub fn chunk(turns: &[Turn], allowance: usize) -> Vec<Chunk> {
     let turns = split_long(turns, allowance);
     if turns.is_empty() {
         return Vec::new();
     }
-    let mut owned: Vec<Vec<Note>> = vec![Vec::new(); turns.len()];
-    for note in notes {
-        if let Some(ms) = note.position_ms {
-            owned[owning_turn(&turns, ms)].push(note.clone());
-        }
-    }
-    // A turn's weight when this chunk owns it: its line and its notes.
-    let weight: Vec<usize> = turns
-        .iter()
-        .zip(&owned)
-        .map(|(t, n)| turn_cost(t) + n.iter().map(note_cost).sum::<usize>())
-        .collect();
+    let weight: Vec<usize> = turns.iter().map(turn_cost).collect();
 
     let mut chunks = Vec::new();
     let mut start = 0; // first turn this chunk owns
@@ -191,15 +151,13 @@ pub fn chunk(turns: &[Turn], notes: &[Note], allowance: usize) -> Vec<Chunk> {
         let mut cost: usize = (overlap_from..start).map(|i| turn_cost(&turns[i])).sum();
         let mut end = start;
         while end < turns.len() && (end == start || cost + weight[end] <= allowance) {
-            // The first owned turn always goes in, so the packing advances;
-            // an oversized note can then push one chunk over.
+            // The first owned turn always goes in, so the packing advances.
             cost += weight[end];
             end += 1;
         }
         chunks.push(Chunk {
             turns: turns[overlap_from..end].to_vec(),
             first_new: start - overlap_from,
-            notes: owned[start..end].iter().flatten().cloned().collect(),
         });
         // Repeat the last ~10% of this chunk's turns, but never so many that
         // the next chunk could not own at least one turn of its own.

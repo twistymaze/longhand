@@ -1,15 +1,14 @@
 // Primitives after macOS's grouped settings form: inset groups of rows, a
-// label on the left and its control on the right, footnotes under a group.
+// title and a description on the left and the control on the right, and
+// footnotes under a group.
 
 import type { ReactNode } from "react";
 
 export function Pane({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="mx-auto max-w-[34rem] px-6 pt-5 pb-8">
-      <h1 className="mb-4 text-[1.35rem] leading-tight font-semibold tracking-[-0.01em]">
-        {title}
-      </h1>
-      <div className="grid gap-5">{children}</div>
+    <div className="mx-auto max-w-[40rem] px-8 pt-7 pb-10">
+      <h1 className="mb-5 text-[1.6rem] leading-tight font-bold tracking-[-0.025em]">{title}</h1>
+      <div className="grid gap-6">{children}</div>
     </div>
   );
 }
@@ -25,17 +24,18 @@ export function Group({
 }) {
   return (
     <section>
-      {header && <h2 className="mb-1.5 px-1 font-semibold">{header}</h2>}
-      <div className="divide-y divide-separator overflow-hidden rounded-[10px] bg-group shadow-[0_0_0_0.5px_var(--separator)]">
+      {header && <h2 className="mb-2 px-1 text-[0.85rem] font-semibold text-label-secondary">{header}</h2>}
+      <div className="overflow-hidden rounded-[12px] bg-group shadow-[0_0_0_0.5px_var(--separator),0_1px_2px_rgb(0_0_0/0.04)]">
         {children}
       </div>
       {footer && (
-        <div className="mt-1.5 px-1 text-[0.85rem] text-label-secondary">{footer}</div>
+        <div className="mt-2 px-1 text-[0.8rem] leading-[1.45] text-label-secondary">{footer}</div>
       )}
     </section>
   );
 }
 
+// Rows after the first have a separator inset to the text, as in macOS.
 export function Row({
   label,
   detail,
@@ -46,12 +46,14 @@ export function Row({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-10 items-center gap-3 px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <div>{label}</div>
-        {detail && <div className="text-[0.85rem] text-label-secondary">{detail}</div>}
+    <div className="settings-row px-4">
+      <div className="flex min-h-[3.25rem] items-center gap-4 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{label}</div>
+          {detail && <div className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">{detail}</div>}
+        </div>
+        {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
       </div>
-      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
   );
 }
@@ -66,12 +68,12 @@ type ButtonProps = {
 // Pressed state is instant: feedback belongs to pointer-down, not release.
 export function Button({ children, onClick, disabled, prominent }: ButtonProps) {
   const tone = prominent
-    ? "bg-accent text-white active:bg-accent-pressed"
-    : "bg-fill text-label active:bg-fill-pressed";
+    ? "bg-accent text-white shadow-[0_1px_1.5px_rgb(0_0_0/0.14)] active:bg-accent-pressed"
+    : "bg-fill text-label shadow-[0_0_0_0.5px_var(--separator)] active:bg-fill-pressed";
   return (
     <button
       type="button"
-      className={`rounded-md px-2.5 py-[3px] whitespace-nowrap select-none ${tone} outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
+      className={`rounded-[7px] px-3 py-[3px] font-medium whitespace-nowrap select-none ${tone} outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
       onClick={onClick}
       disabled={disabled}
     >

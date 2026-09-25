@@ -13,6 +13,6 @@ pub mod context;
 pub mod prompts;
 pub mod tokens;
 
-pub use chunk::{Chunk, Note, Turn};
+pub use chunk::{Chunk, Turn};
 pub use client::{Client, Completion, Endpoint, Limits, SummarizeError};
 pub use context::{Budget, BudgetSource};

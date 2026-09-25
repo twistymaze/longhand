@@ -1,5 +1,7 @@
 mod commands;
 mod managers;
+#[cfg(target_os = "macos")]
+mod menu;
 mod shortcut;
 mod tray;
 mod window;
@@ -34,9 +36,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::stop_recording,
             commands::capture::resume_recording,
             commands::capture::recording_status,
-            commands::capture::begin_note,
-            commands::capture::edit_note,
-            commands::capture::scratchpad_notes,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
             commands::alerts::alert_check,
@@ -48,7 +47,12 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::list_sessions,
             commands::session::session_detail,
             commands::session::session_notes,
+            commands::session::set_session_notes,
+            commands::session::rename_session,
             commands::session::session_document,
+            commands::session::delete_session,
+            commands::session::delete_session_permanently,
+            commands::window::open_settings,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
@@ -56,6 +60,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
             managers::processing::ProcessingUpdate,
+            tray::ShowSession,
         ])
 }
 
@@ -139,6 +144,18 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_store::Builder::default().build())
+        // The main window opens at the size and place it had when the app
+        // quit. The Settings window opens at its own size, centred.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .with_denylist(&[window::SETTINGS_WINDOW])
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -207,6 +224,8 @@ pub fn run() {
 
             window::create_main_window(&handle)?;
             tray::create_tray(&handle)?;
+            #[cfg(target_os = "macos")]
+            menu::set_app_menu(&handle)?;
             shortcut::register(&handle);
             // After the tray exists, so the restored alert can mark it.
             alerts.restore(&handle, &capture);

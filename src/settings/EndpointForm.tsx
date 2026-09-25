@@ -179,7 +179,7 @@ export function EndpointForm({
   const baseUrl = settings.endpoint_base_url;
 
   return (
-    <Pane title="Summarization">
+    <Pane title="Summaries">
       <Group
         header="Endpoint"
         footer={

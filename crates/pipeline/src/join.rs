@@ -1,7 +1,9 @@
 //! The join stage (KTD7, R16, R20a): each ASR segment goes to the speaker
-//! turn it overlaps most, consecutive same-speaker segments merge into one
-//! transcript turn, and times move from within-segment to session positions.
-//! The result is `transcript.md` in the session's working directory.
+//! turn it overlaps most, consecutive same-speaker segments merge into
+//! paragraph-sized transcript turns (KTD10), and times move from
+//! within-segment to session positions. The result is `transcript.md` in the
+//! session's working directory, and the store records the number of
+//! speakers found (KTD11).
 
 use std::path::Path;
 
@@ -19,6 +21,14 @@ use crate::{SharedStore, StageError, checkpoint};
 pub const SILENCE_MARK_MS: u64 = 60_000;
 pub const TRANSCRIPT_FILE: &str = "transcript.md";
 
+/// A same-speaker turn longer than this many characters ends at the next
+/// sentence end, and the next sentence starts a new paragraph with its own
+/// time (KTD10, provisional).
+pub const PARAGRAPH_CHARS: usize = 400;
+/// A pause longer than this between two pieces starts a new paragraph
+/// (KTD10, provisional).
+pub const PARAGRAPH_PAUSE_MS: u64 = 2_000;
+
 pub fn run(
     store: &SharedStore,
     session_id: &str,
@@ -30,6 +40,7 @@ pub fn run(
         &results(store, session_id)?,
         &speakers(store, session_id)?,
     );
+    crate::lock(store).set_found_speakers(session_id, found_speakers(&transcript))?;
     let path = session_dir.join(TRANSCRIPT_FILE);
     let temp = session_dir.join(format!("{TRANSCRIPT_FILE}.tmp"));
     std::fs::write(&temp, transcript.render())?;
@@ -99,6 +110,8 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
                     duration_ms: piece.start_ms - last_end,
                 });
             }
+            // A pause between pieces starts a new paragraph (KTD10).
+            let paused = piece.start_ms.saturating_sub(last_end) > PARAGRAPH_PAUSE_MS;
             last_end = last_end.max(piece.end_ms);
             let speaker = if has_speakers {
                 speaker_for(piece, &own)
@@ -106,7 +119,9 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
                 None
             };
             match &mut open {
-                Some((current, _, text)) if *current == speaker => {
+                Some((current, _, text))
+                    if *current == speaker && !paused && !paragraph_full(text) =>
+                {
                     text.push(' ');
                     text.push_str(piece.text.trim());
                 }
@@ -193,4 +208,30 @@ fn renumber(lines: &mut [TranscriptLine]) {
             *s = order.iter().position(|o| o == s).expect("seen") as u32 + 1;
         }
     }
+}
+
+/// True when a paragraph is past the length limit and ends a sentence, so
+/// the next piece starts a new paragraph. A split occurs only between
+/// pieces, never inside one, so each paragraph starts at a piece's time.
+fn paragraph_full(text: &str) -> bool {
+    if text.chars().count() <= PARAGRAPH_CHARS {
+        return false;
+    }
+    let end = text.trim_end_matches(['"', '\'', '\u{201D}', '\u{2019}', ')', ']']);
+    end.ends_with([
+        '.', '?', '!', '\u{2026}', '\u{3002}', '\u{FF1F}', '\u{FF01}',
+    ])
+}
+
+/// The number of distinct speakers in a transcript (KTD11), or `None` when
+/// it has no speaker marks (R20a). After [`renumber`], speakers are 1..N.
+pub fn found_speakers(transcript: &Transcript) -> Option<u32> {
+    transcript
+        .lines
+        .iter()
+        .filter_map(|line| match line {
+            TranscriptLine::Turn { speaker, .. } => *speaker,
+            _ => None,
+        })
+        .max()
 }
