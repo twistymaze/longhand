@@ -127,6 +127,19 @@ describe("LiveTranscript", () => {
     expect(screen.queryByText(/Live transcript paused/)).toBeNull();
   });
 
+  test("a rejected live_transcript call leaves the starting line and later events still show", async () => {
+    const tauri = mockTauri({
+      live_transcript: () => {
+        throw new Error("boom");
+      },
+    });
+    render(<Harness />);
+    await screen.findByText("Starting the live transcript…");
+    await act(() => tauri.emit("live-transcript-event", text("rec", "First words")));
+    await waitFor(() => expect(screen.queryByText("Starting the live transcript…")).toBeNull());
+    expect(screen.getByText("First words")).toBeTruthy();
+  });
+
   test("a live transcript that cannot run says the transcript is ready after Stop", async () => {
     const tauri = mockLive({ parts: [], current: null, state: "starting" });
     render(<Harness />);

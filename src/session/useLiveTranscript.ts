@@ -105,15 +105,28 @@ export function useLiveTranscript(sessionId: string): LiveView {
     ];
     // Listen first, then read: no event falls between the two.
     void Promise.all(unlisteners).then(async () => {
-      const result = await commands.liveTranscript(sessionId);
-      if (!open) return;
-      const queued = waiting ?? [];
-      waiting = null;
-      setLive((l) => {
-        let next = result.status === "ok" ? apply(l, { kind: "catchup", data: result.data }) : { ...l, loaded: true };
-        for (const change of queued) next = apply(next, change);
-        return next;
-      });
+      try {
+        const result = await commands.liveTranscript(sessionId);
+        if (!open) return;
+        const queued = waiting ?? [];
+        waiting = null;
+        setLive((l) => {
+          let next = result.status === "ok" ? apply(l, { kind: "catchup", data: result.data }) : { ...l, loaded: true };
+          for (const change of queued) next = apply(next, change);
+          return next;
+        });
+      } catch {
+        // The IPC call itself rejected (not a Result error). Leave the
+        // starting line, but stop waiting: later events reach the view.
+        if (!open) return;
+        const queued = waiting ?? [];
+        waiting = null;
+        setLive((l) => {
+          let next = { ...l, loaded: true };
+          for (const change of queued) next = apply(next, change);
+          return next;
+        });
+      }
     });
     return () => {
       open = false;
