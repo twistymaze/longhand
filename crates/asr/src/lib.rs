@@ -1,10 +1,16 @@
 //! Speech recognition (KTD6): `transcribe-cpp` behind a small engine, and the
-//! VAD windowing that decides what each recognition call hears.
+//! VAD windowing that decides what each recognition call hears. Live
+//! recognition streams audio in parts (KTD4, KTD5).
 
 pub mod engine;
+pub mod stream;
 pub mod windows;
 
 pub use engine::{AsrError, AsrSegment, Engine, Recognizer, WindowText, pad_to_minimum};
+pub use stream::{
+    Cut, Fed, LivePart, LiveStream, LiveText, LiveWord, PartPolicy, Parts, TimedToken, join_words,
+    stream_all, unspaced, words_from_tokens,
+};
 pub use windows::{MAX_WINDOW_MS, Span, Voicing, plan_windows, voiced_ms};
 
 /// The rate recognition consumes: mono 16 kHz, as the processing tap is.

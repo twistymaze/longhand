@@ -10,7 +10,6 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   commands,
-  type ModelStatus,
   type Readiness,
   type SessionDetail,
   type SessionDocument,
@@ -29,6 +28,8 @@ import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
+import { useTranscribeAgain } from "./TranscribeAgain";
+import { LiveTranscript, type LiveMode, READY_AFTER_STOP } from "./LiveTranscript";
 import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
@@ -42,6 +43,14 @@ const tabs: { value: Tab; label: string }[] = [
 ];
 
 type Phase = "recording" | "processing" | "saved" | "missing";
+
+/// The states after Stop in which Transcript keeps the live text, and how
+/// it reads in each. The other states need an action on the stages.
+const afterLive: Record<string, LiveMode> = {
+  interrupted: "interrupted",
+  queued: "processing",
+  processing: "processing",
+};
 
 /// A segmented control. The segments have one width, so the control keeps
 /// its shape when the level bars show on Transcript.
@@ -103,14 +112,12 @@ export function SessionPage({
   capture,
   sessions,
   readiness,
-  models,
   onBack,
 }: {
   id: string;
   capture: Capture;
   sessions: Sessions;
   readiness: Readiness | null;
-  models: ModelStatus[];
   onBack: () => void;
 }) {
   const entry = sessions.entries.find((e) => e.id === id);
@@ -132,6 +139,7 @@ export function SessionPage({
   const [scrolled, setScrolled] = useState(false);
   const title = useRef<TitleFieldHandle>(null);
   const notesPanel = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLElement>(null);
 
   // A recording shows My Notes (R11). Stop shows Summary, where the
   // processing stages show. A session that completes shows Summary (F2),
@@ -214,6 +222,16 @@ export function SessionPage({
     },
   });
 
+  const again = useTranscribeAgain({
+    sessionId: id,
+    noteModel: detail?.asr_model ?? null,
+    onQueued: () => {
+      setNotice(null);
+      changed();
+    },
+    onFailed: (text) => setNotice({ tone: "negative", text }),
+  });
+
   const items: MenuItem[] = [];
   if (phase === "recording" && capture.status?.recording) {
     items.push({ label: "Number of Speakers…", onSelect: () => setSpeakers(true) });
@@ -228,21 +246,34 @@ export function SessionPage({
   }
   if (phase === "saved") {
     items.push({ label: "Regenerate Summary", disabled: regenerating, onSelect: regenerate });
+    items.push({
+      label: "Transcribe Again…",
+      disabled: regenerating,
+      reason: "Wait until the summary is ready.",
+      onSelect: again.ask,
+    });
   }
   items.push({ label: "Rename", onSelect: () => title.current?.edit() });
   if (entry && !open && canDelete(entry.state)) {
     items.push({ label: "Delete…", onSelect: () => deletion.ask(entry) });
   }
 
+  // What the last Transcribe Again left for the user to know (R19).
+  const againFailed = phase === "saved" && detail?.transcribe_again_error != null;
+  const summaryKept = phase === "saved" && detail?.summary_not_updated != null;
+
   const live = sessions.live[id];
   const progress = regenerating && live?.stage === "summarize" && live.total > 1 ? ` part ${live.done} of ${live.total}` : "";
   const regenerateControl = (
-    <Button prominent={!doc?.summary || doc.summary.stub} disabled={regenerating} onClick={regenerate}>
+    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} disabled={regenerating} onClick={regenerate}>
       {regenerating ? `Summarizing…${progress}` : "Regenerate Summary"}
     </Button>
   );
 
-  const asr = models.find((m) => m.role === "recognition" && m.required);
+  // The note's own live mode decides, not the model selected now (R9). A
+  // Transcribe Again run has no live text.
+  const liveMode = (detail?.live_transcript ?? false) && !detail?.transcribe_again;
+  const liveView = (mode: LiveMode) => <LiveTranscript sessionId={id} mode={mode} scroller={scroller} />;
   const processing =
     detail && phase === "processing" ? (
       <ProcessingStatus
@@ -258,19 +289,29 @@ export function SessionPage({
     if (phase === "recording") {
       return which === "summary" ? (
         <AfterStop>The summary is written after you stop recording.</AfterStop>
+      ) : !detail ? null : liveMode ? (
+        liveView(capture.status?.recording ? "recording" : "interrupted")
       ) : (
-        <AfterStop>
-          {asr?.streaming
-            ? "The transcript is ready after you stop recording. A live transcript is possible with this model, but this version does not show one."
-            : "The transcript is ready after you stop recording."}
-        </AfterStop>
+        <AfterStop>{READY_AFTER_STOP}</AfterStop>
       );
     }
-    if (phase === "processing") return processing;
+    if (phase === "processing") {
+      // The live text stays until the saved transcript is ready. A note
+      // that needs an action shows the stages, where the action is.
+      if (which === "transcript" && liveMode && state && afterLive[state]) return liveView(afterLive[state]);
+      return processing;
+    }
     if (error) return <p className="text-negative">{error}</p>;
-    if (!doc) return null;
+    if (!doc) return which === "transcript" && liveMode ? liveView("loading") : null;
     return which === "summary" ? (
-      <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
+      <>
+        {summaryKept && (
+          <p role="status" className="mb-4 text-[0.85rem] text-caution">
+            The summary could not be updated. It is from the previous transcript.
+          </p>
+        )}
+        <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
+      </>
     ) : (
       <TranscriptTab
         lines={doc.lines}
@@ -341,6 +382,7 @@ export function SessionPage({
         </div>
       </header>
       <main
+        ref={scroller}
         className="min-h-0 flex-1 overflow-y-auto bg-pane select-text"
         // The header shows its bottom line only while content is under it.
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
@@ -363,6 +405,11 @@ export function SessionPage({
               className={`mt-2 text-[0.85rem] ${notice.tone === "caution" ? "text-caution" : "text-negative"}`}
             >
               {notice.text}
+            </p>
+          )}
+          {!notice && againFailed && (
+            <p role="status" className="mt-2 text-[0.85rem] text-negative" title={detail?.transcribe_again_error ?? undefined}>
+              The new transcript failed. The previous transcript is unchanged.
             </p>
           )}
         </div>
@@ -391,6 +438,7 @@ export function SessionPage({
         />
       )}
       {deletion.dialog}
+      {again.dialog}
     </div>
   );
 }

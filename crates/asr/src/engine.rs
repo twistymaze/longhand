@@ -11,10 +11,12 @@ use std::sync::Once;
 
 use serde::{Deserialize, Serialize};
 use transcribe_cpp::{
-    Model, ModelOptions, RunExtension, RunOptions, Session, TimestampKind, WhisperRunOptions,
+    Model, ModelOptions, RunExtension, RunOptions, Session, StreamOptions, TimestampKind,
+    WhisperRunOptions,
 };
 
 use crate::SAMPLES_PER_MS;
+use crate::stream::{LiveStream, LiveText, TimedToken};
 
 /// Whisper returns zero segments, and no error, for input under a second
 /// (KTD6); shorter windows are zero-padded to this length.
@@ -49,6 +51,39 @@ pub trait Recognizer: Send {
     fn model_id(&self) -> &str;
     /// Transcribe one window of mono 16 kHz audio.
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError>;
+    /// Transcribe one window with token times, in milliseconds from the
+    /// start of the window, for a gap fill after Stop (KTD6). Build words
+    /// with [`words_from_tokens`](crate::words_from_tokens). The default
+    /// divides the time of each segment of [`Recognizer::transcribe`]
+    /// equally between the segment's words.
+    fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
+        Ok(segment_tokens(&self.transcribe(pcm)?.segments))
+    }
+    /// Start a live stream of mono 16 kHz audio (KTD5). `None` when the
+    /// model does not stream. The stream borrows the recognizer, so the
+    /// recognizer does no batch work while a stream is open.
+    fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
+        Ok(None)
+    }
+}
+
+/// One token for each word of `segments`, each word with an equal part of
+/// its segment's time.
+fn segment_tokens(segments: &[AsrSegment]) -> Vec<TimedToken> {
+    let mut tokens = Vec::new();
+    for segment in segments {
+        let words: Vec<&str> = segment.text.split_whitespace().collect();
+        let n = words.len() as u64;
+        let length = segment.end_ms.saturating_sub(segment.start_ms);
+        for (i, word) in (0u64..).zip(&words) {
+            tokens.push(TimedToken {
+                text: format!(" {word}"),
+                start_ms: segment.start_ms + length * i / n,
+                end_ms: segment.start_ms + length * (i + 1) / n,
+            });
+        }
+    }
+    tokens
 }
 
 /// Zero-pad `pcm` to [`MIN_WINDOW_MS`]; longer input is returned unchanged.
@@ -81,14 +116,39 @@ fn init_backends() {
     });
 }
 
+/// Whether a model streams: the catalog flag and the model's own capability
+/// must agree (KTD5). A disagreement logs a warning, and the model does not
+/// stream, so the note gets a full pass after Stop.
+pub fn streams(model_id: &str, catalog: bool, model: bool) -> bool {
+    if catalog != model {
+        log::warn!(
+            "{model_id}: the catalog says streaming is {catalog}, the model says {model}; \
+             the model does not stream"
+        );
+    }
+    catalog && model
+}
+
 pub struct Engine {
     model_id: String,
     session: Session,
     is_whisper: bool,
+    streaming: bool,
 }
 
 impl Engine {
+    /// Load a model for batch recognition only.
     pub fn load(model_id: &str, path: &Path) -> Result<Self, AsrError> {
+        Self::load_with(model_id, path, false)
+    }
+
+    /// Load a model. `catalog_streaming` is the catalog's `streaming` flag;
+    /// the model streams only when its capabilities agree (KTD5).
+    pub fn load_with(
+        model_id: &str,
+        path: &Path,
+        catalog_streaming: bool,
+    ) -> Result<Self, AsrError> {
         init_backends();
         let load_error = |e: transcribe_cpp::Error| AsrError::Load {
             path: path.display().to_string(),
@@ -96,6 +156,11 @@ impl Engine {
         };
         let model = Model::load_with(path, &ModelOptions::default()).map_err(load_error)?;
         let is_whisper = model.arch().to_ascii_lowercase().contains("whisper");
+        let streaming = streams(
+            model_id,
+            catalog_streaming,
+            model.capabilities().supports_streaming,
+        );
         log::info!(
             "loaded {model_id} ({} on {})",
             model.arch(),
@@ -106,7 +171,91 @@ impl Engine {
             model_id: model_id.to_string(),
             session,
             is_whisper,
+            streaming,
         })
+    }
+
+    /// Transcribe one window with token times, in milliseconds from the
+    /// start of the window. Build words with
+    /// [`words_from_tokens`](crate::words_from_tokens).
+    pub fn transcribe_timed(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
+        let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
+        let audio = pad_to_minimum(pcm);
+        let options = RunOptions {
+            timestamps: TimestampKind::Token,
+            family: self.family(),
+            ..Default::default()
+        };
+        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
+        Ok(timed_tokens(&transcript.tokens, original_ms))
+    }
+
+    /// Each window is decoded on its own; nothing decoded before a silence
+    /// conditions what follows it (KTD6, the repetition-loop trap).
+    fn family(&self) -> Option<RunExtension> {
+        self.is_whisper.then(|| {
+            RunExtension::Whisper(WhisperRunOptions {
+                condition_on_prev_tokens: Some(false),
+                ..Default::default()
+            })
+        })
+    }
+}
+
+fn run_error(e: transcribe_cpp::Error) -> AsrError {
+    AsrError::Run(e.to_string())
+}
+
+/// Tokens with text, with times clamped into `[0, limit_ms]`. Special
+/// tokens such as `<|endoftext|>` are not speech.
+fn timed_tokens(tokens: &[transcribe_cpp::Token], limit_ms: u64) -> Vec<TimedToken> {
+    tokens
+        .iter()
+        .filter(|t| {
+            let text = t.text.trim();
+            let special = text.starts_with("<|") && text.ends_with("|>");
+            !text.is_empty() && !special
+        })
+        .map(|t| {
+            let start = (t.t0_ms.max(0) as u64).min(limit_ms);
+            TimedToken {
+                text: t.text.clone(),
+                start_ms: start,
+                end_ms: (t.t1_ms.max(0) as u64).clamp(start, limit_ms),
+            }
+        })
+        .collect()
+}
+
+/// A `transcribe-cpp` stream on the engine's session. The stream holds the
+/// model's compute lease from its start until it finishes, resets or drops.
+struct EngineStream<'a> {
+    stream: transcribe_cpp::Stream<'a>,
+}
+
+impl LiveStream for EngineStream<'_> {
+    fn feed(&mut self, pcm: &[f32]) -> Result<bool, AsrError> {
+        let update = self.stream.feed(pcm).map_err(run_error)?;
+        Ok(update.committed_changed || update.tentative_changed)
+    }
+
+    fn text(&self) -> LiveText {
+        let text = self.stream.text();
+        LiveText {
+            committed: text.committed,
+            tentative: text.tentative,
+        }
+    }
+
+    fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
+        self.stream.finalize().map_err(run_error)?;
+        // A stream gives timed tokens only; its words and segments stay
+        // empty, so words are built from the tokens.
+        Ok(timed_tokens(&self.stream.snapshot().tokens, u64::MAX))
+    }
+
+    fn reset(&mut self) {
+        self.stream.reset();
     }
 }
 
@@ -118,23 +267,12 @@ impl Recognizer for Engine {
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError> {
         let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
         let audio = pad_to_minimum(pcm);
-        // Each window is decoded on its own; nothing decoded before a silence
-        // conditions what follows it (KTD6, the repetition-loop trap).
-        let family = self.is_whisper.then(|| {
-            RunExtension::Whisper(WhisperRunOptions {
-                condition_on_prev_tokens: Some(false),
-                ..Default::default()
-            })
-        });
         let options = RunOptions {
             timestamps: TimestampKind::Segment,
-            family,
+            family: self.family(),
             ..Default::default()
         };
-        let transcript = self
-            .session
-            .run(&audio, &options)
-            .map_err(|e| AsrError::Run(e.to_string()))?;
+        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
         let segments = transcript
             .segments
             .into_iter()
@@ -159,6 +297,25 @@ impl Recognizer for Engine {
             segments,
         })
     }
+
+    fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
+        self.transcribe_timed(pcm)
+    }
+
+    fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
+        if !self.streaming {
+            return Ok(None);
+        }
+        let options = RunOptions {
+            timestamps: TimestampKind::Token,
+            ..Default::default()
+        };
+        let stream = self
+            .session
+            .stream(&options, &StreamOptions::default())
+            .map_err(run_error)?;
+        Ok(Some(Box::new(EngineStream { stream })))
+    }
 }
 
 #[cfg(test)]
@@ -178,5 +335,36 @@ mod tests {
             pad_to_minimum(&long),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn segment_tokens_divide_each_segment_equally_between_its_words() {
+        let segment = |start_ms, end_ms, text: &str| AsrSegment {
+            start_ms,
+            end_ms,
+            text: text.into(),
+        };
+        let segments = [
+            segment(1_000, 1_900, "one two three"),
+            segment(3_000, 3_400, " four "),
+            segment(4_000, 4_000, ""),
+        ];
+        let tokens = segment_tokens(&segments);
+        let times: Vec<(&str, u64, u64)> = tokens
+            .iter()
+            .map(|t| (t.text.as_str(), t.start_ms, t.end_ms))
+            .collect();
+        assert_eq!(
+            times,
+            vec![
+                (" one", 1_000, 1_300),
+                (" two", 1_300, 1_600),
+                (" three", 1_600, 1_900),
+                (" four", 3_000, 3_400),
+            ]
+        );
+        let words = crate::words_from_tokens(&tokens, 10_000);
+        assert_eq!(words[0].start_ms, 11_000);
+        assert_eq!(crate::join_words(&words), "one two three four");
     }
 }

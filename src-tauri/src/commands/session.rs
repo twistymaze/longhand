@@ -14,6 +14,7 @@ use specta::Type;
 use tauri::{AppHandle, State};
 
 use crate::managers::capture::CaptureManager;
+use crate::managers::live::{LiveManager, LiveTranscript};
 use crate::managers::processing::{ProcessingManager, stage_name};
 use crate::managers::settings;
 
@@ -67,6 +68,20 @@ pub struct SessionDetail {
     pub endpoint: Option<EndpointView>,
     pub audio_kept: bool,
     pub transcript_kept: bool,
+    /// The recognition model that the note recorded when it started
+    /// (KTD2). `None` for a note that started before the update.
+    pub asr_model: Option<String>,
+    /// The note records a live transcript (R8, R18). The Transcript tab
+    /// reads this, not the model selected now (R9).
+    pub live_transcript: bool,
+    /// A Transcribe Again run waits or runs (KTD14). It has no live text.
+    pub transcribe_again: bool,
+    /// Why the last Transcribe Again run failed. The note kept its
+    /// previous transcript and summary (R19).
+    pub transcribe_again_error: Option<String>,
+    /// Why the last Transcribe Again run kept the previous summary with
+    /// the new transcript (R19).
+    pub summary_not_updated: Option<String>,
 }
 
 #[derive(Serialize, Type)]
@@ -166,7 +181,7 @@ pub fn session_detail(
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
-    let (record, segments, saving, audio_intact) = {
+    let (record, segments, saving, audio_intact, again) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&session_id)
@@ -178,7 +193,10 @@ pub fn session_detail(
         let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &session_id).map_err(e)?;
         let audio_intact = pipeline::save::home_intact(&store, &session_id).map_err(e)?;
-        (record, segments, saving, audio_intact)
+        let again = store
+            .transcribe_again_marks(&session_id)
+            .map_err(|e| e.to_string())?;
+        (record, segments, saving, audio_intact, again)
     };
     let snapshot = pipeline::progress::snapshot(&shared, &session_id).map_err(e)?;
 
@@ -248,6 +266,11 @@ pub fn session_detail(
         endpoint,
         audio_kept,
         transcript_kept,
+        asr_model: record.asr_model.clone(),
+        live_transcript: record.live_transcript == Some(true),
+        transcribe_again: again.model.is_some(),
+        transcribe_again_error: again.error,
+        summary_not_updated: again.summary_error,
     })
 }
 
@@ -331,6 +354,19 @@ pub async fn rename_session(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The live transcript of a note so far: its saved parts and the text of
+/// the open part (KTD10). The Transcript tab reads it when it opens during
+/// recording, and then follows the live events.
+#[tauri::command]
+#[specta::specta]
+pub fn live_transcript(
+    capture: State<'_, Arc<CaptureManager>>,
+    live: State<'_, Arc<LiveManager>>,
+    session_id: String,
+) -> Result<LiveTranscript, String> {
+    live.transcript(&capture.shared_store(), &session_id)
 }
 
 /// The saved transcript and summary, read from the session's folder.
@@ -716,6 +752,8 @@ mod entry_tests {
                 source: TitleSource::Proposed,
             }),
             found_speakers: Some(3),
+            live_transcript: None,
+            transcribe_again_model: None,
         };
         let e = entry(&record, &[], None);
         assert_eq!(e.title.as_deref(), Some("Budget review"));

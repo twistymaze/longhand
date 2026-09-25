@@ -34,6 +34,23 @@ The folder that Save put a session into. A session keeps its home folder for lif
 ### Title
 The name of a session, shown on Home, on the session page and in the home folder's name. Processing proposes it. The user can rename it at any time, and a title the user set is never replaced automatically. A session with no title yet shows its start time.
 
+## Transcription
+
+### Recognition model
+The model that turns speech into text. The user selects one recognition model in Settings from the catalog of nine. A session records its recognition model when recording starts and keeps it through processing. The speaker-detection weights are not recognition models: the user does not select them, and the UI shows them as one item, "Other required models".
+
+### Live transcript
+The text that a streaming recognition model makes during recording. It shows in the Transcript tab. A live transcript runs only when the session's recognition model streams and the Live transcript switch is on; the session records this live mode when recording starts. The text of the live transcript is final: processing after Stop does not transcribe it again.
+
+### Part
+A span of a live transcript that the app saves as one checkpoint. A part ends at the first pause of at least 600 ms after 4 minutes, and always at 8 minutes. The live stream then starts again for the next part.
+
+### Gap
+Audio of a session that has no live transcript: a span that the live transcript missed because it fell behind, failed or stopped, or a part that did not save before a crash. After Stop, recognition transcribes only the gaps in batch ("gap fill").
+
+### Transcribe Again
+The action that makes a new transcript and a new summary of a saved session with the selected recognition model. The session's audio, its notes and its title stay. When the run fails before Save, the session stays Saved with its previous files. The UI label is "Transcribe Again…".
+
 ## Summaries
 
 ### Summary prompt

@@ -7,7 +7,10 @@ mod http;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use asr::{AsrError, AsrSegment, Recognizer, WindowText};
+use asr::{
+    AsrError, AsrSegment, LiveStream, LiveText, PartPolicy, Parts, Recognizer, TimedToken,
+    WindowText,
+};
 use common::{queue_session, speech, store};
 use diarize::{Analysis, AudioSource, DiarizeError, DiarizeRequest, SpeakerAnalyzer};
 use pipeline::join::TRANSCRIPT_FILE;
@@ -47,8 +50,19 @@ struct Script {
     blank_on: Mutex<Vec<usize>>,
     diarize_fails: AtomicBool,
     weights_missing: AtomicBool,
+    /// The model streams: each stream says one word for each full second it
+    /// hears.
+    streaming: AtomicBool,
     /// Where sessions are saved; unset is no destination chosen.
     destination: Mutex<Option<std::path::PathBuf>>,
+    /// The model of each transcribe call, in order.
+    models_called: Mutex<Vec<String>>,
+    /// Set this flag, as capture starts, after the given number of calls.
+    capture_after: Mutex<Option<(usize, Arc<AtomicBool>)>>,
+    /// Models that are not on disk.
+    missing: Mutex<Vec<String>>,
+    /// A capture is active: the runner is suspended.
+    capturing: AtomicBool,
     /// The active summary prompt; unset is the "Topic summary" built-in.
     prompt: Mutex<Option<summarize::Prompt>>,
 }
@@ -100,6 +114,12 @@ impl Recognizer for Fake {
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
         let n = s.calls.fetch_add(1, Ordering::SeqCst);
+        s.models_called.lock().unwrap().push(self.model.clone());
+        if let Some((after, flag)) = s.capture_after.lock().unwrap().as_ref()
+            && n + 1 == *after
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
         s.running.fetch_sub(1, Ordering::SeqCst);
         if s.fail_on.lock().unwrap().take_if(|f| *f == n).is_some() {
             return Err(AsrError::Run("decoder exploded".into()));
@@ -150,13 +170,50 @@ impl Recognizer for Fake {
             }],
         })
     }
+
+    fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
+        if !self.script.streaming.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(FakeStream { samples: 0 })))
+    }
+}
+
+struct FakeStream {
+    samples: u64,
+}
+
+impl LiveStream for FakeStream {
+    fn feed(&mut self, pcm: &[f32]) -> Result<bool, AsrError> {
+        let before = self.samples / 16_000;
+        self.samples += pcm.len() as u64;
+        Ok(self.samples / 16_000 > before)
+    }
+    fn text(&self) -> LiveText {
+        LiveText {
+            committed: format!("{} seconds", self.samples / 16_000),
+            tentative: String::new(),
+        }
+    }
+    fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
+        Ok((0..self.samples / 16_000)
+            .map(|n| TimedToken {
+                text: format!(" s{n}"),
+                start_ms: n * 1_000,
+                end_ms: n * 1_000 + 500,
+            })
+            .collect())
+    }
+    fn reset(&mut self) {
+        self.samples = 0;
+    }
 }
 
 struct Provider(Arc<Script>);
 
 impl EngineProvider for Provider {
-    fn ready(&self, _: &str) -> bool {
-        true
+    fn ready(&self, model_id: &str) -> bool {
+        !self.0.missing.lock().unwrap().iter().any(|m| m == model_id)
     }
     fn load(&self, model_id: &str) -> Result<Box<dyn Recognizer>, String> {
         self.0.loads.lock().unwrap().push(model_id.to_string());
@@ -236,11 +293,12 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
     let path = root.path().to_path_buf();
+    let capturing = Arc::clone(&script);
     let runner = Runner::new(Environment {
         store: Arc::clone(&store),
         working_root: path.clone(),
         engines: Box::new(Provider(Arc::clone(&script))),
-        suspended: Box::new(|| false),
+        suspended: Box::new(move || capturing.capturing.load(Ordering::SeqCst)),
         events: Box::new(move |e| sink.lock().unwrap().push(e)),
     });
     Rig {
@@ -285,6 +343,32 @@ fn plan(store: &SharedStore, id: &str) -> WindowPlan {
 
 fn state(store: &SharedStore, id: &str) -> SessionState {
     store.lock().unwrap().session(id).unwrap().unwrap().state
+}
+
+#[test]
+fn a_loaded_engine_streams_parts_from_the_engine_slot_when_its_model_streams() {
+    let script = Arc::new(Script::default());
+    let provider = Provider(Arc::clone(&script));
+    // The runner's engine slot holds the loaded recognizer (KTD9).
+    let slot: Mutex<Option<Box<dyn Recognizer>>> =
+        Mutex::new(Some(provider.load("streams").unwrap()));
+    let audio = vec![0.0f32; 3_500 * 16];
+    let run = |slot: &Mutex<Option<Box<dyn Recognizer>>>| {
+        let mut guard = slot.lock().unwrap();
+        let recognizer = guard.as_mut().unwrap();
+        let mut parts = Parts::with_classifier(0, PartPolicy::default(), |_: &[f32]| true);
+        asr::stream_all(&mut **recognizer, &mut parts, &audio, 320).unwrap()
+    };
+
+    assert!(run(&slot).is_none(), "a model that does not stream");
+
+    script.streaming.store(true, Ordering::SeqCst);
+    let parts = run(&slot).unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!((parts[0].start_ms, parts[0].end_ms), (0, 3_500));
+    assert_eq!(asr::join_words(&parts[0].words), "s0 s1 s2");
+    // The slot still holds the engine after the stream.
+    assert_eq!(slot.lock().unwrap().as_ref().unwrap().model_id(), "streams");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -502,6 +586,62 @@ async fn nothing_starts_while_capture_is_active() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_recording_during_the_transcribe_stage_leaves_the_other_note_its_own_model() {
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let capturing = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&capturing);
+    let script: Arc<Script> = Arc::default();
+    with_summaries(&script).await;
+    let dest = tempfile::tempdir().unwrap();
+    *script.destination.lock().unwrap() = Some(dest.path().to_path_buf());
+    // A recording starts after the first window.
+    *script.capture_after.lock().unwrap() = Some((1, Arc::clone(&capturing)));
+    let runner = Runner::new(Environment {
+        store: Arc::clone(&store),
+        working_root: root.path().to_path_buf(),
+        engines: Box::new(Provider(Arc::clone(&script))),
+        suspended: Box::new(move || flag.load(Ordering::SeqCst)),
+        events: Box::new(|_| {}),
+    });
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("batch"),
+        &[(16_000, conversation())],
+    );
+
+    // The live worker takes the slot while the stage waits out the
+    // recording, and loads the recording's model into it (KTD9).
+    let access = runner.engine_access();
+    let recording = Arc::clone(&capturing);
+    let worker = std::thread::spawn(move || {
+        while !recording.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let held = access.hold("live").unwrap().expect("not shut down");
+        assert_eq!(held.as_ref().unwrap().model_id(), "live");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(held);
+        // Stop: the worker saved its last part and released the slot.
+        recording.store(false, Ordering::SeqCst);
+    });
+
+    let (_, outcome) = runner.run_next().await.unwrap();
+    worker.join().unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let called = script.models_called.lock().unwrap().clone();
+    assert!(called.len() >= 2, "{called:?}");
+    assert!(called.iter().all(|m| m == "batch"), "{called:?}");
+    assert_eq!(
+        *script.loads.lock().unwrap(),
+        vec!["batch".to_string(), "live".into(), "batch".into()]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_resume_takes_the_session_back_at_the_next_window_without_being_told() {
     let r = rig().await;
     queue_session(
@@ -649,6 +789,78 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
     assert!(
         transcript.contains(&format!("call {windows}")),
         "{transcript}"
+    );
+}
+
+// ------------------------------------------------------------- gap fill (U7)
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streamed_session_is_saved_from_its_live_text_without_a_batch_window() {
+    // Covers AE3 through the runner.
+    let r = rig().await;
+    let audio = speech();
+    let duration_ms = audio.len() as u64 / 16;
+    queue_session(&r.store, &r.root, "s", 100, Some("m"), &[(16_000, audio)]);
+    // The live worker saved one part with a word in every second.
+    let words = (0..=duration_ms / 1_000)
+        .map(|s| asr::LiveWord {
+            start_ms: s * 1_000,
+            end_ms: s * 1_000 + 300,
+            text: format!("live{s}"),
+        })
+        .collect();
+    let part = asr::LivePart {
+        start_ms: 0,
+        end_ms: duration_ms,
+        words,
+    };
+    pipeline::live::save_part(&r.store, "s", 0, 0, &part).unwrap();
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), 0);
+    assert!(r.script.analyses.load(Ordering::SeqCst) > 0, "speakers ran");
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(transcript.contains("live0 live1 live2"), "{transcript}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_waits_for_its_model_lets_the_next_ready_session_go_first() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "waits",
+        100,
+        Some("downloading"),
+        &[(16_000, speech())],
+    );
+    queue_session(
+        &r.store,
+        &r.root,
+        "ready",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.script.missing.lock().unwrap().push("downloading".into());
+
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("ready", Outcome::Finished));
+    // The waiting session keeps its place, and nothing else can start.
+    assert!(matches!(
+        state(&r.store, "waits"),
+        SessionState::Queued { .. }
+    ));
+    assert!(r.runner.run_next().await.is_none());
+
+    // The model finishes downloading: the waiting session processes.
+    r.script.missing.lock().unwrap().clear();
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("waits", Outcome::Finished));
+    assert_eq!(
+        *r.script.loads.lock().unwrap(),
+        vec!["m".to_string(), "downloading".into()]
     );
 }
 
@@ -3286,4 +3498,406 @@ async fn deleting_a_session_whose_save_stopped_when_staged_removes_the_staged_co
         destination_entries(&r)
     );
     assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+}
+
+// ------------------------------------------------------------- transcribe again (U9)
+
+/// Summaries that name their call: each summary differs from the one
+/// before. Title calls fail.
+async fn numbered_summaries(r: &Rig) -> http::Mock {
+    let n = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let k = n.fetch_add(1, Ordering::SeqCst);
+        (200, http::completion(&format!("Summary number {k}.")))
+    }));
+    summaries_from(r, reply, None).await
+}
+
+/// "s" saved with model "m", with notes and, when given, a user title.
+async fn saved_note(r: &Rig, title: Option<&str>) -> std::path::PathBuf {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    add_notes(&r.store, "s");
+    if let Some(title) = title {
+        set_title(&r.store, "s", title);
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    saved_folder(r, "s")
+}
+
+fn read(folder: &std::path::Path, name: &str) -> String {
+    std::fs::read_to_string(folder.join(name)).unwrap()
+}
+
+fn marks(r: &Rig) -> session_core::TranscribeAgainMarks {
+    r.store.lock().unwrap().transcribe_again_marks("s").unwrap()
+}
+
+fn asr_model(r: &Rig) -> Option<String> {
+    r.store
+        .lock()
+        .unwrap()
+        .session("s")
+        .unwrap()
+        .unwrap()
+        .asr_model
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_notes_and_title() {
+    // Covers AE7.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, Some("Budget review")).await;
+    let (transcript, summary, notes) = (
+        read(&folder, TRANSCRIPT_FILE),
+        read(&folder, "summary.md"),
+        read(&folder, "notes.md"),
+    );
+    let calls = r.script.calls.load(Ordering::SeqCst);
+
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    assert_eq!(asr_model(&r).as_deref(), Some("m"), "not before the save");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(saved_folder(&r, "s"), folder, "the same folder");
+    assert_eq!(destination_entries(&r).len(), 1);
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_ne!(read(&folder, "summary.md"), summary);
+    assert!(summary_is_complete(&folder));
+    assert_eq!(read(&folder, "notes.md"), notes);
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+    // A full pass, with the new model only.
+    let called = r.script.models_called.lock().unwrap()[calls..].to_vec();
+    assert_eq!(called.len(), plan(&r.store, "s").windows.len());
+    assert!(called.iter().all(|m| m == "tdt"), "{called:?}");
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
+    let r = rig().await;
+    let title = title_reply("First");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    assert_eq!(title_of(&r), proposed("First"));
+
+    *title.lock().unwrap() = (200, http::completion("Second"));
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(title_calls(&mock).len(), 1, "no title call for the run");
+    assert_eq!(title_of(&r), proposed("First"));
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcript() {
+    // Covers AE12.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let before: Vec<String> = [TRANSCRIPT_FILE, "summary.md", "notes.md", "session.md"]
+        .iter()
+        .map(|name| read(&folder, name))
+        .collect();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let turns = pipeline::summarize::transcript_turns(&r.store, "s", &segments).unwrap();
+
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Transcribe,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    let after: Vec<String> = [TRANSCRIPT_FILE, "summary.md", "notes.md", "session.md"]
+        .iter()
+        .map(|name| read(&folder, name))
+        .collect();
+    assert_eq!(after, before);
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+    let marks = marks(&r);
+    assert_eq!(marks.model, None);
+    assert!(
+        marks
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("decoder exploded")),
+        "{marks:?}"
+    );
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+    assert!(r.events.lock().unwrap().iter().any(
+        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+    ));
+    // The previous checkpoints came back: the transcript the summary reads
+    // is the saved one, and a regeneration works from it.
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    assert_eq!(
+        pipeline::summarize::transcript_turns(&r.store, "s", &segments).unwrap(),
+        turns
+    );
+    r.runner.regenerate_summary("s").await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_offline_summary_endpoint_keeps_the_previous_summary_with_the_new_transcript() {
+    // Covers AE13.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let (transcript, summary) = (read(&folder, TRANSCRIPT_FILE), read(&folder, "summary.md"));
+
+    let _offline = summaries_from(&r, http::Reply::Json(500, "{}".into()), None).await;
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(read(&folder, "summary.md"), summary, "the previous summary");
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    let marks = marks(&r);
+    assert!(marks.summary_error.is_some(), "{marks:?}");
+    assert_eq!(marks.error, None);
+
+    // A regeneration that succeeds updates the summary and the notice goes.
+    let _online = numbered_summaries(&r).await;
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(self::marks(&r).summary_error, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_is_refused_while_a_regeneration_runs_a_capture_is_active_or_audio_is_gone()
+ {
+    let r = rig().await;
+    let folder = saved_note(&r, None).await;
+    let refused = |r: &Rig| {
+        assert!(r.runner.transcribe_again("s", "tdt").is_err());
+        assert_eq!(state(&r.store, "s"), SessionState::Saved);
+        assert_eq!(marks(r).model, None);
+    };
+
+    let claim = r.runner.claims().regenerate("s").unwrap();
+    refused(&r);
+    drop(claim);
+
+    r.script.capturing.store(true, Ordering::SeqCst);
+    refused(&r);
+    r.script.capturing.store(false, Ordering::SeqCst);
+
+    std::fs::remove_file(folder.join("audio/segment-01.opus")).unwrap();
+    refused(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_that_waits_for_its_model_lets_other_notes_go_first() {
+    // R17, KTD13.
+    let r = rig().await;
+    saved_note(&r, None).await;
+    r.script.missing.lock().unwrap().push("downloading".into());
+    r.runner.transcribe_again("s", "downloading").unwrap();
+    queue_session(
+        &r.store,
+        &r.root,
+        "other",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("other", Outcome::Finished));
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    assert!(r.runner.run_next().await.is_none());
+
+    r.script.missing.lock().unwrap().clear();
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("s", Outcome::Finished));
+    assert_eq!(asr_model(&r).as_deref(), Some("downloading"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let transcript = read(&folder, TRANSCRIPT_FILE);
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    *r.script.cancel_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.runner), "s".into()));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+    let windows = plan(&r.store, "s").windows.len();
+
+    // The next launch.
+    let relaunched = Runner::new(Environment {
+        store: Arc::clone(&r.store),
+        working_root: r.root.clone(),
+        engines: Box::new(Provider(Arc::clone(&r.script))),
+        suspended: Box::new(|| false),
+        events: Box::new(|_| {}),
+    });
+    assert_eq!(
+        relaunched
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        ["s"]
+    );
+    assert_eq!(relaunched.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        r.script.calls.load(Ordering::SeqCst) - calls,
+        windows,
+        "no window ran twice"
+    );
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_transcribe_again_that_then_fails_is_a_normal_failure_that_keeps_the_new_audio() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    resume_completed(&r, "s", &speech());
+    assert_eq!(marks(&r).model, None);
+    *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    assert!(r.root.join("s").join("audio/segment-02.opus").exists());
+    assert_eq!(marks(&r).error, None);
+    // The note keeps its model: the run did not save.
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_save_that_fails_after_a_home_write_keeps_the_run_and_a_retry_finishes_it()
+ {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let transcript = read(&folder, TRANSCRIPT_FILE);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    // A directory at summary.md stops the save after it replaced
+    // transcript.md.
+    std::fs::remove_file(folder.join("summary.md")).unwrap();
+    std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Save,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    let replaced = read(&folder, TRANSCRIPT_FILE);
+    assert_ne!(replaced, transcript, "the new transcript is in the folder");
+    assert!(
+        !r.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, RunnerEvent::TranscribeAgainFailed { .. }))
+    );
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    // The run keeps its marker and its checkpoints until the save finishes.
+    assert_eq!(marks(&r).model.as_deref(), Some("tdt"));
+    assert_eq!(marks(&r).error, None);
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+    assert!(
+        r.root.join("s").exists(),
+        "the working copy stays for a retry"
+    );
+
+    std::fs::remove_dir_all(folder.join("summary.md")).unwrap();
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.retry("s").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        r.script.calls.load(Ordering::SeqCst),
+        calls,
+        "no window ran again"
+    );
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_eq!(read(&folder, TRANSCRIPT_FILE), replaced);
+    assert!(summary_is_complete(&folder));
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_while_transcribe_again_recognizes_a_window_keeps_the_restored_transcription() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    saved_note(&r, None).await;
+    let before = transcribe::results(&r.store, "s").unwrap();
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    // The resume comes while the run's first window is recognized.
+    *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+
+    assert_eq!(state(&r.store, "s"), SessionState::Capturing);
+    assert_eq!(marks(&r).model, None);
+    assert_eq!(
+        transcribe::results(&r.store, "s").unwrap(),
+        before,
+        "the window recognized during the resume is not written"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_diarization_failure_during_transcribe_again_saves_the_new_transcript_without_speakers() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let transcript = read(&folder, TRANSCRIPT_FILE);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    r.script.diarize_fails.store(true, Ordering::SeqCst);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+    assert_eq!(
+        pipeline::diarize::speakers(&r.store, "s").unwrap(),
+        pipeline::diarize::Speakers::Unavailable
+    );
+    let events = r.events.lock().unwrap();
+    assert!(events.iter().any(
+        |e| matches!(e, RunnerEvent::SpeakersUnavailable { session_id, .. } if session_id == "s")
+    ));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, RunnerEvent::TranscribeAgainFailed { .. }))
+    );
 }

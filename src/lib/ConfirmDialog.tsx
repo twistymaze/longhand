@@ -1,21 +1,25 @@
 // A question before a change that cannot be undone, such as a delete. Cancel
 // has the focus, so Return does not confirm by accident.
 
-import { useEffect, useId, useRef } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 
 export function ConfirmDialog({
   title,
   message,
   action,
   busy = false,
+  destructive = true,
   onConfirm,
   onCancel,
 }: {
   title: string;
-  message: string;
+  message: ReactNode;
   action: string;
   /// The confirmed change is in progress. The confirm button is disabled.
   busy?: boolean;
+  /// The action removes something, so its button is red. An action that
+  /// replaces something uses the accent colour.
+  destructive?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -37,9 +41,9 @@ export function ConfirmDialog({
         <h2 id={`${id}-title`} className="font-semibold break-words">
           {title}
         </h2>
-        <p id={`${id}-message`} className="mt-1 text-[0.85rem] text-label-secondary">
-          {message}
-        </p>
+        <div id={`${id}-message`} className="mt-1 grid gap-1.5 text-[0.85rem] text-label-secondary">
+          {typeof message === "string" ? <p>{message}</p> : message}
+        </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
             ref={cancel}
@@ -53,7 +57,9 @@ export function ConfirmDialog({
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className="rounded-md bg-negative px-2.5 py-[3px] text-white active:opacity-80 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
+            className={`rounded-md px-2.5 py-[3px] text-white active:opacity-80 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 ${
+              destructive ? "bg-negative" : "bg-accent"
+            }`}
           >
             {action}
           </button>

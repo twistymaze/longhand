@@ -37,11 +37,63 @@ pub struct SessionRecord {
     pub state: SessionState,
     pub queue_seq: Option<i64>,
     pub speaker_count: Option<SpeakerCount>,
+    /// The recognition model that the session records when it starts, or at
+    /// Stop for a session that started before the update (KTD2).
     pub asr_model: Option<String>,
     pub home_path: Option<String>,
     pub title: Option<Title>,
     /// The number of speakers that processing found (KTD11).
     pub found_speakers: Option<u32>,
+    /// The session transcribes during recording (R18, KTD2). `None` for a
+    /// session from before migration 0004.
+    pub live_transcript: Option<bool>,
+    /// The model of a queued or running Transcribe Again run, the same value
+    /// as [`TranscribeAgainMarks::model`]. The run uses this model, not
+    /// `asr_model` (KTD14).
+    pub transcribe_again_model: Option<String>,
+}
+
+/// The recognition model and the live mode that a session records when it
+/// starts (KTD2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingModel {
+    pub asr_model: String,
+    /// True only when the model streams and the Live transcript switch is on.
+    pub live_transcript: bool,
+}
+
+/// The marks of Transcribe Again on a session (KTD14).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TranscribeAgainMarks {
+    /// The model of a queued or running Transcribe Again run. `None` when
+    /// no run waits or runs.
+    pub model: Option<String>,
+    /// Why the last run failed before its save. The session kept its
+    /// previous transcript and summary.
+    pub error: Option<String>,
+    /// Why the summary of the last run that saved was not updated. The
+    /// session has the new transcript and the previous summary.
+    pub summary_error: Option<String>,
+}
+
+/// The stages whose checkpoints a Transcribe Again run replaces: every
+/// stage. Assemble is one of them because its completion mark would skip
+/// the stage, and the run needs the processing files that Assemble decodes
+/// again from the session's folder (KTD14).
+const AGAIN_STAGES: [Stage; 7] = [
+    Stage::Assemble,
+    Stage::Diarize,
+    Stage::Transcribe,
+    Stage::Join,
+    Stage::Verify,
+    Stage::Summarize,
+    Stage::Save,
+];
+
+/// The stage name that holds a copy of `stage`'s checkpoints from before a
+/// Transcribe Again run. [`Store::checkpoints`] never reads it.
+fn previous_key(stage: Stage) -> String {
+    format!("previous_{}", stage_key(stage))
 }
 
 /// Where a title came from (KTD7).
@@ -99,7 +151,7 @@ fn stage_key(stage: Stage) -> String {
 
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
-     home_path, title, title_source, found_speakers";
+     home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -133,15 +185,27 @@ impl Store {
 
     // ------------------------------------------------------------ sessions
 
-    /// Create a capturing session with an empty notes document.
+    /// Create a capturing session with an empty notes document and no
+    /// recorded model.
     pub fn create_session(
         &mut self,
         id: &str,
         created_at: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<()> {
+        self.insert_session(id, created_at, speaker_count, None)
+    }
+
+    fn insert_session(
+        &mut self,
+        id: &str,
+        created_at: DateTime<FixedOffset>,
+        speaker_count: Option<SpeakerCount>,
+        model: Option<&RecordingModel>,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, created_at, state, speaker_count) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -149,6 +213,8 @@ impl Store {
                 speaker_count
                     .map(|c| serde_json::to_string(&c))
                     .transpose()?,
+                model.map(|m| m.asr_model.as_str()),
+                model.map(|m| m.live_transcript),
             ],
         )?;
         Ok(())
@@ -156,12 +222,13 @@ impl Store {
 
     /// Start a new session from the shortcut (R6c): any session still capturing
     /// or interrupted is stopped and queued first (or discarded if it kept no
-    /// audio), then the new one is created.
+    /// audio), then the new one is created with `model` (KTD2).
     pub fn start_session(
         &mut self,
         id: &str,
         now: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
+        model: &RecordingModel,
     ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
@@ -177,7 +244,7 @@ impl Store {
                 stopped.push(record.id);
             }
         }
-        self.create_session(id, now, speaker_count)?;
+        self.insert_session(id, now, speaker_count, Some(model))?;
         Ok(stopped)
     }
 
@@ -224,7 +291,7 @@ impl Store {
         Ok(())
     }
 
-    /// Record the recognition model selected when the session stopped (R20c).
+    /// Record the recognition model of the session.
     pub fn set_asr_model(&self, id: &str, model: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE sessions SET asr_model = ?2 WHERE id = ?1",
@@ -233,10 +300,155 @@ impl Store {
         Ok(())
     }
 
+    /// Record the model and the live mode of the session. A resume uses
+    /// this when the session's model is no longer downloaded (KTD2).
+    pub fn set_recording_model(&self, id: &str, model: &RecordingModel) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET asr_model = ?2, live_transcript = ?3 WHERE id = ?1",
+            params![id, model.asr_model, model.live_transcript],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Record `model` for a session that has no recorded model: one that
+    /// started before the update (KTD2). Such a session did not transcribe
+    /// during recording, so its live mode becomes false. Returns false and
+    /// changes nothing when the session already has a model.
+    pub fn record_model_if_unset(&self, id: &str, model: &str) -> Result<bool> {
+        self.require(id)?;
+        let changed = self.conn.execute(
+            "UPDATE sessions SET asr_model = ?2, live_transcript = COALESCE(live_transcript, 0)
+             WHERE id = ?1 AND asr_model IS NULL",
+            params![id, model],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn set_home_path(&self, id: &str, path: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE sessions SET home_path = ?2 WHERE id = ?1",
             params![id, path],
+        )?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ transcribe again
+
+    pub fn transcribe_again_marks(&self, id: &str) -> Result<TranscribeAgainMarks> {
+        self.conn
+            .query_row(
+                "SELECT transcribe_again_model, transcribe_again_error, transcribe_again_summary_error
+                 FROM sessions WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(TranscribeAgainMarks {
+                        model: r.get(0)?,
+                        error: r.get(1)?,
+                        summary_error: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
+    }
+
+    /// Queue a saved session for a Transcribe Again run with `model` (R15,
+    /// KTD14). `event` is the [`Event::UserTranscribeAgain`] with its guards.
+    /// In one transaction: the session is queued, the checkpoints of every
+    /// stage are set aside, the model is recorded and the
+    /// notices of an earlier run are cleared. The session's `asr_model`
+    /// stays until the run saves. A refused event changes nothing.
+    pub fn transcribe_again(
+        &mut self,
+        id: &str,
+        model: &str,
+        event: &Event,
+    ) -> Result<SessionState> {
+        if !matches!(event, Event::UserTranscribeAgain { .. }) {
+            return Err(StoreError::Illegal(IllegalTransition {
+                state: "saved".into(),
+                event: format!("{event:?}"),
+            }));
+        }
+        let current = self.require(id)?;
+        let next = current.state.transition(event)?;
+        let tx = self.conn.transaction()?;
+        write_state(&tx, id, &next)?;
+        apply_queue_effects(&tx, id, &current.state, &next, event)?;
+        for stage in AGAIN_STAGES {
+            move_checkpoints(&tx, id, &stage_key(stage), &previous_key(stage))?;
+        }
+        tx.execute(
+            "UPDATE sessions SET transcribe_again_model = ?2, transcribe_again_error = NULL,
+             transcribe_again_summary_error = NULL WHERE id = ?1",
+            params![id, model],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// A Transcribe Again run failed before its save (R19): the session is
+    /// saved again with the checkpoints it had before the run, and `error`
+    /// is recorded for the note page. The caller removes the working
+    /// directory. Refused for a session that runs no Transcribe Again.
+    pub fn fail_transcribe_again(&mut self, id: &str, error: &str) -> Result<SessionState> {
+        let current = self.require(id)?;
+        if self.transcribe_again_marks(id)?.model.is_none() {
+            return Err(StoreError::Illegal(IllegalTransition {
+                state: current.state.name().to_string(),
+                event: "TranscribeAgainFailed with no Transcribe Again run".into(),
+            }));
+        }
+        let event = Event::TranscribeAgainFailed;
+        let next = current.state.transition(&event)?;
+        let tx = self.conn.transaction()?;
+        write_state(&tx, id, &next)?;
+        apply_queue_effects(&tx, id, &current.state, &next, &event)?;
+        for stage in AGAIN_STAGES {
+            restore_previous(&tx, id, stage)?;
+        }
+        tx.execute(
+            "UPDATE sessions SET transcribe_again_model = NULL, transcribe_again_error = ?2
+             WHERE id = ?1",
+            params![id, error],
+        )?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// Called by the save stage when a save is complete, before the session
+    /// becomes Saved. For a Transcribe Again run, the session's `asr_model`
+    /// becomes the run's model, the checkpoints from before the run are
+    /// dropped, and `summary_error` records why the previous summary stays.
+    /// Every save clears the notices of an earlier run.
+    pub fn finish_transcribe_again(&self, id: &str, summary_error: Option<&str>) -> Result<()> {
+        let model = self.transcribe_again_marks(id)?.model;
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(model) = &model {
+            tx.execute(
+                "UPDATE sessions SET asr_model = ?2 WHERE id = ?1",
+                params![id, model],
+            )?;
+            delete_previous(&tx, id)?;
+        }
+        tx.execute(
+            "UPDATE sessions SET transcribe_again_model = NULL, transcribe_again_error = NULL,
+             transcribe_again_summary_error = ?2 WHERE id = ?1",
+            params![id, model.and(summary_error)],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The summary was made again (R19): the note has no summary from a
+    /// previous transcript now.
+    pub fn clear_summary_not_updated(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET transcribe_again_summary_error = NULL WHERE id = ?1",
+            [id],
         )?;
         Ok(())
     }
@@ -472,7 +684,31 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
-        let Some(id) = next else {
+        match next {
+            Some(id) => self.dequeue_session(&id, owner, now),
+            None => Ok(None),
+        }
+    }
+
+    /// Take the queued session `id` and claim it for `owner`, whatever its
+    /// place in the queue: the runner takes a later session when the head
+    /// session waits for its model (KTD13). `None` when `id` is not queued.
+    pub fn dequeue_session(
+        &mut self,
+        id: &str,
+        owner: &str,
+        now: DateTime<FixedOffset>,
+    ) -> Result<Option<String>> {
+        let queued: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM sessions WHERE id = ?1 AND queue_seq IS NOT NULL
+                 AND json_extract(state, '$.state') = 'queued'",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(id) = queued else {
             return Ok(None);
         };
         self.apply(&id, &Event::Dequeued)?;
@@ -665,6 +901,8 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let title: Option<String> = r.get(7)?;
     let title_source: Option<String> = r.get(8)?;
     let found_speakers: Option<u32> = r.get(9)?;
+    let live_transcript: Option<bool> = r.get(10)?;
+    let transcribe_again_model: Option<String> = r.get(11)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -687,6 +925,8 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
             home_path,
             title,
             found_speakers,
+            live_transcript,
+            transcribe_again_model,
         })
     })())
 }
@@ -695,6 +935,65 @@ fn write_state(tx: &Transaction, id: &str, state: &SessionState) -> Result<()> {
     tx.execute(
         "UPDATE sessions SET state = ?2 WHERE id = ?1",
         params![id, serde_json::to_string(state)?],
+    )?;
+    Ok(())
+}
+
+/// Replace `stage`'s checkpoints with the copy set aside before a
+/// Transcribe Again run.
+fn restore_previous(tx: &Transaction, id: &str, stage: Stage) -> Result<()> {
+    move_checkpoints(tx, id, &previous_key(stage), &stage_key(stage))
+}
+
+/// Replace the checkpoints stored under the stage name `to` with those
+/// stored under `from`.
+fn move_checkpoints(tx: &Transaction, id: &str, from: &str, to: &str) -> Result<()> {
+    tx.execute(
+        "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+        params![id, to],
+    )?;
+    tx.execute(
+        "UPDATE checkpoints SET stage = ?3 WHERE session_id = ?1 AND stage = ?2",
+        params![id, from, to],
+    )?;
+    Ok(())
+}
+
+fn delete_previous(tx: &Transaction, id: &str) -> Result<()> {
+    for stage in AGAIN_STAGES {
+        tx.execute(
+            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+            params![id, previous_key(stage)],
+        )?;
+    }
+    Ok(())
+}
+
+/// A resume takes a queued or running Transcribe Again run back (KTD14):
+/// the session then resumes as a saved session does. Its assembly and
+/// transcription from before the run come back, and the stages after them
+/// run again.
+fn cancel_transcribe_again(tx: &Transaction, id: &str) -> Result<()> {
+    let model: Option<String> = tx.query_row(
+        "SELECT transcribe_again_model FROM sessions WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    if model.is_none() {
+        return Ok(());
+    }
+    for stage in AGAIN_STAGES {
+        tx.execute(
+            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+            params![id, stage_key(stage)],
+        )?;
+    }
+    restore_previous(tx, id, Stage::Assemble)?;
+    restore_previous(tx, id, Stage::Transcribe)?;
+    delete_previous(tx, id)?;
+    tx.execute(
+        "UPDATE sessions SET transcribe_again_model = NULL WHERE id = ?1",
+        [id],
     )?;
     Ok(())
 }
@@ -730,6 +1029,7 @@ fn apply_queue_effects(
         // discards summarization output, keeping transcription and
         // diarization checkpoints for the segments already recorded (R6b).
         SessionState::Capturing if before.is_stopped() => {
+            cancel_transcribe_again(tx, id)?;
             tx.execute("UPDATE sessions SET queue_seq = NULL WHERE id = ?1", [id])?;
             tx.execute("DELETE FROM jobs WHERE session_id = ?1", [id])?;
             tx.execute(

@@ -22,7 +22,7 @@ pub const MAX_WINDOW_MS: u64 = 30_000;
 pub const JOIN_GAP_MS: u64 = 2_000;
 /// How far back from the limit an over-long span looks for its quietest frame.
 const SPLIT_SEARCH_MS: u64 = 5_000;
-const THRESHOLD: f32 = 0.5;
+pub(crate) const THRESHOLD: f32 = 0.5;
 
 /// A half-open interval `[start_ms, end_ms)` within a segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -20,7 +20,7 @@ function MainWindow() {
   const [view, setView] = useState<View>({ kind: "home" });
   const capture = useCapture();
   const sessions = useSessions();
-  const { settings, readiness, models } = useAppSettings();
+  const { settings, readiness } = useAppSettings();
 
   // A recording that starts or resumes, from the shortcut or anywhere, opens
   // its session's page (KTD2). So does the tray's "Open Longhand" while a
@@ -73,7 +73,6 @@ function MainWindow() {
           capture={capture}
           sessions={sessions}
           readiness={readiness}
-          models={models}
           onBack={back}
         />
       )}

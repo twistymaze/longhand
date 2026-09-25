@@ -34,8 +34,16 @@ pub struct CatalogModel {
     /// Recognition models only: whether a live transcript is possible (R10).
     #[serde(default)]
     pub streaming: bool,
+    /// Recognition models only: the timestamp level, "token", "word" or
+    /// "segment". The speaker join needs timestamps (R2).
     #[serde(default)]
     pub timestamps: Option<String>,
+    /// Recognition models only: the language codes the model recognizes.
+    #[serde(default)]
+    pub languages: Vec<String>,
+    /// The model the picker marks as recommended.
+    #[serde(default)]
+    pub recommended: bool,
     pub repository: String,
     pub revision: String,
     /// Name on disk inside the models directory.
@@ -61,8 +69,9 @@ pub fn model(id: &str) -> Option<&'static CatalogModel> {
     CATALOG.iter().find(|m| m.id == id)
 }
 
-/// The recognition model a fresh install selects (KTD6).
-pub const DEFAULT_ASR_MODEL: &str = "whisper-large-v3-turbo-q5km";
+/// The recognition model a fresh install selects (KD8, R3). An install that
+/// already has a stored model keeps it.
+pub const DEFAULT_ASR_MODEL: &str = "parakeet-unified-en-0.6b-q80";
 
 /// The models processing cannot run without: the selected recognition model
 /// and both diarization weights.
@@ -117,9 +126,102 @@ mod tests {
         assert_eq!(before, names.len());
     }
 
+    /// R1: id, whether it streams, and the language count of each model.
+    const R1: [(&str, bool, usize); 9] = [
+        ("parakeet-unified-en-0.6b-q80", true, 1),
+        ("nemotron-speech-streaming-en-0.6b-q80", true, 1),
+        ("nemotron-3.5-asr-streaming-0.6b-q80", true, 28),
+        ("multitalker-parakeet-streaming-0.6b-v1-q80", true, 1),
+        ("parakeet-tdt-0.6b-v2-q80", false, 1),
+        ("parakeet-tdt-0.6b-v3-q80", false, 25),
+        ("parakeet-tdt-1.1b-q5km", false, 1),
+        ("whisper-large-v3-turbo-q5km", false, 100),
+        ("moss-transcribe-diarize-q80", false, 2),
+    ];
+
+    fn asr_models() -> Vec<&'static CatalogModel> {
+        CATALOG
+            .iter()
+            .filter(|m| m.kind == ModelKind::Asr)
+            .collect()
+    }
+
+    #[test]
+    fn asr_entries_are_the_nine_models_of_r1() {
+        let mut ids: Vec<_> = asr_models().iter().map(|m| m.id.as_str()).collect();
+        let mut expected: Vec<_> = R1.iter().map(|(id, ..)| *id).collect();
+        ids.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+    }
+
+    #[test]
+    fn streaming_and_languages_match_r1() {
+        for (id, streaming, languages) in R1 {
+            let m = model(id).unwrap_or_else(|| panic!("{id} is not in the catalog"));
+            assert_eq!(m.streaming, streaming, "{id}: streaming");
+            assert_eq!(m.languages.len(), languages, "{id}: language count");
+            assert!(
+                m.languages
+                    .iter()
+                    .all(|l| !l.is_empty() && !l.contains(' ')),
+                "{id}: language codes"
+            );
+        }
+    }
+
+    #[test]
+    fn every_asr_entry_has_timestamps() {
+        for m in asr_models() {
+            let level = m.timestamps.as_deref();
+            assert!(
+                matches!(level, Some("token" | "word" | "segment")),
+                "{}: timestamp level {level:?}",
+                m.id
+            );
+        }
+    }
+
+    #[test]
+    fn every_entry_names_its_licence() {
+        for m in CATALOG.iter() {
+            assert!(!m.licence.name.is_empty(), "{}", m.id);
+            assert!(m.licence.url.starts_with("https://"), "{}", m.id);
+        }
+    }
+
+    #[test]
+    fn only_the_default_model_is_recommended() {
+        let recommended: Vec<_> = CATALOG.iter().filter(|m| m.recommended).collect();
+        assert_eq!(recommended.len(), 1);
+        assert_eq!(recommended[0].id, DEFAULT_ASR_MODEL);
+    }
+
     #[test]
     fn default_model_needs_three_files() {
-        assert!(model(DEFAULT_ASR_MODEL).is_some());
-        assert_eq!(required_for(DEFAULT_ASR_MODEL).len(), 3);
+        assert_eq!(DEFAULT_ASR_MODEL, "parakeet-unified-en-0.6b-q80");
+        let mut ids: Vec<_> = required_for(DEFAULT_ASR_MODEL)
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "parakeet-unified-en-0.6b-q80",
+                "pyannote-segmentation-3.0",
+                "wespeaker-voxceleb-resnet34-lm",
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_model_needs_only_the_diarization_weights() {
+        let kinds: Vec<_> = required_for("no-such-model")
+            .iter()
+            .map(|m| m.kind)
+            .collect();
+        assert_eq!(kinds.len(), 2);
+        assert!(!kinds.contains(&ModelKind::Asr));
     }
 }

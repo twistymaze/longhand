@@ -8,7 +8,7 @@ import { SettingsWindow } from "./SettingsWindow";
 import { SummaryPrompts } from "./SummaryPrompts";
 
 const baseSettings: Settings = {
-  settings_schema_version: 3,
+  settings_schema_version: 4,
   shortcut: "Alt+Shift+L",
   destination_roots: [],
   current_destination: null,
@@ -17,6 +17,8 @@ const baseSettings: Settings = {
   context_limit_tokens: null,
   default_speaker_count: null,
   asr_model: "a",
+  pending_asr_model: null,
+  live_transcript: true,
   learned_context_limits: {},
   alert_tone_heard: true,
   summary_prompts: [],
@@ -582,7 +584,12 @@ describe("SummaryPrompts", () => {
 
 test("a pane change in the Settings window saves the prompt text and asks nothing", async () => {
   mockWindows("settings");
-  const tauri = backend({ get_settings: () => baseSettings, readiness: () => readiness, model_statuses: () => [] });
+  const tauri = backend({
+    get_settings: () => baseSettings,
+    readiness: () => readiness,
+    model_statuses: () => [],
+    speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
+  });
   render(<SettingsWindow />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("tab", { name: "Summaries" }));

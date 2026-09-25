@@ -1,0 +1,870 @@
+//! The live transcript during recording (KTD3, KTD4, KTD7, KTD9).
+//!
+//! A live worker runs next to each capture segment. The recorder offers it
+//! each frame with the frame's sample index through a bounded channel, and
+//! never waits: a full channel drops the frame. The worker resamples to
+//! 16 kHz and streams the audio through the recognizer in parts
+//! ([`asr::Parts`]). Each finished part is saved at once as a checkpoint
+//! row, `seg-NNNN-live-NNNN` in the Transcribe stage. The row holds the
+//! part's span of segment audio and its timed words.
+//!
+//! A gap is segment audio that no saved part covers. Processing after Stop
+//! gives a gap a full recognition pass (R13). A gap starts when:
+//! - frames are dropped: the part ends at the last frame the worker
+//!   received, and a new part starts at the next frame;
+//! - the stream fails: the part ends at the last audio the stream accepted;
+//! - the stream stalls: [`STALL_MS`] of voiced audio give no new committed
+//!   text, and the part ends where the committed text last changed;
+//! - the process stops before the worker saves its open part.
+//!
+//! The recording never stops for a live failure.
+//!
+//! The worker saves a part (the step) before it counts the part as covered
+//! and tells the surface (the record). A row is written in one statement,
+//! so a crash leaves the row whole or absent, and an absent row is a gap.
+//!
+//! The worker shares the runner's one loaded engine (KTD9). It locks the
+//! engine slot for as long as it streams, and loads the note's model into
+//! the slot when the slot holds another model or is empty. Processing is
+//! suspended while a worker runs, and [`Workers::busy`] keeps it suspended
+//! after Stop until the last worker has saved its last part and released
+//! the slot. Workers run one after another: a segment's worker waits for
+//! the worker of the segment before it.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use asr::{AsrError, Cut, LivePart, LiveStream, LiveText, LiveWord, Parts, Recognizer, join_words};
+use serde::{Deserialize, Serialize};
+use session_core::Stage;
+use tokio_util::sync::CancellationToken;
+
+use crate::resample::StreamResampler;
+use crate::{SharedStore, StageError, checkpoint, lock};
+
+/// The runner's one loaded engine (KTD9).
+pub type EngineSlot = Arc<Mutex<Option<Box<dyn Recognizer>>>>;
+
+/// Loads a recognition model by its catalog id.
+pub type Loader = Arc<dyn Fn(&str) -> Result<Box<dyn Recognizer>, String> + Send + Sync>;
+
+/// Frames of 20 ms that wait for the worker: 5 s of audio.
+pub const CHANNEL_FRAMES: usize = 250;
+
+/// Voiced audio with no new committed text that counts as a stall
+/// (Anarlog's stall rule).
+pub const STALL_MS: u64 = 45_000;
+
+/// How long a stream that failed to start waits, in segment audio, before
+/// the worker tries again.
+const RETRY_MS: u64 = 10_000;
+
+/// How often a worker that waits for frames checks for a quit.
+const POLL: Duration = Duration::from_millis(100);
+
+/// One saved part of the live transcript: a checkpoint row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRow {
+    pub segment: u32,
+    /// The part's number in its segment, from 0.
+    pub part: u32,
+    /// The span of segment audio that the stream heard, in milliseconds
+    /// from the start of the segment.
+    pub start_ms: u64,
+    pub end_ms: u64,
+    /// In milliseconds from the start of the segment.
+    pub words: Vec<LiveWord>,
+}
+
+impl LiveRow {
+    pub fn text(&self) -> String {
+        join_words(&self.words)
+    }
+}
+
+/// Save `live` as part `part` of `segment`.
+pub fn save_part(
+    store: &SharedStore,
+    session_id: &str,
+    segment: u32,
+    part: u32,
+    live: &LivePart,
+) -> Result<LiveRow, StageError> {
+    let row = LiveRow {
+        segment,
+        part,
+        start_ms: live.start_ms,
+        end_ms: live.end_ms,
+        words: live.words.clone(),
+    };
+    checkpoint::put(
+        store,
+        session_id,
+        Stage::Transcribe,
+        &checkpoint::live_key(segment, part),
+        &row,
+    )?;
+    Ok(row)
+}
+
+/// Every live row of a session, in segment and part order.
+pub fn rows(store: &SharedStore, session_id: &str) -> Result<Vec<LiveRow>, StageError> {
+    let mut out = Vec::new();
+    for (key, payload) in checkpoint::all(store, session_id, Stage::Transcribe)? {
+        if key.contains("-live-") {
+            out.push(serde_json::from_str::<LiveRow>(&payload)?);
+        }
+    }
+    out.sort_by_key(|r| (r.segment, r.part));
+    Ok(out)
+}
+
+/// The live rows of one segment, in part order.
+pub fn segment_rows(
+    store: &SharedStore,
+    session_id: &str,
+    segment: u32,
+) -> Result<Vec<LiveRow>, StageError> {
+    let mut out = rows(store, session_id)?;
+    out.retain(|r| r.segment == segment);
+    Ok(out)
+}
+
+/// Delete the live rows of a segment that was discarded. Returns how many
+/// rows it deleted.
+pub fn delete_segment(
+    store: &SharedStore,
+    session_id: &str,
+    segment: u32,
+) -> Result<usize, StageError> {
+    let prefix = checkpoint::live_prefix(segment);
+    let guard = lock(store);
+    let keys: Vec<String> = guard
+        .checkpoints(session_id, Stage::Transcribe)?
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with(&prefix))
+        .collect();
+    for key in &keys {
+        guard.delete_checkpoint(session_id, Stage::Transcribe, key)?;
+    }
+    Ok(keys.len())
+}
+
+/// The number of the next part of `segment`.
+fn next_part(store: &SharedStore, session_id: &str, segment: u32) -> u32 {
+    match segment_rows(store, session_id, segment) {
+        Ok(rows) => rows.last().map_or(0, |r| r.part + 1),
+        Err(e) => {
+            log::warn!("could not read the live rows of {session_id}: {e}");
+            0
+        }
+    }
+}
+
+/// One capture frame at the device's rate. `index` is the segment's sample
+/// count before the frame.
+pub struct LiveFrame {
+    pub index: u64,
+    pub pcm: Arc<[f32]>,
+}
+
+/// The recorder's end of the channel to a live worker.
+#[derive(Clone)]
+pub struct LiveTap {
+    tx: SyncSender<LiveFrame>,
+}
+
+impl LiveTap {
+    /// Offer a frame to the worker without waiting. False when the channel
+    /// is full or the worker has stopped: the frame is dropped.
+    pub fn offer(&self, index: u64, pcm: &Arc<[f32]>) -> bool {
+        self.tx
+            .try_send(LiveFrame {
+                index,
+                pcm: Arc::clone(pcm),
+            })
+            .is_ok()
+    }
+}
+
+/// A bounded frame channel of `capacity` frames.
+pub fn channel(capacity: usize) -> (LiveTap, Receiver<LiveFrame>) {
+    let (tx, rx) = mpsc::sync_channel(capacity);
+    (LiveTap { tx }, rx)
+}
+
+/// The live worker's way to the runner's engine slot (KTD9).
+#[derive(Clone)]
+pub struct EngineAccess {
+    slot: EngineSlot,
+    load: Loader,
+    /// The runner's shutdown: after it, nothing loads a model again.
+    shutdown: CancellationToken,
+}
+
+type SlotGuard<'a> = MutexGuard<'a, Option<Box<dyn Recognizer>>>;
+
+impl EngineAccess {
+    pub fn new(slot: EngineSlot, load: Loader, shutdown: CancellationToken) -> Self {
+        Self {
+            slot,
+            load,
+            shutdown,
+        }
+    }
+
+    /// Lock the slot and make it hold `model`: the engine that the slot
+    /// holds when it holds `model`, or `model` loaded in place of what the
+    /// slot holds. `None` after the runner's shutdown, which frees the
+    /// engine for good.
+    pub fn hold(&self, model: &str) -> Result<Option<SlotGuard<'_>>, String> {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        // Checked under the lock, as the runner's stages do.
+        if self.shutdown.is_cancelled() {
+            return Ok(None);
+        }
+        ensure_model(&mut slot, model, &*self.load)?;
+        Ok(Some(slot))
+    }
+}
+
+/// Load `model` into `slot` when the slot holds another model or none. The
+/// old engine is freed before the load, so two models are never loaded at
+/// the same time.
+pub(crate) fn ensure_model(
+    slot: &mut Option<Box<dyn Recognizer>>,
+    model: &str,
+    load: &crate::transcribe::Load<'_>,
+) -> Result<(), String> {
+    if slot.as_ref().map(|e| e.model_id()) != Some(model) {
+        *slot = None;
+        *slot = Some(load(model)?);
+    }
+    Ok(())
+}
+
+/// What the live view shows about the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStatus {
+    /// The worker waits for the engine or loads the model.
+    Starting,
+    /// Text arrives.
+    Running,
+    /// A gap started. The text returns with the next part.
+    Paused,
+    /// This recording has no live transcript: the model did not load or
+    /// does not stream. The note gets a full pass after Stop.
+    Unavailable,
+    /// The worker stopped.
+    Ended,
+}
+
+/// Where the worker reports what it does. Every method has an empty
+/// default.
+pub trait LiveSink: Send {
+    /// The worker holds `model` in the engine slot, or holds no model now.
+    fn model(&mut self, _held: Option<&str>) {}
+    fn status(&mut self, _status: LiveStatus) {}
+    /// The text of the open part changed.
+    fn text(&mut self, _part: u32, _text: &LiveText) {}
+    /// A part was saved.
+    fn saved(&mut self, _row: &LiveRow) {}
+}
+
+/// A sink that reports nothing.
+pub struct Silent;
+
+impl LiveSink for Silent {}
+
+/// One segment's live worker.
+#[derive(Debug, Clone)]
+pub struct LiveConfig {
+    pub session_id: String,
+    pub segment: u32,
+    /// The note's model (KTD2).
+    pub model: String,
+    /// The capture rate of the frames.
+    pub sample_rate: u32,
+    pub stall_ms: u64,
+}
+
+impl LiveConfig {
+    pub fn new(session_id: &str, segment: u32, model: &str, sample_rate: u32) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            segment,
+            model: model.to_string(),
+            sample_rate: sample_rate.max(1),
+            stall_ms: STALL_MS,
+        }
+    }
+}
+
+/// How the segment ended, from capture's close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveEnd {
+    /// The segment is kept: save the open part.
+    Keep,
+    /// The segment ran under a second and was discarded: delete its rows.
+    Discard,
+}
+
+/// What a worker reads.
+pub struct Inputs {
+    pub frames: Receiver<LiveFrame>,
+    /// Sent after the frames end. A closed channel counts as
+    /// [`LiveEnd::Keep`].
+    pub end: Receiver<LiveEnd>,
+    /// A quit: stop at once and save nothing more.
+    pub cancel: CancellationToken,
+}
+
+enum Ending {
+    /// The frames and the end signal arrived.
+    Closed,
+    Cancelled,
+    /// The model does not stream.
+    NoStream,
+}
+
+/// Run one segment's live worker until its frames end and capture says how
+/// the segment ended, or until a quit. Blocks: run it on a thread of its
+/// own.
+pub fn run(
+    store: &SharedStore,
+    engine: &EngineAccess,
+    config: &LiveConfig,
+    parts: Parts,
+    inputs: &Inputs,
+    sink: &mut dyn LiveSink,
+) {
+    let id = &config.session_id;
+    sink.status(LiveStatus::Starting);
+    let mut guard = match engine.hold(&config.model) {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            sink.status(LiveStatus::Ended);
+            return;
+        }
+        Err(e) => {
+            log::warn!(
+                "no live transcript for segment {} of {id}: {e}",
+                config.segment
+            );
+            sink.status(LiveStatus::Unavailable);
+            finish_without_stream(store, config, inputs);
+            sink.status(LiveStatus::Ended);
+            return;
+        }
+    };
+    sink.model(Some(&config.model));
+    let part = next_part(store, id, config.segment);
+    let ending = {
+        let recognizer = guard.as_deref_mut().expect("hold loads the model");
+        let mut work = Work::new(store, config, sink, parts, part);
+        stream_parts(recognizer, &mut work, inputs)
+    };
+    drop(guard);
+    sink.model(None);
+    if let Ending::NoStream = ending {
+        log::warn!(
+            "{} does not stream; segment {} of {id} gets a full pass after Stop",
+            config.model,
+            config.segment
+        );
+        sink.status(LiveStatus::Unavailable);
+        finish_without_stream(store, config, inputs);
+    }
+    sink.status(LiveStatus::Ended);
+}
+
+/// Read the frames to their end with no stream, and delete the segment's
+/// rows when capture discards it.
+fn finish_without_stream(store: &SharedStore, config: &LiveConfig, inputs: &Inputs) {
+    loop {
+        if inputs.cancel.is_cancelled() {
+            return;
+        }
+        match inputs.frames.recv_timeout(POLL) {
+            Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    if wait_end(inputs) == Some(LiveEnd::Discard) {
+        discard(store, config);
+    }
+}
+
+/// How capture ended the segment. `None` on a quit.
+fn wait_end(inputs: &Inputs) -> Option<LiveEnd> {
+    loop {
+        if inputs.cancel.is_cancelled() {
+            return None;
+        }
+        match inputs.end.recv_timeout(POLL) {
+            Ok(end) => return Some(end),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Some(LiveEnd::Keep),
+        }
+    }
+}
+
+fn discard(store: &SharedStore, config: &LiveConfig) {
+    match delete_segment(store, &config.session_id, config.segment) {
+        Ok(0) => {}
+        Ok(n) => log::info!(
+            "deleted {n} live part(s) of the discarded segment {} of {}",
+            config.segment,
+            config.session_id
+        ),
+        Err(e) => log::warn!(
+            "could not delete the live parts of segment {} of {}: {e}",
+            config.segment,
+            config.session_id
+        ),
+    }
+}
+
+/// The frame loop. Each new stream borrows `recognizer`, so every start
+/// comes after the previous stream is dropped.
+fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inputs) -> Ending {
+    let mut stream = match recognizer.start_stream() {
+        Ok(Some(stream)) => Some(stream),
+        Ok(None) => return Ending::NoStream,
+        Err(e) => {
+            log::warn!("the live stream did not start: {e}");
+            None
+        }
+    };
+    // The next stream starts a new part at the next frame, after a gap.
+    let mut fresh = true;
+    // Segment time before which a failed start is not tried again.
+    let mut retry_at_ms = 0;
+    loop {
+        if inputs.cancel.is_cancelled() {
+            return Ending::Cancelled;
+        }
+        let frame = match inputs.frames.recv_timeout(POLL) {
+            Ok(frame) => frame,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        let len = frame.pcm.len() as u64;
+        let start_ms = w.ms(frame.index);
+        let end_ms = w.ms(frame.index + len);
+
+        if let Some(expected) = w.expected
+            && frame.index != expected
+        {
+            log::info!(
+                "the live worker dropped audio from {} to {start_ms} ms of segment {}",
+                w.ms(expected),
+                w.config.segment
+            );
+            if let Some(s) = stream.as_deref_mut() {
+                let tail = w.flush();
+                if w.feed(s, &tail, w.ms(expected)).is_ok() {
+                    w.finish(s);
+                }
+            }
+            drop(stream);
+            stream = None;
+            fresh = true;
+            retry_at_ms = 0;
+            w.set_status(LiveStatus::Paused);
+        }
+        w.expected = Some(frame.index + len);
+
+        if stream.is_none() && start_ms >= retry_at_ms {
+            drop(stream);
+            stream = match recognizer.start_stream() {
+                Ok(Some(stream)) => Some(stream),
+                Ok(None) => return Ending::NoStream,
+                Err(e) => {
+                    log::warn!("the live stream did not start: {e}");
+                    retry_at_ms = start_ms + RETRY_MS;
+                    None
+                }
+            };
+        }
+        let Some(s) = stream.as_deref_mut() else {
+            continue;
+        };
+        if fresh {
+            w.restart(start_ms);
+            w.began(start_ms);
+            fresh = false;
+        }
+        let pcm = w.resample(&frame.pcm);
+        let next = match w.feed(s, &pcm, end_ms) {
+            Ok(Some(_)) => {
+                w.finish(s);
+                Next::Continue
+            }
+            Ok(None) if w.stalled() => {
+                log::warn!(
+                    "the live stream of segment {} gave no new text for {} s of speech; \
+                     the span is transcribed after Stop",
+                    w.config.segment,
+                    w.config.stall_ms / 1000
+                );
+                w.finish_stalled(s);
+                w.set_status(LiveStatus::Paused);
+                Next::Continue
+            }
+            Ok(None) => Next::Same,
+            Err(e) => {
+                log::warn!(
+                    "the live stream of segment {} failed at {start_ms} ms: {e}",
+                    w.config.segment
+                );
+                w.finish(s);
+                w.set_status(LiveStatus::Paused);
+                Next::Fresh
+            }
+        };
+        match next {
+            Next::Same => {}
+            // The part ended with no gap: the next stream goes on from
+            // where it ended.
+            Next::Continue => {
+                drop(stream);
+                stream = match recognizer.start_stream() {
+                    Ok(Some(stream)) => {
+                        w.began(end_ms);
+                        Some(stream)
+                    }
+                    Ok(None) => return Ending::NoStream,
+                    Err(e) => {
+                        log::warn!("the live stream did not start again: {e}");
+                        fresh = true;
+                        retry_at_ms = end_ms + RETRY_MS;
+                        None
+                    }
+                };
+            }
+            Next::Fresh => {
+                drop(stream);
+                stream = None;
+                fresh = true;
+                retry_at_ms = end_ms;
+            }
+        }
+    }
+
+    match wait_end(inputs) {
+        None => Ending::Cancelled,
+        Some(LiveEnd::Keep) => {
+            if let Some(s) = stream.as_deref_mut() {
+                let at_ms = w.expected.map_or(0, |e| w.ms(e));
+                let tail = w.flush();
+                if w.feed(s, &tail, at_ms).is_ok() {
+                    w.finish(s);
+                }
+            }
+            Ending::Closed
+        }
+        Some(LiveEnd::Discard) => {
+            if let Some(s) = stream.as_deref_mut() {
+                s.reset();
+            }
+            discard(w.store, w.config);
+            Ending::Closed
+        }
+    }
+}
+
+enum Next {
+    /// Go on with the same stream.
+    Same,
+    /// The part ended: start the next stream at once.
+    Continue,
+    /// The stream failed: start the next stream at the next frame.
+    Fresh,
+}
+
+/// A worker's state apart from its stream.
+struct Work<'a> {
+    store: &'a SharedStore,
+    config: &'a LiveConfig,
+    sink: &'a mut dyn LiveSink,
+    parts: Parts,
+    resampler: StreamResampler,
+    /// The number of the open part.
+    part: u32,
+    /// The index of the next frame when no frame is dropped.
+    expected: Option<u64>,
+    /// The committed text of the open stream.
+    committed: String,
+    /// [`Parts::voiced_ms`] when the committed text last changed.
+    voiced_at_commit: u64,
+    /// Segment time when the committed text last changed.
+    commit_ms: u64,
+    status: LiveStatus,
+}
+
+impl<'a> Work<'a> {
+    fn new(
+        store: &'a SharedStore,
+        config: &'a LiveConfig,
+        sink: &'a mut dyn LiveSink,
+        parts: Parts,
+        part: u32,
+    ) -> Self {
+        Self {
+            store,
+            config,
+            sink,
+            parts,
+            resampler: StreamResampler::new(config.sample_rate, asr::SAMPLE_RATE),
+            part,
+            expected: None,
+            committed: String::new(),
+            voiced_at_commit: 0,
+            commit_ms: 0,
+            status: LiveStatus::Starting,
+        }
+    }
+
+    /// Segment time of a sample index at the capture rate.
+    fn ms(&self, index: u64) -> u64 {
+        index * 1000 / u64::from(self.config.sample_rate)
+    }
+
+    fn set_status(&mut self, status: LiveStatus) {
+        if self.status != status {
+            self.status = status;
+            self.sink.status(status);
+        }
+    }
+
+    /// Start the next part at `at_ms`, after a gap: nothing of the audio
+    /// before the gap goes into it.
+    fn restart(&mut self, at_ms: u64) {
+        self.resampler = StreamResampler::new(self.config.sample_rate, asr::SAMPLE_RATE);
+        self.parts.restart_at(at_ms);
+    }
+
+    /// A new stream starts at segment time `at_ms`.
+    fn began(&mut self, at_ms: u64) {
+        self.committed.clear();
+        self.voiced_at_commit = self.parts.voiced_ms();
+        self.commit_ms = at_ms;
+    }
+
+    fn resample(&mut self, pcm: &[f32]) -> Vec<f32> {
+        let mut out = Vec::with_capacity(pcm.len());
+        self.resampler
+            .push(pcm, &mut |s: &[f32]| out.extend_from_slice(s));
+        out
+    }
+
+    /// The audio still in the resampler, before a gap or the end.
+    fn flush(&mut self) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.resampler
+            .finish(&mut |s: &[f32]| out.extend_from_slice(s));
+        out
+    }
+
+    /// Feed 16 kHz audio that ends at segment time `at_ms`. Returns the
+    /// cut when the part must end now.
+    fn feed(
+        &mut self,
+        stream: &mut dyn LiveStream,
+        pcm: &[f32],
+        at_ms: u64,
+    ) -> Result<Option<Cut>, AsrError> {
+        if pcm.is_empty() {
+            return Ok(None);
+        }
+        let fed = self.parts.feed(stream, pcm)?;
+        if fed.changed {
+            let text = stream.text();
+            if text.committed != self.committed {
+                self.committed.clone_from(&text.committed);
+                self.voiced_at_commit = self.parts.voiced_ms();
+                self.commit_ms = at_ms;
+            }
+            if !text.committed.is_empty() || !text.tentative.is_empty() {
+                self.set_status(LiveStatus::Running);
+            }
+            self.sink.text(self.part, &text);
+        }
+        Ok(fed.cut)
+    }
+
+    fn stalled(&self) -> bool {
+        self.parts.voiced_ms().saturating_sub(self.voiced_at_commit) >= self.config.stall_ms
+    }
+
+    /// Finish the open part and save it. A stream that fails to finish
+    /// loses its part: that span is a gap.
+    fn finish(&mut self, stream: &mut dyn LiveStream) {
+        match self.parts.finish(stream) {
+            Ok(part) => self.save(part),
+            Err(e) => log::warn!(
+                "the live part {} of segment {} was lost: {e}",
+                self.part,
+                self.config.segment
+            ),
+        }
+    }
+
+    /// Finish a stalled part. The saved part ends where its committed text
+    /// last changed, so the stalled span is a gap.
+    fn finish_stalled(&mut self, stream: &mut dyn LiveStream) {
+        match self.parts.finish(stream) {
+            Ok(mut part) => {
+                let end = self.commit_ms.clamp(part.start_ms, part.end_ms);
+                part.words.retain(|w| w.start_ms < end);
+                for word in &mut part.words {
+                    word.end_ms = word.end_ms.min(end);
+                }
+                part.end_ms = end;
+                self.save(part);
+            }
+            Err(e) => log::warn!(
+                "the stalled live part {} of segment {} was lost: {e}",
+                self.part,
+                self.config.segment
+            ),
+        }
+    }
+
+    /// Save a finished part (the step), then count it and tell the sink
+    /// (the record). A part that heard nothing is not saved.
+    fn save(&mut self, part: LivePart) {
+        if part.end_ms <= part.start_ms {
+            return;
+        }
+        let id = &self.config.session_id;
+        match save_part(self.store, id, self.config.segment, self.part, &part) {
+            Ok(row) => {
+                self.part += 1;
+                self.sink.saved(&row);
+            }
+            Err(e) => log::warn!(
+                "could not save the live part {} of segment {} of {id}: {e}",
+                self.part,
+                self.config.segment
+            ),
+        }
+    }
+}
+
+/// Runs live workers on threads of their own, one after another, and says
+/// while one runs.
+pub struct Workers {
+    store: SharedStore,
+    engine: EngineAccess,
+    running: Arc<AtomicUsize>,
+    cancel: CancellationToken,
+    /// The last worker started. Each worker waits for the one before it.
+    last: Mutex<Option<JoinHandle<()>>>,
+    /// Called when the last running worker ends.
+    idle: Option<Idle>,
+}
+
+type Idle = Arc<dyn Fn() + Send + Sync>;
+
+/// Capture's end of a running worker.
+pub struct LiveWorker {
+    end: mpsc::Sender<LiveEnd>,
+}
+
+impl LiveWorker {
+    /// Tell the worker how its segment ended. Call it after the frames end.
+    pub fn end(self, how: LiveEnd) {
+        let _ = self.end.send(how);
+    }
+}
+
+/// Counts a worker as running until it drops.
+struct Running(Arc<AtomicUsize>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Workers {
+    pub fn new(store: SharedStore, engine: EngineAccess) -> Self {
+        Self {
+            store,
+            engine,
+            running: Arc::new(AtomicUsize::new(0)),
+            cancel: CancellationToken::new(),
+            last: Mutex::new(None),
+            idle: None,
+        }
+    }
+
+    /// Call `idle` each time the last running worker ends: processing can
+    /// start again.
+    pub fn with_idle(mut self, idle: impl Fn() + Send + Sync + 'static) -> Self {
+        self.idle = Some(Arc::new(idle));
+        self
+    }
+
+    /// Start a worker for one segment. It counts as running from now, so
+    /// processing is suspended before the first frame.
+    pub fn start(
+        &self,
+        config: LiveConfig,
+        parts: Parts,
+        mut sink: Box<dyn LiveSink>,
+    ) -> std::io::Result<(LiveTap, LiveWorker)> {
+        let (tap, frames) = channel(CHANNEL_FRAMES);
+        let (end, ends) = mpsc::channel();
+        let inputs = Inputs {
+            frames,
+            end: ends,
+            cancel: self.cancel.child_token(),
+        };
+        self.running.fetch_add(1, Ordering::SeqCst);
+        let running = Running(Arc::clone(&self.running));
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = last.take();
+        let (store, engine) = (Arc::clone(&self.store), self.engine.clone());
+        let (count, idle) = (Arc::clone(&self.running), self.idle.clone());
+        let name = format!("longhand-live-{}", config.segment);
+        let thread = std::thread::Builder::new().name(name).spawn(move || {
+            if let Some(previous) = previous {
+                let _ = previous.join();
+            }
+            run(&store, &engine, &config, parts, &inputs, sink.as_mut());
+            drop(running);
+            if count.load(Ordering::SeqCst) == 0
+                && let Some(idle) = idle
+            {
+                idle();
+            }
+        })?;
+        *last = Some(thread);
+        Ok((tap, LiveWorker { end }))
+    }
+
+    /// True while a worker runs: it streams, or it saves its last part
+    /// after Stop.
+    pub fn busy(&self) -> bool {
+        self.running.load(Ordering::SeqCst) > 0
+    }
+
+    /// Stop every worker and wait for it to release the engine slot. The
+    /// open part of a worker is not saved: it is a gap. Call before the
+    /// runner's shutdown frees the engine.
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(last) = last {
+            let _ = last.join();
+        }
+    }
+}

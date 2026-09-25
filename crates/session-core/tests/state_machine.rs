@@ -80,7 +80,20 @@ fn events() -> Vec<Event> {
         Event::Saved,
         Event::SavedEdit,
         Event::ClaimLost,
+        transcribe_again_ok(),
+        Event::TranscribeAgainFailed,
     ]
+}
+
+/// Transcribe Again with the audio in the folder, no capture and no
+/// summary regeneration (KTD14).
+fn transcribe_again_ok() -> Event {
+    Event::UserTranscribeAgain {
+        at: t(5),
+        audio_intact: true,
+        capture_active: false,
+        regenerating: false,
+    }
 }
 
 /// The diagram, as (state name, event, target name). Anything absent is illegal.
@@ -128,6 +141,8 @@ fn expected(state: &SessionState, event: &Event) -> Option<&'static str> {
         (S::Processing { .. }, Event::Saved) => Some("saved"),
         (S::Processing { .. } | S::Blocked { .. }, Event::ClaimLost) => Some("queued"),
         (S::Saved, Event::SavedEdit) => Some("saved"),
+        (S::Saved, Event::UserTranscribeAgain { .. }) => Some("queued"),
+        (S::Processing { .. }, Event::TranscribeAgainFailed) => Some("saved"),
         (_, Event::UserResume { .. }) if post_stop => Some("capturing"),
         (S::Saved, Event::UserResume { .. }) => Some("capturing"),
         _ => None,
@@ -169,6 +184,41 @@ fn a_completed_session_resumes_only_while_its_folder_holds_its_audio() {
     };
     assert!(SessionState::Saved.transition(&missing).is_err());
     assert!(SessionState::Discarded.transition(&resume_ok()).is_err());
+}
+
+#[test]
+fn transcribe_again_queues_a_saved_session_only_when_nothing_refuses_it() {
+    assert_eq!(
+        SessionState::Saved
+            .transition(&transcribe_again_ok())
+            .unwrap(),
+        SessionState::Queued { stopped_at: t(5) }
+    );
+    for refused in [
+        Event::UserTranscribeAgain {
+            at: t(5),
+            audio_intact: false,
+            capture_active: false,
+            regenerating: false,
+        },
+        Event::UserTranscribeAgain {
+            at: t(5),
+            audio_intact: true,
+            capture_active: true,
+            regenerating: false,
+        },
+        Event::UserTranscribeAgain {
+            at: t(5),
+            audio_intact: true,
+            capture_active: false,
+            regenerating: true,
+        },
+    ] {
+        assert!(
+            SessionState::Saved.transition(&refused).is_err(),
+            "{refused:?}"
+        );
+    }
 }
 
 #[test]

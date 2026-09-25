@@ -7,6 +7,7 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
+use pipeline::live::Workers;
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SummaryEndpoint,
 };
@@ -17,6 +18,7 @@ use tauri::AppHandle;
 use tauri_specta::Event as _;
 
 use crate::managers::capture::CaptureManager;
+use crate::managers::live::LiveManager;
 use crate::managers::models::ModelsManager;
 use crate::managers::settings;
 
@@ -69,6 +71,12 @@ pub enum ProcessingStep {
     Saved {
         path: String,
         copied: bool,
+    },
+    /// A Transcribe Again run failed; the session keeps its previous
+    /// transcript and summary (R19).
+    TranscribeAgainFailed {
+        stage: String,
+        message: String,
     },
     Cancelled,
     Finished,
@@ -144,6 +152,17 @@ impl From<RunnerEvent> for ProcessingUpdate {
                 ProcessingStep::Saved {
                     path: path.to_string_lossy().into_owned(),
                     copied,
+                },
+            ),
+            RunnerEvent::TranscribeAgainFailed {
+                session_id,
+                stage,
+                message,
+            } => (
+                session_id,
+                ProcessingStep::TranscribeAgainFailed {
+                    stage: stage_name(stage),
+                    message,
                 },
             ),
             RunnerEvent::Cancelled { session_id } => (session_id, ProcessingStep::Cancelled),
@@ -225,7 +244,10 @@ impl EngineProvider for Models {
             .models
             .file_path(model_id)
             .ok_or_else(|| format!("{model_id} is not a known model"))?;
-        Engine::load(model_id, &path)
+        // The catalog says whether the model streams, so the live worker
+        // gets a stream from the engine that processing also uses (KTD5).
+        let streaming = models::model(model_id).is_some_and(|m| m.streaming);
+        Engine::load_with(model_id, &path, streaming)
             .map(|e| Box::new(e) as Box<dyn Recognizer>)
             .map_err(|e| e.to_string())
     }
@@ -305,19 +327,25 @@ fn notify_saved(app: &AppHandle, path: &std::path::Path) {
 
 pub struct ProcessingManager {
     runner: Arc<Runner>,
+    live: Arc<LiveManager>,
 }
 
 impl ProcessingManager {
     /// Build the runner and return sessions a previous run left mid-stage to
-    /// the queue. Call [`ProcessingManager::start`] to begin working.
+    /// the queue. Call [`ProcessingManager::start`] to begin working. The
+    /// live workers get the runner's engine slot (KTD9).
     pub fn new(
         app: &AppHandle,
         capture: &Arc<CaptureManager>,
+        live: &Arc<LiveManager>,
         models: Arc<ModelsManager>,
         secrets: Arc<SecretStore>,
         liveness: session_core::jobs::Liveness,
     ) -> Self {
         let suspended = Arc::clone(capture);
+        // Processing stays suspended after Stop until the live worker has
+        // saved its last part and released the engine (KTD9).
+        let draining = Arc::clone(live);
         let events = app.clone();
         let runner = Runner::new(Environment {
             store: capture.shared_store(),
@@ -327,7 +355,7 @@ impl ProcessingManager {
                 models,
                 secrets,
             }),
-            suspended: Box::new(move || suspended.is_capturing()),
+            suspended: Box::new(move || suspended.is_capturing() || draining.busy()),
             events: Box::new(move |event| {
                 if let RunnerEvent::Saved { path, .. } = &event {
                     notify_saved(&events, path);
@@ -354,7 +382,18 @@ impl ProcessingManager {
                 log::error!("launch recovery of folder renames failed: {e}");
             }
         }
-        let manager = Self { runner };
+        let woken = Arc::downgrade(&runner);
+        live.attach(
+            Workers::new(capture.shared_store(), runner.engine_access()).with_idle(move || {
+                if let Some(runner) = woken.upgrade() {
+                    runner.wake();
+                }
+            }),
+        );
+        let manager = Self {
+            runner,
+            live: Arc::clone(live),
+        };
         // The volume may be back, or the folder restored (U18).
         manager.retry_awaiting();
         manager
@@ -366,12 +405,23 @@ impl ProcessingManager {
 
     /// A session was queued or capture ended.
     /// Before the process exits: stop processing and free the models.
+    /// The live workers stop first: a worker holds the engine slot while it
+    /// streams, and the runner frees the engine after it (KTD9).
     pub fn shutdown(&self) {
+        self.live.shutdown();
         self.runner.shutdown();
     }
 
     pub fn wake(&self) {
         self.runner.wake();
+    }
+
+    /// Free the loaded engine when it holds `model`, before a delete of
+    /// its file (KTD12).
+    pub fn unload_engine(&self, model: &str) {
+        if self.runner.unload_engine(model) {
+            log::info!("unloaded model '{model}' before its delete");
+        }
     }
 
     /// A resume took `session_id` back; its stage stops at the next checkpoint.
@@ -414,6 +464,13 @@ impl ProcessingManager {
     ) -> Result<pipeline::folder_rename::FolderRename, String> {
         self.runner
             .rename_session(session_id, title)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Queue a saved session to be transcribed again with `model` (R15).
+    pub fn transcribe_again(&self, session_id: &str, model: &str) -> Result<(), String> {
+        self.runner
+            .transcribe_again(session_id, model)
             .map_err(|e| e.to_string())
     }
 

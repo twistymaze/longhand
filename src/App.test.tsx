@@ -41,6 +41,7 @@ function mockApp(status: { current: RecordingStatus }, entries: { current: Sessi
     get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
     readiness: () => readiness,
     model_statuses: () => [],
+    speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     recording_status: () => status.current,
     list_sessions: () => entries.current,
     alert_check: () => ({ reason: null }),
@@ -162,6 +163,7 @@ describe("App", () => {
         if (fail) throw "the models folder cannot be read";
         return [];
       },
+      speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     });
     render(<App />);
     expect(await screen.findByRole("tab", { name: "General" })).toBeTruthy();

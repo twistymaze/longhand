@@ -10,6 +10,8 @@ const model = (id: string, name: string, role: ModelStatus["role"]): ModelStatus
   name,
   description: "",
   streaming: false,
+  languages: [],
+  recommended: false,
   size_bytes: 1,
   required: true,
   state: { state: "present" },

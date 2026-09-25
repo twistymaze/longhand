@@ -13,6 +13,10 @@ pub fn migrations() -> Migrations<'static> {
             notes_to_documents,
         ),
         M::up(include_str!("../migrations/0003_rename_intent.sql")),
+        M::up(include_str!(
+            "../migrations/0004_live_and_transcribe_again.sql"
+        )),
+        M::up(include_str!("../migrations/0005_summary_not_updated.sql")),
     ])
 }
 

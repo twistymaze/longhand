@@ -1,6 +1,7 @@
 //! Coverage measurement: voiced time against the time that carries text.
 
-use asr::{AsrSegment, Span};
+use asr::{AsrSegment, LiveWord, Span};
+use pipeline::live::LiveRow;
 use pipeline::transcribe::WindowResult;
 use pipeline::verify::{MAX_UNCOVERED_MS, measure, text_spans};
 
@@ -62,6 +63,8 @@ fn windows_whose_text_covers_only_their_first_seconds_do_not_count_as_covered() 
                 end_ms: 3_000,
                 text: "hello".into(),
             }],
+            words: None,
+            live: false,
         })
         .collect();
     let refs: Vec<&WindowResult> = windows.iter().collect();
@@ -132,6 +135,8 @@ fn text_past_a_padded_window_is_clamped_and_blank_text_covers_nothing() {
                 text: "  ".into(),
             },
         ],
+        words: None,
+        live: false,
     };
     assert_eq!(text_spans(&[&window]), vec![span(10_000, 10_600)]);
 }
@@ -145,8 +150,41 @@ fn text_without_timestamps_covers_nothing() {
         end_ms: 30_000,
         text: "hi".into(),
         segments: vec![],
+        words: None,
+        live: false,
     };
     assert_eq!(text_spans(&[&window]), vec![]);
     let c = measure(0, &[span(0, 30_000)], &text_spans(&[&window]));
     assert!(!c.passes(), "{c:?}");
+}
+
+#[test]
+fn live_words_put_text_on_their_own_spans() {
+    let word = |start_ms, end_ms, text: &str| LiveWord {
+        start_ms,
+        end_ms,
+        text: text.into(),
+    };
+    let part = WindowResult::from_live(LiveRow {
+        segment: 0,
+        part: 0,
+        start_ms: 0,
+        end_ms: 30_000,
+        words: vec![
+            word(1_000, 1_400, "one"),
+            word(1_400, 1_800, "two"),
+            word(5_000, 5_000, "three"),
+            word(9_000, 9_500, " "),
+            word(29_800, 30_400, "last"),
+        ],
+    });
+    // Touching words form one span; a word of no length covers 1 ms; a blank
+    // word covers nothing; a word past the part is clamped to the part.
+    assert_eq!(
+        text_spans(&[&part]),
+        vec![span(1_000, 1_800), span(5_000, 5_001), span(29_800, 30_000)]
+    );
+    // The live text covers the speech around it within the slack only.
+    let c = measure(0, &[span(0, 30_000)], &text_spans(&[&part]));
+    assert_eq!(c.uncovered, vec![span(2_800, 4_000), span(6_001, 28_800)]);
 }

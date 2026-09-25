@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Lint the workspace for Windows from macOS or Linux, before a push, so a
 # Windows-only warning or cfg mistake shows up in seconds rather than in the
-# Windows CI job (which runs only on pull requests into main and manual runs).
+# Windows CI job (which runs on pull requests into main, on pushes to main
+# that change more than docs, and on manual runs).
 #
 # Crates whose dependencies build C or C++ (bundled SQLite, ggml, ONNX
 # Runtime, opus) need a Windows toolchain and are left out; CI checks them.

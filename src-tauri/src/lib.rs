@@ -21,7 +21,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_endpoint,
             commands::settings::set_context_limit,
             commands::settings::set_default_speaker_count,
-            commands::settings::set_asr_model,
+            commands::settings::select_asr_model,
+            commands::settings::set_live_transcript,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
             commands::settings::duplicate_summary_prompt,
@@ -38,6 +39,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::models::model_statuses,
             commands::models::download_models,
             commands::models::cancel_model_downloads,
+            commands::models::speaker_models_status,
+            commands::models::delete_model,
             commands::readiness::readiness,
             commands::capture::start_recording,
             commands::capture::stop_recording,
@@ -49,6 +52,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::alerts::play_alert_sound,
             commands::alerts::confirm_alert_sound,
             commands::processing::regenerate_summary,
+            commands::processing::transcribe_again,
             commands::processing::retry_session,
             commands::processing::unblock_session,
             commands::session::list_sessions,
@@ -57,16 +61,21 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::set_session_notes,
             commands::session::rename_session,
             commands::session::session_document,
+            commands::session::live_transcript,
             commands::session::delete_session,
             commands::session::delete_session_permanently,
             commands::window::open_settings,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
+            managers::settings::SettingsChanged,
             managers::capture::CaptureEnded,
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
             managers::processing::ProcessingUpdate,
+            managers::live::LiveTranscriptEvent,
+            managers::live::LivePartSaved,
+            managers::live::LiveTranscriptStatus,
             tray::ShowSession,
         ])
 }
@@ -204,9 +213,16 @@ pub fn run() {
                 }
             });
             app.manage(std::sync::Mutex::new(watch));
+            // Managed before anything records: capture starts a live worker
+            // for each segment of a note in live mode.
+            let live = std::sync::Arc::new(managers::live::LiveManager::new(
+                std::sync::Arc::clone(&models),
+            ));
+            app.manage(std::sync::Arc::clone(&live));
             let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
                 &handle,
                 &capture,
+                &live,
                 models,
                 secret_store,
                 liveness,
@@ -246,7 +262,8 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app, event| match event {
-        // Free the recognition engine before static destructors run.
+        // Stop the live workers and free the recognition engine before
+        // static destructors run.
         tauri::RunEvent::Exit => {
             if let Some(processing) =
                 app.try_state::<std::sync::Arc<managers::processing::ProcessingManager>>()

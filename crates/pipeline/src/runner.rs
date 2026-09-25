@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
 use crate::folder_rename::{self, FolderRename};
+use crate::live::{EngineAccess, EngineSlot};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
@@ -137,6 +138,13 @@ pub enum RunnerEvent {
         path: PathBuf,
         copied: bool,
     },
+    /// A Transcribe Again run failed before its save. The session is saved
+    /// with its previous transcript and summary (R19).
+    TranscribeAgainFailed {
+        session_id: String,
+        stage: Stage,
+        message: String,
+    },
     /// Every stage has run.
     Finished {
         session_id: String,
@@ -159,8 +167,9 @@ pub struct Runner {
     wake: Notify,
     current: Mutex<Option<(String, CancellationToken)>>,
     shutdown: CancellationToken,
-    /// The one loaded engine, kept across sessions (KTD6).
-    engine: Arc<Mutex<Option<Box<dyn Recognizer>>>>,
+    /// The one loaded engine, kept across sessions (KTD6) and shared with
+    /// the live worker (KTD9).
+    engine: EngineSlot,
     /// One stage of one session at a time, whoever asks (R20c).
     permit: Arc<Semaphore>,
     /// Summary regenerations and deletes that run on a session. They
@@ -349,6 +358,47 @@ impl Runner {
         .map_err(|e| StageError::Failed(format!("the summary stopped unexpectedly: {e}")))?
     }
 
+    /// The user's Transcribe Again on a saved session (R15, KTD14): queue it
+    /// for a full recognition pass with `model`, the model selected now.
+    /// Refused while the session's summary is regenerated or the session is
+    /// deleted, while a capture is active, and when the session's folder
+    /// does not hold every segment's audio.
+    pub fn transcribe_again(&self, session_id: &str, model: &str) -> Result<(), StageError> {
+        let regenerating = self.claims.busy(session_id);
+        let capture_active = (self.env.suspended)();
+        {
+            let mut store = lock(&self.env.store);
+            let audio_intact = save::home_intact(&store, session_id)?;
+            let refusal = if regenerating {
+                Some("The summary of this note is being made again. Try again when it is done.")
+            } else if capture_active {
+                Some("A recording is in progress. Try again after it stops.")
+            } else if !audio_intact {
+                Some(
+                    "The note's folder does not have all of its audio, so it can't be transcribed again.",
+                )
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                return Err(StageError::Failed(refusal.into()));
+            }
+            store.transcribe_again(
+                session_id,
+                model,
+                &Event::UserTranscribeAgain {
+                    at: now(),
+                    audio_intact,
+                    capture_active,
+                    regenerating,
+                },
+            )?;
+        }
+        log::info!("{session_id} is queued to be transcribed again with '{model}'");
+        self.wake();
+        Ok(())
+    }
+
     /// True while `session_id` has its summary regenerated or waits to.
     pub fn is_regenerating(&self, session_id: &str) -> bool {
         self.claims.is_regenerating(session_id)
@@ -389,6 +439,8 @@ impl Runner {
     /// destructor if a model is still loaded then, and the abort reads as a
     /// crash on every quit after a session was transcribed. Handy unloads on
     /// exit for the same reason. Waits for a window in progress to end.
+    /// Stop the live workers first ([`crate::live::Workers::shutdown`]): a
+    /// worker holds the engine slot while it streams.
     pub fn shutdown(&self) {
         self.shutdown.cancel();
         if let Some((_, token)) = self
@@ -400,6 +452,28 @@ impl Runner {
             token.cancel();
         }
         self.engine.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    /// The live worker's way to the engine slot (KTD9). After
+    /// [`Runner::shutdown`], it loads nothing.
+    pub fn engine_access(&self) -> EngineAccess {
+        let env = Arc::clone(&self.env);
+        EngineAccess::new(
+            Arc::clone(&self.engine),
+            Arc::new(move |model| env.engines.load(model)),
+            self.shutdown.clone(),
+        )
+    }
+
+    /// Free the loaded engine when it holds `model`, so that the model file
+    /// can be removed: Windows cannot remove an open file (KTD12). Returns
+    /// whether the engine held `model`.
+    pub fn unload_engine(&self, model: &str) -> bool {
+        unload_if(
+            &self.engine,
+            model,
+            <dyn Recognizer as Recognizer>::model_id,
+        )
     }
 
     pub async fn run(self: Arc<Self>) {
@@ -417,28 +491,31 @@ impl Runner {
         }
     }
 
-    /// Claim the head of the queue and run its stages. `None` when nothing
-    /// can start: the queue is empty, capture is active, or the head
-    /// session's models are not on disk yet (it keeps its place).
+    /// Claim the first queued session whose models are on disk and run its
+    /// stages. A session that waits for its model keeps its place, and the
+    /// sessions after it go first (KTD13). `None` when nothing can start:
+    /// the queue is empty, capture is active, or no queued session has its
+    /// models.
     pub async fn run_next(&self) -> Option<(String, Outcome)> {
         if self.shutdown.is_cancelled() || (self.env.suspended)() {
             return None;
         }
         let (id, model) = {
             let mut store = lock(&self.env.store);
-            let head = store.queue().ok()?.into_iter().next()?;
-            let record = store.session(&head).ok()??;
-            let model = record
-                .asr_model
-                .unwrap_or_else(|| self.env.engines.default_model());
-            if !self.env.engines.ready(&model) {
-                return None;
-            }
-            let id = match store.dequeue(&self.owner, now()) {
+            let (next, model) = store.queue().ok()?.into_iter().find_map(|id| {
+                let record = store.session(&id).ok()??;
+                // A Transcribe Again run uses the model it recorded (KTD14).
+                let again = store.transcribe_again_marks(&id).ok()?.model;
+                let model = again
+                    .or(record.asr_model)
+                    .unwrap_or_else(|| self.env.engines.default_model());
+                self.env.engines.ready(&model).then_some((id, model))
+            })?;
+            let id = match store.dequeue_session(&next, &self.owner, now()) {
                 Ok(Some(id)) => id,
                 Ok(None) => return None,
                 Err(e) => {
-                    log::error!("could not claim {head}: {e}");
+                    log::error!("could not claim {next}: {e}");
                     return None;
                 }
             };
@@ -457,6 +534,9 @@ impl Runner {
         // Once saving has begun, the working directory may be gone: only
         // the save itself is left to finish.
         let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
+        let again = lock(&self.env.store)
+            .transcribe_again_marks(id)
+            .is_ok_and(|marks| marks.model.is_some());
         for &stage in STAGES {
             if saving && stage != Stage::Save {
                 continue;
@@ -475,6 +555,19 @@ impl Runner {
                         session_id: id.to_string(),
                         message,
                     });
+                }
+                // A Transcribe Again run that fails keeps the saved files
+                // (R19). Speaker separation failing costs the speaker
+                // marks only, as for any run. A save that has replaced a
+                // document in the folder fails as for any run: a retry
+                // writes the folder again and then finishes the run.
+                Err(StageError::Failed(message) | StageError::NoDestination(message))
+                    if again
+                        && stage != Stage::Diarize
+                        && !(stage == Stage::Save
+                            && save::home_changed(&lock(&self.env.store), id).unwrap_or(true)) =>
+                {
+                    return self.fail_transcribe_again(id, stage, message);
                 }
                 Err(StageError::NoDestination(problem)) => {
                     log::info!("{id} waits for its destination: {problem}");
@@ -568,6 +661,31 @@ impl Runner {
             session_id: id.to_string(),
         });
         Outcome::Finished
+    }
+
+    /// Return a failed Transcribe Again run to Saved with its previous
+    /// checkpoints, record the error for the note page, and remove the
+    /// working directory that the run made. When a resume took the session
+    /// first, the resume owns the working directory and nothing changes.
+    fn fail_transcribe_again(&self, id: &str, stage: Stage, message: String) -> Outcome {
+        log::error!("transcribing {id} again failed at {stage:?}: {message}");
+        match lock(&self.env.store).fail_transcribe_again(id, &message) {
+            Ok(_) => {
+                let dir = self.env.working_root.join(id);
+                if dir.exists()
+                    && let Err(e) = std::fs::remove_dir_all(&dir)
+                {
+                    log::warn!("could not remove {}: {e}", dir.display());
+                }
+            }
+            Err(e) => log::warn!("could not return {id} to its saved state: {e}"),
+        }
+        (self.env.events)(RunnerEvent::TranscribeAgainFailed {
+            session_id: id.to_string(),
+            stage,
+            message: message.clone(),
+        });
+        Outcome::Failed { stage, message }
     }
 
     async fn run_stage(
@@ -686,23 +804,21 @@ fn execute(
                     .collect(),
                 Speakers::Unavailable => TurnCuts::new(),
             };
-            let mut slot = engine.lock().unwrap_or_else(|e| e.into_inner());
-            // Checked under the engine's lock, so a shutdown that freed the
-            // engine is never followed by loading it again.
-            control.proceed()?;
-            // A queued session keeps the model selected when it stopped (R20c).
-            if slot.as_ref().map(|e| e.model_id()) != Some(model) {
-                *slot = None;
-                *slot = Some(env.engines.load(model).map_err(StageError::Failed)?);
-            }
-            let recognizer = slot.as_mut().expect("loaded above");
+            // The stage locks the slot for each window only, so a live
+            // worker can take the slot while the stage waits out a
+            // suspension (KTD9).
+            let slot = transcribe::Slot {
+                slot: engine,
+                model,
+                load: &|model| env.engines.load(model),
+            };
             transcribe::run(
                 &env.store,
                 id,
                 &dir,
                 segments,
                 &cuts,
-                recognizer.as_mut(),
+                &slot,
                 control,
                 &mut |p| {
                     (env.events)(RunnerEvent::Progress {
@@ -777,6 +893,27 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
     })
 }
 
+/// Empty `slot` when it holds `model`. A slot that a stage holds now stays
+/// as it is: the stage runs the model of a note in processing, and delete
+/// refuses that model, so the stage loads another model into the slot.
+fn unload_if<E: ?Sized>(
+    slot: &Mutex<Option<Box<E>>>,
+    model: &str,
+    model_id: impl Fn(&E) -> &str,
+) -> bool {
+    let mut slot = match slot.try_lock() {
+        Ok(slot) => slot,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    if slot.as_deref().map(model_id) == Some(model) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
+}
+
 /// For work on a saved session: stops on shutdown and waits out capture,
 /// with no processing state to be taken back from.
 struct Unattended {
@@ -799,5 +936,40 @@ impl Control for Unattended {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(model: &str) -> &str {
+        model
+    }
+
+    fn slot(model: Option<&str>) -> Mutex<Option<Box<str>>> {
+        Mutex::new(model.map(Box::from))
+    }
+
+    #[test]
+    fn unload_frees_the_engine_that_holds_the_model() {
+        let engine = slot(Some("whisper"));
+        assert!(unload_if(&engine, "whisper", id));
+        assert_eq!(*engine.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn unload_keeps_an_engine_that_holds_another_model() {
+        let engine = slot(Some("parakeet"));
+        assert!(!unload_if(&engine, "whisper", id));
+        assert_eq!(engine.lock().unwrap().as_deref(), Some("parakeet"));
+        assert!(!unload_if(&slot(None), "whisper", id));
+    }
+
+    #[test]
+    fn unload_does_not_wait_for_a_stage_that_holds_the_engine() {
+        let engine = slot(Some("whisper"));
+        let _stage = engine.lock().unwrap();
+        assert!(!unload_if(&engine, "whisper", id));
     }
 }

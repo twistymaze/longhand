@@ -28,6 +28,16 @@ pub fn window_prefix(index: u32) -> String {
     format!("seg-{index:04}-win-")
 }
 
+/// A part of the live transcript (KTD7). Live keys do not start with
+/// [`window_prefix`], so a live row never counts as a finished window.
+pub fn live_key(index: u32, part: u32) -> String {
+    format!("seg-{index:04}-live-{part:04}")
+}
+
+pub fn live_prefix(index: u32) -> String {
+    format!("seg-{index:04}-live-")
+}
+
 pub fn segment_done_key(index: u32) -> String {
     format!("seg-{index:04}-done")
 }

@@ -2,7 +2,8 @@
 //! caught before it is saved. Per segment, the VAD's voiced spans are measured
 //! against the spans the recognizer actually put text on (its timestamped
 //! segments, not the request windows around them), so a window that decoded
-//! one word does not count its whole length as covered.
+//! one word does not count its whole length as covered. Live parts and
+//! gap-fill windows put text on the spans of their timed words.
 //!
 //! A segment fails below [`MIN_COVERAGE`], or when one stretch of speech
 //! with nothing transcribed between its parts carries more than
@@ -13,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use asr::Span;
+use asr::{LiveWord, Span};
 use serde::{Deserialize, Serialize};
 use session_core::{Segment, Stage};
 
@@ -147,10 +148,20 @@ pub fn run(
 /// The spans carrying decoded text, within the segment: only timestamped
 /// segments count (U20). Text a window decoded without timestamps covers
 /// nothing, since one word would otherwise vouch for the whole window; the
-/// 90% and long-stretch rules tolerate an occasional such window.
+/// 90% and long-stretch rules tolerate an occasional such window. A live
+/// part and a gap-fill window put text on the spans of their words (KTD7).
 pub fn text_spans(windows: &[&WindowResult]) -> Vec<Span> {
     let mut spans = Vec::new();
     for w in windows {
+        if let Some(words) = &w.words {
+            spans.extend(word_spans(words).into_iter().filter_map(|s| {
+                let (start, end) = (s.start_ms.max(w.start_ms), s.end_ms.min(w.end_ms));
+                (end > start).then_some(Span {
+                    start_ms: start,
+                    end_ms: end,
+                })
+            }));
+        }
         for s in w.segments.iter().filter(|s| !s.text.trim().is_empty()) {
             // A short window is padded before decoding, so a timestamp can
             // fall past the audio it was given.
@@ -165,6 +176,22 @@ pub fn text_spans(windows: &[&WindowResult]) -> Vec<Span> {
         }
     }
     union(spans)
+}
+
+/// The spans of the words that have text, in milliseconds from the start of
+/// the segment. A word of no length covers one millisecond, so that
+/// [`measure`] counts it.
+pub fn word_spans(words: &[LiveWord]) -> Vec<Span> {
+    union(
+        words
+            .iter()
+            .filter(|w| !w.text.trim().is_empty())
+            .map(|w| Span {
+                start_ms: w.start_ms,
+                end_ms: w.end_ms.max(w.start_ms + 1),
+            })
+            .collect(),
+    )
 }
 
 fn union(mut spans: Vec<Span>) -> Vec<Span> {
@@ -295,7 +322,8 @@ fn clock(ms: u64) -> String {
 
 /// Before a retry of a failed verification: forget the windows that missed
 /// speech, and the completion of every stage after them, so the runner
-/// re-transcribes only those windows, joins again and verifies again.
+/// re-transcribes only those windows, joins again and verifies again. The
+/// live rows stay (KTD7): only window rows are deleted.
 pub fn prepare_retry(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
     let Some(failure) = checkpoint::get::<VerifyFailure>(store, session_id, Stage::Verify, FAILED)?
     else {

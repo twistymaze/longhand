@@ -18,6 +18,19 @@ pub async fn regenerate_summary(
     processing.regenerate_summary(&session_id).await
 }
 
+/// Transcribe a saved session again with the model selected now (R15). The
+/// session is queued; its transcript and summary change when it saves.
+#[tauri::command]
+#[specta::specta]
+pub fn transcribe_again(
+    app: tauri::AppHandle,
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<(), String> {
+    let model = crate::managers::settings::get_settings(&app).asr_model;
+    processing.transcribe_again(&session_id, &model)
+}
+
 /// Retry a failed session, or one waiting for its destination, from its
 /// checkpoints.
 #[tauri::command]
