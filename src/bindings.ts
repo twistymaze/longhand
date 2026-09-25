@@ -9,13 +9,26 @@ async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
 /**
- * Set the summarization endpoint (R32). An empty base URL clears it; any
- * other value must be a URL with a host, since the credential is keyed by
- * that host (R30a).
+ * Save the Base URL of the summarization endpoint (R32). An empty value
+ * clears it and stays empty (R2). Any other value must be a URL with a
+ * host, because the credential is keyed by that host (R30a). The Model does
+ * not change (KTD5).
  */
-async setEndpoint(baseUrl: string, model: string) : Promise<Result<Settings, string>> {
+async setEndpointBaseUrl(baseUrl: string) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_endpoint", { baseUrl, model }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_endpoint_base_url", { baseUrl }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save the Model of the summarization endpoint. The Base URL does not
+ * change, so a new install keeps "never saved" (KTD5).
+ */
+async setEndpointModel(model: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_endpoint_model", { model }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -853,8 +866,11 @@ destination_roots: string[];
 current_destination: string | null; 
 /**
  * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
+ * `None` means that the user never saved one, and
+ * [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
+ * user cleared it (KTD4).
  */
-endpoint_base_url: string; endpoint_model: string; 
+endpoint_base_url: string | null; endpoint_model: string; 
 /**
  * Overrides the probed context budget when set (KTD16).
  */

@@ -18,7 +18,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::settings::get_settings,
-            commands::settings::set_endpoint,
+            commands::settings::set_endpoint_base_url,
+            commands::settings::set_endpoint_model,
             commands::settings::set_context_limit,
             commands::settings::set_default_speaker_count,
             commands::settings::select_asr_model,

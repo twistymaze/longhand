@@ -231,11 +231,13 @@ pub fn session_detail(
     .map_err(e)?;
 
     let s = settings::get_settings(&app);
-    let endpoint = s.endpoint_configured().then(|| EndpointView {
-        host: secrets::endpoint_key(&s.endpoint_base_url)
-            .unwrap_or_else(|_| s.endpoint_base_url.clone()),
-        model: s.endpoint_model.clone(),
-        encrypted: s.endpoint_base_url.trim().starts_with("https://"),
+    let endpoint = s.endpoint_configured().then(|| {
+        let base_url = s.effective_endpoint_base_url();
+        EndpointView {
+            host: secrets::endpoint_key(base_url).unwrap_or_else(|_| base_url.to_string()),
+            model: s.endpoint_model.clone(),
+            encrypted: base_url.starts_with("https://"),
+        }
     });
 
     let working = capture.working_root().join(&session_id);

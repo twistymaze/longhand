@@ -55,19 +55,23 @@ pub fn get_settings(app: AppHandle) -> Settings {
     settings::get_settings(&app)
 }
 
-/// Set the summarization endpoint (R32). An empty base URL clears it; any
-/// other value must be a URL with a host, since the credential is keyed by
-/// that host (R30a).
+/// Save the Base URL of the summarization endpoint (R32). An empty value
+/// clears it and stays empty (R2). Any other value must be a URL with a
+/// host, because the credential is keyed by that host (R30a). The Model does
+/// not change (KTD5).
 #[tauri::command]
 #[specta::specta]
-pub fn set_endpoint(app: AppHandle, base_url: String, model: String) -> Result<Settings, String> {
-    let base_url = base_url.trim().to_string();
-    if !base_url.is_empty() {
-        secrets::endpoint_key(&base_url).map_err(|e| e.to_string())?;
-    }
+pub fn set_endpoint_base_url(app: AppHandle, base_url: String) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.set_endpoint_base_url(&base_url))
+}
+
+/// Save the Model of the summarization endpoint. The Base URL does not
+/// change, so a new install keeps "never saved" (KTD5).
+#[tauri::command]
+#[specta::specta]
+pub fn set_endpoint_model(app: AppHandle, model: String) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
-        s.endpoint_base_url = base_url;
-        s.endpoint_model = model.trim().to_string();
+        s.set_endpoint_model(&model);
         Ok(())
     })
 }

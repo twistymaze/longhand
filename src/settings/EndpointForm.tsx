@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { commands, type CredentialStatus, type Settings } from "../bindings";
+import { commands, type CredentialStatus, type Result, type Settings } from "../bindings";
 import { SummaryPrompts } from "./SummaryPrompts";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, fieldClass } from "./ui";
 
@@ -111,8 +111,8 @@ export function EndpointForm({
   const [error, setError] = useState<string | null>(null);
   const [limitError, setLimitError] = useState<string | null>(null);
 
-  const setEndpoint = async (baseUrl: string, model: string) => {
-    const result = await commands.setEndpoint(baseUrl, model);
+  const save = async (saving: Promise<Result<Settings, string>>) => {
+    const result = await saving;
     if (result.status === "error") setError(result.error);
     else {
       setError(null);
@@ -135,7 +135,7 @@ export function EndpointForm({
     }
   };
 
-  const baseUrl = settings.endpoint_base_url;
+  const baseUrl = settings.endpoint_base_url ?? "";
 
   return (
     <Pane title="Summaries">
@@ -157,7 +157,7 @@ export function EndpointForm({
             label="Base URL"
             value={baseUrl}
             placeholder="https://api.example.com/v1"
-            onCommit={(v) => setEndpoint(v, settings.endpoint_model)}
+            onCommit={(v) => save(commands.setEndpointBaseUrl(v))}
           />
         </Row>
         <Row label="Model">
@@ -165,7 +165,7 @@ export function EndpointForm({
             label="Model"
             value={settings.endpoint_model}
             placeholder="model name"
-            onCommit={(v) => setEndpoint(baseUrl, v)}
+            onCommit={(v) => save(commands.setEndpointModel(v))}
           />
         </Row>
         {error && <ErrorText>{error}</ErrorText>}
