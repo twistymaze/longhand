@@ -409,6 +409,7 @@ fn summary_view(summary: Summary) -> SummaryView {
         SummaryMeta::Complete {
             endpoint_host,
             model,
+            ..
         } => SummaryView {
             body,
             stub: false,

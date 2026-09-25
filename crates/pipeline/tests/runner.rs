@@ -49,6 +49,8 @@ struct Script {
     weights_missing: AtomicBool,
     /// Where sessions are saved; unset is no destination chosen.
     destination: Mutex<Option<std::path::PathBuf>>,
+    /// The active summary prompt; unset is the "Topic summary" built-in.
+    prompt: Mutex<Option<summarize::Prompt>>,
 }
 
 /// Analyses without finding anyone: the stage runs, no speaker turns come out.
@@ -179,6 +181,11 @@ impl EngineProvider for Provider {
             .unwrap()
             .clone()
             .unwrap_or(Err(EndpointProblem::Unconfigured("no endpoint".into())))
+    }
+    fn summary_prompt(&self) -> summarize::Prompt {
+        self.0.prompt.lock().unwrap().clone().unwrap_or_else(|| {
+            summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
+        })
     }
     fn learn_limit(&self, _: &str, _: &str, limit: u32) {
         self.0.learned.lock().unwrap().push(limit);
@@ -1080,6 +1087,402 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
+    assert!(r.script.learned.lock().unwrap().is_empty());
+}
+
+// ------------------------------------------------------ summary prompts (U2)
+
+/// The system message and the user message of each summary call, without
+/// the title call.
+fn chat_messages(mock: &http::Mock) -> Vec<(String, String)> {
+    completions(mock)
+        .iter()
+        .filter(|b| !is_title_call(b))
+        .map(|b| {
+            let v: serde_json::Value = serde_json::from_str(b).unwrap();
+            let content = |i: usize| {
+                v["messages"][i]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            (content(0), content(1))
+        })
+        .collect()
+}
+
+/// A saved custom prompt whose text holds `marker`.
+fn custom_prompt(name: &str, marker: &str) -> summarize::Prompt {
+    summarize::Prompt {
+        id: format!("custom-{marker}"),
+        name: name.into(),
+        text: format!("Write the summary as a short list. {marker}"),
+    }
+}
+
+fn use_prompt(r: &Rig, prompt: &summarize::Prompt) {
+    *r.script.prompt.lock().unwrap() = Some(prompt.clone());
+}
+
+/// The prompt name that the `summary.md` at `path` records.
+fn prompt_name(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).unwrap();
+    match session_core::folder::Summary::parse(&text).unwrap().meta {
+        session_core::folder::SummaryMeta::Complete { prompt_name, .. } => prompt_name,
+        session_core::folder::SummaryMeta::Stub { .. } => None,
+    }
+}
+
+fn summarize_keys(r: &Rig) -> Vec<String> {
+    r.store
+        .lock()
+        .unwrap()
+        .checkpoints("s", Stage::Summarize)
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+/// A long session whose fifth part note fails, so it is saved with a stub.
+async fn stub_after_part_five(r: &Rig) -> (http::Mock, std::path::PathBuf) {
+    let n = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&n);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        if count.fetch_add(1, Ordering::SeqCst) == 4 {
+            (500, r#"{"error":"overloaded"}"#.into())
+        } else {
+            (200, http::completion("Notes on a part."))
+        }
+    }));
+    let mock = summaries_from(r, reply, Some(2_048)).await;
+    long_session(r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(chat_calls(&mock).len(), 5);
+    let path = saved_folder(r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), None, "a stub records no prompt name");
+    (mock, path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_whole_transcript_run_sends_the_active_prompt_and_records_its_name() {
+    let r = rig().await;
+    let recap = custom_prompt("Game recap", "RECAP-MARKER");
+    use_prompt(&r, &recap);
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("One pass.")),
+        None,
+    )
+    .await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].0.contains("RECAP-MARKER"), "{}", calls[0].0);
+    let path = saved_folder(&r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("prompt_name: Game recap"), "{text}");
+    // The snapshot is saved next to the plan, and the whole call has its
+    // own key, apart from the first part note's.
+    let saved: summarize::Prompt =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PROMPT)
+            .unwrap()
+            .unwrap();
+    assert_eq!(saved, recap);
+    let keys = summarize_keys(&r);
+    assert!(
+        keys.iter().any(|k| k == pipeline::summarize::WHOLE),
+        "{keys:?}"
+    );
+    assert!(keys.iter().all(|k| k != "l00-00000"), "{keys:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunked_run_at_the_floor_sends_the_prompt_text_only_in_the_last_merge() {
+    let r = rig().await;
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(2_048),
+    )
+    .await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let topic = summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap();
+    let calls = chat_messages(&mock);
+    assert!(calls.len() > 2, "{} calls", calls.len());
+    let with_text: Vec<usize> = (0..calls.len())
+        .filter(|&i| calls[i].0.contains(topic.text.trim()))
+        .collect();
+    assert_eq!(with_text, vec![calls.len() - 1]);
+    assert!(
+        calls[calls.len() - 1]
+            .1
+            .contains("Combine these into the summary of the whole session.")
+    );
+    for (system, user) in &calls {
+        let cost = summarize::tokens::estimate_messages([system.as_str(), user.as_str()]);
+        assert!(cost < 2_048, "{cost}");
+    }
+    let path = saved_folder(&r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Topic summary".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_resumed_after_the_active_prompt_changes_keeps_its_first_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    let first = rig_with(Arc::clone(&store), root, Arc::default());
+    use_prompt(&first, &custom_prompt("Game recap", "FIRST-MARKER"));
+    // The process stops after two part notes.
+    let runner = Arc::clone(&first.runner);
+    let count = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        if count.fetch_add(1, Ordering::SeqCst) == 1 {
+            runner.cancel("s");
+        }
+        (200, http::completion("Notes on a part."))
+    }));
+    let first_mock = summaries_from(&first, reply, Some(2_048)).await;
+    long_session(&first);
+    assert_eq!(first.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+    assert_eq!(chat_calls(&first_mock).len(), 2);
+
+    let Rig { _root, .. } = first;
+    let second = rig_with(Arc::clone(&store), _root, Arc::default());
+    use_prompt(&second, &custom_prompt("Business meeting", "SECOND-MARKER"));
+    let mock = summaries_from(
+        &second,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(2_048),
+    )
+    .await;
+    assert_eq!(
+        second
+            .runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        vec!["s".to_string()]
+    );
+    assert_eq!(second.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(calls.iter().all(|(s, _)| !s.contains("SECOND-MARKER")));
+    assert!(calls.iter().any(|(s, _)| s.contains("FIRST-MARKER")));
+    // The two part notes made before the stop are not made again.
+    for done in ["<transcript part=\"1\">", "<transcript part=\"2\">"] {
+        assert!(calls.iter().all(|(_, u)| !u.contains(done)), "{done}");
+    }
+    let path = saved_folder(&second, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_complete_summary_uses_the_prompt_active_now_and_records_its_name() {
+    let r = rig().await;
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("A summary.")),
+        None,
+    )
+    .await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let path = saved_folder(&r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Topic summary".into()));
+    // A change of the active prompt leaves the saved summary as it is.
+    use_prompt(&r, &custom_prompt("Game recap", "RECAP-MARKER"));
+    assert_eq!(prompt_name(&path), Some("Topic summary".into()));
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_messages(&mock);
+    assert_eq!(calls.len(), 2);
+    assert!(calls[1].0.contains("RECAP-MARKER"));
+    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_with_the_same_prompt_reuses_its_part_notes() {
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five(&r).await;
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"5\">"),
+        "{}",
+        &calls[5][..80]
+    );
+    assert_eq!(prompt_name(&path), Some("Topic summary".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_the_prompt_changes_makes_every_call_again() {
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five(&r).await;
+    use_prompt(&r, &custom_prompt("Game recap", "RECAP-MARKER"));
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_messages(&mock);
+    assert!(
+        calls[5].1.contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[5].1[..80]
+    );
+    assert!(calls.last().unwrap().0.contains("RECAP-MARKER"));
+    assert_eq!(prompt_name(&path), Some("Game recap".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_with_a_changed_text_under_the_same_id_makes_every_call_again() {
+    let r = rig().await;
+    let before = custom_prompt("Game recap", "FIRST-MARKER");
+    use_prompt(&r, &before);
+    let (mock, path) = stub_after_part_five(&r).await;
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            text: "Write the summary as one paragraph. EDITED-MARKER".into(),
+            ..before
+        },
+    );
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_messages(&mock);
+    assert!(calls[5].1.contains("<transcript part=\"1\">"));
+    assert!(calls.last().unwrap().0.contains("EDITED-MARKER"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_with_no_saved_prompt_makes_every_call_again() {
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five(&r).await;
+    // A stub from before prompts were saved has no snapshot.
+    r.store
+        .lock()
+        .unwrap()
+        .delete_checkpoint("s", Stage::Summarize, pipeline::summarize::PROMPT)
+        .unwrap();
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[5][..80]
+    );
+    assert_eq!(prompt_name(&path), Some("Topic summary".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_its_prompt_is_renamed_reuses_the_calls_and_records_the_new_name()
+{
+    let r = rig().await;
+    let before = custom_prompt("Game recap", "RECAP-MARKER");
+    use_prompt(&r, &before);
+    let (mock, path) = stub_after_part_five(&r).await;
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            name: "Campaign recap".into(),
+            ..before
+        },
+    );
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"5\">"),
+        "{}",
+        &calls[5][..80]
+    );
+    assert_eq!(prompt_name(&path), Some("Campaign recap".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_whole_call_result_is_never_used_as_a_part_note() {
+    let r = rig().await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let k = count.fetch_add(1, Ordering::SeqCst);
+        (200, http::completion(&format!("Reply {k}.")))
+    }));
+    let mock = summaries_from(&r, reply, Some(32_000)).await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(chat_calls(&mock).len(), 1, "the transcript fits one call");
+    // A stub whose plan is gone: the next run decides the fit again, under
+    // a smaller context, and the transcript no longer fits one call.
+    {
+        let s = r.store.lock().unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, checkpoint::DONE)
+            .unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, pipeline::summarize::PLAN)
+            .unwrap();
+    }
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        ..endpoint(&mock.base)
+    }));
+    r.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[1].contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[1][..80]
+    );
+    let get = |key: &str| {
+        checkpoint::get::<String>(&r.store, "s", Stage::Summarize, key)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(get(pipeline::summarize::WHOLE), "Reply 0.");
+    assert_eq!(get("l00-00000"), "Reply 1.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_too_long_for_the_context_fails_the_summary_before_any_call() {
+    let r = rig().await;
+    let text: String = "Keep every detail that was said. "
+        .repeat(200)
+        .chars()
+        .take(summarize::prompts::PROMPT_TEXT_LIMIT)
+        .collect();
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            id: "custom-long".into(),
+            name: "Long".into(),
+            text,
+        },
+    );
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(2_048),
+    )
+    .await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(chat_calls(&mock).is_empty(), "no call is made");
+    let expected = "the summary prompt is too long for this model's context";
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::SummaryUnavailable { message, .. } if message.contains(expected)
+    )));
+    let path = saved_folder(&r, "s").join("summary.md");
+    let stub =
+        session_core::folder::Summary::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(stub.body.contains(expected), "{}", stub.body);
     assert!(r.script.learned.lock().unwrap().is_empty());
 }
 

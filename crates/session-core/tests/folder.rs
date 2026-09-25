@@ -136,6 +136,15 @@ fn summary_md_round_trips_both_forms_and_never_holds_a_credential() {
             meta: SummaryMeta::Complete {
                 endpoint_host: "litellm.example.com".into(),
                 model: "gpt-5".into(),
+                prompt_name: Some("Game recap".into()),
+            },
+            body: "## Decisions\n\n- Ship Friday.".into(),
+        },
+        Summary {
+            meta: SummaryMeta::Complete {
+                endpoint_host: "litellm.example.com".into(),
+                model: "gpt-5".into(),
+                prompt_name: None,
             },
             body: "## Decisions\n\n- Ship Friday.".into(),
         },
@@ -150,6 +159,46 @@ fn summary_md_round_trips_both_forms_and_never_holds_a_credential() {
         assert!(!text.to_lowercase().contains("key"));
         assert_eq!(Summary::parse(&text).unwrap(), summary);
     }
+}
+
+#[test]
+fn a_summary_md_with_no_prompt_name_parses_and_renders_again_without_one() {
+    let older = "---\nstatus: complete\nendpoint_host: litellm.example.com\nmodel: gpt-5\n---\n\n## Decisions\n";
+    let summary = Summary::parse(older).unwrap();
+    assert_eq!(
+        summary.meta,
+        SummaryMeta::Complete {
+            endpoint_host: "litellm.example.com".into(),
+            model: "gpt-5".into(),
+            prompt_name: None,
+        }
+    );
+    assert_eq!(summary.render(), older);
+}
+
+#[test]
+fn a_summary_md_records_the_prompt_name_in_its_frontmatter() {
+    let summary = Summary {
+        meta: SummaryMeta::Complete {
+            endpoint_host: "litellm.example.com".into(),
+            model: "gpt-5".into(),
+            prompt_name: Some("Game recap".into()),
+        },
+        body: "## Decisions".into(),
+    };
+    let text = summary.render();
+    assert!(text.contains("\nprompt_name: Game recap\n"), "{text}");
+}
+
+#[test]
+fn a_stub_renders_with_no_prompt_name() {
+    let stub = Summary {
+        meta: SummaryMeta::Stub {
+            failed_stage: "summarize".into(),
+        },
+        body: "No summary was produced.".into(),
+    };
+    assert!(!stub.render().contains("prompt_name"));
 }
 
 #[test]
