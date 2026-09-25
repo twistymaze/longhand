@@ -168,13 +168,15 @@ pub enum EndpointGate {
     NotRequested(NotRequestedReason),
 }
 
-/// The key state from the result of a Keychain read. The list command and
-/// summary processing both call it, so they map Keychain errors the same way.
+/// The key state from the result of a Keychain read. The list command,
+/// summary processing and readiness all call it, so they map Keychain errors
+/// the same way. A key that is empty after trim counts as no key: it must
+/// not pass the gate or go out as a blank Bearer header.
 pub fn key_state(read: &Result<Option<String>, secrets::SecretError>) -> KeyState {
     use secrets::SecretError;
     match read {
-        Ok(Some(_)) => KeyState::Saved,
-        Ok(None) => KeyState::Absent,
+        Ok(Some(key)) if !key.trim().is_empty() => KeyState::Saved,
+        Ok(_) => KeyState::Absent,
         Err(SecretError::Locked { .. } | SecretError::Unavailable { .. }) => KeyState::Locked,
         Err(_) => KeyState::Failed,
     }
@@ -194,6 +196,24 @@ pub fn endpoint_gate(base_url: &str, saved_by_user: bool, key: KeyState) -> Endp
         KeyState::Absent if saved_by_user => EndpointGate::RequestWithoutKey,
         KeyState::Absent => EndpointGate::NotRequested(NotRequestedReason::KeyNeeded),
     }
+}
+
+/// Whether summary processing can use the endpoint in `s`, given the state
+/// of the key for its host. Readiness reports this value, so it applies the
+/// same gate as summary processing. A locked or failed Keychain read counts
+/// as configured: the Keychain problem has its own message.
+pub fn endpoint_ready(s: &Settings, key: KeyState) -> bool {
+    s.endpoint_configured()
+        && !matches!(
+            endpoint_gate(
+                s.effective_endpoint_base_url(),
+                s.endpoint_base_url_saved(),
+                key
+            ),
+            EndpointGate::NotRequested(
+                NotRequestedReason::KeyNeeded | NotRequestedReason::NoBaseUrl
+            )
+        )
 }
 
 impl Default for Settings {
@@ -1220,6 +1240,54 @@ mod tests {
         );
         for key in [Saved, Absent, Locked, Failed] {
             assert_eq!(endpoint_gate("  ", true, key), NotRequested(NoBaseUrl));
+        }
+    }
+
+    #[test]
+    fn a_blank_saved_key_counts_as_no_key() {
+        assert_eq!(key_state(&Ok(Some("sk-1".into()))), KeyState::Saved);
+        assert_eq!(key_state(&Ok(Some("   ".into()))), KeyState::Absent);
+        assert_eq!(key_state(&Ok(Some(String::new()))), KeyState::Absent);
+        assert_eq!(key_state(&Ok(None)), KeyState::Absent);
+        // A blank key does not open the gate for the default Base URL.
+        let key = key_state(&Ok(Some(" \t".into())));
+        assert_eq!(
+            endpoint_gate(DEFAULT_ENDPOINT_BASE_URL, false, key),
+            EndpointGate::NotRequested(NotRequestedReason::KeyNeeded)
+        );
+    }
+
+    #[test]
+    fn readiness_applies_the_same_gate_as_summary_processing() {
+        use KeyState::*;
+        let default_url = Settings {
+            endpoint_model: "gpt-4o".into(),
+            ..Settings::default()
+        };
+        // A model with no key for the default Base URL: processing refuses.
+        assert!(!endpoint_ready(&default_url, Absent));
+        assert!(endpoint_ready(&default_url, Saved));
+        // A Keychain problem has its own message. It is not "unconfigured".
+        assert!(endpoint_ready(&default_url, Locked));
+        assert!(endpoint_ready(&default_url, Failed));
+
+        let local = Settings {
+            endpoint_base_url: Some("http://localhost:11434/v1".into()),
+            ..default_url.clone()
+        };
+        assert!(endpoint_ready(&local, Absent));
+
+        let cleared = Settings {
+            endpoint_base_url: Some(String::new()),
+            ..default_url.clone()
+        };
+        let no_model = Settings {
+            endpoint_model: String::new(),
+            ..local.clone()
+        };
+        for key in [Saved, Absent, Locked, Failed] {
+            assert!(!endpoint_ready(&cleared, key));
+            assert!(!endpoint_ready(&no_model, key));
         }
     }
 

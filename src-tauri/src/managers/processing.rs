@@ -206,12 +206,15 @@ fn endpoint_from_settings(
         | EndpointGate::RequestWithKey
         | EndpointGate::RequestWithoutKey => {}
     }
-    let credential = read.map_err(|e| match e {
-        SecretError::Locked { .. } | SecretError::Unavailable { .. } => {
-            EndpointProblem::Locked(e.to_string())
-        }
-        other => EndpointProblem::Unconfigured(other.to_string()),
-    })?;
+    let credential = read
+        .map_err(|e| match e {
+            SecretError::Locked { .. } | SecretError::Unavailable { .. } => {
+                EndpointProblem::Locked(e.to_string())
+            }
+            other => EndpointProblem::Unconfigured(other.to_string()),
+        })?
+        // A blank key is no key (see `key_state`): send no Bearer header.
+        .filter(|key| !key.trim().is_empty());
     Ok(SummaryEndpoint {
         learned_limit: s
             .learned_context_limits

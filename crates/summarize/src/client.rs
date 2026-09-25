@@ -59,6 +59,9 @@ impl Limits {
     }
 }
 
+/// The `location` of a redirect that has no `Location` header.
+pub(crate) const NO_LOCATION: &str = "an unnamed location";
+
 #[derive(Debug, thiserror::Error)]
 pub enum SummarizeError {
     #[error("the summarization endpoint is not a valid http(s) URL: {0}")]
@@ -253,7 +256,7 @@ impl Client {
                     .headers()
                     .get(reqwest::header::LOCATION)
                     .and_then(|v| v.to_str().ok())
-                    .unwrap_or("an unnamed location")
+                    .unwrap_or(NO_LOCATION)
                     .to_string();
                 return Err(SummarizeError::Redirect {
                     status: status.as_u16(),

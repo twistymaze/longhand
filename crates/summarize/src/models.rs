@@ -11,7 +11,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::client::{Client, SummarizeError};
+use crate::client::{Client, NO_LOCATION, SummarizeError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -107,8 +107,11 @@ fn outcome(error: SummarizeError, key_sent: bool, url: &str) -> ModelList {
 }
 
 /// The host of a redirect target. A relative `Location` resolves against
-/// the request URL.
+/// the request URL. A redirect with no `Location` header gives no host.
 fn redirect_host(url: &str, location: &str) -> Option<String> {
+    if location == NO_LOCATION {
+        return None;
+    }
     Url::parse(url)
         .and_then(|base| base.join(location))
         .ok()?

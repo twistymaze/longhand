@@ -750,7 +750,12 @@ armed: boolean; shortcut: ShortcutStatus;
 /**
  * Catalog ids of required weights not yet on disk.
  */
-missing_models: string[]; endpoint_configured: boolean }
+missing_models: string[]; 
+/**
+ * A Base URL and a model are set, and the request gate lets summary
+ * processing use them (KTD3). A locked Keychain does not clear it.
+ */
+endpoint_configured: boolean }
 /**
  * A session started, stopped, or resumed recording.
  */

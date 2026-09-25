@@ -331,6 +331,60 @@ describe("the Summaries pane", () => {
     expect(b.listCalls()).toBe(1);
   });
 
+  test("a rejected Base URL save sends no list request and shows no status for the old URL", async () => {
+    const b = backend({
+      list: () => listed("old-a", "old-b"),
+      over: {
+        set_endpoint_base_url: () => {
+          throw "The Base URL needs a host.";
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await waitFor(() => expect(status().textContent).toContain("Connected · 2 models"));
+    const field = screen.getByLabelText("Base URL");
+    await user.clear(field);
+    await user.type(field, "http://{Enter}");
+    await screen.findByText("The Base URL needs a host.");
+    await waitFor(() => expect(status().textContent).not.toContain("Checking…"));
+    expect(status().textContent).not.toContain("Connected");
+    expect(b.listCalls()).toBe(1);
+    expect(modelIsPicker()).toBe(false);
+  });
+
+  test("a save that throws leaves no Checking… status", async () => {
+    const b = backend({
+      over: {
+        set_endpoint_base_url: () => {
+          throw new Error("IPC failed");
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await waitFor(() => expect(status().textContent).toContain("Add an API key"));
+    const field = screen.getByLabelText("Base URL");
+    await user.clear(field);
+    await user.type(field, "http://localhost:11434/v1{Enter}");
+    await screen.findByText("IPC failed");
+    await waitFor(() => expect(status().textContent).not.toContain("Checking…"));
+    expect(b.listCalls()).toBe(1);
+  });
+
+  test("a list request that throws shows the error on the status line in the negative tone", async () => {
+    const b = backend({
+      over: {
+        list_endpoint_models: () => {
+          throw new Error("The list command failed.");
+        },
+      },
+    });
+    render(<Harness initial={b.initial} />);
+    await waitFor(() => expect(status().textContent).toContain("The list command failed."));
+    expect(status().querySelector(".text-negative")).not.toBeNull();
+  });
+
   test("the status line is a live region", async () => {
     const b = backend();
     render(<Harness initial={b.initial} />);

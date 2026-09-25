@@ -3,6 +3,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{Reply, serve};
@@ -154,6 +155,26 @@ async fn a_relative_redirect_names_the_host_of_the_request() {
             host: Some("127.0.0.1".into())
         }
     );
+}
+
+#[tokio::test]
+async fn a_redirect_with_no_location_names_no_host() {
+    // A `With` reply sends no `Location` header.
+    let reply = Reply::With(Arc::new(|_| (302, String::new())));
+    assert_eq!(
+        list_with(reply, None).await,
+        ModelList::Redirected { host: None }
+    );
+}
+
+#[tokio::test]
+async fn a_blank_id_is_dropped() {
+    let body = r#"{"data":[{"id":""},{"id":"   "},{"id":"a"}]}"#;
+    assert_eq!(
+        list_with(Reply::Json(200, body.into()), None).await,
+        listed(&["a"])
+    );
+    assert_eq!(parse_ids(&json!([" ", "b"])), Some(vec!["b".to_string()]));
 }
 
 #[tokio::test]

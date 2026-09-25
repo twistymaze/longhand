@@ -210,7 +210,8 @@ export function EndpointForm({
   // result of the latest request applies. `models` is the list that the
   // picker shows, or null when Model is a text field.
   const latest = useRef(0);
-  const [checking, setChecking] = useState(false);
+  // True at the start: the first request starts when the form mounts.
+  const [checking, setChecking] = useState(true);
   const [outcome, setOutcome] = useState<Result<EndpointModels, string> | null>(null);
   const [models, setModels] = useState<string[] | null>(null);
   const [credential, setCredential] = useState<CredentialStatus | null>(null);
@@ -220,17 +221,27 @@ export function EndpointForm({
 
   /// Start a list request. `keep` keeps the current list while the request
   /// runs (Refresh and pane open). `before` runs after the counter changes
-  /// and before the request, for example to save a new Base URL.
-  const check = useCallback(async (keep: boolean, before?: () => Promise<unknown>) => {
+  /// and before the request, for example to save a new Base URL. When
+  /// `before` returns false, no request starts and the status line is empty:
+  /// the field error shows why. When `before` throws, the status line shows
+  /// the error.
+  const check = useCallback(async (keep: boolean, before?: () => Promise<boolean>) => {
     const id = ++latest.current;
     if (!keep) setModels(null);
     setChecking(true);
-    if (before) await before();
     let result: Result<EndpointModels, string>;
     try {
+      if (before && !(await before())) {
+        // The save failed. Do not list the models of the previous Base URL.
+        if (id !== latest.current) return;
+        setChecking(false);
+        setOutcome(null);
+        setModels(null);
+        return;
+      }
       result = await commands.listEndpointModels();
     } catch (e) {
-      // The IPC call itself failed. Show the failure on the status line.
+      // The save or the IPC call itself failed. Show the failure on the status line.
       result = { status: "error", error: e instanceof Error ? e.message : String(e) };
     }
     if (id !== latest.current) return;
@@ -243,13 +254,26 @@ export function EndpointForm({
     void check(true);
   }, [check]);
 
-  const save = async (saving: Promise<Result<Settings, string>>, setError: (e: string | null) => void) => {
-    const result = await saving;
-    if (result.status === "error") setError(result.error);
-    else {
-      setError(null);
-      onSettings(result.data);
+  /// Save a setting. Returns true when the save succeeds. A rejected save
+  /// and a failed IPC call both show the error under the field.
+  const save = async (
+    saving: Promise<Result<Settings, string>>,
+    setError: (e: string | null) => void,
+  ): Promise<boolean> => {
+    let result: Result<Settings, string>;
+    try {
+      result = await saving;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
     }
+    if (result.status === "error") {
+      setError(result.error);
+      return false;
+    }
+    setError(null);
+    onSettings(result.data);
+    return true;
   };
 
   const setLimit = async (text: string) => {
@@ -271,8 +295,9 @@ export function EndpointForm({
   const saveModel = (v: string) => save(commands.setEndpointModel(v), setModelError);
   const showPicker = models !== null && !typing;
 
-  let line: ReactNode = <span className="text-label-tertiary">Checking…</span>;
-  if (!checking && outcome) {
+  let line: ReactNode = null;
+  if (checking) line = <span className="text-label-tertiary">Checking…</span>;
+  else if (outcome) {
     const [tone, text] = statusLine(outcome, baseUrl, credential?.kind === "failed" ? credential.message : null);
     line = <Status tone={tone}>{text}</Status>;
   }
