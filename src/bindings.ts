@@ -46,6 +46,73 @@ async setAsrModel(modelId: string) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * The built-in summary prompts first, then the custom prompts (R1, R2).
+ */
+async summaryPrompts() : Promise<SummaryPromptList> {
+    return await TAURI_INVOKE("summary_prompts");
+},
+/**
+ * Add a summary prompt named "New prompt" with the Topic summary text (R3).
+ */
+async createSummaryPrompt() : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_summary_prompt") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add a copy of a summary prompt, named "X copy" (R3).
+ */
+async duplicateSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("duplicate_summary_prompt", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async renameSummaryPrompt(id: string, name: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_summary_prompt", { id, name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setSummaryPromptText(id: string, text: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_summary_prompt_text", { id, text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a custom summary prompt. The Topic summary becomes active when the
+ * deleted prompt was active (R4).
+ */
+async deleteSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_summary_prompt", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Make a summary prompt the one that the next summary uses (R1).
+ */
+async activateSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("activate_summary_prompt", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Pick a folder with the system dialog, make it current, and retain it as a
  * root (R23, R25a). `None` when the user closes the dialog.
  */
@@ -652,7 +719,16 @@ learned_context_limits: Partial<{ [key in string]: number }>;
 /**
  * The user heard the alert cue played at setup (R5a, KTD14).
  */
-alert_tone_heard: boolean }
+alert_tone_heard: boolean; 
+/**
+ * The custom summary prompts, in the order the user made them (KTD6).
+ */
+summary_prompts: SummaryPrompt[]; 
+/**
+ * The id of the prompt that the next summary uses. An id that matches
+ * no prompt resolves to the Topic summary.
+ */
+active_summary_prompt: string }
 export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
 /**
  * The main window must show the page of this session (R3).
@@ -662,6 +738,24 @@ export type ShowSession = { session_id: string }
  * An optional bound on how many people are speaking (R36).
  */
 export type SpeakerCountSetting = { kind: "exact"; count: number } | { kind: "range"; min: number; max: number }
+/**
+ * A summary prompt that the user made (R1, KTD6). The built-in prompts are
+ * never saved: their text lives in `summarize::prompts`.
+ */
+export type SummaryPrompt = { id: string; name: string; text: string }
+/**
+ * One row of the prompt list that the Settings window shows.
+ */
+export type SummaryPromptEntry = { id: string; name: string; text: string; 
+/**
+ * A built-in prompt cannot be renamed, edited or deleted (R2).
+ */
+built_in: boolean }
+/**
+ * The built-in prompts first, then the custom prompts, and the id of the
+ * prompt that the next summary uses.
+ */
+export type SummaryPromptList = { prompts: SummaryPromptEntry[]; active: string }
 export type SummaryView = { 
 /**
  * Markdown.

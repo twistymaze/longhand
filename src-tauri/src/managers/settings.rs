@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use specta::Type;
+use summarize::prompts::{PROMPT_TEXT_LIMIT, TOPIC_SUMMARY_ID};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
@@ -18,7 +19,7 @@ use tauri_plugin_store::StoreExt;
 pub const SETTINGS_STORE_PATH: &str = "settings.json";
 const SETTINGS_KEY: &str = "settings";
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 /// The chord a fresh install records with. Obscure enough to collide with
 /// nothing common; the Phase 2a probe proved it registers on macOS.
@@ -45,6 +46,37 @@ impl SpeakerCountSetting {
     }
 }
 
+/// A summary prompt that the user made (R1, KTD6). The built-in prompts are
+/// never saved: their text lives in `summarize::prompts`.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct SummaryPrompt {
+    pub id: String,
+    pub name: String,
+    pub text: String,
+}
+
+/// One row of the prompt list that the Settings window shows.
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct SummaryPromptEntry {
+    pub id: String,
+    pub name: String,
+    pub text: String,
+    /// A built-in prompt cannot be renamed, edited or deleted (R2).
+    pub built_in: bool,
+}
+
+/// The built-in prompts first, then the custom prompts, and the id of the
+/// prompt that the next summary uses.
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct SummaryPromptList {
+    pub prompts: Vec<SummaryPromptEntry>,
+    pub active: String,
+}
+
+const NEW_PROMPT_NAME: &str = "New prompt";
+const NO_SUCH_PROMPT: &str = "That prompt no longer exists.";
+const BUILT_IN_PROMPT: &str = "A built-in prompt can't be changed. Duplicate it to make your own.";
+
 #[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -68,6 +100,11 @@ pub struct Settings {
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
     /// The user heard the alert cue played at setup (R5a, KTD14).
     pub alert_tone_heard: bool,
+    /// The custom summary prompts, in the order the user made them (KTD6).
+    pub summary_prompts: Vec<SummaryPrompt>,
+    /// The id of the prompt that the next summary uses. An id that matches
+    /// no prompt resolves to the Topic summary.
+    pub active_summary_prompt: String,
 }
 
 /// One endpoint and model: a limit learned for one says nothing of another.
@@ -89,6 +126,8 @@ impl Default for Settings {
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
             learned_context_limits: Default::default(),
             alert_tone_heard: false,
+            summary_prompts: Vec::new(),
+            active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
         }
     }
 }
@@ -105,6 +144,180 @@ impl Settings {
     pub fn endpoint_configured(&self) -> bool {
         !self.endpoint_base_url.trim().is_empty() && !self.endpoint_model.trim().is_empty()
     }
+
+    /// The prompt that a summary run uses now (KTD4). An unknown id gives
+    /// the Topic summary.
+    pub fn active_summary_prompt_snapshot(&self) -> summarize::Prompt {
+        self.find_summary_prompt(&self.active_summary_prompt)
+            .unwrap_or_else(topic_summary)
+    }
+
+    pub fn summary_prompt_list(&self) -> SummaryPromptList {
+        let built_ins = summarize::prompts::built_ins()
+            .into_iter()
+            .map(|p| SummaryPromptEntry {
+                id: p.id,
+                name: p.name,
+                text: p.text,
+                built_in: true,
+            });
+        let custom = self.summary_prompts.iter().map(|p| SummaryPromptEntry {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            text: p.text.clone(),
+            built_in: false,
+        });
+        SummaryPromptList {
+            prompts: built_ins.chain(custom).collect(),
+            active: self.active_summary_prompt_snapshot().id,
+        }
+    }
+
+    /// Add a prompt with the Topic summary text (R3). Returns its id.
+    pub fn create_summary_prompt(&mut self) -> String {
+        let name = self.free_prompt_name(NEW_PROMPT_NAME);
+        self.add_summary_prompt(name, topic_summary().text)
+    }
+
+    /// Add a copy of the prompt `id`, named "X copy" (R3). Returns its id.
+    pub fn duplicate_summary_prompt(&mut self, id: &str) -> Result<String, String> {
+        let source = self.find_summary_prompt(id).ok_or(NO_SUCH_PROMPT)?;
+        let name = self.free_prompt_name(&format!("{} copy", source.name));
+        Ok(self.add_summary_prompt(name, source.text))
+    }
+
+    pub fn rename_summary_prompt(&mut self, id: &str, name: &str) -> Result<(), String> {
+        let index = self.custom_prompt_index(id)?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Enter a name for the prompt.".into());
+        }
+        let taken = self
+            .all_prompt_names()
+            .any(|(other, existing)| other != id && same_name(&existing, name));
+        if taken {
+            return Err("A prompt with that name already exists.".into());
+        }
+        self.summary_prompts[index].name = name.to_string();
+        Ok(())
+    }
+
+    pub fn set_summary_prompt_text(&mut self, id: &str, text: &str) -> Result<(), String> {
+        let index = self.custom_prompt_index(id)?;
+        if text.trim().is_empty() {
+            return Err("Enter the text for the prompt.".into());
+        }
+        if text.chars().count() > PROMPT_TEXT_LIMIT {
+            return Err(format!(
+                "The prompt text is too long. Use {} characters or fewer.",
+                format_count(PROMPT_TEXT_LIMIT)
+            ));
+        }
+        self.summary_prompts[index].text = text.to_string();
+        Ok(())
+    }
+
+    /// Remove a custom prompt. When it was active, the Topic summary
+    /// becomes active (R4).
+    pub fn delete_summary_prompt(&mut self, id: &str) -> Result<(), String> {
+        let index = self.custom_prompt_index(id)?;
+        self.summary_prompts.remove(index);
+        if self.active_summary_prompt == id {
+            self.active_summary_prompt = TOPIC_SUMMARY_ID.to_string();
+        }
+        Ok(())
+    }
+
+    pub fn activate_summary_prompt(&mut self, id: &str) -> Result<(), String> {
+        if self.find_summary_prompt(id).is_none() {
+            return Err(NO_SUCH_PROMPT.into());
+        }
+        self.active_summary_prompt = id.to_string();
+        Ok(())
+    }
+
+    fn find_summary_prompt(&self, id: &str) -> Option<summarize::Prompt> {
+        summarize::prompts::built_in(id).or_else(|| {
+            self.summary_prompts
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| summarize::Prompt {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    text: p.text.clone(),
+                })
+        })
+    }
+
+    /// The position of the custom prompt `id`. A built-in id or an unknown
+    /// id fails.
+    fn custom_prompt_index(&self, id: &str) -> Result<usize, String> {
+        if summarize::prompts::built_in(id).is_some() {
+            return Err(BUILT_IN_PROMPT.into());
+        }
+        self.summary_prompts
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| NO_SUCH_PROMPT.into())
+    }
+
+    fn add_summary_prompt(&mut self, name: String, text: String) -> String {
+        // A random id never matches a built-in id, which is a fixed word.
+        let id = uuid::Uuid::new_v4().to_string();
+        self.summary_prompts.push(SummaryPrompt {
+            id: id.clone(),
+            name,
+            text,
+        });
+        id
+    }
+
+    /// The id and name of every prompt, built-in and custom.
+    fn all_prompt_names(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        summarize::prompts::built_ins()
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .chain(
+                self.summary_prompts
+                    .iter()
+                    .map(|p| (p.id.clone(), p.name.clone())),
+            )
+    }
+
+    /// `base`, or `base 2`, `base 3`, … when that name is taken (R3).
+    fn free_prompt_name(&self, base: &str) -> String {
+        let taken: Vec<String> = self.all_prompt_names().map(|(_, name)| name).collect();
+        let is_free = |candidate: &str| !taken.iter().any(|t| same_name(t, candidate));
+        if is_free(base) {
+            return base.to_string();
+        }
+        (2..)
+            .map(|n| format!("{base} {n}"))
+            .find(|candidate| is_free(candidate))
+            .expect("an unbounded range always gives a free name")
+    }
+}
+
+/// Names are compared trimmed and without case (KTD7).
+fn same_name(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+fn topic_summary() -> summarize::Prompt {
+    summarize::prompts::built_in(TOPIC_SUMMARY_ID).expect("the Topic summary is a built-in prompt")
+}
+
+/// `4000` as "4,000", for UI text.
+fn format_count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Parse a stored value into settings. Returns whether the stored form
@@ -140,10 +353,54 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
         // every real field takes its default.
         updated = true;
     }
+    if stored_version < 3 {
+        // Every existing install changes to the new default prompt (KTD6).
+        settings.active_summary_prompt = TOPIC_SUMMARY_ID.to_string();
+        updated = true;
+    }
+    if drop_unusable_prompts(&mut settings.summary_prompts) {
+        updated = true;
+    }
     if updated {
         settings.settings_schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     }
     updated
+}
+
+/// Remove each stored prompt whose id is a built-in id or repeats an earlier
+/// id: such a prompt could never be selected apart from the other one.
+/// Returns whether a prompt was removed.
+fn drop_unusable_prompts(prompts: &mut Vec<SummaryPrompt>) -> bool {
+    let before = prompts.len();
+    let mut seen = std::collections::HashSet::new();
+    prompts.retain(|p| {
+        let usable = summarize::prompts::built_in(&p.id).is_none() && seen.insert(p.id.clone());
+        if !usable {
+            log::warn!("dropping a stored summary prompt with a built-in or repeated id");
+        }
+        usable
+    });
+    prompts.len() != before
+}
+
+/// Keep only the entries of a stored prompt list that are individually
+/// valid, so one bad entry never drops the other prompts.
+fn salvage_prompts(value: &Value) -> Value {
+    let Some(entries) = value.as_array() else {
+        return value.clone();
+    };
+    let kept: Vec<Value> = entries
+        .iter()
+        .filter(|entry| {
+            let valid = serde_json::from_value::<SummaryPrompt>((*entry).clone()).is_ok();
+            if !valid {
+                log::warn!("dropping an invalid stored summary prompt");
+            }
+            valid
+        })
+        .cloned()
+        .collect();
+    Value::Array(kept)
 }
 
 /// Rebuild settings from a stored value that failed to deserialize as a
@@ -157,6 +414,11 @@ fn salvage_settings(stored: &Value) -> Settings {
     let mut merged =
         serde_json::to_value(Settings::default()).expect("default settings serialize to an object");
     for (key, value) in stored_map {
+        let value = if key == "summary_prompts" {
+            &salvage_prompts(value)
+        } else {
+            value
+        };
         let map = merged
             .as_object_mut()
             .expect("merged settings stay an object");
@@ -232,6 +494,8 @@ fn write_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
 mod tests {
     use serde_json::json;
 
+    use summarize::prompts::PLAY_BY_PLAY_ID;
+
     use super::*;
 
     #[test]
@@ -256,7 +520,10 @@ mod tests {
         assert_eq!(settings, Settings::default());
         let written = serde_json::to_value(&settings).unwrap();
         assert!(written.get("probe_value").is_none());
-        assert_eq!(written["settings_schema_version"], 2);
+        assert_eq!(
+            written["settings_schema_version"],
+            CURRENT_SETTINGS_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -320,6 +587,261 @@ mod tests {
             SpeakerCountSetting::Range { min: 0, max: 3 }
                 .validate()
                 .is_err()
+        );
+    }
+
+    fn custom(id: &str, name: &str) -> SummaryPrompt {
+        SummaryPrompt {
+            id: id.into(),
+            name: name.into(),
+            text: "Write a recap.".into(),
+        }
+    }
+
+    fn names(settings: &Settings) -> Vec<&str> {
+        settings
+            .summary_prompts
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn an_empty_store_gets_version_3_and_topic_summary_active() {
+        let (settings, _) = settings_from_value(&json!({}));
+        assert_eq!(settings.settings_schema_version, 3);
+        assert!(settings.summary_prompts.is_empty());
+        assert_eq!(settings.active_summary_prompt, TOPIC_SUMMARY_ID);
+    }
+
+    #[test]
+    fn a_version_2_store_keeps_its_settings_and_gets_topic_summary_active() {
+        let stored = json!({
+            "settings_schema_version": 2,
+            "endpoint_model": "gpt-5",
+            "active_summary_prompt": PLAY_BY_PLAY_ID,
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(settings.endpoint_model, "gpt-5");
+        assert_eq!(settings.active_summary_prompt, TOPIC_SUMMARY_ID);
+        assert_eq!(settings.settings_schema_version, 3);
+    }
+
+    #[test]
+    fn a_version_3_store_keeps_its_active_prompt() {
+        let stored = json!({
+            "settings_schema_version": 3,
+            "active_summary_prompt": PLAY_BY_PLAY_ID,
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(settings.active_summary_prompt, PLAY_BY_PLAY_ID);
+    }
+
+    #[test]
+    fn one_malformed_prompt_entry_keeps_the_other_entries() {
+        let stored = json!({
+            "settings_schema_version": 3,
+            "endpoint_model": "kept",
+            "summary_prompts": [
+                { "id": "a", "name": "Game recap", "text": "Recap." },
+                { "id": "b", "name": 7 },
+                { "id": "c", "name": "One on one", "text": "Notes." },
+            ],
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(names(&settings), ["Game recap", "One on one"]);
+    }
+
+    #[test]
+    fn a_stored_prompt_with_a_built_in_or_repeated_id_is_dropped() {
+        let stored = json!({
+            "settings_schema_version": 3,
+            "summary_prompts": [
+                { "id": TOPIC_SUMMARY_ID, "name": "Shadow", "text": "x" },
+                { "id": "a", "name": "Game recap", "text": "Recap." },
+                { "id": "a", "name": "Again", "text": "x" },
+            ],
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(names(&settings), ["Game recap"]);
+    }
+
+    #[test]
+    fn create_names_new_prompts_in_turn_with_the_topic_summary_text() {
+        let mut settings = Settings::default();
+        settings.create_summary_prompt();
+        settings.create_summary_prompt();
+        assert_eq!(names(&settings), ["New prompt", "New prompt 2"]);
+        let topic = summarize::prompts::built_in(TOPIC_SUMMARY_ID).unwrap();
+        for prompt in &settings.summary_prompts {
+            assert_eq!(prompt.text, topic.text);
+            assert!(summarize::prompts::built_in(&prompt.id).is_none());
+        }
+        assert_ne!(
+            settings.summary_prompts[0].id,
+            settings.summary_prompts[1].id
+        );
+    }
+
+    #[test]
+    fn duplicate_names_the_copy_in_turn() {
+        let mut settings = Settings::default();
+        settings.duplicate_summary_prompt(TOPIC_SUMMARY_ID).unwrap();
+        settings.duplicate_summary_prompt(TOPIC_SUMMARY_ID).unwrap();
+        assert_eq!(
+            names(&settings),
+            ["Topic summary copy", "Topic summary copy 2"]
+        );
+
+        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.duplicate_summary_prompt("g").unwrap();
+        let copy = settings.summary_prompts.last().unwrap();
+        assert_eq!(copy.name, "Game recap copy");
+        assert_eq!(copy.text, "Write a recap.");
+        assert_ne!(copy.id, "g");
+
+        assert!(settings.duplicate_summary_prompt("missing").is_err());
+    }
+
+    #[test]
+    fn rename_refuses_a_taken_empty_or_built_in_name() {
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("o", "One on one"));
+
+        assert!(
+            settings
+                .rename_summary_prompt("g", "  topic SUMMARY ")
+                .is_err()
+        );
+        assert!(settings.rename_summary_prompt("g", "one ON one").is_err());
+        assert!(settings.rename_summary_prompt("g", "   ").is_err());
+        assert!(
+            settings
+                .rename_summary_prompt(TOPIC_SUMMARY_ID, "Mine")
+                .is_err()
+        );
+        assert!(settings.rename_summary_prompt("missing", "Mine").is_err());
+        assert_eq!(names(&settings), ["Game recap", "One on one"]);
+
+        settings
+            .rename_summary_prompt("g", "  Game night ")
+            .unwrap();
+        // A change of case on the prompt's own name is not a clash.
+        settings.rename_summary_prompt("o", "One On One").unwrap();
+        assert_eq!(names(&settings), ["Game night", "One On One"]);
+    }
+
+    #[test]
+    fn set_text_refuses_empty_or_too_long_text_and_built_ins() {
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(custom("g", "Game recap"));
+        let before = settings.clone();
+
+        assert!(settings.set_summary_prompt_text("g", " \n ").is_err());
+        let too_long = "é".repeat(PROMPT_TEXT_LIMIT + 1);
+        assert!(settings.set_summary_prompt_text("g", &too_long).is_err());
+        assert!(
+            settings
+                .set_summary_prompt_text(TOPIC_SUMMARY_ID, "x")
+                .is_err()
+        );
+        assert!(settings.set_summary_prompt_text("missing", "x").is_err());
+        assert_eq!(settings, before);
+
+        // The limit counts characters, not bytes.
+        let at_limit = "é".repeat(PROMPT_TEXT_LIMIT);
+        settings.set_summary_prompt_text("g", &at_limit).unwrap();
+        assert_eq!(settings.summary_prompts[0].text, at_limit);
+    }
+
+    #[test]
+    fn deleting_the_active_prompt_makes_topic_summary_active() {
+        // Covers AE5.
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("o", "One on one"));
+        settings.activate_summary_prompt("g").unwrap();
+
+        settings.delete_summary_prompt("o").unwrap();
+        assert_eq!(settings.active_summary_prompt, "g");
+
+        settings.delete_summary_prompt("g").unwrap();
+        assert!(settings.summary_prompts.is_empty());
+        assert_eq!(settings.active_summary_prompt, TOPIC_SUMMARY_ID);
+
+        assert!(settings.delete_summary_prompt(PLAY_BY_PLAY_ID).is_err());
+        assert!(settings.delete_summary_prompt("missing").is_err());
+    }
+
+    #[test]
+    fn activate_accepts_any_known_prompt_and_refuses_an_unknown_id() {
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.activate_summary_prompt(PLAY_BY_PLAY_ID).unwrap();
+        assert_eq!(settings.active_summary_prompt, PLAY_BY_PLAY_ID);
+        settings.activate_summary_prompt("g").unwrap();
+        assert_eq!(settings.active_summary_prompt, "g");
+        assert!(settings.activate_summary_prompt("missing").is_err());
+        assert_eq!(settings.active_summary_prompt, "g");
+    }
+
+    #[test]
+    fn the_list_puts_built_ins_first_and_marks_them_read_only() {
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.active_summary_prompt = "g".into();
+        let list = settings.summary_prompt_list();
+        let rows: Vec<_> = list
+            .prompts
+            .iter()
+            .map(|p| (p.id.as_str(), p.name.as_str(), p.built_in))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (TOPIC_SUMMARY_ID, "Topic summary", true),
+                (PLAY_BY_PLAY_ID, "Play-by-play summary", true),
+                ("g", "Game recap", false),
+            ]
+        );
+        assert_eq!(list.prompts[2].text, "Write a recap.");
+        assert_eq!(list.active, "g");
+
+        settings.active_summary_prompt = "gone".into();
+        assert_eq!(settings.summary_prompt_list().active, TOPIC_SUMMARY_ID);
+    }
+
+    #[test]
+    fn the_snapshot_falls_back_to_topic_summary_for_an_unknown_id() {
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(custom("g", "Game recap"));
+
+        settings.active_summary_prompt = "gone".into();
+        assert_eq!(
+            settings.active_summary_prompt_snapshot(),
+            summarize::prompts::built_in(TOPIC_SUMMARY_ID).unwrap()
+        );
+
+        settings.active_summary_prompt = "g".into();
+        assert_eq!(
+            settings.active_summary_prompt_snapshot(),
+            summarize::Prompt {
+                id: "g".into(),
+                name: "Game recap".into(),
+                text: "Write a recap.".into(),
+            }
+        );
+
+        settings.active_summary_prompt = PLAY_BY_PLAY_ID.into();
+        assert_eq!(
+            settings.active_summary_prompt_snapshot().id,
+            PLAY_BY_PLAY_ID
         );
     }
 
