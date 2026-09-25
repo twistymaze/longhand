@@ -18,7 +18,12 @@ use tauri_plugin_store::StoreExt;
 pub const SETTINGS_STORE_PATH: &str = "settings.json";
 const SETTINGS_KEY: &str = "settings";
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
+
+/// The recognition model that versions 1 and 2 selected by default. A store
+/// of those versions with no `asr_model` read as this model, so the
+/// migration to version 3 keeps it (KTD11).
+const PREVIOUS_DEFAULT_ASR_MODEL: &str = "whisper-large-v3-turbo-q5km";
 
 /// The chord a fresh install records with. Obscure enough to collide with
 /// nothing common; the Phase 2a probe proved it registers on macOS.
@@ -63,11 +68,23 @@ pub struct Settings {
     pub default_speaker_count: Option<SpeakerCountSetting>,
     /// Catalog id of the recognition model (KTD6).
     pub asr_model: String,
+    /// A picked recognition model that is downloading. It becomes
+    /// `asr_model` when its download is verified (R5, KTD11).
+    pub pending_asr_model: Option<String>,
+    /// A streaming model transcribes during recording (R18, KD9).
+    pub live_transcript: bool,
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
     /// The user heard the alert cue played at setup (R5a, KTD14).
     pub alert_tone_heard: bool,
+}
+
+/// The settings changed without a command from the surface, for example
+/// when a picked model becomes the selected model after its download.
+#[derive(Serialize, Type, Debug, Clone, tauri_specta::Event)]
+pub struct SettingsChanged {
+    pub settings: Settings,
 }
 
 /// One endpoint and model: a limit learned for one says nothing of another.
@@ -87,6 +104,8 @@ impl Default for Settings {
             context_limit_tokens: None,
             default_speaker_count: None,
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
+            pending_asr_model: None,
+            live_transcript: true,
             learned_context_limits: Default::default(),
             alert_tone_heard: false,
         }
@@ -138,6 +157,15 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
     if stored_version < 2 {
         // Version 1 carried only the Phase 2a probe field, which is dropped;
         // every real field takes its default.
+        updated = true;
+    }
+    if stored_version < 3 {
+        // Version 3 changes the default model. An existing install keeps the
+        // model it used, and only a store with no settings gets the new
+        // default (R3, KTD11). Version 0 is a store with no version at all.
+        if stored_version >= 1 && stored.get("asr_model").is_none() {
+            settings.asr_model = PREVIOUS_DEFAULT_ASR_MODEL.to_string();
+        }
         updated = true;
     }
     if updated {
@@ -253,10 +281,55 @@ mod tests {
         let stored = json!({ "settings_schema_version": 1, "probe_value": "Test" });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings, Settings::default());
+        // The install existed before the default changed, so it keeps the
+        // model it read before (KTD11).
+        assert_eq!(
+            settings,
+            Settings {
+                asr_model: PREVIOUS_DEFAULT_ASR_MODEL.to_string(),
+                ..Settings::default()
+            }
+        );
         let written = serde_json::to_value(&settings).unwrap();
         assert!(written.get("probe_value").is_none());
-        assert_eq!(written["settings_schema_version"], 2);
+        assert_eq!(
+            written["settings_schema_version"],
+            CURRENT_SETTINGS_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn no_stored_settings_select_parakeet_and_the_live_transcript() {
+        let settings = Settings::default();
+        assert_eq!(settings.asr_model, "parakeet-unified-en-0.6b-q80");
+        assert!(settings.live_transcript);
+        assert_eq!(settings.pending_asr_model, None);
+        assert_eq!(settings_from_value(&json!({})).0, settings);
+    }
+
+    #[test]
+    fn a_version_2_store_keeps_its_whisper_model() {
+        let stored = json!({
+            "settings_schema_version": 2,
+            "asr_model": "whisper-large-v3-turbo-q5km",
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(settings.settings_schema_version, 3);
+        assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
+        assert_eq!(settings.endpoint_model, "kept");
+        assert!(settings.live_transcript);
+        assert_eq!(settings.pending_asr_model, None);
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(settings_from_value(&written), (settings, false));
+    }
+
+    #[test]
+    fn a_version_2_store_without_a_model_keeps_the_previous_default() {
+        let stored = json!({ "settings_schema_version": 2, "endpoint_model": "x" });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.asr_model, PREVIOUS_DEFAULT_ASR_MODEL);
     }
 
     #[test]

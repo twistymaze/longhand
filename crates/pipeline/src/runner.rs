@@ -397,6 +397,17 @@ impl Runner {
         self.engine.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
+    /// Free the loaded engine when it holds `model`, so that the model file
+    /// can be removed: Windows cannot remove an open file (KTD12). Returns
+    /// whether the engine held `model`.
+    pub fn unload_engine(&self, model: &str) -> bool {
+        unload_if(
+            &self.engine,
+            model,
+            <dyn Recognizer as Recognizer>::model_id,
+        )
+    }
+
     pub async fn run(self: Arc<Self>) {
         loop {
             // A session waiting on a model is back at the head of the queue;
@@ -771,6 +782,27 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
     })
 }
 
+/// Empty `slot` when it holds `model`. A slot that a stage holds now stays
+/// as it is: the stage runs the model of a note in processing, and delete
+/// refuses that model, so the stage loads another model into the slot.
+fn unload_if<E: ?Sized>(
+    slot: &Mutex<Option<Box<E>>>,
+    model: &str,
+    model_id: impl Fn(&E) -> &str,
+) -> bool {
+    let mut slot = match slot.try_lock() {
+        Ok(slot) => slot,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return false,
+    };
+    if slot.as_deref().map(model_id) == Some(model) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
+}
+
 /// For work on a saved session: stops on shutdown and waits out capture,
 /// with no processing state to be taken back from.
 struct Unattended {
@@ -793,5 +825,40 @@ impl Control for Unattended {
 
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(model: &str) -> &str {
+        model
+    }
+
+    fn slot(model: Option<&str>) -> Mutex<Option<Box<str>>> {
+        Mutex::new(model.map(Box::from))
+    }
+
+    #[test]
+    fn unload_frees_the_engine_that_holds_the_model() {
+        let engine = slot(Some("whisper"));
+        assert!(unload_if(&engine, "whisper", id));
+        assert_eq!(*engine.lock().unwrap(), None);
+    }
+
+    #[test]
+    fn unload_keeps_an_engine_that_holds_another_model() {
+        let engine = slot(Some("parakeet"));
+        assert!(!unload_if(&engine, "whisper", id));
+        assert_eq!(engine.lock().unwrap().as_deref(), Some("parakeet"));
+        assert!(!unload_if(&slot(None), "whisper", id));
+    }
+
+    #[test]
+    fn unload_does_not_wait_for_a_stage_that_holds_the_engine() {
+        let engine = slot(Some("whisper"));
+        let _stage = engine.lock().unwrap();
+        assert!(!unload_if(&engine, "whisper", id));
     }
 }

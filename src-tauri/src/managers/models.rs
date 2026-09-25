@@ -8,9 +8,12 @@ use std::sync::{Arc, Mutex};
 use models::download::{Event as DownloadProgress, partial_path};
 use models::{CancellationToken, CatalogModel, Limits, ModelKind, Outcome};
 use serde::Serialize;
+use session_core::{SessionRecord, SessionState};
 use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
+
+use crate::managers::settings::{self, Settings, SettingsChanged};
 
 #[derive(Serialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -53,6 +56,10 @@ pub struct ModelStatus {
     pub description: String,
     /// Recognition models only: whether a live transcript is possible (R10).
     pub streaming: bool,
+    /// Recognition models only: the language codes the model recognizes.
+    pub languages: Vec<String>,
+    /// The model the picker marks as recommended (R4).
+    pub recommended: bool,
     pub size_bytes: u64,
     /// Needed by the current settings: the selected recognition model and
     /// both diarization weights.
@@ -61,6 +68,17 @@ pub struct ModelStatus {
     pub repository: String,
     pub revision: String,
     pub licence: LicenceInfo,
+}
+
+/// The speaker-detection weights as one item (R7).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct SpeakerModelsStatus {
+    /// The catalog ids, for one download of all of them.
+    pub ids: Vec<String>,
+    /// The sum of the sizes.
+    pub size_bytes: u64,
+    /// Present only when every weight is present.
+    pub state: ModelState,
 }
 
 #[derive(Serialize, Type, Debug, Clone)]
@@ -79,21 +97,155 @@ pub struct ModelDownloadEvent {
     pub update: DownloadUpdate,
 }
 
+/// What a pick of a recognition model does, after the settings change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    /// Start the download of the picked model.
+    pub download: bool,
+    /// Stop the download of a pending pick that this pick replaces.
+    pub cancel: Option<String>,
+}
+
+/// Apply a pick of the recognition model `id` to `settings` (R5, KTD11).
+/// The pick is selected at once when it is downloaded, or when the selected
+/// model is not downloaded. Otherwise the selected model stays in use and the
+/// pick waits as the pending pick until its download is verified.
+pub fn apply_pick(settings: &mut Settings, id: &str, is_present: impl Fn(&str) -> bool) -> Pick {
+    let cancel = settings.pending_asr_model.take().filter(|p| p != id);
+    let picked_present = is_present(id);
+    if id == settings.asr_model || picked_present || !is_present(&settings.asr_model) {
+        settings.asr_model = id.to_string();
+    } else {
+        settings.pending_asr_model = Some(id.to_string());
+    }
+    Pick {
+        download: !picked_present,
+        cancel,
+    }
+}
+
+/// Apply the outcome of a download of `id` to the pending pick. Returns
+/// whether the settings changed.
+pub fn settle_pending(settings: &mut Settings, id: &str, update: &DownloadUpdate) -> bool {
+    if settings.pending_asr_model.as_deref() != Some(id) {
+        return false;
+    }
+    match update {
+        DownloadUpdate::Completed => {
+            settings.asr_model = id.to_string();
+            settings.pending_asr_model = None;
+            true
+        }
+        DownloadUpdate::Failed { .. } | DownloadUpdate::Cancelled => {
+            settings.pending_asr_model = None;
+            true
+        }
+        DownloadUpdate::Progress { .. } | DownloadUpdate::Verifying => false,
+    }
+}
+
+/// Why the app cannot delete the model `id` now, or `None` when it can
+/// (R6, KTD12). `live_model` is the model of the live worker.
+pub fn delete_refusal(
+    id: &str,
+    settings: &Settings,
+    live_model: Option<&str>,
+    sessions: &[SessionRecord],
+) -> Option<String> {
+    let Some(model) = models::model(id) else {
+        return Some(format!("no model named '{id}'"));
+    };
+    if model.kind != ModelKind::Asr {
+        return Some("Speaker detection needs this model.".into());
+    }
+    if settings.asr_model == id {
+        return Some("This model is selected. Select another model first.".into());
+    }
+    if settings.pending_asr_model.as_deref() == Some(id) {
+        return Some("This model is downloading to become the selected model.".into());
+    }
+    if live_model == Some(id) {
+        return Some("The current recording uses this model.".into());
+    }
+    let needed = sessions.iter().any(|s| {
+        s.asr_model.as_deref() == Some(id)
+            && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
+    });
+    if needed {
+        return Some("A note that isn't finished needs this model.".into());
+    }
+    None
+}
+
+/// One status for the speaker-detection weights (R7).
+pub fn speaker_models(statuses: &[ModelStatus]) -> SpeakerModelsStatus {
+    let weights: Vec<_> = statuses
+        .iter()
+        .filter(|s| matches!(s.role, ModelRole::Segmentation | ModelRole::Embedding))
+        .collect();
+    let state = if weights.iter().all(|s| s.state == ModelState::Present) {
+        ModelState::Present
+    } else if weights.iter().any(|s| s.state == ModelState::Downloading) {
+        ModelState::Downloading
+    } else {
+        // The bytes on disk: a present weight counts in full, so one
+        // progress covers both weights.
+        let partial_bytes = weights
+            .iter()
+            .map(|s| match s.state {
+                ModelState::Absent { partial_bytes } => partial_bytes,
+                ModelState::Present => s.size_bytes,
+                ModelState::Downloading => 0,
+            })
+            .sum();
+        ModelState::Absent { partial_bytes }
+    };
+    SpeakerModelsStatus {
+        ids: weights.iter().map(|s| s.id.clone()).collect(),
+        size_bytes: weights.iter().map(|s| s.size_bytes).sum(),
+        state,
+    }
+}
+
 pub struct ModelsManager {
     dir: PathBuf,
     active: Mutex<HashMap<String, CancellationToken>>,
+    /// The model that the live worker has loaded, when one runs (KTD12).
+    live_model: Mutex<Option<String>>,
 }
 
 impl ModelsManager {
     pub fn new(app: &AppHandle) -> tauri::Result<Self> {
-        Ok(Self {
-            dir: app.path().app_data_dir()?.join("models"),
+        Ok(Self::at(app.path().app_data_dir()?.join("models")))
+    }
+
+    fn at(dir: PathBuf) -> Self {
+        Self {
+            dir,
             active: Mutex::new(HashMap::new()),
-        })
+            live_model: Mutex::new(None),
+        }
     }
 
     fn active(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
         self.active.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record the model that the live worker uses, or `None` when it stops.
+    /// Delete refuses that model.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the live worker (U6) sets the model")
+    )]
+    pub fn set_live_model(&self, model: Option<String>) {
+        *self.live_model.lock().unwrap_or_else(|e| e.into_inner()) = model;
+    }
+
+    pub fn live_model(&self) -> Option<String> {
+        self.live_model
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn statuses(&self, asr_model: &str) -> Vec<ModelStatus> {
@@ -111,6 +263,8 @@ impl ModelsManager {
                 description: m.description.clone(),
                 size_bytes: m.size_bytes,
                 streaming: m.streaming,
+                languages: m.languages.clone(),
+                recommended: m.recommended,
                 required: required.contains(&m.id.as_str()),
                 state: self.state_of(m, active.contains_key(&m.id)),
                 repository: m.repository.clone(),
@@ -143,6 +297,11 @@ impl ModelsManager {
         models::model(id).map(|m| self.dir.join(&m.filename))
     }
 
+    /// Whether the catalog model `id` is on disk and complete.
+    pub fn is_present(&self, id: &str) -> bool {
+        models::model(id).is_some_and(|m| models::is_present(&self.dir, m))
+    }
+
     /// Catalog ids required by `asr_model` that are not on disk.
     pub fn missing(&self, asr_model: &str) -> Vec<String> {
         models::required_for(asr_model)
@@ -152,8 +311,34 @@ impl ModelsManager {
             .collect()
     }
 
+    /// Remove the file of the model `id` and its partial download. The
+    /// caller applies [`delete_refusal`] first. A download in progress is
+    /// refused, because it continues to write the partial file.
+    pub fn delete_files(&self, id: &str) -> Result<(), String> {
+        let path = self
+            .file_path(id)
+            .ok_or_else(|| format!("no model named '{id}'"))?;
+        if self.active().contains_key(id) {
+            return Err("This model is downloading. Cancel the download first.".into());
+        }
+        for path in [partial_path(&path), path] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    log::warn!("could not remove model file {}: {e}", path.display());
+                    return Err(format!("Couldn't delete the model: {e}"));
+                }
+            }
+        }
+        log::info!("model '{id}' deleted");
+        Ok(())
+    }
+
     /// Fetch `ids` one after another in the background. An id already
     /// present or already downloading is skipped; an unknown id is refused.
+    /// Each model gets its own cancellation, so a cancel of one pick stops
+    /// only that download.
     pub fn start_downloads(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -166,23 +351,28 @@ impl ModelsManager {
                 wanted.push(model);
             }
         }
-        let token = CancellationToken::new();
-        {
+        let wanted: Vec<_> = {
             let mut active = self.active();
             wanted.retain(|m| !active.contains_key(&m.id));
-            for model in &wanted {
-                active.insert(model.id.clone(), token.clone());
-            }
-        }
+            wanted
+                .into_iter()
+                .map(|model| {
+                    let token = CancellationToken::new();
+                    active.insert(model.id.clone(), token.clone());
+                    (model, token)
+                })
+                .collect()
+        };
         if wanted.is_empty() {
             return Ok(());
         }
         let manager = Arc::clone(self);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            for model in wanted {
+            for (model, token) in wanted {
                 let update = manager.download_one(&app, model, &token).await;
                 manager.active().remove(&model.id);
+                settle_pending_pick(&app, &model.id, &update);
                 emit(&app, &model.id, update);
             }
         });
@@ -237,12 +427,47 @@ impl ModelsManager {
         }
     }
 
+    /// Stop the download of `id`, if one is in progress. The partial is
+    /// kept.
+    pub fn cancel(&self, id: &str) {
+        if let Some(token) = self.active().get(id) {
+            token.cancel();
+        }
+    }
+
     /// Stop every download in flight. Partials are kept, so the next
     /// download resumes where this one stopped.
     pub fn cancel_all(&self) {
         for token in self.active().values() {
             token.cancel();
         }
+    }
+}
+
+/// A download of the pending pick finished: select it, or clear it after a
+/// failure, and tell the surface. The settings change before the download
+/// event is emitted, so a surface that reads the settings on the event sees
+/// the new selection.
+fn settle_pending_pick(app: &AppHandle, id: &str, update: &DownloadUpdate) {
+    if settings::get_settings(app).pending_asr_model.as_deref() != Some(id) {
+        return;
+    }
+    let mut changed = false;
+    match settings::update_settings(app, |s| {
+        changed = settle_pending(s, id, update);
+        Ok(())
+    }) {
+        Ok(settings) if changed => {
+            log::info!(
+                "pending model '{id}' settled; selected model is '{}'",
+                settings.asr_model
+            );
+            if let Err(e) = (SettingsChanged { settings }).emit(app) {
+                log::warn!("failed to emit the settings change: {e}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => log::error!("could not settle the pending model '{id}': {e}"),
     }
 }
 
@@ -253,5 +478,330 @@ fn emit(app: &AppHandle, model_id: &str, update: DownloadUpdate) {
     };
     if let Err(e) = event.emit(app) {
         log::warn!("failed to emit model download event: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, FixedOffset};
+
+    use super::*;
+
+    const WHISPER: &str = "whisper-large-v3-turbo-q5km";
+    const PARAKEET: &str = "parakeet-unified-en-0.6b-q80";
+    const TDT_1_1B: &str = "parakeet-tdt-1.1b-q5km";
+    const TDT_V2: &str = "parakeet-tdt-0.6b-v2-q80";
+
+    fn whisper_selected() -> Settings {
+        Settings {
+            asr_model: WHISPER.into(),
+            ..Settings::default()
+        }
+    }
+
+    fn only(present: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |id| present.contains(&id)
+    }
+
+    #[test]
+    fn a_pick_waits_for_its_download_while_the_selected_model_stays() {
+        // AE5: Whisper is selected and downloaded, Parakeet TDT 1.1B is not.
+        let mut settings = whisper_selected();
+        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        assert_eq!(
+            pick,
+            Pick {
+                download: true,
+                cancel: None
+            }
+        );
+        assert_eq!(settings.asr_model, WHISPER);
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_1_1B));
+
+        // Progress and the outcome of another model change nothing.
+        assert!(!settle_pending(
+            &mut settings,
+            TDT_1_1B,
+            &DownloadUpdate::Verifying
+        ));
+        assert!(!settle_pending(
+            &mut settings,
+            TDT_V2,
+            &DownloadUpdate::Completed
+        ));
+        assert_eq!(settings.asr_model, WHISPER);
+
+        assert!(settle_pending(
+            &mut settings,
+            TDT_1_1B,
+            &DownloadUpdate::Completed
+        ));
+        assert_eq!(settings.asr_model, TDT_1_1B);
+        assert_eq!(settings.pending_asr_model, None);
+    }
+
+    #[test]
+    fn a_pick_with_the_selected_model_absent_applies_at_once() {
+        let mut settings = whisper_selected();
+        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[]));
+        assert!(pick.download);
+        assert_eq!(settings.asr_model, TDT_1_1B);
+        assert_eq!(settings.pending_asr_model, None);
+    }
+
+    #[test]
+    fn a_pick_of_a_downloaded_model_applies_at_once() {
+        let mut settings = whisper_selected();
+        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER, TDT_1_1B]));
+        assert!(!pick.download);
+        assert_eq!(settings.asr_model, TDT_1_1B);
+    }
+
+    #[test]
+    fn a_second_pick_replaces_the_pending_pick_and_cancels_its_download() {
+        let mut settings = whisper_selected();
+        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        let pick = apply_pick(&mut settings, TDT_V2, only(&[WHISPER]));
+        assert_eq!(
+            pick,
+            Pick {
+                download: true,
+                cancel: Some(TDT_1_1B.into())
+            }
+        );
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V2));
+        // The cancelled download does not clear the new pick.
+        assert!(!settle_pending(
+            &mut settings,
+            TDT_1_1B,
+            &DownloadUpdate::Cancelled
+        ));
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V2));
+    }
+
+    #[test]
+    fn a_pick_of_the_pending_model_again_keeps_its_download() {
+        let mut settings = whisper_selected();
+        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        assert_eq!(
+            pick,
+            Pick {
+                download: true,
+                cancel: None
+            }
+        );
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_1_1B));
+    }
+
+    #[test]
+    fn a_pick_of_the_selected_model_clears_the_pending_pick() {
+        let mut settings = whisper_selected();
+        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        let pick = apply_pick(&mut settings, WHISPER, only(&[WHISPER]));
+        assert_eq!(
+            pick,
+            Pick {
+                download: false,
+                cancel: Some(TDT_1_1B.into())
+            }
+        );
+        assert_eq!(settings.asr_model, WHISPER);
+        assert_eq!(settings.pending_asr_model, None);
+    }
+
+    #[test]
+    fn a_failed_download_clears_the_pending_pick() {
+        let mut settings = whisper_selected();
+        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        let failed = DownloadUpdate::Failed {
+            message: "checksum".into(),
+        };
+        assert!(settle_pending(&mut settings, TDT_1_1B, &failed));
+        assert_eq!(settings.asr_model, WHISPER);
+        assert_eq!(settings.pending_asr_model, None);
+    }
+
+    fn note(model: &str, state: SessionState) -> SessionRecord {
+        SessionRecord {
+            id: "note".into(),
+            created_at: stopped(),
+            state,
+            queue_seq: None,
+            speaker_count: None,
+            asr_model: Some(model.into()),
+            home_path: None,
+            title: None,
+            found_speakers: None,
+        }
+    }
+
+    fn stopped() -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339("2026-09-25T10:00:00+00:00").unwrap()
+    }
+
+    #[test]
+    fn delete_refuses_the_selected_model_and_allows_another() {
+        // AE8.
+        let settings = Settings {
+            asr_model: PARAKEET.into(),
+            ..Settings::default()
+        };
+        assert!(delete_refusal(PARAKEET, &settings, None, &[]).is_some());
+        assert_eq!(delete_refusal(WHISPER, &settings, None, &[]), None);
+    }
+
+    #[test]
+    fn delete_refuses_the_pending_and_the_live_model() {
+        let mut settings = whisper_selected();
+        settings.pending_asr_model = Some(TDT_1_1B.into());
+        assert!(delete_refusal(TDT_1_1B, &settings, None, &[]).is_some());
+        assert!(delete_refusal(PARAKEET, &settings, Some(PARAKEET), &[]).is_some());
+        assert_eq!(delete_refusal(PARAKEET, &settings, Some(TDT_V2), &[]), None);
+    }
+
+    #[test]
+    fn the_live_worker_records_its_model_for_the_delete_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().to_path_buf());
+        assert_eq!(manager.live_model(), None);
+        manager.set_live_model(Some(PARAKEET.into()));
+        let live = manager.live_model();
+        assert!(delete_refusal(PARAKEET, &whisper_selected(), live.as_deref(), &[]).is_some());
+        manager.set_live_model(None);
+        assert_eq!(manager.live_model(), None);
+    }
+
+    #[test]
+    fn delete_refuses_a_model_that_an_unfinished_note_needs() {
+        let settings = whisper_selected();
+        let stopped_at = stopped();
+        let unfinished = [
+            SessionState::Capturing,
+            SessionState::Queued { stopped_at },
+            SessionState::Processing { stopped_at },
+            SessionState::Blocked { stopped_at },
+            SessionState::ProcessingFailed {
+                stopped_at,
+                stage: session_core::Stage::Transcribe,
+            },
+            SessionState::AwaitingDestination {
+                stopped_at,
+                problem: "offline".into(),
+            },
+            SessionState::Interrupted {
+                reason: session_core::InterruptReason::Crash,
+                since: stopped_at,
+                acknowledged: false,
+            },
+        ];
+        for state in unfinished {
+            let name = state.name();
+            let sessions = [note(PARAKEET, state)];
+            assert!(
+                delete_refusal(PARAKEET, &settings, None, &sessions).is_some(),
+                "{name}"
+            );
+        }
+        for state in [SessionState::Saved, SessionState::Discarded] {
+            let sessions = [note(PARAKEET, state)];
+            assert_eq!(delete_refusal(PARAKEET, &settings, None, &sessions), None);
+        }
+    }
+
+    #[test]
+    fn delete_refuses_the_speaker_detection_weights_and_unknown_ids() {
+        let settings = whisper_selected();
+        assert!(delete_refusal("pyannote-segmentation-3.0", &settings, None, &[]).is_some());
+        assert!(delete_refusal("no-such-model", &settings, None, &[]).is_some());
+    }
+
+    #[test]
+    fn delete_files_removes_the_model_and_its_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().to_path_buf());
+        let path = manager.file_path(WHISPER).unwrap();
+        std::fs::write(&path, b"weights").unwrap();
+        std::fs::write(partial_path(&path), b"part").unwrap();
+        manager.delete_files(WHISPER).unwrap();
+        assert!(!path.exists());
+        assert!(!partial_path(&path).exists());
+        // A second delete finds nothing and succeeds.
+        manager.delete_files(WHISPER).unwrap();
+        assert!(manager.delete_files("no-such-model").is_err());
+    }
+
+    #[test]
+    fn delete_files_refuses_a_model_that_is_downloading() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().to_path_buf());
+        let path = manager.file_path(WHISPER).unwrap();
+        std::fs::write(partial_path(&path), b"part").unwrap();
+        manager
+            .active()
+            .insert(WHISPER.into(), CancellationToken::new());
+        assert!(manager.delete_files(WHISPER).is_err());
+        assert!(partial_path(&path).exists());
+    }
+
+    #[test]
+    fn statuses_list_the_nine_recognition_models_with_their_catalog_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().to_path_buf());
+        let statuses = manager.statuses(PARAKEET);
+        let asr: Vec<_> = statuses
+            .iter()
+            .filter(|s| s.role == ModelRole::Recognition)
+            .collect();
+        assert_eq!(asr.len(), 9);
+        let parakeet = asr.iter().find(|s| s.id == PARAKEET).unwrap();
+        assert!(parakeet.recommended && parakeet.streaming && parakeet.required);
+        assert_eq!(parakeet.languages, ["en"]);
+    }
+
+    fn weight_status(id: &str, size_bytes: u64, state: ModelState) -> ModelStatus {
+        let dir = tempfile::tempdir().unwrap();
+        let mut status = ModelsManager::at(dir.path().to_path_buf())
+            .statuses(WHISPER)
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap();
+        status.size_bytes = size_bytes;
+        status.state = state;
+        status
+    }
+
+    const SEGMENTATION: &str = "pyannote-segmentation-3.0";
+    const EMBEDDING: &str = "wespeaker-voxceleb-resnet34-lm";
+
+    #[test]
+    fn the_speaker_models_are_present_only_when_both_weights_are() {
+        let both = [
+            weight_status(SEGMENTATION, 6, ModelState::Present),
+            weight_status(EMBEDDING, 26, ModelState::Present),
+            weight_status(WHISPER, 1000, ModelState::Absent { partial_bytes: 0 }),
+        ];
+        assert_eq!(
+            speaker_models(&both),
+            SpeakerModelsStatus {
+                ids: vec![SEGMENTATION.into(), EMBEDDING.into()],
+                size_bytes: 32,
+                state: ModelState::Present,
+            }
+        );
+
+        let one = [
+            weight_status(SEGMENTATION, 6, ModelState::Present),
+            weight_status(EMBEDDING, 26, ModelState::Absent { partial_bytes: 4 }),
+        ];
+        let status = speaker_models(&one);
+        assert_eq!(status.size_bytes, 32);
+        assert_eq!(status.state, ModelState::Absent { partial_bytes: 10 });
+
+        let downloading = [
+            weight_status(SEGMENTATION, 6, ModelState::Absent { partial_bytes: 0 }),
+            weight_status(EMBEDDING, 26, ModelState::Downloading),
+        ];
+        assert_eq!(speaker_models(&downloading).state, ModelState::Downloading);
     }
 }

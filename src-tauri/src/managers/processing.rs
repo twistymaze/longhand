@@ -370,6 +370,14 @@ impl ProcessingManager {
         self.runner.wake();
     }
 
+    /// Free the loaded engine when it holds `model`, before a delete of
+    /// its file (KTD12).
+    pub fn unload_engine(&self, model: &str) {
+        if self.runner.unload_engine(model) {
+            log::info!("unloaded model '{model}' before its delete");
+        }
+    }
+
     /// A resume took `session_id` back; its stage stops at the next checkpoint.
     pub fn cancel(&self, session_id: &str) {
         self.runner.cancel(session_id);

@@ -37,9 +37,25 @@ async setDefaultSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result
     else return { status: "error", error: e  as any };
 }
 },
-async setAsrModel(modelId: string) : Promise<Result<Settings, string>> {
+/**
+ * Pick the recognition model (R5, KD7). A pick that is not downloaded
+ * starts its download. While the selected model is downloaded, it stays in
+ * use until the pick's download is verified.
+ */
+async selectAsrModel(modelId: string) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_asr_model", { modelId }) };
+    return { status: "ok", data: await TAURI_INVOKE("select_asr_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Turn the live transcript of streaming models on or off (R18, KD9).
+ */
+async setLiveTranscript(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_live_transcript", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -117,6 +133,24 @@ async downloadModels(ids: string[]) : Promise<Result<null, string>> {
 },
 async cancelModelDownloads() : Promise<void> {
     await TAURI_INVOKE("cancel_model_downloads");
+},
+/**
+ * The speaker-detection weights as one item (R7).
+ */
+async speakerModelsStatus() : Promise<SpeakerModelsStatus> {
+    return await TAURI_INVOKE("speaker_models_status");
+},
+/**
+ * Delete a downloaded recognition model to recover disk space (R6). The
+ * app refuses a model that it still needs (KTD12).
+ */
+async deleteModel(modelId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_model", { modelId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 async readiness() : Promise<Result<Readiness, string>> {
     try {
@@ -346,6 +380,7 @@ captureTick: CaptureTick,
 modelDownloadEvent: ModelDownloadEvent,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
+settingsChanged: SettingsChanged,
 showSession: ShowSession
 }>({
 captureEnded: "capture-ended",
@@ -353,6 +388,7 @@ captureTick: "capture-tick",
 modelDownloadEvent: "model-download-event",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
+settingsChanged: "settings-changed",
 showSession: "show-session"
 })
 
@@ -472,7 +508,15 @@ export type ModelStatus = { id: string; role: ModelRole; name: string; descripti
 /**
  * Recognition models only: whether a live transcript is possible (R10).
  */
-streaming: boolean; size_bytes: number; 
+streaming: boolean; 
+/**
+ * Recognition models only: the language codes the model recognizes.
+ */
+languages: string[]; 
+/**
+ * The model the picker marks as recommended (R4).
+ */
+recommended: boolean; size_bytes: number; 
 /**
  * Needed by the current settings: the selected recognition model and
  * both diarization weights.
@@ -645,6 +689,15 @@ context_limit_tokens: number | null; default_speaker_count: SpeakerCountSetting 
  */
 asr_model: string; 
 /**
+ * A picked recognition model that is downloading. It becomes
+ * `asr_model` when its download is verified (R5, KTD11).
+ */
+pending_asr_model: string | null; 
+/**
+ * A streaming model transcribes during recording (R18, KD9).
+ */
+live_transcript: boolean; 
+/**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).
  */
@@ -653,6 +706,11 @@ learned_context_limits: Partial<{ [key in string]: number }>;
  * The user heard the alert cue played at setup (R5a, KTD14).
  */
 alert_tone_heard: boolean }
+/**
+ * The settings changed without a command from the surface, for example
+ * when a picked model becomes the selected model after its download.
+ */
+export type SettingsChanged = { settings: Settings }
 export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
 /**
  * The main window must show the page of this session (R3).
@@ -662,6 +720,22 @@ export type ShowSession = { session_id: string }
  * An optional bound on how many people are speaking (R36).
  */
 export type SpeakerCountSetting = { kind: "exact"; count: number } | { kind: "range"; min: number; max: number }
+/**
+ * The speaker-detection weights as one item (R7).
+ */
+export type SpeakerModelsStatus = { 
+/**
+ * The catalog ids, for one download of all of them.
+ */
+ids: string[]; 
+/**
+ * The sum of the sizes.
+ */
+size_bytes: number; 
+/**
+ * Present only when every weight is present.
+ */
+state: ModelState }
 export type SummaryView = { 
 /**
  * Markdown.

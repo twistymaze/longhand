@@ -21,7 +21,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_endpoint,
             commands::settings::set_context_limit,
             commands::settings::set_default_speaker_count,
-            commands::settings::set_asr_model,
+            commands::settings::select_asr_model,
+            commands::settings::set_live_transcript,
             commands::settings::choose_destination,
             commands::settings::set_current_destination,
             commands::settings::credential_status,
@@ -31,6 +32,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::models::model_statuses,
             commands::models::download_models,
             commands::models::cancel_model_downloads,
+            commands::models::speaker_models_status,
+            commands::models::delete_model,
             commands::readiness::readiness,
             commands::capture::start_recording,
             commands::capture::stop_recording,
@@ -56,6 +59,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
+            managers::settings::SettingsChanged,
             managers::capture::CaptureEnded,
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,

@@ -4,12 +4,15 @@
 //! presence, length, and a short fingerprint, which is enough to prove a
 //! value survived a relaunch without moving the secret out of Rust.
 
+use std::sync::Arc;
+
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::models::{self as model_manager, ModelsManager};
 use crate::managers::processing::ProcessingManager;
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{self, Settings, SpeakerCountSetting};
@@ -96,15 +99,43 @@ pub fn set_default_speaker_count(
     })
 }
 
+/// Pick the recognition model (R5, KD7). A pick that is not downloaded
+/// starts its download. While the selected model is downloaded, it stays in
+/// use until the pick's download is verified.
 #[tauri::command]
 #[specta::specta]
-pub fn set_asr_model(app: AppHandle, model_id: String) -> Result<Settings, String> {
+pub fn select_asr_model(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+    model_id: String,
+) -> Result<Settings, String> {
     match models::model(&model_id) {
         Some(m) if m.kind == models::ModelKind::Asr => {}
         _ => return Err(format!("'{model_id}' is not a recognition model")),
     }
+    let mut pick = None;
+    let settings = settings::update_settings(&app, |s| {
+        pick = Some(model_manager::apply_pick(s, &model_id, |id| {
+            manager.is_present(id)
+        }));
+        Ok(())
+    })?;
+    let pick = pick.expect("the settings change ran");
+    if let Some(replaced) = pick.cancel {
+        manager.cancel(&replaced);
+    }
+    if pick.download {
+        manager.start_downloads(&app, vec![model_id])?;
+    }
+    Ok(settings)
+}
+
+/// Turn the live transcript of streaming models on or off (R18, KD9).
+#[tauri::command]
+#[specta::specta]
+pub fn set_live_transcript(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
-        s.asr_model = model_id;
+        s.live_transcript = enabled;
         Ok(())
     })
 }
