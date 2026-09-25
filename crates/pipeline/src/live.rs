@@ -227,12 +227,24 @@ impl EngineAccess {
         if self.shutdown.is_cancelled() {
             return Ok(None);
         }
-        if slot.as_ref().map(|e| e.model_id()) != Some(model) {
-            *slot = None;
-            *slot = Some((self.load)(model)?);
-        }
+        ensure_model(&mut slot, model, &*self.load)?;
         Ok(Some(slot))
     }
+}
+
+/// Load `model` into `slot` when the slot holds another model or none. The
+/// old engine is freed before the load, so two models are never loaded at
+/// the same time.
+pub(crate) fn ensure_model(
+    slot: &mut Option<Box<dyn Recognizer>>,
+    model: &str,
+    load: &crate::transcribe::Load<'_>,
+) -> Result<(), String> {
+    if slot.as_ref().map(|e| e.model_id()) != Some(model) {
+        *slot = None;
+        *slot = Some(load(model)?);
+    }
+    Ok(())
 }
 
 /// What the live view shows about the worker.

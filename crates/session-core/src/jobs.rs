@@ -375,15 +375,7 @@ impl Store {
         write_state(&tx, id, &next)?;
         apply_queue_effects(&tx, id, &current.state, &next, event)?;
         for stage in AGAIN_STAGES {
-            let previous = previous_key(stage);
-            tx.execute(
-                "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
-                params![id, previous],
-            )?;
-            tx.execute(
-                "UPDATE checkpoints SET stage = ?3 WHERE session_id = ?1 AND stage = ?2",
-                params![id, stage_key(stage), previous],
-            )?;
+            move_checkpoints(&tx, id, &stage_key(stage), &previous_key(stage))?;
         }
         tx.execute(
             "UPDATE sessions SET transcribe_again_model = ?2, transcribe_again_error = NULL,
@@ -944,13 +936,19 @@ fn write_state(tx: &Transaction, id: &str, state: &SessionState) -> Result<()> {
 /// Replace `stage`'s checkpoints with the copy set aside before a
 /// Transcribe Again run.
 fn restore_previous(tx: &Transaction, id: &str, stage: Stage) -> Result<()> {
+    move_checkpoints(tx, id, &previous_key(stage), &stage_key(stage))
+}
+
+/// Replace the checkpoints stored under the stage name `to` with those
+/// stored under `from`.
+fn move_checkpoints(tx: &Transaction, id: &str, from: &str, to: &str) -> Result<()> {
     tx.execute(
         "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
-        params![id, stage_key(stage)],
+        params![id, to],
     )?;
     tx.execute(
-        "UPDATE checkpoints SET stage = ?2 WHERE session_id = ?1 AND stage = ?3",
-        params![id, stage_key(stage), previous_key(stage)],
+        "UPDATE checkpoints SET stage = ?3 WHERE session_id = ?1 AND stage = ?2",
+        params![id, from, to],
     )?;
     Ok(())
 }

@@ -47,8 +47,10 @@ function withPart(parts: LivePartText[], part: LivePartText): LivePartText[] {
 export function apply(live: LiveView, change: Change): LiveView {
   switch (change.kind) {
     case "catchup": {
-      let parts = live.parts;
-      for (const p of change.data.parts) parts = withPart(parts, p);
+      // One merge and one sort: a long note has many saved parts.
+      const byKey = new Map(live.parts.map((p) => [`${p.segment}-${p.part}`, p]));
+      for (const p of change.data.parts) byKey.set(`${p.segment}-${p.part}`, p);
+      const parts = [...byKey.values()].sort(order);
       const current = change.data.current;
       return {
         parts,

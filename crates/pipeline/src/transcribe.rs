@@ -117,10 +117,7 @@ impl Slot<'_> {
             return Err(StageError::Cancelled);
         }
         // A queued session keeps the model it recorded (KTD2).
-        if slot.as_ref().map(|e| e.model_id()) != Some(self.model) {
-            *slot = None;
-            *slot = Some((self.load)(self.model).map_err(StageError::Failed)?);
-        }
+        live::ensure_model(&mut slot, self.model, self.load).map_err(StageError::Failed)?;
         Ok(slot)
     }
 }
@@ -142,6 +139,9 @@ pub fn run(
     control: &dyn Control,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), StageError> {
+    // The live worker saved its last part before processing started (KTD9),
+    // so the live rows do not change during this stage.
+    let live_rows = live::rows(store, session_id)?;
     for segment in segments {
         let done_key = checkpoint::segment_done_key(segment.index);
         if checkpoint::get::<bool>(store, session_id, Stage::Transcribe, &done_key)?.is_some() {
@@ -169,9 +169,12 @@ pub fn run(
             }
         };
 
-        let rows = live::segment_rows(store, session_id, segment.index)?;
+        let rows: Vec<&LiveRow> = live_rows
+            .iter()
+            .filter(|r| r.segment == segment.index)
+            .collect();
         let fill = (!rows.is_empty()).then(|| {
-            let words: Vec<LiveWord> = rows.into_iter().flat_map(|r| r.words).collect();
+            let words: Vec<LiveWord> = rows.iter().flat_map(|r| r.words.iter().cloned()).collect();
             // A plan checkpointed before voiced spans were kept: its
             // windows hold the voiced time.
             let voiced = if plan.voiced.is_empty() && plan.voiced_ms > 0 {
