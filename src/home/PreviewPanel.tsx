@@ -5,23 +5,12 @@
 
 import { useEffect, useState } from "react";
 import { commands, type SessionEntry } from "../bindings";
-import { entryStatus, formatDuration } from "../processing/describe";
+import { entryStatus, formatDuration, startedAt } from "../processing/describe";
 import { folderName } from "../settings/ui";
 import { firstParagraph } from "../session/markdown";
 import { rowTitle } from "./group";
 
 type Loaded = { id: string; overview: string | null; folder: string | null };
-
-function startedAt(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 function Detail({ label, value, title }: { label: string; value: string; title?: string }) {
   return (

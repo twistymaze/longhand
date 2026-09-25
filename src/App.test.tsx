@@ -45,6 +45,7 @@ function mockApp(status: { current: RecordingStatus }, entries: { current: Sessi
     list_sessions: () => entries.current,
     alert_check: () => ({ reason: null }),
     session_notes: () => "",
+    session_detail: () => ({ entry: recordingEntry, done: [], current: null, resumable: false }),
   });
 }
 
@@ -82,5 +83,17 @@ describe("App", () => {
     await userEvent.setup().click(back);
     expect(screen.getByRole("button", { name: /Recording/ })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+  });
+
+  // Covers R3: the tray's "Open Longhand" during a recording.
+  test("a request to show a session opens its page", async () => {
+    const status = { current: { ...idle, session_id: "rec", state: "capturing", recording: true } };
+    const entries = { current: [recordingEntry] };
+    const tauri = mockApp(status, entries);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "← Back" })).toBeNull();
+    await act(() => tauri.emit("show-session", { session_id: "rec" }));
+    expect(await screen.findByRole("button", { name: "← Back" })).toBeTruthy();
   });
 });

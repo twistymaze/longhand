@@ -23,25 +23,29 @@ function MainWindow() {
   const { settings, readiness, models } = useAppSettings();
 
   // A recording that starts or resumes, from the shortcut or anywhere, opens
-  // its session's page (KTD2). The page opens when the capture status or the
+  // its session's page (KTD2). So does the tray's "Open Longhand" while a
+  // session records (R3). The page opens when the capture status or the
   // list knows the session, so it never shows a session it cannot find.
-  const [started, setStarted] = useState<string | null>(null);
+  const [requested, setRequested] = useState<string | null>(null);
   useEffect(() => {
-    const unlisten = events.recordingChanged.listen(({ payload }) => {
-      if (payload.session_id) setStarted(payload.session_id);
-    });
+    const unlisteners = [
+      events.recordingChanged.listen(({ payload }) => {
+        if (payload.session_id) setRequested(payload.session_id);
+      }),
+      events.showSession.listen(({ payload }) => setRequested(payload.session_id)),
+    ];
     return () => {
-      void unlisten.then((f) => f());
+      for (const u of unlisteners) void u.then((f) => f());
     };
   }, []);
   const known =
-    started !== null &&
-    (capture.status?.session_id === started || sessions.entries.some((e) => e.id === started));
+    requested !== null &&
+    (capture.status?.session_id === requested || sessions.entries.some((e) => e.id === requested));
   useEffect(() => {
-    if (started === null || !known) return;
-    setView({ kind: "session", id: started });
-    setStarted(null);
-  }, [started, known]);
+    if (requested === null || !known) return;
+    setView({ kind: "session", id: requested });
+    setRequested(null);
+  }, [requested, known]);
 
   const open = capture.status?.session_id ?? null;
   const recording = open
@@ -65,7 +69,6 @@ function MainWindow() {
           sessions={sessions}
           readiness={readiness}
           models={models}
-          settings={settings}
           onBack={back}
         />
       )}

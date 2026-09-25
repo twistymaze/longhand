@@ -3,81 +3,12 @@
 // ready. The row menu holds Rename and Delete. Selection and the menu
 // change at once, with no motion: a list is moved through many times a day.
 
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { SessionEntry } from "../bindings";
 import { entryStatus, entryTone, formatDuration, sessionTitle } from "../processing/describe";
+import { canDelete, Menu } from "../session/SessionMenu";
 import { Status } from "../settings/ui";
 import { speakerCount } from "./group";
-
-/// States in which the store refuses a delete (`delete_refusal`, R8).
-export function canDelete(state: string): boolean {
-  return !["capturing", "interrupted", "queued", "processing"].includes(state);
-}
-
-function RowMenu({
-  canDelete,
-  onRename,
-  onDelete,
-  onClose,
-}: {
-  canDelete: boolean;
-  onRename: () => void;
-  onDelete: () => void;
-  onClose: () => void;
-}) {
-  const menu = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-    const outside = (event: PointerEvent) => {
-      if (!menu.current?.parentElement?.contains(event.target as Node)) onClose();
-    };
-    document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
-  }, [onClose]);
-
-  const onKeyDown = (event: KeyboardEvent) => {
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === "ArrowDown" ? at + 1 : at - 1;
-    items[(next + items.length) % items.length]?.focus();
-  };
-
-  const item =
-    "block w-full rounded-[4px] px-2.5 py-[3px] text-left text-label enabled:hover:bg-accent enabled:hover:text-white focus-visible:bg-accent focus-visible:text-white focus-visible:outline-none disabled:text-label-tertiary";
-  return (
-    <div
-      ref={menu}
-      role="menu"
-      onKeyDown={onKeyDown}
-      onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-      className="absolute top-full right-0 z-10 mt-1 w-40 rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)]"
-    >
-      <button type="button" role="menuitem" className={item} onClick={onRename}>
-        Rename
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        className={item}
-        disabled={!canDelete}
-        title={canDelete ? undefined : "You can delete this session after processing finishes."}
-        onClick={onDelete}
-      >
-        Delete…
-      </button>
-    </div>
-  );
-}
 
 function TitleField({
   initial,
@@ -226,17 +157,26 @@ export function SessionRow({
           …
         </button>
         {menuOpen && (
-          <RowMenu
-            canDelete={canDelete(entry.state)}
+          <Menu
             onClose={closeMenu}
-            onRename={() => {
-              setMenuOpen(false);
-              onRename();
-            }}
-            onDelete={() => {
-              setMenuOpen(false);
-              onDelete();
-            }}
+            items={[
+              {
+                label: "Rename",
+                onSelect: () => {
+                  setMenuOpen(false);
+                  onRename();
+                },
+              },
+              {
+                label: "Delete…",
+                disabled: !canDelete(entry.state),
+                reason: "You can delete this session after processing finishes.",
+                onSelect: () => {
+                  setMenuOpen(false);
+                  onDelete();
+                },
+              },
+            ]}
           />
         )}
       </div>

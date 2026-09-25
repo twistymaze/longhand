@@ -2,10 +2,11 @@
 // the selected one. The open session shows as a recording row above the
 // list. Double-click or Return opens a session's page.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { commands, type Readiness, type SessionEntry } from "../bindings";
-import { isOpen, sentence } from "../processing/describe";
-import { missingPreconditions } from "../recording/Rail";
+import { isOpen, missingPreconditions, sentence } from "../processing/describe";
+import { useDeleteSession } from "../session/DeleteSession";
+import { commitTitle, type Notice } from "../session/TitleField";
 import { Button } from "../settings/ui";
 import { groupByDay, rowTitle } from "./group";
 import { PreviewPanel } from "./PreviewPanel";
@@ -13,71 +14,6 @@ import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
 
 export type { RecordingNow };
-
-type Confirm =
-  | { kind: "trash"; entry: SessionEntry }
-  | { kind: "permanent"; entry: SessionEntry; reason: string };
-
-type Notice = { tone: "caution" | "negative"; text: string };
-
-function ConfirmDialog({
-  title,
-  message,
-  action,
-  busy,
-  onConfirm,
-  onCancel,
-}: {
-  title: string;
-  message: string;
-  action: string;
-  busy: boolean;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  const cancel = useRef<HTMLButtonElement>(null);
-  useEffect(() => cancel.current?.focus(), []);
-  // Cancel has the focus: Return must not delete by accident.
-  return (
-    <div className="fixed inset-0 z-20 flex items-start justify-center bg-black/20 pt-[18vh]">
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-        aria-describedby="confirm-message"
-        onKeyDown={(e) => {
-          if (e.key === "Escape") onCancel();
-        }}
-        className="fade-in w-[19rem] rounded-xl bg-group p-4 shadow-[0_0_0_0.5px_var(--separator),0_12px_40px_rgb(0_0_0/0.25)]"
-      >
-        <h2 id="confirm-title" className="font-semibold break-words">
-          {title}
-        </h2>
-        <p id="confirm-message" className="mt-1 text-[0.85rem] text-label-secondary">
-          {message}
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            ref={cancel}
-            type="button"
-            onClick={onCancel}
-            className="rounded-md bg-fill px-2.5 py-[3px] text-label active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onConfirm}
-            className="rounded-md bg-negative px-2.5 py-[3px] text-white active:opacity-80 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
-          >
-            {action}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function Home({
   entries,
@@ -107,8 +43,6 @@ export function Home({
   const order = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<Confirm | null>(null);
-  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [starting, setStarting] = useState(false);
   const list = useRef<HTMLDivElement>(null);
@@ -133,46 +67,22 @@ export function Home({
     setRenamingId(null);
     focusRow(entry.id);
     if (title === (entry.title ?? "")) return;
-    const result = await commands.renameSession(entry.id, title);
-    if (result.status === "error") {
-      setNotice({ tone: "negative", text: sentence(result.error) });
-    } else if (result.data.kind === "kept") {
-      setNotice({
-        tone: "caution",
-        text: `The title changed, but the folder kept its old name. ${sentence(result.data.message)}`,
-      });
-    } else {
-      setNotice(null);
-    }
+    setNotice(await commitTitle(entry.id, title));
     onChanged();
   };
 
-  const remove = async (current: Confirm) => {
-    setBusy(true);
-    const result =
-      current.kind === "trash"
-        ? await commands.deleteSession(current.entry.id)
-        : await commands.deleteSessionPermanently(current.entry.id);
-    setBusy(false);
-    if (result.status === "ok") {
-      setConfirm(null);
+  const deletion = useDeleteSession({
+    titleOf: (entry) => rowTitle(entry, now),
+    onDeleted: (entry) => {
       setNotice(null);
-      if (selectedId === current.entry.id) setSelectedId(null);
+      if (selectedId === entry.id) setSelectedId(null);
       onChanged();
-      return;
-    }
-    const error = result.error;
-    if (error.kind === "cannot_move_to_trash" && current.kind === "trash") {
-      setConfirm({ kind: "permanent", entry: current.entry, reason: error.reason });
-      return;
-    }
-    setConfirm(null);
-    setNotice({
-      tone: "negative",
-      text: sentence(error.kind === "cannot_move_to_trash" ? error.reason : error.message),
-    });
-    onChanged();
-  };
+    },
+    onFailed: (text) => {
+      setNotice({ tone: "negative", text });
+      onChanged();
+    },
+  });
 
   const record = async () => {
     setStarting(true);
@@ -184,7 +94,6 @@ export function Home({
   const time = (iso: string) =>
     new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
-  const confirmTitle = confirm ? rowTitle(confirm.entry, now) : "";
   const missing = readiness ? missingPreconditions(readiness) : "";
 
   return (
@@ -260,7 +169,7 @@ export function Home({
                         setRenamingId(null);
                         focusRow(entry.id);
                       }}
-                      onDelete={() => setConfirm({ kind: "trash", entry })}
+                      onDelete={() => deletion.ask(entry)}
                     />
                   ))}
                 </div>
@@ -270,26 +179,7 @@ export function Home({
         </div>
       </div>
       <PreviewPanel entry={selected} stage={selected ? (stages[selected.id] ?? null) : null} now={now} />
-      {confirm?.kind === "trash" && (
-        <ConfirmDialog
-          title={`Delete “${confirmTitle}”?`}
-          message="Its folder moves to the Trash."
-          action="Delete"
-          busy={busy}
-          onConfirm={() => void remove(confirm)}
-          onCancel={() => setConfirm(null)}
-        />
-      )}
-      {confirm?.kind === "permanent" && (
-        <ConfirmDialog
-          title={`“${confirmTitle}” can’t be moved to the Trash`}
-          message={`${sentence(confirm.reason)} Delete it permanently? You can’t undo this.`}
-          action="Delete Permanently"
-          busy={busy}
-          onConfirm={() => void remove(confirm)}
-          onCancel={() => setConfirm(null)}
-        />
-      )}
+      {deletion.dialog}
     </div>
   );
 }

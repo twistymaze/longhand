@@ -1,13 +1,17 @@
 //! Tray icon and menu. The builder shape and the Windows click convention are
 //! Handy's (`lib.rs` tray setup); see src-tauri/PROVENANCE.md.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+use specta::Type;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
+use tauri_specta::Event as _;
 
+use crate::managers::capture::CaptureManager;
 use crate::window::{open_settings, show_main_window};
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
@@ -47,6 +51,30 @@ pub fn recording_changed(app: &AppHandle, session_id: Option<&str>) {
 /// A capture tick: the title shows the new recorded time once a second.
 pub fn recording_tick(app: &AppHandle, session_id: &str, recorded_ms: u64) {
     update_title(app, |title| title.tick(session_id, recorded_ms));
+}
+
+/// The main window must show the page of this session (R3).
+#[derive(Serialize, Clone, Type, tauri_specta::Event)]
+pub struct ShowSession {
+    pub session_id: String,
+}
+
+/// Show the main window. While a session records or is interrupted, the
+/// window also shows that session's page (R3), because the user who opens
+/// Longhand from the tray during a recording wants the recording.
+fn open_longhand(app: &AppHandle) {
+    show_main_window(app);
+    let Some(capture) = app.try_state::<Arc<CaptureManager>>() else {
+        return;
+    };
+    match capture.status() {
+        Ok(status) => {
+            if let Some(session_id) = status.session_id {
+                let _ = ShowSession { session_id }.emit(app);
+            }
+        }
+        Err(e) => log::error!("tray open could not read the recording status: {e}"),
+    }
 }
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -91,7 +119,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                     }
                 );
                 if opens_window {
-                    show_main_window(tray.app_handle());
+                    open_longhand(tray.app_handle());
                 }
             });
     }
@@ -102,7 +130,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
 
     let tray = builder
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => show_main_window(app),
+            "open" => open_longhand(app),
             "settings" => open_settings(app),
             "quit" => app.exit(0),
             _ => {}

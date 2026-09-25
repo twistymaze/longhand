@@ -345,13 +345,15 @@ captureEnded: CaptureEnded,
 captureTick: CaptureTick,
 modelDownloadEvent: ModelDownloadEvent,
 processingUpdate: ProcessingUpdate,
-recordingChanged: RecordingChanged
+recordingChanged: RecordingChanged,
+showSession: ShowSession
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
 modelDownloadEvent: "model-download-event",
 processingUpdate: "processing-update",
-recordingChanged: "recording-changed"
+recordingChanged: "recording-changed",
+showSession: "show-session"
 })
 
 /** user-defined constants **/
@@ -648,6 +650,10 @@ learned_context_limits: Partial<{ [key in string]: number }>;
  */
 alert_tone_heard: boolean }
 export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
+/**
+ * The main window must show the page of this session (R3).
+ */
+export type ShowSession = { session_id: string }
 /**
  * An optional bound on how many people are speaking (R36).
  */

@@ -98,6 +98,7 @@ export function useCapture(): Capture {
       lastTickAt: lastTickAt.current,
       startedAt: startedAt.current,
       now,
+      levels,
     }),
     levels,
     recordedMs,

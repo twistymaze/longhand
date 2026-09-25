@@ -115,3 +115,11 @@ html {
 .followed {
   animation: followed 1800ms linear;
 }
+
+/* The live dot's brightness follows the input level. With reduced motion
+   it holds steady: the status text still says whether audio arrives. */
+@media (prefers-reduced-motion: reduce) {
+  .live-dot {
+    opacity: 1 !important;
+  }
+}

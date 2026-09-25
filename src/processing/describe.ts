@@ -1,7 +1,7 @@
 // Plain-language wording for a session's lifecycle and stages, shared by the
 // Home and the processing view so each state reads the same everywhere.
 
-import type { SessionDetail, SessionEntry } from "../bindings";
+import type { Readiness, SessionDetail, SessionEntry } from "../bindings";
 
 export const STAGES = ["assemble", "diarize", "transcribe", "join", "verify", "summarize", "save"] as const;
 export type StageName = (typeof STAGES)[number];
@@ -111,6 +111,27 @@ export function sessionTitle(startedIso: string, now: Date = new Date()): string
   if (days === 1) return `Yesterday, ${time}`;
   const date = started.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
   return `${date}, ${time}`;
+}
+
+/// "Thursday 24 September 2026, 14:05": the date and start time in full.
+export function startedAt(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/// What stands between the shortcut and a recording (R1a).
+export function missingPreconditions(readiness: Readiness): string {
+  const missing: string[] = [];
+  if (!readiness.microphone_authorized) missing.push("microphone access");
+  if (readiness.destination.kind === "unset") missing.push("a destination folder");
+  if (!readiness.shortcut.registered) missing.push("the shortcut could not be registered");
+  return missing.join(", ");
 }
 
 /// "1 h 12 min", "42 min", "under a minute".

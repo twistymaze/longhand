@@ -60,6 +60,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
             managers::processing::ProcessingUpdate,
+            tray::ShowSession,
         ])
 }
 
