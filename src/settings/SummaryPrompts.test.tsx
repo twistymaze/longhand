@@ -51,6 +51,7 @@ function backend(over: Record<string, CommandHandler> = {}) {
     summary_prompts: () => ({
       prompts: [...builtIns, ...custom.map((p) => ({ ...p, built_in: false }))],
       active,
+      text_limit: 4000,
     }),
     create_summary_prompt: () => {
       custom.push({ id: `c${next++}`, name: "New prompt", text: "Topic text" });

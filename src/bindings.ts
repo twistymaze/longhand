@@ -755,7 +755,11 @@ built_in: boolean }
  * The built-in prompts first, then the custom prompts, and the id of the
  * prompt that the next summary uses.
  */
-export type SummaryPromptList = { prompts: SummaryPromptEntry[]; active: string }
+export type SummaryPromptList = { prompts: SummaryPromptEntry[]; active: string; 
+/**
+ * The most characters a prompt text can have.
+ */
+text_limit: number }
 export type SummaryView = { 
 /**
  * Markdown.

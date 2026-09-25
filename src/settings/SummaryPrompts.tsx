@@ -12,7 +12,6 @@ import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } fr
 /// user discards it.
 export type Guard = () => Promise<boolean>;
 
-const LIMIT = 4000;
 const format = (n: number) => n.toLocaleString("en-US");
 
 function CheckIcon() {
@@ -109,7 +108,8 @@ export function SummaryPrompts({
   const draft = selected && edit?.id === selected.id ? edit.text : (selected?.text ?? "");
   const dirty = !!selected && !selected.built_in && draft !== selected.text;
   const count = [...draft].length;
-  const canSave = dirty && draft.trim() !== "" && count <= LIMIT;
+  const limit = list?.text_limit ?? 0;
+  const canSave = dirty && draft.trim() !== "" && count <= limit;
   const name = selected?.name ?? "";
 
   const guard = useCallback<Guard>(
@@ -274,9 +274,9 @@ export function SummaryPrompts({
             ) : (
               <>
                 <span
-                  className={`min-w-0 flex-1 text-[0.85rem] tabular-nums ${count > LIMIT ? "text-negative" : "text-label-secondary"}`}
+                  className={`min-w-0 flex-1 text-[0.85rem] tabular-nums ${count > limit ? "text-negative" : "text-label-secondary"}`}
                 >
-                  {`${format(count)} / ${format(LIMIT)}`}
+                  {`${format(count)} / ${format(limit)}`}
                 </span>
                 <Button onClick={() => void duplicate()}>Duplicate</Button>
                 <Button onClick={() => void remove()}>Delete</Button>

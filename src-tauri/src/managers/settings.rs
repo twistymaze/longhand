@@ -71,6 +71,8 @@ pub struct SummaryPromptEntry {
 pub struct SummaryPromptList {
     pub prompts: Vec<SummaryPromptEntry>,
     pub active: String,
+    /// The most characters a prompt text can have.
+    pub text_limit: u32,
 }
 
 const NEW_PROMPT_NAME: &str = "New prompt";
@@ -170,6 +172,7 @@ impl Settings {
         SummaryPromptList {
             prompts: built_ins.chain(custom).collect(),
             active: self.active_summary_prompt_snapshot().id,
+            text_limit: summarize::prompts::PROMPT_TEXT_LIMIT as u32,
         }
     }
 
