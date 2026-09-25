@@ -15,6 +15,7 @@ use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
+use crate::folder_rename::{self, FolderRename};
 use crate::join::TRANSCRIPT_FILE;
 use crate::summarize::{self, SUMMARY_FILE, SummaryEndpoint};
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
@@ -106,7 +107,7 @@ pub fn run(
     if let Some(home) = home
         && !first_save_in_progress
     {
-        return update_home(store, session_id, working, segments, &home, control);
+        return update_home(store, session_id, working, segments, &home, fs, control);
     }
     let destination = destination
         .ok_or_else(|| StageError::NoDestination("no destination folder is set".into()))?;
@@ -204,6 +205,7 @@ pub fn run(
         })?,
     )?;
     guard.apply(session_id, &Event::Saved)?;
+    let path = reconcile_after_done(&guard, session_id, path, fs);
     Ok(Saved { path, copied })
 }
 
@@ -275,6 +277,7 @@ fn update_home(
     working: &Path,
     segments: &[Segment],
     home: &Path,
+    fs: &dyn Fs,
     control: &dyn Control,
 ) -> Result<Saved, StageError> {
     if !home.is_dir() {
@@ -340,8 +343,9 @@ fn update_home(
         })?,
     )?;
     guard.apply(session_id, &Event::Saved)?;
+    let path = reconcile_after_done(&guard, session_id, home.to_path_buf(), fs);
     Ok(Saved {
-        path: home.to_path_buf(),
+        path,
         copied: false,
     })
 }
@@ -421,9 +425,7 @@ fn render(
         let notes = render_notes(&guard, session_id)?;
         (record, notes)
     };
-    let mut doc = SessionDoc::new(session_id, record.speaker_count, segments)
-        .ok_or_else(|| StageError::Failed("the session has no audio".into()))?;
-    doc.title = record.title.map(|t| t.text);
+    let doc = session_doc(&record, segments)?;
     write_working(working, SESSION_FILE, &doc.render())?;
     write_working(working, NOTES_FILE, &notes)?;
     if !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
@@ -432,6 +434,44 @@ fn render(
         write_working(working, SUMMARY_FILE, &stub(&why).render())?;
     }
     Ok(())
+}
+
+/// The contents of `session.md`, with the session's title.
+pub fn session_doc(record: &SessionRecord, segments: &[Segment]) -> Result<SessionDoc, StageError> {
+    let mut doc = SessionDoc::new(&record.id, record.speaker_count, segments)
+        .ok_or_else(|| StageError::Failed("the session has no audio".into()))?;
+    doc.title = record.title.as_ref().map(|t| t.text.clone());
+    Ok(doc)
+}
+
+/// After the save records `Done`: the save used the folder name it
+/// recorded when it began (KTD7). A title that changed since then renames
+/// the folder now (KTD8). Returns the folder's path. A failed rename does
+/// not fail the save: the reconcile at the next launch tries again. No
+/// regeneration runs, because the stage holds the one processing permit.
+fn reconcile_after_done(store: &Store, session_id: &str, path: PathBuf, fs: &dyn Fs) -> PathBuf {
+    moved_to(
+        session_id,
+        folder_rename::reconcile(store, session_id, false, true, fs),
+    )
+    .unwrap_or(path)
+}
+
+/// The folder's new path when a reconcile moved it. A reconcile that
+/// failed is logged, and the folder keeps its path.
+fn moved_to(session_id: &str, reconciled: Result<FolderRename, StageError>) -> Option<PathBuf> {
+    match reconciled {
+        Ok(FolderRename::Moved(folder)) => Some(folder),
+        Ok(FolderRename::Kept(why)) => {
+            log::warn!("the folder of {session_id} keeps its name: {why}");
+            None
+        }
+        Ok(FolderRename::Unchanged | FolderRename::Later) => None,
+        Err(e) => {
+            log::warn!("could not reconcile the folder of {session_id}: {e}");
+            None
+        }
+    }
 }
 
 pub fn stub(why: &str) -> Summary {
@@ -496,8 +536,26 @@ fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError
 
 /// Summarize a saved session again and replace its `summary.md` (R19,
 /// AE17): a stub left by a failed summary, or a summary the user wants
-/// redone.
+/// redone. A rename that waited for the regeneration then moves the
+/// folder, whether the regeneration succeeded or not (KTD8). The returned
+/// path is in the folder under its name after that rename.
 pub fn regenerate_summary(
+    store: &SharedStore,
+    session_id: &str,
+    endpoint: SummaryEndpoint,
+    learn: &dyn Fn(u32),
+    control: &dyn Control,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<PathBuf, StageError> {
+    let regenerated = summarize_again(store, session_id, endpoint, learn, control, progress);
+    // The regeneration has ended, and the caller holds the one processing
+    // permit, so no other regeneration runs.
+    let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
+    let path = regenerated?;
+    Ok(moved_to(session_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
+}
+
+fn summarize_again(
     store: &SharedStore,
     session_id: &str,
     endpoint: SummaryEndpoint,

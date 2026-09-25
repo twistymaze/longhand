@@ -59,6 +59,19 @@ pub struct Title {
     pub source: TitleSource,
 }
 
+/// A folder move that a rename recorded before it renamed the home folder
+/// (KTD8). The paths are absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameIntent {
+    /// The home folder before the rename.
+    pub from: String,
+    /// The home folder after the rename.
+    pub to: String,
+    /// The temporary name of a change of case alone, which moves the
+    /// folder in two steps: `from` to `temp`, then `temp` to `to`.
+    pub temp: Option<String>,
+}
+
 /// How long a claim's heartbeat may be quiet before its owner, when it
 /// cannot be shown dead, is taken to be gone (U17). The runner beats every
 /// 10 s.
@@ -352,6 +365,58 @@ impl Store {
         Ok(self.require(id)?.title)
     }
 
+    // ------------------------------------------------------------ rename intent
+
+    /// Record the folder move that a rename is about to make (KTD8). A
+    /// second record for the session replaces the first.
+    pub fn set_rename_intent(&self, id: &str, intent: &RenameIntent) -> Result<()> {
+        self.require(id)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO rename_intents (session_id, from_path, to_path, temp_path)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, intent.from, intent.to, intent.temp],
+        )?;
+        Ok(())
+    }
+
+    pub fn rename_intent(&self, id: &str) -> Result<Option<RenameIntent>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT from_path, to_path, temp_path FROM rename_intents WHERE session_id = ?1",
+                [id],
+                read_intent,
+            )
+            .optional()?)
+    }
+
+    /// Every recorded intent, with its session id.
+    pub fn rename_intents(&self) -> Result<Vec<(String, RenameIntent)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id, from_path, to_path, temp_path FROM rename_intents
+             ORDER BY session_id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    RenameIntent {
+                        from: r.get(1)?,
+                        to: r.get(2)?,
+                        temp: r.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    pub fn clear_rename_intent(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM rename_intents WHERE session_id = ?1", [id])?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ notes
 
     /// The session's notes: one markdown document (KTD5).
@@ -580,6 +645,14 @@ fn parse_time(text: &str) -> Result<DateTime<FixedOffset>> {
             rusqlite::types::Type::Text,
             Box::new(e),
         ))
+    })
+}
+
+fn read_intent(r: &rusqlite::Row) -> rusqlite::Result<RenameIntent> {
+    Ok(RenameIntent {
+        from: r.get(0)?,
+        to: r.get(1)?,
+        temp: r.get(2)?,
     })
 }
 

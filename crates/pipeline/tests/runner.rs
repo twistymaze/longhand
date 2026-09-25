@@ -1619,16 +1619,34 @@ async fn a_titled_session_is_saved_under_its_title() {
     );
 }
 
+/// Where the save stage put the folder, before any rename after `Done`.
+fn saved_at(r: &Rig) -> std::path::PathBuf {
+    match checkpoint::get::<session_save::SaveState>(
+        &r.store,
+        "s",
+        Stage::Save,
+        pipeline::save::STATE,
+    )
+    .unwrap()
+    {
+        Some(session_save::SaveState::Done { path }) => path,
+        other => panic!("the save is not done: {other:?}"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_title_changed_between_two_save_runs_keeps_the_first_name() {
+async fn a_title_changed_between_two_save_runs_saves_under_the_first_name_then_renames() {
     let r = rig().await;
     save_fails_at_the_final_rename(&r, false).await;
     set_title(&r.store, "s", "Second");
 
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     let first = session_save::naming::folder_name(common::at(0), Some("First"));
-    assert_eq!(destination_entries(&r), [first.as_str()]);
-    assert_eq!(saved_folder(&r, "s"), r.dest.join(&first));
+    let second = session_save::naming::folder_name(common::at(0), Some("Second"));
+    assert_eq!(saved_at(&r), r.dest.join(&first));
+    // The reconcile after Done gives the folder the new title's name (KTD8).
+    assert_eq!(destination_entries(&r), [second.as_str()]);
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&second));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1642,9 +1660,11 @@ async fn a_final_rename_whose_record_was_lost_is_found_by_the_recorded_name() {
     set_title(&r.store, "s", "Second");
 
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert_eq!(destination_entries(&r), [first.as_str()]);
+    assert_eq!(saved_at(&r), r.dest.join(&first));
+    let second = session_save::naming::folder_name(common::at(0), Some("Second"));
+    assert_eq!(destination_entries(&r), [second.as_str()]);
     let home = saved_folder(&r, "s");
-    assert_eq!(home, r.dest.join(&first));
+    assert_eq!(home, r.dest.join(&second));
     assert!(home.join("audio/segment-01.opus").exists());
     assert!(!home.join(session_save::MARKER).exists());
     assert!(!r.root.join("s").exists());
@@ -1696,8 +1716,11 @@ async fn a_save_begun_with_no_recorded_name_finishes_under_the_no_title_name() {
     set_title(&r.store, "s", "Later title");
 
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert_eq!(destination_entries(&r), [old.as_str()]);
-    assert_eq!(saved_folder(&r, "s"), r.dest.join(&old));
+    assert_eq!(saved_at(&r), r.dest.join(&old));
+    // The reconcile after Done then gives the folder the title's name.
+    let titled = session_save::naming::folder_name(segments[0].wall_start, Some("Later title"));
+    assert_eq!(destination_entries(&r), [titled.as_str()]);
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&titled));
 }
 
 // ------------------------------------------------------------- progress (U12)
@@ -2030,4 +2053,362 @@ async fn a_session_counts_as_regenerating_only_while_its_summary_is_regenerated(
     );
     assert!(!r.runner.is_regenerating("s"));
     assert!(!r.runner.is_regenerating("other"));
+}
+
+// ------------------------------------------------------------- folder rename (U8)
+
+use pipeline::folder_rename::{self, FolderRename};
+use session_core::RenameIntent;
+
+/// A session processed and saved, titled `title` before processing.
+async fn saved_session(r: &Rig, title: Option<&str>) -> std::path::PathBuf {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    if let Some(title) = title {
+        set_title(&r.store, "s", title);
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    saved_folder(r, "s")
+}
+
+fn name_for(title: Option<&str>) -> String {
+    session_save::naming::folder_name(common::at(0), title)
+}
+
+fn document_title(folder: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(folder.join(pipeline::save::SESSION_FILE)).unwrap();
+    session_core::folder::SessionDoc::parse(&text)
+        .unwrap()
+        .title
+}
+
+fn intent(r: &Rig) -> Option<RenameIntent> {
+    r.store.lock().unwrap().rename_intent("s").unwrap()
+}
+
+/// Record a move as the rename does before it takes it.
+fn record_intent(r: &Rig, from: &std::path::Path, to: &std::path::Path, temp: Option<&str>) {
+    r.store
+        .lock()
+        .unwrap()
+        .set_rename_intent(
+            "s",
+            &RenameIntent {
+                from: from.to_string_lossy().into_owned(),
+                to: to.to_string_lossy().into_owned(),
+                temp: temp.map(|t| r.dest.join(t).to_string_lossy().into_owned()),
+            },
+        )
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_session_renamed_has_one_folder_under_the_new_name() {
+    // Covers AE2.
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(old, r.dest.join(name_for(None)));
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert!(new.join("audio/segment-01.opus").exists());
+    assert_eq!(intent(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_during_processing_changes_the_title_at_once_and_the_folder_after_done() {
+    // Covers AE1.
+    let r = rig().await;
+    save_fails_at_the_final_rename(&r, false).await;
+    assert_eq!(
+        r.runner.rename_session("s", "Second").unwrap(),
+        FolderRename::Later
+    );
+    assert_eq!(
+        r.store.lock().unwrap().title("s").unwrap().unwrap().text,
+        "Second"
+    );
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let second = r.dest.join(name_for(Some("Second")));
+    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
+    assert_eq!(saved_folder(&r, "s"), second);
+    assert_eq!(document_title(&second).as_deref(), Some("Second"));
+    // The save itself used the name it recorded when it began.
+    assert_eq!(
+        checkpoint::get::<session_save::SaveState>(
+            &r.store,
+            "s",
+            Stage::Save,
+            pipeline::save::STATE
+        )
+        .unwrap(),
+        Some(session_save::SaveState::Done {
+            path: r.dest.join(name_for(Some("First")))
+        })
+    );
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::Saved { path, .. } if *path == second
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_the_intent_and_before_the_rename_resolves_at_launch_to_the_old_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    record_intent(&r, &old, &new, None);
+
+    assert_eq!(
+        folder_rename::resolve_intents(&r.store, &session_save::RealFs).unwrap(),
+        ["s"]
+    );
+    assert_eq!(saved_folder(&r, "s"), old);
+    assert_eq!(intent(&r), None);
+    assert_eq!(destination_entries(&r), [name_for(None)]);
+
+    // The reconcile at launch then completes the rename.
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_the_rename_and_before_home_path_resolves_at_launch_to_the_new_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    record_intent(&r, &old, &new, None);
+    std::fs::rename(&old, &new).unwrap();
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_session_md_and_before_home_path_resolves_at_launch_to_the_new_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    record_intent(&r, &old, &new, None);
+    std::fs::rename(&old, &new).unwrap();
+    let text = std::fs::read_to_string(new.join("session.md")).unwrap();
+    let mut doc = session_core::folder::SessionDoc::parse(&text).unwrap();
+    doc.title = Some("Budget review".into());
+    std::fs::write(new.join("session.md"), doc.render()).unwrap();
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_home_path_and_before_the_intent_is_cleared_keeps_the_new_path() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let first = r.runner.rename_session("s", "Budget review").unwrap();
+    let FolderRename::Moved(new) = first else {
+        panic!("{first:?}");
+    };
+    // The record that the rename ended is lost.
+    record_intent(&r, &old, &new, None);
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_to_a_name_another_folder_uses_takes_the_next_suffix() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let taken = name_for(Some("Budget review"));
+    std::fs::create_dir(r.dest.join(&taken)).unwrap();
+
+    let suffixed = format!("{taken}-2");
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review").unwrap(),
+        FolderRename::Moved(r.dest.join(&suffixed))
+    );
+    assert_eq!(destination_entries(&r), [taken.clone(), suffixed.clone()]);
+    // The suffixed folder has its name: a launch does not move it again.
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&suffixed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_that_changes_only_the_case_ends_with_the_new_case() {
+    let r = rig().await;
+    saved_session(&r, Some("budget review")).await;
+    assert_eq!(destination_entries(&r), [name_for(Some("budget review"))]);
+
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review").unwrap(),
+        FolderRename::Moved(new.clone())
+    );
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_of_case_stopped_at_the_temporary_name_resolves_at_launch_to_the_new_name() {
+    let r = rig().await;
+    let old = saved_session(&r, Some("budget review")).await;
+    set_title(&r.store, "s", "Budget review");
+    let new = r.dest.join(name_for(Some("Budget review")));
+    let temp = session_save::rename_home::temp_name("s");
+    record_intent(&r, &old, &new, Some(&temp));
+    std::fs::rename(&old, r.dest.join(&temp)).unwrap();
+    assert_eq!(destination_entries(&r), [temp]);
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(intent(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_after_done_and_before_a_deferred_rename_ends_renames_at_the_next_launch() {
+    let r = rig().await;
+    saved_session(&r, Some("First")).await;
+    // The title changed while the session was busy, and the process
+    // stopped before the reconcile after Done ran.
+    set_title(&r.store, "s", "Second");
+
+    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    let second = r.dest.join(name_for(Some("Second")));
+    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
+    assert_eq!(saved_folder(&r, "s"), second);
+    assert_eq!(document_title(&second).as_deref(), Some("Second"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_during_a_regeneration_moves_the_folder_after_it() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    assert_eq!(
+        folder_rename::rename_session(
+            &r.store,
+            "s",
+            "Budget review",
+            &|_| true,
+            &session_save::RealFs
+        )
+        .unwrap(),
+        FolderRename::Later
+    );
+    assert_eq!(saved_folder(&r, "s"), old);
+
+    let summary = r.runner.regenerate_summary("s").await.unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(summary, new.join("summary.md"));
+    assert!(summary.exists());
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+/// Refuses every rename as `PermissionDenied`, as Windows does while
+/// another process holds a file in the folder.
+struct AlwaysInUse(AtomicUsize);
+
+impl session_save::Fs for AlwaysInUse {
+    fn rename(&self, _: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+    fn rename_new(&self, _: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_in_use_keeps_its_old_name_and_the_new_title() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let fs = AlwaysInUse(AtomicUsize::new(0));
+    let result =
+        folder_rename::rename_session(&r.store, "s", "Budget review", &|_| false, &fs).unwrap();
+    let FolderRename::Kept(message) = result else {
+        panic!("{result:?}");
+    };
+    assert!(message.contains("in use"), "{message}");
+    assert!(!message.contains("no free name"), "{message}");
+    assert_eq!(
+        fs.0.load(Ordering::SeqCst),
+        1 + session_save::rename_home::IN_USE_RETRIES
+    );
+    assert_eq!(
+        r.store.lock().unwrap().title("s").unwrap().unwrap().text,
+        "Budget review"
+    );
+    assert_eq!(saved_folder(&r, "s"), old);
+    assert_eq!(destination_entries(&r), [name_for(None)]);
+    assert_eq!(intent(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_a_rename_notes_and_a_resume_write_into_the_renamed_folder() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let FolderRename::Moved(new) = r.runner.rename_session("s", "Budget review").unwrap() else {
+        panic!("not moved");
+    };
+
+    pipeline::save::set_notes(&mut r.store.lock().unwrap(), "s", "- after the rename\n").unwrap();
+    let notes = std::fs::read_to_string(new.join(pipeline::save::NOTES_FILE)).unwrap();
+    assert!(notes.contains("after the rename"), "{notes}");
+
+    resume_completed(&r, "s", &speech());
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_folder(&r, "s"), new);
+    assert!(new.join("audio/segment-02.opus").exists());
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_title_names_the_folder_by_its_start_time_again() {
+    let r = rig().await;
+    saved_session(&r, Some("Budget review")).await;
+    let old = r.dest.join(name_for(None));
+    assert_eq!(
+        r.runner.rename_session("s", "  ").unwrap(),
+        FolderRename::Moved(old.clone())
+    );
+    assert_eq!(r.store.lock().unwrap().title("s").unwrap(), None);
+    assert_eq!(document_title(&old), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_change_that_keeps_the_folder_name_rewrites_session_md() {
+    let r = rig().await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review?").unwrap(),
+        FolderRename::Unchanged
+    );
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert_eq!(document_title(&folder).as_deref(), Some("Budget review?"));
 }

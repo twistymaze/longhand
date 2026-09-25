@@ -16,6 +16,7 @@ use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::diarize::Speakers;
+use crate::folder_rename::{self, FolderRename};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
@@ -345,6 +346,30 @@ impl Runner {
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .any(|id| id == session_id)
+    }
+
+    /// The user's rename (R9): the title changes at once, and a saved, idle
+    /// session's folder takes the new name now. A busy session's folder
+    /// takes it when the work ends.
+    pub fn rename_session(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<FolderRename, StageError> {
+        folder_rename::rename_session(
+            &self.env.store,
+            session_id,
+            title,
+            &|id| self.is_regenerating(id),
+            &session_save::RealFs,
+        )
+    }
+
+    /// At launch, before [`Runner::run`]: settle the folder renames that a
+    /// crash left, then give every saved folder the name its title gives
+    /// (KTD8).
+    pub fn recover_folders(&self) -> Result<(), StageError> {
+        folder_rename::recover(&self.env.store, &session_save::RealFs)
     }
 
     /// Stop at the next window and free the recognition engine. Called as

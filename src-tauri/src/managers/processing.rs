@@ -342,6 +342,13 @@ impl ProcessingManager {
         }
         if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
             sweep_staging(app, &capture.shared_store());
+            // Before the queue starts: a folder rename that a crash
+            // stopped completes, and each saved folder takes the name its
+            // title gives (KTD8). Only with the instance lock held, so no
+            // other run renames a folder at the same time.
+            if let Err(e) = runner.recover_folders() {
+                log::error!("launch recovery of folder renames failed: {e}");
+            }
         }
         let manager = Self { runner };
         // The volume may be back, or the folder restored (U18).
@@ -391,6 +398,19 @@ impl ProcessingManager {
     /// delete refuses it (R8).
     pub fn is_regenerating(&self, session_id: &str) -> bool {
         self.runner.is_regenerating(session_id)
+    }
+
+    /// Rename a session (R9). The title changes at once; see
+    /// [`Runner::rename_session`] for the folder. This can reach a synced
+    /// folder, so call it off the main thread.
+    pub fn rename_session(
+        &self,
+        session_id: &str,
+        title: &str,
+    ) -> Result<pipeline::folder_rename::FolderRename, String> {
+        self.runner
+            .rename_session(session_id, title)
+            .map_err(|e| e.to_string())
     }
 
     /// Summarize a saved session again, replacing its `summary.md` (AE17).

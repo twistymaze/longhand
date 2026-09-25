@@ -12,6 +12,7 @@ pub fn migrations() -> Migrations<'static> {
             include_str!("../migrations/0002_titles_and_notes.sql"),
             notes_to_documents,
         ),
+        M::up(include_str!("../migrations/0003_rename_intent.sql")),
     ])
 }
 

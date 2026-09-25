@@ -48,6 +48,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::session_detail,
             commands::session::session_notes,
             commands::session::set_session_notes,
+            commands::session::rename_session,
             commands::session::session_document,
             commands::session::delete_session,
             commands::session::delete_session_permanently,

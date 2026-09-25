@@ -630,3 +630,31 @@ fn deleting_no_such_session_is_an_error() {
         "{err:?}"
     );
 }
+
+#[test]
+fn a_rename_intent_is_kept_until_it_is_cleared_and_goes_with_its_session() {
+    use session_core::RenameIntent;
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.rename_intent("s1").unwrap(), None);
+    let first = RenameIntent {
+        from: "/d/a".into(),
+        to: "/d/b".into(),
+        temp: None,
+    };
+    store.set_rename_intent("s1", &first).unwrap();
+    let second = RenameIntent {
+        from: "/d/a".into(),
+        to: "/d/A".into(),
+        temp: Some("/d/.longhand-rename-s1".into()),
+    };
+    store.set_rename_intent("s1", &second).unwrap();
+    assert_eq!(store.rename_intent("s1").unwrap(), Some(second.clone()));
+    assert_eq!(
+        store.rename_intents().unwrap(),
+        vec![("s1".to_string(), second)]
+    );
+    store.clear_rename_intent("s1").unwrap();
+    assert!(store.rename_intents().unwrap().is_empty());
+    assert!(store.set_rename_intent("nobody", &first).is_err());
+}

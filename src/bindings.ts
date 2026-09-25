@@ -280,6 +280,20 @@ async setSessionNotes(sessionId: string, markdown: string) : Promise<Result<null
 }
 },
 /**
+ * Rename a session (R9, R35): `title` is stored as the user's title, and
+ * an empty title clears it. The folder of a saved, idle session takes
+ * the new name now; any other session's folder takes it later. The rename
+ * runs off the main thread, since it can reach a synced folder.
+ */
+async renameSession(sessionId: string, title: string) : Promise<Result<FolderRenameResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_session", { sessionId, title }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * The saved transcript and summary, read from the session's folder.
  */
 async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, string>> {
@@ -421,6 +435,28 @@ export type EndpointView = { host: string; model: string;
  * False when the transcript would cross the network unencrypted.
  */
 encrypted: boolean }
+/**
+ * What a rename did to the session's folder. The title changes in every
+ * case.
+ */
+export type FolderRenameResult = 
+/**
+ * The folder already has the name the title gives.
+ */
+{ kind: "unchanged" } | 
+/**
+ * The session records, waits, processes or regenerates its summary:
+ * the folder takes the new name when that ends.
+ */
+{ kind: "later" } | 
+/**
+ * The folder has the new name at `path`.
+ */
+{ kind: "moved"; path: string } | 
+/**
+ * The folder could not be renamed and keeps its old name.
+ */
+{ kind: "kept"; message: string }
 export type Interruption = { headline: string; 
 /**
  * A disk interruption resumes only once space is freed (R7a).

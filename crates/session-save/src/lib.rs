@@ -13,6 +13,7 @@ pub mod fsync;
 pub mod home_write;
 pub mod naming;
 pub mod rename;
+pub mod rename_home;
 pub mod stage;
 
 use std::io;
@@ -34,7 +35,7 @@ pub const LEFT_BEHIND: &[&str] = &["proc", "audio-recovery"];
 pub const MARKER: &str = ".longhand-saving";
 
 /// Final-name attempts before giving up on the destination.
-const MAX_NAMES: usize = 100;
+pub(crate) const MAX_NAMES: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case")]

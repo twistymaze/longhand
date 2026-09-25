@@ -6,6 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use pipeline::folder_rename::FolderRename;
 use serde::Serialize;
 use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Event, SessionRecord, SessionState, Stage};
@@ -272,6 +273,56 @@ pub async fn set_session_notes(
         capture
             .set_session_notes(&session_id, &markdown)
             .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What a rename did to the session's folder. The title changes in every
+/// case.
+#[derive(Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FolderRenameResult {
+    /// The folder already has the name the title gives.
+    Unchanged,
+    /// The session records, waits, processes or regenerates its summary:
+    /// the folder takes the new name when that ends.
+    Later,
+    /// The folder has the new name at `path`.
+    Moved { path: String },
+    /// The folder could not be renamed and keeps its old name.
+    Kept { message: String },
+}
+
+impl From<FolderRename> for FolderRenameResult {
+    fn from(rename: FolderRename) -> Self {
+        match rename {
+            FolderRename::Unchanged => Self::Unchanged,
+            FolderRename::Later => Self::Later,
+            FolderRename::Moved(path) => Self::Moved {
+                path: path.to_string_lossy().into_owned(),
+            },
+            FolderRename::Kept(message) => Self::Kept { message },
+        }
+    }
+}
+
+/// Rename a session (R9, R35): `title` is stored as the user's title, and
+/// an empty title clears it. The folder of a saved, idle session takes
+/// the new name now; any other session's folder takes it later. The rename
+/// runs off the main thread, since it can reach a synced folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_session(
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+    title: String,
+) -> Result<FolderRenameResult, String> {
+    let processing = Arc::clone(&processing);
+    tauri::async_runtime::spawn_blocking(move || {
+        processing
+            .rename_session(&session_id, &title)
+            .map(FolderRenameResult::from)
     })
     .await
     .map_err(|e| e.to_string())?
