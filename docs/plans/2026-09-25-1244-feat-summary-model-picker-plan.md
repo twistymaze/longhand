@@ -19,7 +19,7 @@ execution: code
 - **Stop conditions:** Stop and ask if an implementation step would change a Requirement or a Key Decision. Also stop and ask if Keychain access from the list command needs a permission prompt that summary processing does not already cause.
 - **Who finishes:** `ce-work` builds the units and passes the local gates. The user runs the manual check in the signed bundle (Verification Contract).
 - **Open blockers:** None.
-- **Product Contract preservation:** Changed: R2 (an empty Base URL saved before this change counts as never saved, because the saved settings cannot tell the two apart) and R14 (the status line has more states: the key cannot list models, a server error, a redirect, an empty list and a locked Keychain). Added: R16, R17, R18, AE7 and AE8, for gaps that the flow analysis found. The user confirmed these changes. The Outstanding Questions are resolved in place, in KTD1, KTD4 and KTD6.
+- **Product Contract preservation:** Changed: R2 (the default applies only to a new install; an existing install keeps an empty Base URL, changed by the user after the code review found that the earlier rule could send summaries to OpenAI for a user who had cleared the field) and R14 (the status line has more states: the key cannot list models, a server error, a redirect, an empty list and a locked Keychain). Added: R16, R17, R18, AE7 and AE8, for gaps that the flow analysis found. The user confirmed these changes. The Outstanding Questions are resolved in place, in KTD1, KTD4 and KTD6.
 
 ---
 
@@ -50,7 +50,7 @@ Longhand already reads the models list, but only to find the context limit of th
 **Default endpoint**
 
 - R1. When no Base URL was ever saved, Base URL shows `https://api.openai.com/v1`, and Model is empty.
-- R2. A saved Base URL does not change, and a Base URL that the user clears stays empty. An empty Base URL saved before this change counts as never saved.
+- R2. A saved Base URL does not change, and a Base URL that the user clears stays empty. The OpenAI default applies only to a new install that has no settings. An install that has settings and an empty Base URL keeps it empty.
 
 **Layout**
 
@@ -142,7 +142,7 @@ Longhand already reads the models list, but only to find the context limit of th
 
   Governs R14.
 - KTD3. **The Rust command owns the R4 and R16 gates and reads the key itself.** The command takes no arguments. It reads the effective Base URL and the saved state from Settings, and the key through `SecretsManager`, in the same way that `credential_status` does. The webview never holds the key. It returns "not requested" with a reason (default endpoint with no key, no Base URL, Keychain locked, Keychain failed) instead of sending a request. A UI mistake therefore cannot contact OpenAI. Processing uses the same gate before a summary request. When the effective Base URL is the built-in default, the user did not save it, and no key is saved for its host, `summary_endpoint` returns `EndpointProblem::Unconfigured` with the text "Add an API key for api.openai.com, or enter a Base URL", and sends nothing. Without this gate, a model typed on a new install would send the transcript to OpenAI with no key, which is the case KD7 excludes. The gate is one pure function that both paths call. Governs R4, R16, R17.
-- KTD4. **Settings saves the Base URL as "never saved" or a saved value.** `endpoint_base_url` becomes an optional value. The absent value means never saved, and the effective Base URL is then `https://api.openai.com/v1`. A saved empty string means cleared. The migration maps a stored `""` to the absent value (R2). `endpoint_configured()`, `learned_limit_key` and the processing read use the effective Base URL. The schema version is the next unused number when this unit is built: the summary-prompts and recognition-models plans also claim version 3. Governs R1, R2.
+- KTD4. **Settings saves the Base URL as "never saved" or a saved value.** `endpoint_base_url` becomes an optional value. The absent value means never saved, and the effective Base URL is then `https://api.openai.com/v1`. A saved empty string means cleared, or an existing install that never set it. Only a new store with no settings has the absent value; no migration changes a stored value (R2). A version 1 store, which has no Base URL field, gets an empty string. `endpoint_configured()`, `learned_limit_key` and the processing read use the effective Base URL. The schema version does not change. Governs R1, R2.
 - KTD5. **`set_endpoint` splits into a Base URL setter and a Model setter.** Today one command sends both values, so a Model commit would save the displayed default URL. The default would then count as "entered by the user", and AE1 would fail. Each setter changes only its own field. The Base URL setter keeps today's trim and host check. Governs R2, R4.
 - KTD6. **The status text.** It uses the existing `Status` tone in `src/settings/ui.tsx`. `{n}` and `{host}` are filled in.
 
@@ -253,7 +253,7 @@ A result whose counter value is old is dropped in the Checking state and does no
 - **Files:** `src-tauri/src/managers/settings.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/managers/processing.rs`, `src-tauri/src/lib.rs`, `src/bindings.ts`.
 - **Approach:**
   1. Change `endpoint_base_url` to an optional value, and add an accessor for the effective Base URL and one for "saved by the user".
-  2. Bump the schema version to the next unused number. In the migration, map a stored `""` to the absent value and keep every other value.
+  2. Do not bump the schema version. No migration changes a stored Base URL. The version 1 step sets an empty Base URL.
   3. Point `endpoint_configured()`, `learned_limit_key` and the processing credential read at the effective Base URL.
   4. Add the gate as a pure function over (effective Base URL, saved by the user, key state), so that tests need no Keychain. Call it from `summary_endpoint` before a summary request (KTD3). U3 calls the same function.
   4. Replace `set_endpoint` with `set_endpoint_base_url` and `set_endpoint_model`. An empty Base URL from the setter saves `Some("")` (R2).
@@ -262,7 +262,7 @@ A result whose counter value is old is dropped in the Checking state and does no
 - **Test scenarios:**
   - A new store has no saved Base URL, and the effective Base URL is `https://api.openai.com/v1`.
   - Covers AE2. A store at the previous version with `http://localhost:11434/v1` keeps it after the migration.
-  - A store at the previous version with `""` has no saved Base URL after the migration.
+  - A store at the previous version with `""` keeps `""`, and the effective Base URL is empty.
   - `set_endpoint_base_url("")` saves an empty value. The effective Base URL is then empty and `endpoint_configured()` is false.
   - `set_endpoint_model("gpt-4o")` on a new store does not save a Base URL.
   - On a new store with a Model set and no key, `summary_endpoint` returns `Unconfigured` with the KTD3 text and sends no request.
