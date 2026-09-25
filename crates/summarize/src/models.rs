@@ -58,7 +58,7 @@ pub fn parse_ids(body: &Value) -> Option<Vec<String>> {
         return None;
     };
     ids.retain(|id| !id.trim().is_empty());
-    ids.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
+    ids.sort_by_cached_key(|id| (id.to_lowercase(), id.clone()));
     ids.dedup();
     Some(ids)
 }

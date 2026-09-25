@@ -179,7 +179,7 @@ fn endpoint_from_settings(
     s: settings::Settings,
     read_key: impl FnOnce(&str) -> Result<Option<String>, SecretError>,
 ) -> Result<SummaryEndpoint, EndpointProblem> {
-    use settings::{EndpointGate, KeyState, NotRequestedReason};
+    use settings::{EndpointGate, NotRequestedReason};
     const NO_ENDPOINT: &str = "no summarization endpoint is set; choose one in Settings";
     if !s.endpoint_configured() {
         return Err(EndpointProblem::Unconfigured(NO_ENDPOINT.into()));
@@ -188,12 +188,7 @@ fn endpoint_from_settings(
     // The credential is keyed by the configured host: a changed base URL
     // has none until one is entered for it (R30a).
     let read = read_key(&base_url);
-    let key = match &read {
-        Ok(Some(_)) => KeyState::Saved,
-        Ok(None) => KeyState::Absent,
-        Err(SecretError::Locked { .. } | SecretError::Unavailable { .. }) => KeyState::Locked,
-        Err(_) => KeyState::Failed,
-    };
+    let key = settings::key_state(&read);
     match settings::endpoint_gate(&base_url, s.endpoint_base_url_saved(), key) {
         EndpointGate::NotRequested(NotRequestedReason::KeyNeeded) => {
             let host = secrets::endpoint_key(&base_url).unwrap_or_else(|_| base_url.clone());

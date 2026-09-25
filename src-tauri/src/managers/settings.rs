@@ -168,6 +168,18 @@ pub enum EndpointGate {
     NotRequested(NotRequestedReason),
 }
 
+/// The key state from the result of a Keychain read. The list command and
+/// summary processing both call it, so they map Keychain errors the same way.
+pub fn key_state(read: &Result<Option<String>, secrets::SecretError>) -> KeyState {
+    use secrets::SecretError;
+    match read {
+        Ok(Some(_)) => KeyState::Saved,
+        Ok(None) => KeyState::Absent,
+        Err(SecretError::Locked { .. } | SecretError::Unavailable { .. }) => KeyState::Locked,
+        Err(_) => KeyState::Failed,
+    }
+}
+
 /// The request gate for the endpoint (KTD3). Longhand contacts only an
 /// endpoint that the user acted on: a key is saved for its host, or the user
 /// saved the Base URL. The list command and summary processing both call it.

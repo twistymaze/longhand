@@ -376,18 +376,11 @@ enum ListStep {
 }
 
 /// Apply the request gate (KTD3) to the settings and to the result of the
-/// Keychain read. Keychain errors map to key states as in processing, so
-/// the list command and summary processing agree.
+/// Keychain read.
 fn list_step(s: &Settings, read: Result<Option<String>, secrets::SecretError>) -> ListStep {
-    use secrets::SecretError;
-    use settings::{EndpointGate, KeyState};
+    use settings::EndpointGate;
     let base_url = s.effective_endpoint_base_url();
-    let key = match &read {
-        Ok(Some(_)) => KeyState::Saved,
-        Ok(None) => KeyState::Absent,
-        Err(SecretError::Locked { .. } | SecretError::Unavailable { .. }) => KeyState::Locked,
-        Err(_) => KeyState::Failed,
-    };
+    let key = settings::key_state(&read);
     let credential = match settings::endpoint_gate(base_url, s.endpoint_base_url_saved(), key) {
         EndpointGate::NotRequested(reason) => {
             return ListStep::Done(EndpointModels::NotRequested {
