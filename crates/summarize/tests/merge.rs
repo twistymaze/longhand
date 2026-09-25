@@ -35,7 +35,7 @@ fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
     use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
 
     let text = "word ".repeat(PROMPT_TEXT_LIMIT / 5);
-    let notes = "- the loot\n- the mist\n";
+    let notes = "- the budget\n- the launch date\n";
     let limit = 8_192;
     let budget = prompt_allowance(limit, reply_reserve(limit));
     let allowance = budget - prompts::overhead(notes, &text);

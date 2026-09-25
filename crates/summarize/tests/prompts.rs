@@ -207,7 +207,7 @@ fn the_built_ins_have_fixed_ids_and_names_and_unknown_ids_have_none() {
         assert!(p.text.chars().count() <= PROMPT_TEXT_LIMIT);
         assert!(!p.text.trim().is_empty());
     }
-    assert_eq!(prompts::built_in("game-recap"), None);
+    assert_eq!(prompts::built_in("team-sync"), None);
     assert_eq!(prompts::built_in(""), None);
     assert_eq!(prompts::built_in("Topic summary"), None);
 }
@@ -220,7 +220,7 @@ fn the_topic_summary_groups_by_topic_states_facts_and_shows_no_times() {
         "overview paragraph",
         "bold label",
         "nested",
-        "15 gold pieces",
+        "the budget rises to $40,000",
         "numbers, amounts, names",
         "Open questions",
         "owner",
