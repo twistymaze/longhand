@@ -9,8 +9,10 @@
 
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, FixedOffset};
+
 use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
-use session_core::{Event, Segment, SessionState, Stage, Store};
+use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
 use crate::join::TRANSCRIPT_FILE;
@@ -22,6 +24,11 @@ pub const NOTES_FILE: &str = "notes.md";
 /// The save's progress, a [`SaveState`]. Its presence means saving has
 /// begun and the session can no longer be resumed.
 pub const STATE: &str = "state";
+/// The destination folder name, a string, recorded with the claim so that
+/// every later run of the save uses the same name (KTD7). A title that
+/// changes during the save cannot then send the final rename, or the scan
+/// for a folder whose rename was not recorded, to another name.
+pub const FOLDER_NAME: &str = "folder_name";
 /// Under the summarize stage: why it failed, for the saved stub (KD13).
 pub const SUMMARY_FAILED: &str = "failed";
 
@@ -107,21 +114,24 @@ pub fn run(
         .first()
         .ok_or_else(|| StageError::Failed("the session has no audio".into()))?
         .wall_start;
-    let folder_name = session_save::naming::folder_name(started);
+    let (mut state, folder_name) = match recorded {
+        Some(state) => {
+            // A save that began before names were recorded used the
+            // no-title name.
+            let name = checkpoint::get::<String>(store, session_id, Stage::Save, FOLDER_NAME)?
+                .unwrap_or_else(|| session_save::naming::folder_name(started, None));
+            (state, name)
+        }
+        None => {
+            control.proceed()?;
+            (SaveState::Working, claim_named(store, session_id, started)?)
+        }
+    };
     let job = Job {
         session_id,
         working,
         destination,
         folder_name: &folder_name,
-    };
-
-    let mut state = match recorded {
-        Some(state) => state,
-        None => {
-            control.proceed()?;
-            claim(store, session_id)?;
-            SaveState::Working
-        }
     };
     if state == SaveState::Working && working.exists() {
         render(store, session_id, working, segments)?;
@@ -339,14 +349,43 @@ fn update_home(
 /// Take the session for saving, unless a resume took it first.
 fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     let guard = lock(store);
-    let processing = matches!(
-        guard.session(session_id)?.map(|r| r.state),
-        Some(SessionState::Processing { .. })
-    );
-    if !processing {
-        return Err(StageError::Cancelled);
-    }
+    processing(&guard, session_id)?;
+    put_working(&guard, session_id)
+}
+
+/// Take the session for a first save and record its folder name, from the
+/// title it has now. The name is recorded before the claim, under the same
+/// lock, so a recorded claim always has its name.
+fn claim_named(
+    store: &SharedStore,
+    session_id: &str,
+    started: DateTime<FixedOffset>,
+) -> Result<String, StageError> {
+    let guard = lock(store);
+    let record = processing(&guard, session_id)?;
+    let title = record.title.map(|t| t.text);
+    let name = session_save::naming::folder_name(started, title.as_deref());
     guard.put_checkpoint(
+        session_id,
+        Stage::Save,
+        FOLDER_NAME,
+        &serde_json::to_string(&name)?,
+    )?;
+    put_working(&guard, session_id)?;
+    Ok(name)
+}
+
+/// The session's record, if it is still processing; a resume took it
+/// otherwise.
+fn processing(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {
+    match store.session(session_id)? {
+        Some(record) if matches!(record.state, SessionState::Processing { .. }) => Ok(record),
+        _ => Err(StageError::Cancelled),
+    }
+}
+
+fn put_working(store: &Store, session_id: &str) -> Result<(), StageError> {
+    store.put_checkpoint(
         session_id,
         Stage::Save,
         STATE,
@@ -355,10 +394,14 @@ fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     Ok(())
 }
 
-/// Nothing moved: the session may be resumed again.
+/// Nothing moved: the session may be resumed again, and the next claim
+/// records a name from the title it has then.
 fn release(store: &SharedStore, session_id: &str) {
-    if let Err(e) = lock(store).delete_checkpoint(session_id, Stage::Save, STATE) {
-        log::warn!("could not release the save claim on {session_id}: {e}");
+    let guard = lock(store);
+    for key in [STATE, FOLDER_NAME] {
+        if let Err(e) = guard.delete_checkpoint(session_id, Stage::Save, key) {
+            log::warn!("could not release the save claim on {session_id}: {e}");
+        }
     }
 }
 

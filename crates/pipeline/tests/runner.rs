@@ -1060,7 +1060,7 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
     assert_eq!(folder.parent(), Some(r.dest.as_path()));
     assert_eq!(
         folder.file_name().unwrap().to_string_lossy(),
-        session_save::naming::folder_name(common::at(0))
+        session_save::naming::folder_name(common::at(0), None)
     );
     assert!(!r.root.join("s").exists(), "the working copy is gone");
     let mut names: Vec<String> = std::fs::read_dir(&folder)
@@ -1332,7 +1332,7 @@ async fn a_taken_folder_name_gets_a_suffix() {
     let r = rig().await;
     std::fs::create_dir(
         r.dest
-            .join(session_save::naming::folder_name(common::at(0))),
+            .join(session_save::naming::folder_name(common::at(0), None)),
     )
     .unwrap();
     queue_session(
@@ -1346,7 +1346,10 @@ async fn a_taken_folder_name_gets_a_suffix() {
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
         saved_folder(&r, "s").file_name().unwrap().to_string_lossy(),
-        format!("{}-2", session_save::naming::folder_name(common::at(0)))
+        format!(
+            "{}-2",
+            session_save::naming::folder_name(common::at(0), None)
+        )
     );
 }
 
@@ -1402,7 +1405,7 @@ async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage()
         session_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
-        folder_name: &session_save::naming::folder_name(segments[0].wall_start),
+        folder_name: &session_save::naming::folder_name(segments[0].wall_start, None),
     };
     let staged = session_save::step(
         &session_save::SaveState::Working,
@@ -1457,7 +1460,7 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
         session_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
-        folder_name: &session_save::naming::folder_name(segments[0].wall_start),
+        folder_name: &session_save::naming::folder_name(segments[0].wall_start, None),
     };
     let staged = session_save::step(
         &session_save::SaveState::Working,
@@ -1491,6 +1494,204 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
     let home = saved_folder(&r, "s");
     assert!(home.join("audio/segment-01.opus").exists());
     assert!(!home.join(session_save::MARKER).exists());
+}
+
+// ------------------------------------------------------- folder names (U7)
+
+/// A filesystem whose first final rename fails: before the rename, or after
+/// it, as a process killed before it records `Saved` leaves it.
+struct FailsFinalRename {
+    after_the_rename: bool,
+    failed: AtomicBool,
+}
+
+impl session_save::Fs for FailsFinalRename {
+    fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        session_save::RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        if self.failed.swap(true, Ordering::SeqCst) {
+            return session_save::RealFs.rename_new(from, to);
+        }
+        if self.after_the_rename {
+            session_save::RealFs.rename_new(from, to)?;
+        }
+        Err(std::io::Error::other("the process stopped"))
+    }
+}
+
+fn set_title(store: &SharedStore, id: &str, title: &str) {
+    store
+        .lock()
+        .unwrap()
+        .set_title(id, title, session_core::TitleSource::User)
+        .unwrap();
+}
+
+/// Run a titled session up to the save, then run the save stage by hand
+/// with `fs`, which fails it at the final rename.
+async fn save_fails_at_the_final_rename(r: &Rig, after_the_rename: bool) {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    set_title(&r.store, "s", "First");
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    *r.script.destination.lock().unwrap() = Some(r.dest.clone());
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::Retry)
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let fs = FailsFinalRename {
+        after_the_rename,
+        failed: AtomicBool::new(false),
+    };
+    pipeline::save::run(
+        &r.store,
+        "s",
+        &r.root.join("s"),
+        &segments,
+        Some(&r.dest),
+        &fs,
+        &pipeline::Unattended,
+    )
+    .unwrap_err();
+    assert!(fs.failed.load(Ordering::SeqCst));
+    assert!(matches!(
+        checkpoint::get::<session_save::SaveState>(
+            &r.store,
+            "s",
+            Stage::Save,
+            pipeline::save::STATE
+        )
+        .unwrap(),
+        Some(session_save::SaveState::Staged { .. })
+    ));
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::ClaimLost)
+        .unwrap();
+}
+
+fn destination_entries(r: &Rig) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(&r.dest)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_titled_session_is_saved_under_its_title() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    set_title(&r.store, "s", "Budget: Q3 / review?");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        destination_entries(&r),
+        [session_save::naming::folder_name(
+            common::at(0),
+            Some("Budget Q3 review")
+        )]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_changed_between_two_save_runs_keeps_the_first_name() {
+    let r = rig().await;
+    save_fails_at_the_final_rename(&r, false).await;
+    set_title(&r.store, "s", "Second");
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let first = session_save::naming::folder_name(common::at(0), Some("First"));
+    assert_eq!(destination_entries(&r), [first.as_str()]);
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&first));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_final_rename_whose_record_was_lost_is_found_by_the_recorded_name() {
+    let r = rig().await;
+    save_fails_at_the_final_rename(&r, true).await;
+    // The rename happened: the folder has the first name, and a new title
+    // must not send the scan for the marker to another name.
+    let first = session_save::naming::folder_name(common::at(0), Some("First"));
+    assert!(r.dest.join(&first).join(session_save::MARKER).exists());
+    set_title(&r.store, "s", "Second");
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(destination_entries(&r), [first.as_str()]);
+    let home = saved_folder(&r, "s");
+    assert_eq!(home, r.dest.join(&first));
+    assert!(home.join("audio/segment-01.opus").exists());
+    assert!(!home.join(session_save::MARKER).exists());
+    assert!(!r.root.join("s").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_begun_with_no_recorded_name_finishes_under_the_no_title_name() {
+    // A save that began before names were recorded used the no-title name.
+    // Its final rename happened and its record was lost; the session has a
+    // title now.
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    *r.script.destination.lock().unwrap() = None;
+    r.runner.run_next().await.unwrap();
+    *r.script.destination.lock().unwrap() = Some(r.dest.clone());
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::Retry)
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let old = session_save::naming::folder_name(segments[0].wall_start, None);
+    let job = session_save::Job {
+        session_id: "s",
+        working: &r.root.join("s"),
+        destination: &r.dest,
+        folder_name: &old,
+    };
+    let staged = session_save::step(
+        &session_save::SaveState::Working,
+        &job,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    session_save::step(&staged, &job, &session_save::RealFs).unwrap();
+    checkpoint::put(&r.store, "s", Stage::Save, pipeline::save::STATE, &staged).unwrap();
+    r.store
+        .lock()
+        .unwrap()
+        .apply("s", &session_core::Event::ClaimLost)
+        .unwrap();
+    set_title(&r.store, "s", "Later title");
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(destination_entries(&r), [old.as_str()]);
+    assert_eq!(saved_folder(&r, "s"), r.dest.join(&old));
 }
 
 // ------------------------------------------------------------- progress (U12)
