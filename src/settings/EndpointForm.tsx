@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { commands, type CredentialStatus, type Settings } from "../bindings";
-import { type Guard, SummaryPrompts } from "./SummaryPrompts";
+import { SummaryPrompts } from "./SummaryPrompts";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, fieldClass } from "./ui";
 
 const isMac = navigator.userAgent.includes("Mac");
@@ -104,12 +104,9 @@ function Credential({ baseUrl }: { baseUrl: string }) {
 export function EndpointForm({
   settings,
   onSettings,
-  onGuard,
 }: {
   settings: Settings;
   onSettings: (s: Settings) => void;
-  /// Receives the question to ask before the pane changes, or null.
-  onGuard?: (guard: Guard | null) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [limitError, setLimitError] = useState<string | null>(null);
@@ -176,7 +173,7 @@ export function EndpointForm({
 
       {baseUrl && <Credential key={baseUrl} baseUrl={baseUrl} />}
 
-      <SummaryPrompts onSettings={onSettings} onGuard={onGuard} />
+      <SummaryPrompts onSettings={onSettings} />
 
       <Group
         header="Context"

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import type { Readiness, Settings, SummaryPrompt } from "../bindings";
-import { type CommandHandler, mockTauri } from "../test/tauri";
+import { type CommandHandler, type TauriMock, mockTauri } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
 import { SummaryPrompts } from "./SummaryPrompts";
 
@@ -93,6 +93,8 @@ function renderPrompts() {
 const row = (name: string) => screen.getByRole("radio", { name: new RegExp(`^${name}`) });
 const textArea = () => screen.getByRole("textbox", { name: "Prompt text" }) as HTMLTextAreaElement;
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
+const textCalls = (tauri: TauriMock) =>
+  tauri.calls.filter((c) => c.cmd === "set_summary_prompt_text").map((c) => c.args);
 
 async function selectCustom(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("radio", { name: /^Game recap/ }));
@@ -116,7 +118,7 @@ describe("SummaryPrompts", () => {
     expect(button("Use Game recap")).toBeTruthy();
   });
 
-  test("a built-in prompt shows read-only text and Duplicate, with no Delete or Save", async () => {
+  test("a built-in prompt shows read-only text and Duplicate, with no Delete or count", async () => {
     backend();
     renderPrompts();
     await waitFor(() => expect(textArea().value).toBe("Topic text"));
@@ -126,7 +128,7 @@ describe("SummaryPrompts", () => {
     expect(screen.getByText(/Built-in prompts can’t be changed/)).toBeTruthy();
     expect(button("Duplicate")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByText(/ \/ 4,000$/)).toBeNull();
   });
 
   test("New calls the create command and selects the new prompt", async () => {
@@ -151,26 +153,63 @@ describe("SummaryPrompts", () => {
     expect(tauri.calls.find((c) => c.cmd === "duplicate_summary_prompt")?.args).toEqual({ id: "topic-summary" });
   });
 
-  test("Save is disabled while the text is empty, and Save calls set text", async () => {
+  test("typing saves the text one second after the last change, in one call", async () => {
     const tauri = backend();
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
-    expect((button("Revert") as HTMLButtonElement).disabled).toBe(true);
-
-    fireEvent.change(textArea(), { target: { value: "   " } });
-    expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
-    expect((button("Revert") as HTMLButtonElement).disabled).toBe(false);
-
+    fireEvent.change(textArea(), { target: { value: "Short" } });
+    fireEvent.change(textArea(), { target: { value: "Short re" } });
     fireEvent.change(textArea(), { target: { value: "Short recap" } });
-    await user.click(button("Save"));
-    await waitFor(() => expect((button("Save") as HTMLButtonElement).disabled).toBe(true));
-    expect(tauri.calls.find((c) => c.cmd === "set_summary_prompt_text")?.args).toEqual({
-      id: "c1",
-      text: "Short recap",
-    });
+    await act(() => new Promise((r) => setTimeout(r, 500)));
+    expect(textCalls(tauri)).toEqual([]);
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1), { timeout: 3000 });
+    expect(textCalls(tauri)[0]).toEqual({ id: "c1", text: "Short recap" });
     expect(textArea().value).toBe("Short recap");
+  });
+
+  test("blur saves the text at once", async () => {
+    const tauri = backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Short recap" } });
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short recap" }]), { timeout: 500 });
+  });
+
+  test("selecting another prompt saves the text first and asks nothing", async () => {
+    const tauri = backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await user.click(row("Topic summary"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(textArea().value).toBe("Topic text"));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]), { timeout: 500 });
+
+    await user.click(row("Game recap"));
+    await waitFor(() => expect(textArea().value).toBe("Changed"));
+  });
+
+  test("empty text is not saved and the editor says why", async () => {
+    const tauri = backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    expect(screen.queryByText("A prompt can’t be empty.")).toBeNull();
+    fireEvent.change(textArea(), { target: { value: "   " } });
+    expect(screen.getByText("A prompt can’t be empty.")).toBeTruthy();
+    fireEvent.blur(textArea());
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(textCalls(tauri)).toEqual([]);
+    expect(textArea().value).toBe("   ");
+
+    // A change of prompt drops the text that is not valid.
+    await user.click(row("Topic summary"));
+    await user.click(row("Game recap"));
+    await waitFor(() => expect(textArea().value).toBe("Recap text"));
   });
 
   test("a save error shows inline and keeps the edit", async () => {
@@ -183,12 +222,53 @@ describe("SummaryPrompts", () => {
     const user = userEvent.setup();
     await selectCustom(user);
     fireEvent.change(textArea(), { target: { value: "Short recap" } });
-    await user.click(button("Save"));
+    fireEvent.blur(textArea());
     expect(await screen.findByText("The prompt text cannot be saved.")).toBeTruthy();
     expect(textArea().value).toBe("Short recap");
   });
 
-  test("text typed while Save runs stays in the editor and stays unsaved", async () => {
+  test("two saves apply in the order typed", async () => {
+    // The first save waits until the test calls `release`.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const done: string[] = [];
+    let text = "Recap text";
+    const tauri = backend({
+      set_summary_prompt_text: async (args) => {
+        if (done.length === 0) await held;
+        text = args.text as string;
+        done.push(text);
+        return { ...baseSettings, summary_prompts: [{ id: "c1", name: "Game recap", text }] };
+      },
+      summary_prompts: () => ({
+        prompts: [
+          { id: "topic-summary", name: "Topic summary", text: "Topic text", built_in: true },
+          { id: "play-by-play", name: "Play-by-play summary", text: "Play text", built_in: true },
+          { id: "c1", name: "Game recap", text, built_in: false },
+        ],
+        active: "topic-summary",
+        text_limit: 4000,
+      }),
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "First" } });
+    fireEvent.blur(textArea());
+    fireEvent.change(textArea(), { target: { value: "First, then second" } });
+    fireEvent.blur(textArea());
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    // The second save waits for the first.
+    expect(textCalls(tauri)).toHaveLength(1);
+
+    await act(async () => release());
+    await waitFor(() => expect(done).toEqual(["First", "First, then second"]));
+    expect(textCalls(tauri)[1]).toEqual({ id: "c1", text: "First, then second" });
+    await waitFor(() => expect(text).toBe("First, then second"));
+    expect(textArea().value).toBe("First, then second");
+  });
+
+  test("text typed while a save runs stays in the editor and the next save saves it", async () => {
     // The save command waits until the test calls `finish`.
     let finish: () => void = () => {};
     const saved = new Promise<void>((r) => (finish = r));
@@ -213,14 +293,16 @@ describe("SummaryPrompts", () => {
     const user = userEvent.setup();
     await selectCustom(user);
     fireEvent.change(textArea(), { target: { value: "Short recap" } });
-    await user.click(button("Save"));
+    fireEvent.blur(textArea());
     fireEvent.change(textArea(), { target: { value: "Short recap, longer" } });
     await act(async () => finish());
     await waitFor(() => expect(text).toBe("Short recap"));
     await act(() => new Promise((r) => setTimeout(r, 10)));
     expect(textArea().value).toBe("Short recap, longer");
-    expect((button("Save") as HTMLButtonElement).disabled).toBe(false);
-    expect((button("Revert") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(text).toBe("Short recap, longer"));
+    expect(textArea().value).toBe("Short recap, longer");
   });
 
   test("a list read error shows inline", async () => {
@@ -258,36 +340,6 @@ describe("SummaryPrompts", () => {
     await user.type(name, "1:1{Enter}");
     await waitFor(() => expect(row("1:1")).toBeTruthy());
     expect(tauri.calls.find((c) => c.cmd === "rename_summary_prompt")?.args).toEqual({ id: "c1", name: "1:1" });
-  });
-
-  test("Revert puts back the saved text", async () => {
-    backend();
-    renderPrompts();
-    const user = userEvent.setup();
-    await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
-    await user.click(button("Revert"));
-    expect(textArea().value).toBe("Recap text");
-  });
-
-  test("selecting another prompt with unsaved text asks first, and Cancel keeps the edit", async () => {
-    backend();
-    renderPrompts();
-    const user = userEvent.setup();
-    await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
-
-    await user.click(row("Topic summary"));
-    const dialog = await screen.findByRole("alertdialog");
-    expect(within(dialog).getByText("Discard your changes to “Game recap”?")).toBeTruthy();
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(row("Game recap").getAttribute("aria-checked")).toBe("true");
-    expect(textArea().value).toBe("Changed");
-
-    await user.click(row("Topic summary"));
-    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard" }));
-    await waitFor(() => expect(textArea().value).toBe("Topic text"));
   });
 
   test("rows select with Enter and Space from the keyboard", async () => {
@@ -348,119 +400,46 @@ describe("SummaryPrompts", () => {
     expect(await screen.findByText("The settings could not be saved.")).toBeTruthy();
   });
 
-  test("text of 4,001 characters shows the count in the error colour and disables Save", async () => {
-    backend();
+  test("text of 4,001 characters shows the count in the error colour and is not saved", async () => {
+    const tauri = backend();
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "a".repeat(4000) } });
-    expect(screen.getByText("4,000 / 4,000").className).not.toContain("text-negative");
-    expect((button("Save") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.change(textArea(), { target: { value: "a".repeat(4001) } });
     expect(screen.getByText("4,001 / 4,000").className).toContain("text-negative");
-    expect((button("Save") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.blur(textArea());
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(textCalls(tauri)).toEqual([]);
+    expect(textArea().value).toHaveLength(4001);
+
+    fireEvent.change(textArea(), { target: { value: "a".repeat(4000) } });
+    expect(screen.getByText("4,000 / 4,000").className).not.toContain("text-negative");
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
   });
 
   test("the count counts characters, not UTF-16 units", async () => {
-    backend();
+    const tauri = backend();
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
     fireEvent.change(textArea(), { target: { value: "😀".repeat(4000) } });
     expect(screen.getByText("4,000 / 4,000")).toBeTruthy();
-    expect((button("Save") as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  test("closing the Settings window with unsaved text asks first", async () => {
-    const tauri = backend({ "plugin:window|destroy": () => null });
-    renderPrompts();
-    const user = userEvent.setup();
-    await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
-    // The mock handles `plugin:event|listen` itself, so the call is not in
-    // `calls`. Let the listener register.
-    await act(() => new Promise((r) => setTimeout(r, 10)));
-
-    await tauri.emit("tauri://close-requested");
-    const dialog = await screen.findByRole("alertdialog");
-    expect(within(dialog).getByText("Discard your changes to “Game recap”?")).toBeTruthy();
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
-    expect(textArea().value).toBe("Changed");
-
-    await tauri.emit("tauri://close-requested");
-    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard" }));
-    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
   });
 });
 
-test("with no unsaved text the page does not hold the close", async () => {
-  const tauri = backend({ "plugin:window|destroy": () => null });
-  renderPrompts();
-  await waitFor(() => expect(textArea().value).toBe("Topic text"));
-  await act(() => new Promise((r) => setTimeout(r, 10)));
-  await tauri.emit("tauri://close-requested");
-  await act(() => new Promise((r) => setTimeout(r, 10)));
+test("a pane change in the Settings window saves the prompt text and asks nothing", async () => {
+  mockWindows("settings");
+  const tauri = backend({ get_settings: () => baseSettings, readiness: () => readiness, model_statuses: () => [] });
+  render(<SettingsWindow />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("tab", { name: "Summaries" }));
+  await selectCustom(user);
+  fireEvent.change(textArea(), { target: { value: "Changed" } });
+  await user.click(screen.getByRole("tab", { name: "Transcription" }));
   expect(screen.queryByRole("alertdialog")).toBeNull();
-  expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
-});
-
-describe("SettingsWindow with unsaved prompt text", () => {
-  async function openSummaries() {
-    mockWindows("settings");
-    backend({
-      get_settings: () => baseSettings,
-      readiness: () => readiness,
-      model_statuses: () => [],
-    });
-    render(<SettingsWindow />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Summaries" }));
-    await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
-    return user;
-  }
-
-  test("a pane change by click asks first", async () => {
-    const user = await openSummaries();
-    await user.click(screen.getByRole("tab", { name: "Transcription" }));
-    const dialog = await screen.findByRole("alertdialog");
-    expect(within(dialog).getByText("Discard your changes to “Game recap”?")).toBeTruthy();
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("tab", { name: "Summaries" }).getAttribute("aria-selected")).toBe("true");
-    expect(textArea().value).toBe("Changed");
-
-    await user.click(screen.getByRole("tab", { name: "Transcription" }));
-    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard" }));
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Transcription" }).getAttribute("aria-selected")).toBe("true"),
-    );
-  });
-
-  test("a pane change by arrow key asks first", async () => {
-    const user = await openSummaries();
-    screen.getByRole("tab", { name: "Summaries" }).focus();
-    await user.keyboard("{ArrowDown}");
-    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("tab", { name: "Summaries" }).getAttribute("aria-selected")).toBe("true");
-
-    screen.getByRole("tab", { name: "Summaries" }).focus();
-    await user.keyboard("{ArrowUp}");
-    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard" }));
-    await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Storage" }).getAttribute("aria-selected")).toBe("true"),
-    );
-  });
-
-  test("with no unsaved text a pane change does not ask", async () => {
-    mockWindows("settings");
-    backend({ get_settings: () => baseSettings, readiness: () => readiness, model_statuses: () => [] });
-    render(<SettingsWindow />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Summaries" }));
-    await waitFor(() => expect(textArea().value).toBe("Topic text"));
-    await user.click(screen.getByRole("tab", { name: "Transcription" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(screen.getByRole("tab", { name: "Transcription" }).getAttribute("aria-selected")).toBe("true");
-  });
+  expect(screen.getByRole("tab", { name: "Transcription" }).getAttribute("aria-selected")).toBe("true");
+  await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]), { timeout: 500 });
 });

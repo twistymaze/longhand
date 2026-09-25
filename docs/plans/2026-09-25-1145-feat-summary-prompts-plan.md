@@ -130,7 +130,7 @@ The current summary has one fixed shape: an overview, then "Key points" with a `
 - KTD8. **The prompt text counts toward each call's token budget.** `prompts::overhead()` and `fit_notes` measure the final-call system message with the snapshot's text. Merge grouping reserves that room in every merge layer, because the grouping does not know which layer is last. The 4,000-character limit (KTD7) bounds the reserve. A small context can still leave too little room: when the final call's fixed parts and the snapshot text take more than half of the prompt allowance, the stage fails at once with a plain error that says the summary prompt is too long for this model's context. The built-in texts must fit at the 2,048-token floor. Governs R5.
 - KTD9. **The recorded prompt name lives in `summary.md` frontmatter.** `SummaryMeta::Complete` gets `prompt_name: Option<String>` with `#[serde(default)]` and `skip_serializing_if`. Older files parse with no name (R11). A stub records no name. `SummaryView` carries the name to the Summary tab, and the footer shows it before the model and host. Governs R11.
 - KTD10. **The Summary tab renders nested bullets.** `src/session/markdown.ts` trims each line before it matches a bullet, so an indented bullet becomes a flat item today. The parser keeps the indent depth and builds nested lists. A wrapped continuation line is still joined to its item. Governs R8.
-- KTD11. **The Settings editor saves the prompt text with explicit Save and Revert buttons.** Other Settings fields commit on blur. A multi-line prompt edit is too large to lose, and too large to save on every blur. A change of prompt or pane, closing the Settings window, or quitting the app with unsaved text asks first. Clicking a row only selects it for the editor; a separate Use button on each row that is not active makes it the active prompt. Delete asks for confirmation. The UI term is "summary prompt", and the pane lists the prompts under "Prompts". Governs R3, R4.
+- KTD11. **The Settings editor saves the prompt text as the user types.** The save starts about one second after the last change, and at once when the text area loses focus or the prompt or pane changes. A pane change or a window close saves with no wait. Tauri cannot stop the app when it quits, so text that waits for a Save button is at risk, and macOS System Settings has no Save buttons. Saves for one prompt apply in the order typed. Empty text and text over 4,000 characters are not saved: the editor keeps the text and says why, and the last valid text stays saved. A change of prompt drops text that is not valid. There is no Save or Revert button and no question about unsaved text. Clicking a row only selects it for the editor; a separate Use button on each row that is not active makes it the active prompt. Delete asks for confirmation. The UI term is "summary prompt", and the pane lists the prompts under "Prompts". Governs R3, R4.
 
 ### High-Level Technical Design
 
@@ -267,22 +267,26 @@ flowchart TB
 - **Approach:**
   1. Invoke `apple-design` before building the pane.
   2. Add a "Prompts" group to the "Summaries" pane: one row for each prompt, a mark on the active one, a trailing Use button on the others, and New (KTD11).
-  3. Put an editor under the list for the selected prompt: a name field (`CommitField`), a text area with a character count, and Save and Revert. Past 4,000 characters, the count shows the error colour and Save is disabled.
+  3. Put an editor under the list for the selected prompt: a name field (`CommitField`), a text area with a character count, Duplicate and Delete. Past 4,000 characters, the count shows the error colour and the text is not saved. Empty text shows a line that says why and is not saved.
   4. A built-in shows its text read-only with Duplicate.
   5. Show a command error inline with `ErrorText`.
-  6. Guard unsaved text (KTD11). `SettingsWindow.tsx` asks the Summaries pane through a guard callback before any pane change, including the arrow keys and the Status pane's links, and before the window closes or the app quits. Confirm Delete.
+  6. Save the text as the user types (KTD11). One timer starts the save one second after the last change. Blur, a change of prompt, New and Duplicate start the save at once. The unmount of the pane (a pane change or a window close) and the `pagehide` and `beforeunload` events start it with no wait. Each save waits for the save before it. Delete stops the pending save of the prompt it deletes, and asks for confirmation.
 - **Patterns to follow:** `Group`, `Row` and `Button` from `ui.tsx`, the radiogroup in `Models.tsx`, and the confirmation in `DeleteSession.tsx`.
 - **Test scenarios:**
   - The pane lists "Topic summary" and "Play-by-play summary" first, and marks the active prompt.
-  - Selecting a built-in shows read-only text and Duplicate, with no Delete or Save.
+  - Selecting a built-in shows read-only text and Duplicate, with no Delete or count.
   - New calls the create command, and selects the new prompt.
-  - Save is disabled while the text is empty. Save calls set text, and a command error shows inline.
-  - Selecting another prompt with unsaved text asks first. Cancel keeps the edit.
-  - A pane change by click or arrow key with unsaved text asks first.
-  - Closing the Settings window with unsaved text asks first.
+  - Typing saves the text one second after the last change, with one set text call that has the final text.
+  - Blur saves the text at once.
+  - Selecting another prompt saves the text first, and asks nothing.
+  - Empty text is not saved, and the editor says why.
+  - A command error shows inline and the editor keeps the text.
+  - Text typed while a save runs stays in the editor, and the next save saves it.
+  - Two saves apply in the order typed.
+  - A pane change saves the text, and asks nothing.
   - Delete asks for confirmation, then calls delete.
   - Clicking a row that is not active only selects it. Its Use button calls the activate command, and the mark moves.
-  - Text of 4,001 characters shows the count in the error colour and disables Save.
+  - Text of 4,001 characters shows the count in the error colour and is not saved.
 - **Verification:** `bun run typecheck` and `bun run test` pass. A check in `bun tauri dev` shows the pane in light and dark mode.
 
 ### U5. Nested bullets and the prompt name in the Summary tab

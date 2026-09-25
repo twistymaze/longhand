@@ -1,16 +1,15 @@
 // The summary prompts in the Summaries pane (R1–R4, KTD11): the list of
 // prompts with the prompt in use, and an editor for the selected prompt
-// under it. Each change is one backend command (KTD7). The prompt text has
-// Save and Revert buttons, and unsaved text asks before it is lost.
+// under it. Each change is one backend command (KTD7). The editor saves the
+// prompt text as the user types: one second after the last change, and at
+// once on blur or a change of prompt or pane.
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } from "./ui";
 
-/// Resolves to true when the pane can change: no text is unsaved, or the
-/// user discards it.
-export type Guard = () => Promise<boolean>;
+/// The time from the last change to the save, in milliseconds.
+const saveDelay = 1000;
 
 const format = (n: number) => n.toLocaleString("en-US");
 
@@ -74,22 +73,24 @@ function PromptRow({
   );
 }
 
-export function SummaryPrompts({
-  onSettings,
-  onGuard,
-}: {
-  onSettings: (s: Settings) => void;
-  /// Receives the question to ask before the pane changes, or null when no
-  /// text is unsaved.
-  onGuard?: (guard: Guard | null) => void;
-}) {
+type Edit = { id: string; text: string };
+
+export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => void }) {
   const [list, setList] = useState<SummaryPromptList | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The unsaved text of one prompt, or null when the editor shows the saved text.
-  const [edit, setEdit] = useState<{ id: string; text: string } | null>(null);
+  const [edit, setEdit] = useState<Edit | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   const { ask, dialog } = useConfirm();
+  // The valid text that waits for the timer, the timer, and the last save
+  // that started. Each save waits for the save before it, so the saves apply
+  // in the order typed.
+  const pending = useRef<Edit | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saving = useRef<Promise<void>>(Promise.resolve());
+  const onSettingsRef = useRef(onSettings);
+  onSettingsRef.current = onSettings;
 
   const load = useCallback(async () => {
     try {
@@ -102,62 +103,61 @@ export function SummaryPrompts({
     void load();
   }, [load]);
 
+  const cancel = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    pending.current = null;
+  }, []);
+
+  // Starts the save of the pending text at once. Resolves when all saves
+  // that started are complete.
+  const flush = useCallback(() => {
+    const sent = pending.current;
+    cancel();
+    if (sent) {
+      saving.current = saving.current
+        .then(async () => {
+          const result = await commands.setSummaryPromptText(sent.id, sent.text);
+          if (result.status === "error") {
+            setEditorError(result.error);
+            return;
+          }
+          setEditorError(null);
+          onSettingsRef.current(result.data);
+          await load();
+          // Clear the edit only if it still holds the sent text, so that text
+          // typed during the save stays for the next save.
+          setEdit((e) => (e && e.id === sent.id && e.text === sent.text ? null : e));
+        })
+        .catch((e: unknown) => {
+          // A failed save must not stop the saves after it.
+          console.error("The prompt text could not be saved:", e);
+          setEditorError("The prompt text could not be saved.");
+        });
+    }
+    return saving.current;
+  }, [cancel, load]);
+
+  // A pane change or a window close unmounts the pane. The save then runs
+  // with no wait. The page events also start it when the page closes.
+  useEffect(() => {
+    const onHide = () => void flush();
+    window.addEventListener("pagehide", onHide);
+    window.addEventListener("beforeunload", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      window.removeEventListener("beforeunload", onHide);
+      void flush();
+    };
+  }, [flush]);
+
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
   const draft = selected && edit?.id === selected.id ? edit.text : (selected?.text ?? "");
-  const dirty = !!selected && !selected.built_in && draft !== selected.text;
   const count = [...draft].length;
   const limit = list?.text_limit ?? 0;
-  const canSave = dirty && draft.trim() !== "" && count <= limit;
   const name = selected?.name ?? "";
-
-  const guard = useCallback<Guard>(
-    async () =>
-      !dirty ||
-      (await ask({
-        title: `Discard your changes to “${name}”?`,
-        message: "The text you changed isn’t saved.",
-        action: "Discard",
-      })),
-    [dirty, name, ask],
-  );
-
-  useEffect(() => {
-    if (!onGuard) return;
-    onGuard(dirty ? guard : null);
-    return () => onGuard(null);
-  }, [onGuard, dirty, guard]);
-
-  // The close-requested listener exists only while text is unsaved: with a
-  // listener, the window closes only when the page destroys it.
-  useEffect(() => {
-    if (!dirty) return;
-    const win = getCurrentWindow();
-    let stop: (() => void) | undefined;
-    let gone = false;
-    void win
-      .onCloseRequested(async (event) => {
-        event.preventDefault();
-        if (!(await guard())) return;
-        // With no unsaved text the listener goes, so a second close works
-        // even if the destroy below is refused.
-        setEdit(null);
-        try {
-          await win.destroy();
-        } catch (e) {
-          console.error("The Settings window could not close:", e);
-        }
-      })
-      .then((f) => {
-        if (gone) f();
-        else stop = f;
-      });
-    return () => {
-      gone = true;
-      stop?.();
-    };
-  }, [dirty, guard]);
 
   const run = async (
     op: () => Promise<Result<Settings, string>>,
@@ -187,13 +187,16 @@ export function SummaryPrompts({
     if (newest) show(newest.id);
   };
 
-  const select = async (id: string) => {
-    if (id === selected?.id || !(await guard())) return;
+  // Text that is not valid is not saved, and a change of prompt drops it.
+  const select = (id: string) => {
+    if (id === selected?.id) return;
+    void flush();
     show(id);
   };
 
   const create = async () => {
-    if (await guard()) await run(() => commands.createSummaryPrompt(), setListError, showNewest);
+    await flush();
+    await run(() => commands.createSummaryPrompt(), setListError, showNewest);
   };
 
   if (!list || !selected) {
@@ -205,22 +208,26 @@ export function SummaryPrompts({
   }
 
   const id = selected.id;
+  const empty = !selected.built_in && draft.trim() === "";
+  // The copy gets the text that the editor shows.
   const duplicate = async () => {
-    if (await guard()) await run(() => commands.duplicateSummaryPrompt(id), setEditorError, showNewest);
+    await flush();
+    await run(() => commands.duplicateSummaryPrompt(id), setEditorError, showNewest);
   };
   const remove = async () => {
     const yes = await ask({ title: `Delete “${name}”?`, message: "This can’t be undone.", action: "Delete" });
-    if (yes) await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => show(null));
+    if (!yes) return;
+    if (pending.current?.id === id) cancel();
+    await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => show(null));
   };
-  // The text stays editable while the save runs. Clear the edit only if it
-  // still holds the saved text, so that text typed after Save stays unsaved.
-  const save = () => {
-    const sent = draft;
-    return run(
-      () => commands.setSummaryPromptText(id, sent),
-      setEditorError,
-      () => setEdit((e) => (e && e.id === id && e.text === sent ? null : e)),
-    );
+  // The text stays editable while a save runs. Only valid text waits for
+  // the timer; the last valid text stays saved.
+  const change = (text: string) => {
+    setEdit({ id, text });
+    cancel();
+    if (text.trim() === "" || [...text].length > limit) return;
+    pending.current = { id, text };
+    timer.current = setTimeout(() => void flush(), saveDelay);
   };
 
   return (
@@ -236,7 +243,7 @@ export function SummaryPrompts({
               prompt={p}
               selected={p.id === id}
               active={p.id === list.active}
-              onSelect={() => void select(p.id)}
+              onSelect={() => select(p.id)}
               onUse={() => void run(() => commands.activateSummaryPrompt(p.id), setListError)}
             />
           ))}
@@ -266,7 +273,8 @@ export function SummaryPrompts({
               value={draft}
               readOnly={selected.built_in}
               rows={14}
-              onChange={(e) => setEdit({ id, text: e.target.value })}
+              onChange={(e) => change(e.target.value)}
+              onBlur={() => void flush()}
               className={`${fieldClass} block w-full resize-y py-1.5 leading-[1.45] read-only:text-label-secondary`}
             />
           </div>
@@ -289,17 +297,11 @@ export function SummaryPrompts({
                 </span>
                 <Button onClick={() => void duplicate()}>Duplicate</Button>
                 <Button onClick={() => void remove()}>Delete</Button>
-                <span aria-hidden className="w-2" />
-                <Button disabled={!dirty} onClick={() => setEdit(null)}>
-                  Revert
-                </Button>
-                <Button prominent disabled={!canSave} onClick={() => void save()}>
-                  Save
-                </Button>
               </>
             )}
           </div>
         </div>
+        {empty && <ErrorText>A prompt can’t be empty.</ErrorText>}
         {editorError && <ErrorText>{editorError}</ErrorText>}
       </Group>
       {dialog}
