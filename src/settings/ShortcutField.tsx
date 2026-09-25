@@ -110,7 +110,7 @@ export function ShortcutField({
       <button
         type="button"
         aria-label={status.chord ? `${label}: ${formatChord(status.chord, isMac)}. Change` : `Set ${label}`}
-        className={`min-w-24 rounded-md border px-2.5 py-[3px] text-center font-medium tracking-[0.04em] select-none outline-offset-0 focus-visible:outline-3 focus-visible:outline-accent/50 ${
+        className={`min-w-28 rounded-md border px-2.5 py-[3px] text-center font-medium tracking-[0.04em] select-none outline-offset-0 focus-visible:outline-3 focus-visible:outline-accent/50 ${
           listening
             ? "border-accent bg-control text-label-secondary outline-3 outline-accent/50"
             : "border-control-border bg-control text-label active:bg-fill-pressed"
