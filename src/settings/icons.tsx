@@ -102,6 +102,13 @@ export const TranscriptIcon = ({ className }: IconProps) => (
   </Icon>
 );
 
+/// A check mark: the selected item in a list.
+export const CheckIcon = ({ className }: IconProps) => (
+  <Icon className={className}>
+    <path d="m3.25 8.5 3 3 6.5-7" strokeWidth={1.8} />
+  </Icon>
+);
+
 /// A seal with a check mark: licences.
 export const BadgeIcon = ({ className }: IconProps) => (
   <Icon className={className}>

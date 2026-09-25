@@ -2,7 +2,7 @@
 // title and a description on the left and the control on the right, and
 // footnotes under a group.
 
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode, Ref } from "react";
 
 export function Pane({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -60,18 +60,24 @@ export function Row({
 
 type ButtonProps = {
   children: ReactNode;
-  onClick?: () => void;
+  onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   prominent?: boolean;
+  /// A red button, for the action that deletes.
+  destructive?: boolean;
+  ref?: Ref<HTMLButtonElement>;
 };
 
 // Pressed state is instant: feedback belongs to pointer-down, not release.
-export function Button({ children, onClick, disabled, prominent }: ButtonProps) {
-  const tone = prominent
-    ? "bg-accent text-white shadow-[0_1px_1.5px_rgb(0_0_0/0.14)] active:bg-accent-pressed"
-    : "bg-fill text-label shadow-[0_0_0_0.5px_var(--separator)] active:bg-fill-pressed";
+export function Button({ children, onClick, disabled, prominent, destructive, ref }: ButtonProps) {
+  const tone = destructive
+    ? "bg-negative text-white shadow-[0_1px_1.5px_rgb(0_0_0/0.14)] active:opacity-80"
+    : prominent
+      ? "bg-accent text-white shadow-[0_1px_1.5px_rgb(0_0_0/0.14)] active:bg-accent-pressed"
+      : "bg-fill text-label shadow-[0_0_0_0.5px_var(--separator)] active:bg-fill-pressed";
   return (
     <button
+      ref={ref}
       type="button"
       className={`rounded-[7px] px-3 py-[3px] font-medium whitespace-nowrap select-none ${tone} outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
       onClick={onClick}
@@ -126,6 +132,55 @@ export function ProgressBar({ fraction }: { fraction: number }) {
     >
       <div className="progress-fill h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
     </div>
+  );
+}
+
+// An on/off switch after the macOS switch. The knob moves to its new side
+// with no overshoot, and without motion when the user asks for reduced
+// motion.
+export function Switch({
+  label,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors duration-150 select-none ${
+        checked ? "bg-accent" : "bg-fill-pressed"
+      } outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
+    >
+      <span
+        aria-hidden
+        className={`absolute top-[2px] left-[2px] size-[14px] rounded-full bg-white shadow-[0_0.5px_1.5px_rgb(0_0_0/0.3)] transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
+          checked ? "translate-x-[14px]" : ""
+        }`}
+      />
+    </button>
+  );
+}
+
+/// A small label beside a row title, for example "Recommended".
+export function Tag({ children, accent }: { children: ReactNode; accent?: boolean }) {
+  return (
+    <span
+      className={`rounded-[4px] px-[5px] py-px text-[0.72rem] leading-[1.3] font-medium whitespace-nowrap ${
+        accent ? "bg-accent/12 text-accent" : "bg-fill text-label-secondary"
+      }`}
+    >
+      {children}
+    </span>
   );
 }
 

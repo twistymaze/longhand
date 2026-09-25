@@ -1,4 +1,8 @@
-import { useEffect, useState } from "react";
+// The Transcription pane: the recognition model picker (R4, R5, R6), the
+// Live transcript switch (R18), one row for the speaker-detection weights
+// (R7) and the default number of speakers.
+
+import { type MouseEvent, useEffect, useRef, useState } from "react";
 import {
   commands,
   type DownloadUpdate,
@@ -6,8 +10,23 @@ import {
   type ModelStatus,
   type Settings,
   type SpeakerCountSetting,
+  type SpeakerModelsStatus,
 } from "../bindings";
-import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, fieldClass, formatBytes } from "./ui";
+import { sentence } from "../processing/describe";
+import { CheckIcon } from "./icons";
+import {
+  Button,
+  ErrorText,
+  Group,
+  Pane,
+  ProgressBar,
+  Row,
+  Status,
+  Switch,
+  Tag,
+  fieldClass,
+  formatBytes,
+} from "./ui";
 
 export const roleLabel: Record<ModelRole, string> = {
   recognition: "Speech recognition",
@@ -15,53 +34,244 @@ export const roleLabel: Record<ModelRole, string> = {
   embedding: "Speaker embedding",
 };
 
-export type Actions = { download: (ids: string[]) => void; cancel: () => void };
+export type Actions = {
+  download: (ids: string[]) => void;
+  cancel: () => void;
+  /// Pick a recognition model. Resolves to why the pick failed, or null.
+  select: (id: string) => Promise<string | null>;
+  /// Read the model statuses again.
+  refresh: () => Promise<void>;
+};
 
-function ModelRow({
+const FAILED = "Couldn't download. Try again.";
+
+const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+
+/// "English", "English and Chinese", or "28 languages".
+export function describeLanguages(codes: string[]): string {
+  if (codes.length === 0) return "";
+  if (codes.length > 2) return `${codes.length} languages`;
+  return codes.map((c) => languageNames.of(c) ?? c).join(" and ");
+}
+
+/// A download in progress for one model, from its live events or its state.
+function progressOf(model: ModelStatus, live: DownloadUpdate | undefined) {
+  const active = live?.kind === "progress" || live?.kind === "verifying";
+  const downloading = active || model.state.state === "downloading";
+  const downloaded =
+    live?.kind === "progress"
+      ? live.downloaded
+      : model.state.state === "present"
+        ? model.size_bytes
+        : model.state.state === "absent"
+          ? model.state.partial_bytes
+          : 0;
+  const total = live?.kind === "progress" ? live.total : model.size_bytes;
+  const partial = model.state.state === "absent" && model.state.partial_bytes > 0;
+  return { downloading, checking: live?.kind === "verifying", downloaded, total, partial };
+}
+
+function Checking() {
+  return <span className="text-label-secondary">Checking…</span>;
+}
+
+function ModelOption({
   model,
   live,
+  selected,
+  pending,
   actions,
 }: {
   model: ModelStatus;
   live: DownloadUpdate | undefined;
+  selected: boolean;
+  pending: boolean;
   actions: Actions;
 }) {
-  const downloading = model.state.state === "downloading";
-  const partial = model.state.state === "absent" ? model.state.partial_bytes : 0;
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const cancelDelete = useRef<HTMLButtonElement>(null);
+  const { downloading, checking, downloaded, total, partial } = progressOf(model, live);
+  const present = model.state.state === "present";
+  const failed = live?.kind === "failed" && !downloading;
 
-  let trailing;
-  if (model.state.state === "present") {
-    trailing = <Status tone="positive">Downloaded</Status>;
-  } else if (downloading) {
-    const progress = live?.kind === "progress" ? live : null;
+  useEffect(() => {
+    if (confirming) cancelDelete.current?.focus();
+  }, [confirming]);
+
+  const pick = async () => {
+    setError(null);
+    setConfirming(false);
+    setError(await actions.select(model.id));
+  };
+
+  const remove = async () => {
+    const result = await commands.deleteModel(model.id);
+    setConfirming(false);
+    if (result.status === "error") setError(sentence(result.error));
+    else {
+      setError(null);
+      await actions.refresh();
+    }
+  };
+
+  // A click on a control in the row does not also pick the model.
+  const only = (f: () => void) => (e: MouseEvent) => {
+    e.stopPropagation();
+    f();
+  };
+
+  let trailing = null;
+  if (downloading) {
     trailing = (
       <>
-        {live?.kind === "verifying" ? (
-          <span className="text-label-secondary">Verifying…</span>
-        ) : (
-          <ProgressBar fraction={progress ? progress.downloaded / progress.total : partial / model.size_bytes} />
-        )}
-        <Button onClick={actions.cancel}>Cancel</Button>
+        {checking ? <Checking /> : <ProgressBar fraction={downloaded / total} />}
+        <Button onClick={only(actions.cancel)}>Cancel</Button>
       </>
     );
-  } else {
+  } else if (confirming) {
     trailing = (
-      <Button onClick={() => actions.download([model.id])}>
-        {partial > 0 ? "Resume" : "Download"}
+      <>
+        <Button ref={cancelDelete} onClick={only(() => setConfirming(false))}>
+          Cancel
+        </Button>
+        <Button destructive onClick={only(() => void remove())}>
+          Delete
+        </Button>
+      </>
+    );
+  } else if (present && !selected) {
+    trailing = <Button onClick={only(() => setConfirming(true))}>Delete…</Button>;
+  } else if (!present && selected) {
+    trailing = (
+      <Button prominent onClick={only(() => void pick())}>
+        {partial ? "Resume" : "Download"}
       </Button>
     );
   }
 
-  const detail = [roleLabel[model.role], formatBytes(model.size_bytes)];
-  if (!downloading && partial > 0) detail.push(`${formatBytes(partial)} so far`);
+  const meta = [describeLanguages(model.languages), formatBytes(model.size_bytes)].filter(Boolean);
+  if (present) meta.push("Downloaded");
+  let note: string | null = null;
+  if (confirming) note = `Delete this model to free ${formatBytes(model.size_bytes)}? You can download it again later.`;
+  else if (downloading && pending) note = "Longhand switches to this model when the download is done.";
 
   return (
-    <>
-      <Row label={model.name} detail={detail.join(" · ")}>
+    <div
+      data-model={model.id}
+      // While Delete asks, a click on the row only closes the question.
+      onClick={() => (confirming ? setConfirming(false) : void pick())}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && confirming) setConfirming(false);
+      }}
+      className="settings-row flex cursor-default items-stretch pl-2 hover:bg-row-hover active:bg-fill"
+    >
+      {/* The check mark is on the line of the model name. */}
+      <span aria-hidden className="flex w-6 shrink-0 justify-center pt-[13px] text-accent">
+        {selected && <CheckIcon className="size-[14px]" />}
+      </span>
+      <div className="flex min-h-[3.25rem] min-w-0 flex-1 items-center gap-4 py-2.5 pr-4 pl-1">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={selected}
+          className="min-w-0 flex-1 text-left outline-offset-2 focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+            <span className="font-medium">{model.name}</span>
+            {model.streaming && <Tag accent>Live</Tag>}
+            {model.recommended && <Tag>Recommended</Tag>}
+          </span>
+          <span className="mt-0.5 block text-[0.85rem] leading-[1.4] text-label-secondary">
+            {meta.join(" · ")}
+          </span>
+          {note && <span className="mt-0.5 block text-[0.85rem] leading-[1.4] text-label-secondary">{note}</span>}
+          {(failed || error) && (
+            <span className="mt-0.5 block text-[0.85rem] leading-[1.4] text-negative">{error ?? FAILED}</span>
+          )}
+        </button>
+        {trailing && <div className="flex shrink-0 items-center gap-2">{trailing}</div>}
+      </div>
+    </div>
+  );
+}
+
+/// The speaker-detection weights as one row (R7). The row never names the
+/// individual weights.
+function OtherModels({
+  speakers,
+  models,
+  live,
+  actions,
+}: {
+  speakers: SpeakerModelsStatus;
+  models: ModelStatus[];
+  live: Record<string, DownloadUpdate>;
+  actions: Actions;
+}) {
+  const weights = models.filter((m) => speakers.ids.includes(m.id));
+  const parts = weights.map((m) => progressOf(m, live[m.id]));
+  const downloading = speakers.state.state === "downloading" || parts.some((p) => p.downloading);
+  // One progress for both weights: a present weight counts in full.
+  const downloaded = parts.reduce((sum, p) => sum + p.downloaded, 0);
+  const total = parts.reduce((sum, p) => sum + p.total, 0) || speakers.size_bytes;
+  const checking = parts.some((p) => p.checking) && !weights.some((m) => live[m.id]?.kind === "progress");
+  const failed = !downloading && weights.some((m) => live[m.id]?.kind === "failed");
+  const present = speakers.state.state === "present";
+  const partial = parts.some((p) => p.partial);
+
+  let trailing;
+  if (present) trailing = <Status tone="positive">Downloaded</Status>;
+  else if (downloading)
+    trailing = (
+      <>
+        {checking ? <Checking /> : <ProgressBar fraction={downloaded / total} />}
+        <Button onClick={actions.cancel}>Cancel</Button>
+      </>
+    );
+  else
+    trailing = (
+      <Button prominent onClick={() => actions.download(speakers.ids)}>
+        {partial ? "Resume" : "Download"}
+      </Button>
+    );
+
+  const detail = ["Tells the speakers apart", formatBytes(speakers.size_bytes)];
+  if (!present && !downloading && partial) detail.push(`${formatBytes(downloaded)} so far`);
+
+  return (
+    <Group
+      footer={
+        present
+          ? "Transcription and speaker detection run on this computer. Your audio never leaves it."
+          : "Recording works without these models. Notes wait to be processed until they are downloaded."
+      }
+    >
+      <Row label="Other required models" detail={detail.join(" · ")}>
         {trailing}
       </Row>
-      {live?.kind === "failed" && !downloading && <ErrorText>{live.message}</ErrorText>}
-    </>
+      {failed && <ErrorText>{FAILED}</ErrorText>}
+    </Group>
+  );
+}
+
+function LiveTranscript({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const change = async (enabled: boolean) => {
+    const result = await commands.setLiveTranscript(enabled);
+    if (result.status === "error") setError(sentence(result.error));
+    else {
+      setError(null);
+      onSettings(result.data);
+    }
+  };
+  return (
+    <Group footer="When this is off, the transcript is made after you stop recording. This uses less power.">
+      <Row label="Live transcript" detail="Show the transcript while you record">
+        <Switch label="Live transcript" checked={settings.live_transcript} onChange={(v) => void change(v)} />
+      </Row>
+      {error && <ErrorText>{error}</ErrorText>}
+    </Group>
   );
 }
 
@@ -159,42 +369,45 @@ function SpeakerCount({ settings, onSettings }: { settings: Settings; onSettings
 
 export function Models({
   models,
+  speakers,
   live,
   actions,
   settings,
   onSettings,
 }: {
   models: ModelStatus[];
+  speakers: SpeakerModelsStatus | null;
   live: Record<string, DownloadUpdate>;
   actions: Actions;
   settings: Settings;
   onSettings: (s: Settings) => void;
 }) {
-  const required = models.filter((m) => m.required);
-  const missing = required.filter((m) => m.state.state === "absent");
-  const remaining = missing.reduce((sum, m) => sum + m.size_bytes, 0);
+  const recognition = models.filter((m) => m.role === "recognition");
+  const selected = recognition.find((m) => m.id === settings.asr_model);
 
   return (
     <Pane title="Transcription">
       <Group
-        header="Models"
-        footer={
-          missing.length > 0
-            ? `Recognition and speaker detection run on this machine, so these weights are downloaded once from their publishers (${formatBytes(remaining)}). Recording works without them; processing waits until they are here.`
-            : "Recognition and speaker detection run entirely on this machine. Your audio never leaves it."
-        }
+        header="Model"
+        footer="When you pick a model that isn't downloaded, it downloads first. Longhand keeps the current model until the new one is ready. Models marked Live show the transcript while you record."
       >
-        {required.map((m) => (
-          <ModelRow key={m.id} model={m} live={live[m.id]} actions={actions} />
-        ))}
-        {missing.length > 1 && (
-          <Row label={`${missing.length} models to download`}>
-            <Button prominent onClick={() => actions.download(missing.map((m) => m.id))}>
-              Download All
-            </Button>
-          </Row>
-        )}
+        <div role="radiogroup" aria-label="Recognition model">
+          {recognition.map((m) => (
+            <ModelOption
+              key={m.id}
+              model={m}
+              live={live[m.id]}
+              selected={m.id === settings.asr_model}
+              pending={m.id === settings.pending_asr_model}
+              actions={actions}
+            />
+          ))}
+        </div>
       </Group>
+
+      {selected?.streaming && <LiveTranscript settings={settings} onSettings={onSettings} />}
+
+      {speakers && <OtherModels speakers={speakers} models={models} live={live} actions={actions} />}
 
       <SpeakerCount settings={settings} onSettings={onSettings} />
     </Pane>

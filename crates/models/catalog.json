@@ -216,7 +216,7 @@
     {
       "id": "whisper-large-v3-turbo-q5km",
       "kind": "asr",
-      "name": "Whisper Large v3 Turbo (Q5_K_M)",
+      "name": "Whisper Large v3 Turbo",
       "description": "100 languages, segment-level timestamps, not streaming.",
       "streaming": false,
       "timestamps": "segment",
