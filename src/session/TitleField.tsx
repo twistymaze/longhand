@@ -85,7 +85,7 @@ export const TitleField = forwardRef<
           e.currentTarget.blur();
         }
       }}
-      className="-mx-1.5 w-[calc(100%+0.75rem)] min-w-0 truncate rounded-md bg-transparent px-1.5 py-0.5 text-[1.5rem] leading-tight font-semibold tracking-[-0.015em] text-label placeholder:text-label-secondary hover:bg-fill focus:bg-control focus:outline-3 focus:outline-accent/50"
+      className="-mx-1.5 w-[calc(100%+0.75rem)] min-w-0 truncate rounded-md bg-transparent px-1.5 py-0.5 text-[1.65rem] leading-[1.2] font-bold tracking-[-0.022em] text-label placeholder:text-label hover:bg-fill focus:bg-control focus:outline-3 focus:outline-accent/50"
     />
   );
 });

@@ -78,7 +78,7 @@ describe("App", () => {
     status.current = { ...idle, session_id: "rec", state: "capturing", recording: true };
     entries.current = [recordingEntry];
     await act(() => tauri.emit("recording-changed", { session_id: "rec" }));
-    const back = await screen.findByRole("button", { name: "← Back" });
+    const back = await screen.findByRole("button", { name: "Back" });
 
     await userEvent.setup().click(back);
     expect(screen.getByRole("button", { name: /Recording/ })).toBeTruthy();
@@ -92,9 +92,9 @@ describe("App", () => {
     const tauri = mockApp(status, entries);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Sessions" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "← Back" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     await act(() => tauri.emit("show-session", { session_id: "rec" }));
-    expect(await screen.findByRole("button", { name: "← Back" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
   });
 
   // A page that opens in place of another starts again, so an edit on the

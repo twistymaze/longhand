@@ -33,7 +33,7 @@ describe("NotesTab", () => {
     });
     render(<NotesTab sessionId="s" autoFocus={false} />);
     expect(await screen.findByText("the notes file cannot be read")).toBeTruthy();
-    expect(screen.queryByRole("textbox", { name: "My notes" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "My Notes" })).toBeNull();
   });
 
   test("an error that saves the notes shows after typing", async () => {
@@ -44,7 +44,7 @@ describe("NotesTab", () => {
       },
     });
     render(<NotesTab sessionId="s" autoFocus={false} />);
-    const box = await screen.findByRole("textbox", { name: "My notes" });
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "!");
     expect(await screen.findByText("the disk is full")).toBeTruthy();
   });
@@ -57,7 +57,7 @@ describe("NotesTab", () => {
       set_session_notes: () => (n++ === 0 ? first.promise : null),
     });
     render(<NotesTab sessionId="s" autoFocus={false} />);
-    const box = await screen.findByRole("textbox", { name: "My notes" });
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await typeAndSend(box, "2");
     await typeAndSend(box, "3");
@@ -80,7 +80,7 @@ describe("NotesTab", () => {
       set_session_notes: () => (n++ === 0 ? first.promise : null),
     });
     const view = render(<NotesTab sessionId="a" autoFocus={false} />);
-    const box = await screen.findByRole("textbox", { name: "My notes" });
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await userEvent.setup().type(box, "2");
     // The editor sends its pending document when it closes.

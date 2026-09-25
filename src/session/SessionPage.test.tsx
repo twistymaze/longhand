@@ -135,13 +135,100 @@ function renderPage({
 const tab = (name: string) => screen.getByRole("tab", { name });
 
 describe("SessionPage", () => {
-  test("a page opened for a recording shows My notes with the cursor in the editor", async () => {
+  test("a page opened for a recording shows My Notes with the cursor in the editor", async () => {
     const e = entry("rec", { state: "capturing", duration_ms: 0, found_speakers: null });
     mockPage(e);
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
-    expect(tab("My notes").getAttribute("aria-selected")).toBe("true");
-    const editor = await screen.findByRole("textbox", { name: "My notes" });
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
     expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(true);
+  });
+
+  test("the tabs follow the order things happen: My Notes, Transcript, Summary", () => {
+    const e = entry("s");
+    mockPage(e);
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["My Notes", "Transcript", "Summary"]);
+  });
+
+  test("Stop moves the page to Summary, which shows the processing", async () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+    view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing", stage: "transcribe" }]));
+    expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("while recording, the Transcript tab shows bars that follow the input level", () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    const scales = () =>
+      [...tab("Transcript").querySelectorAll<HTMLElement>("[data-bar]")].map((b) =>
+        Number(b.style.transform.match(/scaleY\(([\d.]+)\)/)?.[1]),
+      );
+    const view = renderPage({
+      id: "rec",
+      capture: recordingCapture("rec", { levels: [0, 0.001, 0.1, 1] }),
+      sessions: sessionsOf([e]),
+    });
+    const loud = scales();
+    expect(loud).toHaveLength(4);
+    expect(loud[3]).toBe(1);
+    expect(loud[0]).toBeLessThan(loud[2]);
+    expect(loud[2]).toBeLessThan(loud[3]);
+
+    // Silence: the bars are flat, all at the smallest height.
+    view.rerenderWith(recordingCapture("rec", { levels: [0, 0, 0, 0] }), sessionsOf([e]));
+    const quiet = scales();
+    expect(new Set(quiet).size).toBe(1);
+    expect(quiet[0]).toBe(loud[0]);
+  });
+
+  test("with reduced motion, the bars hold still and show only whether sound arrives", () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    const original = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ ...original(q), matches: q.includes("reduced-motion") })) as typeof window.matchMedia;
+    try {
+      const view = renderPage({
+        id: "rec",
+        capture: recordingCapture("rec", { levels: [0, 0.001, 0.1, 1] }),
+        sessions: sessionsOf([e]),
+      });
+      const meter = () => tab("Transcript").querySelector<HTMLElement>("[data-meter]");
+      const transforms = () => [...meter()!.querySelectorAll<HTMLElement>("[data-bar]")].map((b) => b.style.transform);
+      const still = transforms();
+      expect(meter()?.dataset.signal).toBe("true");
+      view.rerenderWith(recordingCapture("rec", { levels: [0.5, 0.02, 0.9, 0.3] }), sessionsOf([e]));
+      expect(transforms()).toEqual(still);
+      view.rerenderWith(recordingCapture("rec", { levels: [0, 0, 0, 0] }), sessionsOf([e]));
+      expect(meter()?.dataset.signal).toBe("false");
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  test("no bars show once the recording stops", () => {
+    const e = entry("s");
+    mockPage(e);
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(tab("Transcript").querySelector("[data-meter]")).toBeNull();
+  });
+
+  test("the page calls a session a note, never a session", async () => {
+    const rec = entry("rec", { state: "capturing" });
+    mockPage(rec);
+    const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([rec]) });
+    expect(document.body.textContent).not.toMatch(/session/i);
+    const failed = entry("rec", { state: "processing_failed", stage: "transcribe" });
+    mockPage(failed, { failed_stage: "transcribe", message: "the model crashed" });
+    view.rerenderWith(captureOf(), sessionsOf([failed]));
+    await screen.findByRole("button", { name: "Retry" });
+    expect(document.body.textContent).not.toMatch(/session/i);
+    view.rerenderWith(captureOf(), sessionsOf([]));
+    expect(document.body.textContent).toMatch(/note/);
+    expect(document.body.textContent).not.toMatch(/session/i);
   });
 
   test("a completed session opens on Summary", async () => {
@@ -247,7 +334,7 @@ describe("SessionPage", () => {
     expect(screen.getByText(/summary is written after you stop recording/)).toBeTruthy();
   });
 
-  test("during processing, Summary shows the stage rows and My notes stays editable", async () => {
+  test("during processing, Summary shows the stage rows and My Notes stays editable", async () => {
     const e = entry("p", { state: "processing", stage: "transcribe" });
     mockPage(e, { done: ["assemble", "diarize"], current: "transcribe", windows_done: 1, windows_total: 4 });
     renderPage({ id: "p", sessions: sessionsOf([e]) });
@@ -256,8 +343,8 @@ describe("SessionPage", () => {
     expect(screen.getByText("Telling speakers apart")).toBeTruthy();
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
 
-    await userEvent.setup().click(tab("My notes"));
-    const editor = await screen.findByRole("textbox", { name: "My notes" });
+    await userEvent.setup().click(tab("My Notes"));
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
     expect(editor.getAttribute("contenteditable")).toBe("true");
   });
 
@@ -279,7 +366,7 @@ describe("SessionPage", () => {
     const tauri = mockPage(e);
     const onBack = mock(() => {});
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]), onBack });
-    await userEvent.setup().click(screen.getByRole("button", { name: "← Back" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
     expect(onBack).toHaveBeenCalled();
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(false);
   });
@@ -319,7 +406,7 @@ describe("SessionPage", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-    const confirm = screen.getByRole("alertdialog", { name: "Delete “Budget review”?" });
+    const confirm = screen.getByRole("alertdialog", { name: "Delete note?" });
     await user.click(within(confirm).getByRole("button", { name: "Delete" }));
     expect(tauri.calls.filter((c) => c.cmd === "delete_session").map((c) => c.args)).toEqual([
       { sessionId: "s" },
@@ -366,8 +453,8 @@ describe("SessionPage", () => {
     await user.click(screen.getByRole("button", { name: "Copy" }));
     expect(writeText).toHaveBeenLastCalledWith("# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n");
     expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
-    await user.click(tab("My notes"));
-    await screen.findByRole("textbox", { name: "My notes" });
+    await user.click(tab("My Notes"));
+    await screen.findByRole("textbox", { name: "My Notes" });
     await user.click(screen.getByRole("button", { name: /^Cop/ }));
     expect(writeText).toHaveBeenLastCalledWith("# Agenda\n\n- ask about headcount");
   });

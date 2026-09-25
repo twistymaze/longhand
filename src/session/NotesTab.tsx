@@ -1,4 +1,4 @@
-// My notes (R20–R23): the session's notes document in the markdown editor,
+// My Notes (R20–R23): the session's notes document in the markdown editor,
 // editable in every state. The editor sends the whole document as the user
 // types; each document goes to the store, and on a saved session to the
 // folder's notes.md.
@@ -66,7 +66,7 @@ export function NotesTab({
   };
 
   return (
-    <div className="mx-auto max-w-[44rem] px-8 pt-2 pb-10 [&_.prosemirror-editor]:min-h-[50vh]">
+    <div className="mx-auto max-w-[44rem] px-8 pt-5 pb-12 [&_.prosemirror-editor]:min-h-[50vh]">
       {error && <p className="mb-2 text-[0.85rem] text-negative">{error}</p>}
       {markdown !== null && <NoteEditor key={sessionId} markdown={markdown} onChange={send} autoFocus={autoFocus} />}
     </div>

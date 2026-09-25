@@ -3,8 +3,9 @@
 // participant at the table should spend:
 // - always: the live dot, the elapsed time and Stop;
 // - only while a condition exists: the level meter and the warnings.
-// Nothing moves but the live dot, whose brightness follows the input. The
-// warnings appear at once, with no fade: motion would pull the eye.
+// Nothing in the bar moves: the level bars on the Transcript tab show the
+// input. The warnings appear at once, with no fade: motion would pull the
+// eye.
 
 import { useState } from "react";
 import { commands, type Readiness, type SpeakerCountSetting } from "../bindings";
@@ -28,16 +29,29 @@ const statusText: Record<InputStatus, string> = {
 /// the microphone hears.
 const showsLevel: InputStatus[] = ["quiet", "stalled", "reconnecting"];
 
-function LiveDot({ input, peak }: { input: InputStatus; peak: number }) {
+/// A steady dot: red while audio arrives, orange when it does not.
+function LiveDot({ input }: { input: InputStatus }) {
   const live = input === "capturing" || input === "quiet" || input === "starting";
   return (
     <span
       aria-hidden
-      className={`live-dot size-2.5 shrink-0 rounded-full ${live ? "bg-negative" : "bg-caution"}`}
-      // The brightness follows the latest peak: a steady dot with a room
-      // talking would look the same as a dead input.
-      style={{ opacity: live && input !== "starting" ? 0.55 + 0.45 * levelFraction(peak) : 1 }}
+      className={`size-2 shrink-0 rounded-full ${live ? "bg-negative" : "bg-caution"}`}
     />
+  );
+}
+
+/// Stop, with the square that marks it on every recorder.
+function StopButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="flex items-center gap-1.5 rounded-md bg-fill py-[3px] pr-2.5 pl-2 whitespace-nowrap text-label active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
+    >
+      <span aria-hidden className="size-[9px] rounded-[2px] bg-negative" />
+      Stop
+    </button>
   );
 }
 
@@ -80,7 +94,7 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
     if (free < needed) {
       items.push({
         tone: "negative",
-        text: `${formatBytes(free)} free: processing this session needs about ${formatBytes(needed)}.`,
+        text: `${formatBytes(free)} free: processing this note needs about ${formatBytes(needed)}.`,
       });
     }
   }
@@ -125,7 +139,7 @@ function SpeakerField({ onDone }: { onDone: () => void }) {
     <label className="flex items-center gap-1.5 text-label-secondary">
       Speakers
       <input
-        aria-label="Speakers in this session, a number or a range like 4-6"
+        aria-label="Speakers in this note, a number or a range like 4-6"
         autoFocus
         className={`${fieldClass} w-16 text-center tabular-nums ${error ? "border-negative" : ""}`}
         placeholder="auto"
@@ -167,7 +181,6 @@ export function RecordingBar({
   };
 
   const items = warnings(capture, readiness);
-  const peak = capture.levels[capture.levels.length - 1] ?? 0;
   const id = status?.session_id ?? null;
 
   return (
@@ -175,28 +188,18 @@ export function RecordingBar({
       aria-label="Recording"
       className="shrink-0 border-t border-separator bg-group select-none"
     >
-      <div className="mx-auto flex max-w-[44rem] items-center gap-3 px-8 py-2.5">
-        <LiveDot input={interruption ? "lost" : capture.input} peak={peak} />
+      <div className="mx-auto flex max-w-[44rem] items-center gap-2.5 px-8 py-2.5">
+        <LiveDot input={interruption ? "lost" : capture.input} />
         <span className="shrink-0 font-medium">
           {interruption ? "Recording interrupted" : statusText[capture.input]}
         </span>
-        <span className="shrink-0 font-medium tabular-nums tracking-tight text-label-secondary">
-          {formatPosition(capture.recordedMs)}
-        </span>
+        <span className="shrink-0 tabular-nums text-label-secondary">{formatPosition(capture.recordedMs)}</span>
         {showsLevel.includes(capture.input) ? <LevelMeter levels={capture.levels} /> : <span className="flex-1" />}
         {speakers && <SpeakerField onDone={onSpeakersDone} />}
-        {interruption && id ? (
-          <>
-            <Button disabled={busy} onClick={() => void act(() => commands.stopRecording())}>
-              Stop
-            </Button>
-            <Button prominent disabled={busy} onClick={() => void act(() => commands.resumeRecording(id))}>
-              Resume
-            </Button>
-          </>
-        ) : (
-          <Button disabled={busy} onClick={() => void act(() => commands.stopRecording())}>
-            Stop
+        <StopButton disabled={busy} onClick={() => void act(() => commands.stopRecording())} />
+        {interruption && id && (
+          <Button prominent disabled={busy} onClick={() => void act(() => commands.resumeRecording(id))}>
+            Resume
           </Button>
         )}
       </div>

@@ -1,4 +1,4 @@
-// The My notes editor (R21–R23, R25). It shows markdown as formatted text
+// The My Notes editor (R21–R23, R25). It shows markdown as formatted text
 // while the user types, with a selection toolbar and a `/` menu, and gives
 // the document back as markdown.
 //
@@ -135,7 +135,7 @@ export function NoteEditor({ markdown, onChange, autoFocus = false }: NoteEditor
         spellCheck: "true",
         role: "textbox",
         "aria-multiline": "true",
-        "aria-label": "My notes",
+        "aria-label": "My Notes",
         class: "prosemirror-editor note-typography",
       }}
     >

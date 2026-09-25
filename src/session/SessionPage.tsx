@@ -1,13 +1,13 @@
 // One session's page in the main window (R10, KD3). The same page serves
 // the three states of a session:
-// - recording: My notes, with the recording bar below (R11, R12);
+// - recording: My Notes, with the recording bar below (R11, R12);
 // - processing: the stages on Summary and Transcript (R14);
 // - saved: the summary, the transcript and the notes (R15).
-// The toolbar has "← Back", the tabs, Copy for the open tab (R17) and the
+// The toolbar has Back, the tabs, Copy for the open tab (R17) and the
 // "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   commands,
   type ModelStatus,
@@ -20,6 +20,7 @@ import { formatDuration, sentence, sessionTitle, startedAt } from "../processing
 import type { Capture } from "../recording/useCapture";
 import { Button } from "../settings/ui";
 import { useDeleteSession } from "./DeleteSession";
+import { LevelBars } from "./LevelBars";
 import { NotesTab } from "./NotesTab";
 import { ProcessingStatus } from "./ProcessingStatus";
 import { RecordingBar } from "./RecordingBar";
@@ -32,20 +33,24 @@ import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
 
+// The tabs follow the order things happen: notes during the recording,
+// then the transcript, then the summary.
 const tabs: { value: Tab; label: string }[] = [
-  { value: "summary", label: "Summary" },
+  { value: "notes", label: "My Notes" },
   { value: "transcript", label: "Transcript" },
-  { value: "notes", label: "My notes" },
+  { value: "summary", label: "Summary" },
 ];
 
 type Phase = "recording" | "processing" | "saved" | "missing";
 
-function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+/// A segmented control. The segments have one width, so the control keeps
+/// its shape when the level bars show on Transcript.
+function Tabs({ tab, onTab, meter }: { tab: Tab; onTab: (t: Tab) => void; meter: ReactNode }) {
   return (
     <div
       role="tablist"
       aria-label="Show"
-      className="inline-flex gap-0.5 rounded-md bg-fill p-0.5"
+      className="inline-grid auto-cols-fr grid-flow-col gap-0.5 rounded-[7px] bg-fill p-[2px]"
       onKeyDown={(e) => {
         if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
         e.preventDefault();
@@ -64,20 +69,33 @@ function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
           aria-selected={tab === t.value}
           tabIndex={tab === t.value ? 0 : -1}
           onClick={() => onTab(t.value)}
-          className={`rounded-[5px] px-3 py-[2px] whitespace-nowrap ${
-            tab === t.value ? "bg-control shadow-[0_0.5px_1.5px_rgb(0_0_0/0.2)]" : "text-label active:bg-fill-pressed"
+          className={`flex items-center justify-center gap-1.5 rounded-[5px] px-4 py-[3px] whitespace-nowrap ${
+            tab === t.value
+              ? "bg-white text-label shadow-[0_0.5px_1.5px_rgb(0_0_0/0.18),0_0_0_0.5px_rgb(0_0_0/0.04)] dark:bg-white/[0.2] dark:shadow-[0_0.5px_1px_rgb(0_0_0/0.4)]"
+              : "text-label-secondary hover:text-label active:bg-fill-pressed"
           } outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
         >
           {t.label}
+          {t.value === "transcript" && meter}
         </button>
       ))}
     </div>
   );
 }
 
-/// What Summary and Transcript say while the session records (R13).
+/// What Summary and Transcript say while the note records (R13).
 function AfterStop({ children }: { children: string }) {
-  return <p className="pt-6 text-center text-label-secondary">{children}</p>;
+  return (
+    <p className="mx-auto max-w-[24rem] pt-16 text-center leading-relaxed text-label-secondary">{children}</p>
+  );
+}
+
+function BackChevron() {
+  return (
+    <svg aria-hidden viewBox="0 0 10 16" className="h-[13px] w-[8px]">
+      <path d="M8 1.5L2 8l6 6.5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 export function SessionPage({
@@ -110,18 +128,21 @@ export function SessionPage({
   const [speakers, setSpeakers] = useState(false);
   const [notes, setNotes] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
   const title = useRef<TitleFieldHandle>(null);
   const notesPanel = useRef<HTMLDivElement>(null);
 
-  // A recording shows My notes (R11). A session that completes shows
-  // Summary (F2), unless the user is typing notes.
+  // A recording shows My Notes (R11). Stop shows Summary, where the
+  // processing stages show. A session that completes shows Summary (F2),
+  // unless the user is typing notes.
   const previous = useRef(phase);
   useEffect(() => {
     const before = previous.current;
     previous.current = phase;
     if (before === phase) return;
     if (phase === "recording") setTab("notes");
-    if (phase === "saved" && before === "processing" && !notesPanel.current?.contains(document.activeElement)) {
+    else if (before === "recording") setTab("summary");
+    else if (phase === "saved" && before === "processing" && !notesPanel.current?.contains(document.activeElement)) {
       setTab("summary");
     }
   }, [phase]);
@@ -200,7 +221,7 @@ export function SessionPage({
     items.push({
       label: "Resume Recording",
       disabled: !detail?.resumable,
-      reason: "This session can't record more.",
+      reason: "This note can’t be resumed.",
       onSelect: resume,
     });
   }
@@ -232,7 +253,7 @@ export function SessionPage({
     ) : null;
 
   const content = (which: "summary" | "transcript") => {
-    if (phase === "missing") return <AfterStop>This session is no longer listed.</AfterStop>;
+    if (phase === "missing") return <AfterStop>This note is no longer in the list.</AfterStop>;
     if (phase === "recording") {
       return which === "summary" ? (
         <AfterStop>The summary is written after you stop recording.</AfterStop>
@@ -280,33 +301,49 @@ export function SessionPage({
         .join(" · ")
     : "";
 
+  const copyLabel = { notes: "Copy My Notes", transcript: "Copy the transcript", summary: "Copy the summary" }[tab];
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-window">
-      <header className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 px-3 py-2 select-none">
+      <header
+        className={`grid shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b px-3 py-2 select-none ${
+          scrolled ? "border-separator" : "border-transparent"
+        }`}
+      >
         <div>
           <button
             type="button"
             onClick={onBack}
-            className="rounded-md px-2 py-[3px] text-accent hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
+            className="flex items-center gap-1 rounded-md py-[3px] pr-2 pl-1.5 text-accent hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
           >
-            ← Back
+            <BackChevron />
+            Back
           </button>
         </div>
-        <Tabs tab={tab} onTab={setTab} />
+        <Tabs
+          tab={tab}
+          onTab={setTab}
+          meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
+        />
         <div className="flex items-center justify-end gap-1">
           <button
             type="button"
             disabled={copyable === null}
+            title={copyable === null ? undefined : copyLabel}
             onClick={() => void copy()}
-            className="rounded-md px-2 py-[3px] text-label-secondary enabled:hover:bg-fill enabled:active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:text-label-tertiary"
+            className="rounded-md px-2 py-[3px] text-label enabled:hover:bg-fill enabled:active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:text-label-tertiary"
           >
             {copied ? "Copied" : "Copy"}
           </button>
           <SessionMenu items={items} />
         </div>
       </header>
-      <main className="min-h-0 flex-1 overflow-y-auto select-text">
-        <div className="mx-auto max-w-[44rem] px-8 pt-3 pb-3">
+      <main
+        className="min-h-0 flex-1 overflow-y-auto select-text"
+        // The header shows its bottom line only while content is under it.
+        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+      >
+        <div className="mx-auto max-w-[44rem] px-8 pt-6 pb-1">
           <TitleField
             ref={title}
             sessionId={id}
@@ -317,7 +354,7 @@ export function SessionPage({
               void sessions.refresh();
             }}
           />
-          <p className="mt-0.5 text-[0.85rem] text-label-secondary">{subtitle}</p>
+          <p className="mt-1 text-[0.85rem] text-label-secondary tabular-nums">{subtitle}</p>
           {notice && (
             <p
               role="status"
@@ -328,11 +365,11 @@ export function SessionPage({
           )}
         </div>
         {tab !== "notes" && (
-          <div role="tabpanel" className="mx-auto max-w-[44rem] px-8 pt-2 pb-10">
+          <div role="tabpanel" className="mx-auto max-w-[44rem] px-8 pt-5 pb-12">
             {content(tab)}
           </div>
         )}
-        {/* My notes stays mounted, so the editor keeps its document, cursor
+        {/* My Notes stays mounted, so the editor keeps its document, cursor
             and undo history while another tab shows. */}
         <div ref={notesPanel} role="tabpanel" hidden={tab !== "notes"}>
           <NotesTab
