@@ -7,7 +7,10 @@ mod http;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use asr::{AsrError, AsrSegment, Recognizer, WindowText};
+use asr::{
+    AsrError, AsrSegment, LiveStream, LiveText, PartPolicy, Parts, Recognizer, TimedToken,
+    WindowText,
+};
 use common::{queue_session, speech, store};
 use diarize::{Analysis, AudioSource, DiarizeError, DiarizeRequest, SpeakerAnalyzer};
 use pipeline::join::TRANSCRIPT_FILE;
@@ -47,6 +50,9 @@ struct Script {
     blank_on: Mutex<Vec<usize>>,
     diarize_fails: AtomicBool,
     weights_missing: AtomicBool,
+    /// The model streams: each stream says one word for each full second it
+    /// hears.
+    streaming: AtomicBool,
     /// Where sessions are saved; unset is no destination chosen.
     destination: Mutex<Option<std::path::PathBuf>>,
 }
@@ -147,6 +153,43 @@ impl Recognizer for Fake {
                 text,
             }],
         })
+    }
+
+    fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
+        if !self.script.streaming.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(FakeStream { samples: 0 })))
+    }
+}
+
+struct FakeStream {
+    samples: u64,
+}
+
+impl LiveStream for FakeStream {
+    fn feed(&mut self, pcm: &[f32]) -> Result<bool, AsrError> {
+        let before = self.samples / 16_000;
+        self.samples += pcm.len() as u64;
+        Ok(self.samples / 16_000 > before)
+    }
+    fn text(&self) -> LiveText {
+        LiveText {
+            committed: format!("{} seconds", self.samples / 16_000),
+            tentative: String::new(),
+        }
+    }
+    fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
+        Ok((0..self.samples / 16_000)
+            .map(|n| TimedToken {
+                text: format!(" s{n}"),
+                start_ms: n * 1_000,
+                end_ms: n * 1_000 + 500,
+            })
+            .collect())
+    }
+    fn reset(&mut self) {
+        self.samples = 0;
     }
 }
 
@@ -278,6 +321,32 @@ fn plan(store: &SharedStore, id: &str) -> WindowPlan {
 
 fn state(store: &SharedStore, id: &str) -> SessionState {
     store.lock().unwrap().session(id).unwrap().unwrap().state
+}
+
+#[test]
+fn a_loaded_engine_streams_parts_from_the_engine_slot_when_its_model_streams() {
+    let script = Arc::new(Script::default());
+    let provider = Provider(Arc::clone(&script));
+    // The runner's engine slot holds the loaded recognizer (KTD9).
+    let slot: Mutex<Option<Box<dyn Recognizer>>> =
+        Mutex::new(Some(provider.load("streams").unwrap()));
+    let audio = vec![0.0f32; 3_500 * 16];
+    let run = |slot: &Mutex<Option<Box<dyn Recognizer>>>| {
+        let mut guard = slot.lock().unwrap();
+        let recognizer = guard.as_mut().unwrap();
+        let mut parts = Parts::with_classifier(0, PartPolicy::default(), |_: &[f32]| true);
+        asr::stream_all(&mut **recognizer, &mut parts, &audio, 320).unwrap()
+    };
+
+    assert!(run(&slot).is_none(), "a model that does not stream");
+
+    script.streaming.store(true, Ordering::SeqCst);
+    let parts = run(&slot).unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!((parts[0].start_ms, parts[0].end_ms), (0, 3_500));
+    assert_eq!(asr::join_words(&parts[0].words), "s0 s1 s2");
+    // The slot still holds the engine after the stream.
+    assert_eq!(slot.lock().unwrap().as_ref().unwrap().model_id(), "streams");
 }
 
 #[tokio::test(flavor = "multi_thread")]
