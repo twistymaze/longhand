@@ -3,7 +3,7 @@
 // folder, a second question offers a permanent delete, and Cancel changes
 // nothing.
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { commands, type SessionEntry } from "../bindings";
 import { sentence } from "../processing/describe";
 
@@ -11,18 +11,23 @@ type Confirm =
   | { kind: "trash"; entry: SessionEntry }
   | { kind: "permanent"; entry: SessionEntry; reason: string };
 
-function ConfirmDialog({
+/// A question before an action that the user can't undo. `destructive`
+/// colours the action red: it removes something. An action that replaces
+/// something uses the accent colour.
+export function ConfirmDialog({
   title,
   message,
   action,
   busy,
+  destructive = true,
   onConfirm,
   onCancel,
 }: {
   title: string;
-  message: string;
+  message: ReactNode;
   action: string;
   busy: boolean;
+  destructive?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -44,9 +49,9 @@ function ConfirmDialog({
         <h2 id="confirm-title" className="font-semibold break-words">
           {title}
         </h2>
-        <p id="confirm-message" className="mt-1 text-[0.85rem] text-label-secondary">
+        <div id="confirm-message" className="mt-1 grid gap-1.5 text-[0.85rem] text-label-secondary">
           {message}
-        </p>
+        </div>
         <div className="mt-4 flex justify-end gap-2">
           <button
             ref={cancel}
@@ -60,7 +65,9 @@ function ConfirmDialog({
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className="rounded-md bg-negative px-2.5 py-[3px] text-white active:opacity-80 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
+            className={`rounded-md px-2.5 py-[3px] text-white active:opacity-80 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 ${
+              destructive ? "bg-negative" : "bg-accent"
+            }`}
           >
             {action}
           </button>

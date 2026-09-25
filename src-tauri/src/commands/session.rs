@@ -74,6 +74,14 @@ pub struct SessionDetail {
     /// The note records a live transcript (R8, R18). The Transcript tab
     /// reads this, not the model selected now (R9).
     pub live_transcript: bool,
+    /// A Transcribe Again run waits or runs (KTD14). It has no live text.
+    pub transcribe_again: bool,
+    /// Why the last Transcribe Again run failed. The note kept its
+    /// previous transcript and summary (R19).
+    pub transcribe_again_error: Option<String>,
+    /// Why the last Transcribe Again run kept the previous summary with
+    /// the new transcript (R19).
+    pub summary_not_updated: Option<String>,
 }
 
 #[derive(Serialize, Type)]
@@ -170,7 +178,7 @@ pub fn session_detail(
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
-    let (record, segments, saving, audio_intact) = {
+    let (record, segments, saving, audio_intact, again) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&session_id)
@@ -182,7 +190,10 @@ pub fn session_detail(
         let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &session_id).map_err(e)?;
         let audio_intact = pipeline::save::home_intact(&store, &session_id).map_err(e)?;
-        (record, segments, saving, audio_intact)
+        let again = store
+            .transcribe_again_marks(&session_id)
+            .map_err(|e| e.to_string())?;
+        (record, segments, saving, audio_intact, again)
     };
     let snapshot = pipeline::progress::snapshot(&shared, &session_id).map_err(e)?;
 
@@ -254,6 +265,9 @@ pub fn session_detail(
         transcript_kept,
         asr_model: record.asr_model.clone(),
         live_transcript: record.live_transcript == Some(true),
+        transcribe_again: again.model.is_some(),
+        transcribe_again_error: again.error,
+        summary_not_updated: again.summary_error,
     })
 }
 

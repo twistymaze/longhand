@@ -204,6 +204,7 @@ pub fn run(
             segments: segments.len(),
         })?,
     )?;
+    guard.finish_transcribe_again(session_id, None)?;
     guard.apply(session_id, &Event::Saved)?;
     let path = reconcile_after_done(&guard, session_id, path, fs);
     Ok(Saved { path, copied })
@@ -286,6 +287,22 @@ fn update_home(
             home.display()
         )));
     }
+    // A Transcribe Again run whose summary failed keeps the previous
+    // `summary.md`, not the stub (R19, KTD14).
+    let again = lock(store)
+        .transcribe_again_marks(session_id)?
+        .model
+        .is_some();
+    let summary_error = if again
+        && !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())?
+    {
+        Some(
+            checkpoint::get::<String>(store, session_id, Stage::Summarize, SUMMARY_FAILED)?
+                .unwrap_or_else(|| "summarization did not run".into()),
+        )
+    } else {
+        None
+    };
     let finished = match checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)? {
         Some(state) => matches!(state, SaveState::Done { .. }),
         None => {
@@ -320,6 +337,9 @@ fn update_home(
             home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
         }
         for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE, SESSION_FILE] {
+            if name == SUMMARY_FILE && summary_error.is_some() {
+                continue;
+            }
             let contents = std::fs::read(working.join(name))?;
             home_write::write_atomic(home, name, &contents)?;
         }
@@ -342,6 +362,8 @@ fn update_home(
             segments: segments.len(),
         })?,
     )?;
+    // After `Done`: a crash before this line runs the bookkeeping again.
+    guard.finish_transcribe_again(session_id, summary_error.as_deref())?;
     guard.apply(session_id, &Event::Saved)?;
     let path = reconcile_after_done(&guard, session_id, home.to_path_buf(), fs);
     Ok(Saved {
@@ -595,6 +617,7 @@ fn summarize_again(
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;
     let mut guard = lock(store);
     guard.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;
+    guard.clear_summary_not_updated(session_id)?;
     guard.apply(session_id, &Event::SavedEdit)?;
     Ok(path.join(SUMMARY_FILE))
 }

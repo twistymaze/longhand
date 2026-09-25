@@ -855,3 +855,207 @@ fn model_writes_for_no_session_are_errors() {
     assert!(store.set_recording_model("nobody", &whisper()).is_err());
     assert!(store.record_model_if_unset("nobody", WHISPER).is_err());
 }
+
+// ---------------------------------------------------------------- transcribe again (U9)
+
+const STAGES: [Stage; 7] = [
+    Stage::Assemble,
+    Stage::Diarize,
+    Stage::Transcribe,
+    Stage::Join,
+    Stage::Verify,
+    Stage::Summarize,
+    Stage::Save,
+];
+
+/// A saved session recorded with Parakeet, with one checkpoint in each stage.
+fn saved_with_checkpoints() -> Store {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live())
+        .unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    stop(&mut store, "s1", 5);
+    store.dequeue("run", t(6)).unwrap();
+    for stage in STAGES {
+        store.put_checkpoint("s1", stage, "old", "\"old\"").unwrap();
+    }
+    store.apply("s1", &Event::Saved).unwrap();
+    store
+}
+
+fn keys(store: &Store, stage: Stage) -> Vec<String> {
+    store
+        .checkpoints("s1", stage)
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+fn again(at: i64) -> Event {
+    Event::UserTranscribeAgain {
+        at: t(at),
+        audio_intact: true,
+        capture_active: false,
+        regenerating: false,
+    }
+}
+
+fn resume(store: &mut Store) {
+    store
+        .apply(
+            "s1",
+            &Event::UserResume {
+                space_ok: true,
+                audio_intact: true,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn transcribe_again_queues_the_note_with_its_model_and_sets_aside_the_checkpoints() {
+    let mut store = saved_with_checkpoints();
+    let state = store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    assert_eq!(state, SessionState::Queued { stopped_at: t(10) });
+    assert_eq!(store.queue().unwrap(), ["s1"]);
+    let marks = store.transcribe_again_marks("s1").unwrap();
+    assert_eq!(marks.model.as_deref(), Some(WHISPER));
+    assert_eq!(marks.error, None);
+    // The model of the note changes only after the save (KTD14).
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
+    // Every stage runs again. Assemble decodes the audio from the folder.
+    for stage in STAGES {
+        assert!(keys(&store, stage).is_empty(), "{stage:?}");
+    }
+}
+
+#[test]
+fn a_refused_transcribe_again_changes_nothing() {
+    let mut store = saved_with_checkpoints();
+    let refused = Event::UserTranscribeAgain {
+        at: t(10),
+        audio_intact: false,
+        capture_active: false,
+        regenerating: false,
+    };
+    assert!(matches!(
+        store.transcribe_again("s1", WHISPER, &refused),
+        Err(StoreError::Illegal(_))
+    ));
+    assert_eq!(
+        store.session("s1").unwrap().unwrap().state,
+        SessionState::Saved
+    );
+    assert_eq!(store.transcribe_again_marks("s1").unwrap().model, None);
+    for stage in STAGES {
+        assert_eq!(keys(&store, stage), ["old"], "{stage:?}");
+    }
+}
+
+#[test]
+fn a_failed_transcribe_again_returns_to_saved_with_the_previous_checkpoints() {
+    let mut store = saved_with_checkpoints();
+    store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    store.dequeue("run", t(11)).unwrap();
+    store
+        .put_checkpoint("s1", Stage::Transcribe, "new", "\"new\"")
+        .unwrap();
+    let state = store
+        .fail_transcribe_again("s1", "the decoder failed")
+        .unwrap();
+    assert_eq!(state, SessionState::Saved);
+    assert!(store.queue().unwrap().is_empty());
+    for stage in STAGES {
+        assert_eq!(keys(&store, stage), ["old"], "{stage:?}");
+    }
+    let marks = store.transcribe_again_marks("s1").unwrap();
+    assert_eq!(marks.model, None);
+    assert_eq!(marks.error.as_deref(), Some("the decoder failed"));
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
+    // The next run clears the error.
+    store.transcribe_again("s1", WHISPER, &again(20)).unwrap();
+    assert_eq!(store.transcribe_again_marks("s1").unwrap().error, None);
+}
+
+#[test]
+fn a_saved_transcribe_again_changes_the_model_and_drops_the_previous_checkpoints() {
+    let mut store = saved_with_checkpoints();
+    store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    store.dequeue("run", t(11)).unwrap();
+    store
+        .finish_transcribe_again("s1", Some("the endpoint is offline"))
+        .unwrap();
+    store.apply("s1", &Event::Saved).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(WHISPER));
+    let marks = store.transcribe_again_marks("s1").unwrap();
+    assert_eq!(marks.model, None);
+    assert_eq!(
+        marks.summary_error.as_deref(),
+        Some("the endpoint is offline")
+    );
+    // A later failure has no previous checkpoints to restore.
+    for stage in STAGES {
+        assert!(keys(&store, stage).is_empty(), "{stage:?}");
+    }
+    store.clear_summary_not_updated("s1").unwrap();
+    assert_eq!(
+        store.transcribe_again_marks("s1").unwrap().summary_error,
+        None
+    );
+}
+
+#[test]
+fn a_save_that_is_no_transcribe_again_keeps_the_model_and_clears_the_notices() {
+    let mut store = saved_with_checkpoints();
+    store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    store.dequeue("run", t(11)).unwrap();
+    store.fail_transcribe_again("s1", "failed").unwrap();
+    // A resume, then the save of the new recording (R6d).
+    resume(&mut store);
+    stop(&mut store, "s1", 30);
+    store.dequeue("run", t(31)).unwrap();
+    store
+        .finish_transcribe_again("s1", Some("ignored"))
+        .unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
+    let marks = store.transcribe_again_marks("s1").unwrap();
+    assert_eq!(
+        (marks.model, marks.error, marks.summary_error),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn a_resume_of_a_queued_transcribe_again_is_a_resume_of_the_saved_note() {
+    let mut store = saved_with_checkpoints();
+    store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    store.dequeue("run", t(11)).unwrap();
+    store
+        .put_checkpoint("s1", Stage::Transcribe, "new", "\"new\"")
+        .unwrap();
+    resume(&mut store);
+    assert_eq!(store.transcribe_again_marks("s1").unwrap().model, None);
+    // As a resume from Saved: assembly and transcription stay, the rest
+    // runs again (R6d).
+    assert_eq!(keys(&store, Stage::Assemble), ["old"]);
+    assert_eq!(keys(&store, Stage::Transcribe), ["old"]);
+    for stage in [
+        Stage::Diarize,
+        Stage::Join,
+        Stage::Verify,
+        Stage::Summarize,
+        Stage::Save,
+    ] {
+        assert!(keys(&store, stage).is_empty(), "{stage:?}");
+    }
+    // A later failure is a normal failure: no Transcribe Again runs.
+    stop(&mut store, "s1", 30);
+    store.dequeue("run", t(31)).unwrap();
+    assert!(store.fail_transcribe_again("s1", "x").is_err());
+}

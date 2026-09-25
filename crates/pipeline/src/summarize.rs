@@ -455,10 +455,21 @@ impl Calls<'_> {
         {
             return Ok(());
         }
-        let user_title = lock(self.store)
-            .title(self.session_id)?
-            .is_some_and(|t| t.source == TitleSource::User);
-        if user_title {
+        let (user_title, again) = {
+            let guard = lock(self.store);
+            (
+                guard
+                    .title(self.session_id)?
+                    .is_some_and(|t| t.source == TitleSource::User),
+                guard
+                    .transcribe_again_marks(self.session_id)?
+                    .model
+                    .is_some(),
+            )
+        };
+        // A Transcribe Again run keeps the title and so the folder name
+        // (R16, KTD14).
+        if user_title || again {
             return Ok(());
         }
         self.control.proceed()?;

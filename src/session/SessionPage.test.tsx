@@ -65,6 +65,9 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   transcript_kept: true,
   asr_model: null,
   live_transcript: false,
+  transcribe_again: false,
+  transcribe_again_error: null,
+  summary_not_updated: null,
   ...over,
 });
 
@@ -493,6 +496,104 @@ describe("SessionPage", () => {
       { sessionId: "s" },
     ]);
     expect(sessions.refresh).toHaveBeenCalled();
+  });
+
+  describe("Transcribe Again", () => {
+    const models = [
+      { id: "tdt", name: "Parakeet TDT 1.1B", state: { state: "present" } },
+      { id: "whisper", name: "Whisper large-v3-turbo", state: { state: "absent", partial_bytes: 0 } },
+    ];
+    const withModel = (asr_model: string) => ({
+      get_settings: () => ({ asr_model }),
+      model_statuses: () => models,
+      transcribe_again: () => null,
+    });
+
+    async function openQuestion(noteModel: string, selected: string) {
+      const e = entry("s", { title: "Budget review" });
+      const tauri = mockPage(e, { asr_model: noteModel }, withModel(selected));
+      const sessions = sessionsOf([e]);
+      renderPage({ id: "s", sessions });
+      await act(async () => {});
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
+      const dialog = await screen.findByRole("alertdialog", { name: "Transcribe this note again?" });
+      return { tauri, sessions, user, dialog };
+    }
+
+    test("the question names the selected model and says what is replaced, and Cancel changes nothing", async () => {
+      const { tauri, user, dialog } = await openQuestion("parakeet-unified-en-0.6b", "tdt");
+      expect(dialog.textContent).toContain("Parakeet TDT 1.1B");
+      expect(dialog.textContent).toContain("replace the current transcript and summary");
+      expect(dialog.textContent).toContain("My Notes and the title stay the same");
+      expect(dialog.textContent).not.toContain("already used");
+      expect(dialog.textContent).not.toContain("download");
+      // Cancel has the focus: Return must not start the run by accident.
+      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(tauri.calls.some((c) => c.cmd === "transcribe_again")).toBe(false);
+    });
+
+    test("the question says when the model is the note's own, and confirming queues the note", async () => {
+      const { tauri, sessions, user, dialog } = await openQuestion("tdt", "tdt");
+      expect(dialog.textContent).toContain("Parakeet TDT 1.1B, the model this note already used");
+      await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
+      expect(tauri.calls.filter((c) => c.cmd === "transcribe_again").map((c) => c.args)).toEqual([
+        { sessionId: "s" },
+      ]);
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(sessions.refresh).toHaveBeenCalled();
+    });
+
+    test("the question says that the note waits for a model that isn't downloaded", async () => {
+      const { dialog } = await openQuestion("tdt", "whisper");
+      expect(dialog.textContent).toContain("Whisper large-v3-turbo isn’t downloaded yet. The note waits until it is.");
+    });
+
+    test("a refused run says why on the page", async () => {
+      const e = entry("s");
+      mockPage(e, {}, {
+        ...withModel("tdt"),
+        transcribe_again: () => {
+          throw "A recording is in progress. Try again after it stops.";
+        },
+      });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      await act(async () => {});
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
+      const dialog = await screen.findByRole("alertdialog");
+      await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
+      expect(await screen.findByText("A recording is in progress. Try again after it stops.")).toBeTruthy();
+    });
+
+    test("after a failed run, the page says the previous transcript is unchanged", async () => {
+      const e = entry("s");
+      mockPage(e, { transcribe_again_error: "decoder exploded" });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      expect(await screen.findByText("The new transcript failed. The previous transcript is unchanged.")).toBeTruthy();
+      expect(screen.getByText("We agreed the budget.")).toBeTruthy();
+    });
+
+    test("a run that kept the previous summary says so on Summary", async () => {
+      const e = entry("s");
+      mockPage(e, { summary_not_updated: "the endpoint did not answer" });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      expect(await screen.findByText("The summary could not be updated. It is from the previous transcript.")).toBeTruthy();
+      expect(screen.getByText("We agreed the budget.")).toBeTruthy();
+    });
+
+    test("the menu has no Transcribe Again while the note processes", async () => {
+      const p = entry("p", { state: "processing" });
+      mockPage(p, { transcribe_again: true });
+      renderPage({ id: "p", sessions: sessionsOf([p]) });
+      await act(async () => {});
+      await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+      expect(screen.queryByRole("menuitem", { name: "Transcribe Again…" })).toBeNull();
+    });
   });
 
   test("the Transcript tab of a saved session shows the header and the turns", async () => {

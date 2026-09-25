@@ -247,6 +247,18 @@ async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
 }
 },
 /**
+ * Transcribe a saved session again with the model selected now (R15). The
+ * session is queued; its transcript and summary change when it saves.
+ */
+async transcribeAgain(sessionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("transcribe_again", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Retry a failed session, or one waiting for its destination, from its
  * checkpoints.
  */
@@ -615,7 +627,12 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * In the destination. `copied` when it crossed volumes, so the move
  * was a verified copy rather than one atomic step.
  */
-{ kind: "saved"; path: string; copied: boolean } | { kind: "cancelled" } | { kind: "finished" }
+{ kind: "saved"; path: string; copied: boolean } | 
+/**
+ * A Transcribe Again run failed; the session keeps its previous
+ * transcript and summary (R19).
+ */
+{ kind: "transcribe_again_failed"; stage: string; message: string } | { kind: "cancelled" } | { kind: "finished" }
 /**
  * What processing is doing, for the surface.
  */
@@ -709,7 +726,21 @@ asr_model: string | null;
  * The note records a live transcript (R8, R18). The Transcript tab
  * reads this, not the model selected now (R9).
  */
-live_transcript: boolean }
+live_transcript: boolean; 
+/**
+ * A Transcribe Again run waits or runs (KTD14). It has no live text.
+ */
+transcribe_again: boolean; 
+/**
+ * Why the last Transcribe Again run failed. The note kept its
+ * previous transcript and summary (R19).
+ */
+transcribe_again_error: string | null; 
+/**
+ * Why the last Transcribe Again run kept the previous summary with
+ * the new transcript (R19).
+ */
+summary_not_updated: string | null }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).

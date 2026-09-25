@@ -61,6 +61,8 @@ struct Script {
     capture_after: Mutex<Option<(usize, Arc<AtomicBool>)>>,
     /// Models that are not on disk.
     missing: Mutex<Vec<String>>,
+    /// A capture is active: the runner is suspended.
+    capturing: AtomicBool,
 }
 
 /// Analyses without finding anyone: the stage runs, no speaker turns come out.
@@ -284,11 +286,12 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
     let path = root.path().to_path_buf();
+    let capturing = Arc::clone(&script);
     let runner = Runner::new(Environment {
         store: Arc::clone(&store),
         working_root: path.clone(),
         engines: Box::new(Provider(Arc::clone(&script))),
-        suspended: Box::new(|| false),
+        suspended: Box::new(move || capturing.capturing.load(Ordering::SeqCst)),
         events: Box::new(move |e| sink.lock().unwrap().push(e)),
     });
     Rig {
@@ -3010,4 +3013,294 @@ async fn deleting_a_session_whose_save_stopped_when_staged_removes_the_staged_co
         destination_entries(&r)
     );
     assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+}
+
+// ------------------------------------------------------------- transcribe again (U9)
+
+/// Summaries that name their call: each summary differs from the one
+/// before. Title calls fail.
+async fn numbered_summaries(r: &Rig) -> http::Mock {
+    let n = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let k = n.fetch_add(1, Ordering::SeqCst);
+        (200, http::completion(&format!("Summary number {k}.")))
+    }));
+    summaries_from(r, reply, None).await
+}
+
+/// "s" saved with model "m", with notes and, when given, a user title.
+async fn saved_note(r: &Rig, title: Option<&str>) -> std::path::PathBuf {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    add_notes(&r.store, "s");
+    if let Some(title) = title {
+        set_title(&r.store, "s", title);
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    saved_folder(r, "s")
+}
+
+fn read(folder: &std::path::Path, name: &str) -> String {
+    std::fs::read_to_string(folder.join(name)).unwrap()
+}
+
+fn marks(r: &Rig) -> session_core::TranscribeAgainMarks {
+    r.store.lock().unwrap().transcribe_again_marks("s").unwrap()
+}
+
+fn asr_model(r: &Rig) -> Option<String> {
+    r.store
+        .lock()
+        .unwrap()
+        .session("s")
+        .unwrap()
+        .unwrap()
+        .asr_model
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_notes_and_title() {
+    // Covers AE7.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, Some("Budget review")).await;
+    let (transcript, summary, notes) = (
+        read(&folder, TRANSCRIPT_FILE),
+        read(&folder, "summary.md"),
+        read(&folder, "notes.md"),
+    );
+    let calls = r.script.calls.load(Ordering::SeqCst);
+
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    assert_eq!(asr_model(&r).as_deref(), Some("m"), "not before the save");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(saved_folder(&r, "s"), folder, "the same folder");
+    assert_eq!(destination_entries(&r).len(), 1);
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_ne!(read(&folder, "summary.md"), summary);
+    assert!(summary_is_complete(&folder));
+    assert_eq!(read(&folder, "notes.md"), notes);
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+    // A full pass, with the new model only.
+    let called = r.script.models_called.lock().unwrap()[calls..].to_vec();
+    assert_eq!(called.len(), plan(&r.store, "s").windows.len());
+    assert!(called.iter().all(|m| m == "tdt"), "{called:?}");
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
+    let r = rig().await;
+    let title = title_reply("First");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    assert_eq!(title_of(&r), proposed("First"));
+
+    *title.lock().unwrap() = (200, http::completion("Second"));
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(title_calls(&mock).len(), 1, "no title call for the run");
+    assert_eq!(title_of(&r), proposed("First"));
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcript() {
+    // Covers AE12.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let before: Vec<String> = [TRANSCRIPT_FILE, "summary.md", "notes.md", "session.md"]
+        .iter()
+        .map(|name| read(&folder, name))
+        .collect();
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let turns = pipeline::summarize::transcript_turns(&r.store, "s", &segments).unwrap();
+
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Transcribe,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    let after: Vec<String> = [TRANSCRIPT_FILE, "summary.md", "notes.md", "session.md"]
+        .iter()
+        .map(|name| read(&folder, name))
+        .collect();
+    assert_eq!(after, before);
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+    let marks = marks(&r);
+    assert_eq!(marks.model, None);
+    assert!(
+        marks
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("decoder exploded")),
+        "{marks:?}"
+    );
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+    assert!(r.events.lock().unwrap().iter().any(
+        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+    ));
+    // The previous checkpoints came back: the transcript the summary reads
+    // is the saved one, and a regeneration works from it.
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    assert_eq!(
+        pipeline::summarize::transcript_turns(&r.store, "s", &segments).unwrap(),
+        turns
+    );
+    r.runner.regenerate_summary("s").await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_offline_summary_endpoint_keeps_the_previous_summary_with_the_new_transcript() {
+    // Covers AE13.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let (transcript, summary) = (read(&folder, TRANSCRIPT_FILE), read(&folder, "summary.md"));
+
+    let _offline = summaries_from(&r, http::Reply::Json(500, "{}".into()), None).await;
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(read(&folder, "summary.md"), summary, "the previous summary");
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    let marks = marks(&r);
+    assert!(marks.summary_error.is_some(), "{marks:?}");
+    assert_eq!(marks.error, None);
+
+    // A regeneration that succeeds updates the summary and the notice goes.
+    let _online = numbered_summaries(&r).await;
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(self::marks(&r).summary_error, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_is_refused_while_a_regeneration_runs_a_capture_is_active_or_audio_is_gone()
+ {
+    let r = rig().await;
+    let folder = saved_note(&r, None).await;
+    let refused = |r: &Rig| {
+        assert!(r.runner.transcribe_again("s", "tdt").is_err());
+        assert_eq!(state(&r.store, "s"), SessionState::Saved);
+        assert_eq!(marks(r).model, None);
+    };
+
+    let claim = r.runner.claims().regenerate("s").unwrap();
+    refused(&r);
+    drop(claim);
+
+    r.script.capturing.store(true, Ordering::SeqCst);
+    refused(&r);
+    r.script.capturing.store(false, Ordering::SeqCst);
+
+    std::fs::remove_file(folder.join("audio/segment-01.opus")).unwrap();
+    refused(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_that_waits_for_its_model_lets_other_notes_go_first() {
+    // R17, KTD13.
+    let r = rig().await;
+    saved_note(&r, None).await;
+    r.script.missing.lock().unwrap().push("downloading".into());
+    r.runner.transcribe_again("s", "downloading").unwrap();
+    queue_session(
+        &r.store,
+        &r.root,
+        "other",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("other", Outcome::Finished));
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    assert!(r.runner.run_next().await.is_none());
+
+    r.script.missing.lock().unwrap().clear();
+    let (id, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!((id.as_str(), outcome), ("s", Outcome::Finished));
+    assert_eq!(asr_model(&r).as_deref(), Some("downloading"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    let transcript = read(&folder, TRANSCRIPT_FILE);
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    *r.script.cancel_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.runner), "s".into()));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+    let windows = plan(&r.store, "s").windows.len();
+
+    // The next launch.
+    let relaunched = Runner::new(Environment {
+        store: Arc::clone(&r.store),
+        working_root: r.root.clone(),
+        engines: Box::new(Provider(Arc::clone(&r.script))),
+        suspended: Box::new(|| false),
+        events: Box::new(|_| {}),
+    });
+    assert_eq!(
+        relaunched
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        ["s"]
+    );
+    assert_eq!(relaunched.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(
+        r.script.calls.load(Ordering::SeqCst) - calls,
+        windows,
+        "no window ran twice"
+    );
+    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(marks(&r), Default::default());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_transcribe_again_that_then_fails_is_a_normal_failure_that_keeps_the_new_audio() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    resume_completed(&r, "s", &speech());
+    assert_eq!(marks(&r).model, None);
+    *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    assert!(r.root.join("s").join("audio/segment-02.opus").exists());
+    assert_eq!(marks(&r).error, None);
+    // The note keeps its model: the run did not save.
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
 }

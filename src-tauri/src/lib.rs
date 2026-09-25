@@ -45,6 +45,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::alerts::play_alert_sound,
             commands::alerts::confirm_alert_sound,
             commands::processing::regenerate_summary,
+            commands::processing::transcribe_again,
             commands::processing::retry_session,
             commands::processing::unblock_session,
             commands::session::list_sessions,

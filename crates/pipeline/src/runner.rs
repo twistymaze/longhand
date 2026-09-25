@@ -134,6 +134,13 @@ pub enum RunnerEvent {
         path: PathBuf,
         copied: bool,
     },
+    /// A Transcribe Again run failed before its save. The session is saved
+    /// with its previous transcript and summary (R19).
+    TranscribeAgainFailed {
+        session_id: String,
+        stage: Stage,
+        message: String,
+    },
     /// Every stage has run.
     Finished {
         session_id: String,
@@ -346,6 +353,47 @@ impl Runner {
         .map_err(|e| StageError::Failed(format!("the summary stopped unexpectedly: {e}")))?
     }
 
+    /// The user's Transcribe Again on a saved session (R15, KTD14): queue it
+    /// for a full recognition pass with `model`, the model selected now.
+    /// Refused while the session's summary is regenerated or the session is
+    /// deleted, while a capture is active, and when the session's folder
+    /// does not hold every segment's audio.
+    pub fn transcribe_again(&self, session_id: &str, model: &str) -> Result<(), StageError> {
+        let regenerating = self.claims.busy(session_id);
+        let capture_active = (self.env.suspended)();
+        {
+            let mut store = lock(&self.env.store);
+            let audio_intact = save::home_intact(&store, session_id)?;
+            let refusal = if regenerating {
+                Some("The summary of this note is being made again. Try again when it is done.")
+            } else if capture_active {
+                Some("A recording is in progress. Try again after it stops.")
+            } else if !audio_intact {
+                Some(
+                    "The note's folder does not have all of its audio, so it can't be transcribed again.",
+                )
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                return Err(StageError::Failed(refusal.into()));
+            }
+            store.transcribe_again(
+                session_id,
+                model,
+                &Event::UserTranscribeAgain {
+                    at: now(),
+                    audio_intact,
+                    capture_active,
+                    regenerating,
+                },
+            )?;
+        }
+        log::info!("{session_id} is queued to be transcribed again with '{model}'");
+        self.wake();
+        Ok(())
+    }
+
     /// True while `session_id` has its summary regenerated or waits to.
     pub fn is_regenerating(&self, session_id: &str) -> bool {
         self.claims.is_regenerating(session_id)
@@ -451,8 +499,10 @@ impl Runner {
             let mut store = lock(&self.env.store);
             let (next, model) = store.queue().ok()?.into_iter().find_map(|id| {
                 let record = store.session(&id).ok()??;
-                let model = record
-                    .asr_model
+                // A Transcribe Again run uses the model it recorded (KTD14).
+                let again = store.transcribe_again_marks(&id).ok()?.model;
+                let model = again
+                    .or(record.asr_model)
                     .unwrap_or_else(|| self.env.engines.default_model());
                 self.env.engines.ready(&model).then_some((id, model))
             })?;
@@ -479,6 +529,9 @@ impl Runner {
         // Once saving has begun, the working directory may be gone: only
         // the save itself is left to finish.
         let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
+        let again = lock(&self.env.store)
+            .transcribe_again_marks(id)
+            .is_ok_and(|marks| marks.model.is_some());
         for &stage in STAGES {
             if saving && stage != Stage::Save {
                 continue;
@@ -497,6 +550,14 @@ impl Runner {
                         session_id: id.to_string(),
                         message,
                     });
+                }
+                // A Transcribe Again run that fails keeps the saved files
+                // (R19). Speaker separation failing costs the speaker
+                // marks only, as for any run.
+                Err(StageError::Failed(message) | StageError::NoDestination(message))
+                    if again && stage != Stage::Diarize =>
+                {
+                    return self.fail_transcribe_again(id, stage, message);
                 }
                 Err(StageError::NoDestination(problem)) => {
                     log::info!("{id} waits for its destination: {problem}");
@@ -590,6 +651,31 @@ impl Runner {
             session_id: id.to_string(),
         });
         Outcome::Finished
+    }
+
+    /// Return a failed Transcribe Again run to Saved with its previous
+    /// checkpoints, record the error for the note page, and remove the
+    /// working directory that the run made. When a resume took the session
+    /// first, the resume owns the working directory and nothing changes.
+    fn fail_transcribe_again(&self, id: &str, stage: Stage, message: String) -> Outcome {
+        log::error!("transcribing {id} again failed at {stage:?}: {message}");
+        match lock(&self.env.store).fail_transcribe_again(id, &message) {
+            Ok(_) => {
+                let dir = self.env.working_root.join(id);
+                if dir.exists()
+                    && let Err(e) = std::fs::remove_dir_all(&dir)
+                {
+                    log::warn!("could not remove {}: {e}", dir.display());
+                }
+            }
+            Err(e) => log::warn!("could not return {id} to its saved state: {e}"),
+        }
+        (self.env.events)(RunnerEvent::TranscribeAgainFailed {
+            session_id: id.to_string(),
+            stage,
+            message: message.clone(),
+        });
+        Outcome::Failed { stage, message }
     }
 
     async fn run_stage(

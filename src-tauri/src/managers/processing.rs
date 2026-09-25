@@ -72,6 +72,12 @@ pub enum ProcessingStep {
         path: String,
         copied: bool,
     },
+    /// A Transcribe Again run failed; the session keeps its previous
+    /// transcript and summary (R19).
+    TranscribeAgainFailed {
+        stage: String,
+        message: String,
+    },
     Cancelled,
     Finished,
 }
@@ -146,6 +152,17 @@ impl From<RunnerEvent> for ProcessingUpdate {
                 ProcessingStep::Saved {
                     path: path.to_string_lossy().into_owned(),
                     copied,
+                },
+            ),
+            RunnerEvent::TranscribeAgainFailed {
+                session_id,
+                stage,
+                message,
+            } => (
+                session_id,
+                ProcessingStep::TranscribeAgainFailed {
+                    stage: stage_name(stage),
+                    message,
                 },
             ),
             RunnerEvent::Cancelled { session_id } => (session_id, ProcessingStep::Cancelled),
@@ -443,6 +460,13 @@ impl ProcessingManager {
     ) -> Result<pipeline::folder_rename::FolderRename, String> {
         self.runner
             .rename_session(session_id, title)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Queue a saved session to be transcribed again with `model` (R15).
+    pub fn transcribe_again(&self, session_id: &str, model: &str) -> Result<(), String> {
+        self.runner
+            .transcribe_again(session_id, model)
             .map_err(|e| e.to_string())
     }
 

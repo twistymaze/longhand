@@ -28,6 +28,7 @@ import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
+import { useTranscribeAgain } from "./TranscribeAgain";
 import { LiveTranscript, type LiveMode, READY_AFTER_STOP } from "./LiveTranscript";
 import type { Sessions } from "./useSessions";
 
@@ -221,6 +222,16 @@ export function SessionPage({
     },
   });
 
+  const again = useTranscribeAgain({
+    sessionId: id,
+    noteModel: detail?.asr_model ?? null,
+    onQueued: () => {
+      setNotice(null);
+      changed();
+    },
+    onFailed: (text) => setNotice({ tone: "negative", text }),
+  });
+
   const items: MenuItem[] = [];
   if (phase === "recording" && capture.status?.recording) {
     items.push({ label: "Number of Speakers…", onSelect: () => setSpeakers(true) });
@@ -235,22 +246,33 @@ export function SessionPage({
   }
   if (phase === "saved") {
     items.push({ label: "Regenerate Summary", disabled: regenerating, onSelect: regenerate });
+    items.push({
+      label: "Transcribe Again…",
+      disabled: regenerating,
+      reason: "Wait until the summary is ready.",
+      onSelect: again.ask,
+    });
   }
   items.push({ label: "Rename", onSelect: () => title.current?.edit() });
   if (entry && !open && canDelete(entry.state)) {
     items.push({ label: "Delete…", onSelect: () => deletion.ask(entry) });
   }
 
+  // What the last Transcribe Again left for the user to know (R19).
+  const againFailed = phase === "saved" && detail?.transcribe_again_error != null;
+  const summaryKept = phase === "saved" && detail?.summary_not_updated != null;
+
   const live = sessions.live[id];
   const progress = regenerating && live?.stage === "summarize" && live.total > 1 ? ` part ${live.done} of ${live.total}` : "";
   const regenerateControl = (
-    <Button prominent={!doc?.summary || doc.summary.stub} disabled={regenerating} onClick={regenerate}>
+    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} disabled={regenerating} onClick={regenerate}>
       {regenerating ? `Summarizing…${progress}` : "Regenerate Summary"}
     </Button>
   );
 
-  // The note's own live mode decides, not the model selected now (R9).
-  const liveMode = detail?.live_transcript ?? false;
+  // The note's own live mode decides, not the model selected now (R9). A
+  // Transcribe Again run has no live text.
+  const liveMode = (detail?.live_transcript ?? false) && !detail?.transcribe_again;
   const liveView = (mode: LiveMode) => <LiveTranscript sessionId={id} mode={mode} scroller={scroller} />;
   const processing =
     detail && phase === "processing" ? (
@@ -282,7 +304,14 @@ export function SessionPage({
     if (error) return <p className="text-negative">{error}</p>;
     if (!doc) return which === "transcript" && liveMode ? liveView("loading") : null;
     return which === "summary" ? (
-      <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
+      <>
+        {summaryKept && (
+          <p role="status" className="mb-4 text-[0.85rem] text-caution">
+            The summary could not be updated. It is from the previous transcript.
+          </p>
+        )}
+        <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
+      </>
     ) : (
       <TranscriptTab
         lines={doc.lines}
@@ -378,6 +407,11 @@ export function SessionPage({
               {notice.text}
             </p>
           )}
+          {!notice && againFailed && (
+            <p role="status" className="mt-2 text-[0.85rem] text-negative" title={detail?.transcribe_again_error ?? undefined}>
+              The new transcript failed. The previous transcript is unchanged.
+            </p>
+          )}
         </div>
         {tab !== "notes" && (
           <div role="tabpanel" className="mx-auto max-w-[44rem] px-8 pt-5 pb-12">
@@ -404,6 +438,7 @@ export function SessionPage({
         />
       )}
       {deletion.dialog}
+      {again.dialog}
     </div>
   );
 }

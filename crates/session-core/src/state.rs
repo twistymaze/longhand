@@ -116,6 +116,19 @@ pub enum Event {
     SavedEdit,
     /// Launch sweep: this session was processing in a process that is gone.
     ClaimLost,
+    /// The user's Transcribe Again on a saved session (R15, KTD14). The
+    /// caller answers the guards: whether the folder still holds every
+    /// segment's audio, whether a capture is active, and whether the
+    /// session's summary is regenerated.
+    UserTranscribeAgain {
+        at: DateTime<FixedOffset>,
+        audio_intact: bool,
+        capture_active: bool,
+        regenerating: bool,
+    },
+    /// A Transcribe Again run failed before its save. The session is saved
+    /// again with its previous files (R19).
+    TranscribeAgainFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -264,6 +277,18 @@ impl SessionState {
                 stopped_at: *stopped_at,
             }),
             (S::Saved, Event::SavedEdit) => Some(S::Saved),
+            (
+                S::Saved,
+                Event::UserTranscribeAgain {
+                    at,
+                    audio_intact,
+                    capture_active,
+                    regenerating,
+                },
+            ) if *audio_intact && !*capture_active && !*regenerating => {
+                Some(S::Queued { stopped_at: *at })
+            }
+            (S::Processing { .. }, Event::TranscribeAgainFailed) => Some(S::Saved),
 
             (_, Event::UserResume { .. }) if self.is_stopped() => Some(S::Capturing),
             (S::Saved, Event::UserResume { audio_intact, .. }) if *audio_intact => {
