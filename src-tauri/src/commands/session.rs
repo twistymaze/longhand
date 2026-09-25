@@ -731,6 +731,7 @@ mod entry_tests {
             }),
             found_speakers: Some(3),
             live_transcript: None,
+            transcribe_again_model: None,
         };
         let e = entry(&record, &[], None);
         assert_eq!(e.title.as_deref(), Some("Budget review"));

@@ -167,9 +167,14 @@ pub fn delete_refusal(
     if live_model == Some(id) {
         return Some("The current recording uses this model.".into());
     }
+    // A Transcribe Again run keeps the old `asr_model` until its save and
+    // uses the run's model. This is the same order as `Runner::run_next`.
     let needed = sessions.iter().any(|s| {
-        s.asr_model.as_deref() == Some(id)
-            && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
+        let model = s
+            .transcribe_again_model
+            .as_deref()
+            .or(s.asr_model.as_deref());
+        model == Some(id) && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
     });
     if needed {
         return Some("A note that isn't finished needs this model.".into());
@@ -630,6 +635,7 @@ mod tests {
             title: None,
             found_speakers: None,
             live_transcript: None,
+            transcribe_again_model: None,
         }
     }
 
@@ -704,6 +710,39 @@ mod tests {
             let sessions = [note(PARAKEET, state)];
             assert_eq!(delete_refusal(PARAKEET, &settings, None, &sessions), None);
         }
+    }
+
+    #[test]
+    fn delete_refuses_the_model_of_a_transcribe_again_run_and_allows_the_old_model() {
+        // A Transcribe Again run keeps the old `asr_model` until its save
+        // and uses the run's model (KTD14).
+        let settings = whisper_selected();
+        let stopped_at = stopped();
+        for state in [
+            SessionState::Queued { stopped_at },
+            SessionState::Processing { stopped_at },
+        ] {
+            let name = state.name();
+            let sessions = [SessionRecord {
+                transcribe_again_model: Some(TDT_1_1B.into()),
+                ..note(PARAKEET, state)
+            }];
+            assert!(
+                delete_refusal(TDT_1_1B, &settings, None, &sessions).is_some(),
+                "{name}"
+            );
+            assert_eq!(
+                delete_refusal(PARAKEET, &settings, None, &sessions),
+                None,
+                "{name}"
+            );
+        }
+        // A saved note with a stale mark needs no model.
+        let sessions = [SessionRecord {
+            transcribe_again_model: Some(TDT_1_1B.into()),
+            ..note(PARAKEET, SessionState::Saved)
+        }];
+        assert_eq!(delete_refusal(TDT_1_1B, &settings, None, &sessions), None);
     }
 
     #[test]

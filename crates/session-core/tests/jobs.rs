@@ -926,6 +926,7 @@ fn transcribe_again_queues_the_note_with_its_model_and_sets_aside_the_checkpoint
     // The model of the note changes only after the save (KTD14).
     let record = store.session("s1").unwrap().unwrap();
     assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
+    assert_eq!(record.transcribe_again_model.as_deref(), Some(WHISPER));
     // Every stage runs again. Assemble decodes the audio from the folder.
     for stage in STAGES {
         assert!(keys(&store, stage).is_empty(), "{stage:?}");
@@ -992,6 +993,7 @@ fn a_saved_transcribe_again_changes_the_model_and_drops_the_previous_checkpoints
     store.apply("s1", &Event::Saved).unwrap();
     let record = store.session("s1").unwrap().unwrap();
     assert_eq!(record.asr_model.as_deref(), Some(WHISPER));
+    assert_eq!(record.transcribe_again_model, None);
     let marks = store.transcribe_again_marks("s1").unwrap();
     assert_eq!(marks.model, None);
     assert_eq!(

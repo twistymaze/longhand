@@ -47,6 +47,10 @@ pub struct SessionRecord {
     /// The session transcribes during recording (R18, KTD2). `None` for a
     /// session from before migration 0004.
     pub live_transcript: Option<bool>,
+    /// The model of a queued or running Transcribe Again run, the same value
+    /// as [`TranscribeAgainMarks::model`]. The run uses this model, not
+    /// `asr_model` (KTD14).
+    pub transcribe_again_model: Option<String>,
 }
 
 /// The recognition model and the live mode that a session records when it
@@ -147,7 +151,7 @@ fn stage_key(stage: Stage) -> String {
 
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
-     home_path, title, title_source, found_speakers, live_transcript";
+     home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -898,6 +902,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let title_source: Option<String> = r.get(8)?;
     let found_speakers: Option<u32> = r.get(9)?;
     let live_transcript: Option<bool> = r.get(10)?;
+    let transcribe_again_model: Option<String> = r.get(11)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -921,6 +926,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
             title,
             found_speakers,
             live_transcript,
+            transcribe_again_model,
         })
     })())
 }
