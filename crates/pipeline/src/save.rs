@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset};
 
+use library::refresh::Scope;
 use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
@@ -122,8 +123,8 @@ pub fn run(
     {
         return update_home(store, session_id, working, segments, &home, fs, control);
     }
-    let destination = destination
-        .ok_or_else(|| StageError::NoDestination("no destination folder is set".into()))?;
+    let destination =
+        destination.ok_or_else(|| StageError::NoDestination("no storage folder is set".into()))?;
     let started = segments
         .first()
         .ok_or_else(|| StageError::Failed("the note has no audio".into()))?
@@ -202,6 +203,7 @@ pub fn run(
     let SaveState::Done { path } = state else {
         unreachable!("the loop ends on Done");
     };
+    crate::follow::mark_destination(destination);
 
     // Reopen notes against the home folder (R22e): anything edited while
     // saving is in the store, and is written here. Under the lock, so an
@@ -236,7 +238,7 @@ fn check_room(working: &Path, destination: &Path) -> Result<(), StageError> {
     let needed = tree_size(working, session_save::LEFT_BEHIND)? + MARGIN;
     match recorder::storage::available_space(destination) {
         Some(free) if free < needed => Err(StageError::NoDestination(format!(
-            "the destination folder {} has {:.1} GB free and the note needs about {:.1} GB",
+            "the storage folder {} has {:.1} GB free and the note needs about {:.1} GB",
             destination.display(),
             free as f64 / 1e9,
             needed as f64 / 1e9
@@ -325,6 +327,7 @@ fn update_home(
             false
         }
     };
+    let mut home = home.to_path_buf();
     if !finished {
         if !working.exists() {
             return Err(StageError::Failed(format!(
@@ -333,41 +336,48 @@ fn update_home(
                 home.display()
             )));
         }
+        // Another computer can rename the note or edit its notes during the
+        // run: the row takes them now, and the run's transcript and summary
+        // replace the folder's (KTD3).
+        follow_run(&mut lock(store), session_id)?;
         render(store, session_id, working, segments)?;
-        for segment in segments {
-            let target = home.join(&segment.audio_file);
-            if target.exists() {
-                continue;
+        // The library reconcile moves the home path when a sync delivers a
+        // renamed folder (KTD6), so each write reads it again. The audio is
+        // copied without the store lock; when the home path moved during
+        // the copy, the copy runs again into the new folder.
+        home = run_home(&lock(store), session_id)?;
+        let mut guard = loop {
+            add_audio(&home, working, segments)?;
+            let guard = lock(store);
+            let now = run_home(&guard, session_id)?;
+            if now == home {
+                break guard;
             }
-            let (Some(dir), Some(name)) =
-                (target.parent(), target.file_name().and_then(|n| n.to_str()))
-            else {
-                return Err(StageError::Failed(format!(
-                    "bad audio name {}",
-                    segment.audio_file
-                )));
-            };
-            std::fs::create_dir_all(dir)?;
-            home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
-        }
-        checkpoint::put(store, session_id, Stage::Save, HOME_CHANGED, &true)?;
-        for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE] {
+            drop(guard);
+            home = now;
+        };
+        guard.put_checkpoint(session_id, Stage::Save, HOME_CHANGED, "true")?;
+        // Under the store lock: the documents go into the folder where the
+        // note is now, and the notes written are the ones that the folder
+        // and this computer hold now.
+        follow_run(&mut guard, session_id)?;
+        for name in [TRANSCRIPT_FILE, SUMMARY_FILE] {
             if name == SUMMARY_FILE && summary_error.is_some() {
                 continue;
             }
             let contents = std::fs::read(working.join(name))?;
-            home_write::write_atomic(home, name, &contents)?;
+            home_write::write_atomic(&home, name, &contents)?;
         }
+        write_notes(&guard, session_id, &home)?;
         // `session.md` is made again from the home folder, because a kept
         // previous `summary.md` has another fingerprint than the stub in
         // the working copy.
-        let record = lock(store)
+        let record = guard
             .session(session_id)?
             .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
-        folder_rename::write_document(&record, segments, home)?;
-        let done = SaveState::Done {
-            path: home.to_path_buf(),
-        };
+        folder_rename::write_document(&record, segments, &home)?;
+        drop(guard);
+        let done = SaveState::Done { path: home.clone() };
         checkpoint::put(store, session_id, Stage::Save, STATE, &done)?;
     }
     if working.exists() {
@@ -375,8 +385,10 @@ fn update_home(
     }
 
     let mut guard = lock(store);
-    write_notes(&guard, session_id, home)?;
-    record_transcript_fingerprint(&guard, session_id, home)?;
+    let home = run_home(&guard, session_id)?;
+    follow_run(&mut guard, session_id)?;
+    write_notes(&guard, session_id, &home)?;
+    record_transcript_fingerprint(&guard, session_id, &home)?;
     guard.put_checkpoint(
         session_id,
         Stage::Save,
@@ -393,6 +405,52 @@ fn update_home(
         path,
         copied: false,
     })
+}
+
+/// Copy each segment's audio that `home` does not hold yet from the working
+/// copy. The old audio is never rewritten.
+fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), StageError> {
+    if !home.is_dir() {
+        return Err(StageError::NoDestination(format!(
+            "the note's folder {} is missing; put it back to finish",
+            home.display()
+        )));
+    }
+    for segment in segments {
+        let target = home.join(&segment.audio_file);
+        if target.exists() {
+            continue;
+        }
+        let (Some(dir), Some(name)) =
+            (target.parent(), target.file_name().and_then(|n| n.to_str()))
+        else {
+            return Err(StageError::Failed(format!(
+                "bad audio name {}",
+                segment.audio_file
+            )));
+        };
+        std::fs::create_dir_all(dir)?;
+        home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
+    }
+    Ok(())
+}
+
+/// The home folder of a session in a run that updates its folder, whatever
+/// the session's state.
+fn run_home(store: &Store, session_id: &str) -> Result<PathBuf, StageError> {
+    store
+        .session(session_id)?
+        .and_then(|record| record.home_path)
+        .map(PathBuf::from)
+        .ok_or_else(|| StageError::Failed(format!("the note {session_id} has no folder")))
+}
+
+/// Inside a run that updates the note's folder: take the title and the
+/// notes from the folder, and keep the run's recognition results (KTD3).
+fn follow_run(store: &mut Store, session_id: &str) -> Result<(), StageError> {
+    let home = run_home(store, session_id)?;
+    crate::follow::follow_scoped(store, session_id, &home, Scope::TitleAndNotes)?;
+    Ok(())
 }
 
 /// Take the session for saving, unless a resume took it first.
@@ -598,25 +656,103 @@ fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageEr
         .map(PathBuf::from))
 }
 
-/// Replace a session's notes document (KTD5, R20). On a saved session the
-/// home folder's `notes.md` is rewritten whole in the same call (R22f).
-/// The caller holds the store lock for the whole call, which is the lock
-/// the save stage takes to write `notes.md` after `Done`: an edit comes
-/// either before that write or after the session is saved, so no edit is
-/// lost. Returns false when the session is not saved, so there is no file
-/// to write yet.
-pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<bool, StageError> {
-    store.set_notes(session_id, document)?;
-    rewrite_notes(store, session_id)
+/// What a notes save did (KTD10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotesSave {
+    /// The store holds the document. `written` when the note folder's
+    /// `notes.md` holds it too.
+    Saved { written: bool },
+    /// `notes.md` changed after the editor loaded it: another computer
+    /// wrote it. The file and the row keep that text, and the document is
+    /// in the draft file at `draft`, beside `notes.md`.
+    Conflict { draft: PathBuf },
 }
 
-fn rewrite_notes(store: &mut Store, session_id: &str) -> Result<bool, StageError> {
-    let Some(path) = home_path(store, session_id)? else {
-        return Ok(false);
+/// The fingerprint of the `notes.md` that holds `document`. The editor
+/// sends it back with each save, as the fingerprint of the file that it
+/// loaded (KTD10).
+pub fn notes_fingerprint(document: &str) -> String {
+    folder::fingerprint(folder::render_notes(document).as_bytes())
+}
+
+/// Replace a session's notes document (KTD5, R20), with no check of what
+/// the editor loaded. See [`save_notes`]. Returns whether the note
+/// folder's `notes.md` holds the document.
+pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<bool, StageError> {
+    match save_notes(store, session_id, document, None)? {
+        NotesSave::Saved { written } => Ok(written),
+        NotesSave::Conflict { .. } => unreachable!("a save with no loaded fingerprint"),
+    }
+}
+
+/// Replace a session's notes document (KTD5, KTD10, R20). The row first
+/// follows its folder (KTD3). A session with a home folder then gets its
+/// `notes.md` rewritten whole in the same call (R22f), also while a Resume
+/// or a Transcribe Again runs on it, so that the folder and the row agree
+/// and a refresh in that run keeps the edit.
+///
+/// `loaded` is the fingerprint of the `notes.md` that the editor loaded
+/// ([`notes_fingerprint`]). When the file in the folder has another
+/// fingerprint, another computer changed it: the file stays as it is, and
+/// the document goes into a draft beside it.
+///
+/// The caller holds the store lock for the whole call, which is the lock
+/// the save stage takes to write `notes.md`: an edit comes either before
+/// that write or after it, so no edit is lost.
+pub fn save_notes(
+    store: &mut Store,
+    session_id: &str,
+    document: &str,
+    loaded: Option<&str>,
+) -> Result<NotesSave, StageError> {
+    let record = store
+        .session(session_id)?
+        .ok_or_else(|| session_core::StoreError::NoSuchSession(session_id.to_string()))?;
+    crate::follow::follow_folder(store, session_id, false)?;
+    let saved = record.state == SessionState::Saved;
+    // A session in a run keeps the edit in the store when its folder is
+    // not there; the save of the run writes it. A saved session reports
+    // the folder that is gone.
+    let home = record
+        .home_path
+        .map(PathBuf::from)
+        .filter(|home| saved || home.is_dir());
+    if let (Some(home), Some(loaded)) = (&home, loaded)
+        && let Some(current) = fingerprint_of(home, NOTES_FILE)?
+        && current != loaded
+    {
+        let draft = write_draft(home, document)?;
+        log::info!(
+            "the notes of {session_id} changed on another computer; the edit is in {}",
+            draft.display()
+        );
+        return Ok(NotesSave::Conflict { draft });
+    }
+    store.set_notes(session_id, document)?;
+    let Some(home) = home else {
+        return Ok(NotesSave::Saved { written: false });
     };
-    write_notes(store, session_id, &path)?;
-    store.apply(session_id, &Event::SavedEdit)?;
-    Ok(true)
+    write_notes(store, session_id, &home)?;
+    if saved {
+        store.apply(session_id, &Event::SavedEdit)?;
+    }
+    Ok(NotesSave::Saved { written: true })
+}
+
+/// Write `document` beside `notes.md` in `dir` as a conflict draft,
+/// `notes (Longhand conflict YYYY-MM-DD HHMM).md`, a name of the conflict
+/// form that the library scan finds (KTD5, KTD10). A draft of the same
+/// minute gets a number, so no draft replaces another.
+fn write_draft(dir: &Path, document: &str) -> Result<PathBuf, StageError> {
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H%M").to_string();
+    let mut name = format!("notes (Longhand conflict {stamp}).md");
+    let mut n = 2;
+    while dir.join(&name).exists() {
+        name = format!("notes (Longhand conflict {stamp}-{n}).md");
+        n += 1;
+    }
+    home_write::write_atomic(dir, &name, folder::render_notes(document).as_bytes())?;
+    Ok(dir.join(name))
 }
 
 /// Summarize a saved session again and replace its `summary.md` (R19,
@@ -657,10 +793,15 @@ fn summarize_again(
             "a summary can be regenerated only once the note has finished processing".into(),
         )
     };
-    let segments = {
-        let guard = lock(store);
+    // The row follows its folder first (KTD3): the summary uses the notes
+    // and the title that another computer wrote. The caller holds the
+    // regeneration claim.
+    let (home, segments) = {
+        let mut guard = lock(store);
         home_path(&guard, session_id)?.ok_or_else(not_saved)?;
-        guard.segments(session_id)?
+        crate::follow::follow_folder(&mut guard, session_id, false)?;
+        let home = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        (home, guard.segments(session_id)?)
     };
     // A stub resumes from the calls made before the failure, but only when
     // they were made with the active prompt's text (KTD5). A complete
@@ -684,8 +825,10 @@ fn summarize_again(
             &active,
         )?;
     }
+    // The transcript comes from `transcript.md`, so a computer with no
+    // recognition results for the note summarizes the same text (KTD4).
     let summary = summarize::produce(
-        store, session_id, &segments, endpoint, active, learn, control, progress,
+        store, session_id, &home, endpoint, active, learn, control, progress,
     )?;
     // The home folder is read again under the lock, just before the write,
     // and the lock is held through the write.

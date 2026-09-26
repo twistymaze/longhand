@@ -308,6 +308,74 @@ pub async fn set_session_notes(
     .map_err(|e| e.to_string())?
 }
 
+/// A session's notes document and the fingerprint of the `notes.md` that
+/// holds it. The editor sends the fingerprint back with each save
+/// (KTD10).
+#[derive(Serialize, Type)]
+pub struct LoadedNotes {
+    pub markdown: String,
+    pub fingerprint: String,
+}
+
+/// A session's notes document, with the fingerprint that
+/// [`save_session_notes`] checks.
+#[tauri::command]
+#[specta::specta]
+pub fn load_session_notes(
+    capture: State<'_, Arc<CaptureManager>>,
+    session_id: String,
+) -> Result<LoadedNotes, String> {
+    let markdown = capture
+        .session_notes(&session_id)
+        .map_err(|e| e.to_string())?;
+    Ok(LoadedNotes {
+        fingerprint: pipeline::save::notes_fingerprint(&markdown),
+        markdown,
+    })
+}
+
+/// What a notes save did.
+#[derive(Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotesSaveResult {
+    /// `fingerprint` is the fingerprint of the saved document, which the
+    /// editor sends with its next save.
+    Saved { fingerprint: String },
+    /// Another computer changed `notes.md` after the editor loaded it. The
+    /// file keeps that text, and the edit is in the draft file `draft`
+    /// beside it. The editor loads the notes again.
+    Conflict { draft: String },
+}
+
+/// Replace a session's notes document, as [`set_session_notes`] does.
+/// `loaded_fingerprint` is the fingerprint that [`load_session_notes`] gave
+/// for the document that the editor changed; `None` skips the check.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_session_notes(
+    capture: State<'_, Arc<CaptureManager>>,
+    session_id: String,
+    markdown: String,
+    loaded_fingerprint: Option<String>,
+) -> Result<NotesSaveResult, String> {
+    let capture = Arc::clone(&capture);
+    tauri::async_runtime::spawn_blocking(move || {
+        let saved = capture
+            .save_session_notes(&session_id, &markdown, loaded_fingerprint.as_deref())
+            .map_err(|e| e.to_string())?;
+        Ok(match saved {
+            pipeline::save::NotesSave::Saved { .. } => NotesSaveResult::Saved {
+                fingerprint: pipeline::save::notes_fingerprint(&markdown),
+            },
+            pipeline::save::NotesSave::Conflict { draft } => NotesSaveResult::Conflict {
+                draft: draft.to_string_lossy().into_owned(),
+            },
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// What a rename did to the session's folder. The title changes in every
 /// case.
 #[derive(Serialize, Type)]

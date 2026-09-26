@@ -1477,3 +1477,21 @@ fn clearing_recognition_results_removes_assemble_transcribe_and_diarize_only() {
         Err(StoreError::NoSuchSession(_))
     ));
 }
+
+#[test]
+fn only_a_saved_unclaimed_session_with_a_home_folder_is_not_busy() {
+    use session_core::jobs::busy;
+    let d = saved_session();
+    let record = d.store.lock().unwrap().session("s").unwrap().unwrap();
+    assert!(!busy(&record, false));
+    assert!(
+        busy(&record, true),
+        "a regeneration or a delete holds a claim"
+    );
+    let mut homeless = record.clone();
+    homeless.home_path = None;
+    assert!(busy(&homeless, false));
+    let mut recording = record;
+    recording.state = SessionState::Capturing;
+    assert!(busy(&recording, false));
+}

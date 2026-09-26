@@ -76,9 +76,9 @@ pub struct Job<'a> {
 pub enum SaveError {
     /// The destination cannot take the session: it waits for the user
     /// (R22b's awaiting-destination), whole in the working location.
-    #[error("the destination folder {} {problem}", path.display())]
+    #[error("the storage folder {} {problem}", path.display())]
     Destination { path: PathBuf, problem: String },
-    #[error("{} already exists in the destination and was not made by this session", .0.display())]
+    #[error("{} already exists in the storage folder and was not made by this session", .0.display())]
     StagingTaken(PathBuf),
     #[error("{0}")]
     Lost(String),

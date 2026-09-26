@@ -543,6 +543,31 @@ async setSessionNotes(sessionId: string, markdown: string) : Promise<Result<null
 }
 },
 /**
+ * A session's notes document, with the fingerprint that
+ * [`save_session_notes`] checks.
+ */
+async loadSessionNotes(sessionId: string) : Promise<Result<LoadedNotes, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("load_session_notes", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace a session's notes document, as [`set_session_notes`] does.
+ * `loaded_fingerprint` is the fingerprint that [`load_session_notes`] gave
+ * for the document that the editor changed; `None` skips the check.
+ */
+async saveSessionNotes(sessionId: string, markdown: string, loadedFingerprint: string | null) : Promise<Result<NotesSaveResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_session_notes", { sessionId, markdown, loadedFingerprint }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Rename a session (R9, R35): `title` is stored as the user's title, and
  * an empty title clears it. The folder of a saved, idle session takes
  * the new name now; any other session's folder takes it later. The rename
@@ -848,6 +873,12 @@ export type LiveTranscriptEvent = { session_id: string; segment: number; part: n
  */
 export type LiveTranscriptStatus = { session_id: string; segment: number; state: LiveState }
 /**
+ * A session's notes document and the fingerprint of the `notes.md` that
+ * holds it. The editor sends the fingerprint back with each save
+ * (KTD10).
+ */
+export type LoadedNotes = { markdown: string; fingerprint: string }
+/**
  * The usual microphone (R1, KTD1): cpal's stable device ID, with the device
  * name as its label, so Settings can name a microphone that is not
  * connected. Lookup is by ID first, then by the exact label.
@@ -886,6 +917,21 @@ recommended: boolean; size_bytes: number;
  * both diarization weights.
  */
 required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo }
+/**
+ * What a notes save did.
+ */
+export type NotesSaveResult = 
+/**
+ * `fingerprint` is the fingerprint of the saved document, which the
+ * editor sends with its next save.
+ */
+{ kind: "saved"; fingerprint: string } | 
+/**
+ * Another computer changed `notes.md` after the editor loaded it. The
+ * file keeps that text, and the edit is in the draft file `draft`
+ * beside it. The editor loads the notes again.
+ */
+{ kind: "conflict"; draft: string }
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
  * The secret store holding the endpoint credential is locked (R20b).

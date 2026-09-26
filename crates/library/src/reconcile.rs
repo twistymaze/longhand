@@ -21,7 +21,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use session_core::{Adoption, SessionRecord, SessionState, Store, StoreError};
+use session_core::jobs::busy;
+use session_core::{Adoption, SessionRecord, Store, StoreError};
 
 use crate::refresh::{self, FolderContents};
 use crate::scan::{LibraryScan, NoteFolder, READ_TIMEOUT, ScanOptions};
@@ -171,8 +172,7 @@ impl Reconciler {
             let since = *self.pending.entry(record.id.clone()).or_insert(now);
             let due = now.saturating_duration_since(since) >= DELETE_WAIT;
             if due
-                && record.state == SessionState::Saved
-                && !claimed(&record.id)
+                && !busy(record, claimed(&record.id))
                 && !intents.contains(&record.id)
                 && store.forget(&record.id)?
             {
@@ -205,8 +205,7 @@ impl Reconciler {
             .home_path
             .as_deref()
             .is_some_and(|home| Path::new(home) != note.path);
-        let refreshable =
-            record.state == SessionState::Saved && record.home_path.is_some() && !claimed(id);
+        let refreshable = !busy(record, claimed(id));
         let stale = refreshable && refresh::differs(store, id, &FolderContents::from_scan(note))?;
         if !moved && !stale {
             return Ok(false);

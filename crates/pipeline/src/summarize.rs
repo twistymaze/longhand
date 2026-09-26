@@ -1,5 +1,5 @@
 //! The summarize stage (KTD16, R17, R18, R19, R24b). The transcript is
-//! rebuilt from the join's inputs, the context budget resolved, and the
+//! read from `transcript.md` (KTD4), the context budget resolved, and the
 //! summary produced in one call when it fits, which is the normal case, or
 //! in parts merged layer by layer when it does not. Every call's result is
 //! checkpointed, so a quit resumes at the first missing one; a rejection
@@ -18,14 +18,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use session_core::folder::{Summary, SummaryMeta, TranscriptLine};
+use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Turn};
 use summarize::client::Message;
 use summarize::{Budget, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
-use crate::diarize::speakers;
-use crate::transcribe::results;
+use crate::join::TRANSCRIPT_FILE;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
 pub use summarize::Prompt;
@@ -115,17 +114,23 @@ fn call_key(layer: usize, index: usize) -> String {
     format!("l{layer:02}-{index:05}")
 }
 
-/// The transcript's turns, rebuilt exactly as the join rendered them.
-pub fn transcript_turns(
-    store: &SharedStore,
-    session_id: &str,
-    segments: &[Segment],
-) -> Result<Vec<Turn>, StageError> {
-    let transcript = crate::join::build(
-        segments,
-        &results(store, session_id)?,
-        &speakers(store, session_id)?,
-    );
+/// The turns of the `transcript.md` in `folder` (KTD4). The file holds the
+/// final text, so the turns are the same on every computer, also on one
+/// that has no recognition results for the note.
+pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
+    let path = folder.join(TRANSCRIPT_FILE);
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        StageError::Failed(format!(
+            "the transcript {} cannot be read: {e}",
+            path.display()
+        ))
+    })?;
+    let transcript = Transcript::parse(&text).map_err(|e| {
+        StageError::Failed(format!(
+            "the transcript {} is not valid: {e}",
+            path.display()
+        ))
+    })?;
     Ok(transcript
         .lines
         .into_iter()
@@ -203,7 +208,14 @@ pub fn run(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
-        store, session_id, segments, endpoint, active, learn, control, progress,
+        store,
+        session_id,
+        session_dir,
+        endpoint,
+        active,
+        learn,
+        control,
+        progress,
     )?;
     let path = session_dir.join(SUMMARY_FILE);
     let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
@@ -213,21 +225,21 @@ pub fn run(
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
 }
 
-/// Summarize the session from its checkpoints, resuming any calls already
+/// Summarize the `transcript.md` in `folder`, resuming any calls already
 /// made. Writes nothing but checkpoints. `active` is the active summary
 /// prompt, which the run uses only when it saved no snapshot before.
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
     session_id: &str,
-    segments: &[Segment],
+    folder: &Path,
     endpoint: SummaryEndpoint,
     active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
-    let turns = transcript_turns(store, session_id, segments)?;
+    let turns = transcript_turns(folder)?;
     let notes = session_notes(store, session_id)?;
     let client = Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),

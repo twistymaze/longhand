@@ -554,3 +554,91 @@ fn a_new_transcript_from_b_clears_as_recognition_results_for_that_note() {
     );
     assert!(other.is_dir());
 }
+
+// Covers KTD3: a writer inside its own run.
+#[test]
+fn a_refresh_inside_a_run_takes_a_users_title_and_the_notes_and_keeps_the_runs_results() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "- bring snacks\n");
+    a.store
+        .lock()
+        .unwrap()
+        .put_checkpoint("n1", Stage::Transcribe, "window-0", "{}")
+        .unwrap();
+    let stored = a
+        .store
+        .lock()
+        .unwrap()
+        .transcript_fingerprint("n1")
+        .unwrap();
+
+    // B renames the note, edits its notes and writes a new transcript.
+    let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n";
+    fs::write(folder.join("transcript.md"), transcript).unwrap();
+    fs::write(folder.join("notes.md"), "- bring more snacks\n").unwrap();
+    edit_doc(&folder, |doc| {
+        doc.title = Some("Budget".into());
+        doc.title_source = Some(TitleSource::User);
+        doc.asr_model = Some("tdt".into());
+        doc.found_speakers = Some(3);
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+    });
+
+    let refreshed = refresh::refresh_scoped(
+        &mut a.store.lock().unwrap(),
+        "n1",
+        &folder,
+        options().read_timeout,
+        refresh::Scope::TitleAndNotes,
+    )
+    .unwrap();
+    assert_eq!(
+        refreshed,
+        Refresh {
+            changed: true,
+            cleared_recognition_results: false,
+        }
+    );
+    let record = a.record("n1").unwrap();
+    assert_eq!(record.title, user_title("Budget"));
+    assert_eq!(a.notes("n1"), "- bring more snacks\n");
+    // The run's model, speakers, results and fingerprint stay.
+    assert_eq!(record.asr_model.as_deref(), Some("m"));
+    assert_eq!(record.found_speakers, None);
+    let s = a.store.lock().unwrap();
+    assert_eq!(s.checkpoints("n1", Stage::Transcribe).unwrap().len(), 1);
+    assert_eq!(s.transcript_fingerprint("n1").unwrap(), stored);
+}
+
+#[test]
+fn a_refresh_inside_a_run_keeps_the_runs_title_over_a_proposal_in_the_folder() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let proposed = |text: &str| {
+        Some(Title {
+            text: text.into(),
+            source: TitleSource::Proposed,
+        })
+    };
+    let folder = a.save_note("n1", &root, proposed("Planning"), "");
+    // The run proposed a new title with its new summary.
+    assert!(
+        a.store
+            .lock()
+            .unwrap()
+            .set_title("n1", "Budget", TitleSource::Proposed)
+            .unwrap()
+    );
+
+    let refreshed = refresh::refresh_scoped(
+        &mut a.store.lock().unwrap(),
+        "n1",
+        &folder,
+        options().read_timeout,
+        refresh::Scope::TitleAndNotes,
+    )
+    .unwrap();
+    assert_eq!(refreshed, Refresh::default());
+    assert_eq!(a.record("n1").unwrap().title, proposed("Budget"));
+}

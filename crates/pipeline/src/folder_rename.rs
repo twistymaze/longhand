@@ -7,13 +7,15 @@
 //! 3. rewrite `session.md` in the new folder with the title;
 //! 4. set `home_path`, then clear the intent.
 //!
-//! At launch, [`recover`] settles each intent that is left from disk, then
-//! runs the reconcile for every saved session. A rename that was deferred,
-//! lost to a crash or failed then completes.
+//! At launch, [`resolve_intents`] settles each intent that is left from
+//! disk. After the library reconcile, [`reconcile_saved`] runs the
+//! reconcile for every saved session. A rename that was deferred, lost to
+//! a crash or failed then completes.
 
 use std::path::{Path, PathBuf};
 
 use session_core::folder::SessionDoc;
+use session_core::jobs::busy;
 use session_core::{RenameIntent, Segment, SessionRecord, SessionState, Store, TitleSource};
 use session_save::rename_home::{self, Move, RenameError, Resolved};
 use session_save::{Fs, home_write};
@@ -36,20 +38,10 @@ pub enum FolderRename {
     Kept(String),
 }
 
-/// Whether a session is too busy for a folder rename (KTD8). This is the
-/// one busy check: every reconcile calls it. A session that records, is
-/// queued or processes is not in the saved state. `claimed` is true while
-/// a summary regeneration or a delete holds a claim on the session
-/// (`session_core::jobs::Claims`); the caller reads it under the store
-/// lock, so a regeneration or a delete that starts later reads the renamed
-/// folder.
-pub fn busy(record: &SessionRecord, claimed: bool) -> bool {
-    record.state != SessionState::Saved || record.home_path.is_none() || claimed
-}
-
-/// The user's rename (R9, R35): store `title` as the user's title, which
-/// changes it at once, then run the reconcile. `claimed` tells whether a
-/// summary regeneration or a delete holds a claim on the session now.
+/// The user's rename (R9, R35): bring the row up to date from its folder
+/// (KTD3), store `title` as the user's title, which changes it at once,
+/// then run the reconcile. `claimed` tells whether a summary regeneration
+/// or a delete holds a claim on the session now.
 pub fn rename_session(
     store: &SharedStore,
     session_id: &str,
@@ -57,10 +49,48 @@ pub fn rename_session(
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    let guard = lock(store);
-    guard.set_title(session_id, title, TitleSource::User)?;
+    let mut guard = lock(store);
     let claimed = claimed(session_id);
-    reconcile(&guard, session_id, claimed, true, fs)
+    crate::follow::follow_folder(&mut guard, session_id, claimed)?;
+    guard.set_title(session_id, title, TitleSource::User)?;
+    let renamed = reconcile(&guard, session_id, claimed, true, fs)?;
+    if renamed == FolderRename::Later {
+        write_title(&guard, session_id);
+    }
+    Ok(renamed)
+}
+
+/// Write the stored title into the `session.md` of a busy session's
+/// folder, which takes its new name later. A writer that follows the
+/// folder in the meantime (KTD3) then reads this title, not the old one.
+/// A folder that is not there, or a `session.md` that cannot be read or
+/// written, is logged: the reconcile after the work writes the document.
+fn write_title(store: &Store, session_id: &str) {
+    let Ok(Some(record)) = store.session(session_id) else {
+        return;
+    };
+    let Some(home) = record.home_path.as_deref().map(Path::new) else {
+        return;
+    };
+    let Some(mut doc) = std::fs::read_to_string(home.join(SESSION_FILE))
+        .ok()
+        .and_then(|text| SessionDoc::parse(&text).ok())
+    else {
+        return;
+    };
+    let title = record.title.as_ref().map(|t| t.text.clone());
+    let source = record.title.as_ref().map(|t| t.source);
+    if doc.title == title && doc.title_source == source {
+        return;
+    }
+    doc.title = title;
+    doc.title_source = source;
+    if let Err(e) = home_write::write_atomic(home, SESSION_FILE, doc.render().as_bytes()) {
+        log::warn!(
+            "could not write the title into {SESSION_FILE} in {}: {e}",
+            home.display()
+        );
+    }
 }
 
 /// Compare a saved, idle session's folder name with the name its title
@@ -173,12 +203,13 @@ pub fn resolve_intents(store: &SharedStore, fs: &dyn Fs) -> Result<Vec<String>, 
     Ok(settled)
 }
 
-/// At launch, before the processing queue starts: settle the intents that
-/// are left, then run the reconcile for every saved session. Nothing
+/// At launch, after [`resolve_intents`] and the library reconcile, and
+/// before the processing queue starts: run the reconcile for every saved
+/// session (KTD9). The library reconcile ran first, so a title that a sync
+/// delivered is in the row, and no folder is renamed back. Nothing
 /// regenerates at launch. A failure on one session does not stop the
 /// others.
-pub fn recover(store: &SharedStore, fs: &dyn Fs) -> Result<(), StageError> {
-    resolve_intents(store, fs)?;
+pub fn reconcile_saved(store: &SharedStore, fs: &dyn Fs) -> Result<(), StageError> {
     let guard = lock(store);
     for record in guard.sessions_in(SessionState::Saved.name())? {
         match reconcile(&guard, &record.id, false, false, fs) {

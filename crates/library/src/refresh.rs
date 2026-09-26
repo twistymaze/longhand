@@ -102,6 +102,20 @@ pub struct Refresh {
     pub cleared_recognition_results: bool,
 }
 
+/// Which parts of the row a refresh takes from the folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every part, and the transcript fingerprint (KTD12). For a Saved row
+    /// that no stage has claimed.
+    All,
+    /// Only a title that a user set, and the notes. For a writer inside
+    /// its own run (Resume, Transcribe Again): the run's recognition
+    /// results, model, speakers found, segments and title proposal belong
+    /// to the run, and its new transcript and summary replace the folder's
+    /// (KTD3).
+    TitleAndNotes,
+}
+
 /// Read the note folder `folder` and bring the row `id` up to date from it.
 pub fn refresh(
     store: &mut Store,
@@ -109,8 +123,19 @@ pub fn refresh(
     folder: &Path,
     timeout: Duration,
 ) -> Result<Refresh, RefreshError> {
+    refresh_scoped(store, id, folder, timeout, Scope::All)
+}
+
+/// [`refresh`] of the parts of the row that `scope` names.
+pub fn refresh_scoped(
+    store: &mut Store,
+    id: &str,
+    folder: &Path,
+    timeout: Duration,
+    scope: Scope,
+) -> Result<Refresh, RefreshError> {
     let contents = FolderContents::read(folder, timeout)?;
-    apply(store, id, &contents)
+    apply_scoped(store, id, &contents, scope)
 }
 
 /// Bring the row `id` up to date from `contents`, which were read from its
@@ -120,13 +145,36 @@ pub fn apply(
     id: &str,
     contents: &FolderContents,
 ) -> Result<Refresh, RefreshError> {
+    apply_scoped(store, id, contents, Scope::All)
+}
+
+/// [`apply`] to the parts of the row that `scope` names.
+pub fn apply_scoped(
+    store: &mut Store,
+    id: &str,
+    contents: &FolderContents,
+    scope: Scope,
+) -> Result<Refresh, RefreshError> {
     if contents.doc.session_id != id {
         return Err(RefreshError::OtherNote {
             expected: id.to_string(),
             found: contents.doc.session_id.clone(),
         });
     }
-    let updates = updates(store, id, contents)?;
+    let updates = match (scope, updates(store, id, contents)?) {
+        (Scope::All, updates) => updates,
+        // The run proposes its own title with its new summary, so only a
+        // title that a user set in the folder replaces the row's.
+        (Scope::TitleAndNotes, updates) => Updates {
+            title: updates.title.filter(|title| {
+                title
+                    .as_ref()
+                    .is_some_and(|title| title.source == TitleSource::User)
+            }),
+            notes: updates.notes,
+            ..Updates::default()
+        },
+    };
     Ok(write(store, id, updates)?)
 }
 

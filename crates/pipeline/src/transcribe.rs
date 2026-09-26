@@ -18,7 +18,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use asr::{AsrSegment, LiveWord, Recognizer, SAMPLES_PER_MS, Span, Voicing};
 use serde::{Deserialize, Serialize};
-use session_core::{Segment, Stage};
+use session_core::folder::{Transcript, TranscriptLine};
+use session_core::{Segment, Stage, Store};
 
 use crate::assemble::open_proc;
 use crate::live::{self, LiveRow};
@@ -522,6 +523,128 @@ fn read_span(
         pcm.push(sample?);
     }
     Ok(pcm)
+}
+
+/// Resume of a saved note that has no stored recognition results (KD3,
+/// KTD12): an adopted note, or one whose results a new `transcript.md` from
+/// another computer cleared. The text of each recorded segment comes from
+/// the `transcript.md` in `folder`: each turn goes to the segment that it
+/// falls in, by the offsets and durations of the segments. Each segment
+/// gets one window with those turns, and counts as transcribed, so the
+/// transcribe stage recognizes only the new segment. The segments have no
+/// voiced spans, so verification measures only the new segment.
+///
+/// Call it under the store lock, after the resume, before the new segment
+/// is added. Returns false and writes nothing when the note has stored
+/// recognition results, or when `transcript.md` cannot be read: then every
+/// segment is transcribed from its audio.
+pub fn seed_from_transcript(
+    store: &Store,
+    session_id: &str,
+    folder: &Path,
+) -> Result<bool, StageError> {
+    if !store.checkpoints(session_id, Stage::Transcribe)?.is_empty() {
+        return Ok(false);
+    }
+    let mut segments = store.segments(session_id)?;
+    if segments.is_empty() {
+        return Ok(false);
+    }
+    let path = folder.join(crate::join::TRANSCRIPT_FILE);
+    let transcript = match std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|text| Transcript::parse(&text).map_err(|e| e.to_string()))
+    {
+        Ok(transcript) => transcript,
+        Err(e) => {
+            log::warn!(
+                "{session_id} is transcribed again from its audio: {} cannot be used: {e}",
+                path.display()
+            );
+            return Ok(false);
+        }
+    };
+    segments.sort_by_key(|s| s.offset_ms);
+    let mut turns: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
+    for line in transcript.lines {
+        let TranscriptLine::Turn {
+            position_ms, text, ..
+        } = line
+        else {
+            continue;
+        };
+        // The last segment that starts at or before the turn, or the first.
+        let segment = segments
+            .iter()
+            .rev()
+            .find(|s| s.offset_ms <= position_ms)
+            .unwrap_or(&segments[0]);
+        let at = position_ms
+            .saturating_sub(segment.offset_ms)
+            .min(segment.duration_ms);
+        turns.entry(segment.index).or_default().push((at, text));
+    }
+    for segment in &segments {
+        let own = turns.remove(&segment.index).unwrap_or_default();
+        let pieces: Vec<AsrSegment> = own
+            .iter()
+            .enumerate()
+            .map(|(i, (start_ms, text))| AsrSegment {
+                start_ms: *start_ms,
+                end_ms: own
+                    .get(i + 1)
+                    .map_or(segment.duration_ms, |(next, _)| *next)
+                    .max(*start_ms),
+                text: text.clone(),
+            })
+            .collect();
+        let whole = Span {
+            start_ms: 0,
+            end_ms: segment.duration_ms,
+        };
+        let plan = WindowPlan {
+            segment: segment.index,
+            duration_ms: segment.duration_ms,
+            voiced_ms: 0,
+            voiced: Vec::new(),
+            windows: vec![whole],
+        };
+        let result = WindowResult {
+            segment: segment.index,
+            window: 0,
+            start_ms: whole.start_ms,
+            end_ms: whole.end_ms,
+            text: pieces
+                .iter()
+                .map(|p| p.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            segments: pieces,
+            words: None,
+            live: false,
+        };
+        let put = |key: &str, payload: String| {
+            store.put_checkpoint(session_id, Stage::Transcribe, key, &payload)
+        };
+        put(
+            &checkpoint::plan_key(segment.index),
+            serde_json::to_string(&plan)?,
+        )?;
+        put(
+            &checkpoint::window_key(segment.index, 0),
+            serde_json::to_string(&result)?,
+        )?;
+        put(
+            &checkpoint::segment_done_key(segment.index),
+            serde_json::to_string(&true)?,
+        )?;
+    }
+    log::info!(
+        "{session_id} resumes with the text of its {} recorded segment(s) from {}",
+        segments.len(),
+        path.display()
+    );
+    Ok(true)
 }
 
 /// Every window result and every live part of a session in timeline order,

@@ -1374,6 +1374,16 @@ pub fn delete_refusal(state: &SessionState) -> Option<&'static str> {
     }
 }
 
+/// Whether a session is busy (KTD8): it records, is queued, processes, has
+/// no home folder, or `claimed` is true because a summary regeneration or
+/// a delete holds a claim on it ([`Claims::busy`]). A folder rename waits
+/// while a session is busy, and the library reconcile neither refreshes
+/// nor forgets a busy row. The caller reads `claimed` under the store
+/// lock, so work that starts later sees what the busy check changed.
+pub fn busy(record: &SessionRecord, claimed: bool) -> bool {
+    record.state != SessionState::Saved || record.home_path.is_none() || claimed
+}
+
 /// Work on a session that its state does not show: a summary that is
 /// regenerated and a delete that removes the session's directories. The
 /// two exclude each other, and a folder rename waits for both (R8, KTD8).
