@@ -320,6 +320,19 @@ async recordingStatus() : Promise<Result<RecordingStatus, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Change the microphone of one note from the recording page (R2). With no
+ * `session_id`, the next note uses it. `None` is "System default". Settings
+ * does not change. Returns the status after the change.
+ */
+async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice | null) : Promise<Result<RecordingStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_microphone", { sessionId, microphone }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_session_speaker_count", { count }) };
@@ -892,7 +905,22 @@ processing_bytes_per_second: number;
 /**
  * The free-space floor recording stops at (R7a).
  */
-reserve_bytes: number }
+reserve_bytes: number; 
+/**
+ * The name of the input that the segment records from, while a
+ * segment records (R2, R4).
+ */
+microphone: string | null; 
+/**
+ * The note's chosen microphone is missing, and the system default
+ * records in its place (R4, R5).
+ */
+microphone_fallback: boolean; 
+/**
+ * The microphone that the open note chose. With no note open, the
+ * microphone that the next note uses. `None` is "System default".
+ */
+microphone_choice: MicrophoneChoice | null }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.

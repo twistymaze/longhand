@@ -12,6 +12,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::capture::CaptureManager;
 use crate::managers::models::{self as model_manager, ModelsManager};
 use crate::managers::processing::ProcessingManager;
 use crate::managers::secrets::SecretsManager;
@@ -195,7 +196,18 @@ pub fn set_microphone(
     app: AppHandle,
     microphone: Option<MicrophoneChoice>,
 ) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.set_microphone(microphone))
+    let updated = settings::update_settings(&app, |s| s.set_microphone(microphone))?;
+    // Resolve the new choice off the start path, so the next note starts
+    // at once (R3).
+    if let Some(capture) = app.try_state::<Arc<CaptureManager>>() {
+        let capture = Arc::clone(&capture);
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(e) = capture.prepare(&app) {
+                log::warn!("the chosen microphone was not prepared: {e}");
+            }
+        });
+    }
+    Ok(updated)
 }
 
 /// Choose whether a new note starts with Computer audio on (R6).

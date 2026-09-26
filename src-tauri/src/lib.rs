@@ -53,6 +53,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::stop_recording,
             commands::capture::resume_recording,
             commands::capture::recording_status,
+            commands::capture::set_note_microphone,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
             commands::capture::set_shortcut,
@@ -244,8 +245,9 @@ pub fn run() {
             // Resolving the microphone queries the audio HAL; keep it off the
             // launch path. A failure here is retried at the first press.
             let preparing = std::sync::Arc::clone(&capture);
+            let preparing_app = handle.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(e) = preparing.prepare() {
+                if let Err(e) = preparing.prepare(&preparing_app) {
                     log::warn!("microphone not prepared at launch: {e}");
                 }
             });

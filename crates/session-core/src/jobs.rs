@@ -62,6 +62,26 @@ pub struct RecordingModel {
     pub live_transcript: bool,
 }
 
+/// A microphone that a note chose: cpal's stable device ID, with the device
+/// name as its label (KTD1 of the system audio plan).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Microphone {
+    pub id: String,
+    pub label: String,
+}
+
+/// The capture choice of a note (KTD2 of the system audio plan). The note
+/// records it at its start, and a change on the recording page updates it.
+/// Restart, resume and the capture watcher read it, not the current
+/// Settings. The default, "System default" with Computer audio off, is also
+/// the choice of a note from an older build.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CaptureChoice {
+    /// `None` is "System default".
+    pub microphone: Option<Microphone>,
+    pub computer_audio: bool,
+}
+
 /// The marks of Transcribe Again on a session (KTD14).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranscribeAgainMarks {
@@ -193,7 +213,13 @@ impl Store {
         created_at: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<()> {
-        self.insert_session(id, created_at, speaker_count, None)
+        self.insert_session(
+            id,
+            created_at,
+            speaker_count,
+            None,
+            &CaptureChoice::default(),
+        )
     }
 
     fn insert_session(
@@ -202,10 +228,12 @@ impl Store {
         created_at: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
         model: Option<&RecordingModel>,
+        capture: &CaptureChoice,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
+               mic_id, mic_label, computer_audio)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -215,6 +243,9 @@ impl Store {
                     .transpose()?,
                 model.map(|m| m.asr_model.as_str()),
                 model.map(|m| m.live_transcript),
+                capture.microphone.as_ref().map(|m| m.id.as_str()),
+                capture.microphone.as_ref().map(|m| m.label.as_str()),
+                capture.computer_audio,
             ],
         )?;
         Ok(())
@@ -222,13 +253,14 @@ impl Store {
 
     /// Start a new session from the shortcut (R6c): any session still capturing
     /// or interrupted is stopped and queued first (or discarded if it kept no
-    /// audio), then the new one is created with `model` (KTD2).
+    /// audio), then the new one is created with `model` and `capture` (KTD2).
     pub fn start_session(
         &mut self,
         id: &str,
         now: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
         model: &RecordingModel,
+        capture: &CaptureChoice,
     ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
@@ -244,8 +276,50 @@ impl Store {
                 stopped.push(record.id);
             }
         }
-        self.insert_session(id, now, speaker_count, Some(model))?;
+        self.insert_session(id, now, speaker_count, Some(model), capture)?;
         Ok(stopped)
+    }
+
+    /// The capture choice of the session (KTD2). A session with no stored
+    /// choice, from an older build, gets the default.
+    pub fn capture_choice(&self, id: &str) -> Result<CaptureChoice> {
+        self.conn
+            .query_row(
+                "SELECT mic_id, mic_label, computer_audio FROM sessions WHERE id = ?1",
+                [id],
+                |r| {
+                    let mic_id: Option<String> = r.get(0)?;
+                    let mic_label: Option<String> = r.get(1)?;
+                    let computer_audio: Option<bool> = r.get(2)?;
+                    Ok(CaptureChoice {
+                        microphone: mic_id.map(|id| Microphone {
+                            id,
+                            label: mic_label.unwrap_or_default(),
+                        }),
+                        computer_audio: computer_audio.unwrap_or(false),
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
+    }
+
+    /// Replace the capture choice of the session: a change on the
+    /// recording page (KTD2).
+    pub fn set_capture_choice(&self, id: &str, capture: &CaptureChoice) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET mic_id = ?2, mic_label = ?3, computer_audio = ?4 WHERE id = ?1",
+            params![
+                id,
+                capture.microphone.as_ref().map(|m| m.id.as_str()),
+                capture.microphone.as_ref().map(|m| m.label.as_str()),
+                capture.computer_audio,
+            ],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
     }
 
     /// Queue every interruption left untouched too long (R5e).

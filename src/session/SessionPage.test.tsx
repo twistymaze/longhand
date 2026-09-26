@@ -34,6 +34,9 @@ const idle: RecordingStatus = {
   session_demand_bytes: null,
   processing_bytes_per_second: 0,
   reserve_bytes: 0,
+  microphone: null,
+  microphone_fallback: false,
+  microphone_choice: null,
 };
 
 const started = new Date(2026, 8, 24, 14, 5).toISOString();

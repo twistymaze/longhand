@@ -67,7 +67,7 @@ fn open_longhand(app: &AppHandle) {
     let Some(capture) = app.try_state::<Arc<CaptureManager>>() else {
         return;
     };
-    match capture.status() {
+    match capture.status(app) {
         Ok(status) => {
             if let Some(session_id) = status.session_id {
                 let _ = ShowSession { session_id }.emit(app);

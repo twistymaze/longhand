@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 pub use audio::{AudioProvider, CaptureConfig, CaptureFrame, CaptureStream, Error};
+pub use config::find_choice;
 
 use callback::{FAULT_DEVICE_LOST, NO_FAULT, Overrun, Shared};
 use resampler::FrameResampler;
@@ -102,10 +103,16 @@ impl CpalAudio {
     /// system default. Does not open the stream: an open stream lights the
     /// system's microphone indicator.
     pub fn prepare(&self, choice: Option<&MicChoice>) -> Result<u32, Error> {
+        self.prepare_input(choice).map(|(_, rate)| rate)
+    }
+
+    /// [`CpalAudio::prepare`], and also the input that capture will open:
+    /// the name that the recording page shows (R4).
+    pub fn prepare_input(&self, choice: Option<&MicChoice>) -> Result<(Input, u32), Error> {
         let host = cpal::default_host();
         let device = config::resolve_input(&host, choice, &self.bluetooth)?;
         let config = self.config_for(&device)?;
-        Ok(config.sample_rate())
+        Ok((config::input_of(&device), config.sample_rate()))
     }
 
     fn config_for(&self, device: &cpal::Device) -> Result<SupportedStreamConfig, Error> {

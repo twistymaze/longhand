@@ -82,6 +82,30 @@ fn a_sub_second_segment_is_discarded_on_close() {
 }
 
 #[test]
+fn a_short_segment_that_ends_at_a_switch_is_kept() {
+    // KTD3: a quick microphone change, or a Stop just after one, loses no
+    // audio.
+    let mut timeline = Timeline::new();
+    timeline.open(0, wall(0)).unwrap();
+    let closed = timeline.close_at_switch(300, wall(0), "a".into()).unwrap();
+    assert!(matches!(closed, Closed::Kept(ref s) if s.duration_ms == 300));
+    assert_eq!(timeline.segments().len(), 1);
+}
+
+#[test]
+fn a_segment_with_no_audio_is_discarded_even_at_a_switch() {
+    let mut timeline = Timeline::new();
+    timeline.open(1_000, wall(0)).unwrap();
+    assert_eq!(
+        timeline
+            .close_at_switch(1_000, wall(0), "a".into())
+            .unwrap(),
+        Closed::Discarded
+    );
+    assert!(timeline.is_empty());
+}
+
+#[test]
 fn overlapping_segments_are_rejected() {
     let mut timeline = two_segments();
     assert!(timeline.open(7_000_000, wall(3)).is_err());

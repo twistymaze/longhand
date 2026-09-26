@@ -172,3 +172,57 @@ fn migration_four_keeps_existing_sessions_and_their_model() {
         .unwrap();
     assert_eq!(marks, (None, None));
 }
+
+/// A database as the recognition models work left it: migrations 0001 to
+/// 0005 applied.
+fn version_five(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 5)
+        .unwrap();
+    conn
+}
+
+#[test]
+fn migration_six_gives_existing_segments_one_channel_and_no_capture_choice() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_five(&path);
+        add_session(&conn, "s1");
+        conn.execute(
+            "INSERT INTO segments
+             (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file)
+             VALUES ('s1', 0, 0, 60000, '2026-09-22T10:00:00-05:00',
+                     '2026-09-22T10:01:00-05:00', 'audio/segment-01.opus')",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.segments("s1").unwrap().len(), 1);
+    // A note from an older build resumes on "System default" with Computer
+    // audio off (KTD2).
+    assert_eq!(
+        store.capture_choice("s1").unwrap(),
+        session_core::CaptureChoice::default()
+    );
+    drop(store);
+    let conn = Connection::open(&path).unwrap();
+    let channels: i64 = conn
+        .query_row(
+            "SELECT channels FROM segments WHERE session_id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(channels, 1);
+    let stereo_from: Option<i64> = conn
+        .query_row(
+            "SELECT stereo_from FROM sessions WHERE id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stereo_from, None);
+}

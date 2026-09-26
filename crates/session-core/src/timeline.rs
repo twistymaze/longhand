@@ -171,6 +171,34 @@ impl Timeline {
         if duration_ms < MIN_SEGMENT_MS {
             return Ok(Closed::Discarded);
         }
+        self.keep(open, duration_ms, wall_end, audio_file)
+    }
+
+    /// Close the open segment at an input change (KTD3 of the system audio
+    /// plan). A segment shorter than [`MIN_SEGMENT_MS`] is kept, so a quick
+    /// change or a Stop just after one loses no audio. Only a segment with
+    /// no audio is discarded.
+    pub fn close_at_switch(
+        &mut self,
+        end_ms: u64,
+        wall_end: DateTime<FixedOffset>,
+        audio_file: String,
+    ) -> Result<Closed, TimelineError> {
+        let open = self.open.take().ok_or(TimelineError::NotOpen)?;
+        let duration_ms = end_ms.saturating_sub(open.offset_ms);
+        if duration_ms == 0 {
+            return Ok(Closed::Discarded);
+        }
+        self.keep(open, duration_ms, wall_end, audio_file)
+    }
+
+    fn keep(
+        &mut self,
+        open: OpenSegment,
+        duration_ms: u64,
+        wall_end: DateTime<FixedOffset>,
+        audio_file: String,
+    ) -> Result<Closed, TimelineError> {
         let segment = Segment {
             index: open.index,
             offset_ms: open.offset_ms,

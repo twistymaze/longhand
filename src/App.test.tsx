@@ -24,6 +24,9 @@ const idle: RecordingStatus = {
   session_demand_bytes: null,
   processing_bytes_per_second: 0,
   reserve_bytes: 0,
+  microphone: null,
+  microphone_fallback: false,
+  microphone_choice: null,
 };
 
 const recordingEntry: SessionEntry = {
