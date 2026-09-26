@@ -23,7 +23,7 @@ execution: code
 
 ## Product Contract
 
-Product Contract preservation: unchanged by planning. The Outstanding Questions section now points to the KTDs that resolve each question.
+Product Contract preservation: changed KD3 — its line on a computer with no stored recognition results now says that Resume reuses the text of `transcript.md`; the user approved this at the plan review. The Outstanding Questions section now points to the KTDs that resolve each question.
 
 ### Summary
 
