@@ -226,3 +226,69 @@ fn migration_six_gives_existing_segments_one_channel_and_no_capture_choice() {
         .unwrap();
     assert_eq!(stereo_from, None);
 }
+
+/// A database as the system audio work left it: migrations 0001 to 0006
+/// applied.
+fn version_six(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 6)
+        .unwrap();
+    conn
+}
+
+#[test]
+fn migration_seven_keeps_saved_notes_and_gives_them_no_transcript_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_six(&path);
+        for id in ["s1", "s2"] {
+            add_session(&conn, id);
+            conn.execute(
+                "INSERT INTO segments
+                 (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file,
+                  channels)
+                 VALUES (?1, 0, 0, 60000, '2026-09-22T10:00:00-05:00',
+                         '2026-09-22T10:01:00-05:00', 'audio/segment-01.opus', 2)",
+                [id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO checkpoints (session_id, stage, key, payload)
+                 VALUES (?1, 'transcribe', 'w1', '{}')",
+                [id],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE sessions SET asr_model = 'parakeet', title = 'Budget', title_source = 'user',
+               notes = '- agenda', found_speakers = 2, home_path = '/notes/Budget',
+               stereo_from = 0 WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.state, session_core::SessionState::Saved);
+    assert_eq!(record.asr_model.as_deref(), Some("parakeet"));
+    assert_eq!(record.title.unwrap().text, "Budget");
+    assert_eq!(record.found_speakers, Some(2));
+    assert_eq!(record.home_path.as_deref(), Some("/notes/Budget"));
+    assert_eq!(store.notes("s1").unwrap(), "- agenda");
+    assert_eq!(store.stereo_from("s1").unwrap(), Some(0));
+    assert_eq!(store.segments("s1").unwrap()[0].channels, 2);
+    assert_eq!(store.sessions().unwrap().len(), 2);
+    for id in ["s1", "s2"] {
+        assert_eq!(
+            store
+                .checkpoints(id, session_core::Stage::Transcribe)
+                .unwrap()
+                .len(),
+            1
+        );
+        // A note from before the migration has no recorded fingerprint.
+        assert_eq!(store.transcript_fingerprint(id).unwrap(), None);
+    }
+}

@@ -10,7 +10,7 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::folder::SpeakerCount;
+use crate::folder::{SessionDoc, SpeakerCount};
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
 
@@ -95,6 +95,60 @@ pub struct TranscribeAgainMarks {
     /// session has the new transcript and the previous summary.
     pub summary_error: Option<String>,
 }
+
+/// A saved note as a scan of its folder gives it (KTD1). [`Store::adopt`]
+/// makes a Saved row from it. The per-computer data (the live mode, the
+/// capture choice and the Transcribe Again marks) is not in the folder, so
+/// an adopted row has the defaults (R4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adoption {
+    pub id: String,
+    /// The start of the note: `started` in `session.md`.
+    pub created_at: DateTime<FixedOffset>,
+    pub speaker_count: Option<SpeakerCount>,
+    pub segments: Vec<Segment>,
+    /// The text of `notes.md`.
+    pub notes: String,
+    pub title: Option<Title>,
+    pub asr_model: Option<String>,
+    pub found_speakers: Option<u32>,
+    /// The absolute path of the note folder.
+    pub home_path: String,
+    /// The [`fingerprint`](crate::folder::fingerprint) of the
+    /// `transcript.md` that the scan read (KTD12). `None` when the folder
+    /// has no `transcript.md`.
+    pub transcript_fingerprint: Option<String>,
+}
+
+impl Adoption {
+    /// The adoption of the note that `doc`, the parsed `session.md`,
+    /// describes, with the text of its `notes.md`, the path of its folder
+    /// and the fingerprint of its `transcript.md`.
+    pub fn from_doc(
+        doc: &SessionDoc,
+        notes: String,
+        home_path: String,
+        transcript_fingerprint: Option<String>,
+    ) -> Self {
+        Self {
+            id: doc.session_id.clone(),
+            created_at: doc.started,
+            speaker_count: doc.speaker_count,
+            segments: doc.timeline_segments(),
+            notes,
+            title: doc.title_and_source(),
+            asr_model: doc.asr_model.clone(),
+            found_speakers: doc.found_speakers,
+            home_path,
+            transcript_fingerprint,
+        }
+    }
+}
+
+/// The stages that hold this computer's recognition results for a note:
+/// the decoded audio, the transcription (window rows and live parts) and
+/// the speaker analysis (KTD12).
+const RECOGNITION_STAGES: [Stage; 3] = [Stage::Assemble, Stage::Transcribe, Stage::Diarize];
 
 /// The stages whose checkpoints a Transcribe Again run replaces: every
 /// stage. Assemble is one of them because its completion mark would skip
@@ -411,6 +465,113 @@ impl Store {
         Ok(())
     }
 
+    // ------------------------------------------------------------ adopt and forget
+
+    /// Make a Saved row for a note from another computer, from its folder
+    /// (KTD1): its segments, notes, title, recognition model, speakers found,
+    /// home path and transcript fingerprint, in one transaction. The row does
+    /// not go through the state machine, because the note never recorded on
+    /// this computer. Returns false and changes nothing when `note.id`
+    /// already has a row.
+    pub fn adopt(&mut self, note: &Adoption) -> Result<bool> {
+        let stereo_from = note
+            .segments
+            .iter()
+            .find(|s| s.channels == 2)
+            .map(|s| s.index);
+        let tx = self.conn.transaction()?;
+        let inserted = tx.execute(
+            "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, home_path,
+               title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT (id) DO NOTHING",
+            params![
+                note.id,
+                note.created_at.to_rfc3339(),
+                serde_json::to_string(&SessionState::Saved)?,
+                note.speaker_count
+                    .map(|c| serde_json::to_string(&c))
+                    .transpose()?,
+                note.asr_model,
+                note.home_path,
+                note.title.as_ref().map(|t| t.text.as_str()),
+                note.title.as_ref().map(|t| title_source_key(t.source)),
+                note.notes,
+                note.found_speakers,
+                stereo_from,
+                note.transcript_fingerprint,
+            ],
+        )?;
+        if inserted == 0 {
+            return Ok(false);
+        }
+        for segment in &note.segments {
+            insert_segment(&tx, &note.id, segment)?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Remove the row of a saved note, with its segments, notes, checkpoints
+    /// and job (KTD1, KTD6). No folder changes. Returns false and changes
+    /// nothing when the note has no row, is not Saved, or has a folder rename
+    /// in progress: then capture, processing or a rename can still need the
+    /// row. The caller checks the claims of [`Claims`] first.
+    pub fn forget(&mut self, id: &str) -> Result<bool> {
+        let removed = self.conn.execute(
+            "DELETE FROM sessions WHERE id = ?1 AND json_extract(state, '$.state') = 'saved'
+             AND NOT EXISTS (SELECT 1 FROM rename_intents WHERE session_id = ?1)",
+            [id],
+        )?;
+        Ok(removed > 0)
+    }
+
+    // ------------------------------------------------------------ transcript fingerprint
+
+    /// The fingerprint of the `transcript.md` that this computer last wrote
+    /// or read for the note (KTD12). `None` when none is recorded.
+    pub fn transcript_fingerprint(&self, id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT transcript_fingerprint FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
+    }
+
+    pub fn set_transcript_fingerprint(&self, id: &str, fingerprint: Option<&str>) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET transcript_fingerprint = ?2 WHERE id = ?1",
+            params![id, fingerprint],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Remove this computer's recognition results for the note: its
+    /// Assemble, Transcribe and Diarize checkpoints, also the copies that a
+    /// Transcribe Again run set aside (KTD12). Another computer wrote the
+    /// note's `transcript.md`, and a later Resume or Transcribe Again must
+    /// not bring back the older transcript (R18).
+    pub fn clear_recognition_results(&mut self, id: &str) -> Result<()> {
+        self.require(id)?;
+        let tx = self.conn.transaction()?;
+        for stage in RECOGNITION_STAGES {
+            for key in [stage_key(stage), previous_key(stage)] {
+                tx.execute(
+                    "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                    params![id, key],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ transcribe again
 
     pub fn transcribe_again_marks(&self, id: &str) -> Result<TranscribeAgainMarks> {
@@ -572,22 +733,7 @@ impl Store {
     // ------------------------------------------------------------ segments
 
     pub fn put_segment(&self, session_id: &str, segment: &Segment) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO segments
-             (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                session_id,
-                segment.index,
-                segment.offset_ms as i64,
-                segment.duration_ms as i64,
-                segment.wall_start.to_rfc3339(),
-                segment.wall_end.to_rfc3339(),
-                segment.audio_file,
-                segment.channels,
-            ],
-        )?;
-        Ok(())
+        insert_segment(&self.conn, session_id, segment)
     }
 
     pub fn segments(&self, session_id: &str) -> Result<Vec<Segment>> {
@@ -974,6 +1120,33 @@ impl Store {
             params![session_id, stage_key(stage), key],
         )?;
         Ok(())
+    }
+}
+
+fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO segments
+         (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            session_id,
+            segment.index,
+            segment.offset_ms as i64,
+            segment.duration_ms as i64,
+            segment.wall_start.to_rfc3339(),
+            segment.wall_end.to_rfc3339(),
+            segment.audio_file,
+            segment.channels,
+        ],
+    )?;
+    Ok(())
+}
+
+/// The text of `source` in the `title_source` column.
+fn title_source_key(source: TitleSource) -> &'static str {
+    match source {
+        TitleSource::Proposed => "proposed",
+        TitleSource::User => "user",
     }
 }
 
