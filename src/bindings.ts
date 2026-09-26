@@ -378,19 +378,11 @@ async alertCheck(force: boolean) : Promise<Result<AlertCheck, string>> {
 }
 },
 /**
- * Play the failed-capture cue once, for the user to confirm hearing it.
+ * Play the failed-capture cue once, so the user knows the sound (R18).
  */
 async playAlertSound() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("play_alert_sound") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async confirmAlertSound(heard: boolean) : Promise<Result<Settings, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("confirm_alert_sound", { heard }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -620,11 +612,7 @@ export type AlertCheck = {
 /**
  * Why the cue would not be heard, when it would not.
  */
-output_problem: string | null; 
-/**
- * The user has confirmed hearing the cue at setup.
- */
-tone_heard: boolean }
+output_problem: string | null }
 /**
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.
@@ -1049,10 +1037,6 @@ computer_audio_default: boolean;
  * keyed by [`learned_limit_key`] (KTD16).
  */
 learned_context_limits: Partial<{ [key in string]: number }>; 
-/**
- * The user heard the alert cue played at setup (R5a, KTD14).
- */
-alert_tone_heard: boolean; 
 /**
  * The custom summary prompts, in the order the user made them (KTD6).
  */

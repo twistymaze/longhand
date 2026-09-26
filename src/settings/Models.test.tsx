@@ -93,7 +93,6 @@ function settings(asr_model: string, extra: Partial<Settings> = {}): Settings {
     microphone: null,
     computer_audio_default: false,
     learned_context_limits: {},
-    alert_tone_heard: true,
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
     ...extra,

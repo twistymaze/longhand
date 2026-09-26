@@ -166,27 +166,14 @@ export function StatusPane({
   );
 }
 
-/// The one-time test of the failed-capture cue (R5a, KTD14): the only check
-/// of the alert path that proves the user can hear it, not just that the
-/// output is on.
+/// The failed-capture sound (R18, KTD16). The user can play it, and no test
+/// is asked for.
 function AlertSound() {
-  const [heard, setHeard] = useState<boolean | null>(null);
-  const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void commands.getSettings().then((s) => setHeard(s.alert_tone_heard));
-  }, []);
 
   const play = async () => {
     const result = await commands.playAlertSound();
     setError(result.status === "error" ? result.error : null);
-    setAsking(result.status === "ok");
-  };
-  const answer = async (yes: boolean) => {
-    const result = await commands.confirmAlertSound(yes);
-    if (result.status === "ok") setHeard(result.data.alert_tone_heard);
-    setAsking(false);
   };
 
   return (
@@ -196,23 +183,9 @@ function AlertSound() {
     >
       <Row
         label="Alert sound"
-        detail={error ?? (asking ? "Did you hear it?" : heard ? "Heard at setup" : "Not tested yet")}
+        detail={error ?? "Plays when recording stops and cannot restart"}
       >
-        {asking ? (
-          <>
-            <Button onClick={() => void answer(false)}>No</Button>
-            <Button prominent onClick={() => void answer(true)}>
-              Yes
-            </Button>
-          </>
-        ) : (
-          <>
-            {heard && <StatusText tone="positive">Tested</StatusText>}
-            <Button prominent={heard === false} onClick={() => void play()}>
-              Play Sound
-            </Button>
-          </>
-        )}
+        <Button onClick={() => void play()}>Play Sound</Button>
       </Row>
     </Group>
   );

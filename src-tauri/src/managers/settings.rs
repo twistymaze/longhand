@@ -135,8 +135,6 @@ pub struct Settings {
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
-    /// The user heard the alert cue played at setup (R5a, KTD14).
-    pub alert_tone_heard: bool,
     /// The custom summary prompts, in the order the user made them (KTD6).
     pub summary_prompts: Vec<SummaryPrompt>,
     /// The id of the prompt that the next summary uses. An id that matches
@@ -253,7 +251,6 @@ impl Default for Settings {
             microphone: None,
             computer_audio_default: false,
             learned_context_limits: Default::default(),
-            alert_tone_heard: false,
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
         }
@@ -835,6 +832,22 @@ mod tests {
         assert_eq!(settings.endpoint_model, "kept");
         assert_eq!(Settings::default().microphone, None);
         assert!(!Settings::default().computer_audio_default);
+    }
+
+    #[test]
+    fn a_store_with_the_old_alert_test_key_loads_and_drops_it_on_the_next_write() {
+        for heard in [false, true] {
+            let stored = json!({
+                "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+                "endpoint_model": "kept",
+                "alert_tone_heard": heard,
+            });
+            let (settings, updated) = settings_from_value(&stored);
+            assert!(!updated, "the removed key needs no migration (KTD16)");
+            assert_eq!(settings.endpoint_model, "kept");
+            let written = serde_json::to_value(&settings).unwrap();
+            assert!(written.get("alert_tone_heard").is_none());
+        }
     }
 
     fn usb_mic() -> MicrophoneChoice {

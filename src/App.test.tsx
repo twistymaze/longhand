@@ -38,7 +38,7 @@ const recordingEntry: SessionEntry = {
 
 function mockApp(status: { current: RecordingStatus }, entries: { current: SessionEntry[] }) {
   return mockTauri({
-    get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+    get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
     readiness: () => readiness,
     shortcut_status: () => shortcutStatuses,
     model_statuses: () => [],
@@ -105,7 +105,7 @@ describe("App", () => {
     const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
     const entries = [saved("a", "Alpha"), saved("b", "Beta")];
     const tauri = mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       model_statuses: () => [],
@@ -160,7 +160,7 @@ describe("App", () => {
     setURL("http://localhost/?window=settings");
     let fail = false;
     mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       model_statuses: () => {

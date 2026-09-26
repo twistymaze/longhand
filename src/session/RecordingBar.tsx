@@ -100,9 +100,6 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   }
   const problem = capture.alert?.output_problem;
   if (problem) items.push({ tone: "caution", text: `If recording fails, ${problem}` });
-  if (capture.alert && !capture.alert.tone_heard) {
-    items.push({ tone: "caution", text: "The alert sound has not been tested. Test it in Settings." });
-  }
   if (readiness && readiness.destination.kind !== "ready") {
     const d = describeDestination(readiness.destination);
     items.push({ tone: d.tone === "negative" ? "negative" : "caution", text: `Destination: ${d.text}` });
