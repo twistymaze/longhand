@@ -92,9 +92,13 @@ export function SessionRow({
   const status = entry.state === "saved" ? null : entryStatus(entry, stage);
   const tone = entryTone(entry.state) ?? "neutral";
   // An untitled row shows the start time as its title already.
-  const details = [entry.title === null ? null : time, formatDuration(entry.duration_ms), speakerCount(entry.found_speakers)]
-    .filter(Boolean)
-    .join(" · ");
+  // A note whose storage folder is unavailable says so in place of its
+  // details (R16).
+  const details = entry.storage_unavailable
+    ? "Storage folder unavailable"
+    : [entry.title === null ? null : time, formatDuration(entry.duration_ms), speakerCount(entry.found_speakers)]
+        .filter(Boolean)
+        .join(" · ");
   const secondary = selected ? "text-white/75" : "text-label-secondary";
   const surface = selected ? "bg-accent text-white" : previewed || menuOpen ? "bg-row-hover text-label" : "text-label";
 
@@ -185,8 +189,10 @@ export function SessionRow({
               },
               {
                 label: "Delete…",
-                disabled: !canDelete(entry.state),
-                reason: "You can delete this note after processing finishes.",
+                disabled: !canDelete(entry.state) || entry.storage_unavailable,
+                reason: entry.storage_unavailable
+                  ? "The storage folder for this note is unavailable."
+                  : "You can delete this note after processing finishes.",
                 onSelect: () => {
                   setMenuOpen(false);
                   onDelete();

@@ -372,6 +372,9 @@ pub struct ProcessingManager {
     store: pipeline::SharedStore,
     liveness: session_core::jobs::Liveness,
     library: std::sync::Mutex<LibrarySlot>,
+    /// What the latest library scans found. The launch scan and the
+    /// watcher write it, and the note commands read it (KTD10).
+    library_status: Arc<library::status::LibraryStatus>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -441,7 +444,13 @@ impl ProcessingManager {
             store: capture.shared_store(),
             liveness,
             library: std::sync::Mutex::default(),
+            library_status: Arc::default(),
         }
+    }
+
+    /// What the latest library scans found about each note.
+    pub fn library_status(&self) -> &library::status::LibraryStatus {
+        &self.library_status
     }
 
     /// The rest of the launch steps, in order, on one background thread,
@@ -463,7 +472,8 @@ impl ProcessingManager {
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
-        let mut reconciler = library::reconcile::Reconciler::default();
+        let mut reconciler =
+            library::reconcile::Reconciler::default().with_status(Arc::clone(&self.library_status));
         match self.runner.reconcile_library(&roots, &mut reconciler) {
             Ok(changes) => {
                 log::info!(

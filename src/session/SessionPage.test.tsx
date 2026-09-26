@@ -13,7 +13,7 @@ import { sessionTitle } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { SessionPage } from "./SessionPage";
-import type { Sessions } from "./useSessions";
+import { type Sessions, useSessions } from "./useSessions";
 import { features } from "../lib/features";
 
 const readiness: Readiness = {
@@ -58,6 +58,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   stage: null,
   title: null,
   found_speakers: 3,
+  storage_unavailable: false,
   ...over,
 });
 
@@ -80,6 +81,8 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   transcribe_again: false,
   transcribe_again_error: null,
   summary_not_updated: null,
+  waiting: [],
+  conflict_files: [],
   ...over,
 });
 
@@ -112,13 +115,13 @@ const recordingCapture = (id: string, over: Partial<Capture> = {}) =>
   });
 
 function sessionsOf(entries: SessionEntry[]): Sessions {
-  return { entries, stages: {}, live: {}, version: {}, refresh: mock(async () => {}) };
+  return { entries, stages: {}, live: {}, version: {}, synced: {}, removed: {}, refresh: mock(async () => {}) };
 }
 
 function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Record<string, CommandHandler> = {}) {
   return mockTauri({
-    session_notes: () => "",
-    set_session_notes: () => null,
+    load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
+    save_session_notes: () => ({ kind: "saved", fingerprint: "f1" }),
     session_detail: () => detail(e, over),
     session_document: () => doc,
     ...extra,
@@ -726,8 +729,8 @@ describe("SessionPage", () => {
   test("Copy writes the open tab's markdown: the transcript file, or the notes", async () => {
     const e = entry("s", { title: "Budget review" });
     mockTauri({
-      session_notes: () => "# Agenda\n\n- ask about headcount",
-      set_session_notes: () => null,
+      load_session_notes: () => ({ markdown: "# Agenda\n\n- ask about headcount", fingerprint: "f0" }),
+      save_session_notes: () => ({ kind: "saved", fingerprint: "f1" }),
       session_detail: () => detail(e),
       session_document: () => doc,
     });
@@ -1148,5 +1151,144 @@ describe("SessionPage", () => {
     await act(async () => release(detail(e, { resumable: false })));
     await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menuitem", { name: "Resume Recording" }).hasAttribute("disabled")).toBe(false);
+  });
+});
+
+/// The page with the real session list, so library events reach it.
+function Synced({ id }: { id: string }) {
+  const sessions = useSessions();
+  return <SessionPage id={id} capture={captureOf()} sessions={sessions} readiness={readiness} onBack={() => {}} />;
+}
+
+describe("SessionPage and the synced library", () => {
+  test("a library change for the open note reloads its detail and document", async () => {
+    const e = entry("s");
+    let body = "We agreed the budget.";
+    const tauri = mockPage(e, {}, {
+      list_sessions: () => [e],
+      session_document: () => ({ ...doc, summary: { ...doc.summary!, body } }),
+    });
+    render(<Synced id="s" />);
+    await screen.findByText("We agreed the budget.");
+    const details = () => tauri.calls.filter((c) => c.cmd === "session_detail").length;
+    const before = details();
+
+    body = "We moved the budget to Friday.";
+    await act(() => tauri.emit("library-changed", { changed: ["s"], removed: [] }));
+    expect(await screen.findByText("We moved the budget to Friday.")).toBeTruthy();
+    expect(details()).toBeGreaterThan(before);
+  });
+
+  test("a removed note says that it was deleted and keeps its title", async () => {
+    const e = entry("s", { title: "Budget review" });
+    let listed = [e];
+    const tauri = mockPage(e, {}, { list_sessions: () => listed });
+    render(<Synced id="s" />);
+    await screen.findByText("We agreed the budget.");
+
+    listed = [];
+    await act(() => tauri.emit("library-changed", { changed: [], removed: ["s"] }));
+    expect(await screen.findByText("This note was deleted.")).toBeTruthy();
+    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Title" }).value).toBe("Budget review");
+    expect(screen.queryByText("This note is no longer in the list.")).toBeNull();
+  });
+
+  // Covers AE7.
+  test("a note whose notes wait for the sync says so, and the editor takes no input", async () => {
+    const e = entry("s");
+    mockPage(e, { waiting: ["notes", "audio"], resumable: true });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Waiting for the notes and audio to sync.")).toBeTruthy();
+    const box = await screen.findByRole("textbox", { name: "My Notes", hidden: true });
+    expect(box.getAttribute("contenteditable")).toBe("false");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+    for (const name of ["Resume Recording", "Regenerate Summary", "Transcribe Again…"]) {
+      expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
+    }
+  });
+
+  // R12: audio that waits holds only Resume and Transcribe Again.
+  test("a note whose audio waits for the sync keeps its notes and summary actions", async () => {
+    const e = entry("s");
+    mockPage(e, { waiting: ["audio"], resumable: true });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Waiting for the audio to sync.")).toBeTruthy();
+    const box = await screen.findByRole("textbox", { name: "My Notes", hidden: true });
+    expect(box.getAttribute("contenteditable")).toBe("true");
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+    for (const name of ["Resume Recording", "Transcribe Again…"]) {
+      expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
+    }
+    expect(screen.getByRole("menuitem", { name: "Regenerate Summary" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  // Covers AE8.
+  test("a conflict notice names the other version", async () => {
+    const e = entry("s");
+    mockPage(e, { conflict_files: ["notes (1).md"] });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(
+      await screen.findByText("Another version of this note exists: notes (1).md. Compare them in Finder."),
+    ).toBeTruthy();
+  });
+
+  // Covers AE8, KTD10.
+  test("a notes save that conflicts names the draft on the page", async () => {
+    const e = entry("s");
+    const draft = "notes (Longhand conflict 2026-09-26 1412).md";
+    mockPage(e, { conflict_files: [draft] }, {
+      save_session_notes: () => ({ kind: "conflict", draft: `/n/Planning/${draft}` }),
+    });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    const user = userEvent.setup();
+    await user.click(tab("My Notes"));
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    await user.type(box, "!");
+    act(() => {
+      box.blur();
+    });
+    expect(
+      await screen.findByText(`The notes changed on another computer. Your edit is in ${draft}.`),
+    ).toBeTruthy();
+    // The draft is not named a second time as another version.
+    expect(screen.queryByText(/Another version of this note exists/)).toBeNull();
+  });
+
+  // Covers AE6.
+  test("a note in an unavailable storage folder says so, and its actions wait", async () => {
+    const e = entry("s", { storage_unavailable: true });
+    mockPage(e, { resumable: true }, {
+      session_document: () => {
+        throw "could not read session.md in /Volumes/Drive/Planning";
+      },
+    });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("The storage folder for this note is unavailable.")).toBeTruthy();
+    expect(screen.queryByText(/could not read/)).toBeNull();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+    for (const name of ["Resume Recording", "Regenerate Summary", "Transcribe Again…", "Rename", "Delete…"]) {
+      expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
+    }
+    const box = await screen.findByRole("textbox", { name: "My Notes", hidden: true });
+    expect(box.getAttribute("contenteditable")).toBe("false");
+  });
+
+  test("the recording bar says Storage when the folder is not ready", async () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    render(
+      <SessionPage
+        id="rec"
+        capture={recordingCapture("rec")}
+        sessions={sessionsOf([e])}
+        readiness={{ ...readiness, destination: { kind: "missing", path: "/Volumes/Drive" } }}
+        onBack={() => {}}
+      />,
+    );
+    expect(await screen.findByText(/^Storage: Folder not found/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/Destination/);
   });
 });

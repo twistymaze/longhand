@@ -16,6 +16,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   stage: null,
   title: null,
   found_speakers: 3,
+  storage_unavailable: false,
   ...over,
 });
 
@@ -38,6 +39,8 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   transcribe_again: false,
   transcribe_again_error: null,
   summary_not_updated: null,
+  waiting: [],
+  conflict_files: [],
 });
 
 const document = (body: string): SessionDocument => ({
@@ -375,5 +378,22 @@ describe("Home", () => {
     await user.clear(screen.getByRole("textbox", { name: "Title" }));
     await user.keyboard("New{Enter}");
     expect(await screen.findByText(/The folder is open in another app/)).toBeTruthy();
+  });
+
+  // Covers AE6, R16.
+  test("a note in an unavailable storage folder stays listed and says so under its title", async () => {
+    mockTauri();
+    renderHome({
+      entries: [
+        entry("a", { title: "Planning", storage_unavailable: true }),
+        entry("b", { title: "Budget" }),
+      ],
+    });
+    const away = row("Planning");
+    expect(within(away).getByText("Storage folder unavailable")).toBeTruthy();
+    expect(within(row("Budget")).queryByText("Storage folder unavailable")).toBeNull();
+
+    await userEvent.setup().click(within(away).getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Delete…" }).hasAttribute("disabled")).toBe(true);
   });
 });

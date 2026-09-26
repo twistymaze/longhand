@@ -1833,20 +1833,13 @@ impl CaptureManager {
         Ok(self.store().notes(session_id)?)
     }
 
-    /// Replace a session's notes document (KTD5). On a saved session the
-    /// home folder's `notes.md` is rewritten whole under the store lock
-    /// (R20). A session id that the store does not hold is refused: the
-    /// app keeps no notes outside a session (R27).
-    pub fn set_session_notes(&self, session_id: &str, document: &str) -> Result<(), CaptureError> {
-        self.save_session_notes(session_id, document, None)?;
-        Ok(())
-    }
-
-    /// Replace a session's notes document, as [`Self::set_session_notes`]
-    /// does, and check the `notes.md` that the editor loaded (KTD10):
-    /// `loaded` is its fingerprint. When another computer changed the file
-    /// since then, the file stays and the document goes into a draft
-    /// beside it.
+    /// Replace a session's notes document (KTD5), and check the `notes.md`
+    /// that the editor loaded (KTD10): `loaded` is its fingerprint. On a
+    /// saved session the home folder's `notes.md` is rewritten whole under
+    /// the store lock (R20). When another computer changed the file since
+    /// the editor loaded it, the file stays and the document goes into a
+    /// draft beside it. A session id that the store does not hold is
+    /// refused: the app keeps no notes outside a session (R27).
     pub fn save_session_notes(
         &self,
         session_id: &str,

@@ -8,3 +8,4 @@ pub mod conflict;
 pub mod reconcile;
 pub mod refresh;
 pub mod scan;
+pub mod status;

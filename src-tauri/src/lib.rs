@@ -72,8 +72,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::processing::unblock_session,
             commands::session::list_sessions,
             commands::session::session_detail,
-            commands::session::session_notes,
-            commands::session::set_session_notes,
             commands::session::load_session_notes,
             commands::session::save_session_notes,
             commands::session::rename_session,

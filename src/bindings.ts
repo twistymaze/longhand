@@ -501,6 +501,8 @@ async unblockSession(sessionId: string) : Promise<Result<null, string>> {
 },
 /**
  * Every session but the discarded ones: the switcher's list, newest first.
+ * The storage flag comes from the latest library scan: the list reads no
+ * folder.
  */
 async listSessions() : Promise<Result<SessionEntry[], string>> {
     try {
@@ -519,32 +521,8 @@ async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> 
 }
 },
 /**
- * A session's notes document, editable whatever its state (R20).
- */
-async sessionNotes(sessionId: string) : Promise<Result<string, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("session_notes", { sessionId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Replace a session's notes document. The editor sends the whole
- * document; on a saved session the home folder's `notes.md` follows (R20).
- * The write runs off the main thread, since it can reach a synced folder.
- */
-async setSessionNotes(sessionId: string, markdown: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_session_notes", { sessionId, markdown }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * A session's notes document, with the fingerprint that
- * [`save_session_notes`] checks.
+ * A session's notes document, editable whatever its state (R20), with the
+ * fingerprint that [`save_session_notes`] checks.
  */
 async loadSessionNotes(sessionId: string) : Promise<Result<LoadedNotes, string>> {
     try {
@@ -555,7 +533,9 @@ async loadSessionNotes(sessionId: string) : Promise<Result<LoadedNotes, string>>
 }
 },
 /**
- * Replace a session's notes document, as [`set_session_notes`] does.
+ * Replace a session's notes document. The editor sends the whole
+ * document; on a saved session the home folder's `notes.md` follows (R20).
+ * The write runs off the main thread, since it can reach a synced folder.
  * `loaded_fingerprint` is the fingerprint that [`load_session_notes`] gave
  * for the document that the editor changed; `None` skips the check.
  */
@@ -1145,7 +1125,17 @@ transcribe_again_error: string | null;
  * Why the last Transcribe Again run kept the previous summary with
  * the new transcript (R19).
  */
-summary_not_updated: string | null }
+summary_not_updated: string | null; 
+/**
+ * The parts that the sync has not delivered yet (R6). Notes edits,
+ * Regenerate Summary, Transcribe Again and Resume wait for them.
+ */
+waiting: WaitingPart[]; 
+/**
+ * The file or folder names of other versions of the note, which the
+ * user resolves in Finder (R15).
+ */
+conflict_files: string[] }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).
@@ -1178,7 +1168,12 @@ title: string | null;
  * The number of speakers that processing found (KTD11). `None` before
  * the join, or when the transcript has no speaker marks.
  */
-found_speakers: number | null }
+found_speakers: number | null; 
+/**
+ * The note's storage folder is unavailable, or its `session.md` cannot
+ * be read now (R16). Opening it and its actions wait.
+ */
+storage_unavailable: boolean }
 export type Settings = { settings_schema_version: number; 
 /**
  * The chord that starts and stops a recording. `None` when the user
@@ -1333,6 +1328,10 @@ export type SystemAudioPermission = "allowed" | "denied" |
  * The private check is missing on this macOS.
  */
 "unknown"
+/**
+ * A part of a note that the sync has not delivered yet (R6).
+ */
+export type WaitingPart = "transcript" | "summary" | "notes" | "audio"
 export type WebviewLogLevel = "error" | "warn" | "info"
 
 /** tauri-specta globals **/

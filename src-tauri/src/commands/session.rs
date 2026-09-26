@@ -3,7 +3,7 @@
 //! window shown mid-processing rebuilds from these, then follows events
 //! (U12, AE4).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pipeline::folder_rename::FolderRename;
@@ -12,6 +12,9 @@ use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, Transcr
 use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
+
+use library::scan::Waiting;
+use library::status::LibraryStatus;
 
 use crate::managers::capture::CaptureManager;
 use crate::managers::live::{LiveManager, LiveTranscript};
@@ -36,6 +39,49 @@ pub struct SessionEntry {
     /// The number of speakers that processing found (KTD11). `None` before
     /// the join, or when the transcript has no speaker marks.
     pub found_speakers: Option<u32>,
+    /// The note's storage folder is unavailable, or its `session.md` cannot
+    /// be read now (R16). Opening it and its actions wait.
+    pub storage_unavailable: bool,
+}
+
+/// A part of a note that the sync has not delivered yet (R6).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingPart {
+    Transcript,
+    Summary,
+    Notes,
+    Audio,
+}
+
+/// The parts that `waiting` names, in its order, each one time.
+fn waiting_parts(waiting: &[Waiting]) -> Vec<WaitingPart> {
+    let mut parts = Vec::new();
+    for w in waiting {
+        let part = match w {
+            Waiting::Transcript => WaitingPart::Transcript,
+            Waiting::Summary => WaitingPart::Summary,
+            Waiting::Notes => WaitingPart::Notes,
+            Waiting::Audio(_) => WaitingPart::Audio,
+        };
+        if !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    parts
+}
+
+/// The names of the other versions of a note: conflict copies and other
+/// folders with the same note id (R15).
+fn file_names(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map_or_else(|| p.to_string_lossy(), |n| n.to_string_lossy())
+                .into_owned()
+        })
+        .collect()
 }
 
 #[derive(Serialize, Type)]
@@ -82,6 +128,12 @@ pub struct SessionDetail {
     /// Why the last Transcribe Again run kept the previous summary with
     /// the new transcript (R19).
     pub summary_not_updated: Option<String>,
+    /// The parts that the sync has not delivered yet (R6). Notes edits,
+    /// Regenerate Summary, Transcribe Again and Resume wait for them.
+    pub waiting: Vec<WaitingPart>,
+    /// The file or folder names of other versions of the note, which the
+    /// user resolves in Finder (R15).
+    pub conflict_files: Vec<String>,
 }
 
 #[derive(Serialize, Type)]
@@ -130,6 +182,7 @@ fn entry(
     record: &SessionRecord,
     segments: &[session_core::Segment],
     stage: Option<Stage>,
+    storage_unavailable: bool,
 ) -> SessionEntry {
     let stage = match &record.state {
         SessionState::ProcessingFailed { stage, .. } => Some(*stage),
@@ -147,13 +200,24 @@ fn entry(
         stage: stage.map(stage_name),
         title: record.title.as_ref().map(|t| t.text.clone()),
         found_speakers: record.found_speakers,
+        storage_unavailable,
     }
 }
 
+fn storage_unavailable(status: &LibraryStatus, record: &SessionRecord) -> bool {
+    status.storage_unavailable(&record.id, record.home_path.as_deref().map(Path::new))
+}
+
 /// Every session but the discarded ones: the switcher's list, newest first.
+/// The storage flag comes from the latest library scan: the list reads no
+/// folder.
 #[tauri::command]
 #[specta::specta]
-pub fn list_sessions(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<SessionEntry>, String> {
+pub fn list_sessions(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+) -> Result<Vec<SessionEntry>, String> {
+    let status = processing.library_status();
     let store = capture.shared_store();
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     let records = store.sessions().map_err(|e| e.to_string())?;
@@ -162,7 +226,8 @@ pub fn list_sessions(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<Sess
         if record.state != SessionState::Discarded {
             let segments = store.segments(&record.id).map_err(|e| e.to_string())?;
             let stage = store.current_stage(&record.id).map_err(|e| e.to_string())?;
-            out.push(entry(record, &segments, stage));
+            let unavailable = storage_unavailable(status, record);
+            out.push(entry(record, &segments, stage, unavailable));
         }
     }
     Ok(out)
@@ -177,6 +242,7 @@ fn has_files(dir: &Path) -> bool {
 pub fn session_detail(
     app: AppHandle,
     capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
@@ -254,8 +320,15 @@ pub fn session_detail(
         ),
     };
 
+    let status = processing.library_status();
+    let note = status.note(&session_id);
     Ok(SessionDetail {
-        entry: entry(&record, &segments, snapshot.current),
+        entry: entry(
+            &record,
+            &segments,
+            snapshot.current,
+            storage_unavailable(status, &record),
+        ),
         done: snapshot.done.into_iter().map(stage_name).collect(),
         current: snapshot.current.map(stage_name),
         windows_done: snapshot.windows.map(|(d, _)| d as u32),
@@ -273,39 +346,9 @@ pub fn session_detail(
         transcribe_again: again.model.is_some(),
         transcribe_again_error: again.error,
         summary_not_updated: again.summary_error,
+        waiting: waiting_parts(&note.waiting),
+        conflict_files: file_names(&note.other_versions),
     })
-}
-
-/// A session's notes document, editable whatever its state (R20).
-#[tauri::command]
-#[specta::specta]
-pub fn session_notes(
-    capture: State<'_, Arc<CaptureManager>>,
-    session_id: String,
-) -> Result<String, String> {
-    capture
-        .session_notes(&session_id)
-        .map_err(|e| e.to_string())
-}
-
-/// Replace a session's notes document. The editor sends the whole
-/// document; on a saved session the home folder's `notes.md` follows (R20).
-/// The write runs off the main thread, since it can reach a synced folder.
-#[tauri::command]
-#[specta::specta]
-pub async fn set_session_notes(
-    capture: State<'_, Arc<CaptureManager>>,
-    session_id: String,
-    markdown: String,
-) -> Result<(), String> {
-    let capture = Arc::clone(&capture);
-    tauri::async_runtime::spawn_blocking(move || {
-        capture
-            .set_session_notes(&session_id, &markdown)
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 /// A session's notes document and the fingerprint of the `notes.md` that
@@ -317,8 +360,8 @@ pub struct LoadedNotes {
     pub fingerprint: String,
 }
 
-/// A session's notes document, with the fingerprint that
-/// [`save_session_notes`] checks.
+/// A session's notes document, editable whatever its state (R20), with the
+/// fingerprint that [`save_session_notes`] checks.
 #[tauri::command]
 #[specta::specta]
 pub fn load_session_notes(
@@ -347,7 +390,9 @@ pub enum NotesSaveResult {
     Conflict { draft: String },
 }
 
-/// Replace a session's notes document, as [`set_session_notes`] does.
+/// Replace a session's notes document. The editor sends the whole
+/// document; on a saved session the home folder's `notes.md` follows (R20).
+/// The write runs off the main thread, since it can reach a synced folder.
 /// `loaded_fingerprint` is the fingerprint that [`load_session_notes`] gave
 /// for the document that the editor changed; `None` skips the check.
 #[tauri::command]
@@ -825,7 +870,8 @@ mod entry_tests {
             live_transcript: None,
             transcribe_again_model: None,
         };
-        let e = entry(&record, &[], None);
+        let e = entry(&record, &[], None, false);
+        assert!(!e.storage_unavailable);
         assert_eq!(e.title.as_deref(), Some("Budget review"));
         assert_eq!(e.found_speakers, Some(3));
         let e = entry(
@@ -836,7 +882,9 @@ mod entry_tests {
             },
             &[],
             None,
+            true,
         );
+        assert!(e.storage_unavailable);
         assert_eq!(e.title, None);
         assert_eq!(e.found_speakers, None);
     }

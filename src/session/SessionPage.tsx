@@ -15,6 +15,7 @@ import {
   type Readiness,
   type SessionDetail,
   type SessionDocument,
+  type WaitingPart,
 } from "../bindings";
 import { rowTitle } from "../home/group";
 import { features } from "../lib/features";
@@ -54,6 +55,20 @@ const afterLive: Record<string, LiveMode> = {
   queued: "processing",
   processing: "processing",
 };
+
+const partNames: Record<WaitingPart, string> = {
+  transcript: "transcript",
+  summary: "summary",
+  notes: "notes",
+  audio: "audio",
+};
+const partName = (part: WaitingPart) => partNames[part];
+
+/// "a", "a and b", "a, b and c".
+function listOf(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
 
 /// A segmented control. The segments have one width, so the control keeps
 /// its shape when the level bars show on Transcript.
@@ -166,6 +181,11 @@ export function SessionPage({
   onBack: () => void;
 }) {
   const entry = sessions.entries.find((e) => e.id === id);
+  // A note that a sync deleted keeps its title and date on the page.
+  const lastEntry = useRef(entry);
+  if (entry) lastEntry.current = entry;
+  const shown = entry ?? lastEntry.current;
+  const deleted = !entry && sessions.removed[id] === true;
   // A recording that just started can be known first to the capture status
   // or first to the list. Either one makes the page open as a recording, so
   // it never opens on Summary and then moves to My Notes.
@@ -228,9 +248,24 @@ export function SessionPage({
       setError(null);
     } else setError(sentence(result.error));
   }, [id]);
+  // A sync can change the saved documents, so a new version reads them
+  // again (KTD10).
   useEffect(() => {
     if (phase === "saved") void loadDocument();
-  }, [phase, loadDocument]);
+  }, [phase, loadDocument, version]);
+
+  // The note's actions and notes edits wait while a document waits for the
+  // sync or the storage folder is unavailable (R6, R16). Audio that waits
+  // holds only Resume and Transcribe Again (R12).
+  const unavailable = entry?.storage_unavailable ?? detail?.entry.storage_unavailable ?? false;
+  const waiting = detail?.waiting ?? [];
+  const held = unavailable || waiting.some((part) => part !== "audio");
+  const heldForAudio = unavailable || waiting.length > 0;
+  const heldReason = unavailable
+    ? "The storage folder for this note is unavailable."
+    : "Wait until the note finishes syncing.";
+  const [draft, setDraft] = useState<string | null>(null);
+  const others = (detail?.conflict_files ?? []).filter((name) => name !== draft);
 
   const changed = () => {
     void loadDetail();
@@ -333,23 +368,40 @@ export function SessionPage({
   if (phase === "processing" || phase === "saved") {
     items.push({
       label: "Resume Recording",
-      disabled: !detail?.resumable,
-      reason: "This note can’t be resumed.",
+      disabled: !detail?.resumable || heldForAudio,
+      reason: heldForAudio ? heldReason : "This note can’t be resumed.",
       onSelect: resume,
     });
   }
   if (phase === "saved") {
-    items.push({ label: "Regenerate Summary", disabled: regenerating, onSelect: regenerate });
+    items.push({
+      label: "Regenerate Summary",
+      disabled: regenerating || held,
+      reason: held ? heldReason : undefined,
+      onSelect: regenerate,
+    });
     items.push({
       label: "Transcribe Again…",
-      disabled: regenerating,
-      reason: "Wait until the summary is ready.",
+      disabled: regenerating || heldForAudio,
+      reason: heldForAudio ? heldReason : "Wait until the summary is ready.",
       onSelect: again.ask,
     });
   }
-  items.push({ label: "Rename", onSelect: () => title.current?.edit() });
+  if (!deleted) {
+    items.push({
+      label: "Rename",
+      disabled: unavailable,
+      reason: heldReason,
+      onSelect: () => title.current?.edit(),
+    });
+  }
   if (entry && !open && canDelete(entry.state)) {
-    items.push({ label: "Delete…", onSelect: () => deletion.ask(entry) });
+    items.push({
+      label: "Delete…",
+      disabled: unavailable,
+      reason: heldReason,
+      onSelect: () => deletion.ask(entry),
+    });
   }
 
   // What the last Transcribe Again left for the user to know (R19).
@@ -358,7 +410,7 @@ export function SessionPage({
 
   const live = sessions.live[id];
   const regenerateControl = (
-    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} onClick={regenerate}>
+    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} disabled={held} onClick={regenerate}>
       Regenerate Summary
     </Button>
   );
@@ -378,6 +430,8 @@ export function SessionPage({
     ) : null;
 
   const content = (which: "summary" | "transcript") => {
+    // A deleted note says so in the line under its title.
+    if (deleted) return null;
     if (phase === "missing") return <AfterStop>This note is no longer in the list.</AfterStop>;
     if (phase === "recording") {
       return which === "summary" ? (
@@ -394,7 +448,8 @@ export function SessionPage({
       if (which === "transcript" && liveMode && state && afterLive[state]) return liveView(afterLive[state]);
       return processing;
     }
-    if (error) return <p className="text-negative">{error}</p>;
+    // The line under the title says why the folder cannot be read.
+    if (error) return unavailable ? null : <p className="text-negative">{error}</p>;
     // While the summary is written again, Summary shows the summarize stage
     // in place of the previous summary. A failed run shows it again.
     if (which === "summary" && regenerating && detail) {
@@ -435,11 +490,24 @@ export function SessionPage({
     if (done) copyTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
-  const subtitle = entry
-    ? [startedAt(entry.started), !open && entry.duration_ms > 0 ? formatDuration(entry.duration_ms) : null]
+  const subtitle = shown
+    ? [startedAt(shown.started), !open && shown.duration_ms > 0 ? formatDuration(shown.duration_ms) : null]
         .filter(Boolean)
         .join(" · ")
     : "";
+
+  // The state of the note's folder, each as one quiet line (R6, R10, R15,
+  // R16). The most important one comes first.
+  const syncLines: string[] = [];
+  if (deleted) syncLines.push("This note was deleted.");
+  else {
+    if (unavailable) syncLines.push("The storage folder for this note is unavailable.");
+    else if (waiting.length > 0) syncLines.push(`Waiting for the ${listOf(waiting.map(partName))} to sync.`);
+    if (draft) syncLines.push(`The notes changed on another computer. Your edit is in ${draft}.`);
+    if (others.length > 0) {
+      syncLines.push(`Another version of this note exists: ${listOf(others)}. Compare them in Finder.`);
+    }
+  }
 
   const copyLabel = { notes: "Copy My Notes", transcript: "Copy the transcript", summary: "Copy the summary" }[tab];
 
@@ -489,14 +557,19 @@ export function SessionPage({
           <TitleField
             ref={title}
             sessionId={id}
-            title={entry?.title ?? null}
-            placeholder={entry ? sessionTitle(entry.started) : "Recording"}
+            title={shown?.title ?? null}
+            placeholder={shown ? sessionTitle(shown.started) : "Recording"}
             onRenamed={(n) => {
               setNotice(n);
               void sessions.refresh();
             }}
           />
           <p className="mt-1 text-[0.85rem] text-label-secondary tabular-nums">{subtitle}</p>
+          {syncLines.map((line) => (
+            <p key={line} role="status" className="mt-1 text-[0.85rem] text-label-secondary">
+              {line}
+            </p>
+          ))}
           {notice && (
             <p
               role="status"
@@ -523,7 +596,10 @@ export function SessionPage({
             key={id}
             sessionId={id}
             autoFocus={tab === "notes" && phase === "recording"}
+            editable={!held && !deleted}
+            synced={sessions.synced[id] ?? 0}
             onMarkdown={setNotes}
+            onConflict={setDraft}
           />
         </div>
       </main>

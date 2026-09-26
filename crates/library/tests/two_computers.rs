@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, FixedOffset};
 use library::reconcile::{Changes, Coverage, DELETE_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
-use library::scan::{Known, ScanOptions, scan};
+use library::scan::{Known, ScanOptions, Waiting, scan};
+use library::status::NoteStatus;
 use pipeline::SharedStore;
 use session_core::folder::{SessionDoc, fingerprint};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
@@ -712,8 +713,81 @@ fn a_targeted_scan_of_a_duplicate_folder_keeps_the_home_folder() {
             fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
         }
     }
-    assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
+    // The row does not change, but the note now has another version (R15).
+    assert_eq!(a.sync_folders(&root, &[&copy]), changed(&["n1"]));
     assert_eq!(a.home("n1"), folder);
+    assert_eq!(
+        a.reconciler.status().note("n1").other_versions,
+        std::slice::from_ref(&copy)
+    );
+    assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
+}
+
+// Covers AE7, R6 (U7).
+#[test]
+fn a_part_that_arrives_later_clears_its_wait_and_reports_the_note() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let audio = folder.join("audio/segment-01.opus");
+    let away = dir.path().join("segment-01.opus");
+    fs::rename(&audio, &away).unwrap();
+
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(
+        a.reconciler.status().note("n1").waiting,
+        [Waiting::Audio("audio/segment-01.opus".into())]
+    );
+    assert_eq!(a.sync_roots(&[&root]), Changes::default());
+
+    fs::rename(&away, &audio).unwrap();
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+}
+
+// Covers AE8, R15 (U7).
+#[test]
+fn a_conflict_copy_reports_the_note_and_names_the_file() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+
+    let copy = folder.join("notes (1).md");
+    fs::write(&copy, "Other notes\n").unwrap();
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(
+        a.reconciler.status().note("n1").other_versions,
+        std::slice::from_ref(&copy)
+    );
+
+    fs::remove_file(&copy).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(a.reconciler.status().note("n1").other_versions.is_empty());
+}
+
+// Covers AE6, R16 (U7).
+#[test]
+fn a_root_that_goes_away_and_comes_back_reports_its_notes() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+    let status = Arc::clone(a.reconciler.status());
+    assert!(!status.storage_unavailable("n1", Some(&folder)));
+
+    let unmounted = dir.path().join("unmounted");
+    fs::rename(&root, &unmounted).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(status.storage_unavailable("n1", Some(&folder)));
+    assert_eq!(a.sync_roots(&[&root]), Changes::default());
+
+    fs::rename(&unmounted, &root).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(!status.storage_unavailable("n1", Some(&folder)));
 }
 
 // Covers KD7, R10 (U6).

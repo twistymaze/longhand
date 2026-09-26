@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use session_core::jobs::busy;
@@ -29,6 +29,7 @@ use session_core::{Adoption, SessionRecord, Store, StoreError};
 
 use crate::refresh::{self, FolderContents};
 use crate::scan::{self, Known, LibraryScan, NoteFolder, READ_TIMEOUT, ScanOptions};
+use crate::status::LibraryStatus;
 
 /// How long a row stays after its folder is gone from an available
 /// Destination (R10). A sync can deliver a rename as a removed folder and
@@ -46,7 +47,7 @@ pub enum Coverage {
 }
 
 impl Coverage {
-    fn covers(&self, home: &Path) -> bool {
+    pub(crate) fn covers(&self, home: &Path) -> bool {
         match self {
             Coverage::Full => true,
             Coverage::Folders(folders) => folders.contains(home),
@@ -71,7 +72,8 @@ pub enum Target {
 /// (KTD10). Each list is sorted and has no repeated id.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Changes {
-    /// Adopted rows, refreshed rows and rows with a new home path.
+    /// Adopted rows, refreshed rows and rows with a new home path. After
+    /// [`Reconciler::run`], also the notes whose [`LibraryStatus`] changed.
     pub changed: Vec<String>,
     /// Forgotten rows.
     pub removed: Vec<String>,
@@ -90,6 +92,8 @@ pub struct Reconciler {
     /// When each pending delete started.
     pending: HashMap<String, Instant>,
     read_timeout: Duration,
+    /// What the scans of [`Reconciler::run`] found (KTD10).
+    status: Arc<LibraryStatus>,
 }
 
 impl Default for Reconciler {
@@ -97,6 +101,7 @@ impl Default for Reconciler {
         Self {
             pending: HashMap::new(),
             read_timeout: READ_TIMEOUT,
+            status: Arc::default(),
         }
     }
 }
@@ -107,7 +112,19 @@ impl Reconciler {
         Self {
             pending: HashMap::new(),
             read_timeout: options.read_timeout,
+            status: Arc::default(),
         }
+    }
+
+    /// Write the status of each scan into `status`, which the caller
+    /// shares with the commands that read it.
+    pub fn with_status(mut self, status: Arc<LibraryStatus>) -> Self {
+        self.status = status;
+        self
+    }
+
+    pub fn status(&self) -> &Arc<LibraryStatus> {
+        &self.status
     }
 
     /// Whether the row `id` has a pending delete.
@@ -125,7 +142,7 @@ impl Reconciler {
     }
 
     /// Scan `target` without the store lock, then apply the scan to the
-    /// store under the lock. `claimed` is as for [`Reconciler::reconcile`].
+    /// store and to the status under the lock. `claimed` is as for [`Reconciler::reconcile`].
     pub fn run(
         &mut self,
         store: &Mutex<Store>,
@@ -149,7 +166,16 @@ impl Reconciler {
                 }
             }
         };
-        self.reconcile(&mut lock(), &result, &coverage, Instant::now(), claimed)
+        let mut store = lock();
+        let mut changes =
+            self.reconcile(&mut store, &result, &coverage, Instant::now(), claimed)?;
+        let noted = self.status.apply(&result, &coverage, &store.sessions()?);
+        changes
+            .changed
+            .extend(noted.into_iter().filter(|id| !changes.removed.contains(id)));
+        changes.changed.sort();
+        changes.changed.dedup();
+        Ok(changes)
     }
 
     /// Apply `scan` to `store`. `now` is the time of the scan. `claimed`

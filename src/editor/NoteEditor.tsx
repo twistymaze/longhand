@@ -46,6 +46,9 @@ export type NoteEditorProps = {
   /** Receives the whole document as markdown after a change. */
   onChange: (markdown: string) => void;
   autoFocus?: boolean;
+  /** False while the notes cannot change, for example while they wait for
+   * the sync. The editor then shows the document and takes no input. */
+  editable?: boolean;
 };
 
 const nodeViews = {
@@ -60,7 +63,7 @@ function createDoc(markdown: string): PMNode {
   }
 }
 
-export function NoteEditor({ markdown, onChange, autoFocus = false }: NoteEditorProps) {
+export function NoteEditor({ markdown, onChange, autoFocus = false, editable = true }: NoteEditorProps) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
@@ -130,6 +133,7 @@ export function NoteEditor({ markdown, onChange, autoFocus = false }: NoteEditor
   return (
     <ProseMirror
       defaultState={defaultState}
+      editable={() => editable}
       nodeViewComponents={nodeViews}
       attributes={{
         spellCheck: "true",

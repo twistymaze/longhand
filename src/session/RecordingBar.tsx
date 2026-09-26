@@ -105,7 +105,7 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   if (problem) items.push({ tone: "caution", text: `If recording fails, ${problem}` });
   if (readiness && readiness.destination.kind !== "ready") {
     const d = describeDestination(readiness.destination);
-    items.push({ tone: d.tone === "negative" ? "negative" : "caution", text: `Destination: ${d.text}` });
+    items.push({ tone: d.tone === "negative" ? "negative" : "caution", text: `Storage: ${d.text}` });
   }
   if (readiness && readiness.missing_models.length > 0) {
     items.push({ tone: "caution", text: "Processing will wait for model downloads." });
