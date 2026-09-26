@@ -43,7 +43,7 @@ Walking-skeleton `KD5` and `R25` already say that the folders hold the content a
 
 - KD1. **One person, several computers, not several people.** The library is one user's notes across the user's own computers. Shared use by colleagues is out of scope. *(session-settled: user-directed — chosen over a folder that several people share: the user named this case explicitly.)*
 - KD2. **The missing fields go into `session.md` frontmatter, not a second metadata file.** The frontmatter is already the authoritative manifest (`SessionDoc::parse` in `crates/session-core/src/folder.rs`), and one manifest cannot disagree with itself when a sync delivers only part of a folder. *(session-settled: user-directed — chosen over a separate machine-only metadata file and over deriving defaults with no new fields: two files can disagree after a partial sync, and defaults leave the R25 gap open.)* Governs R3, R4.
-- KD3. **Every action works on every computer, including Resume and Transcribe Again.** Both decode the earlier segments from the audio in the note folder (walking-skeleton R6d, `assemble.rs`), and that audio syncs, so neither needs the recording computer. A computer that has no stored recognition results for the note transcribes the earlier segments again. *(session-settled: user-directed — chosen over Resume only on the recording computer, after review showed that the working-state reason for that limit was false.)* Governs R13, R14.
+- KD3. **Every action works on every computer, including Resume and Transcribe Again.** Both decode the earlier segments from the audio in the note folder (walking-skeleton R6d, `assemble.rs`), and that audio syncs, so neither needs the recording computer. On Resume, a computer that has no stored recognition results for the note takes the earlier segments' text from `transcript.md` and transcribes only the new segment. Transcribe Again always makes a full new pass. *(session-settled: user-directed — chosen over Resume only on the recording computer, after review showed that the working-state reason for that limit was false.)* Governs R13, R14.
 - KD4. **The note folder is the authority for a saved note on every computer, including the one that recorded it.** This computer's database is a copy that follows the folder. Governs R9, R14, R18.
 - KD5. **Live updates, not only at launch.** *(session-settled: user-directed — chosen over a rescan at launch and on window focus, and over a rescan at launch plus a Refresh action.)* Governs R7, R8, R11.
 - KD6. **Longhand reads the real file and shows a notice when a conflict copy exists.** The user resolves the conflict in Finder, and the notice says that there is something to resolve. *(session-settled: user-directed — chosen over ignoring conflict copies silently, after review showed that edits on every computer make conflicts more likely, and over listing the copy as a second note.)* Governs R15.
@@ -144,29 +144,30 @@ None remain. Planning resolved each question that the brainstorm deferred:
 ### Key Technical Decisions
 
 - KTD1. **A note from another computer becomes an ordinary Saved row in this computer's store.** A new store method adopts a note from its folder. It inserts a row in state Saved with the fields of `session.md`, its segments, the text of `notes.md` and its home path. It does this only for an id that has no row, and it goes around the state machine because the note never passed through Capturing on this computer. A second new method, forget, removes a row and its checkpoints without touching any folder. Rationale: every command already resolves a saved note through its row (`home_path`, `busy`, rename, delete, Regenerate Summary, Transcribe Again, Resume), so an adopted row makes each action work with no second code path. A separate read-only library table was rejected: every action would need two sources, and KD3 needs full actions. Covers R1, R4, R13.
-- KTD2. **`session.md` gets three new frontmatter fields: `title_source`, `asr_model` and `found_speakers`.** Each is optional, is read with a default and is written only when set, like `title` today. The frontmatter parser also accepts CRLF line ends, because a Windows tool can rewrite the file. The per-computer data stays out of the file (R4): the live mode, the microphone, the Computer audio switch, the prompt snapshot and the Transcribe Again marks. `stereo_from` is derived from the first segment record with two channels. A file with a title and no `title_source` counts as set by the user (R5). Covers R3, R5.
+- KTD2. **`session.md` gets three new frontmatter fields: `title_source`, `asr_model` and `found_speakers`.** Each is optional, is read with a default and is written only when set, like `title` today. The frontmatter parser also accepts CRLF line ends, because a Windows tool can rewrite the file. `session.md` also records the fingerprints of `transcript.md` and `summary.md`. Every writer of either file writes `session.md` after it, with the new fingerprints. `notes.md` has no fingerprint in `session.md`, because it changes on every keystroke. The per-computer data stays out of the file (R4): the live mode, the microphone, the Computer audio switch, the prompt snapshot and the Transcribe Again marks. `stereo_from` is derived from the first segment record with two channels. A file with a title and no `title_source` counts as set by the user (R5). Covers R3, R5.
 - KTD3. **One refresh step brings a row up to date from its folder, and every writer calls it first.** The refresh reads `session.md`, `notes.md` and the fingerprint of `transcript.md` (KTD12), and updates the title, title source, recognition model, speakers found, segments and notes. It is idempotent: an unchanged folder changes nothing and emits nothing. When an older Longhand wrote `session.md` without `title_source` and the title did not change, the refresh keeps the row's stored title source. The scan and the launch reconcile run it only for a Saved row that no stage has claimed (`busy`). A writer runs it on the row that the writer itself holds, whatever its claim: at the start of rename, notes save, Regenerate Summary (under the regenerate claim), Transcribe Again and Resume. `update_home` runs it again under the save claim before it renders the documents into the working directory, and once more under the store lock before the final `write_notes`. So a notes edit or rename that another computer made during a long run is kept. The new transcript and summary of that run still replace the old ones. Covers R9, R14 (KD4).
 - KTD4. **Regenerate Summary reads its transcript from `transcript.md`.** `Transcript::parse` gives the same speaker, position and text as `summarize::Turn`, so it replaces `transcript_turns` on every computer. Echo spans and live parts do not matter at that point, because `transcript.md` already holds the final text. Covers R14.
 - KTD5. **The library scan reads only `session.md` in each note folder.** For each retained root that is present, it lists the top-level folders, skips names that start with a dot (staging, rename and temporary folders), and parses `session.md`. It never opens audio, so an online-only audio file is not downloaded by the scan. Reading `session.md` downloads that one small file, which is acceptable. The scan also records:
-  1. Waiting parts: `transcript.md`, `summary.md` or `notes.md` missing, or a segment's audio missing (R6).
+  1. Waiting parts: `transcript.md`, `summary.md` or `notes.md` missing, a transcript or summary whose fingerprint differs from the one in `session.md` (a file from another version of the note), or a segment's audio missing (R6).
   2. Conflict copies: a sibling file whose name matches a conflict pattern of one of the four documents. The patterns are the OneDrive, Dropbox, Google Drive and iCloud forms (`notes (1).md`, `notes (Erv's conflicted copy 2026-09-25).md`, `notes-DESKTOP-ABC.md`, `notes 2.md`).
   3. Duplicate ids: when two folders hold one note id, the real folder is the one at the row's home path, then the one whose name has no conflict pattern, then the older one. The other folder becomes a conflict notice (R15).
   4. Root availability uses a hidden marker file, `.longhand-library`, that Longhand writes in each retained root the first time it saves to or scans a root that has note folders or no saved rows. A root that is missing, not a folder, or present without its marker while the store holds saved rows under it is unavailable. This covers a signed-out sync client, which removes the marker with its other online-only files (KD7). A root with its marker and no note folders is available and empty, so the rows under it follow the pending delete (KTD6).
   5. Unreadable notes: a folder whose `session.md` exists but cannot be read (an I/O error, a read that times out, a placeholder that does not download) is unreadable, not missing. Its row stays, it starts no pending delete, and the note shows as storage unavailable. A read has a timeout, so an offline computer does not stall the scan.
   Covers R1, R6, R10, R12, R15, R16.
 - KTD6. **Reconcile applies a scan to the store.** A new id is adopted (KTD1). A known id is refreshed (KTD3). A new folder path updates the home path, which follows a rename by id (R8). The home path follows for any row that has one and has no rename intent on this computer, whatever its state or claim, so a run whose folder another computer renamed saves into the new folder. Only the refresh of KTD3 is limited to Saved, unclaimed rows. An id that is gone from an available root gets a pending delete. It is forgotten only after 30 seconds with no folder for that id. It is forgotten only when its row is Saved and unclaimed, and has no rename in progress. Rows under an unavailable root are left alone. Forget removes only rows and checkpoints: a Saved row has no working copy. A note that comes back later is adopted again, and loses only this computer's stored recognition results. Covers R8, R10, R16.
-- KTD7. **The watcher is `notify` 8 with `notify-debouncer-full` 0.5, from anarlog's notify plugin (MIT).** There is one recursive watch for each retained root that is present, with a 900 ms debounce. An event only marks its top-level note folder for a targeted scan. A rescan or overflow event, an event with no usable path, or an unpaired rename runs a full scan of that root. A full scan of every root also runs every 60 seconds as a safety net, because FSEvents can drop events and File Provider folders behave in unusual ways. The watcher restarts when the retained roots change. Longhand's own writes need no own-writes registry, because the refresh is idempotent (KTD3). The path filter follows anarlog's `should_skip_path`, plus Longhand's hidden names. Covers R7, R8, R11.
+- KTD7. **The watcher is `notify` 8 with `notify-debouncer-full` 0.5, from anarlog's notify plugin (MIT).** There is one recursive watch for each retained root that is present, with a 900 ms debounce. An event only marks its top-level note folder for a targeted scan. A rescan or overflow event, an event with no usable path, or an unpaired rename runs a full scan of that root. A full scan of every root also runs every 60 seconds as a safety net, because FSEvents can drop events and File Provider folders behave in unusual ways. The watcher restarts when the retained roots change. Each 60-second scan also adds a watch for a retained root that is present again, and drops the watch of a root that went away. Longhand's own writes need no own-writes registry, because the refresh is idempotent (KTD3). The path filter follows anarlog's `should_skip_path`, plus Longhand's hidden names. Covers R7, R8, R11.
 - KTD8. **A new crate `crates/library` holds the scan, conflict detection and reconcile, and `src-tauri/src/managers/library.rs` holds the watcher.** The crate has no Tauri dependency, so the two-computer tests run with two stores over one temporary folder. `crates/library` depends on session-core and session-save only. `pipeline` depends on `library`, and `library` has `pipeline` only as a dev-dependency for the two-computer harness. `folder_rename::busy` moves into session-core, so that both crates can call it. The manager owns the debouncer, the 60-second timer and the pending-delete timers, and it emits a `LibraryChanged` event. Runtime state (unavailable roots, waiting parts, conflict notices, pending deletes) stays in memory and is rebuilt by each scan. It is never stored. Covers R7–R12, R15, R16.
 - KTD9. **The launch order puts the library scan before the folder reconcile.** The steps are: reclaim, staging sweep, rename intents (`folder_rename::resolve_intents`), library full scan and reconcile, folder reconcile (the rest of `folder_rename::recover`), live attach, retry of notes waiting for a folder, the runner start and the watcher start. `recover` splits into its two halves. The steps from the library scan to the watcher start run in this order on one background thread that setup starts after the instance-lock check. The window opens at once with the stored rows, and the first reconcile emits `LibraryChanged`. The staging sweep stays as it is: it removes staging only for an id recorded as completed, and a first save's staging has an id that no other computer has adopted. A test holds that rule. Covers R9, R11.
 - KTD10. **The UI refreshes on `LibraryChanged { changed, removed }`.**
   - `useSessions` refreshes the list and bumps the version of each changed id.
   - The note page reloads the detail and the document on a bump for its id. Today it reloads the document only on a phase change.
-  - The notes tab reloads the notes only when no save is waiting and the last keystroke was more than 2 seconds ago. Otherwise the local edit wins at its next save, as with any other write.
+  - The notes tab reloads the notes only when no save is waiting and the last keystroke was more than 2 seconds ago.
+  - A notes save sends the fingerprint of the `notes.md` that the editor loaded. When the file changed since then, the save leaves `notes.md` as it is, writes the draft beside it as `notes (Longhand conflict YYYY-MM-DD HHMM).md`, and the editor loads the current file. The conflict notice then names the draft (R15). The name matches a conflict pattern of KTD5.
   - A removed id turns an open page into "This note was deleted."
   - `SessionEntry` gets the storage-unavailable flag. `SessionDetail` gets the waiting parts, the conflict file names and the storage-unavailable flag.
   Covers R6, R8, R10, R15, R16.
 - KTD11. **The status of a Transcribe Again run stays on the computer that ran it.** Its error and its "summary not updated" mark are about a run on this computer. Other computers see the new files. Covers R4.
-- KTD12. **R18 uses a fingerprint of `transcript.md`.** The row stores a hash of the `transcript.md` that this computer last wrote or read. When the refresh finds a different hash, it removes this computer's stored recognition results for the note: its Assemble, Transcribe (window rows and live parts) and Diarize checkpoints. It marks the note so that a later Resume takes the text of the earlier segments from `transcript.md`: the turns that `Transcript::parse` reads, split into segments by each segment's offset and duration in `session.md`. Resume then transcribes only the new segment. Transcribe Again makes a full new pass, as it does today. This needs one new column, added by the next free migration number at merge time (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`). Covers R18.
+- KTD12. **R18 uses a fingerprint of `transcript.md`.** The row stores a hash of the `transcript.md` that this computer last wrote or read. When the refresh finds a different hash, it removes this computer's stored recognition results for the note: its Assemble, Transcribe (window rows and live parts) and Diarize checkpoints. A Resume of any note that has no stored recognition results (an adopted note, or one that a fingerprint change cleared) takes the text of the earlier segments from `transcript.md`: the turns that `Transcript::parse` reads, split into segments by each segment's offset and duration in `session.md`. Resume then transcribes only the new segment. Transcribe Again makes a full new pass, as it does today. This needs one new column, added by the next free migration number at merge time (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`). Covers R18.
 - KTD13. **Backend errors that the note page can show say "storage folder".** The three save errors in `crates/pipeline/src/save.rs` and `crates/session-save/src/lib.rs` change their text. Identifiers and log text keep "destination". Covers R17 (KD8).
 
 ### High-Level Technical Design
@@ -225,7 +226,7 @@ flowchart LR
 | FSEvents drops events or behaves in unusual ways in `~/Library/CloudStorage`. | The 60-second full scan (KTD7). The manual test covers OneDrive and Dropbox on macOS. |
 | A signed-out sync client keeps some files, so the root is neither empty nor complete. | The 30-second pending delete limits the damage to rows. Notes come back when the files return (KTD6). The manual test checks sign-out. |
 | An adopted row trips a check that expects a row that was processed on this computer. | Two-computer integration tests for every action (U4, U5). |
-| Resume or Transcribe Again on another computer transcribes the earlier segments again, and the text can change. | Accepted (KD3). |
+| Transcribe Again on another computer uses that computer's recognition model, so the text can change. | Accepted (KD3, KD10). |
 
 ---
 
@@ -249,7 +250,7 @@ flowchart LR
 - `crates/pipeline/tests/runner.rs`
 
 **Approach:**
-1. Add `title_source`, `asr_model` and `found_speakers` to `SessionDoc`, each optional and skipped when unset.
+1. Add `title_source`, `asr_model`, `found_speakers` and the transcript and summary fingerprints to `SessionDoc`, each optional and skipped when unset. Regenerate Summary rewrites `session.md` after `summary.md`.
 2. Make the frontmatter split accept CRLF.
 3. Write the new fields from the row in `session_doc` and in the rename rewrite.
 4. Add a reader that gives the defaults of KTD2 for a file without the fields.
@@ -262,6 +263,7 @@ flowchart LR
 - A `session.md` with CRLF line ends parses.
 - A rename rewrites `session.md` and keeps the new fields.
 - A stereo segment keeps `channels: 2`, and `stereo_from` is derived from it.
+- After a save and after Regenerate Summary, the fingerprints in `session.md` match `transcript.md` and `summary.md`.
 
 **Verification:** `cargo test -p session-core` and `cargo test -p pipeline` pass.
 
@@ -330,6 +332,7 @@ flowchart LR
 - Two folders with one id: the real one is chosen by the rule, and the other gives a notice.
 - A missing root is unavailable. A present root without its marker and with saved rows under it is unavailable. A root with its marker and no note folders is available and empty.
 - A folder whose `session.md` cannot be read is unreadable, not missing.
+- A `transcript.md` whose fingerprint differs from the one in `session.md` shows the transcript as waiting.
 - No audio file is opened.
 
 **Verification:** `cargo test -p library` passes.
@@ -379,7 +382,7 @@ flowchart LR
 **Dependencies:** U4.
 
 **Files:**
-- `crates/pipeline/src/save.rs` (`set_notes`, `update_home`, `summarize_again`, the error text)
+- `crates/pipeline/src/save.rs` (`set_notes` with the loaded fingerprint and the conflict draft, `update_home`, `summarize_again`, the error text)
 - `crates/pipeline/src/summarize.rs`
 - `crates/pipeline/src/folder_rename.rs` (`rename_session`, the split of `recover`)
 - `crates/pipeline/src/runner.rs` (Transcribe Again)
@@ -390,7 +393,7 @@ flowchart LR
 
 **Approach:**
 1. Call the refresh at the start of each writer on the row that it holds. In `update_home`, call it before the render into the working directory and again under the store lock before the final `write_notes`. Read the home path again under the lock before each write to the folder, as `summarize_again` does (KTD3, KTD6).
-2. Resume of a note marked by KTD12 takes the earlier segments' turns from `transcript.md` and transcribes only the new segment.
+2. Resume of a note with no stored recognition results takes the earlier segments' turns from `transcript.md` and transcribes only the new segment (KTD12).
 3. Regenerate Summary builds its turns from `Transcript::parse` of `transcript.md` (KTD4).
 4. Split `folder_rename::recover` into intents and reconcile, run the library scan between them, and move the steps from the scan to the watcher start onto one background thread (KTD9).
 5. Move `busy` into session-core (KTD8).
@@ -400,7 +403,7 @@ flowchart LR
 
 **Test scenarios:**
 - Covers AE5. B renames the note and edits its notes. A runs Regenerate Summary: the summary uses B's notes, and the folder keeps B's title.
-- Covers AE3. B resumes a note that A recorded, records a new segment and stops. The folder holds the old audio, one new file and a transcript of both.
+- Covers AE3. B resumes a note that A recorded, records a new segment and stops. The folder holds the old audio, one new file and a transcript of both, and the earlier segments keep A's text.
 - B runs Transcribe Again on A's note. It decodes from the folder audio and keeps the notes and title.
 - Regenerate Summary on a computer with no recognition results summarizes the text of `transcript.md`, not an empty transcript.
 - A notes edit on B during A's Transcribe Again is still in `notes.md` after A's save.
@@ -442,6 +445,7 @@ flowchart LR
 - A folder added under a watched temporary root emits `LibraryChanged` with its id within the debounce plus scan time.
 - A rescan event runs a full scan.
 - A roots change restarts the watches on the new set.
+- A root that is missing at start and appears later gets a watch after the next 60-second scan.
 - The path filter skips Longhand's hidden names and temporary files.
 
 **Verification:** `cargo test -p longhand` passes, and `scripts/check-provenance.sh` passes.
@@ -479,6 +483,7 @@ flowchart LR
 **Test scenarios:**
 - A `LibraryChanged` for the open note reloads its detail and document.
 - A synced notes change reloads the notes tab when no save waits, and does not replace a local edit that is still waiting.
+- A save whose loaded `notes.md` changed on disk writes the draft as a Longhand conflict file, keeps `notes.md`, and shows the conflict notice.
 - A removed id shows "This note was deleted" on the open page.
 - Covers AE7. A note with notes waiting shows the line, and the editor does not accept input.
 - Covers AE8. A conflict notice names the file.
