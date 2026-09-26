@@ -1,13 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
+  cargoAboutProblems,
+  checkNpmVersion,
   checkOnnxRuntimeVersion,
   copyrightFromFiles,
+  isSpdxMetadata,
+  packageLicenceTexts,
   PART_TITLES,
   renderList,
   selectNative,
   splitCopyright,
+  type JsPackage,
   type LicensedComponent,
   type NativeEntry,
+  type PackageLicence,
 } from "./group";
 
 const MIT_BODY = `Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -170,5 +176,94 @@ describe("copyrightFromFiles", () => {
   test("keeps the text's own copyright lines when it has them", () => {
     const files = [mit("Copyright (c) 2017 Someone Else")];
     expect(copyrightFromFiles(mit("Copyright (c) 2020 Someone"), files)).toEqual(["Copyright (c) 2020 Someone"]);
+  });
+});
+
+describe("packageLicenceTexts", () => {
+  const spdx = "SPDXVersion: SPDX-2.1\nDataLicense: CC0-1.0\nPackageName: tauri\n";
+  const opener: JsPackage = {
+    name: "@tauri-apps/plugin-opener",
+    version: "2.5.5",
+    license: "MIT OR Apache-2.0",
+    licenseText: spdx,
+    noticeText: null,
+  };
+  const replacements: Record<string, PackageLicence> = {
+    "@tauri-apps/plugin-opener": {
+      version: "2.5.5",
+      copyright: ["Copyright (c) 2017 Tauri"],
+      files: ["mit.txt", "apache.txt"],
+      source: "https://example.com/opener",
+    },
+  };
+  const read = (path: string) => `text of ${path}`;
+
+  test("isSpdxMetadata detects a LICENSE.spdx text and not a licence text", () => {
+    expect(isSpdxMetadata(spdx)).toBe(true);
+    expect(isSpdxMetadata(`\n${spdx}`)).toBe(true);
+    expect(isSpdxMetadata(mit("Copyright (c) 2020 Alice"))).toBe(false);
+  });
+
+  test("uses the replacement files, one text for each file, with the copyright lines", () => {
+    const texts = packageLicenceTexts(opener, replacements, read);
+    expect(texts).toHaveLength(2);
+    expect(texts[0]).toContain("text of mit.txt");
+    expect(texts[1]).toContain("text of apache.txt");
+    for (const text of texts) expect(splitCopyright(text).copyright).toEqual(["Copyright (c) 2017 Tauri"]);
+  });
+
+  test("fails and names the package when the licence text is SPDX metadata and there is no replacement", () => {
+    expect(() => packageLicenceTexts(opener, {}, read)).toThrow(/@tauri-apps\/plugin-opener.*packageLicences/);
+  });
+
+  test("fails when the replacement is for a different version", () => {
+    expect(() => packageLicenceTexts({ ...opener, version: "2.6.0" }, replacements, read)).toThrow(/2\.5\.5.*2\.6\.0/);
+  });
+
+  test("keeps an ordinary licence text and describes a package with no licence file", () => {
+    const text = mit("Copyright (c) 2020 Alice");
+    expect(packageLicenceTexts({ ...opener, name: "react", licenseText: text }, replacements, read)).toEqual([text]);
+    expect(packageLicenceTexts({ ...opener, name: "x", license: "MIT", licenseText: null }, {}, read)).toEqual([
+      "MIT licence. The package includes no licence file.",
+    ]);
+  });
+});
+
+describe("checkNpmVersion", () => {
+  const entry: NativeEntry = {
+    name: "tailwindcss",
+    version: "4.3.3",
+    part: "interface",
+    platforms: ["macos"],
+    files: ["t.txt"],
+    source: "https://example.com/t",
+    npmPackage: "tailwindcss",
+  };
+
+  test("passes when node_modules has the manifest's version", () => {
+    expect(() => checkNpmVersion(entry, "4.3.3")).not.toThrow();
+  });
+
+  test("fails with both versions named when they differ", () => {
+    expect(() => checkNpmVersion(entry, "4.4.0")).toThrow(/4\.3\.3.*4\.4\.0/);
+  });
+});
+
+describe("cargoAboutProblems", () => {
+  test("detects a warning line with colour codes around the level, as cargo-about 0.9.2 prints it", () => {
+    const line = "2026-09-26 10:00:00.000000 +00:00:00 [\x1b[33mWARN\x1b[0m] crate 'foo 1.0.0': checksum mismatch for LICENSE";
+    const problems = cargoAboutProblems(`${line}\n`);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("[WARN]");
+    expect(problems[0]).toContain("checksum mismatch");
+  });
+
+  test("detects an error line", () => {
+    expect(cargoAboutProblems("[\x1b[31mERROR\x1b[0m] failed to satisfy license requirements\n")).toHaveLength(1);
+  });
+
+  test("ignores clean output and ordinary INFO lines", () => {
+    expect(cargoAboutProblems("")).toEqual([]);
+    expect(cargoAboutProblems("[\x1b[32mINFO\x1b[0m] gathered 400 crates\n[INFO] done\n")).toEqual([]);
   });
 });

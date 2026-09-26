@@ -14,13 +14,18 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import {
+  cargoAboutProblems,
+  checkNpmVersion,
   checkOnnxRuntimeVersion,
   copyrightFromFiles,
+  packageLicenceTexts,
   renderList,
   selectNative,
   splitCopyright,
+  type JsPackage,
   type LicensedComponent,
   type NativeEntry,
+  type PackageLicence,
 } from "./group";
 
 const ROOT = resolve(import.meta.dir, "../..");
@@ -34,15 +39,8 @@ const PLATFORMS = [
 interface Manifest {
   onnxRuntimeVersion: string;
   entries: NativeEntry[];
+  packageLicences: Record<string, PackageLicence>;
   crateNotes: Record<string, string>;
-}
-
-interface JsPackage {
-  name: string;
-  version: string;
-  license: string | null;
-  licenseText: string | null;
-  noticeText: string | null;
 }
 
 interface CargoAboutCrate {
@@ -85,11 +83,7 @@ function cargoAbout(target: string): CargoAboutOutput {
     "--target",
     target,
   ]);
-  // The log lines carry colour codes even when stderr is not a terminal.
-  const warnings = stderr
-    .split("\n")
-    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""))
-    .filter((line) => /\[(WARN|ERROR)\]/.test(line));
+  const warnings = cargoAboutProblems(stderr);
   if (warnings.length > 0) fail(`cargo about reported problems for ${target}:\n${warnings.join("\n")}`);
   return JSON.parse(stdout) as CargoAboutOutput;
 }
@@ -122,14 +116,43 @@ function rustComponents(about: CargoAboutOutput, notes: Record<string, string>):
   );
 }
 
-function jsComponents(packages: JsPackage[]): LicensedComponent[] {
+function jsComponents(
+  packages: JsPackage[],
+  replacements: Record<string, PackageLicence>,
+  read: (path: string) => string,
+): LicensedComponent[] {
+  for (const name of Object.keys(replacements)) {
+    if (!packages.some((pkg) => pkg.name === name)) {
+      fail(`the build does not include ${name}; remove its packageLicences entry from licences/native/manifest.json`);
+    }
+  }
   return packages.flatMap((pkg) => {
     const base = { part: "interface" as const, name: pkg.name, version: pkg.version };
-    const licence = pkg.licenseText ?? `${pkg.license} licence. The package includes no licence file.`;
-    const out: LicensedComponent[] = [{ ...base, text: licence }];
+    let texts: string[];
+    try {
+      texts = packageLicenceTexts(pkg, replacements, read);
+    } catch (error) {
+      fail((error as Error).message);
+    }
+    const out: LicensedComponent[] = texts.map((text) => ({ ...base, text }));
     if (pkg.noticeText) out.push({ ...base, note: "notice", text: pkg.noticeText });
     return out;
   });
+}
+
+// A native entry with an npm package must name the installed version.
+function checkNpmVersions(manifest: Manifest): void {
+  for (const entry of manifest.entries) {
+    if (!entry.npmPackage) continue;
+    const file = join(ROOT, "node_modules", entry.npmPackage, "package.json");
+    if (!existsSync(file)) fail(`${entry.npmPackage} is not in node_modules; run \`bun install\``);
+    const { version } = JSON.parse(readFileSync(file, "utf8")) as { version: string };
+    try {
+      checkNpmVersion(entry, version);
+    } catch (error) {
+      fail((error as Error).message);
+    }
+  }
 }
 
 function checkOrtVersion(about: CargoAboutOutput, manifest: Manifest): void {
@@ -163,13 +186,15 @@ function main(): void {
 
   const manifest = JSON.parse(readFileSync(join(ROOT, "licences/native/manifest.json"), "utf8")) as Manifest;
   const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
+  checkNpmVersions(manifest);
+  const js = jsComponents(packages, manifest.packageLicences ?? {}, read);
 
   for (const { platform, target, product } of PLATFORMS) {
     const about = cargoAbout(target);
     checkOrtVersion(about, manifest);
     const components = [
       ...rustComponents(about, manifest.crateNotes),
-      ...jsComponents(packages),
+      ...js,
       ...selectNative(manifest.entries, platform, read),
     ];
     const text = renderList(product, components);

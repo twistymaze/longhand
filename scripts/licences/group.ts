@@ -33,6 +33,31 @@ export interface NativeEntry {
   note?: string;
   /** Copyright lines for a licence file that has none, such as a plain Apache-2.0 text. */
   copyright?: string[];
+  /** The npm package whose installed version must be `version`. */
+  npmPackage?: string;
+}
+
+/**
+ * Replacement licence files for an interface package whose own licence file
+ * is not a licence text (the `packageLicences` of licences/native/manifest.json).
+ */
+export interface PackageLicence {
+  /** The package version that the files are for. */
+  version: string;
+  /** Licence files, relative to the repository root. */
+  files: string[];
+  source: string;
+  /** Copyright lines for a licence file that has none. */
+  copyright?: string[];
+}
+
+/** One interface package as licences/generated/js-packages.json records it. */
+export interface JsPackage {
+  name: string;
+  version: string;
+  license: string | null;
+  licenseText: string | null;
+  noticeText: string | null;
 }
 
 const RULE = "-".repeat(72);
@@ -254,6 +279,70 @@ export function selectNative(
         text: [...(entry.copyright ?? []), "", read(file)].join("\n"),
       })),
     );
+}
+
+/** True when a text is SPDX metadata (a LICENSE.spdx file), not a licence text. */
+export function isSpdxMetadata(text: string): boolean {
+  return /^\s*SPDXVersion:/.test(text);
+}
+
+/**
+ * The licence texts of one interface package. A manifest replacement comes
+ * first, with one text for each file. Fails when the package's own licence
+ * file is SPDX metadata and the manifest has no replacement, or when the
+ * replacement is for a different version.
+ */
+export function packageLicenceTexts(
+  pkg: JsPackage,
+  replacements: Record<string, PackageLicence>,
+  read: (path: string) => string,
+): string[] {
+  const replacement = replacements[pkg.name];
+  if (replacement) {
+    if (replacement.version !== pkg.version) {
+      throw new Error(
+        `${pkg.name} version mismatch: the packageLicences entry in licences/native/manifest.json is for ` +
+          `${replacement.version}, but the build includes ${pkg.version}. ` +
+          "Fetch the licence files of that version into licences/native/ and update the entry.",
+      );
+    }
+    return replacement.files.map((file) => [...(replacement.copyright ?? []), "", read(file)].join("\n"));
+  }
+  if (pkg.licenseText === null) return [`${pkg.license} licence. The package includes no licence file.`];
+  if (isSpdxMetadata(pkg.licenseText)) {
+    throw new Error(
+      `${pkg.name} ${pkg.version} includes SPDX metadata and no licence text. ` +
+        "Add its licence files to licences/native/ and an entry for it to packageLicences in licences/native/manifest.json.",
+    );
+  }
+  return [pkg.licenseText];
+}
+
+/**
+ * Fails when the installed version of a native entry's npm package differs
+ * from the version whose licence file the manifest records.
+ */
+export function checkNpmVersion(entry: NativeEntry, installedVersion: string): void {
+  if (installedVersion !== entry.version) {
+    throw new Error(
+      `${entry.npmPackage} version mismatch: licences/native/manifest.json names ${entry.version} for ` +
+        `"${entry.name}", but node_modules has ${installedVersion}. ` +
+        "Fetch the licence file of that version into licences/native/ and update the entry's version and source.",
+    );
+  }
+}
+
+/**
+ * The warning and error lines of cargo-about's log output. cargo-about 0.9.2
+ * reports a clarify checksum mismatch only as a warning and exits with 0, so
+ * the generator fails on these lines. The lines carry colour codes even when
+ * stderr is not a terminal, so they are removed first.
+ */
+export function cargoAboutProblems(stderr: string): string[] {
+  return stderr
+    .split("\n")
+    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""))
+    .filter((line) => /\[(WARN|ERROR)\]/.test(line));
 }
 
 /**

@@ -12,6 +12,7 @@
     {
       "name": "tailwindcss",
       "version": "4.3.3",
+      "npmPackage": "tailwindcss",
       "part": "interface",
       "note": "generated base styles",
       "platforms": ["macos", "windows"],
@@ -81,6 +82,17 @@
       "source": "https://github.com/cjpais/Handy"
     }
   ],
+  "packageLicences": {
+    "@tauri-apps/plugin-opener": {
+      "version": "2.5.5",
+      "copyright": ["Copyright (c) 2017 - Present Tauri Apps Contributors"],
+      "files": [
+        "licences/native/tauri-plugin-opener-LICENSE_MIT.txt",
+        "licences/native/tauri-plugin-opener-LICENSE_APACHE-2.0.txt"
+      ],
+      "source": "The npm package includes only LICENSE.spdx. These files are LICENSE_MIT and LICENSE_APACHE-2.0 of the tauri-plugin-opener 2.5.5 crate, from the same repository and version: https://crates.io/crates/tauri-plugin-opener/2.5.5"
+    }
+  },
   "crateNotes": {
     "transcribe-cpp-sys": "includes ggml and miniz",
     "knf-rs-sys": "includes kaldi-native-fbank",
