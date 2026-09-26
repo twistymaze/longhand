@@ -10,19 +10,7 @@
     "macos-permissions:default",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [
-        { "url": "https://anarlog.so/*" },
-        { "url": "https://creativecommons.org/*" },
-        { "url": "https://docs.rs/*" },
-        { "url": "https://github.com/*" },
-        { "url": "https://handy.computer/*" },
-        { "url": "https://huggingface.co/*" },
-        { "url": "https://openmdw.ai/*" },
-        { "url": "https://tauri.app/*" },
-        { "url": "https://unpkg.com/*" },
-        { "url": "https://www.apache.org/*" },
-        { "url": "https://www.nvidia.com/*" }
-      ]
+      "allow": [{ "url": "https://*" }]
     }
   ]
 }
