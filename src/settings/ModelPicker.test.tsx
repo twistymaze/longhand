@@ -29,6 +29,17 @@ describe("ModelPicker", () => {
     expect(optionTexts()).toEqual(["gpt-4o-mini", "o4-MINI", "text-embedding-mini", 'Use "mini"']);
   });
 
+  test("the chevron opens the list, focuses the field, and closes the list again", async () => {
+    const { user, input } = setup("", ["gpt-4o", "whisper-1"]);
+    const chevron = screen.getByRole("button", { name: "Show models" });
+    await user.click(chevron);
+    expect(document.activeElement).toBe(input);
+    expect(optionTexts()).toEqual(["gpt-4o", "whisper-1"]);
+    await user.click(chevron);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
   test("Arrow Down then Enter commits the first match", async () => {
     const { user, input, onCommit } = setup("", many);
     await user.type(input, "mini");

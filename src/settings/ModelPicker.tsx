@@ -108,46 +108,66 @@ export function ModelPicker({
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <input
-        ref={inputRef}
-        role="combobox"
-        aria-label={label}
-        aria-expanded={visible}
-        aria-controls={listId}
-        aria-autocomplete="list"
-        aria-activedescendant={visible && active >= 0 ? optionId(active) : undefined}
-        className={`${fieldClass} ${width}`}
-        value={query ?? value}
-        placeholder="Choose a model"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        autoComplete="off"
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setActive(-1);
-          setOpen(true);
-        }}
-        onMouseDown={() => {
-          if (document.activeElement === inputRef.current) setOpen((o) => !o);
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={close}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      <div className={`relative ${width}`}>
+        <input
+          ref={inputRef}
+          role="combobox"
+          aria-label={label}
+          aria-expanded={visible}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={visible && active >= 0 ? optionId(active) : undefined}
+          className={`${fieldClass} w-full pr-6`}
+          value={query ?? value}
+          placeholder="Choose a model"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          autoComplete="off"
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(-1);
+            setOpen(true);
+          }}
+          onMouseDown={() => {
+            if (document.activeElement === inputRef.current) setOpen((o) => !o);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={close}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              move(e.key === "ArrowDown" ? 1 : -1);
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              onEnter();
+            } else if (e.key === "Escape" && (open || query !== null)) {
+              // The Escape closes the popup only, not the window around it.
+              e.preventDefault();
+              e.stopPropagation();
+              close();
+            }
+          }}
+        />
+        {/* The chevron shows that the field opens a list, as a macOS combo
+            box does. A press keeps the focus in the input and opens or closes
+            the list. */}
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Show models"
+          className="absolute inset-y-0 right-0 flex w-6 items-center justify-center text-label-secondary"
+          onMouseDown={(e) => {
             e.preventDefault();
-            move(e.key === "ArrowDown" ? 1 : -1);
-          } else if (e.key === "Enter") {
-            e.preventDefault();
-            onEnter();
-          } else if (e.key === "Escape" && (open || query !== null)) {
-            // The Escape closes the popup only, not the window around it.
-            e.preventDefault();
-            e.stopPropagation();
-            close();
-          }
-        }}
-      />
+            if (document.activeElement === inputRef.current) setOpen((o) => !o);
+            else inputRef.current?.focus();
+          }}
+        >
+          <svg viewBox="0 0 10 6" className="h-1.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M1 1l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
       {unlisted && (
         <p className="text-[0.8rem] text-label-secondary">This server doesn't list this model</p>
       )}
