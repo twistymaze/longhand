@@ -76,6 +76,14 @@ struct Script {
 /// at least 0.5 and the highest within 100 ms. An echo 250 ms late is a
 /// second copy.
 fn heard(pcm: &[f32], sentences: &[(String, Vec<f32>)]) -> Vec<String> {
+    heard_at(pcm, sentences)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// [`heard`] with the first sample of each copy in `pcm`.
+fn heard_at(pcm: &[f32], sentences: &[(String, Vec<f32>)]) -> Vec<(usize, String)> {
     use realfft::RealFftPlanner;
     let mut found: Vec<(usize, String)> = Vec::new();
     for (name, sentence) in sentences {
@@ -125,7 +133,7 @@ fn heard(pcm: &[f32], sentences: &[(String, Vec<f32>)]) -> Vec<String> {
         }
     }
     found.sort();
-    found.into_iter().map(|(_, name)| name).collect()
+    found
 }
 
 /// Analyses without finding anyone: the stage runs, no speaker turns come out.
@@ -214,19 +222,31 @@ impl Recognizer for Fake {
         let ms = pcm.len() as u64 / 16;
         let sentences = s.sentences_heard.lock().unwrap();
         if !sentences.is_empty() {
-            let mut text = format!("call {n}.");
-            for name in heard(pcm, &sentences) {
+            // One segment for the call number over the window, and one for
+            // each sentence heard, at its time, so a gap fill keeps the
+            // sentence words by their time (U10).
+            let call = format!("call {n}.");
+            let mut text = call.clone();
+            let mut segments = vec![AsrSegment {
+                start_ms: 0,
+                end_ms: ms,
+                text: call,
+            }];
+            let lengths: std::collections::HashMap<&str, u64> = sentences
+                .iter()
+                .map(|(name, pcm)| (name.as_str(), pcm.len() as u64 / 16))
+                .collect();
+            for (at, name) in heard_at(pcm, &sentences) {
                 text.push(' ');
                 text.push_str(&name);
+                let start_ms = at as u64 / 16;
+                segments.push(AsrSegment {
+                    start_ms,
+                    end_ms: start_ms + lengths[name.as_str()],
+                    text: name,
+                });
             }
-            return Ok(WindowText {
-                text: text.clone(),
-                segments: vec![AsrSegment {
-                    start_ms: 0,
-                    end_ms: ms,
-                    text,
-                }],
-            });
+            return Ok(WindowText { text, segments });
         }
         drop(sentences);
         let mut text = format!("call {n}.");
@@ -4083,6 +4103,50 @@ async fn a_call_on_the_speakers_is_transcribed_with_each_remote_sentence_once() 
     let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
     assert_eq!(echo.spans.len(), 3, "{:?}", echo.spans);
     assert_eq!(times_heard(&r), once_each());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_text_inside_the_echo_spans_gives_way_to_the_cleaned_mix() {
+    // Covers AE2 with the live transcript on (U10): the live text holds each
+    // remote sentence twice, from the system channel and from its echo.
+    let r = stereo_rig().await;
+    let starts = [2.0, 9.0, 16.0];
+    let (mic, system) = speaker_call(starts, None);
+    let duration_ms = mic.len() as u64 / 16;
+    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
+    let word = |start_ms: u64, end_ms: u64, text: &str| asr::LiveWord {
+        start_ms,
+        end_ms,
+        text: text.into(),
+    };
+    // A room word before the call, outside every echo span.
+    let mut words = vec![word(500, 800, "hello")];
+    for ((name, sentence), start) in remote_sentences().iter().zip(starts) {
+        let at = (start * 1_000.0) as u64;
+        let len = sentence.len() as u64 / 16;
+        words.push(word(at, at + len, name));
+        words.push(word(at + 250, at + 250 + len, name));
+    }
+    let part = asr::LivePart {
+        start_ms: 0,
+        end_ms: duration_ms,
+        words,
+    };
+    pipeline::live::save_part(&r.store, "s", 0, 0, &part).unwrap();
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+    assert_eq!(echo.spans.len(), 3, "{:?}", echo.spans);
+    assert_eq!(times_heard(&r), once_each());
+    let live: Vec<String> = transcribe::results(&r.store, "s")
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.live)
+        .map(|w| w.text)
+        .collect();
+    assert_eq!(live, ["hello"], "the live word outside the spans stays");
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(transcript.contains("hello"), "{transcript}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

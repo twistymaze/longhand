@@ -7,6 +7,10 @@
 //! windows that hold voiced time that no live word covers are transcribed,
 //! and each of those windows keeps only its words inside the gaps. A segment
 //! with no live rows gets a full pass.
+//!
+//! Each echo span of a stereo segment (KTD8 step 7) is a gap too (KTD10):
+//! the live words inside it came from echoed audio, so they are left out,
+//! and the gap fill recognizes the span on the cleaned processing file.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -19,7 +23,7 @@ use session_core::{Segment, Stage};
 use crate::assemble::open_proc;
 use crate::live::{self, LiveRow};
 use crate::verify::{self, SLACK_MS};
-use crate::{Control, SharedStore, StageError, checkpoint, lock};
+use crate::{Control, SharedStore, StageError, checkpoint, echo, lock};
 
 const READ_BLOCK: usize = 16_000;
 
@@ -174,8 +178,15 @@ pub fn run(
             .iter()
             .filter(|r| r.segment == segment.index)
             .collect();
+        let echo = if rows.is_empty() {
+            Vec::new()
+        } else {
+            echo_spans(store, session_id, segment.index)?
+        };
         let fill = (!rows.is_empty()).then(|| {
-            let words: Vec<LiveWord> = rows.iter().flat_map(|r| r.words.iter().cloned()).collect();
+            // Live words inside an echo span came from echoed audio: they
+            // give way to the cleaned file (KTD10).
+            let words = without_echo(rows.iter().flat_map(|r| r.words.iter().cloned()), &echo);
             // A plan checkpointed before voiced spans were kept: its
             // windows hold the voiced time.
             let voiced = if plan.voiced.is_empty() && plan.voiced_ms > 0 {
@@ -190,8 +201,10 @@ pub fn run(
                     end_ms: r.end_ms,
                 })
                 .collect();
+            let mut gaps = gaps(voiced, &parts, &words);
+            gaps.extend(echo.iter().copied());
             GapFill {
-                gaps: gaps(voiced, &parts, &words),
+                gaps: union(gaps),
                 words,
             }
         });
@@ -201,10 +214,11 @@ pub fn run(
         };
         if let Some(fill) = &fill {
             log::info!(
-                "{session_id} segment {}: live text covers all but {} s of speech; \
-                 {} of {} windows get a gap fill",
+                "{session_id} segment {}: live text covers all but {} s of speech \
+                 ({} s of echo); {} of {} windows get a gap fill",
                 segment.index,
                 fill.gaps.iter().map(Span::duration_ms).sum::<u64>() / 1000,
+                echo.iter().map(Span::duration_ms).sum::<u64>() / 1000,
                 todo.len(),
                 plan.windows.len()
             );
@@ -390,6 +404,28 @@ fn union(mut spans: Vec<Span>) -> Vec<Span> {
     out
 }
 
+/// The echo spans of a segment, from its Assemble checkpoint. Empty for a
+/// mono segment.
+fn echo_spans(
+    store: &SharedStore,
+    session_id: &str,
+    segment: u32,
+) -> Result<Vec<Span>, StageError> {
+    Ok(echo::saved(store, session_id, segment)?
+        .map(|e| e.spans)
+        .unwrap_or_default())
+}
+
+/// The live words that overlap no echo span (KTD10). The gap fill gives
+/// the time of the others to the cleaned file, and [`results`] leaves them
+/// out.
+pub fn without_echo(words: impl IntoIterator<Item = LiveWord>, echo: &[Span]) -> Vec<LiveWord> {
+    words
+        .into_iter()
+        .filter(|w| !echo.iter().any(|e| overlaps(word_span(w), *e)))
+        .collect()
+}
+
 /// The numbers of the windows that overlap a gap.
 pub fn windows_in(windows: &[Span], gaps: &[Span]) -> Vec<usize> {
     windows
@@ -490,14 +526,25 @@ fn read_span(
 
 /// Every window result and every live part of a session in timeline order,
 /// for the stages that follow (join, verify, summarize). A gap-fill window
-/// holds only the words that the merge kept (KTD7).
+/// holds only the words that the merge kept (KTD7). A live part holds only
+/// its words outside the echo spans of its segment (KTD10).
 pub fn results(store: &SharedStore, session_id: &str) -> Result<Vec<WindowResult>, StageError> {
     let mut out = Vec::new();
+    let mut echo: BTreeMap<u32, Vec<Span>> = BTreeMap::new();
     for (key, payload) in checkpoint::all(store, session_id, Stage::Transcribe)? {
         if key.contains("-win-") {
             out.push(serde_json::from_str::<WindowResult>(&payload)?);
         } else if key.contains("-live-") {
-            let row = serde_json::from_str::<LiveRow>(&payload)?;
+            let mut row = serde_json::from_str::<LiveRow>(&payload)?;
+            let spans = match echo.entry(row.segment) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(echo_spans(store, session_id, row.segment)?)
+                }
+            };
+            if !spans.is_empty() {
+                row.words = without_echo(std::mem::take(&mut row.words), spans);
+            }
             out.push(WindowResult::from_live(row));
         }
     }

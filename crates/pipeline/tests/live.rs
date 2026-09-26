@@ -944,6 +944,95 @@ fn the_merge_keeps_gap_words_and_drops_repeats_and_words_outside_the_gaps() {
     assert_eq!(kept, vec!["missed", "inside", "late"]);
 }
 
+// ------------------------------------------ echo spans as gaps (U10, KTD10)
+
+impl Gaps {
+    /// Save the echo spans checkpoint that Assemble saves for a stereo
+    /// segment (KTD8 step 7).
+    fn echo(&self, spans: &[Span]) {
+        let echo = pipeline::echo::EchoSpans {
+            segment: 0,
+            spans: spans.to_vec(),
+            mic_gain: 1.0,
+            system_gain: 1.0,
+        };
+        checkpoint::put(
+            &self.r.store,
+            ID,
+            Stage::Assemble,
+            &checkpoint::echo_key(0),
+            &echo,
+        )
+        .unwrap();
+    }
+
+    /// Every word of the results in time order, as Join places them.
+    fn texts(&self) -> Vec<(u64, String)> {
+        let mut texts: Vec<(u64, String)> = self
+            .words()
+            .into_iter()
+            .map(|w| (w.start_ms, w.text))
+            .collect();
+        texts.sort();
+        texts
+    }
+}
+
+#[test]
+fn live_words_inside_an_echo_span_give_way_to_words_from_the_cleaned_file() {
+    // Covers AE2: the live text of 20 to 30 s came from echoed audio.
+    let g = Gaps::new(&[(0, 60_000, live_words(0, 60))]);
+    g.echo(&[span(20_000, 30_000)]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![2]);
+    assert_eq!(g.calls(), 1);
+    let texts = g.texts();
+    let starts: Vec<u64> = texts.iter().map(|(s, _)| *s).collect();
+    assert_eq!(starts, (0..60).map(|s| s * 1_000).collect::<Vec<_>>());
+    for (start, text) in &texts {
+        let inside = (20_000..30_000).contains(start);
+        assert_eq!(text.starts_with("live"), !inside, "{start} ms: {text}");
+    }
+    g.verify().unwrap();
+}
+
+#[test]
+fn a_segment_with_no_echo_spans_keeps_its_live_text_and_runs_no_batch_window() {
+    // Covers AE1: a call on headphones.
+    let g = Gaps::new(&[(0, 60_000, live_words(0, 60))]);
+    g.echo(&[]);
+    g.transcribe();
+    assert_eq!(g.calls(), 0);
+    assert!(g.filled().is_empty());
+    assert_eq!(g.words(), live_words(0, 60));
+    g.verify().unwrap();
+}
+
+#[test]
+fn a_stream_gap_and_an_echo_span_that_overlap_get_one_pass_over_their_union() {
+    // Frames from 25 to 28 s were dropped, and echo covers 26 to 35.5 s.
+    let g = Gaps::new(&[
+        (0, 25_000, live_words(0, 25)),
+        (28_000, 60_000, live_words(28, 60)),
+    ]);
+    g.echo(&[span(26_000, 35_500)]);
+    g.transcribe();
+    assert_eq!(g.filled(), vec![2, 3]);
+    assert_eq!(g.calls(), 2, "each window once");
+    let texts = g.texts();
+    let starts: Vec<u64> = texts.iter().map(|(s, _)| *s).collect();
+    assert_eq!(
+        starts,
+        (0..60).map(|s| s * 1_000).collect::<Vec<_>>(),
+        "each second once: {texts:?}"
+    );
+    for (start, text) in &texts {
+        let batch = (25_000..36_000).contains(start);
+        assert_eq!(text.starts_with("live"), !batch, "{start} ms: {text}");
+    }
+    g.verify().unwrap();
+}
+
 #[test]
 fn windows_in_finds_the_windows_that_overlap_a_gap() {
     let windows = [span(0, 10_000), span(10_000, 20_000), span(20_000, 30_000)];

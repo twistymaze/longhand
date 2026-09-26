@@ -2160,6 +2160,8 @@ impl CaptureManager {
         let thread_app = app.clone();
         let thread_session = session_id.to_string();
         let silence = link.as_ref().map(|l| l.shared.silence.clone());
+        // The live mix of a stereo segment, only when a live worker reads it.
+        let mut mix = (channels == 2 && tap.is_some()).then(|| audio::live_mix::LiveMix::new(rate));
         let spawned = std::thread::Builder::new()
             .name(format!("longhand-segment-{segment}"))
             .spawn(move || {
@@ -2199,11 +2201,19 @@ impl CaptureManager {
                         .emit(&tick_app);
                     },
                     // Never waits: a full channel drops the frame (KTD3).
-                    // The live worker gets the microphone only until the
-                    // live mix (U10).
+                    // A stereo segment offers the live mix (KTD11); a mono
+                    // segment offers the microphone.
                     move |frame: Frame<'_>| {
                         if let Some(tap) = &tap {
-                            tap.offer(frame.index, frame.mic);
+                            match (&mut mix, frame.speaker) {
+                                (Some(mix), Some(speaker)) => {
+                                    let mono: Arc<[f32]> = mix.mix(frame.mic, speaker).into();
+                                    tap.offer(frame.index, &mono);
+                                }
+                                _ => {
+                                    tap.offer(frame.index, frame.mic);
+                                }
+                            }
                         }
                         if let (Some(silence), Some(right)) = (&silence, frame.speaker) {
                             silence.push(right, rate);

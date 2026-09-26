@@ -1,4 +1,5 @@
 pub mod joiner;
+pub mod live_mix;
 pub mod resampler;
 
 use std::pin::Pin;
