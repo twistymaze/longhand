@@ -66,6 +66,15 @@
       "source": "https://visualstudio.microsoft.com/license-terms/"
     },
     {
+      "name": "DTLN-aec echo cancellation model",
+      "version": "128-unit",
+      "part": "native",
+      "note": "compiled into the app",
+      "platforms": ["macos", "windows"],
+      "files": ["LICENSES/DTLN-aec-MIT.txt"],
+      "source": "https://github.com/breizhn/DTLN-aec"
+    },
+    {
       "name": "Code copied from anarlog",
       "version": "",
       "part": "native",

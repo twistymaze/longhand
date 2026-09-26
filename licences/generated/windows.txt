@@ -1928,6 +1928,8 @@ walkdir 2.5.0
     Copyright (c) 2015 Andrew Gallant
 want 0.3.1
     Copyright (c) 2018-2019 Sean McArthur
+wasapi 0.23.0
+    Copyright (c) 2020 Henrik Enquist
 web_atoms 0.2.6
     Copyright (c) 2014 The html5ever Project Developers
 webview2-com 0.38.2
@@ -2858,6 +2860,8 @@ Code copied from Handy
     Copyright (c) 2025 CJ Pais
 Code copied from anarlog
     Copyright (c) 2023-present Fastrepl, Inc.
+DTLN-aec echo cancellation model 128-unit (compiled into the app)
+    Copyright (c) 2020 Nils L. Westhausen
 ONNX Runtime 1.22.0 (linked through ort-sys)
     Copyright (c) Microsoft Corporation
 

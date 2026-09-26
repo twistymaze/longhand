@@ -174,6 +174,17 @@ export const components: LicenceEntry[] = [
     revision: "1.6.1",
   },
   {
+    id: "dtln-aec",
+    name: "DTLN-aec echo cancellation model",
+    licence: {
+      name: "MIT",
+      url: "https://github.com/breizhn/DTLN-aec/blob/main/LICENSE",
+      attribution: "Copyright (c) 2020 Nils L. Westhausen",
+    },
+    source: "github.com/breizhn/DTLN-aec, through anarlog",
+    revision: "128-unit model",
+  },
+  {
     id: "anarlog",
     name: "Code from anarlog",
     licence: {

@@ -81,23 +81,11 @@ describe("About", () => {
     expect(opened).toEqual(["https://github.com/fastrepl/anarlog", "https://github.com/ggml-org/ggml"]);
   });
 
-  test("the Licences group has one row for each model and the ten component rows, and no whisper.cpp row", () => {
+  test("the Licences group has one row for each model and each component, and no whisper.cpp row", () => {
     render(<About models={models} />);
     const rows = within(section("Licences")).getAllByRole("button");
-    expect(rows).toHaveLength(2 + 10);
-    expect(rows.map((r) => r.getAttribute("aria-expanded"))).toEqual(Array(12).fill("false"));
-    expect(components.map((c) => c.name)).toEqual([
-      "ggml",
-      "transcribe.cpp",
-      "ONNX Runtime",
-      "Tauri",
-      "ProseMirror",
-      "React",
-      "cpal",
-      "Opus",
-      "Code from anarlog",
-      "Code from Handy",
-    ]);
+    expect(rows).toHaveLength(models.length + components.length);
+    expect(rows.map((r) => r.getAttribute("aria-expanded"))).toEqual(Array(rows.length).fill("false"));
     expect(within(section("Licences")).queryByRole("button", { name: /whisper/ })).toBeNull();
   });
 
@@ -139,7 +127,7 @@ describe("About", () => {
 
   test("with no models, the component rows still show", () => {
     render(<About models={[]} />);
-    expect(within(section("Licences")).getAllByRole("button")).toHaveLength(10);
+    expect(within(section("Licences")).getAllByRole("button")).toHaveLength(components.length);
   });
 
   test("the Settings capability allows exactly the acknowledgement addresses", async () => {

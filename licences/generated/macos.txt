@@ -1471,6 +1471,8 @@ cfb 0.7.3
 cfg-if 1.0.5
     Copyright (c) 2014 Alex Crichton
 chrono 0.4.45
+cidre 0.15.2
+cidre-macros 0.5.0
 cookie 0.18.2
     Copyright (c) 2014 Alex Crichton
     Copyright (c) 2017 Sergio Benitez
@@ -2666,6 +2668,8 @@ Code copied from Handy
     Copyright (c) 2025 CJ Pais
 Code copied from anarlog
     Copyright (c) 2023-present Fastrepl, Inc.
+DTLN-aec echo cancellation model 128-unit (compiled into the app)
+    Copyright (c) 2020 Nils L. Westhausen
 ONNX Runtime 1.22.0 (linked through ort-sys)
     Copyright (c) Microsoft Corporation
 
