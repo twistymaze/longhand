@@ -91,6 +91,7 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
+| [Acknowledgements and full licences in an About pane](about-acknowledgements-and-licences.md) | in-progress | Thank anarlog and Handy, and show every shipped component's licence |
 
 ## Done
 
