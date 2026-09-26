@@ -171,6 +171,10 @@ pub struct RecordingStatus {
     /// another output plays sound (Windows only, U4 step 6): the call can
     /// play on a device that the note does not record.
     pub system_audio_other_output: bool,
+    /// The system audio of the last 30 s held a late copy of the
+    /// microphone: an audio mixer app plays the microphone to an output, so
+    /// the note hears the user twice.
+    pub system_audio_mic_copy: bool,
 }
 
 #[derive(Serialize, Clone, Type, Debug)]
@@ -232,6 +236,8 @@ struct SpeakerShared {
     failed: AtomicBool,
     /// The digital silence at the end of the right channel (U5 step 6).
     silence: SilenceRun,
+    /// The right channel holds a late copy of the microphone.
+    mic_copy: audio::mic_copy::MicCopyFlag,
     /// The status of the attached stream, for the Windows other-output
     /// flag (U4 step 6).
     status: Mutex<Option<SystemAudioStatus>>,
@@ -327,6 +333,10 @@ impl SpeakerLink {
 
     fn failed(&self) -> bool {
         self.shared.failed.load(Ordering::Relaxed)
+    }
+
+    fn mic_copy(&self) -> bool {
+        self.shared.mic_copy.get()
     }
 
     fn other_output_playing(&self) -> bool {
@@ -509,9 +519,9 @@ struct StatusSnapshot {
     held_system_audio: Option<bool>,
     silent: bool,
     permission: Option<Permission>,
-    /// For a stereo segment: the switch, attached, failed, and the
-    /// other-output flag.
-    speaker: Option<(bool, bool, bool, bool)>,
+    /// For a stereo segment: the switch, attached, failed, the
+    /// other-output flag, and the microphone copy flag.
+    speaker: Option<(bool, bool, bool, bool, bool)>,
 }
 
 impl Inner {
@@ -590,6 +600,22 @@ pub fn check_microphone(choice: Option<&MicrophoneChoice>) -> Result<(), String>
         }
         _ => Ok(()),
     }
+}
+
+/// Computer audio is available to users. It is false until the
+/// processing of a stereo note is designed again: the mono mix fails when
+/// the system audio holds a copy of the microphone or the channels do not
+/// match. While it is false, no note records system audio, whatever the
+/// settings or a stored note choice say, and the commands refuse to turn
+/// it on. The capture and processing code stays, so that the tests keep
+/// it working.
+pub const SYSTEM_AUDIO_AVAILABLE: bool = false;
+
+/// `choice` with system audio off while [`SYSTEM_AUDIO_AVAILABLE`] is
+/// false.
+fn available(mut choice: CaptureChoice) -> CaptureChoice {
+    choice.system_audio &= SYSTEM_AUDIO_AVAILABLE;
+    choice
 }
 
 /// The capture choice that a note records when it starts (KTD2): the
@@ -966,11 +992,11 @@ impl CaptureManager {
         let index = timeline.open(0, started)?;
         let settings = settings::get_settings(app);
         let model = recording_model(&settings);
-        let capture = capture_choice_at_start(
+        let capture = available(capture_choice_at_start(
             inner.held_microphone.clone(),
             inner.held_system_audio,
             &settings,
-        );
+        ));
         let live = model.live_transcript.then_some(model.asr_model.as_str());
         let choice = mic_of(&capture);
         let opening = Opening {
@@ -1273,6 +1299,7 @@ impl CaptureManager {
                         link.attached(),
                         link.failed(),
                         link.other_output_playing(),
+                        link.mic_copy(),
                     )
                 })
             });
@@ -1306,7 +1333,7 @@ impl CaptureManager {
                 let choice = store.capture_choice(id)?;
                 (
                     choice.microphone.as_ref().map(MicrophoneChoice::from),
-                    choice.system_audio,
+                    choice.system_audio && SYSTEM_AUDIO_AVAILABLE,
                     store.stereo_from(id)?.is_some(),
                 )
             }
@@ -1314,16 +1341,23 @@ impl CaptureManager {
                 let settings = settings::get_settings(app);
                 (
                     held.unwrap_or(settings.microphone),
-                    held_system_audio.unwrap_or(settings.system_audio_default),
+                    held_system_audio.unwrap_or(settings.system_audio_default)
+                        && SYSTEM_AUDIO_AVAILABLE,
                     false,
                 )
             }
         };
         let channels = segment_channels(stereo_mark, system_audio);
-        let (system_audio_recording, system_audio_failed, system_audio_other_output) = match speaker
-        {
-            Some((true, attached, failed, other_output)) => (attached, failed, other_output),
-            _ => (false, false, false),
+        let (
+            system_audio_recording,
+            system_audio_failed,
+            system_audio_other_output,
+            system_audio_mic_copy,
+        ) = match speaker {
+            Some((true, attached, failed, other_output, mic_copy)) => {
+                (attached, failed, other_output, attached && mic_copy)
+            }
+            _ => (false, false, false, false),
         };
         let interruption = match open.as_ref().map(|(_, state)| state) {
             Some(SessionState::Interrupted { reason, .. }) => Some(Interruption {
@@ -1361,6 +1395,7 @@ impl CaptureManager {
                 .filter(|_| system_audio && recording)
                 .map(SystemAudioPermission::from),
             system_audio_other_output,
+            system_audio_mic_copy,
         })
     }
 
@@ -1368,10 +1403,10 @@ impl CaptureManager {
     /// stored choice, or a store that cannot be read, records from the
     /// system default with system audio off.
     fn note_capture(&self, id: &str) -> CaptureChoice {
-        self.store().capture_choice(id).unwrap_or_else(|e| {
+        available(self.store().capture_choice(id).unwrap_or_else(|e| {
             log::warn!("could not read the capture choice of {id}: {e}");
             CaptureChoice::default()
-        })
+        }))
     }
 
     /// Whether the note's stereo mark is set (KTD2). A store that cannot be
@@ -2290,6 +2325,11 @@ impl CaptureManager {
         let thread_app = app.clone();
         let thread_session = session_id.to_string();
         let silence = link.as_ref().map(|l| l.shared.silence.clone());
+        // Each stereo segment checks for a copy of the microphone in the
+        // right channel, with or without a live transcript.
+        let mut mic_copy = link
+            .as_ref()
+            .map(|l| audio::mic_copy::MicCopyCheck::new(rate, l.shared.mic_copy.clone()));
         // The loss report reads the generation of the stream that ended.
         let lost_shared = link.as_ref().map(|l| Arc::clone(&l.shared));
         // The live mix of a stereo segment, only when a live worker reads it.
@@ -2349,6 +2389,9 @@ impl CaptureManager {
                         }
                         if let (Some(silence), Some(right)) = (&silence, frame.speaker) {
                             silence.push(right, rate);
+                        }
+                        if let (Some(check), Some(right)) = (&mut mic_copy, frame.speaker) {
+                            check.push(frame.mic, right);
                         }
                     },
                     // Runs on this thread: the manager's lock is taken on a
@@ -3090,6 +3133,16 @@ mod tests {
         let on = with_microphone(None, true);
         assert!(!capture_choice_at_start(None, Some(false), &on).system_audio);
         assert!(capture_choice_at_start(None, None, &on).system_audio);
+    }
+
+    /// A default or a stored choice with system audio on records the
+    /// microphone alone while Computer audio is not available.
+    #[test]
+    fn computer_audio_stays_off_while_it_is_not_available() {
+        let on = with_microphone(None, true);
+        let choice = available(capture_choice_at_start(None, Some(true), &on));
+        assert_eq!(choice.system_audio, SYSTEM_AUDIO_AVAILABLE);
+        assert!(!available(CaptureChoice::default()).system_audio);
     }
 
     #[test]

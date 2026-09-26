@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
 import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
@@ -101,7 +102,7 @@ export function StatusPane({
             )
           )}
         </Row>
-        <SystemAudioRow permission={readiness.system_audio} onRefresh={onRefresh} />
+        {features.systemAudio && <SystemAudioRow permission={readiness.system_audio} onRefresh={onRefresh} />}
         <Row label="Storage"detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
           {readiness.destination.kind !== "ready" && (
             <GoTo pane="destination" onNavigate={onNavigate}>

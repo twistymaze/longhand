@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { StatusPane } from "./Status";
+import { features } from "../lib/features";
 
 const readiness: Readiness = {
   microphone_authorized: true,
@@ -71,7 +72,20 @@ function renderSystemAudio(
   return { tauri, row, refreshed: () => refreshed };
 }
 
+test("while Computer audio is hidden, the General pane has no Computer audio row", () => {
+  mockTauri({ shortcut_status: () => shortcutStatuses });
+  render(<StatusPane readiness={{ ...readiness, system_audio: "not_asked" }} onRefresh={async () => {}} onNavigate={() => {}} />);
+  expect(screen.queryByText("Computer audio")).toBeNull();
+});
+
 describe("the Computer audio permission row", () => {
+  beforeEach(() => {
+    features.systemAudio = true;
+  });
+  afterEach(() => {
+    features.systemAudio = false;
+  });
+
   test("not asked: says so and offers Allow…", () => {
     const { row } = renderSystemAudio("not_asked");
     expect(row().textContent).toContain("Not allowed yet");

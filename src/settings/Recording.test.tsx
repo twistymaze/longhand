@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { features } from "../lib/features";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MicrophoneList, Settings } from "../bindings";
@@ -170,14 +171,24 @@ describe("Recording pane", () => {
     expect(calls(mock, "list_microphones").length).toBeGreaterThan(before);
   });
 
+  test("while Computer audio is hidden, the pane has no Computer audio switch", async () => {
+    await open();
+    expect(screen.queryByRole("switch", { name: "Computer audio" })).toBeNull();
+  });
+
   test("turning the Computer audio switch on calls the command and shows it on", async () => {
-    const { mock, user } = await open();
-    const toggle = screen.getByRole("switch", { name: "Computer audio" });
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-    await user.click(toggle);
-    expect(calls(mock, "set_system_audio_default")).toEqual([{ enabled: true }]);
-    await waitFor(() => expect(screen.getByRole("switch", { name: "Computer audio" }).getAttribute("aria-checked")).toBe("true"));
-    expect(screen.getByText(/all sound that the computer plays/)).toBeTruthy();
+    features.systemAudio = true;
+    try {
+      const { mock, user } = await open();
+      const toggle = screen.getByRole("switch", { name: "Computer audio" });
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
+      await user.click(toggle);
+      expect(calls(mock, "set_system_audio_default")).toEqual([{ enabled: true }]);
+      await waitFor(() => expect(screen.getByRole("switch", { name: "Computer audio" }).getAttribute("aria-checked")).toBe("true"));
+      expect(screen.getByText(/all sound that the computer plays/)).toBeTruthy();
+    } finally {
+      features.systemAudio = false;
+    }
   });
 
   test("the pane is after General in the sidebar and opens with the arrow keys", async () => {

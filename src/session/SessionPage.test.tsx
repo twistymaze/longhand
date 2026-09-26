@@ -1,4 +1,4 @@
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
@@ -14,6 +14,7 @@ import type { Capture } from "../recording/useCapture";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { SessionPage } from "./SessionPage";
 import type { Sessions } from "./useSessions";
+import { features } from "../lib/features";
 
 const readiness: Readiness = {
   microphone_authorized: true,
@@ -43,6 +44,7 @@ const idle: RecordingStatus = {
   system_audio_failed: false,
   system_audio_permission: null,
   system_audio_other_output: false,
+  system_audio_mic_copy: false,
   microphone_choice: null,
 };
 
@@ -361,7 +363,30 @@ describe("SessionPage", () => {
     expect(bar.textContent).not.toMatch(/alert sound/i);
   });
 
+  test("while Computer audio is hidden, the bar and the menu have no Computer audio control", async () => {
+    const rec = entry("rec", { state: "capturing" });
+    mockPage(rec, {}, { list_microphones: () => ({ default_id: null, inputs: [] }) });
+    renderPage({
+      id: "rec",
+      capture: recordingCapture("rec", {
+        status: { ...idle, session_id: "rec", state: "capturing", recording: true, microphone: "MacBook Pro Microphone" },
+      }),
+      sessions: sessionsOf([rec]),
+    });
+    const bar = screen.getByRole("region", { name: "Recording" });
+    expect(within(bar).queryByRole("button", { name: "Computer audio" })).toBeNull();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Microphone" })).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: "Record Computer Audio" })).toBeNull();
+  });
+
   describe("microphone and Computer audio", () => {
+    beforeEach(() => {
+      features.systemAudio = true;
+    });
+    afterEach(() => {
+      features.systemAudio = false;
+    });
     const rec = entry("rec", { state: "capturing" });
     const withStatus = (over: Partial<RecordingStatus>) =>
       recordingCapture("rec", {
@@ -376,15 +401,49 @@ describe("SessionPage", () => {
       ],
     };
 
-    test("the rail shows the microphone name, and Computer audio while it is on", () => {
-      mockPage(rec);
+    test("the rail shows the microphone name, and a Computer audio toggle that shows its state", async () => {
+      const tauri = mockPage(rec, {}, {
+        set_note_system_audio: () => ({ ...idle, session_id: "rec", recording: true }),
+      });
       const view = renderPage({ id: "rec", capture: withStatus({}), sessions: sessionsOf([rec]) });
       expect(within(bar()).getByText("MacBook Pro Microphone")).toBeTruthy();
-      expect(bar().textContent).not.toContain("Computer audio");
+      const off = within(bar()).getByRole("button", { name: "Computer audio" });
+      expect(off.getAttribute("aria-pressed")).toBe("false");
+      const user = userEvent.setup();
+      await user.click(off);
+      expect(tauri.calls.find((c) => c.cmd === "set_note_system_audio")?.args).toEqual({
+        sessionId: "rec",
+        enabled: true,
+      });
 
       view.rerenderWith(withStatus({ system_audio: true, system_audio_permission: "allowed" }), sessionsOf([rec]));
       expect(within(bar()).getByText("MacBook Pro Microphone")).toBeTruthy();
-      expect(within(bar()).getByText("Computer audio")).toBeTruthy();
+      const on = within(bar()).getByRole("button", { name: "Computer audio" });
+      expect(on.getAttribute("aria-pressed")).toBe("true");
+      await user.click(on);
+      expect(tauri.calls.filter((c) => c.cmd === "set_note_system_audio").pop()?.args).toEqual({
+        sessionId: "rec",
+        enabled: false,
+      });
+    });
+
+    test("with the microphone copy flag, the mixer warning shows", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({
+          system_audio: true,
+          system_audio_permission: "allowed",
+          system_audio_recording: true,
+          system_audio_mic_copy: true,
+        }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(
+        within(bar()).getByText(
+          "Computer audio also has your microphone in it, so your voice is recorded twice. Check your audio mixer app.",
+        ),
+      ).toBeTruthy();
     });
 
     test("with the fallback flag, the fallback warning names both microphones", () => {

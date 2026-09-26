@@ -6,6 +6,7 @@ import { commands, type MicrophoneChoice, type MicrophoneList, type Settings } f
 import { sentence } from "../processing/describe";
 import { CheckIcon } from "./icons";
 import { ErrorText, Group, Pane, Row, Switch } from "./ui";
+import { features } from "../lib/features";
 
 /// One row of the Microphone group. `choice` is null for "System default".
 export type MicrophoneOption = {
@@ -172,7 +173,7 @@ export function RecordingPane({ settings, onSettings }: { settings: Settings; on
   return (
     <Pane title="Recording">
       <MicrophoneGroup settings={settings} onSettings={onSettings} />
-      <SystemAudio settings={settings} onSettings={onSettings} />
+      {features.systemAudio && <SystemAudio settings={settings} onSettings={onSettings} />}
     </Pane>
   );
 }

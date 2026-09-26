@@ -111,6 +111,9 @@ pub async fn set_note_microphone(
     .await
 }
 
+/// The refusal while Computer audio is not available.
+pub const SYSTEM_AUDIO_UNAVAILABLE: &str = "Computer audio is not available yet.";
+
 /// Turn system audio on or off for one note from the recording page (R8).
 /// With no `session_id`, the next note starts with it. Settings does not
 /// change. Returns the status after the change.
@@ -122,6 +125,9 @@ pub async fn set_note_system_audio(
     session_id: Option<String>,
     enabled: bool,
 ) -> Result<RecordingStatus, String> {
+    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
+        return Err(SYSTEM_AUDIO_UNAVAILABLE.to_string());
+    }
     let manager = Arc::clone(&manager);
     blocking(move || {
         manager

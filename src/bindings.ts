@@ -1019,7 +1019,13 @@ system_audio_permission: SystemAudioPermission | null;
  * another output plays sound (Windows only, U4 step 6): the call can
  * play on a device that the note does not record.
  */
-system_audio_other_output: boolean }
+system_audio_other_output: boolean; 
+/**
+ * The system audio of the last 30 s held a late copy of the
+ * microphone: an audio mixer app plays the microphone to an output, so
+ * the note hears the user twice.
+ */
+system_audio_mic_copy: boolean }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.

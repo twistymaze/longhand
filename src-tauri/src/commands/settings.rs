@@ -214,6 +214,9 @@ pub fn set_microphone(
 #[tauri::command]
 #[specta::specta]
 pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
+        return Err(crate::commands::capture::SYSTEM_AUDIO_UNAVAILABLE.to_string());
+    }
     settings::update_settings(&app, |s| {
         s.system_audio_default = enabled;
         Ok(())

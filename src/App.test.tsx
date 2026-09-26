@@ -33,6 +33,7 @@ const idle: RecordingStatus = {
   system_audio_failed: false,
   system_audio_permission: null,
   system_audio_other_output: false,
+  system_audio_mic_copy: false,
   microphone_choice: null,
 };
 
