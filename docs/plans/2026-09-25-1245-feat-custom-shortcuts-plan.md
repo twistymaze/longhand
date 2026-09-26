@@ -287,3 +287,29 @@ The `cargo` commands need the sandbox bypass. A global shortcut from another app
 - On the signed bundle, both shortcuts can be set, cleared and used from another app, and a refused chord leaves the previous chord working.
 - A cleared recording shortcut shows "Off" and still counts as ready to record.
 - No experimental code, abandoned approaches or debug output stay in the diff.
+
+---
+
+## Completion record
+
+**Shipped 2026-09-26** in PR #10 (merge commit fcf59ea). Units U1–U5 are implemented.
+
+**Changes after the units:**
+
+- Simplification: the settings are read once at launch and at resume. The default chord comes from Rust through the `DEFAULT_SHORTCUT` binding constant. The recording row reads its status only from readiness.
+- The code review confirmed 3 findings, and all 3 are fixed. Both rows share one pause, and its calls go in order, so the finish of one row does not resume the shortcuts while the other row captures. The pane reads the statuses after the resume. `set_shortcut` records the status before it saves the settings.
+- The chord button keeps one width while it captures keys.
+
+**The user's test of the signed bundle** found two defects, which PR #10 also fixes:
+
+- Keys and Escape did nothing during capture. WebKit does not focus a button when it is clicked, so the key handler on the button did not receive the keys. The row now focuses its button when capture starts. The unit tests did not find this defect, because they send key events to the button directly, and the Chromium preview gives focus on a click.
+- Both rows could wait for keys at the same time. A row that starts to wait now ends the wait of the other row.
+
+**Verification.** All the gates in the Verification Contract pass. The user confirmed from the signed bundle that a chord can now be set.
+
+**Not done:**
+
+- The other manual checks in the Verification Contract (a chord held by another app, and the relaunch check) are not recorded as run.
+- Deferred from the review:
+  - When a new chord is refused and the old chord cannot be registered again, only a log line records it.
+  - A chord saved in one row registers at once.
