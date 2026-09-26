@@ -32,6 +32,9 @@ UI text is plain language, not STE:
 
 - Python only through `uv`. `bun` is the only JavaScript package manager. Rust is pinned to 1.94.0.
 - Microphone and Keychain behaviour must be tested from the signed bundle (`bun tauri build --bundles app`), never `tauri dev`: an unsigned dev binary's microphone request is attributed to the launching terminal.
+- When work reaches a manual test step, make the signed build at once, without a request from the user. Then give two ways to run it, each with the exact path of the build just made:
+  - on this Mac: `open <checkout>/target/release/bundle/macos/Longhand.app`;
+  - on a remote Mac: zip the bundle with `ditto -c -k --keepParent`, then give the `scp`, unzip, move-to-Applications and `open` steps. A remote Mac needs a notarized build, or Gatekeeper stops the app. Say so, and notarize when the user tests remotely.
 - `reference-source/` holds the anarlog and Handy clones: read-only, never edited, never tracked. Borrowed code needs a `PROVENANCE.md` record; `scripts/check-provenance.sh` enforces it.
 - CI runs only on pull requests into main, on pushes to main that change more than docs, and on `gh workflow run ci.yml --ref <branch>`: runner minutes are billed. The runs on main save the cache that each new pull request restores. For this rule, docs are every Markdown file except `PROVENANCE.md`, plus `docs/`, `.claude/` and `.compound-engineering/`. Local checks are the gate, including `scripts/check-windows.sh`, which lints for Windows from macOS in seconds except the crates that build C or C++. Commit per unit and push in batches. While implementing, keep working after a push instead of waiting for CI. Once a PR is open and the work is done, watch it until CI passes. A change that touches only docs (plans, ideas, solutions, `CONCEPTS.md`, agent guidance) needs no PR: commit it on main and push it directly, because the CI run costs more than it checks.
 - Parallel work has two parts:
