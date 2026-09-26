@@ -4,6 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import license from "rollup-plugin-license";
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname, resolve } from "path";
+import { compare } from "./scripts/licences/group";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -37,11 +38,6 @@ const licences = {
   }),
   apply: "build" as const,
 };
-
-// Code-point order, so the file is the same on every host and locale.
-function compare(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
 
 // Tauri expects a fixed port and must see Rust errors, so the screen is never cleared.
 export default defineConfig(async () => ({

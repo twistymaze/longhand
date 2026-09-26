@@ -156,8 +156,8 @@ export function splitCopyright(text: string): { copyright: string[]; body: strin
   return { copyright, body };
 }
 
-// Code-point order, so the output is the same on every host and locale.
-function compare(a: string, b: string): number {
+/** Code-point order, so the output is the same on every host and locale. */
+export function compare(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 

@@ -5,9 +5,10 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 import { commands } from "../bindings";
+import { PART_TITLES } from "../../scripts/licences/group";
 
 /// The part titles that the licence generator writes, each on its own line.
-const PART_TITLES = new Set(["rust crates", "interface packages", "native libraries"]);
+const HEADINGS = new Set<string>(PART_TITLES.map((title) => title.toLowerCase()));
 
 /// Split the text into runs of plain text and headings. Each heading stays
 /// inline, and the line breaks stay in the text, so the layout is the same
@@ -18,7 +19,7 @@ function withHeadings(text: string): ReactNode[] {
   const lines = text.split("\n");
   lines.forEach((line, i) => {
     const end = i < lines.length - 1 ? "\n" : "";
-    if (PART_TITLES.has(line.trim().toLowerCase())) {
+    if (HEADINGS.has(line.trim().toLowerCase())) {
       if (run) parts.push(run);
       run = end;
       parts.push(
