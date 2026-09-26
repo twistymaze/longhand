@@ -51,25 +51,25 @@ Neither reference app has a full licence screen. anarlog's `LICENSING.md` says t
 - R3. An anarlog entry comes first and carries this text, with only small changes to wording: "anarlog inspired me to make Longhand. The work its team is doing is outstanding. I wanted something smaller and simpler for my own use, and I started from what they built." A short clause then says which parts of Longhand come from anarlog.
 - R4. A Handy entry comes next and carries this text, with only small changes to wording: "Thank you for an amazing local-only dictation tool that I still use every day." A short clause then says which parts of Longhand come from Handy.
 - R5. A separate, shorter group of technical thanks follows the personal entries. It names whisper.cpp, ggml and transcribe.cpp (Georgi Gerganov and contributors), ONNX Runtime, pyannote and Tauri, with one line each on what it does for Longhand.
-- R6. Each acknowledgement names its project and links to or shows the project's address.
+- R6. Each acknowledgement names its project and is a link that opens the project's page in the default browser.
 
 **Curated licences**
 
-- R7. The Licences group lists every model, as it does now, plus the major components: whisper.cpp and ggml, transcribe.cpp, ONNX Runtime, Tauri, ProseMirror, React, and the code copied from anarlog and Handy.
+- R7. The Licences group lists every model, as it does now, plus one row for each major component: ggml, transcribe.cpp, ONNX Runtime, Tauri, ProseMirror, React, cpal, Opus, the code copied from anarlog, and the code copied from Handy. whisper.cpp gets no row, because Longhand does not contain its code: transcribe.cpp only reads whisper.cpp's model file format.
 - R8. A component row behaves as a model row does: a click shows its licence name, attribution, licence address and source.
 
 **Full list**
 
 - R9. The last row of the pane opens a separate window that shows the licence of every component the app ships.
-- R10. The window shows plain scrolling text. Each distinct licence text appears once, followed by the names of the components that use it. The text can be selected and copied.
-- R11. The full list covers every Rust crate linked into the binary, every JavaScript package bundled into the interface, and the code copied from anarlog and Handy. It leaves out tools used only to build or test the app.
-- R12. A check that runs with the local gates and in CI fails when the full list does not match the components the app ships.
+- R10. The window shows plain scrolling text. Each distinct licence body appears once, followed by the components that use it, each with its own copyright line. The text can be selected and copied.
+- R11. For each platform that Longhand ships (macOS and Windows), the full list covers every Rust crate linked into that platform's binary, every JavaScript package bundled into the interface, and the code copied from anarlog and Handy. It also covers the native code that crates bundle or link, with its own licence and notice texts: ggml and miniz inside transcribe-cpp-sys, kaldi-native-fbank inside knf-rs-sys, and the ONNX Runtime library that ort-sys links, with its third-party notices. It leaves out tools used only to build or test the app. Each build shows the list for its own platform.
+- R12. A check that runs with the local gates and in CI fails when the full list for any shipped platform does not match the components that platform ships, including the native code in R11.
 
 ### Acceptance Examples
 
 - AE1. **Covers R12.** **Given** a change that adds a new crate to the binary, **when** the local gates run, **then** the check fails until the full list includes that crate and its licence text.
 - AE2. **Covers R11.** **Given** a crate used only by a test or a build script, **when** the full list is produced, **then** that crate does not appear in it.
-- AE3. **Covers R10.** **Given** 40 crates under the same MIT text, **when** the window opens, **then** that MIT text appears once, with the 40 crate names listed with it.
+- AE3. **Covers R10.** **Given** 40 crates under the same MIT text, **when** the window opens, **then** that MIT text appears once, with the 40 crate names listed with it, each with its own copyright line.
 
 ### Scope Boundaries
 
@@ -83,7 +83,10 @@ Neither reference app has a full licence screen. anarlog's `LICENSING.md` says t
 
 - The clauses in R3 and R4 that say what came from each project must match the `PROVENANCE.md` records. The records show that anarlog supplied recording, audio, diarization, embedding and the editor, and that Handy supplied the model catalog and downloads, speech recognition, voice detection and parts of the pipeline.
 - Which tool produces the full list for Rust and for JavaScript, and in what form the app carries it.
+- How the native licence and notice texts in R11 are collected. Crate-level licence tools read only each crate's top-level licence, so they miss licence files deeper in a crate and the ONNX Runtime download.
 - Whether R12's check uses the same tool as R11 or compares against the existing `cargo deny` licence data.
+- Whether the app carries a stored list that R12 compares with freshly generated output, or a list made during each build. With a list made during each build, the check compares the list with itself, and AE1 cannot fail.
+- How the JavaScript list is taken from the bundled interface output. `package.json` lists some build tools, such as Tailwind, as app dependencies, and AE2 says build tools are left out.
 
 ### Sources / Research
 
