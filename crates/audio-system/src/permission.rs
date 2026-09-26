@@ -7,6 +7,9 @@
 //! does (see PROVENANCE.md). When the function is missing, the result is
 //! [`Permission::Unknown`], so a macOS change cannot stop a recording.
 //! [`request`] opens a short tap, which makes macOS ask the user.
+//! After the user allows a tap prompt, the check in the same process still
+//! gives the old result, so a result other than "allowed" is read again in
+//! a new process of the app binary, as anarlog does with a helper process.
 //!
 //! Windows has no such permission: the result is always allowed.
 
@@ -65,17 +68,94 @@ pub(crate) fn preflight_with(load: impl FnOnce() -> Option<Preflight>) -> Permis
     }
 }
 
-/// The state of the system audio permission. It asks the user nothing and
-/// takes about a millisecond.
+/// The command-line flag that makes the app binary run [`child_check`] and
+/// exit. The flag is not for users.
+pub const CHILD_FLAG: &str = "--system-audio-permission";
+
+/// The exit code of each state in the child check.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn to_code(permission: Permission) -> i32 {
+    match permission {
+        Permission::Allowed => 0,
+        Permission::Denied => 1,
+        Permission::NotAsked => 2,
+        Permission::Unknown => 3,
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn from_code(code: Option<i32>) -> Permission {
+    match code {
+        Some(0) => Permission::Allowed,
+        Some(1) => Permission::Denied,
+        Some(2) => Permission::NotAsked,
+        _ => Permission::Unknown,
+    }
+}
+
+/// Run the child side of the check when `args` holds [`CHILD_FLAG`], and
+/// give the exit code. Call it first in `main`, before the app starts.
+/// It gives `None` for a normal start.
+pub fn child_check(mut args: impl Iterator<Item = String>) -> Option<i32> {
+    if !args.any(|a| a == CHILD_FLAG) {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Some(to_code(preflight_with(tcc::load)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(0)
+    }
+}
+
+/// The state that the in-process result and the child result give
+/// together. An in-process "allowed" is final. Any other in-process result
+/// can be old: macOS does not tell the process when the user allows the
+/// permission after a tap prompt, so a new process decides.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn combine(
+    in_process: Permission,
+    child: impl FnOnce() -> Option<Permission>,
+) -> Permission {
+    if in_process == Permission::Allowed {
+        return in_process;
+    }
+    child().unwrap_or(in_process)
+}
+
+/// The state of the system audio permission. It asks the user nothing.
+/// When the permission is allowed it takes about a millisecond. Otherwise
+/// it starts the app binary again with [`CHILD_FLAG`], which takes some
+/// tens of milliseconds (as anarlog checks in a helper process).
 pub fn preflight() -> Permission {
     #[cfg(target_os = "macos")]
     {
-        preflight_with(tcc::load)
+        combine(preflight_with(tcc::load), check_in_child)
     }
     #[cfg(not(target_os = "macos"))]
     {
         Permission::Allowed
     }
+}
+
+/// The result of [`CHILD_FLAG`] in a new process of the app binary. It
+/// gives `None` when the process does not start.
+#[cfg(target_os = "macos")]
+fn check_in_child() -> Option<Permission> {
+    let exe = std::env::current_exe()
+        .inspect_err(|e| log::warn!("the app binary path is unknown: {e}"))
+        .ok()?;
+    let status = std::process::Command::new(exe)
+        .arg(CHILD_FLAG)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .inspect_err(|e| log::warn!("the permission check process did not start: {e}"))
+        .ok()?;
+    Some(from_code(status.code()))
 }
 
 /// Ask for the permission: open a tap for [`REQUEST_TAP`], stop it, and
@@ -185,6 +265,56 @@ mod tests {
         assert_eq!(with(7), Permission::Unknown);
     }
 
+    #[test]
+    fn an_in_process_allowed_needs_no_child() {
+        let result = combine(Permission::Allowed, || panic!("the child must not run"));
+        assert_eq!(result, Permission::Allowed);
+    }
+
+    /// The case from the first signed-bundle test: the user allowed the
+    /// prompt, and the in-process check still said "not asked".
+    #[test]
+    fn the_child_result_replaces_an_old_in_process_result() {
+        let allowed = || Some(Permission::Allowed);
+        assert_eq!(combine(Permission::NotAsked, allowed), Permission::Allowed);
+        assert_eq!(combine(Permission::Denied, allowed), Permission::Allowed);
+        assert_eq!(
+            combine(Permission::NotAsked, || Some(Permission::Denied)),
+            Permission::Denied
+        );
+    }
+
+    #[test]
+    fn a_child_that_does_not_start_keeps_the_in_process_result() {
+        assert_eq!(combine(Permission::NotAsked, || None), Permission::NotAsked);
+    }
+
+    #[test]
+    fn each_state_survives_the_exit_code() {
+        for p in [
+            Permission::Allowed,
+            Permission::Denied,
+            Permission::NotAsked,
+            Permission::Unknown,
+        ] {
+            assert_eq!(from_code(Some(to_code(p))), p);
+        }
+        assert_eq!(from_code(None), Permission::Unknown);
+        assert_eq!(from_code(Some(101)), Permission::Unknown);
+    }
+
+    #[test]
+    fn the_child_check_runs_only_with_its_flag() {
+        let args = |a: &[&str]| {
+            a.iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .into_iter()
+        };
+        assert_eq!(child_check(args(&["longhand"])), None);
+        assert!(child_check(args(&["longhand", CHILD_FLAG])).is_some());
+    }
+
     /// The real loader finds the private function on this macOS. When a
     /// macOS update removes it, this test fails first, and the app shows
     /// "Cannot check" in place of a wrong state.
@@ -192,7 +322,8 @@ mod tests {
     #[test]
     fn the_private_function_loads_on_this_macos() {
         assert!(tcc::load().is_some());
-        assert_ne!(preflight(), Permission::Unknown);
+        // In-process only: the test binary cannot run the child check.
+        assert_ne!(preflight_with(tcc::load), Permission::Unknown);
     }
 
     #[cfg(not(target_os = "macos"))]
