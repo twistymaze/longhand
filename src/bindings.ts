@@ -9,13 +9,26 @@ async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
 /**
- * Set the summarization endpoint (R32). An empty base URL clears it; any
- * other value must be a URL with a host, since the credential is keyed by
- * that host (R30a).
+ * Save the Base URL of the summarization endpoint (R32). An empty value
+ * clears it and stays empty (R2). Any other value must be a URL with a
+ * host, because the credential is keyed by that host (R30a). The Model does
+ * not change (KTD5).
  */
-async setEndpoint(baseUrl: string, model: string) : Promise<Result<Settings, string>> {
+async setEndpointBaseUrl(baseUrl: string) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_endpoint", { baseUrl, model }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_endpoint_base_url", { baseUrl }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save the Model of the summarization endpoint. The Base URL does not
+ * change, so a new install keeps "never saved" (KTD5).
+ */
+async setEndpointModel(model: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_endpoint_model", { model }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -178,6 +191,19 @@ async deleteCredential(baseUrl: string) : Promise<Result<null, string>> {
 async repairKeychainAccess() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("repair_keychain_access") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List the models of the effective endpoint (R5). The command reads the
+ * key itself, so the webview never holds it. It sends no request when the
+ * request gate refuses one (R4, R16, R17).
+ */
+async listEndpointModels() : Promise<Result<EndpointModels, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_endpoint_models") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -622,6 +648,12 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
  */
 { kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
+/**
+ * The result of a model list request, for the Summaries pane (KTD2). It
+ * has every `ModelList` outcome, and `NotRequested` when the request gate
+ * sends no request (KTD3).
+ */
+export type EndpointModels = { kind: "listed"; ids: string[] } | { kind: "key-needed" } | { kind: "key-rejected" } | { kind: "key-cannot-list" } | { kind: "not-listed" } | { kind: "redirected"; host: string | null } | { kind: "server-error"; status: number | null } | { kind: "unreachable" } | { kind: "not-requested"; reason: ListNotRequested }
 export type EndpointView = { host: string; model: string; 
 /**
  * False when the transcript would cross the network unencrypted.
@@ -655,6 +687,10 @@ export type Interruption = { headline: string;
  */
 disk: boolean }
 export type LicenceInfo = { name: string; url: string; attribution: string }
+/**
+ * Why Longhand sent no model list request (R4, R16, R17).
+ */
+export type ListNotRequested = "no-base-url" | "keychain-locked" | "keychain-failed" | "key-needed"
 /**
  * The text of the part that is open now.
  */
@@ -770,7 +806,12 @@ armed: boolean; shortcut: ShortcutStatus;
 /**
  * Catalog ids of required weights not yet on disk.
  */
-missing_models: string[]; endpoint_configured: boolean }
+missing_models: string[]; 
+/**
+ * A Base URL and a model are set, and the request gate lets summary
+ * processing use them (KTD3). A locked Keychain does not clear it.
+ */
+endpoint_configured: boolean }
 /**
  * A session started, stopped, or resumed recording.
  */
@@ -919,8 +960,11 @@ destination_roots: string[];
 current_destination: string | null; 
 /**
  * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
+ * `None` means a new install that has no settings yet, and
+ * [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
+ * user cleared it, or that an existing install never set it (R2, KTD4).
  */
-endpoint_base_url: string; endpoint_model: string; 
+endpoint_base_url: string | null; endpoint_model: string; 
 /**
  * Overrides the probed context budget when set (KTD16).
  */

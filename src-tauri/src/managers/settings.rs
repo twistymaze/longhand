@@ -21,6 +21,9 @@ const SETTINGS_KEY: &str = "settings";
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
 
+/// The Base URL that Longhand uses when the user never saved one (R1, KD3).
+pub const DEFAULT_ENDPOINT_BASE_URL: &str = "https://api.openai.com/v1";
+
 /// The recognition model that versions 1 to 3 selected by default. A store
 /// of those versions with no `asr_model` read as this model, so the
 /// migration to version 4 keeps it (KTD11).
@@ -100,7 +103,10 @@ pub struct Settings {
     /// Where the next session is saved (R23). Always one of the roots.
     pub current_destination: Option<String>,
     /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
-    pub endpoint_base_url: String,
+    /// `None` means a new install that has no settings yet, and
+    /// [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
+    /// user cleared it, or that an existing install never set it (R2, KTD4).
+    pub endpoint_base_url: Option<String>,
     pub endpoint_model: String,
     /// Overrides the probed context budget when set (KTD16).
     pub context_limit_tokens: Option<u32>,
@@ -136,6 +142,85 @@ pub fn learned_limit_key(base_url: &str, model: &str) -> String {
     format!("{} {}", base_url.trim(), model.trim())
 }
 
+/// The state of the saved key for the host of the effective Base URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyState {
+    Saved,
+    Absent,
+    /// Keychain is locked or refused access. The user can repair it (R16).
+    Locked,
+    /// Keychain cannot be read for another reason.
+    Failed,
+}
+
+/// Why Longhand sends no request to the endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRequestedReason {
+    /// The user cleared the Base URL (R17).
+    NoBaseUrl,
+    KeychainLocked,
+    KeychainFailed,
+    /// The Base URL is the built-in default and no key is saved for its
+    /// host (R4, KD7).
+    KeyNeeded,
+}
+
+/// Whether Longhand can send a request to the endpoint, and with which key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointGate {
+    RequestWithKey,
+    RequestWithoutKey,
+    NotRequested(NotRequestedReason),
+}
+
+/// The key state from the result of a Keychain read. The list command,
+/// summary processing and readiness all call it, so they map Keychain errors
+/// the same way. A key that is empty after trim counts as no key: it must
+/// not pass the gate or go out as a blank Bearer header.
+pub fn key_state(read: &Result<Option<String>, secrets::SecretError>) -> KeyState {
+    use secrets::SecretError;
+    match read {
+        Ok(Some(key)) if !key.trim().is_empty() => KeyState::Saved,
+        Ok(_) => KeyState::Absent,
+        Err(SecretError::Locked { .. } | SecretError::Unavailable { .. }) => KeyState::Locked,
+        Err(_) => KeyState::Failed,
+    }
+}
+
+/// The request gate for the endpoint (KTD3). Longhand contacts only an
+/// endpoint that the user acted on: a key is saved for its host, or the user
+/// saved the Base URL. The list command and summary processing both call it.
+pub fn endpoint_gate(base_url: &str, saved_by_user: bool, key: KeyState) -> EndpointGate {
+    if base_url.trim().is_empty() {
+        return EndpointGate::NotRequested(NotRequestedReason::NoBaseUrl);
+    }
+    match key {
+        KeyState::Locked => EndpointGate::NotRequested(NotRequestedReason::KeychainLocked),
+        KeyState::Failed => EndpointGate::NotRequested(NotRequestedReason::KeychainFailed),
+        KeyState::Saved => EndpointGate::RequestWithKey,
+        KeyState::Absent if saved_by_user => EndpointGate::RequestWithoutKey,
+        KeyState::Absent => EndpointGate::NotRequested(NotRequestedReason::KeyNeeded),
+    }
+}
+
+/// Whether summary processing can use the endpoint in `s`, given the state
+/// of the key for its host. Readiness reports this value, so it applies the
+/// same gate as summary processing. A locked or failed Keychain read counts
+/// as configured: the Keychain problem has its own message.
+pub fn endpoint_ready(s: &Settings, key: KeyState) -> bool {
+    s.endpoint_configured()
+        && !matches!(
+            endpoint_gate(
+                s.effective_endpoint_base_url(),
+                s.endpoint_base_url_saved(),
+                key
+            ),
+            EndpointGate::NotRequested(
+                NotRequestedReason::KeyNeeded | NotRequestedReason::NoBaseUrl
+            )
+        )
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -144,7 +229,7 @@ impl Default for Settings {
             show_window_shortcut: None,
             destination_roots: Vec::new(),
             current_destination: None,
-            endpoint_base_url: String::new(),
+            endpoint_base_url: None,
             endpoint_model: String::new(),
             context_limit_tokens: None,
             default_speaker_count: None,
@@ -169,7 +254,41 @@ impl Settings {
     }
 
     pub fn endpoint_configured(&self) -> bool {
-        !self.endpoint_base_url.trim().is_empty() && !self.endpoint_model.trim().is_empty()
+        !self.effective_endpoint_base_url().is_empty() && !self.endpoint_model.trim().is_empty()
+    }
+
+    /// The Base URL that requests use: the saved value, or the OpenAI
+    /// default when the user never saved one (KTD4). Empty when the user
+    /// cleared it.
+    pub fn effective_endpoint_base_url(&self) -> &str {
+        self.endpoint_base_url
+            .as_deref()
+            .unwrap_or(DEFAULT_ENDPOINT_BASE_URL)
+            .trim()
+    }
+
+    /// Whether the user saved the Base URL, as opposed to the built-in
+    /// default (R4).
+    pub fn endpoint_base_url_saved(&self) -> bool {
+        self.endpoint_base_url.is_some()
+    }
+
+    /// Save the Base URL (R32). An empty value clears it and stays empty
+    /// (R2). Any other value must be a URL with a host, because the
+    /// credential is keyed by that host (R30a). The Model does not change
+    /// (KTD5).
+    pub fn set_endpoint_base_url(&mut self, base_url: &str) -> Result<(), String> {
+        let base_url = base_url.trim();
+        if !base_url.is_empty() {
+            secrets::endpoint_key(base_url).map_err(|e| e.to_string())?;
+        }
+        self.endpoint_base_url = Some(base_url.to_string());
+        Ok(())
+    }
+
+    /// Save the Model. The Base URL does not change (KTD5).
+    pub fn set_endpoint_model(&mut self, model: &str) {
+        self.endpoint_model = model.trim().to_string();
     }
 
     /// The prompt that a summary run uses now (KTD4). An unknown id gives
@@ -589,7 +708,10 @@ mod tests {
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings.settings_schema_version, 4);
+        assert_eq!(
+            settings.settings_schema_version,
+            CURRENT_SETTINGS_SCHEMA_VERSION
+        );
         assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
         assert_eq!(settings.endpoint_model, "kept");
         assert!(settings.live_transcript);
@@ -618,7 +740,10 @@ mod tests {
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings.settings_schema_version, 4);
+        assert_eq!(
+            settings.settings_schema_version,
+            CURRENT_SETTINGS_SCHEMA_VERSION
+        );
         assert_eq!(settings.asr_model, "parakeet-unified-en-0.6b-q80");
         assert!(!settings.live_transcript);
         assert_eq!(settings.active_summary_prompt, PLAY_BY_PLAY_ID);
@@ -992,6 +1117,210 @@ mod tests {
             settings.active_summary_prompt_snapshot().id,
             PLAY_BY_PLAY_ID
         );
+    }
+
+    #[test]
+    fn a_new_store_has_no_saved_base_url_and_uses_the_openai_default() {
+        let (settings, _) = settings_from_value(&json!({}));
+        assert_eq!(settings.endpoint_base_url, None);
+        assert!(!settings.endpoint_base_url_saved());
+        assert_eq!(
+            settings.effective_endpoint_base_url(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(settings.endpoint_model, "");
+    }
+
+    #[test]
+    fn the_migration_keeps_a_saved_base_url() {
+        // Covers AE2.
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION - 1,
+            "endpoint_base_url": "http://localhost:11434/v1",
+            "endpoint_model": "llama3",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(
+            settings.endpoint_base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+        assert!(settings.endpoint_base_url_saved());
+        assert_eq!(
+            settings.effective_endpoint_base_url(),
+            "http://localhost:11434/v1"
+        );
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(settings_from_value(&written), (settings, false));
+    }
+
+    #[test]
+    fn an_existing_store_keeps_an_empty_base_url() {
+        // The OpenAI default applies only to a new install (R2).
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION - 1,
+            "endpoint_base_url": "",
+            "endpoint_model": "gpt-4o",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
+        assert_eq!(settings.effective_endpoint_base_url(), "");
+        assert_eq!(settings.endpoint_model, "gpt-4o");
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(settings_from_value(&written), (settings, false));
+    }
+
+    #[test]
+    fn a_current_store_keeps_a_cleared_base_url() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_base_url": "",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn an_empty_base_url_from_the_setter_is_saved_and_clears_the_endpoint() {
+        let mut settings = Settings::default();
+        settings.set_endpoint_model("gpt-4o");
+        settings.set_endpoint_base_url("   ").unwrap();
+        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
+        assert!(settings.endpoint_base_url_saved());
+        assert_eq!(settings.effective_endpoint_base_url(), "");
+        assert!(!settings.endpoint_configured());
+    }
+
+    #[test]
+    fn the_base_url_setter_trims_and_changes_only_the_base_url() {
+        let mut settings = Settings {
+            endpoint_model: "gpt-4o".into(),
+            ..Settings::default()
+        };
+        settings
+            .set_endpoint_base_url("  http://localhost:11434/v1 ")
+            .unwrap();
+        assert_eq!(
+            settings.endpoint_base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+        assert_eq!(settings.endpoint_model, "gpt-4o");
+    }
+
+    #[test]
+    fn the_model_setter_does_not_save_a_base_url() {
+        let mut settings = Settings::default();
+        settings.set_endpoint_model("  gpt-4o ");
+        assert_eq!(settings.endpoint_model, "gpt-4o");
+        assert_eq!(settings.endpoint_base_url, None);
+        assert!(!settings.endpoint_base_url_saved());
+        assert!(settings.endpoint_configured());
+    }
+
+    #[test]
+    fn the_base_url_setter_refuses_a_url_with_no_host_and_changes_nothing() {
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        let error = settings.set_endpoint_base_url("not a url").unwrap_err();
+        assert_eq!(
+            error,
+            secrets::endpoint_key("not a url").unwrap_err().to_string()
+        );
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn the_salvage_path_keeps_a_valid_base_url() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "context_limit_tokens": "lots",
+            "endpoint_base_url": "http://localhost:11434/v1",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(
+            settings.endpoint_base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+    }
+
+    #[test]
+    fn the_gate_sends_a_request_only_for_an_endpoint_the_user_acted_on() {
+        use EndpointGate::*;
+        use KeyState::*;
+        use NotRequestedReason::*;
+        let default = DEFAULT_ENDPOINT_BASE_URL;
+        let local = "http://localhost:11434/v1";
+        assert_eq!(endpoint_gate(default, false, Saved), RequestWithKey);
+        assert_eq!(
+            endpoint_gate(default, false, Absent),
+            NotRequested(KeyNeeded)
+        );
+        // The user can save the default URL, and then it counts as entered.
+        assert_eq!(endpoint_gate(default, true, Absent), RequestWithoutKey);
+        assert_eq!(endpoint_gate(local, true, Absent), RequestWithoutKey);
+        assert_eq!(endpoint_gate(local, true, Saved), RequestWithKey);
+        assert_eq!(
+            endpoint_gate(local, true, Locked),
+            NotRequested(KeychainLocked)
+        );
+        assert_eq!(
+            endpoint_gate(default, false, Failed),
+            NotRequested(KeychainFailed)
+        );
+        for key in [Saved, Absent, Locked, Failed] {
+            assert_eq!(endpoint_gate("  ", true, key), NotRequested(NoBaseUrl));
+        }
+    }
+
+    #[test]
+    fn a_blank_saved_key_counts_as_no_key() {
+        assert_eq!(key_state(&Ok(Some("sk-1".into()))), KeyState::Saved);
+        assert_eq!(key_state(&Ok(Some("   ".into()))), KeyState::Absent);
+        assert_eq!(key_state(&Ok(Some(String::new()))), KeyState::Absent);
+        assert_eq!(key_state(&Ok(None)), KeyState::Absent);
+        // A blank key does not open the gate for the default Base URL.
+        let key = key_state(&Ok(Some(" \t".into())));
+        assert_eq!(
+            endpoint_gate(DEFAULT_ENDPOINT_BASE_URL, false, key),
+            EndpointGate::NotRequested(NotRequestedReason::KeyNeeded)
+        );
+    }
+
+    #[test]
+    fn readiness_applies_the_same_gate_as_summary_processing() {
+        use KeyState::*;
+        let default_url = Settings {
+            endpoint_model: "gpt-4o".into(),
+            ..Settings::default()
+        };
+        // A model with no key for the default Base URL: processing refuses.
+        assert!(!endpoint_ready(&default_url, Absent));
+        assert!(endpoint_ready(&default_url, Saved));
+        // A Keychain problem has its own message. It is not "unconfigured".
+        assert!(endpoint_ready(&default_url, Locked));
+        assert!(endpoint_ready(&default_url, Failed));
+
+        let local = Settings {
+            endpoint_base_url: Some("http://localhost:11434/v1".into()),
+            ..default_url.clone()
+        };
+        assert!(endpoint_ready(&local, Absent));
+
+        let cleared = Settings {
+            endpoint_base_url: Some(String::new()),
+            ..default_url.clone()
+        };
+        let no_model = Settings {
+            endpoint_model: String::new(),
+            ..local.clone()
+        };
+        for key in [Saved, Absent, Locked, Failed] {
+            assert!(!endpoint_ready(&cleared, key));
+            assert!(!endpoint_ready(&no_model, key));
+        }
     }
 
     #[test]

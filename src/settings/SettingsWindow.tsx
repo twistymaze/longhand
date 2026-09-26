@@ -22,8 +22,10 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
     panes: [
       { id: "status", label: "General", icon: <SlidersIcon /> },
       { id: "destination", label: "Storage", icon: <FolderIcon /> },
-      { id: "summarization", label: "Summaries", icon: <SparkleIcon /> },
+      // The order of processing: a note is saved, then transcribed, then
+      // summarized. The General pane lists its rows in the same order.
       { id: "recognition", label: "Transcription", icon: <TranscriptIcon /> },
+      { id: "summarization", label: "Summaries", icon: <SparkleIcon /> },
     ],
   },
   {

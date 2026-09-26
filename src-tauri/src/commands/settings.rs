@@ -55,19 +55,23 @@ pub fn get_settings(app: AppHandle) -> Settings {
     settings::get_settings(&app)
 }
 
-/// Set the summarization endpoint (R32). An empty base URL clears it; any
-/// other value must be a URL with a host, since the credential is keyed by
-/// that host (R30a).
+/// Save the Base URL of the summarization endpoint (R32). An empty value
+/// clears it and stays empty (R2). Any other value must be a URL with a
+/// host, because the credential is keyed by that host (R30a). The Model does
+/// not change (KTD5).
 #[tauri::command]
 #[specta::specta]
-pub fn set_endpoint(app: AppHandle, base_url: String, model: String) -> Result<Settings, String> {
-    let base_url = base_url.trim().to_string();
-    if !base_url.is_empty() {
-        secrets::endpoint_key(&base_url).map_err(|e| e.to_string())?;
-    }
+pub fn set_endpoint_base_url(app: AppHandle, base_url: String) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.set_endpoint_base_url(&base_url))
+}
+
+/// Save the Model of the summarization endpoint. The Base URL does not
+/// change, so a new install keeps "never saved" (KTD5).
+#[tauri::command]
+#[specta::specta]
+pub fn set_endpoint_model(app: AppHandle, model: String) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
-        s.endpoint_base_url = base_url;
-        s.endpoint_model = model.trim().to_string();
+        s.set_endpoint_model(&model);
         Ok(())
     })
 }
@@ -308,7 +312,292 @@ pub async fn repair_keychain_access() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// The result of a model list request, for the Summaries pane (KTD2). It
+/// has every `ModelList` outcome, and `NotRequested` when the request gate
+/// sends no request (KTD3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum EndpointModels {
+    Listed { ids: Vec<String> },
+    KeyNeeded,
+    KeyRejected,
+    KeyCannotList,
+    NotListed,
+    Redirected { host: Option<String> },
+    ServerError { status: Option<u16> },
+    Unreachable,
+    NotRequested { reason: ListNotRequested },
+}
+
+/// Why Longhand sent no model list request (R4, R16, R17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "kebab-case")]
+pub enum ListNotRequested {
+    NoBaseUrl,
+    KeychainLocked,
+    KeychainFailed,
+    KeyNeeded,
+}
+
+impl From<settings::NotRequestedReason> for ListNotRequested {
+    fn from(reason: settings::NotRequestedReason) -> Self {
+        use settings::NotRequestedReason as R;
+        match reason {
+            R::NoBaseUrl => Self::NoBaseUrl,
+            R::KeychainLocked => Self::KeychainLocked,
+            R::KeychainFailed => Self::KeychainFailed,
+            R::KeyNeeded => Self::KeyNeeded,
+        }
+    }
+}
+
+impl From<summarize::ModelList> for EndpointModels {
+    fn from(list: summarize::ModelList) -> Self {
+        use summarize::ModelList as L;
+        match list {
+            L::Listed { ids } => Self::Listed { ids },
+            L::KeyNeeded => Self::KeyNeeded,
+            L::KeyRejected => Self::KeyRejected,
+            L::KeyCannotList => Self::KeyCannotList,
+            L::NotListed => Self::NotListed,
+            L::Redirected { host } => Self::Redirected { host },
+            L::ServerError { status } => Self::ServerError { status },
+            L::Unreachable => Self::Unreachable,
+        }
+    }
+}
+
+/// What the list command does next: send a request to this endpoint, or
+/// return an outcome with no request.
+#[derive(Debug, PartialEq, Eq)]
+enum ListStep {
+    Request(summarize::Endpoint),
+    Done(EndpointModels),
+}
+
+/// Apply the request gate (KTD3) to the settings and to the result of the
+/// Keychain read.
+fn list_step(s: &Settings, read: Result<Option<String>, secrets::SecretError>) -> ListStep {
+    use settings::EndpointGate;
+    let base_url = s.effective_endpoint_base_url();
+    let key = settings::key_state(&read);
+    let credential = match settings::endpoint_gate(base_url, s.endpoint_base_url_saved(), key) {
+        EndpointGate::NotRequested(reason) => {
+            return ListStep::Done(EndpointModels::NotRequested {
+                reason: reason.into(),
+            });
+        }
+        EndpointGate::RequestWithKey => read.ok().flatten(),
+        EndpointGate::RequestWithoutKey => None,
+    };
+    ListStep::Request(summarize::Endpoint {
+        base_url: base_url.to_string(),
+        model: String::new(),
+        credential,
+    })
+}
+
+/// List the models of the effective endpoint (R5). The command reads the
+/// key itself, so the webview never holds it. It sends no request when the
+/// request gate refuses one (R4, R16, R17).
+#[tauri::command]
+#[specta::specta]
+pub async fn list_endpoint_models(
+    app: AppHandle,
+    manager: State<'_, SecretsManager>,
+) -> Result<EndpointModels, String> {
+    let s = settings::get_settings(&app);
+    let base_url = s.effective_endpoint_base_url().to_string();
+    // An empty Base URL has no host to read a key for. The gate refuses it.
+    let read = if base_url.is_empty() {
+        Ok(None)
+    } else {
+        manager
+            .run(move |store| store.endpoint_credential(&base_url))
+            .await
+    };
+    let endpoint = match list_step(&s, read) {
+        ListStep::Done(outcome) => return Ok(outcome),
+        ListStep::Request(endpoint) => endpoint,
+    };
+    // A Base URL that is not a valid http or https URL cannot be reached.
+    let Ok(client) = summarize::Client::new(endpoint) else {
+        return Ok(EndpointModels::Unreachable);
+    };
+    Ok(summarize::list_models(&client).await.into())
+}
+
 fn fingerprint(secret: &str) -> String {
     let digest = Sha256::digest(secret.as_bytes());
     digest[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrets::SecretError;
+    use summarize::ModelList;
+
+    const LOCAL: &str = "http://localhost:11434/v1";
+
+    fn saved(base_url: &str) -> Settings {
+        let mut s = Settings::default();
+        s.set_endpoint_base_url(base_url).unwrap();
+        s
+    }
+
+    fn not_requested(reason: ListNotRequested) -> ListStep {
+        ListStep::Done(EndpointModels::NotRequested { reason })
+    }
+
+    #[test]
+    fn the_default_endpoint_with_no_key_is_not_requested() {
+        // Covers AE1: a new install sends nothing to api.openai.com.
+        assert_eq!(
+            list_step(&Settings::default(), Ok(None)),
+            not_requested(ListNotRequested::KeyNeeded)
+        );
+    }
+
+    #[test]
+    fn the_default_endpoint_with_a_key_is_requested_with_the_key() {
+        assert_eq!(
+            list_step(&Settings::default(), Ok(Some("sk-test".into()))),
+            ListStep::Request(summarize::Endpoint {
+                base_url: "https://api.openai.com/v1".into(),
+                model: String::new(),
+                credential: Some("sk-test".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_saved_local_endpoint_with_no_key_is_requested_with_no_key() {
+        assert_eq!(
+            list_step(&saved(LOCAL), Ok(None)),
+            ListStep::Request(summarize::Endpoint {
+                base_url: LOCAL.into(),
+                model: String::new(),
+                credential: None,
+            })
+        );
+    }
+
+    #[test]
+    fn an_empty_base_url_is_not_requested() {
+        assert_eq!(
+            list_step(&saved(""), Ok(Some("sk-test".into()))),
+            not_requested(ListNotRequested::NoBaseUrl)
+        );
+    }
+
+    #[test]
+    fn a_keychain_that_cannot_be_read_is_not_requested() {
+        // Covers AE8. Locked and Unavailable map to locked, as processing
+        // maps them.
+        for error in [
+            SecretError::Locked {
+                message: "locked".into(),
+            },
+            SecretError::Unavailable {
+                message: "none".into(),
+            },
+        ] {
+            assert_eq!(
+                list_step(&saved(LOCAL), Err(error)),
+                not_requested(ListNotRequested::KeychainLocked)
+            );
+        }
+        assert_eq!(
+            list_step(
+                &Settings::default(),
+                Err(SecretError::Platform {
+                    message: "broken".into(),
+                })
+            ),
+            not_requested(ListNotRequested::KeychainFailed)
+        );
+    }
+
+    #[test]
+    fn every_list_outcome_maps_to_the_same_frontend_outcome() {
+        let cases = [
+            (
+                ModelList::Listed {
+                    ids: vec!["a".into()],
+                },
+                EndpointModels::Listed {
+                    ids: vec!["a".into()],
+                },
+            ),
+            (ModelList::KeyNeeded, EndpointModels::KeyNeeded),
+            (ModelList::KeyRejected, EndpointModels::KeyRejected),
+            (ModelList::KeyCannotList, EndpointModels::KeyCannotList),
+            (ModelList::NotListed, EndpointModels::NotListed),
+            (
+                ModelList::Redirected {
+                    host: Some("example.com".into()),
+                },
+                EndpointModels::Redirected {
+                    host: Some("example.com".into()),
+                },
+            ),
+            (
+                ModelList::ServerError { status: Some(500) },
+                EndpointModels::ServerError { status: Some(500) },
+            ),
+            (ModelList::Unreachable, EndpointModels::Unreachable),
+        ];
+        for (list, expected) in cases {
+            assert_eq!(EndpointModels::from(list), expected);
+        }
+    }
+
+    #[test]
+    fn the_outcome_serializes_to_the_shape_that_the_bindings_declare() {
+        let json = |value: EndpointModels| serde_json::to_value(value).unwrap();
+        assert_eq!(
+            json(EndpointModels::Listed {
+                ids: vec!["gpt-4o".into()]
+            }),
+            serde_json::json!({ "kind": "listed", "ids": ["gpt-4o"] })
+        );
+        assert_eq!(
+            json(EndpointModels::KeyCannotList),
+            serde_json::json!({ "kind": "key-cannot-list" })
+        );
+        assert_eq!(
+            json(EndpointModels::Redirected { host: None }),
+            serde_json::json!({ "kind": "redirected", "host": null })
+        );
+        assert_eq!(
+            json(EndpointModels::ServerError { status: Some(502) }),
+            serde_json::json!({ "kind": "server-error", "status": 502 })
+        );
+        assert_eq!(
+            json(EndpointModels::NotRequested {
+                reason: ListNotRequested::KeychainLocked
+            }),
+            serde_json::json!({ "kind": "not-requested", "reason": "keychain-locked" })
+        );
+
+        let bindings = include_str!("../../../src/bindings.ts");
+        for declaration in [
+            "export type EndpointModels = { kind: \"listed\"; ids: string[] } | \
+             { kind: \"key-needed\" } | { kind: \"key-rejected\" } | \
+             { kind: \"key-cannot-list\" } | { kind: \"not-listed\" } | \
+             { kind: \"redirected\"; host: string | null } | \
+             { kind: \"server-error\"; status: number | null } | \
+             { kind: \"unreachable\" } | \
+             { kind: \"not-requested\"; reason: ListNotRequested }",
+            "export type ListNotRequested = \"no-base-url\" | \"keychain-locked\" | \
+             \"keychain-failed\" | \"key-needed\"",
+            "async listEndpointModels() : Promise<Result<EndpointModels, string>>",
+        ] {
+            assert!(
+                bindings.contains(declaration),
+                "src/bindings.ts does not declare: {declaration}"
+            );
+        }
+    }
 }

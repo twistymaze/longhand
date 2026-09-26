@@ -172,6 +172,61 @@ impl From<RunnerEvent> for ProcessingUpdate {
     }
 }
 
+/// The summary endpoint from `s`, with the key that `read_key` reads for the
+/// effective Base URL. The request gate (KTD3) applies: the built-in default
+/// Base URL with no saved key gives `Unconfigured`, and no request goes out.
+fn endpoint_from_settings(
+    s: settings::Settings,
+    read_key: impl FnOnce(&str) -> Result<Option<String>, SecretError>,
+) -> Result<SummaryEndpoint, EndpointProblem> {
+    use settings::{EndpointGate, NotRequestedReason};
+    const NO_ENDPOINT: &str = "no summarization endpoint is set; choose one in Settings";
+    if !s.endpoint_configured() {
+        return Err(EndpointProblem::Unconfigured(NO_ENDPOINT.into()));
+    }
+    let base_url = s.effective_endpoint_base_url().to_string();
+    // The credential is keyed by the configured host: a changed base URL
+    // has none until one is entered for it (R30a).
+    let read = read_key(&base_url);
+    let key = settings::key_state(&read);
+    match settings::endpoint_gate(&base_url, s.endpoint_base_url_saved(), key) {
+        EndpointGate::NotRequested(NotRequestedReason::KeyNeeded) => {
+            let host = secrets::endpoint_key(&base_url).unwrap_or_else(|_| base_url.clone());
+            return Err(EndpointProblem::Unconfigured(format!(
+                "Add an API key for {host}, or enter a Base URL"
+            )));
+        }
+        EndpointGate::NotRequested(NotRequestedReason::NoBaseUrl) => {
+            return Err(EndpointProblem::Unconfigured(NO_ENDPOINT.into()));
+        }
+        // The Keychain error below gives the message.
+        EndpointGate::NotRequested(
+            NotRequestedReason::KeychainLocked | NotRequestedReason::KeychainFailed,
+        )
+        | EndpointGate::RequestWithKey
+        | EndpointGate::RequestWithoutKey => {}
+    }
+    let credential = read
+        .map_err(|e| match e {
+            SecretError::Locked { .. } | SecretError::Unavailable { .. } => {
+                EndpointProblem::Locked(e.to_string())
+            }
+            other => EndpointProblem::Unconfigured(other.to_string()),
+        })?
+        // A blank key is no key (see `key_state`): send no Bearer header.
+        .filter(|key| !key.trim().is_empty());
+    Ok(SummaryEndpoint {
+        learned_limit: s
+            .learned_context_limits
+            .get(&settings::learned_limit_key(&base_url, &s.endpoint_model))
+            .copied(),
+        base_url,
+        model: s.endpoint_model,
+        credential,
+        context_limit: s.context_limit_tokens,
+    })
+}
+
 struct Models {
     app: AppHandle,
     models: Arc<ModelsManager>,
@@ -180,35 +235,8 @@ struct Models {
 
 impl EngineProvider for Models {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
-        let s = settings::get_settings(&self.app);
-        if !s.endpoint_configured() {
-            return Err(EndpointProblem::Unconfigured(
-                "no summarization endpoint is set; choose one in Settings".into(),
-            ));
-        }
-        // The credential is keyed by the configured host: a changed base URL
-        // has none until one is entered for it (R30a).
-        let credential = self
-            .secrets
-            .endpoint_credential(&s.endpoint_base_url)
-            .map_err(|e| match e {
-                SecretError::Locked { .. } | SecretError::Unavailable { .. } => {
-                    EndpointProblem::Locked(e.to_string())
-                }
-                other => EndpointProblem::Unconfigured(other.to_string()),
-            })?;
-        Ok(SummaryEndpoint {
-            learned_limit: s
-                .learned_context_limits
-                .get(&settings::learned_limit_key(
-                    &s.endpoint_base_url,
-                    &s.endpoint_model,
-                ))
-                .copied(),
-            base_url: s.endpoint_base_url,
-            model: s.endpoint_model,
-            credential,
-            context_limit: s.context_limit_tokens,
+        endpoint_from_settings(settings::get_settings(&self.app), |base_url| {
+            self.secrets.endpoint_credential(base_url)
         })
     }
 
@@ -481,5 +509,89 @@ impl ProcessingManager {
             .await
             .map(|path| path.to_string_lossy().into_owned())
             .map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_model(base_url: Option<&str>) -> settings::Settings {
+        settings::Settings {
+            endpoint_base_url: base_url.map(str::to_string),
+            endpoint_model: "gpt-4o".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_default_endpoint_with_no_key_is_not_configured() {
+        let result = endpoint_from_settings(with_model(None), |_| Ok(None));
+        assert_eq!(
+            result,
+            Err(EndpointProblem::Unconfigured(
+                "Add an API key for api.openai.com, or enter a Base URL".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_default_endpoint_with_a_key_uses_that_key() {
+        let mut read = None;
+        let endpoint = endpoint_from_settings(with_model(None), |url| {
+            read = Some(url.to_string());
+            Ok(Some("sk-test".into()))
+        })
+        .unwrap();
+        assert_eq!(read.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(endpoint.base_url, "https://api.openai.com/v1");
+        assert_eq!(endpoint.model, "gpt-4o");
+        assert_eq!(endpoint.credential.as_deref(), Some("sk-test"));
+    }
+
+    #[test]
+    fn a_saved_base_url_with_no_key_sends_no_key() {
+        let endpoint =
+            endpoint_from_settings(with_model(Some("http://localhost:11434/v1")), |_| Ok(None))
+                .unwrap();
+        assert_eq!(endpoint.base_url, "http://localhost:11434/v1");
+        assert_eq!(endpoint.credential, None);
+    }
+
+    #[test]
+    fn a_learned_limit_is_read_for_the_effective_base_url() {
+        let mut s = with_model(None);
+        s.learned_context_limits.insert(
+            settings::learned_limit_key("https://api.openai.com/v1", "gpt-4o"),
+            8000,
+        );
+        let endpoint = endpoint_from_settings(s, |_| Ok(Some("k".into()))).unwrap();
+        assert_eq!(endpoint.learned_limit, Some(8000));
+    }
+
+    #[test]
+    fn a_cleared_base_url_or_no_model_is_not_configured() {
+        let cleared = endpoint_from_settings(with_model(Some("")), |_| Ok(Some("k".into())));
+        assert!(matches!(cleared, Err(EndpointProblem::Unconfigured(_))));
+        let mut no_model = with_model(None);
+        no_model.endpoint_model.clear();
+        let result = endpoint_from_settings(no_model, |_| Ok(Some("k".into())));
+        assert!(matches!(result, Err(EndpointProblem::Unconfigured(_))));
+    }
+
+    #[test]
+    fn a_locked_keychain_blocks_and_another_failure_is_not_configured() {
+        let locked = endpoint_from_settings(with_model(None), |_| {
+            Err(SecretError::Locked {
+                message: "locked".into(),
+            })
+        });
+        assert_eq!(locked, Err(EndpointProblem::Locked("locked".into())));
+        let failed = endpoint_from_settings(with_model(None), |_| {
+            Err(SecretError::Platform {
+                message: "broken".into(),
+            })
+        });
+        assert_eq!(failed, Err(EndpointProblem::Unconfigured("broken".into())));
     }
 }

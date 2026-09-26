@@ -9,6 +9,7 @@ use tauri::{AppHandle, State};
 
 use crate::managers::destination::{self, DestinationStatus};
 use crate::managers::models::ModelsManager;
+use crate::managers::secrets::SecretsManager;
 use crate::managers::settings;
 use crate::shortcut::{ShortcutKind, ShortcutRegistration, ShortcutStatus};
 
@@ -30,6 +31,8 @@ pub struct Readiness {
     pub shortcut: ShortcutStatus,
     /// Catalog ids of required weights not yet on disk.
     pub missing_models: Vec<String>,
+    /// A Base URL and a model are set, and the request gate lets summary
+    /// processing use them (KTD3). A locked Keychain does not clear it.
     pub endpoint_configured: bool,
 }
 
@@ -39,6 +42,7 @@ pub async fn readiness(
     app: AppHandle,
     models: State<'_, Arc<ModelsManager>>,
     registration: State<'_, ShortcutRegistration>,
+    secrets: State<'_, SecretsManager>,
 ) -> Result<Readiness, String> {
     let shortcut = registration.status(ShortcutKind::Recording);
     let settings = settings::get_settings(&app);
@@ -48,6 +52,17 @@ pub async fn readiness(
         tauri::async_runtime::spawn_blocking(move || destination::status(current.as_deref()))
             .await
             .map_err(|e| e.to_string())?;
+    // Read the key only when a Base URL and a model are set. Without them
+    // the endpoint is not configured, whatever the key state is.
+    let endpoint_configured = if settings.endpoint_configured() {
+        let base_url = settings.effective_endpoint_base_url().to_string();
+        let read = secrets
+            .run(move |store| store.endpoint_credential(&base_url))
+            .await;
+        settings::endpoint_ready(&settings, settings::key_state(&read))
+    } else {
+        false
+    };
     Ok(Readiness {
         microphone_authorized,
         armed: armed(
@@ -58,7 +73,7 @@ pub async fn readiness(
         shortcut,
         destination,
         missing_models: models.missing(&settings.asr_model),
-        endpoint_configured: settings.endpoint_configured(),
+        endpoint_configured,
     })
 }
 
