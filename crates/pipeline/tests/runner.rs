@@ -434,6 +434,15 @@ fn assert_fingerprints_match(folder: &std::path::Path) {
     assert_eq!(doc.summary_fingerprint, Some(of("summary.md")));
 }
 
+/// The store records the fingerprint of the `transcript.md` that this
+/// computer wrote into the folder (KTD12).
+fn assert_stored_fingerprint(r: &Rig, id: &str, folder: &std::path::Path) {
+    use session_core::folder::fingerprint;
+    let written = fingerprint(&std::fs::read(folder.join(TRANSCRIPT_FILE)).unwrap());
+    let stored = r.store.lock().unwrap().transcript_fingerprint(id).unwrap();
+    assert_eq!(stored, Some(written));
+}
+
 async fn rig() -> Rig {
     let r = rig_with(store(), tempfile::tempdir().unwrap(), Arc::default());
     with_summaries(&r.script).await;
@@ -1384,6 +1393,7 @@ async fn session_md_holds_the_complete_record_after_a_save_and_a_regeneration() 
         })
     );
     assert_fingerprints_match(&folder);
+    assert_stored_fingerprint(&r, "s", &folder);
 
     let before = read(&folder, "summary.md");
     r.runner.regenerate_summary("s").await.unwrap();
@@ -3731,6 +3741,7 @@ async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_
     assert_eq!(saved_folder(&r, "s"), folder, "the same folder");
     assert_eq!(destination_entries(&r).len(), 1);
     assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_stored_fingerprint(&r, "s", &folder);
     assert_ne!(read(&folder, "summary.md"), summary);
     assert!(summary_is_complete(&folder));
     assert_eq!(read(&folder, "notes.md"), notes);

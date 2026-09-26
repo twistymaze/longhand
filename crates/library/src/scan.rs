@@ -128,6 +128,8 @@ pub struct NoteFolder {
     pub transcript_fingerprint: Option<String>,
     /// The fingerprint of `summary.md`, when the scan read it.
     pub summary_fingerprint: Option<String>,
+    /// The text of `notes.md`, when the scan read it.
+    pub notes: Option<String>,
     /// Conflict copies of the four documents in this folder (R15).
     pub conflict_copies: Vec<PathBuf>,
     /// Other folders with the same note id. Their content is not read.
@@ -270,6 +272,7 @@ struct Found {
     waiting: Vec<Waiting>,
     transcript_fingerprint: Option<String>,
     summary_fingerprint: Option<String>,
+    notes: Option<String>,
     conflict_copies: Vec<PathBuf>,
 }
 
@@ -313,7 +316,8 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
     if !summary.current {
         waiting.push(Waiting::Summary);
     }
-    if !exists(&dir.join("notes.md")) {
+    let notes = read_notes(dir, options.read_timeout);
+    if notes.is_none() {
         waiting.push(Waiting::Notes);
     }
     // Only the metadata: the audio is never opened (R12).
@@ -350,8 +354,18 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         waiting,
         transcript_fingerprint: transcript.fingerprint,
         summary_fingerprint: summary.fingerprint,
+        notes,
         conflict_copies,
     }))
+}
+
+/// The text of `notes.md` in `dir`. `None` when the file is missing, cannot
+/// be read in `timeout`, or is not UTF-8: the notes then wait for the sync.
+pub(crate) fn read_notes(dir: &Path, timeout: Duration) -> Option<String> {
+    match read_timed(dir.join("notes.md"), timeout) {
+        Read::Bytes(bytes) => String::from_utf8(bytes).ok(),
+        Read::Missing | Read::Failed(_) => None,
+    }
 }
 
 struct DocumentState {
@@ -386,7 +400,7 @@ fn exists(path: &Path) -> bool {
     path.try_exists().unwrap_or(false)
 }
 
-enum Read {
+pub(crate) enum Read {
     Missing,
     Bytes(Vec<u8>),
     Failed(String),
@@ -394,7 +408,7 @@ enum Read {
 
 /// Read `path` on a separate thread, and stop waiting after `timeout`. A
 /// read that does not finish keeps its thread until the read returns.
-fn read_timed(path: PathBuf, timeout: Duration) -> Read {
+pub(crate) fn read_timed(path: PathBuf, timeout: Duration) -> Read {
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("library-read".into())
@@ -434,6 +448,7 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
                 waiting: real.waiting,
                 transcript_fingerprint: real.transcript_fingerprint,
                 summary_fingerprint: real.summary_fingerprint,
+                notes: real.notes,
                 conflict_copies: real.conflict_copies,
                 duplicate_folders,
             }

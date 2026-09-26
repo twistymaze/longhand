@@ -1,0 +1,556 @@
+//! Two computers over one synced Destination (U4): each has its own store,
+//! both save into one temporary folder, and each reconciles its store from
+//! a scan of that folder. A note is saved through the real save stage.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use chrono::{DateTime, FixedOffset};
+use library::reconcile::{Changes, Coverage, DELETE_WAIT, Reconciler};
+use library::refresh::{self, Refresh};
+use library::scan::{Known, ScanOptions, scan};
+use pipeline::SharedStore;
+use session_core::folder::{SessionDoc, fingerprint};
+use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
+
+const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n";
+
+fn options() -> ScanOptions {
+    ScanOptions {
+        read_timeout: Duration::from_secs(2),
+    }
+}
+
+fn started() -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap()
+}
+
+fn never_claimed(_: &str) -> bool {
+    false
+}
+
+/// One computer: its store, its working location and its reconciler.
+struct Computer {
+    store: SharedStore,
+    working: tempfile::TempDir,
+    reconciler: Reconciler,
+}
+
+fn computer() -> Computer {
+    Computer {
+        store: Arc::new(Mutex::new(Store::open_in_memory().unwrap())),
+        working: tempfile::tempdir().unwrap(),
+        reconciler: Reconciler::new(&options()),
+    }
+}
+
+impl Computer {
+    /// Record, process and save the note `id` into `root` through the real
+    /// save stage. Returns its folder.
+    fn save_note(&self, id: &str, root: &Path, title: Option<Title>, notes: &str) -> PathBuf {
+        let segment = Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: started(),
+            wall_end: started() + chrono::TimeDelta::minutes(1),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        };
+        {
+            let mut s = self.store.lock().unwrap();
+            s.create_session(id, started(), None).unwrap();
+            s.put_segment(id, &segment).unwrap();
+            s.set_asr_model(id, "m").unwrap();
+            s.set_notes(id, notes).unwrap();
+            if let Some(title) = &title {
+                assert!(s.set_title(id, &title.text, title.source).unwrap());
+            }
+            s.apply(
+                id,
+                &Event::UserStop {
+                    at: segment.wall_end,
+                    retained_audio: true,
+                },
+            )
+            .unwrap();
+            s.dequeue_session(id, "test", segment.wall_end).unwrap();
+        }
+        let working = self.working.path().join(id);
+        fs::create_dir_all(working.join("audio")).unwrap();
+        fs::write(working.join(&segment.audio_file), b"opus").unwrap();
+        fs::write(working.join("transcript.md"), TRANSCRIPT).unwrap();
+        pipeline::checkpoint::mark_complete(&self.store, id, Stage::Verify, 1).unwrap();
+        let saved = pipeline::save::run(
+            &self.store,
+            id,
+            &working,
+            &[segment],
+            Some(root),
+            &session_save::RealFs,
+            &pipeline::Unattended,
+        )
+        .unwrap();
+        assert_eq!(self.state(id), SessionState::Saved);
+        saved.path
+    }
+
+    /// Scan `root` and reconcile the store at `now`.
+    fn sync(&mut self, root: &Path, now: Instant) -> Changes {
+        self.sync_claimed(root, now, &never_claimed)
+    }
+
+    fn sync_claimed(
+        &mut self,
+        root: &Path,
+        now: Instant,
+        claimed: &dyn Fn(&str) -> bool,
+    ) -> Changes {
+        let known = Known::from_records(&self.store.lock().unwrap().sessions().unwrap());
+        let result = scan(&[root.to_path_buf()], &known, &options());
+        let mut store = self.store.lock().unwrap();
+        self.reconciler
+            .reconcile(&mut store, &result, &Coverage::Full, now, claimed)
+            .unwrap()
+    }
+
+    fn record(&self, id: &str) -> Option<SessionRecord> {
+        self.store.lock().unwrap().session(id).unwrap()
+    }
+
+    fn state(&self, id: &str) -> SessionState {
+        self.record(id).unwrap().state
+    }
+
+    fn home(&self, id: &str) -> PathBuf {
+        PathBuf::from(self.record(id).unwrap().home_path.unwrap())
+    }
+
+    fn notes(&self, id: &str) -> String {
+        self.store.lock().unwrap().notes(id).unwrap()
+    }
+}
+
+/// A Destination inside a temporary folder, so a test can move it away.
+fn shared_root() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("OneDrive");
+    fs::create_dir(&root).unwrap();
+    (dir, root)
+}
+
+fn changed(ids: &[&str]) -> Changes {
+    Changes {
+        changed: ids.iter().map(|id| id.to_string()).collect(),
+        removed: Vec::new(),
+    }
+}
+
+fn removed(ids: &[&str]) -> Changes {
+    Changes {
+        changed: Vec::new(),
+        removed: ids.iter().map(|id| id.to_string()).collect(),
+    }
+}
+
+fn user_title(text: &str) -> Option<Title> {
+    Some(Title {
+        text: text.into(),
+        source: TitleSource::User,
+    })
+}
+
+/// Change `session.md` in `folder`, as another computer's write does.
+fn edit_doc(folder: &Path, edit: impl FnOnce(&mut SessionDoc)) {
+    let path = folder.join("session.md");
+    let mut doc = SessionDoc::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    edit(&mut doc);
+    fs::write(&path, doc.render()).unwrap();
+}
+
+/// Move `folder` out of the Destination, as a sync does when it removes it.
+fn take_away(folder: &Path, to: &Path) -> PathBuf {
+    let away = to.join(folder.file_name().unwrap());
+    fs::rename(folder, &away).unwrap();
+    away
+}
+
+// Covers AE1, AE2.
+#[test]
+fn a_note_that_a_saved_is_adopted_by_b_with_its_title_date_and_notes() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "- bring snacks\n");
+
+    assert_eq!(b.sync(&root, Instant::now()), changed(&["n1"]));
+    let record = b.record("n1").unwrap();
+    assert_eq!(record.state, SessionState::Saved);
+    assert_eq!(record.title, user_title("Planning"));
+    assert_eq!(record.created_at, started());
+    assert_eq!(record.asr_model.as_deref(), Some("m"));
+    assert_eq!(b.home("n1"), folder);
+    assert_eq!(b.notes("n1"), "- bring snacks\n");
+    let s = b.store.lock().unwrap();
+    assert_eq!(s.segments("n1").unwrap().len(), 1);
+    assert_eq!(
+        s.transcript_fingerprint("n1").unwrap(),
+        Some(fingerprint(TRANSCRIPT.as_bytes()))
+    );
+}
+
+#[test]
+fn a_folder_that_longhand_just_wrote_refreshes_to_no_change_and_emits_nothing() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "- bring snacks\n");
+    assert_eq!(a.sync(&root, Instant::now()), Changes::default());
+    let refreshed = refresh::refresh(
+        &mut a.store.lock().unwrap(),
+        "n1",
+        &folder,
+        options().read_timeout,
+    )
+    .unwrap();
+    assert_eq!(refreshed, Refresh::default());
+}
+
+#[test]
+fn a_refresh_with_an_unchanged_folder_changes_nothing() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    a.save_note("n1", &root, user_title("Planning"), "- bring snacks\n");
+    let now = Instant::now();
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    let before = b.record("n1");
+    assert_eq!(
+        b.sync(&root, now + Duration::from_secs(1)),
+        Changes::default()
+    );
+    let home = b.home("n1");
+    let refreshed = refresh::refresh(
+        &mut b.store.lock().unwrap(),
+        "n1",
+        &home,
+        options().read_timeout,
+    )
+    .unwrap();
+    assert_eq!(refreshed, Refresh::default());
+    assert_eq!(b.record("n1"), before);
+}
+
+#[test]
+fn a_change_from_the_other_computer_refreshes_the_row() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "- first\n");
+    let now = Instant::now();
+    b.sync(&root, now);
+
+    fs::write(folder.join("notes.md"), "- first\n- second\n").unwrap();
+    edit_doc(&folder, |doc| {
+        doc.title = Some("Budget".into());
+        doc.title_source = Some(TitleSource::User);
+        doc.found_speakers = Some(2);
+    });
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    let record = b.record("n1").unwrap();
+    assert_eq!(record.title, user_title("Budget"));
+    assert_eq!(record.found_speakers, Some(2));
+    assert_eq!(b.notes("n1"), "- first\n- second\n");
+}
+
+// Covers AE4.
+#[test]
+fn a_rename_delivered_as_a_removed_folder_and_a_new_one_keeps_the_row_and_follows_the_path() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let old = b.save_note("n1", &root, user_title("Planning"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+    assert_eq!(a.home("n1"), old);
+
+    // B renames the note; the sync delivers the removal first.
+    let renamed = pipeline::folder_rename::rename_session(
+        &b.store,
+        "n1",
+        "Budget review",
+        &never_claimed,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    let pipeline::folder_rename::FolderRename::Moved(new) = renamed else {
+        panic!("the folder did not move: {renamed:?}");
+    };
+    let away = take_away(&new, dir.path());
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert!(a.reconciler.is_pending("n1"));
+
+    fs::rename(&away, &new).unwrap();
+    let later = now + Duration::from_secs(10);
+    assert_eq!(a.sync(&root, later), changed(&["n1"]));
+    assert!(!a.reconciler.is_pending("n1"));
+    assert_eq!(a.home("n1"), new);
+    assert_eq!(a.record("n1").unwrap().title, user_title("Budget review"));
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 2), Changes::default());
+    assert!(a.record("n1").is_some());
+}
+
+// Covers AE6.
+#[test]
+fn a_folder_removed_from_an_available_root_is_forgotten_after_30_seconds() {
+    let (dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let gone = a.save_note("n1", &root, user_title("Planning"), "");
+    let kept = a.save_note("n2", &root, user_title("Budget"), "- kept\n");
+    let now = Instant::now();
+    assert_eq!(b.sync(&root, now), changed(&["n1", "n2"]));
+
+    let away = take_away(&gone, dir.path());
+    assert_eq!(b.sync(&root, now), Changes::default());
+    assert_eq!(b.reconciler.next_due(), Some(now + DELETE_WAIT));
+    let almost = now + DELETE_WAIT - Duration::from_secs(1);
+    assert_eq!(b.sync(&root, almost), Changes::default());
+    assert!(b.record("n1").is_some());
+    assert_eq!(b.sync(&root, now + DELETE_WAIT), removed(&["n1"]));
+    assert!(b.record("n1").is_none());
+    assert!(b.reconciler.next_due().is_none());
+
+    // No folder changed: not the removed one, not the other note's.
+    assert!(away.join("session.md").is_file());
+    assert_eq!(
+        fs::read_to_string(kept.join("notes.md")).unwrap(),
+        "- kept\n"
+    );
+    assert!(b.record("n2").is_some());
+    assert!(a.record("n1").is_some(), "the other store keeps its row");
+}
+
+// Covers AE6, KD7.
+#[test]
+fn a_root_that_goes_missing_leaves_every_row() {
+    let (dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    a.save_note("n1", &root, user_title("Planning"), "");
+    a.save_note("n2", &root, user_title("Budget"), "");
+    let now = Instant::now();
+    b.sync(&root, now);
+
+    // The drive is unmounted.
+    fs::rename(&root, dir.path().join("unmounted")).unwrap();
+    assert_eq!(b.sync(&root, now), Changes::default());
+    assert_eq!(b.sync(&root, now + DELETE_WAIT * 3), Changes::default());
+    assert!(b.record("n1").is_some());
+    assert!(b.record("n2").is_some());
+    assert!(b.reconciler.next_due().is_none());
+}
+
+#[test]
+fn a_claimed_row_or_a_row_that_is_not_saved_follows_a_rename_but_is_never_refreshed_or_forgotten() {
+    let (dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let claimed_folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let queued_folder = a.save_note("n2", &root, user_title("Budget"), "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    // On B, a summary regeneration claims n1, and Transcribe Again queues n2.
+    let claimed = |id: &str| id == "n1";
+    b.store
+        .lock()
+        .unwrap()
+        .transcribe_again(
+            "n2",
+            "tdt",
+            &Event::UserTranscribeAgain {
+                at: started(),
+                audio_intact: true,
+                capture_active: false,
+                regenerating: false,
+            },
+        )
+        .unwrap();
+    assert!(matches!(b.state("n2"), SessionState::Queued { .. }));
+
+    // A renames both folders and changes both titles.
+    let mut moved = Vec::new();
+    for (folder, title) in [
+        (&claimed_folder, "Planning v2"),
+        (&queued_folder, "Budget v2"),
+    ] {
+        let to = root.join(title);
+        fs::rename(folder, &to).unwrap();
+        edit_doc(&to, |doc| doc.title = Some(title.into()));
+        moved.push(to);
+    }
+    assert_eq!(b.sync_claimed(&root, now, &claimed), changed(&["n1", "n2"]));
+    assert_eq!(b.home("n1"), moved[0]);
+    assert_eq!(b.home("n2"), moved[1]);
+    assert_eq!(b.record("n1").unwrap().title, user_title("Planning"));
+    assert_eq!(b.record("n2").unwrap().title, user_title("Budget"));
+
+    for folder in &moved {
+        take_away(folder, dir.path());
+    }
+    assert_eq!(b.sync_claimed(&root, now, &claimed), Changes::default());
+    let later = now + DELETE_WAIT * 2;
+    assert_eq!(b.sync_claimed(&root, later, &claimed), Changes::default());
+    assert!(b.record("n1").is_some());
+    assert!(b.record("n2").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_existing_row_whose_session_md_cannot_be_read_keeps_its_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let now = Instant::now();
+    b.sync(&root, now);
+
+    let session = folder.join("session.md");
+    fs::set_permissions(&session, fs::Permissions::from_mode(0o000)).unwrap();
+    let first = b.sync(&root, now);
+    let after = b.sync(&root, now + DELETE_WAIT * 2);
+    fs::set_permissions(&session, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(first, Changes::default());
+    assert_eq!(after, Changes::default());
+    assert!(!b.reconciler.is_pending("n1"));
+    assert_eq!(b.record("n1").unwrap().title, user_title("Planning"));
+}
+
+/// A known row whose `session.md` is not valid is treated as unreadable: it
+/// keeps its row, and nothing is refreshed from the file.
+#[test]
+fn an_existing_row_whose_session_md_is_not_valid_keeps_its_row() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let now = Instant::now();
+    b.sync(&root, now);
+
+    fs::write(folder.join("session.md"), "not a session document").unwrap();
+    assert_eq!(b.sync(&root, now), Changes::default());
+    assert_eq!(b.sync(&root, now + DELETE_WAIT * 2), Changes::default());
+    assert_eq!(b.record("n1").unwrap().title, user_title("Planning"));
+}
+
+#[test]
+fn the_last_note_of_a_marked_root_removed_on_b_is_forgotten_by_a_after_30_seconds() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+    b.sync(&root, now);
+    assert!(root.join(library::scan::MARKER).is_file());
+
+    // B moves the note to the Trash.
+    fs::remove_dir_all(&folder).unwrap();
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(a.sync(&root, now + DELETE_WAIT), removed(&["n1"]));
+    assert!(a.record("n1").is_none());
+}
+
+#[test]
+fn an_older_session_md_without_a_title_source_keeps_the_rows_title_source() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let proposed = Some(Title {
+        text: "Planning".into(),
+        source: TitleSource::Proposed,
+    });
+    let folder = a.save_note("n1", &root, proposed.clone(), "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    assert_eq!(b.record("n1").unwrap().title, proposed);
+
+    // An older Longhand rewrites `session.md` with the same title.
+    edit_doc(&folder, |doc| doc.title_source = None);
+    assert_eq!(b.sync(&root, now), Changes::default());
+    assert_eq!(b.record("n1").unwrap().title, proposed);
+
+    // A new title with no source is the user's (R5).
+    edit_doc(&folder, |doc| doc.title = Some("Budget".into()));
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    assert_eq!(b.record("n1").unwrap().title, user_title("Budget"));
+}
+
+#[test]
+fn a_proposed_title_from_the_folder_replaces_a_users_title_in_the_row() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let now = Instant::now();
+    b.sync(&root, now);
+
+    // The other computer cleared the title and processing proposed one.
+    edit_doc(&folder, |doc| {
+        doc.title = Some("Budget".into());
+        doc.title_source = Some(TitleSource::Proposed);
+    });
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    assert_eq!(
+        b.record("n1").unwrap().title,
+        Some(Title {
+            text: "Budget".into(),
+            source: TitleSource::Proposed,
+        })
+    );
+}
+
+// Covers AE9.
+#[test]
+fn a_new_transcript_from_b_clears_as_recognition_results_for_that_note() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let other = a.save_note("n2", &root, user_title("Budget"), "");
+    let now = Instant::now();
+    {
+        let s = a.store.lock().unwrap();
+        for id in ["n1", "n2"] {
+            for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
+                s.put_checkpoint(id, stage, "window-0", "{}").unwrap();
+            }
+        }
+    }
+    assert_eq!(a.sync(&root, now), Changes::default());
+
+    // B runs Transcribe Again with another model and saves.
+    let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n";
+    fs::write(folder.join("transcript.md"), transcript).unwrap();
+    edit_doc(&folder, |doc| {
+        doc.asr_model = Some("tdt".into());
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+    });
+    assert_eq!(a.sync(&root, now), changed(&["n1"]));
+
+    let s = a.store.lock().unwrap();
+    for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
+        assert!(s.checkpoints("n1", stage).unwrap().is_empty(), "{stage:?}");
+        assert!(!s.checkpoints("n2", stage).unwrap().is_empty(), "{stage:?}");
+    }
+    assert_eq!(
+        s.transcript_fingerprint("n1").unwrap(),
+        Some(fingerprint(transcript.as_bytes()))
+    );
+    assert_eq!(
+        s.session("n1").unwrap().unwrap().asr_model.as_deref(),
+        Some("tdt")
+    );
+    assert!(other.is_dir());
+}

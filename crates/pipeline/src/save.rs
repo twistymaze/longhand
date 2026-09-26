@@ -209,6 +209,7 @@ pub fn run(
     // where it rewrites the file itself.
     let mut guard = lock(store);
     write_notes(&guard, session_id, &path)?;
+    record_transcript_fingerprint(&guard, session_id, &path)?;
     guard.put_checkpoint(
         session_id,
         Stage::Save,
@@ -375,6 +376,7 @@ fn update_home(
 
     let mut guard = lock(store);
     write_notes(&guard, session_id, home)?;
+    record_transcript_fingerprint(&guard, session_id, home)?;
     guard.put_checkpoint(
         session_id,
         Stage::Save,
@@ -502,6 +504,19 @@ pub fn session_doc(
     doc.transcript_fingerprint = fingerprint_of(folder, TRANSCRIPT_FILE)?;
     doc.summary_fingerprint = fingerprint_of(folder, SUMMARY_FILE)?;
     Ok(doc)
+}
+
+/// Record the fingerprint of the `transcript.md` that this save wrote into
+/// `folder` (KTD12). A later refresh then knows the file as this
+/// computer's, and keeps the stored recognition results.
+fn record_transcript_fingerprint(
+    store: &Store,
+    session_id: &str,
+    folder: &Path,
+) -> Result<(), StageError> {
+    let written = fingerprint_of(folder, TRANSCRIPT_FILE)?;
+    store.set_transcript_fingerprint(session_id, written.as_deref())?;
+    Ok(())
 }
 
 /// The fingerprint of the file `name` in `folder`, or `None` when the file
