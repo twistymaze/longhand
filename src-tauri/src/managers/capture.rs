@@ -1338,9 +1338,13 @@ mod tests {
     }
 
     fn inputs(default: Option<&str>, all: &[&str]) -> Inputs {
+        let input = |name: &str| audio_cpal::Input {
+            id: format!("id-{name}"),
+            name: name.to_string(),
+        };
         Inputs {
-            default: default.map(str::to_string),
-            all: all.iter().map(|s| s.to_string()).collect(),
+            default: default.map(input),
+            all: all.iter().map(|name| input(name)).collect(),
         }
     }
 

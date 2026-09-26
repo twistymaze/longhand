@@ -90,6 +90,8 @@ function settings(asr_model: string, extra: Partial<Settings> = {}): Settings {
     asr_model,
     pending_asr_model: null,
     live_transcript: true,
+    microphone: null,
+    computer_audio_default: false,
     learned_context_limits: {},
     alert_tone_heard: true,
     summary_prompts: [],

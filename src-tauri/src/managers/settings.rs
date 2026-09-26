@@ -54,6 +54,15 @@ impl SpeakerCountSetting {
     }
 }
 
+/// The usual microphone (R1, KTD1): cpal's stable device ID, with the device
+/// name as its label, so Settings can name a microphone that is not
+/// connected. Lookup is by ID first, then by the exact label.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneChoice {
+    pub id: String,
+    pub label: String,
+}
+
 /// A summary prompt that the user made (R1, KTD6). The built-in prompts are
 /// never saved: their text lives in `summarize::prompts`.
 #[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
@@ -118,6 +127,11 @@ pub struct Settings {
     pub pending_asr_model: Option<String>,
     /// A streaming model transcribes during recording (R18, KD9).
     pub live_transcript: bool,
+    /// The microphone a new note records from. `None` is "System default"
+    /// (R1, KTD17).
+    pub microphone: Option<MicrophoneChoice>,
+    /// Whether a new note starts with Computer audio on (R6, KD13).
+    pub computer_audio_default: bool,
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
@@ -236,6 +250,8 @@ impl Default for Settings {
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
             pending_asr_model: None,
             live_transcript: true,
+            microphone: None,
+            computer_audio_default: false,
             learned_context_limits: Default::default(),
             alert_tone_heard: false,
             summary_prompts: Vec::new(),
@@ -245,6 +261,18 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Choose the usual microphone, or `None` for "System default" (R1).
+    /// A choice with a blank ID or label is refused and changes nothing.
+    pub fn set_microphone(&mut self, choice: Option<MicrophoneChoice>) -> Result<(), String> {
+        if let Some(choice) = &choice
+            && (choice.id.trim().is_empty() || choice.label.trim().is_empty())
+        {
+            return Err("A microphone choice needs a device ID and a name.".into());
+        }
+        self.microphone = choice;
+        Ok(())
+    }
+
     /// Make `folder` the current destination and retain it as a root (R23, R25a).
     pub fn choose_destination(&mut self, folder: &str) {
         if !self.destination_roots.iter().any(|r| r == folder) {
@@ -792,6 +820,84 @@ mod tests {
             settings.show_window_shortcut.as_deref(),
             Some("Super+Shift+KeyL")
         );
+    }
+
+    #[test]
+    fn a_store_without_the_recording_keys_reads_as_system_default_and_no_computer_audio() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new keys need no migration (KTD17)");
+        assert_eq!(settings.microphone, None);
+        assert!(!settings.computer_audio_default);
+        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(Settings::default().microphone, None);
+        assert!(!Settings::default().computer_audio_default);
+    }
+
+    fn usb_mic() -> MicrophoneChoice {
+        MicrophoneChoice {
+            id: "CoreAudio:AppleUSBAudioEngine:1".into(),
+            label: "USB Audio".into(),
+        }
+    }
+
+    #[test]
+    fn a_chosen_microphone_and_system_default_round_trip_through_the_store() {
+        let mut settings = Settings::default();
+        settings.set_microphone(Some(usb_mic())).unwrap();
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(
+            written["microphone"],
+            json!({ "id": "CoreAudio:AppleUSBAudioEngine:1", "label": "USB Audio" })
+        );
+        let (read, updated) = settings_from_value(&written);
+        assert!(!updated);
+        assert_eq!(read.microphone, Some(usb_mic()));
+
+        settings.set_microphone(None).unwrap();
+        let written = serde_json::to_value(&settings).unwrap();
+        let (read, updated) = settings_from_value(&written);
+        assert!(!updated);
+        assert_eq!(read.microphone, None);
+    }
+
+    #[test]
+    fn a_microphone_choice_needs_an_id_and_a_label() {
+        let mut settings = Settings::default();
+        settings.set_microphone(Some(usb_mic())).unwrap();
+        for bad in [
+            MicrophoneChoice {
+                id: " ".into(),
+                label: "USB Audio".into(),
+            },
+            MicrophoneChoice {
+                id: "usb-1".into(),
+                label: "".into(),
+            },
+        ] {
+            assert!(settings.set_microphone(Some(bad)).is_err());
+        }
+        assert_eq!(
+            settings.microphone,
+            Some(usb_mic()),
+            "a refusal changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_malformed_microphone_is_dropped_and_the_rest_is_kept() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "microphone": "USB Audio",
+            "computer_audio_default": true,
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(settings.microphone, None);
+        assert!(settings.computer_audio_default);
     }
 
     #[test]

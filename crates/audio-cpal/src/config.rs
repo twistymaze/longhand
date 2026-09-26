@@ -13,45 +13,88 @@ use cpal::{Device, InterfaceType, SampleFormat, SupportedStreamConfig};
 
 use audio::Error;
 
+use crate::{Input, MicChoice};
+
 pub fn device_name(device: &Device) -> String {
     device.to_string()
 }
 
-/// The named input, or the default one. When the default is a Bluetooth
-/// headset and a wired or built-in input exists, the wired one is used:
-/// opening a headset's microphone forces the low-rate hands-free profile,
-/// which gates the room to silence between words. Only the platform default
-/// is replaced; a device the user names is respected. This follows anarlog's
-/// `active_mic_device`, using the transport cpal reports (WASAPI does;
-/// CoreAudio does not yet, so on macOS the default is kept).
+/// cpal's stable device ID in its saved form (KTD1): the CoreAudio device UID
+/// or the WASAPI endpoint ID, after the host name. Empty when the backend
+/// cannot read it; an empty ID never matches a choice.
+pub fn device_id(device: &Device) -> String {
+    device.id().map(|id| id.to_string()).unwrap_or_default()
+}
+
+/// The key of a device in the per-device caches: its ID, so two identical
+/// microphones do not share an entry (KTD1), or its name when the ID is
+/// missing.
+pub fn cache_key(device: &Device) -> String {
+    let id = device_id(device);
+    if id.is_empty() {
+        device_name(device)
+    } else {
+        id
+    }
+}
+
+pub fn input_of(device: &Device) -> Input {
+    Input {
+        id: device_id(device),
+        name: device_name(device),
+    }
+}
+
+/// The index of the device that `choice` names: the device with its ID
+/// first, else the first device with its exact name (KTD1). Names are not
+/// unique, so the name is only the second test.
+pub fn find_choice(devices: &[Input], choice: &MicChoice) -> Option<usize> {
+    let by_id = (!choice.id.is_empty())
+        .then(|| devices.iter().position(|d| d.id == choice.id))
+        .flatten();
+    by_id.or_else(|| devices.iter().position(|d| d.name == choice.label))
+}
+
+/// The chosen input, or the default one. A choice that matches no input is
+/// [`Error::NoInputDevice`]: the caller decides whether to fall back (R4).
+///
+/// When the default is a Bluetooth headset and a wired or built-in input
+/// exists, the wired one is used: opening a headset's microphone forces the
+/// low-rate hands-free profile, which gates the room to silence between
+/// words. Only the platform default is replaced; a device the user chooses
+/// is respected. This follows anarlog's `active_mic_device`, using the
+/// transport cpal reports (WASAPI does; CoreAudio does not yet, so on macOS
+/// the default is kept).
 pub fn resolve_input(
     host: &cpal::Host,
-    name: Option<&str>,
+    choice: Option<&MicChoice>,
     bluetooth: &Mutex<HashMap<String, bool>>,
 ) -> Result<Device, Error> {
-    if let Some(name) = name {
-        return host
+    if let Some(choice) = choice {
+        let mut devices: Vec<Device> = host
             .input_devices()
             .map_err(|_| Error::MicOpenFailed)?
-            .find(|d| device_name(d) == name)
-            .ok_or(Error::NoInputDevice);
+            .collect();
+        let inputs: Vec<Input> = devices.iter().map(input_of).collect();
+        let index = find_choice(&inputs, choice).ok_or(Error::NoInputDevice)?;
+        return Ok(devices.swap_remove(index));
     }
     let default = host.default_input_device().ok_or(Error::NoInputDevice)?;
     // `description()` enumerates the device's configs, which costs more than
     // the whole open; the verdict is remembered per device so only
     // `prepare` pays it.
-    let default_name = device_name(&default);
+    let default_key = cache_key(&default);
     let cached = bluetooth
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&default_name)
+        .get(&default_key)
         .copied();
     let default_is_bluetooth = cached.unwrap_or_else(|| {
         let verdict = is_bluetooth(&default);
         bluetooth
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(default_name, verdict);
+            .insert(default_key, verdict);
         verdict
     });
     if !default_is_bluetooth {
@@ -150,5 +193,58 @@ mod tests {
         assert!(format_score(SampleFormat::F32) > format_score(SampleFormat::I16));
         assert!(format_score(SampleFormat::I16) > format_score(SampleFormat::I32));
         assert!(format_score(SampleFormat::I32) > format_score(SampleFormat::U8));
+    }
+
+    fn input(id: &str, name: &str) -> Input {
+        Input {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    fn choice(id: &str, label: &str) -> MicChoice {
+        MicChoice {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+
+    #[test]
+    fn the_id_wins_over_a_shared_name() {
+        let devices = [input("usb-1", "USB Audio"), input("usb-2", "USB Audio")];
+        assert_eq!(
+            find_choice(&devices, &choice("usb-2", "USB Audio")),
+            Some(1)
+        );
+        assert_eq!(
+            find_choice(&devices, &choice("usb-1", "USB Audio")),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn a_missing_id_falls_back_to_the_exact_name() {
+        let devices = [
+            input("built-in", "MacBook Pro Microphone"),
+            input("usb-9", "Yeti"),
+        ];
+        assert_eq!(find_choice(&devices, &choice("usb-1", "Yeti")), Some(1));
+        // The name must match exactly.
+        assert_eq!(find_choice(&devices, &choice("usb-1", "yeti")), None);
+    }
+
+    #[test]
+    fn neither_id_nor_name_is_no_input() {
+        let devices = [input("built-in", "MacBook Pro Microphone")];
+        assert_eq!(find_choice(&devices, &choice("usb-1", "Yeti")), None);
+        assert_eq!(find_choice(&[], &choice("usb-1", "Yeti")), None);
+    }
+
+    #[test]
+    fn an_empty_id_matches_by_name_only() {
+        // A device whose ID could not be read has an empty ID; it must not
+        // match a choice that has no ID either.
+        let devices = [input("", "Nameless ID"), input("usb-9", "Yeti")];
+        assert_eq!(find_choice(&devices, &choice("", "Yeti")), Some(1));
     }
 }

@@ -75,6 +75,41 @@ async setLiveTranscript(enabled: boolean) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * The connected inputs for the Microphone choice (R1). The device list can
+ * block, so it runs on a blocking thread, not the command thread, as in
+ * Handy.
+ */
+async listMicrophones() : Promise<Result<MicrophoneList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_microphones") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Choose the usual microphone, or `None` for "System default" (R1).
+ */
+async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_microphone", { microphone }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Choose whether a new note starts with Computer audio on (R6).
+ */
+async setComputerAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_computer_audio_default", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * The built-in summary prompts first, then the custom prompts (R1, R2).
  */
 async summaryPrompts() : Promise<SummaryPromptList> {
@@ -739,6 +774,24 @@ export type LiveTranscriptEvent = { session_id: string; segment: number; part: n
  * What the live worker does now, for the lines of the live view (U8).
  */
 export type LiveTranscriptStatus = { session_id: string; segment: number; state: LiveState }
+/**
+ * The usual microphone (R1, KTD1): cpal's stable device ID, with the device
+ * name as its label, so Settings can name a microphone that is not
+ * connected. Lookup is by ID first, then by the exact label.
+ */
+export type MicrophoneChoice = { id: string; label: string }
+/**
+ * One connected input, with cpal's stable ID (KTD1).
+ */
+export type MicrophoneInput = { id: string; name: string }
+/**
+ * The connected inputs, and the ID of the system default among them.
+ */
+export type MicrophoneList = { default_id: string | null; 
+/**
+ * By name. Inputs with the same name keep the order of the device list.
+ */
+inputs: MicrophoneInput[] }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
@@ -982,6 +1035,15 @@ pending_asr_model: string | null;
  * A streaming model transcribes during recording (R18, KD9).
  */
 live_transcript: boolean; 
+/**
+ * The microphone a new note records from. `None` is "System default"
+ * (R1, KTD17).
+ */
+microphone: MicrophoneChoice | null; 
+/**
+ * Whether a new note starts with Computer audio on (R6, KD13).
+ */
+computer_audio_default: boolean; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).

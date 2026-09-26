@@ -34,19 +34,36 @@ const FRAME_QUEUE: usize = 64;
 /// How long the capture thread sleeps when the ring is empty.
 const IDLE_POLL: Duration = Duration::from_millis(4);
 
+/// One input device: cpal's stable ID and the device name (KTD1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Input {
+    pub id: String,
+    pub name: String,
+}
+
+/// A saved microphone choice: the device ID, with the device name as its
+/// label. Lookup is by ID first, then by the exact label (KTD1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicChoice {
+    pub id: String,
+    pub label: String,
+}
+
 /// A snapshot of the system's inputs; see [`CpalAudio::inputs`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Inputs {
-    pub default: Option<String>,
-    pub all: Vec<String>,
+    pub default: Option<Input>,
+    /// Every input, by name. Inputs with the same name keep the order of
+    /// the device list.
+    pub all: Vec<Input>,
 }
 
 #[derive(Default)]
 pub struct CpalAudio {
-    /// Configs the device accepted, by device name, so an open after
+    /// Configs the device accepted, by device ID, so an open after
     /// [`CpalAudio::prepare`] skips the HAL property queries (R1b).
     configs: Arc<Mutex<HashMap<String, SupportedStreamConfig>>>,
-    /// Whether each default input seen so far is Bluetooth.
+    /// Whether each default input seen so far is Bluetooth, by device ID.
     bluetooth: Arc<Mutex<HashMap<String, bool>>>,
 }
 
@@ -65,37 +82,39 @@ impl CpalAudio {
             .clear();
     }
 
-    /// The inputs the system offers now: the default and every device, by
-    /// name. Compared between polls, a change is what "the microphone came
-    /// back" looks like without a platform device-event listener (U14).
+    /// The inputs the system offers now: the default and every device, with
+    /// ID and name. Compared between polls, a change is what "the microphone
+    /// came back" looks like without a platform device-event listener (U14).
     pub fn inputs() -> Inputs {
         let host = cpal::default_host();
-        let default = host.default_input_device().map(|d| config::device_name(&d));
-        let mut all: Vec<String> = host
+        let default = host.default_input_device().map(|d| config::input_of(&d));
+        let mut all: Vec<Input> = host
             .input_devices()
-            .map(|devices| devices.map(|d| config::device_name(&d)).collect())
+            .map(|devices| devices.map(|d| config::input_of(&d)).collect())
             .unwrap_or_default();
-        all.sort();
+        // A stable sort, so inputs with the same name keep the device order.
+        all.sort_by(|a, b| a.name.cmp(&b.name));
         Inputs { default, all }
     }
 
     /// Resolve the device and its stream config ahead of the press, and
-    /// return the native sample rate capture will run at. Does not open the
-    /// stream: an open stream lights the system's microphone indicator.
-    pub fn prepare(&self, device: Option<&str>) -> Result<u32, Error> {
+    /// return the native sample rate capture will run at. `None` is the
+    /// system default. Does not open the stream: an open stream lights the
+    /// system's microphone indicator.
+    pub fn prepare(&self, choice: Option<&MicChoice>) -> Result<u32, Error> {
         let host = cpal::default_host();
-        let device = config::resolve_input(&host, device, &self.bluetooth)?;
+        let device = config::resolve_input(&host, choice, &self.bluetooth)?;
         let config = self.config_for(&device)?;
         Ok(config.sample_rate())
     }
 
     fn config_for(&self, device: &cpal::Device) -> Result<SupportedStreamConfig, Error> {
-        let name = config::device_name(device);
+        let key = config::cache_key(device);
         if let Some(cached) = self
             .configs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&name)
+            .get(&key)
         {
             return Ok(*cached);
         }
@@ -103,15 +122,17 @@ impl CpalAudio {
         self.configs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(name, preferred);
+            .insert(key, preferred);
         Ok(preferred)
     }
 
-    /// Open the microphone. `sample_rate` of 0 means the device's native
-    /// rate; any other value is resampled to.
-    fn open(
+    /// Open the chosen microphone, or the system default for `None`.
+    /// `sample_rate` of 0 means the device's native rate; any other value is
+    /// resampled to. A choice that matches no input fails with
+    /// [`Error::NoInputDevice`].
+    pub fn open_input(
         &self,
-        device: Option<String>,
+        choice: Option<MicChoice>,
         sample_rate: u32,
         chunk_size: usize,
     ) -> Result<CaptureStream, Error> {
@@ -129,7 +150,7 @@ impl CpalAudio {
                 let opened = (|| {
                     let host = cpal::default_host();
                     let device =
-                        config::resolve_input(&host, device.as_deref(), &provider.bluetooth)?;
+                        config::resolve_input(&host, choice.as_ref(), &provider.bluetooth)?;
                     let config = provider.config_for(&device)?;
                     log::info!(
                         "opening '{}' at {} Hz, {} channel(s), {:?}",
@@ -342,10 +363,23 @@ fn drain(
     }
 }
 
+/// The trait names a device by its name only: a choice with no ID, which
+/// matches by the exact name.
+fn by_name(device: Option<String>) -> Option<MicChoice> {
+    device.map(|label| MicChoice {
+        id: String::new(),
+        label,
+    })
+}
+
 impl AudioProvider for CpalAudio {
     /// Microphone only (R2): the speaker half of the config is ignored.
     fn open_capture(&self, config: CaptureConfig) -> Result<CaptureStream, Error> {
-        self.open(config.mic_device, config.sample_rate, config.chunk_size)
+        self.open_input(
+            by_name(config.mic_device),
+            config.sample_rate,
+            config.chunk_size,
+        )
     }
 
     fn open_speaker_capture(
@@ -362,7 +396,7 @@ impl AudioProvider for CpalAudio {
         sample_rate: u32,
         chunk_size: usize,
     ) -> Result<CaptureStream, Error> {
-        self.open(device, sample_rate, chunk_size)
+        self.open_input(by_name(device), sample_rate, chunk_size)
     }
 
     fn default_device_name(&self) -> String {
@@ -389,7 +423,7 @@ impl AudioProvider for CpalAudio {
     }
 
     fn probe_mic(&self, device: Option<String>) -> Result<(), Error> {
-        self.prepare(device.as_deref()).map(|_| ())
+        self.prepare(by_name(device).as_ref()).map(|_| ())
     }
 
     fn probe_speaker(&self) -> Result<(), Error> {
