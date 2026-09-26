@@ -18,6 +18,7 @@ BORROWED_DIRS=(
   crates/audio
   crates/audio-cpal
   crates/audio-sync
+  crates/audio-system
   crates/asr
   crates/audio-mock
   crates/diarize

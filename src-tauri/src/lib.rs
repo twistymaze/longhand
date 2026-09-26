@@ -1,3 +1,5 @@
+#[allow(dead_code, reason = "U6 opens capture through this provider")]
+mod audio;
 mod commands;
 mod managers;
 #[cfg(target_os = "macos")]

@@ -9,7 +9,6 @@ publish.workspace = true
 audio = { path = "../audio" }
 cpal = "0.18.2"
 rtrb = "0.4"
-rubato = "0.16"
 futures-util = "0.3"
 log.workspace = true
 tokio = { version = "1", features = ["sync"] }

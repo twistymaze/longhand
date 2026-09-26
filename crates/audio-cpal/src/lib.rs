@@ -1,4 +1,7 @@
-//! [`AudioProvider`] on cpal 0.18 (KTD3).
+//! Microphone capture on cpal 0.18 (KTD3). This crate captures only the
+//! microphone. `crates/audio-system` captures system audio, and the
+//! provider in `src-tauri/src/audio.rs` joins the two into one
+//! `AudioProvider`.
 //!
 //! The device opens at its native rate. A dedicated thread owns the cpal
 //! stream (which is not `Send` on every platform), starts it explicitly —
@@ -10,7 +13,6 @@
 
 mod callback;
 mod config;
-pub mod resampler;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -22,11 +24,11 @@ use cpal::{SampleFormat, SupportedStreamConfig};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-pub use audio::{AudioProvider, CaptureConfig, CaptureFrame, CaptureStream, Error};
+pub use audio::{CaptureFrame, CaptureStream, Error};
 pub use config::find_choice;
 
+use audio::resampler::FrameResampler;
 use callback::{FAULT_DEVICE_LOST, NO_FAULT, Overrun, Shared};
-use resampler::FrameResampler;
 
 /// Frames queued between the capture thread and the consumer. At 20 ms per
 /// frame this is about 1.3 s, on top of the ring's ten seconds.
@@ -379,25 +381,12 @@ fn by_name(device: Option<String>) -> Option<MicChoice> {
     })
 }
 
-impl AudioProvider for CpalAudio {
-    /// Microphone only (R2): the speaker half of the config is ignored.
-    fn open_capture(&self, config: CaptureConfig) -> Result<CaptureStream, Error> {
-        self.open_input(
-            by_name(config.mic_device),
-            config.sample_rate,
-            config.chunk_size,
-        )
-    }
-
-    fn open_speaker_capture(
-        &self,
-        _sample_rate: u32,
-        _chunk_size: usize,
-    ) -> Result<CaptureStream, Error> {
-        Err(Error::SpeakerStreamSetupFailed)
-    }
-
-    fn open_mic_capture(
+/// The microphone half of `AudioProvider`. The provider in `src-tauri`
+/// calls these methods.
+impl CpalAudio {
+    /// Open the microphone `device`, or the system default for `None`.
+    /// `sample_rate` of 0 means the device's native rate.
+    pub fn open_mic_capture(
         &self,
         device: Option<String>,
         sample_rate: u32,
@@ -406,54 +395,28 @@ impl AudioProvider for CpalAudio {
         self.open_input(by_name(device), sample_rate, chunk_size)
     }
 
-    fn default_device_name(&self) -> String {
+    pub fn default_device_name(&self) -> String {
         cpal::default_host()
             .default_input_device()
             .map(|d| config::device_name(&d))
             .unwrap_or_default()
     }
 
-    fn list_mic_devices(&self) -> Vec<String> {
+    pub fn list_mic_devices(&self) -> Vec<String> {
         cpal::default_host()
             .input_devices()
             .map(|devices| devices.map(|d| config::device_name(&d)).collect())
             .unwrap_or_default()
     }
 
-    /// Cues are played elsewhere (rodio, U7); nothing listens on this sender.
-    fn play_silence(&self) -> std_mpsc::Sender<()> {
-        std_mpsc::channel().0
-    }
-
-    fn play_bytes(&self, _bytes: &'static [u8]) -> std_mpsc::Sender<()> {
-        std_mpsc::channel().0
-    }
-
-    fn probe_mic(&self, device: Option<String>) -> Result<(), Error> {
+    pub fn probe_mic(&self, device: Option<String>) -> Result<(), Error> {
         self.prepare(by_name(device).as_ref()).map(|_| ())
-    }
-
-    fn probe_speaker(&self) -> Result<(), Error> {
-        Err(Error::SpeakerStreamSetupFailed)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_speaker_is_never_captured() {
-        let audio = CpalAudio::new();
-        assert!(matches!(
-            audio.open_speaker_capture(16_000, 320),
-            Err(Error::SpeakerStreamSetupFailed)
-        ));
-        assert!(matches!(
-            audio.probe_speaker(),
-            Err(Error::SpeakerStreamSetupFailed)
-        ));
-    }
 
     fn fed(parts: [&[f32]; 2], consumed: &mut u64, gaps: &[Overrun], unplaced: u64) -> Vec<f32> {
         let (mut tx, mut rx) = rtrb::RingBuffer::new(8);

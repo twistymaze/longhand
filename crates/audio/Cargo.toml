@@ -7,4 +7,5 @@ publish.workspace = true
 
 [dependencies]
 futures-util = "0.3"
+rubato = "0.16"
 thiserror.workspace = true

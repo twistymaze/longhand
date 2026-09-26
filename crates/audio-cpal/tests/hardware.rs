@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use audio_cpal::{AudioProvider, CpalAudio};
+use audio_cpal::CpalAudio;
 use futures_util::StreamExt;
 
 #[tokio::test]

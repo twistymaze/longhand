@@ -39,6 +39,7 @@ sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
 audio = { path = "../crates/audio" }
 audio-cpal = { path = "../crates/audio-cpal" }
+audio-system = { path = "../crates/audio-system" }
 models = { path = "../crates/models" }
 power = { path = "../crates/power" }
 sfx = { path = "../crates/sfx" }
