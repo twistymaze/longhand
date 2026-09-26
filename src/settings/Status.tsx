@@ -7,7 +7,7 @@ import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
 
 const isMac = navigator.userAgent.includes("Mac");
 
-export type PaneId = "status" | "destination" | "summarization" | "recognition" | "licences";
+export type PaneId = "status" | "recording" | "destination" | "summarization" | "recognition" | "licences";
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
