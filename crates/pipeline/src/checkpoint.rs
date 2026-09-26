@@ -16,6 +16,11 @@ pub fn segment_key(index: u32) -> String {
     format!("seg-{index:04}")
 }
 
+/// The echo spans of a stereo segment (KTD8), under `Stage::Assemble`.
+pub fn echo_key(index: u32) -> String {
+    format!("seg-{index:04}-echo")
+}
+
 pub fn plan_key(index: u32) -> String {
     format!("seg-{index:04}-plan")
 }
