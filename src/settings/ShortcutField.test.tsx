@@ -112,7 +112,13 @@ describe("ShortcutField", () => {
     expect(screen.getByText("At rest")).toBeTruthy();
   });
 
-  test("one row's finish does not resume the shortcuts while the other row captures", async () => {
+  test("the button takes focus, so the keys reach it", async () => {
+    renderField(registered("CommandOrControl+Alt+Shift+L"));
+    const button = await capture();
+    expect(document.activeElement).toBe(button);
+  });
+
+  test("starting one row ends the other row's wait and keeps the shortcuts paused", async () => {
     const tauri = mockField();
     render(
       <>
@@ -120,14 +126,14 @@ describe("ShortcutField", () => {
         <ShortcutField kind="show_window" label="Show Longhand" status={off} detail="" onChanged={() => {}} />
       </>,
     );
-    const first = await capture(/Recording shortcut/);
-    await capture(/Show Longhand/);
-    await act(async () => {
-      fireEvent.keyDown(first, { key: "Escape", code: "Escape" });
-    });
+    await capture(/Recording shortcut/);
+    const second = await capture(/Show Longhand/);
+    // Only the second row waits for keys.
+    expect(screen.getAllByText("Press keys…")).toHaveLength(1);
+    expect(second.textContent).toBe("Press keys…");
     expect(names(tauri)).not.toContain("resume_shortcuts");
     await act(async () => {
-      fireEvent.keyDown(screen.getByRole("button", { name: /Show Longhand/ }), { key: "Escape", code: "Escape" });
+      fireEvent.keyDown(second, { key: "Escape", code: "Escape" });
     });
     expect(names(tauri).filter((n) => n.endsWith("_shortcuts"))).toEqual(["suspend_shortcuts", "resume_shortcuts"]);
   });

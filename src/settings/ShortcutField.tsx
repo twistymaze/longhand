@@ -34,6 +34,10 @@ function releasePause(): Promise<unknown> {
   return calls;
 }
 
+// Only one row waits for keys at a time. A row that starts to wait ends the
+// wait of the other row.
+let waiting: { current: () => void } | null = null;
+
 export function ShortcutField({
   kind,
   label,
@@ -61,6 +65,7 @@ export function ShortcutField({
   // A row that closes during capture gives its hold back.
   useEffect(
     () => () => {
+      if (waiting === endWait) waiting = null;
       if (holding.current) {
         holding.current = false;
         void releasePause();
@@ -81,7 +86,16 @@ export function ShortcutField({
     return null;
   };
 
+  const button = useRef<HTMLButtonElement>(null);
+  // Ends this row's wait; the other row calls it when it starts to wait.
+  const endWait = useRef<() => void>(() => {});
+
+  const stopWaiting = () => {
+    if (waiting === endWait) waiting = null;
+  };
+
   const finish = async () => {
+    stopWaiting();
     attempt.current += 1;
     setMode("rest");
     if (!holding.current) return;
@@ -99,10 +113,20 @@ export function ShortcutField({
     setRefusal(null);
     setMode("preparing");
     holding.current = true;
-    await holdPause();
+    const paused = holdPause();
+    // Take the pause before the other row ends its wait, so its finish does
+    // not resume the shortcuts.
+    const other = waiting;
+    waiting = endWait;
+    other?.current();
+    // WebKit does not focus a button on a click, and the keys go to the
+    // focused element.
+    button.current?.focus();
+    await paused;
     if (attempt.current !== mine) return; // The capture ended during the pause.
     setMode("capturing");
   };
+  endWait.current = () => void finish();
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (mode !== "capturing") return;
@@ -115,6 +139,8 @@ export function ShortcutField({
     e.preventDefault();
     if (result.kind === "cancel") void finish();
     if (result.kind === "chord") {
+      // The row no longer waits for keys while the backend answers.
+      stopWaiting();
       void (async () => {
         await save(result.chord);
         await finish();
@@ -144,6 +170,7 @@ export function ShortcutField({
   return (
     <Row label={label} detail={<span aria-live="polite">{shown}</span>}>
       <button
+        ref={button}
         type="button"
         aria-label={status.chord ? `${label}: ${formatChord(status.chord, isMac)}. Change` : `Set ${label}`}
         className={`min-w-28 rounded-md border px-2.5 py-[3px] text-center font-medium tracking-[0.04em] select-none outline-offset-0 focus-visible:outline-3 focus-visible:outline-accent/50 ${
