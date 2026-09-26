@@ -11,8 +11,8 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [
-        { "url": "https://github.com/fastrepl/anarlog" },
-        { "url": "https://github.com/cjpais/Handy" },
+        { "url": "https://anarlog.so/" },
+        { "url": "https://handy.computer/" },
         { "url": "https://github.com/ggml-org/whisper.cpp" },
         { "url": "https://github.com/ggml-org/ggml" },
         { "url": "https://github.com/handy-computer/transcribe.cpp" },

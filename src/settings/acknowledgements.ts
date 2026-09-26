@@ -20,7 +20,7 @@ export type Acknowledgement = {
 export const personal: Acknowledgement[] = [
   {
     name: "anarlog",
-    url: "https://github.com/fastrepl/anarlog",
+    url: "https://anarlog.so/",
     text: [
       "anarlog inspired me to make Longhand. The work its team is doing is outstanding. I wanted something smaller and simpler for my own use, and I started from what they built.",
       "Recording, audio processing, telling speakers apart, and the note editor started from anarlog's code.",
@@ -28,7 +28,7 @@ export const personal: Acknowledgement[] = [
   },
   {
     name: "Handy",
-    url: "https://github.com/cjpais/Handy",
+    url: "https://handy.computer/",
     text: [
       "Thank you for an amazing local-only dictation tool that I still use every day.",
       "The model list and downloads, speech recognition, voice detection and parts of note processing started from Handy's code.",

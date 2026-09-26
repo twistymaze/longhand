@@ -46,7 +46,7 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
       <dt className="text-label-secondary">{label}</dt>
-      <dd className="min-w-0 break-words select-text">{children}</dd>
+      <dd className="min-w-0 [overflow-wrap:anywhere] select-text">{children}</dd>
     </>
   );
 }
@@ -67,7 +67,7 @@ function LicenceRow({ entry: e }: { entry: LicenceEntry }) {
           className="flex w-full items-center gap-3 py-2 text-left outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
         >
           <span className="min-w-0 flex-1 truncate font-medium">{e.name}</span>
-          <span className="shrink-0 truncate text-[0.85rem] text-label-secondary">
+          <span className="min-w-0 truncate text-[0.85rem] text-label-secondary">
             {e.kind ? `${e.kind} · ${e.licence.name}` : e.licence.name}
           </span>
           <ChevronIcon
@@ -77,7 +77,7 @@ function LicenceRow({ entry: e }: { entry: LicenceEntry }) {
         {open && (
           <dl
             id={details}
-            className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 pb-2.5 text-[0.85rem] leading-[1.4]"
+            className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 pb-2.5 text-[0.85rem] leading-[1.4]"
           >
             <Detail label="Licence">{e.licence.name}</Detail>
             <Detail label="Attribution">{e.licence.attribution}</Detail>

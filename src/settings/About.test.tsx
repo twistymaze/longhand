@@ -78,7 +78,7 @@ describe("About", () => {
     await user.click(anarlog);
     await user.click(screen.getByRole("button", { name: /^ggml.*opens in your browser/ }));
     const opened = tauri.calls.filter((c) => c.cmd === "plugin:opener|open_url").map((c) => c.args.url);
-    expect(opened).toEqual(["https://github.com/fastrepl/anarlog", "https://github.com/ggml-org/ggml"]);
+    expect(opened).toEqual(["https://anarlog.so/", "https://github.com/ggml-org/ggml"]);
   });
 
   test("the Licences group has one row for each model and each component, and no whisper.cpp row", () => {
