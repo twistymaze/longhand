@@ -65,7 +65,7 @@ export const technical: Acknowledgement[] = [
   },
   {
     name: "Tauri",
-    url: "https://tauri.app",
+    url: "https://tauri.app/",
     text: ["The framework that makes Longhand a desktop app."],
   },
 ];

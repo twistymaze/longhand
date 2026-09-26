@@ -136,7 +136,7 @@ describe("About", () => {
     expect(within(section("Licences")).getAllByRole("button")).toHaveLength(components.length);
   });
 
-  test("the Settings capability allows exactly the addresses the pane can open", async () => {
+  test("each Settings opener pattern is one host, every address the pane can open matches one, and each pattern is used", async () => {
     const capability = await Bun.file(`${import.meta.dir}/../../src-tauri/capabilities/settings.json`).json();
     const opener = capability.permissions.find(
       (p: unknown) => typeof p === "object" && (p as { identifier: string }).identifier === "opener:allow-open-url",
@@ -161,7 +161,14 @@ describe("About", () => {
       const address = leadingAddress(text);
       if (address) expected.add(address.url);
     }
-    expect(allowed).toEqual([...expected].sort());
+    // Each pattern is "https://<host>/*". The "/" after the host keeps a
+    // look-alike host such as github.com.example.net out.
+    for (const pattern of allowed) expect(pattern).toMatch(/^https:\/\/[a-z0-9.-]+\/\*$/);
+    const prefixes: string[] = allowed.map((p: string) => p.slice(0, -1));
+    const unmatched = [...expected].filter((url) => !prefixes.some((p) => url.startsWith(p)));
+    expect(unmatched).toEqual([]);
+    const unused = prefixes.filter((p) => ![...expected].some((url) => url.startsWith(p)));
+    expect(unused).toEqual([]);
   });
 
   test("an address at the start of a detail opens in the browser", async () => {
