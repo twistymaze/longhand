@@ -111,6 +111,27 @@ pub async fn set_note_microphone(
     .await
 }
 
+/// Turn Computer audio on or off for one note from the recording page (R8).
+/// With no `session_id`, the next note starts with it. Settings does not
+/// change. Returns the status after the change.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_computer_audio(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+    session_id: Option<String>,
+    enabled: bool,
+) -> Result<RecordingStatus, String> {
+    let manager = Arc::clone(&manager);
+    blocking(move || {
+        manager
+            .set_note_computer_audio(&app, session_id.as_deref(), enabled)
+            .and_then(|()| manager.status(&app))
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn set_session_speaker_count(

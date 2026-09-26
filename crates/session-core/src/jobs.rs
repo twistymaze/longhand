@@ -572,8 +572,8 @@ impl Store {
     pub fn put_segment(&self, session_id: &str, segment: &Segment) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO segments
-             (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 session_id,
                 segment.index,
@@ -582,6 +582,7 @@ impl Store {
                 segment.wall_start.to_rfc3339(),
                 segment.wall_end.to_rfc3339(),
                 segment.audio_file,
+                segment.channels,
             ],
         )?;
         Ok(())
@@ -589,7 +590,7 @@ impl Store {
 
     pub fn segments(&self, session_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self.conn.prepare(
-            "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file
+            "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels
              FROM segments WHERE session_id = ?1 ORDER BY offset_ms",
         )?;
         let rows = stmt.query_map([session_id], |r| {
@@ -600,11 +601,12 @@ impl Store {
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, u16>(6)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (index, offset, duration, start, end, audio_file) = row?;
+            let (index, offset, duration, start, end, audio_file, channels) = row?;
             out.push(Segment {
                 index,
                 offset_ms: offset as u64,
@@ -612,9 +614,36 @@ impl Store {
                 wall_start: parse_time(&start)?,
                 wall_end: parse_time(&end)?,
                 audio_file,
+                channels,
             });
         }
         Ok(out)
+    }
+
+    /// The index of the note's first stereo segment: the stereo mark
+    /// (KTD2 of the system audio plan). `None` while every segment is mono.
+    /// After the mark, every segment of the note opens stereo (KTD3).
+    pub fn stereo_from(&self, id: &str) -> Result<Option<u32>> {
+        self.conn
+            .query_row(
+                "SELECT stereo_from FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get::<_, Option<u32>>(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
+    }
+
+    /// Set the stereo mark to `index` when the note has none: its first
+    /// stereo segment is kept. Returns false when the mark was already set;
+    /// it does not move.
+    pub fn mark_stereo_from(&self, id: &str, index: u32) -> Result<bool> {
+        self.require(id)?;
+        let changed = self.conn.execute(
+            "UPDATE sessions SET stereo_from = ?2 WHERE id = ?1 AND stereo_from IS NULL",
+            params![id, index],
+        )?;
+        Ok(changed > 0)
     }
 
     // ------------------------------------------------------------ title

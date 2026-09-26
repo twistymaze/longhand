@@ -28,6 +28,11 @@ const idle: RecordingStatus = {
   microphone: null,
   microphone_fallback: false,
   computer_audio_silent: false,
+  computer_audio: false,
+  computer_audio_recording: false,
+  computer_audio_failed: false,
+  computer_audio_permission: null,
+  computer_audio_other_output: false,
   microphone_choice: null,
 };
 

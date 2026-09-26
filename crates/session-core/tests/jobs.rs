@@ -332,6 +332,7 @@ fn segment(index: u32, offset_ms: u64) -> session_core::Segment {
         wall_start: t(0),
         wall_end: t(1),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
+        channels: 1,
     }
 }
 
@@ -1148,6 +1149,45 @@ fn a_capture_choice_change_updates_only_its_session() {
     ));
     assert!(matches!(
         store.capture_choice("none"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn a_segment_row_keeps_its_channel_count() {
+    // KTD6: each segment row records its channel count.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    let stereo = session_core::Segment {
+        channels: 2,
+        ..segment(1, 120_000)
+    };
+    store.put_segment("s1", &stereo).unwrap();
+    let channels: Vec<u16> = store
+        .segments("s1")
+        .unwrap()
+        .iter()
+        .map(|s| s.channels)
+        .collect();
+    assert_eq!(channels, [1, 2]);
+}
+
+#[test]
+fn the_stereo_mark_is_the_first_stereo_segment() {
+    // KTD2: set when the first stereo segment is kept, and never moved.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.stereo_from("s1").unwrap(), None);
+    assert!(store.mark_stereo_from("s1", 2).unwrap());
+    assert!(!store.mark_stereo_from("s1", 5).unwrap());
+    assert_eq!(store.stereo_from("s1").unwrap(), Some(2));
+    assert!(matches!(
+        store.stereo_from("none"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.mark_stereo_from("none", 0),
         Err(StoreError::NoSuchSession(_))
     ));
 }

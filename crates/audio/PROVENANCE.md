@@ -12,6 +12,16 @@ Borrowed material in this crate, one record per file (R27).
 - Status: copied
 
 
+## `src/joiner.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 7040ace23d1606dcc4371b5bb8c5aca1c3450044
+- Source paths: `crates/audio-actual/src/capture/joiner.rs`
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, LICENSES/anarlog-MIT.txt
+- Status: modified — the microphone is the clock: the joiner pairs each microphone frame with a sample queue of the speaker, pads the speaker with silence at once in place of a four-frame wait, and drops only the oldest speaker samples above a 60 ms bound. It never pads or drops the microphone (KTD5 of the system audio plan).
+
+
 ## `src/resampler.rs`
 
 - Repository: https://github.com/cjpais/Handy

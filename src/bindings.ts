@@ -370,6 +370,19 @@ async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice |
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Turn Computer audio on or off for one note from the recording page (R8).
+ * With no `session_id`, the next note starts with it. Settings does not
+ * change. Returns the status after the change.
+ */
+async setNoteComputerAudio(sessionId: string | null, enabled: boolean) : Promise<Result<RecordingStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_computer_audio", { sessionId, enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_session_speaker_count", { count }) };
@@ -672,7 +685,16 @@ export type CaptureEnded = { session_id: string; reason: string }
  * A quarter-second of capture: level and position (R9). Ticks follow frame
  * arrival, so their absence is what a stalled input looks like.
  */
-export type CaptureTick = { session_id: string; peak: number; 
+export type CaptureTick = { session_id: string; 
+/**
+ * The microphone's peak, 0.0 to 1.0.
+ */
+peak: number; 
+/**
+ * The system audio peak of a stereo segment, 0.0 to 1.0. `None` while
+ * the segment is mono.
+ */
+speaker_peak: number | null; 
 /**
  * On the session timeline, gaps between segments included: where a
  * note typed now is anchored.
@@ -980,7 +1002,36 @@ microphone_choice: MicrophoneChoice | null;
  * system audio channel has been digital silence for 10 s: Computer
  * audio can be missing (U5 step 6). It clears when audio appears.
  */
-computer_audio_silent: boolean }
+computer_audio_silent: boolean; 
+/**
+ * The Computer audio switch of the open note (R8). With no note open,
+ * the switch that the next note starts with (R6).
+ */
+computer_audio: boolean; 
+/**
+ * A speaker stream is attached to the recording segment: the note
+ * records system audio on the right now.
+ */
+computer_audio_recording: boolean; 
+/**
+ * Computer audio is on, but the speaker stream failed or did not open.
+ * The microphone records, the right channel holds silence, and the
+ * capture watcher tries the speaker stream again (R10).
+ */
+computer_audio_failed: boolean; 
+/**
+ * The last Computer audio permission check while Computer audio is on
+ * and a segment records (KTD12). The page uses it to say why computer
+ * audio is not recorded: denied, not asked (the prompt can wait for an
+ * answer), or unknown. `None` while Computer audio is off.
+ */
+computer_audio_permission: ComputerAudioPermission | null; 
+/**
+ * The output that Longhand follows has been silent for 30 s while
+ * another output plays sound (Windows only, U4 step 6): the call can
+ * play on a device that the note does not record.
+ */
+computer_audio_other_output: boolean }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.

@@ -2829,6 +2829,7 @@ dependencies = [
  "audio-system",
  "chrono",
  "diarize",
+ "futures-util",
  "log",
  "models",
  "objc2",

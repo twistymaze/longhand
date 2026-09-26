@@ -73,4 +73,6 @@ tauri-plugin-global-shortcut = "=2.3.2"
 tauri-plugin-single-instance = "2.3.2"
 
 [dev-dependencies]
+# An empty speaker stream in the capture tests.
+futures-util = "0.3"
 tempfile = "3"

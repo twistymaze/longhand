@@ -1,4 +1,3 @@
-#[allow(dead_code, reason = "U6 opens capture through this provider")]
 mod audio;
 mod commands;
 mod managers;
@@ -59,6 +58,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::resume_recording,
             commands::capture::recording_status,
             commands::capture::set_note_microphone,
+            commands::capture::set_note_computer_audio,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
             commands::capture::set_shortcut,

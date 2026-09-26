@@ -38,6 +38,7 @@ fn soak_four_hours_beside_a_busy_core() {
             capture_started_at: 0,
             offset_ms: 0,
             sample_rate: RATE,
+            channels: 1,
             floor_bytes: DISK_RESERVE_BYTES,
         },
         Box::new(|_| Some(u64::MAX)),

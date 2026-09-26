@@ -20,6 +20,14 @@ pub struct Segment {
     pub wall_end: DateTime<FixedOffset>,
     /// Relative to the session folder, e.g. `audio/segment-01.opus`.
     pub audio_file: String,
+    /// 1 for a mono segment. 2 for a stereo segment: the microphone on the
+    /// left and system audio on the right (KTD6 of the system audio plan).
+    #[serde(default = "mono")]
+    pub channels: u16,
+}
+
+fn mono() -> u16 {
+    1
 }
 
 impl Segment {
@@ -34,6 +42,8 @@ pub struct OpenSegment {
     pub index: u32,
     pub offset_ms: u64,
     pub wall_start: DateTime<FixedOffset>,
+    /// 1 until [`Timeline::set_open_channels`] makes it stereo.
+    pub channels: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +159,17 @@ impl Timeline {
             index,
             offset_ms,
             wall_start,
+            channels: 1,
         });
         Ok(index)
+    }
+
+    /// Set the channel count of the open segment: 2 for a stereo segment.
+    /// The segment keeps it when it closes.
+    pub fn set_open_channels(&mut self, channels: u16) -> Result<(), TimelineError> {
+        let open = self.open.as_mut().ok_or(TimelineError::NotOpen)?;
+        open.channels = channels;
+        Ok(())
     }
 
     /// Forget the open segment: its stream never started, so it holds no
@@ -206,6 +225,7 @@ impl Timeline {
             wall_start: open.wall_start,
             wall_end,
             audio_file,
+            channels: open.channels,
         };
         self.segments.push(segment.clone());
         Ok(Closed::Kept(segment))

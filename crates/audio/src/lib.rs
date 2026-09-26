@@ -1,3 +1,4 @@
+pub mod joiner;
 pub mod resampler;
 
 use std::pin::Pin;

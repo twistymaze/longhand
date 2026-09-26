@@ -50,6 +50,7 @@ pub fn write_segment(
             capture_started_at: 1_800_000_000_000,
             offset_ms,
             sample_rate: rate,
+            channels: 1,
             floor_bytes: 0,
         },
         Box::new(|_| Some(u64::MAX)),
@@ -71,6 +72,56 @@ pub fn write_segment(
         wall_start: at(offset_ms as i64 / 1000),
         wall_end: at((offset_ms + duration_ms) as i64 / 1000),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
+        channels: 1,
+    }
+}
+
+/// [`write_segment`] for a stereo segment: `left` is the microphone and
+/// `right` is system audio, of the same length. It writes interleaved
+/// frames through the real chunk writer.
+#[allow(dead_code, reason = "not every test binary writes a stereo segment")]
+pub fn write_stereo_segment(
+    session_dir: &Path,
+    index: u32,
+    offset_ms: u64,
+    rate: u32,
+    left: &[f32],
+    right: &[f32],
+    crash: bool,
+) -> Segment {
+    assert_eq!(left.len(), right.len());
+    let mut writer = ChunkedWriter::with_probe(
+        SegmentArgs {
+            dir: session_dir.join(RECOVERY_DIR),
+            segment: index,
+            capture_started_at: 1_800_000_000_000,
+            offset_ms,
+            sample_rate: rate,
+            channels: 2,
+            floor_bytes: 0,
+        },
+        Box::new(|_| Some(u64::MAX)),
+    )
+    .unwrap();
+    let frame = rate as usize / 50;
+    for (l, r) in left.chunks(frame).zip(right.chunks(frame)) {
+        let block: Vec<f32> = l.iter().zip(r).flat_map(|(&l, &r)| [l, r]).collect();
+        writer.write(&block).unwrap();
+    }
+    let duration_ms = left.len() as u64 * 1000 / rate as u64;
+    if crash {
+        drop(writer);
+    } else {
+        writer.finish().unwrap();
+    }
+    Segment {
+        index,
+        offset_ms,
+        duration_ms,
+        wall_start: at(offset_ms as i64 / 1000),
+        wall_end: at((offset_ms + duration_ms) as i64 / 1000),
+        audio_file: format!("audio/segment-{:02}.opus", index + 1),
+        channels: 2,
     }
 }
 
