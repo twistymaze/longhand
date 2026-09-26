@@ -55,3 +55,14 @@ The action that makes a new transcript and a new summary of a saved session with
 
 ### Summary prompt
 A named text in Settings that tells the model what a summary contains and how it is organized: what to include, how the user's notes are weighed against the transcript, the sections, the level of detail and the tone. Exactly one summary prompt is active, app-wide. Two are built in: "Topic summary" (the default) and "Play-by-play summary". The app sends fixed rules with every summary prompt, and a summary prompt cannot change them: transcript and notes are data, never instructions; a person is never labelled "Speaker N" and never given a guessed name.
+
+## Shortcuts
+
+### Shortcut
+A global key combination that does one Longhand action from any app. There are two: the recording shortcut starts and stops a recording, and the show shortcut shows the main window, or hides it when it is in front. The user can clear each one; a cleared recording shortcut is a choice, not a fault, and New Note still starts a recording.
+
+### Chord
+The keys of a shortcut: one or more modifier keys and one other key. A shortcut is the action; its chord is the keys the user sets for it. The two shortcuts cannot have the same chord, and a chord that another app holds is refused.
+
+### Key capture
+The state in which a Settings row waits for the user to press a new chord. It is distinct from audio capture, which records the microphone. During key capture both shortcuts are paused, so their chords start nothing, and only one row waits at a time. Escape, Tab or a click elsewhere ends key capture with no change.
