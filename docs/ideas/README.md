@@ -92,7 +92,6 @@ This folder is our own convention, not something compound engineering defines, s
 |---|---|---|
 | [Choose the summary model from the server's list](summary-model-picker.md) | in-progress | A searchable Model picker, a connection status line, and OpenAI as the default |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
-| [Choose the shortcuts](custom-shortcuts.md) | in-progress | Set, reset or clear the recording shortcut; an optional shortcut that shows the window |
 
 ## Done
 
@@ -104,6 +103,7 @@ Ideas that shipped: first those from the original list that the walking skeleton
 - **A speaker count per session.** An optional count or range per session, with an app-wide default (KD15, R36). What remains is the per-folder default above.
 - **[Choose the recognition model](recognition-model-picker.md).** A Settings picker for nine models from Handy's catalog, with pick-to-download and delete (`docs/plans/2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md`).
 - **[Live transcript while recording](live-transcript-view.md).** A streaming model shows the transcript in the Transcript tab during recording; after Stop only the gaps get a batch pass, and "Transcribe Again…" redoes a saved note (same plan).
+- **[Choose the shortcuts](custom-shortcuts.md).** Set, reset or clear the recording shortcut in Settings with no relaunch, and an optional shortcut that shows or hides the window (`docs/plans/2026-09-25-1245-feat-custom-shortcuts-plan.md`).
 
 ## Ruled out
 

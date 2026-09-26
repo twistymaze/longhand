@@ -1,6 +1,6 @@
 ---
 title: Choose the shortcuts
-status: in-progress
+status: done
 area: interface
 added: 2026-09-25
 source: "a ce-brainstorm session, 2026-09-25"
