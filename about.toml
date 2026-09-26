@@ -1,0 +1,103 @@
+# cargo-about configuration for the full licence list (KTD1).
+# scripts/licences/generate.ts runs cargo-about once for each shipped target
+# and turns its JSON into licences/generated/<platform>.txt.
+
+# The same allow-list as deny.toml, plus "blessing" for SQLite's notice.
+accepted = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "blessing",
+]
+
+# Only the code that ships in the binary counts.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# Workspace crates are Longhand's own code and carry no licence field.
+private = { ignore = true }
+
+# The MPL-2.0 exceptions in deny.toml, by name: Servo's CSS parser (through
+# tauri-utils and wry) and `dirs`.
+cssparser = { accepted = ["MPL-2.0"] }
+cssparser-macros = { accepted = ["MPL-2.0"] }
+dtoa-short = { accepted = ["MPL-2.0"] }
+selectors = { accepted = ["MPL-2.0"] }
+option-ext = { accepted = ["MPL-2.0"] }
+
+
+# Native code vendored inside -sys crates. Each clarify entry names the licence
+# files that ship with the native code, with a checksum, so a crate update that
+# changes a licence file fails the check until the entry is reviewed.
+
+# transcribe.cpp, with ggml and miniz inside it.
+[transcribe-cpp-sys.clarify]
+license = "MIT"
+
+[[transcribe-cpp-sys.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "86a53633b56f6b029d3cb42158bcc7aac0cdff898aceb13e83b93e368bbc4ac6"
+
+[[transcribe-cpp-sys.clarify.files]]
+path = "ggml/LICENSE"
+license = "MIT"
+checksum = "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+
+[[transcribe-cpp-sys.clarify.files]]
+path = "src/third_party/miniz/LICENSE"
+license = "MIT"
+checksum = "6f20fa7672b00e2e975c291df737cf227addf3ad32e36fef3fe0f416e4664d3d"
+
+# kaldi-native-fbank (Apache-2.0) inside the MIT bindings. The crate ships no
+# MIT file of its own.
+[knf-rs-sys.clarify]
+license = "MIT AND Apache-2.0"
+
+[[knf-rs-sys.clarify.files]]
+path = "knf/LICENSE"
+license = "Apache-2.0"
+checksum = "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+
+# libopus. Only its COPYING file: without this entry, cargo-about also takes
+# the licence headers of single source files, with their code.
+[opusic-sys.clarify]
+license = "BSD-3-Clause"
+
+[[opusic-sys.clarify.files]]
+path = "opus/COPYING"
+license = "BSD-3-Clause"
+checksum = "01e1167d54a096d123cf6dfbbeb19587278845c6481d2d66d545669846079551"
+
+# rusqlite's bindings (MIT) and the bundled SQLite. SQLite has no licence file:
+# its public-domain notice is the "blessing" comment at the top of sqlite3.h.
+[libsqlite3-sys.clarify]
+license = "MIT AND blessing"
+
+[[libsqlite3-sys.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "c10c1f27337546471e5f7e4e97fdd398b35b9d4e126115dcd22de8d8e65abf6f"
+
+[[libsqlite3-sys.clarify.files]]
+path = "sqlite3/sqlite3.h"
+license = "blessing"
+start = "The author disclaims copyright to this source code."
+end = "May you share freely, never taking more than you give."
+checksum = "1e60ef821477b022d622792e3493f65a54d0b638fea612ff8fb3f9d8802f4966"
+
+# A proc-macro crate whose scan also finds a source file with a licence
+# header. Only its LICENSE file.
+[schemars_derive.clarify]
+license = "MIT"
+
+[[schemars_derive.clarify.files]]
+path = "LICENSE"
+license = "MIT"
+checksum = "1954992a2b32e8a2af24a4c11b726902e344c1934b947a77f04d404908f8db30"

@@ -1,0 +1,8 @@
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+The Windows version of Longhand includes the Microsoft Visual C++ runtime
+libraries (msvcp140.dll, vcruntime140.dll and their companion DLLs) beside
+longhand.exe. Microsoft distributes these files as "Distributable Code" under
+the Microsoft Software License Terms for Microsoft Visual Studio. They are not
+open-source software, and these terms apply to them:
+https://visualstudio.microsoft.com/license-terms/
