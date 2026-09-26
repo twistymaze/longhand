@@ -94,7 +94,7 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
-| [Acknowledgements and full licences in an About pane](about-acknowledgements-and-licences.md) | in-progress | Thank anarlog and Handy, and show every shipped component's licence |
+| [Clickable links in notes](clickable-links-in-notes.md) | open | Open a link in a note's markdown in the default browser |
 
 ## Done
 
@@ -108,6 +108,7 @@ Ideas that shipped: first those from the original list that the walking skeleton
 - **[Live transcript while recording](live-transcript-view.md).** A streaming model shows the transcript in the Transcript tab during recording; after Stop only the gaps get a batch pass, and "Transcribe Again…" redoes a saved note (same plan).
 - **[Choose the shortcuts](custom-shortcuts.md).** Set, reset or clear the recording shortcut in Settings with no relaunch, and an optional shortcut that shows or hides the window (`docs/plans/2026-09-25-1245-feat-custom-shortcuts-plan.md`).
 - **[Choose the summary model from the server's list](summary-model-picker.md).** A searchable Model picker filled from the endpoint's model list, a status line that checks the Base URL and API key, and OpenAI as the Base URL on a new install (`docs/plans/2026-09-25-1244-feat-summary-model-picker-plan.md`).
+- **[Acknowledgements and full licences in an About pane](about-acknowledgements-and-licences.md).** Settings → About thanks anarlog and Handy and the core engines, lists the models and major components with their licences, and opens a window with the full licence text of every shipped component, checked for drift in CI (`docs/plans/2026-09-26-1259-feat-about-acknowledgements-and-licences-plan.md`, PR #13).
 
 ## Ruled out
 

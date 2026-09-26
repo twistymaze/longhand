@@ -80,3 +80,11 @@ The keys of a shortcut: one or more modifier keys and one other key. A shortcut 
 
 ### Key capture
 The state in which a Settings row waits for the user to press a new chord. It is distinct from audio capture, which records the microphone. During key capture both shortcuts are paused, so their chords start nothing, and only one row waits at a time. Escape, Tab or a click elsewhere ends key capture with no change.
+
+## About
+
+### Full licence list
+The full licence text of every open source component that the app ships on one platform, direct and indirect, shown in its own window from Settings > About. Each platform has its own list, stored in the repository. A check makes the list again from the dependencies and fails when the result differs from the stored list. The UI calls it "All open source licences".
+
+### Native entry
+A hand-kept record in the full licence list for a shipped component that no licence tool can read, such as a runtime library or a model that one of Longhand's own crates compiles in. Each native entry names its licence files and its source. Nothing fails when a native entry is missing, so a change that ships a new file of this kind must add one.

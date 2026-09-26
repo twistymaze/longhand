@@ -1,6 +1,6 @@
 ---
 title: Acknowledgements and full licences in an About pane
-status: in-progress
+status: done
 area: interface
 added: 2026-09-26
 source: "a ce-brainstorm session, 2026-09-26"
@@ -16,4 +16,4 @@ The Licences pane becomes About. It thanks anarlog and Handy in the author's own
 The pane lists only the models. The copied code, the engines and hundreds of smaller crates and packages also need their notices, and the two projects that Longhand grew from get no credit.
 
 ## Notes / Current state
-Requirements: `docs/plans/2026-09-26-1259-feat-about-acknowledgements-and-licences-plan.md`. An app version line in About is a possible later addition.
+Requirements: `docs/plans/2026-09-26-1259-feat-about-acknowledgements-and-licences-plan.md`. Shipped in PR #13. An app version line in About is a possible later addition. What the list's tools cannot see: `docs/solutions/workflow-issues/full-licence-list-blind-spots.md`.
