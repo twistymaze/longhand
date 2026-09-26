@@ -116,8 +116,10 @@ fn previous_key(stage: Stage) -> String {
     format!("previous_{}", stage_key(stage))
 }
 
-/// Where a title came from (KTD7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where a title came from (KTD7). `session.md` records it as `proposed`
+/// or `user`, the same text as the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TitleSource {
     /// Processing proposed it.
     Proposed,

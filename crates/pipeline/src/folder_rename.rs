@@ -244,16 +244,23 @@ fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), Stag
     Ok(())
 }
 
-/// Rewrite `session.md` in `folder` when its title is not the stored one.
+/// Rewrite `session.md` in `folder` when it is not what the stored record
+/// and the folder's files give: for example a new title or title source,
+/// or a fingerprint that an earlier write left out of date.
 fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path) {
-    let stored = record.title.as_ref().map(|t| t.text.as_str());
     let written = std::fs::read_to_string(folder.join(SESSION_FILE))
         .ok()
         .and_then(|text| SessionDoc::parse(&text).ok());
-    if let Some(doc) = written
-        && doc.title.as_deref() != stored
-        && let Err(e) = write_document(record, segments, folder)
-    {
+    let Some(written) = written else {
+        return;
+    };
+    let result = match session_doc(record, segments, folder) {
+        Ok(doc) if doc == written => Ok(()),
+        Ok(doc) => home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())
+            .map_err(StageError::from),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
         log::warn!(
             "could not rewrite {SESSION_FILE} in {}: {e}",
             folder.display()
@@ -261,12 +268,14 @@ fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path)
     }
 }
 
-fn write_document(
+/// Write `session.md` in `folder` from the stored record, with the
+/// fingerprints of the folder's `transcript.md` and `summary.md`.
+pub(crate) fn write_document(
     record: &SessionRecord,
     segments: &[Segment],
     folder: &Path,
 ) -> Result<(), StageError> {
-    let doc = session_doc(record, segments)?;
+    let doc = session_doc(record, segments, folder)?;
     home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())?;
     Ok(())
 }

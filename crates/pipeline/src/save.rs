@@ -350,13 +350,20 @@ fn update_home(
             home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
         }
         checkpoint::put(store, session_id, Stage::Save, HOME_CHANGED, &true)?;
-        for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE, SESSION_FILE] {
+        for name in [TRANSCRIPT_FILE, SUMMARY_FILE, NOTES_FILE] {
             if name == SUMMARY_FILE && summary_error.is_some() {
                 continue;
             }
             let contents = std::fs::read(working.join(name))?;
             home_write::write_atomic(home, name, &contents)?;
         }
+        // `session.md` is made again from the home folder, because a kept
+        // previous `summary.md` has another fingerprint than the stub in
+        // the working copy.
+        let record = lock(store)
+            .session(session_id)?
+            .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+        folder_rename::write_document(&record, segments, home)?;
         let done = SaveState::Done {
             path: home.to_path_buf(),
         };
@@ -461,23 +468,50 @@ fn render(
         let notes = render_notes(&guard, session_id)?;
         (record, notes)
     };
-    let doc = session_doc(&record, segments)?;
-    write_working(working, SESSION_FILE, &doc.render())?;
     write_working(working, NOTES_FILE, &notes)?;
     if !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
         let why = checkpoint::get::<String>(store, session_id, Stage::Summarize, SUMMARY_FAILED)?
             .unwrap_or_else(|| "summarization did not run".into());
         write_working(working, SUMMARY_FILE, &stub(&why).render())?;
     }
+    // `session.md` last, with the fingerprints of the files written above.
+    let doc = session_doc(&record, segments, working)?;
+    write_working(working, SESSION_FILE, &doc.render())?;
     Ok(())
 }
 
-/// The contents of `session.md`, with the session's title.
-pub fn session_doc(record: &SessionRecord, segments: &[Segment]) -> Result<SessionDoc, StageError> {
+/// The contents of `session.md`: the session's record, and the fingerprints
+/// of the `transcript.md` and `summary.md` that are in `folder` now (KTD2).
+/// Write `session.md` after those files, so that the fingerprints match.
+pub fn session_doc(
+    record: &SessionRecord,
+    segments: &[Segment],
+    folder: &Path,
+) -> Result<SessionDoc, StageError> {
     let mut doc = SessionDoc::new(&record.id, record.speaker_count, segments)
         .ok_or_else(|| StageError::Failed("the note has no audio".into()))?;
     doc.title = record.title.as_ref().map(|t| t.text.clone());
+    doc.title_source = record.title.as_ref().map(|t| t.source);
+    // A Transcribe Again run saves its transcript before the store records
+    // its model as `asr_model`: the run's model made the transcript.
+    doc.asr_model = record
+        .transcribe_again_model
+        .clone()
+        .or_else(|| record.asr_model.clone());
+    doc.found_speakers = record.found_speakers;
+    doc.transcript_fingerprint = fingerprint_of(folder, TRANSCRIPT_FILE)?;
+    doc.summary_fingerprint = fingerprint_of(folder, SUMMARY_FILE)?;
     Ok(doc)
+}
+
+/// The fingerprint of the file `name` in `folder`, or `None` when the file
+/// is not there.
+fn fingerprint_of(folder: &Path, name: &str) -> Result<Option<String>, StageError> {
+    match std::fs::read(folder.join(name)) {
+        Ok(bytes) => Ok(Some(folder::fingerprint(&bytes))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// After the save records `Done`: the save used the folder name it
@@ -644,6 +678,17 @@ fn summarize_again(
         let guard = lock(store);
         let path = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
         home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
+        // `session.md` follows with the new fingerprint (KTD2). The summary
+        // is saved, so a failure here does not fail the regeneration: the
+        // reconcile after it writes `session.md` again.
+        if let Some(record) = guard.session(session_id)?
+            && let Err(e) = folder_rename::write_document(&record, &segments, &path)
+        {
+            log::warn!(
+                "could not rewrite {SESSION_FILE} in {}: {e}",
+                path.display()
+            );
+        }
         path
     };
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;

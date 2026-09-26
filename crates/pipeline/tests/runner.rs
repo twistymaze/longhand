@@ -418,6 +418,22 @@ fn saved_folder(r: &Rig, id: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(record.home_path.expect("a home path"))
 }
 
+/// The parsed `session.md` of a saved folder.
+fn session_md(folder: &std::path::Path) -> session_core::folder::SessionDoc {
+    let text = std::fs::read_to_string(folder.join(pipeline::save::SESSION_FILE)).unwrap();
+    session_core::folder::SessionDoc::parse(&text).unwrap()
+}
+
+/// `session.md` records the fingerprints of the folder's `transcript.md`
+/// and `summary.md` as they are now (KTD2).
+fn assert_fingerprints_match(folder: &std::path::Path) {
+    use session_core::folder::fingerprint;
+    let doc = session_md(folder);
+    let of = |name: &str| fingerprint(&std::fs::read(folder.join(name)).unwrap());
+    assert_eq!(doc.transcript_fingerprint, Some(of(TRANSCRIPT_FILE)));
+    assert_eq!(doc.summary_fingerprint, Some(of("summary.md")));
+}
+
 async fn rig() -> Rig {
     let r = rig_with(store(), tempfile::tempdir().unwrap(), Arc::default());
     with_summaries(&r.script).await;
@@ -1332,6 +1348,48 @@ async fn regenerating_rewrites_the_summary_without_transcribing_again() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_md_holds_the_complete_record_after_a_save_and_a_regeneration() {
+    use session_core::{Title, TitleSource};
+    let r = rig().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&n);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let k = count.fetch_add(1, Ordering::SeqCst);
+        (200, http::completion(&format!("Version {k}.")))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    set_title(&r.store, "s", "Budget review");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    let record = r.store.lock().unwrap().session("s").unwrap().unwrap();
+    let doc = session_md(&folder);
+    assert_eq!(doc.asr_model.as_deref(), Some("m"));
+    assert_eq!(doc.found_speakers, record.found_speakers);
+    assert_eq!(
+        doc.title_and_source(),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User
+        })
+    );
+    assert_fingerprints_match(&folder);
+
+    let before = read(&folder, "summary.md");
+    r.runner.regenerate_summary("s").await.unwrap();
+    let folder = saved_folder(&r, "s");
+    assert_ne!(read(&folder, "summary.md"), before);
+    assert_fingerprints_match(&folder);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2971,6 +3029,11 @@ async fn a_saved_session_renamed_has_one_folder_under_the_new_name() {
     assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
     assert!(new.join("audio/segment-01.opus").exists());
     assert_eq!(intent(&r), None);
+    // The rewrite keeps the complete record (KTD2).
+    let doc = session_md(&new);
+    assert_eq!(doc.title_source, Some(session_core::TitleSource::User));
+    assert_eq!(doc.asr_model.as_deref(), Some("m"));
+    assert_fingerprints_match(&new);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3770,6 +3833,8 @@ async fn an_offline_summary_endpoint_keeps_the_previous_summary_with_the_new_tra
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
     assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
     assert_eq!(read(&folder, "summary.md"), summary, "the previous summary");
+    assert_fingerprints_match(&folder);
+    assert_eq!(session_md(&folder).asr_model.as_deref(), Some("tdt"));
     assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
     let marks = marks(&r);
     assert!(marks.summary_error.is_some(), "{marks:?}");
@@ -4223,6 +4288,15 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
         ],
     )
     .await;
+    // `session.md` keeps each segment's channels; the stereo mark follows.
+    let doc = session_md(&saved_folder(&r, "s"));
+    assert_eq!(doc.segments[0].channels, 1);
+    assert_eq!(doc.segments[1].channels, 2);
+    assert_eq!(doc.stereo_from(), Some(1));
+    assert_eq!(
+        doc.stereo_from(),
+        r.store.lock().unwrap().stereo_from("s").unwrap()
+    );
     r.runner.transcribe_again("s", "tdt").unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
