@@ -42,6 +42,35 @@ function AcknowledgementRow({ entry }: { entry: Acknowledgement }) {
   );
 }
 
+/// The web address at the start of a detail text, such as
+/// "github.com/ggml-org/ggml, in transcribe-cpp-sys", and the text after it.
+/// A text that does not start with an address gives null.
+export function leadingAddress(text: string): { url: string; label: string; rest: string } | null {
+  const match = /^(https?:\/\/)?((?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s,]*)/i.exec(text);
+  if (!match) return null;
+  return { url: match[1] ? match[0] : `https://${match[2]}`, label: match[0], rest: text.slice(match[0].length) };
+}
+
+/// A detail text whose address opens in the default browser. It looks like
+/// the text around it until the pointer is over it.
+function AddressText({ text }: { text: string }) {
+  const address = leadingAddress(text);
+  if (!address) return <>{text}</>;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => void openUrl(address.url)}
+        className="rounded-[3px] text-left [overflow-wrap:anywhere] hover:underline active:opacity-70 outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        {address.label}
+        <span className="sr-only"> (opens in your browser)</span>
+      </button>
+      {address.rest}
+    </>
+  );
+}
+
 function Detail({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
@@ -66,10 +95,15 @@ function LicenceRow({ entry: e }: { entry: LicenceEntry }) {
           onClick={() => setOpen(!open)}
           className="flex w-full items-center gap-3 py-2 text-left outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
         >
-          <span className="min-w-0 flex-1 truncate font-medium">{e.name}</span>
-          <span className="min-w-0 truncate text-[0.85rem] text-label-secondary">
-            {e.kind ? `${e.kind} · ${e.licence.name}` : e.licence.name}
+          {/* Open, the row shows the full name; the role and licence move into the details. */}
+          <span className={`min-w-0 flex-1 font-medium ${open ? "[overflow-wrap:anywhere]" : "truncate"}`}>
+            {e.name}
           </span>
+          {!open && (
+            <span className="min-w-0 truncate text-[0.85rem] text-label-secondary">
+              {e.kind ? `${e.kind} · ${e.licence.name}` : e.licence.name}
+            </span>
+          )}
           <ChevronIcon
             className={`size-3 shrink-0 text-label-tertiary transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-90" : ""}`}
           />
@@ -79,11 +113,14 @@ function LicenceRow({ entry: e }: { entry: LicenceEntry }) {
             id={details}
             className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 pb-2.5 text-[0.85rem] leading-[1.4]"
           >
+            {e.kind && <Detail label="Used for">{e.kind}</Detail>}
             <Detail label="Licence">{e.licence.name}</Detail>
             <Detail label="Attribution">{e.licence.attribution}</Detail>
-            <Detail label="Licence text">{e.licence.url}</Detail>
+            <Detail label="Licence text">
+              <AddressText text={e.licence.url} />
+            </Detail>
             <Detail label="Source">
-              {e.source}
+              <AddressText text={e.source} />
               {e.revision && (
                 <>
                   {" @ "}

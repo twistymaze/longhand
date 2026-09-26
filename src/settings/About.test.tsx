@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelStatus } from "../bindings";
 import { mockTauri } from "../test/tauri";
-import { About } from "./About";
+import { About, leadingAddress } from "./About";
 import { components, personal, technical } from "./acknowledgements";
 
 const model = (id: string, name: string, role: ModelStatus["role"]): ModelStatus => ({
@@ -101,7 +101,13 @@ describe("About", () => {
     render(<About models={models} />);
     expect(screen.queryByText("Speech A authors")).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: /Speech A/ }));
-    expect(screen.getByRole("button", { name: /Speech A/ }).getAttribute("aria-expanded")).toBe("true");
+    const row = screen.getByRole("button", { name: /Speech A/ });
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    // Open, the row line is the name only; the role and licence are in the details.
+    expect(row.textContent).not.toContain("Speech recognition");
+    const details = within(document.getElementById(row.getAttribute("aria-controls") ?? "")!);
+    expect(details.getByText("Used for")).toBeTruthy();
+    expect(details.getByText("Speech recognition")).toBeTruthy();
     expect(screen.getByText("Speech A authors")).toBeTruthy();
     expect(screen.getByText("https://example.com/a/LICENSE")).toBeTruthy();
     expect(screen.getByText("0123456789ab")).toBeTruthy();
@@ -130,13 +136,48 @@ describe("About", () => {
     expect(within(section("Licences")).getAllByRole("button")).toHaveLength(components.length);
   });
 
-  test("the Settings capability allows exactly the acknowledgement addresses", async () => {
+  test("the Settings capability allows exactly the addresses the pane can open", async () => {
     const capability = await Bun.file(`${import.meta.dir}/../../src-tauri/capabilities/settings.json`).json();
     const opener = capability.permissions.find(
       (p: unknown) => typeof p === "object" && (p as { identifier: string }).identifier === "opener:allow-open-url",
     );
     const allowed = opener.allow.map((a: { url: string }) => a.url).sort();
-    expect(allowed).toEqual([...personal, ...technical].map((a) => a.url).sort());
+
+    // The acknowledgement links, and the addresses in the licence details of
+    // each component and of each model in the bundled catalog.
+    const catalog = await Bun.file(`${import.meta.dir}/../../crates/models/catalog.json`).json();
+    const details: string[] = components.flatMap((c) => [c.licence.url, c.source]);
+    const walk = (v: unknown): void => {
+      if (Array.isArray(v)) return v.forEach(walk);
+      if (!v || typeof v !== "object") return;
+      const o = v as { repository?: unknown; licence?: { url?: unknown } };
+      if (typeof o.repository === "string") details.push(o.repository);
+      if (typeof o.licence?.url === "string") details.push(o.licence.url);
+      Object.values(v).forEach(walk);
+    };
+    walk(catalog);
+    const expected = new Set([...personal, ...technical].map((a) => a.url));
+    for (const text of details) {
+      const address = leadingAddress(text);
+      if (address) expected.add(address.url);
+    }
+    expect(allowed).toEqual([...expected].sort());
+  });
+
+  test("an address at the start of a detail opens in the browser", async () => {
+    const tauri = mock();
+    render(<About models={models} />);
+    const user = userEvent.setup();
+    await user.click(within(section("Licences")).getByRole("button", { name: /^ggml/ }));
+    await user.click(screen.getByRole("button", { name: /^github\.com\/ggml-org\/ggml.*opens in your browser/ }));
+    await user.click(screen.getByRole("button", { name: /ggml\/LICENSE.*opens in your browser/ }));
+    await waitFor(() =>
+      expect(tauri.calls.filter((c) => c.cmd === "plugin:opener|open_url").map((c) => c.args.url)).toEqual([
+        "https://github.com/ggml-org/ggml",
+        "https://docs.rs/crate/transcribe-cpp-sys/0.2.3/source/ggml/LICENSE",
+      ]),
+    );
+    expect(leadingAddress("libopus, in opusic-sys 0.7.5")).toBeNull();
   });
 
   test("the full list row opens the licences window once", async () => {
