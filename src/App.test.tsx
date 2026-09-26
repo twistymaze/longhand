@@ -74,10 +74,20 @@ describe("App", () => {
     mockApp({ current: idle }, { current: [] });
     render(<App />);
     expect(await screen.findByRole("tab", { name: "General" })).toBeTruthy();
-    for (const name of ["Storage", "Summaries", "Transcription", "Licences"]) {
+    for (const name of ["Storage", "Summaries", "Transcription", "About"]) {
       expect(screen.getByRole("tab", { name: new RegExp(name) })).toBeTruthy();
     }
+    expect(screen.queryByRole("tab", { name: /Licences/ })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
+  });
+
+  test("the licences query shows the full licence list and not the main window", async () => {
+    setURL("http://localhost/?window=licences");
+    mockTauri({ licence_text: () => "Rust crates\n\nexample 1.0.0\nMIT text" });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Rust crates" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "General" })).toBeNull();
   });
 
   // Covers AE6 and KTD2.

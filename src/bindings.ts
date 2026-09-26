@@ -627,6 +627,19 @@ async closeSettingsWindow() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Show the window with the full licence list, and build it first when it
+ * is not open. Async for the same reason as `open_settings`.
+ */
+async openLicences() : Promise<void> {
+    await TAURI_INVOKE("open_licences");
+},
+/**
+ * Return the full licence list for the platform of this build.
+ */
+async licenceText() : Promise<string> {
+    return await TAURI_INVOKE("licence_text");
+},
+/**
  * Write one line from the webview to the app log. Async, so that the line
  * does not wait for the main thread.
  */

@@ -146,6 +146,23 @@ jobs:
         if: runner.os == 'macOS'
         run: bun run build
 
+      # The stored full licence list matches what each platform ships (R12).
+      # cargo-about reads `cargo metadata` and compiles nothing, so the Rust
+      # cache key stays the same. `cargo fetch` unpacks the crates whose
+      # licence files cargo-about reads offline.
+      - name: Install cargo-about
+        if: runner.os == 'macOS'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+
+      - name: Licences (R12)
+        if: runner.os == 'macOS'
+        run: |
+          cargo fetch --locked
+          scripts/check-licences.sh --self-test
+          scripts/check-licences.sh
+
       - name: Frontend tests
         if: runner.os == 'macOS'
         run: bun run test

@@ -1,9 +1,11 @@
-// The page has two windows (KTD3). The Settings window loads it with
-// `?window=settings`; the main window loads it with no query.
+// The page has three windows (KTD3). The Settings window loads it with
+// `?window=settings`, the licences window with `?window=licences`, and the
+// main window with no query.
 
 import { useEffect, useState } from "react";
 import { events } from "./bindings";
 import { Home } from "./home/Home";
+import { LicencesWindow } from "./licences/LicencesWindow";
 import { formatChord } from "./lib/timeline";
 import { useCapture } from "./recording/useCapture";
 import { SessionPage } from "./session/SessionPage";
@@ -95,6 +97,8 @@ function MainWindow() {
 }
 
 export default function App() {
-  const settingsWindow = new URLSearchParams(window.location.search).get("window") === "settings";
-  return settingsWindow ? <SettingsWindow /> : <MainWindow />;
+  const which = new URLSearchParams(window.location.search).get("window");
+  if (which === "settings") return <SettingsWindow />;
+  if (which === "licences") return <LicencesWindow />;
+  return <MainWindow />;
 }

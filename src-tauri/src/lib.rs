@@ -81,6 +81,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::delete_session_permanently,
             commands::window::open_settings,
             commands::window::close_settings_window,
+            commands::window::open_licences,
+            commands::licences::licence_text,
             commands::webview_log::log_from_webview,
         ])
         .events(collect_events![
@@ -179,7 +181,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_store::Builder::default().build())
         // The main window opens at the size and place it had when the app
-        // quit. The Settings window opens at its own size, centred.
+        // quit. The Settings and licences windows open at their own sizes,
+        // centred.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -187,9 +190,12 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&[window::SETTINGS_WINDOW])
+                .with_denylist(&[window::SETTINGS_WINDOW, window::LICENCES_WINDOW])
                 .build(),
         )
+        // The About pane opens the acknowledged projects' pages in the
+        // default browser (KTD8).
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

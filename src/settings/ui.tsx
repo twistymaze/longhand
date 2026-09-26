@@ -17,7 +17,8 @@ export function Pane({ title, children }: { title: string; children: ReactNode }
   return (
     <div className="mx-auto max-w-[40rem] px-8 pt-7 pb-10">
       <h1 className="mb-5 text-[1.6rem] leading-tight font-bold tracking-[-0.025em]">{title}</h1>
-      <div className="grid gap-6">{children}</div>
+      {/* minmax(0, 1fr): a group never grows past the pane to fit a line that does not wrap. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6">{children}</div>
     </div>
   );
 }

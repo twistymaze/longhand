@@ -1,0 +1,3 @@
+# The licence texts and the generated full list keep LF line ends on every
+# platform, so the drift check (scripts/check-licences.sh) compares the same bytes.
+licences/** text eol=lf
