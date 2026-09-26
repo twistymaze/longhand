@@ -37,13 +37,16 @@ The name of a session, shown on Home, on the session page and in the home folder
 ## Recording
 
 ### Microphone choice
-The input that a note records from. The user chooses the usual microphone in Settings, or "System default", and can change it for one note on the recording page. A chosen microphone that is missing or disconnects is replaced by the system default, and the choice stays.
+The input that a note records from. The user chooses the usual microphone in Settings, or "System default", and can change it for one note on the recording page. The choice is saved by the device ID, with the name as a label. A chosen microphone that is missing or disconnects is replaced by the system default, and the choice stays. When the chosen microphone is back for two polls in a row, the note moves back to it. Each change of input is a segment boundary.
 
 ### System audio
-All audio that the computer plays, from any app. A note records it only while its Computer audio switch is on. The UI calls it "Computer audio"; "system audio" is the term in code and docs only. A note with system audio saves the raw microphone on the left channel and the raw system audio on the right.
+All audio that the computer plays, from any app. A note records it only while its Computer audio switch is on. The UI calls it "Computer audio"; "system audio" is the term in code and docs only. A note with system audio saves the raw microphone on the left channel and the raw system audio on the right. The microphone is the clock: the system audio is padded or trimmed to match it. On macOS the capture is a global process tap that leaves out Longhand's own sounds and needs the Screen & System Audio Recording permission. On Windows it is a loopback of one output device, which follows the device where another app plays.
 
 ### Echo removal
 The processing step after Stop that removes the system audio that the microphone heard from the speakers. It changes only the audio that processing uses, never the saved recording. It is distinct from the echo gate, which only leaves out microphone chunks that are mostly echo from the live mix during recording.
+
+### Echo span
+A part of a stereo segment where the microphone holds echo of the system audio. Assemble finds echo spans by the delay of the system audio in the microphone channel, and runs echo removal only inside them. Transcribe treats each echo span as a gap: it removes the live words inside the span and recognizes the span again from the cleaned mix.
 
 ## Transcription
 

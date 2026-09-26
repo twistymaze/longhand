@@ -52,6 +52,7 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Repository: https://github.com/fastrepl/anarlog
 - Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
 - Source paths: `crates/tcc/swift-lib/src/lib.swift` (`_audio_capture_permission_status`), `crates/tcc/src/lib.rs` (the result codes); anarlog took the Swift function from AudioCap (https://github.com/insidegui/AudioCap, `AudioCap/ProcessTap/AudioRecordingPermission.swift` at 93881a4)
+- Origin: AudioCap by Guilherme Rambo, Copyright (c) 2024, BSD-2-Clause, LICENSES/AudioCap-BSD-2-Clause.txt
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, LICENSES/anarlog-MIT.txt
 - Status: modified — Rust in place of Swift: `dlopen` and `dlsym` load `TCCAccessPreflight` directly, so no Swift build step is needed (KTD12); the function returns a C `int`; a missing function or an unknown result gives "unknown"; the loader is a test seam; `request` (a short tap) and the Windows result are new

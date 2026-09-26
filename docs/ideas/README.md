@@ -51,7 +51,6 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [System audio capture](system-audio-capture.md) | in-progress | Record the computer's own audio for meetings on calls, and choose the microphone |
 | [Let the laptop sleep during a session](prevent-sleep-opt-out.md) | open | An opt-out for the four-hour sleep assertion on battery |
 | [A recording shortcut per folder](shortcut-per-folder.md) | parked | A hotkey per destination; set aside for "move it later" |
 | [Import an existing recording](import-existing-recording.md) | open | Process a file from a dedicated recorder as a session |
@@ -104,6 +103,7 @@ Ideas that shipped: first those from the original list that the walking skeleton
 - **[Live transcript while recording](live-transcript-view.md).** A streaming model shows the transcript in the Transcript tab during recording; after Stop only the gaps get a batch pass, and "Transcribe Again…" redoes a saved note (same plan).
 - **[Choose the shortcuts](custom-shortcuts.md).** Set, reset or clear the recording shortcut in Settings with no relaunch, and an optional shortcut that shows or hides the window (`docs/plans/2026-09-25-1245-feat-custom-shortcuts-plan.md`).
 - **[Choose the summary model from the server's list](summary-model-picker.md).** A searchable Model picker filled from the endpoint's model list, a status line that checks the Base URL and API key, and OpenAI as the Base URL on a new install (`docs/plans/2026-09-25-1244-feat-summary-model-picker-plan.md`).
+- **[System audio capture](system-audio-capture.md).** A Computer audio switch for each note records the computer's sound on a second channel, echo removal after Stop keeps each remote sentence once, and the user chooses the microphone in Settings or for one note (`docs/plans/2026-09-26-0827-feat-system-audio-and-microphone-choice-plan.md`).
 
 ## Ruled out
 
