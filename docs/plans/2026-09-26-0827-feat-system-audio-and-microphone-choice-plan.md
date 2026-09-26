@@ -19,6 +19,11 @@ deepened: 2026-09-26
 - **Stop conditions:** Stop and ask when the licence of anarlog's echo-canceller model weights does not permit redistribution, when a global process tap cannot exclude Longhand's own process, or when a change would alter a Key Decision.
 - **Execution profile:** Twelve units in four phases. `ce-work` implements in a worktree named `system-audio-and-microphone-choice`. Commit per unit. Local checks are the gate (see Verification Contract). Microphone, system audio and permission behavior are tested from the signed bundle.
 - **Open blockers:** None.
+- **Status (2026-09-26, after the signed-bundle tests):**
+  - All units are built. The microphone choice (U1–U3) and R18 (U11) ship.
+  - Computer audio is hidden and turned off (`SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`). Two Teams test calls failed Verify because the mono mix of KD4 fails when one channel has a fault. In the first call, a mixer app put a late copy of the microphone and extra copies of the call on the system channel. In the second, speaker echo gave false copy hits.
+  - KD4 and KD6 are open again. The likely replacement is [per-channel processing](../ideas/per-channel-processing.md), which needs [faster diarization](../ideas/faster-diarization.md) first.
+  - The findings are in [mixer apps and microphone copies](../ideas/mixer-apps-and-microphone-copies.md).
 
 ---
 
