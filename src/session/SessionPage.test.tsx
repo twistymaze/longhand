@@ -361,6 +361,189 @@ describe("SessionPage", () => {
     expect(bar.textContent).not.toMatch(/alert sound/i);
   });
 
+  describe("microphone and Computer audio", () => {
+    const rec = entry("rec", { state: "capturing" });
+    const withStatus = (over: Partial<RecordingStatus>) =>
+      recordingCapture("rec", {
+        status: { ...idle, session_id: "rec", state: "capturing", recording: true, microphone: "MacBook Pro Microphone", ...over },
+      });
+    const bar = () => screen.getByRole("region", { name: "Recording" });
+    const microphones = {
+      default_id: "builtin",
+      inputs: [
+        { id: "builtin", name: "MacBook Pro Microphone" },
+        { id: "usb", name: "Jabra Speak 510" },
+      ],
+    };
+
+    test("the rail shows the microphone name, and Computer audio while it is on", () => {
+      mockPage(rec);
+      const view = renderPage({ id: "rec", capture: withStatus({}), sessions: sessionsOf([rec]) });
+      expect(within(bar()).getByText("MacBook Pro Microphone")).toBeTruthy();
+      expect(bar().textContent).not.toContain("Computer audio");
+
+      view.rerenderWith(withStatus({ computer_audio: true, computer_audio_permission: "allowed" }), sessionsOf([rec]));
+      expect(within(bar()).getByText("MacBook Pro Microphone")).toBeTruthy();
+      expect(within(bar()).getByText("Computer audio")).toBeTruthy();
+    });
+
+    test("with the fallback flag, the fallback warning names both microphones", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({ microphone_fallback: true, microphone_choice: { id: "usb", label: "Jabra Speak 510" } }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(
+        within(bar()).getByText("Using MacBook Pro Microphone: Jabra Speak 510 is not connected."),
+      ).toBeTruthy();
+    });
+
+    test("with the permission denied and Computer audio on, the denied warning shows", () => {
+      mockPage(rec);
+      const view = renderPage({
+        id: "rec",
+        capture: withStatus({ computer_audio: true, computer_audio_permission: "denied", computer_audio_failed: true }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(within(bar()).getByText("Computer audio is not recorded. Allow it in System Settings.")).toBeTruthy();
+      // The denied permission explains the failure, so the failure text does not show too.
+      expect(within(bar()).queryByText(/Computer audio stopped/)).toBeNull();
+
+      view.rerenderWith(withStatus({ computer_audio: false, computer_audio_permission: "denied" }), sessionsOf([rec]));
+      expect(within(bar()).queryByText(/Computer audio is not recorded/)).toBeNull();
+    });
+
+    test("with the permission not yet answered, the pending warning shows", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({ computer_audio: true, computer_audio_permission: "not_asked" }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(within(bar()).getByText("Computer audio is not recorded until you allow it.")).toBeTruthy();
+    });
+
+    test("with the failure flag, the failure warning shows", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({ computer_audio: true, computer_audio_permission: "allowed", computer_audio_failed: true }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(within(bar()).getByText("Computer audio stopped. The microphone is still recording.")).toBeTruthy();
+    });
+
+    test("with the silent flag, the silent warning shows", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({ computer_audio: true, computer_audio_permission: "unknown", computer_audio_silent: true }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(
+        within(bar()).getByText("Computer audio is silent. Check the permission in System Settings."),
+      ).toBeTruthy();
+    });
+
+    test("with the other-output flag, the other-output warning shows", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({ computer_audio: true, computer_audio_permission: "allowed", computer_audio_other_output: true }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(
+        within(bar()).getByText("Computer audio is silent. Sound is playing on another output."),
+      ).toBeTruthy();
+    });
+
+    test("with no problem, no microphone or Computer audio warning shows", () => {
+      mockPage(rec);
+      renderPage({
+        id: "rec",
+        capture: withStatus({ computer_audio: true, computer_audio_permission: "allowed", computer_audio_recording: true }),
+        sessions: sessionsOf([rec]),
+      });
+      expect(within(bar()).queryByRole("status")).toBeNull();
+    });
+
+    test("choosing another microphone in the submenu calls the command with its ID", async () => {
+      const tauri = mockPage(rec, {}, {
+        list_microphones: () => microphones,
+        set_note_microphone: () => ({ ...idle, session_id: "rec", recording: true }),
+      });
+      renderPage({ id: "rec", capture: withStatus({}), sessions: sessionsOf([rec]) });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Microphone" }));
+      const system = await screen.findByRole("menuitemradio", { name: /System default/ });
+      expect(system.getAttribute("aria-checked")).toBe("true");
+      expect(screen.getByRole("menuitemradio", { name: "Jabra Speak 510" }).getAttribute("aria-checked")).toBe("false");
+      await user.click(screen.getByRole("menuitemradio", { name: "Jabra Speak 510" }));
+      const call = tauri.calls.find((c) => c.cmd === "set_note_microphone");
+      expect(call?.args).toEqual({ sessionId: "rec", microphone: { id: "usb", label: "Jabra Speak 510" } });
+      // The menu closes after the choice.
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+
+    test("the submenu checks the note's microphone and opens from the keyboard", async () => {
+      mockPage(rec, {}, { list_microphones: () => microphones });
+      renderPage({
+        id: "rec",
+        capture: withStatus({ microphone_choice: { id: "usb", label: "Jabra Speak 510" } }),
+        sessions: sessionsOf([rec]),
+      });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      const item = screen.getByRole("menuitem", { name: "Microphone" });
+      act(() => item.focus());
+      await user.keyboard("{ArrowRight}");
+      const usb = await screen.findByRole("menuitemradio", { name: "Jabra Speak 510" });
+      expect(usb.getAttribute("aria-checked")).toBe("true");
+      expect(document.activeElement?.getAttribute("role")).toBe("menuitemradio");
+      await user.keyboard("{ArrowLeft}");
+      expect(screen.queryByRole("menuitemradio", { name: "Jabra Speak 510" })).toBeNull();
+      expect(document.activeElement).toBe(item);
+    });
+
+    test("the Record Computer Audio item shows a check mark when on and calls the command when chosen", async () => {
+      const tauri = mockPage(rec, {}, {
+        list_microphones: () => microphones,
+        set_note_computer_audio: () => ({ ...idle, session_id: "rec", recording: true }),
+      });
+      const view = renderPage({ id: "rec", capture: withStatus({ computer_audio: false }), sessions: sessionsOf([rec]) });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      const off = screen.getByRole("menuitemcheckbox", { name: "Record Computer Audio" });
+      expect(off.getAttribute("aria-checked")).toBe("false");
+      await user.click(off);
+      expect(tauri.calls.find((c) => c.cmd === "set_note_computer_audio")?.args).toEqual({
+        sessionId: "rec",
+        enabled: true,
+      });
+
+      view.rerenderWith(withStatus({ computer_audio: true, computer_audio_permission: "allowed" }), sessionsOf([rec]));
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      const on = screen.getByRole("menuitemcheckbox", { name: "Record Computer Audio" });
+      expect(on.getAttribute("aria-checked")).toBe("true");
+      await user.click(on);
+      expect(tauri.calls.filter((c) => c.cmd === "set_note_computer_audio").pop()?.args).toEqual({
+        sessionId: "rec",
+        enabled: false,
+      });
+    });
+
+    test("a saved note's menu has no microphone or Computer audio item", async () => {
+      const e = entry("s");
+      mockPage(e);
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+      expect(screen.queryByRole("menuitem", { name: "Microphone" })).toBeNull();
+      expect(screen.queryByRole("menuitemcheckbox", { name: "Record Computer Audio" })).toBeNull();
+    });
+  });
+
   test("Stop stops the recording", async () => {
     const e = entry("rec", { state: "capturing" });
     const tauri = mockPage(e, {}, { stop_recording: () => "rec" });
