@@ -82,7 +82,9 @@ function MainWindow() {
           stages={sessions.stages}
           recording={recording}
           readiness={readiness}
-          chord={settings ? formatChord(settings.shortcut, isMac) : "the shortcut"}
+          chord={
+            !settings ? "the shortcut" : settings.shortcut ? formatChord(settings.shortcut, isMac) : null
+          }
           onOpen={(id) => setView({ kind: "session", id })}
           onChanged={() => void sessions.refresh()}
         />

@@ -69,6 +69,48 @@ pub fn show_main_window(app: &AppHandle) {
     front(app, &window);
 }
 
+/// What a press of the show shortcut does to the main window (KTD5).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ToggleAction {
+    Hide,
+    Show,
+}
+
+/// A window that is visible and focused is in front, so the press hides it.
+/// A window that is hidden, minimized, or behind another app or the
+/// Settings window is shown (R6).
+pub fn toggle_action(visible: bool, focused: bool) -> ToggleAction {
+    if visible && focused {
+        ToggleAction::Hide
+    } else {
+        ToggleAction::Show
+    }
+}
+
+/// The show shortcut's press: hide the main window when it is in front, or
+/// show it. A recording is not read or changed (R7).
+pub fn toggle_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        log::error!("main window not found");
+        return;
+    };
+    let visible = window.is_visible().unwrap_or(false);
+    let focused = window.is_focused().unwrap_or(false);
+    match toggle_action(visible, focused) {
+        ToggleAction::Hide => hide_main_window(&window.as_ref().window()),
+        ToggleAction::Show => show_main_window(app),
+    }
+}
+
+/// Hide the main window and remove the Dock icon when no other window is
+/// visible. The close button and the show shortcut both hide this way.
+fn hide_main_window(window: &Window) {
+    if let Err(e) = window.hide() {
+        log::error!("failed to hide main window: {e}");
+    }
+    hide_dock_icon_if_no_window(window);
+}
+
 /// How `open_or_build` got the window.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Opened {
@@ -194,10 +236,7 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             // `RunEvent::ExitRequested` + `prevent_exit()` is deliberately not used
             // (tauri-apps/tauri#13511: it makes the app unkillable).
             api.prevent_close();
-            if let Err(e) = window.hide() {
-                log::error!("failed to hide main window: {e}");
-            }
-            hide_dock_icon_if_no_window(window);
+            hide_main_window(window);
         }
         // The Settings page stops the close while it saves, and then
         // destroys the window. If the window is open after
@@ -226,6 +265,11 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         // window.
         WindowEvent::Destroyed if window.label() == SETTINGS_WINDOW => {
             hide_dock_icon_if_no_window(window);
+            // A capture that was in progress when the window closed must not
+            // leave the shortcuts paused (KTD6). Off the main thread, since a
+            // change in progress holds the lock and waits on the main thread.
+            let app = window.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || crate::shortcut::resume(&app));
         }
         _ => {}
     }
@@ -283,6 +327,22 @@ mod tests {
         assert_eq!(builds.get(), 1);
         assert_eq!(focuses.get(), 1);
         assert_eq!(windows.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_window_in_front_is_hidden() {
+        assert_eq!(toggle_action(true, true), ToggleAction::Hide);
+    }
+
+    #[test]
+    fn a_window_behind_another_app_is_shown() {
+        assert_eq!(toggle_action(true, false), ToggleAction::Show);
+    }
+
+    #[test]
+    fn a_hidden_window_is_shown_whatever_its_focus_reads() {
+        assert_eq!(toggle_action(false, false), ToggleAction::Show);
+        assert_eq!(toggle_action(false, true), ToggleAction::Show);
     }
 
     #[test]

@@ -3,13 +3,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import type { Readiness, Settings, SummaryPrompt } from "../bindings";
-import { type CommandHandler, type TauriMock, mockTauri } from "../test/tauri";
+import { type CommandHandler, type TauriMock, mockTauri, shortcutStatuses } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
 import { SummaryPrompts } from "./SummaryPrompts";
 
 const baseSettings: Settings = {
   settings_schema_version: 4,
   shortcut: "Alt+Shift+L",
+  show_window_shortcut: null,
   destination_roots: [],
   current_destination: null,
   endpoint_base_url: "",
@@ -676,6 +677,7 @@ test("a pane change in the Settings window saves the prompt text and asks nothin
   const tauri = backend({
     get_settings: () => baseSettings,
     readiness: () => readiness,
+    shortcut_status: () => shortcutStatuses,
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
   });

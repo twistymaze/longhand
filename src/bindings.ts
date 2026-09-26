@@ -267,8 +267,42 @@ async setSessionSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result
     else return { status: "error", error: e  as any };
 }
 },
-async shortcutStatus() : Promise<ShortcutStatus> {
+async shortcutStatus() : Promise<ShortcutStatuses> {
     return await TAURI_INVOKE("shortcut_status");
+},
+/**
+ * Set, change or clear one shortcut. `None` clears it. Async, so the plugin
+ * calls it makes run off the main thread.
+ */
+async setShortcut(kind: ShortcutKind, chord: string | null) : Promise<Result<ShortcutStatuses, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_shortcut", { kind, chord }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Pause both shortcuts while the user presses keys for a new one (R11).
+ */
+async suspendShortcuts() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("suspend_shortcuts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Register the saved chords again after capture ends.
+ */
+async resumeShortcuts() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_shortcuts") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Whether an alert would reach the user now. Run as recording starts and
@@ -514,7 +548,7 @@ showSession: "show-session"
 
 /** user-defined constants **/
 
-
+export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 /** user-defined types **/
 
@@ -729,7 +763,7 @@ export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
 export type Readiness = { microphone_authorized: boolean; destination: DestinationStatus; 
 /**
  * Microphone authorized, a destination chosen, and the chord registered
- * (R1c). A destination that is unreachable right now can be changed
+ * or cleared (R1c, R13). A destination that is unreachable right now can be changed
  * before the session is saved (R23), so it is shown rather than blocking.
  */
 armed: boolean; shortcut: ShortcutStatus; 
@@ -863,7 +897,17 @@ title: string | null;
  * the join, or when the transcript has no speaker marks.
  */
 found_speakers: number | null }
-export type Settings = { settings_schema_version: number; shortcut: string; 
+export type Settings = { settings_schema_version: number; 
+/**
+ * The chord that starts and stops a recording. `None` when the user
+ * cleared it (R3). A stored string reads as `Some`, so no migration is
+ * needed (KTD3).
+ */
+shortcut: string | null; 
+/**
+ * The chord that shows or hides the main window. Off by default (R5).
+ */
+show_window_shortcut: string | null; 
 /**
  * Every folder the user has ever chosen, oldest first (R25a). The index
  * is rebuilt by scanning these, so a root is never dropped silently.
@@ -917,7 +961,16 @@ active_summary_prompt: string }
  * when a picked model becomes the selected model after its download.
  */
 export type SettingsChanged = { settings: Settings }
-export type ShortcutStatus = { chord: string; registered: boolean; error: string | null }
+/**
+ * Which of the two shortcuts a command acts on.
+ */
+export type ShortcutKind = "recording" | "show_window"
+/**
+ * One shortcut's state (KTD7): off when `chord` is `None`, registered, or
+ * failed with a reason in `error`.
+ */
+export type ShortcutStatus = { chord: string | null; registered: boolean; error: string | null }
+export type ShortcutStatuses = { recording: ShortcutStatus; show_window: ShortcutStatus }
 /**
  * The main window must show the page of this session (R3).
  */

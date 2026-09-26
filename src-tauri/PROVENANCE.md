@@ -88,7 +88,7 @@ Handy-derived modules in the application crate, one record per file (R27).
 
 - Repository: https://github.com/cjpais/Handy
 - Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
-- Source paths: `src-tauri/src/shortcut/tauri_impl.rs` (registration through `tauri-plugin-global-shortcut`, handling `Pressed` only)
+- Source paths: `src-tauri/src/shortcut/tauri_impl.rs` (registration through `tauri-plugin-global-shortcut`, handling `Pressed` only; `validate_shortcut`), `src-tauri/src/shortcut/mod.rs` (`change_binding` and `restore_registration`: unregister, register, and register the old binding again on failure; `suspend_all_shortcuts` and `resume_all_shortcuts`)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, LICENSES/Handy-MIT.txt
-- Status: modified — one chord that toggles a session; arming checked at the press; presses serialized
+- Status: modified — two named shortcuts instead of a binding map; the recording chord toggles a session, with arming checked at the press and presses serialized; a chord needs a modifier; the two chords cannot match; one lock serializes every register, change, suspend and resume; the change decision is a pure function

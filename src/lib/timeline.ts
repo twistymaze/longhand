@@ -18,20 +18,49 @@ export function levelFraction(peak: number): number {
 /// How a chord reads on this platform, e.g. ⌥⇧⌘L on a Mac.
 export function formatChord(chord: string, mac: boolean): string {
   const parts = chord.split("+");
-  const key = parts.pop() ?? "";
+  const key = keyName(parts.pop() ?? "");
   const mods = new Set(parts.map((p) => p.toLowerCase()));
+  const control = mods.has("control") || mods.has("ctrl");
+  const alt = mods.has("alt") || mods.has("option");
+  const command = mods.has("command") || mods.has("cmd") || mods.has("super") || mods.has("meta");
+  const commandOrControl = mods.has("commandorcontrol") || mods.has("cmdorctrl");
   if (mac) {
     let out = "";
-    if (mods.has("control") || mods.has("ctrl")) out += "⌃";
-    if (mods.has("alt") || mods.has("option")) out += "⌥";
+    if (control) out += "⌃";
+    if (alt) out += "⌥";
     if (mods.has("shift")) out += "⇧";
-    if (mods.has("commandorcontrol") || mods.has("command") || mods.has("cmd") || mods.has("super"))
-      out += "⌘";
-    return out + key.toUpperCase();
+    if (command || commandOrControl) out += "⌘";
+    return out + key;
   }
   const names: string[] = [];
-  if (mods.has("commandorcontrol") || mods.has("control") || mods.has("ctrl")) names.push("Ctrl");
-  if (mods.has("alt")) names.push("Alt");
+  if (command) names.push("Win");
+  if (control || commandOrControl) names.push("Ctrl");
+  if (alt) names.push("Alt");
   if (mods.has("shift")) names.push("Shift");
-  return [...names, key.toUpperCase()].join("+");
+  return [...names, key].join("+");
+}
+
+const KEY_NAMES: Record<string, string> = {
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+  Backslash: "\\",
+  Semicolon: ";",
+  Quote: "'",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Minus: "-",
+  Equal: "=",
+  Backquote: "`",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+};
+
+/// The key of a chord as a person names it: `KeyR` is R, `Digit1` is 1.
+function keyName(code: string): string {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  return KEY_NAMES[code] ?? (code.length === 1 ? code.toUpperCase() : code);
 }
