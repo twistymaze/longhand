@@ -367,6 +367,71 @@ mod stereo {
         }
     }
 
+    /// Cancels once the processing file's `.tmp` exists: the stereo arm
+    /// creates it just before echo removal and the mix.
+    struct CancelInEcho(std::path::PathBuf);
+
+    impl pipeline::Control for CancelInEcho {
+        fn proceed(&self) -> Result<(), pipeline::StageError> {
+            if self.0.exists() {
+                Err(pipeline::StageError::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// The files under `dir` whose names end with `.tmp`.
+    fn temp_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                out.extend(temp_files(&path));
+            } else if path.to_string_lossy().ends_with(".tmp") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_cancel_during_echo_removal_removes_the_temporary_files() {
+        let (system, _) = remote(secs(20.0));
+        let mic = delayed(&system, ECHO_DELAY, ECHO_GAIN);
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("s");
+        let segment = write_stereo_segment(&dir, 0, 0, RATE as u32, &mic, &system, false);
+        let store = store();
+        {
+            let mut s = store.lock().unwrap();
+            s.create_session("s", at(0), None).unwrap();
+            s.put_segment("s", &segment).unwrap();
+        }
+        let processing = dir.join(proc_file(&segment.audio_file));
+        let mut name = processing.file_name().unwrap().to_os_string();
+        name.push(".tmp");
+        let control = CancelInEcho(processing.with_file_name(name));
+
+        let result = assemble::run(
+            &store,
+            "s",
+            &dir,
+            std::slice::from_ref(&segment),
+            None,
+            &control,
+        );
+        assert!(
+            matches!(result, Err(pipeline::StageError::Cancelled)),
+            "the stage stops at the cancel"
+        );
+        assert_eq!(
+            temp_files(&dir),
+            Vec::<std::path::PathBuf>::new(),
+            "no temporary file stays after the cancel"
+        );
+    }
+
     /// Remote speech on the system channel: three sentences of 3 s.
     fn remote(len: usize) -> (Vec<f32>, Vec<(usize, usize)>) {
         let sentence = voice(secs(3.0), 200.0, 7, 0.05);

@@ -349,7 +349,7 @@ fn finish_processing(
             let spans = echo::finish(measured, &stereo, segment, control, &mut |s| proc.push(s))?;
             let samples = proc.finish()?;
             commit(&temp_path(processing), processing)?;
-            std::fs::remove_file(&stereo)?;
+            // The caller's `TempFiles` removes the temporary stereo file.
             Ok((samples, Some(spans)))
         }
     }
@@ -386,6 +386,11 @@ pub fn assemble_segment(
 
     let archive = session_dir.join(&segment.audio_file);
     let processing = session_dir.join(proc_file(&segment.audio_file));
+    let _temps = TempFiles(vec![
+        temp_path(&archive),
+        temp_path(&processing),
+        stereo_temp_path(&processing),
+    ]);
     let mut opus = OpusWriter::create(&temp_path(&archive), rate, channels)?;
     let mut sink = Sink::new(rate, channels, &processing)?;
 
@@ -465,6 +470,7 @@ fn decode_segment(
     control: &dyn Control,
 ) -> Result<Assembled, StageError> {
     let processing = session_dir.join(proc_file(&segment.audio_file));
+    let _temps = TempFiles(vec![temp_path(&processing), stereo_temp_path(&processing)]);
     let mut reader = ArchiveReader::open(archive)?;
     let channels = reader.channels();
     let mut sink = match channels {
@@ -670,6 +676,24 @@ fn stereo_temp_path(processing: &Path) -> PathBuf {
     let mut name = processing.file_name().unwrap_or_default().to_os_string();
     name.push(".stereo.tmp");
     processing.with_file_name(name)
+}
+
+/// Removes the temporary files of one segment when it drops: after a
+/// cancel or an error, and after the success, when the commits have renamed
+/// the files that are kept. Declare it before the writers of these files,
+/// so the writers drop first and close their handles.
+struct TempFiles(Vec<PathBuf>);
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("removing {} failed: {e}", path.display()),
+            }
+        }
+    }
 }
 
 /// Create `path` fresh, replacing whatever an interrupted run left there.
