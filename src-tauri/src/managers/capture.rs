@@ -29,7 +29,7 @@
 //! right, and the capture watcher opens a new one.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -235,20 +235,69 @@ struct SpeakerShared {
     /// The status of the attached stream, for the Windows other-output
     /// flag (U4 step 6).
     status: Mutex<Option<SystemAudioStatus>>,
+    /// The generation of the speaker side now. Each attach, detach and
+    /// failure increments it, so a loss report of an older stream does not
+    /// match.
+    generation: AtomicU64,
+    /// The generation of the last speaker stream that ended. The segment
+    /// thread sets it just before it reports the loss.
+    ended: AtomicU64,
+}
+
+/// A speaker stream that records its generation in `shared.ended` when it
+/// fails or ends.
+struct Generation {
+    stream: CaptureStream,
+    generation: u64,
+    shared: Arc<SpeakerShared>,
+}
+
+impl futures_util::Stream for Generation {
+    type Item = Result<audio::CaptureFrame, audio::Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let next = std::pin::Pin::new(&mut self.stream).poll_next(cx);
+        if let std::task::Poll::Ready(None | Some(Err(_))) = &next {
+            self.shared.ended.store(self.generation, Ordering::Relaxed);
+        }
+        next
+    }
+}
+
+/// A loss report of generation `reported` is about the speaker stream of
+/// generation `current`: only then does it mark the speaker side as failed.
+fn loss_is_current(reported: u64, current: u64) -> bool {
+    reported == current
 }
 
 impl SpeakerLink {
+    /// Start a new generation of the speaker side, and return it.
+    fn next_generation(&self) -> u64 {
+        self.shared.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// A loss report of generation `reported` is about the stream attached
+    /// now.
+    fn loss_is_current(&self, reported: u64) -> bool {
+        loss_is_current(reported, self.shared.generation.load(Ordering::Relaxed))
+    }
+
     /// Attach a new speaker stream. It replaces an attached stream.
     fn attach(&self, capture: SystemAudioCapture) {
+        let generation = self.next_generation();
         self.shared.silence.reset();
         *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = Some(capture.status);
         self.shared.failed.store(false, Ordering::Relaxed);
         self.shared.attached.store(true, Ordering::Relaxed);
-        if self
-            .commands
-            .send(SpeakerCommand::Attach(capture.stream))
-            .is_err()
-        {
+        let stream = CaptureStream::new(Generation {
+            stream: capture.stream,
+            generation,
+            shared: Arc::clone(&self.shared),
+        });
+        if self.commands.send(SpeakerCommand::Attach(stream)).is_err() {
             log::warn!("the segment thread ended before the speaker stream attached");
             self.shared.attached.store(false, Ordering::Relaxed);
         }
@@ -257,6 +306,7 @@ impl SpeakerLink {
     /// Detach the speaker stream: system audio turned off. The right
     /// channel gets silence.
     fn detach(&self) {
+        self.next_generation();
         self.shared.attached.store(false, Ordering::Relaxed);
         self.shared.failed.store(false, Ordering::Relaxed);
         *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -265,6 +315,7 @@ impl SpeakerLink {
 
     /// The speaker stream failed or did not open, while system audio is on.
     fn fail(&self) {
+        self.next_generation();
         self.shared.attached.store(false, Ordering::Relaxed);
         self.shared.failed.store(true, Ordering::Relaxed);
         *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -307,7 +358,35 @@ struct Opening<'a> {
     /// A speaker stream opened before the segment, at the first turn-on of
     /// system audio (KTD18). With system audio on and no stream here,
     /// the speaker stream opens on a thread of its own after the segment.
-    speaker: Option<Result<SystemAudioCapture, audio::Error>>,
+    speaker: Option<EarlySpeaker>,
+}
+
+/// A speaker stream that opened before its segment, at the first turn-on of
+/// system audio (KTD18).
+struct EarlySpeaker {
+    /// The rate the stream opened at: the rate of the mono segment that
+    /// closed.
+    rate: u32,
+    opened: Result<SystemAudioCapture, audio::Error>,
+}
+
+/// The early speaker stream that a segment at `rate` can attach. The segment
+/// thread takes a stream only at the microphone's rate. A stream at another
+/// rate is dropped, and `None` tells the segment to open a new stream at
+/// its rate.
+fn early_speaker_at(
+    early: Option<EarlySpeaker>,
+    rate: u32,
+) -> Option<Result<SystemAudioCapture, audio::Error>> {
+    let early = early?;
+    if early.rate != rate {
+        log::info!(
+            "the speaker stream opened at {} Hz, but the new segment records at {rate} Hz; it opens again",
+            early.rate
+        );
+        return None;
+    }
+    Some(early.opened)
 }
 
 /// An input resolved ahead of the open (R1b, R3): its name and native rate.
@@ -1392,7 +1471,7 @@ impl CaptureManager {
         match change {
             SwitchChange::ToStereo => {
                 log::info!("session {id} records system audio from now on; the note turns stereo");
-                self.switch_to(app, &mut inner, id, Some(opened));
+                self.switch_to(app, &mut inner, id, Some(EarlySpeaker { rate, opened }));
             }
             SwitchChange::Attach => {
                 self.attach_opened(&mut inner, opened);
@@ -1452,14 +1531,16 @@ impl CaptureManager {
 
     /// The speaker stream of `segment` of `id` ended (KTD3). The microphone
     /// records on, the status shows the failure, and the capture watcher
-    /// opens a new speaker stream.
-    fn speaker_lost(&self, app: &AppHandle, id: &str, segment: u32) {
+    /// opens a new speaker stream. A report of an older stream (a detach or
+    /// a new attach came after it) changes nothing.
+    fn speaker_lost(&self, app: &AppHandle, id: &str, segment: u32, generation: u64) {
         let mut inner = self.inner();
         let Some(link) = inner
             .active
             .as_ref()
             .filter(|a| a.session_id == id && a.segment == segment && a.system_audio)
             .and_then(|a| a.speaker.as_ref())
+            .filter(|link| link.loss_is_current(generation))
         else {
             return;
         };
@@ -1534,7 +1615,7 @@ impl CaptureManager {
         app: &AppHandle,
         inner: &mut Inner,
         id: &str,
-        speaker: Option<Result<SystemAudioCapture, audio::Error>>,
+        speaker: Option<EarlySpeaker>,
     ) {
         if let Some(active) = inner.active.take()
             && let Err(e) = self.close_segment(inner, active, true)
@@ -2030,7 +2111,7 @@ impl CaptureManager {
         inner: &mut Inner,
         id: &str,
         at_switch: bool,
-        speaker: Option<Result<SystemAudioCapture, audio::Error>>,
+        speaker: Option<EarlySpeaker>,
     ) -> Result<(), CaptureError> {
         self.audio.mic().forget();
         inner.prepared = None;
@@ -2148,6 +2229,7 @@ impl CaptureManager {
         } = opening;
         let (prepared, stream) = self.open_microphone(inner, choice)?;
         let rate = prepared.rate;
+        let speaker = early_speaker_at(speaker, rate);
         let channels = segment_channels(stereo_mark, system_audio);
         log::info!(
             "segment {segment} of {session_id} records from '{}' (fallback: {}, channels: {channels})",
@@ -2208,6 +2290,8 @@ impl CaptureManager {
         let thread_app = app.clone();
         let thread_session = session_id.to_string();
         let silence = link.as_ref().map(|l| l.shared.silence.clone());
+        // The loss report reads the generation of the stream that ended.
+        let lost_shared = link.as_ref().map(|l| Arc::clone(&l.shared));
         // The live mix of a stereo segment, only when a live worker reads it.
         let mut mix = (channels == 2 && tap.is_some()).then(|| audio::live_mix::LiveMix::new(rate));
         let spawned = std::thread::Builder::new()
@@ -2277,9 +2361,14 @@ impl CaptureManager {
                         let manager = Arc::clone(&lost_app.state::<Arc<CaptureManager>>());
                         let app = lost_app.clone();
                         let session = lost_session.clone();
+                        let generation = lost_shared
+                            .as_ref()
+                            .map_or(0, |shared| shared.ended.load(Ordering::Relaxed));
                         let spawned = std::thread::Builder::new()
                             .name("longhand-speaker-lost".into())
-                            .spawn(move || manager.speaker_lost(&app, &session, segment));
+                            .spawn(move || {
+                                manager.speaker_lost(&app, &session, segment, generation)
+                            });
                         if let Err(e) = spawned {
                             log::error!("could not report the speaker loss: {e}");
                         }
@@ -3001,6 +3090,61 @@ mod tests {
         let on = with_microphone(None, true);
         assert!(!capture_choice_at_start(None, Some(false), &on).system_audio);
         assert!(capture_choice_at_start(None, None, &on).system_audio);
+    }
+
+    #[test]
+    fn an_early_speaker_stream_at_another_rate_is_dropped() {
+        let early = |rate| {
+            Some(EarlySpeaker {
+                rate,
+                opened: Ok(capture()),
+            })
+        };
+        assert!(matches!(
+            early_speaker_at(early(48_000), 48_000),
+            Some(Ok(_))
+        ));
+        // The new microphone runs at another rate: the segment opens a new
+        // speaker stream at its rate.
+        assert!(early_speaker_at(early(44_100), 48_000).is_none());
+        assert!(early_speaker_at(None, 48_000).is_none());
+    }
+
+    /// Read the attached stream to its end, as the segment thread does, and
+    /// return the generation that its loss report carries.
+    fn end_attached(
+        link: &SpeakerLink,
+        commands: &mut tokio::sync::mpsc::UnboundedReceiver<SpeakerCommand>,
+    ) -> u64 {
+        use futures_util::StreamExt as _;
+        let Ok(SpeakerCommand::Attach(stream)) = commands.try_recv() else {
+            panic!("no stream attached");
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(stream.collect::<Vec<_>>());
+        link.shared.ended.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn a_loss_report_of_an_older_speaker_stream_is_ignored() {
+        let (segment, mut commands) = stereo("s1", true);
+        let link = segment.speaker.as_ref().unwrap();
+        link.attach(capture());
+        let old = end_attached(link, &mut commands);
+        // A quick off-then-on attaches a new stream before the report of
+        // the old one arrives.
+        link.detach();
+        assert!(matches!(commands.try_recv(), Ok(SpeakerCommand::Detach)));
+        link.attach(capture());
+        assert!(!link.loss_is_current(old), "the new stream stays attached");
+        let new = end_attached(link, &mut commands);
+        assert!(link.loss_is_current(new));
+        // After a detach, no loss report is current.
+        link.detach();
+        assert!(!link.loss_is_current(new));
+        assert!(loss_is_current(3, 3) && !loss_is_current(2, 3));
     }
 
     #[test]

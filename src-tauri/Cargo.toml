@@ -58,6 +58,8 @@ diarize = { path = "../crates/diarize" }
 session-core = { path = "../crates/session-core" }
 supervisor = { path = "../crates/supervisor" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The generation wrapper of a speaker stream (managers/capture.rs).
+futures-util = "0.3"
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"
@@ -73,6 +75,4 @@ tauri-plugin-global-shortcut = "=2.3.2"
 tauri-plugin-single-instance = "2.3.2"
 
 [dev-dependencies]
-# An empty speaker stream in the capture tests.
-futures-util = "0.3"
 tempfile = "3"
