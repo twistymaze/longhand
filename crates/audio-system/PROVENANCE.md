@@ -9,7 +9,7 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/macos.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, LICENSES/anarlog-MIT.txt
-- Status: modified — the tap excludes Longhand's own process; a dedicated thread owns the tap and the device and reads an `rtrb` ring in place of anarlog's async ring reader; the thread reads the rate that the device measures and resamples to fixed-size frames; a device that is no longer alive ends the stream
+- Status: modified — the tap excludes Longhand's own process and the running mixer apps (`is_mixer`), and takes a new exclusion list when one starts or quits; a dedicated thread owns the tap and the device and reads an `rtrb` ring in place of anarlog's async ring reader; the thread reads the rate that the device measures and resamples to fixed-size frames; a device that is no longer alive ends the stream
 
 ## `src/windows.rs`
 
@@ -55,4 +55,4 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Origin: AudioCap by Guilherme Rambo, Copyright (c) 2024, BSD-2-Clause, LICENSES/AudioCap-BSD-2-Clause.txt
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, LICENSES/anarlog-MIT.txt
-- Status: modified — Rust in place of Swift: `dlopen` and `dlsym` load `TCCAccessPreflight` directly, so no Swift build step is needed (KTD12); the function returns a C `int`; a missing function or an unknown result gives "unknown"; the loader is a test seam; `request` (a short tap) and the Windows result are new
+- Status: modified — Rust in place of Swift: `dlopen` and `dlsym` load `TCCAccessPreflight` directly, so no Swift build step is needed (KTD12); the function returns a C `int`; a missing function or an unknown result gives "unknown"; the loader is a test seam; `request` (a short tap) and the Windows result are new; a result other than "allowed" is read again in a new process of the app binary (`CHILD_FLAG`), in place of anarlog's `check-permissions` helper

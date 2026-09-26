@@ -34,12 +34,12 @@ const MAX_EARLY: usize = GATE_RATE * 60 / 1000;
 /// The system audio that the gate keeps.
 const HISTORY: usize = MAX_LAG + WINDOW;
 // anarlog's gate constants.
-const MIN_SAMPLES: usize = 512;
-const LAG_STEP: usize = 80;
+pub(crate) const MIN_SAMPLES: usize = 512;
+pub(crate) const LAG_STEP: usize = 80;
 const MIN_MIC_RMS: f32 = 0.0025;
 const MIN_SPEAKER_RMS: f32 = 0.01;
-const MIN_CORRELATION: f32 = 0.55;
-const MAX_RESIDUAL_RATIO: f32 = 0.45;
+pub(crate) const MIN_CORRELATION: f32 = 0.55;
+pub(crate) const MAX_RESIDUAL_RATIO: f32 = 0.45;
 
 // The balance and the mix in Assemble (KTD8 step 5) use the same constants
 // from the `level` module.
@@ -283,15 +283,15 @@ fn echo_dominant(mic: &[f32], history: &[f32]) -> bool {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct EchoScore {
-    correlation: f32,
-    residual_ratio: f32,
+pub(crate) struct EchoScore {
+    pub(crate) correlation: f32,
+    pub(crate) residual_ratio: f32,
     mic_rms: f32,
     speaker_rms: f32,
 }
 
 /// anarlog's `echo_score_at_lag` for two aligned slices of equal length.
-fn score(mic: &[f32], speaker: &[f32]) -> Option<EchoScore> {
+pub(crate) fn score(mic: &[f32], speaker: &[f32]) -> Option<EchoScore> {
     let overlap = mic.len().min(speaker.len());
     if overlap < MIN_SAMPLES {
         return None;

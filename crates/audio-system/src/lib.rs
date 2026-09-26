@@ -182,10 +182,50 @@ fn own_process_exclusion<T>(
     }
 }
 
+/// Apps that play the audio of other apps again: audio mixers and routing
+/// tools. A global tap records each app's own output, so the audio that a
+/// mixer plays again is a second copy, often late, and a mixer can also
+/// play the microphone to a virtual device. The macOS tap excludes these
+/// apps. Bundle IDs that start with an entry of [`MIXER_BUNDLE_PREFIXES`]
+/// match too.
+pub const MIXER_BUNDLE_IDS: &[&str] = &[
+    // Elgato Wave Link 3 (verified on a Mac with Wave Link 3) and earlier.
+    "com.elgato.WaveLink3",
+    "com.elgato.WaveLink",
+    // OBS Studio plays monitored sources to an output.
+    "com.obsproject.obs-studio",
+];
+
+/// Bundle ID prefixes of mixer vendors: Rogue Amoeba (Loopback,
+/// SoundSource, Audio Hijack, and their helpers).
+pub const MIXER_BUNDLE_PREFIXES: &[&str] = &["com.rogueamoeba."];
+
+/// True when the app with this bundle ID plays the audio of other apps
+/// again. The test ignores case.
+pub fn is_mixer(bundle_id: &str) -> bool {
+    let id = bundle_id.to_ascii_lowercase();
+    MIXER_BUNDLE_IDS.iter().any(|m| m.eq_ignore_ascii_case(&id))
+        || MIXER_BUNDLE_PREFIXES
+            .iter()
+            .any(|p| id.starts_with(&p.to_ascii_lowercase()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn mixer_apps_match_by_bundle_id() {
+        assert!(is_mixer("com.elgato.WaveLink3"));
+        assert!(is_mixer("COM.ELGATO.WAVELINK3"));
+        assert!(is_mixer("com.rogueamoeba.Loopback"));
+        assert!(is_mixer("com.rogueamoeba.soundsource"));
+        assert!(!is_mixer("com.microsoft.teams2"));
+        assert!(!is_mixer("us.zoom.xos"));
+        assert!(!is_mixer("com.elgato.WaveLink3Helper.other"));
+        assert!(!is_mixer(""));
+    }
 
     struct Capture(Mutex<Vec<String>>);
 

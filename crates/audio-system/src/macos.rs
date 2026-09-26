@@ -6,6 +6,12 @@
 //!
 //! - The tap excludes Longhand's own process, so the alert sound and other
 //!   Longhand sounds are not in the note.
+//! - The tap also excludes the running mixer apps ([`crate::is_mixer`]),
+//!   such as Wave Link. A mixer plays the audio of other apps again, and it
+//!   can play the microphone to a virtual device, so a global tap records
+//!   the call more than once and the user's own voice late. The thread
+//!   reads the list again at each device check and gives the tap a new
+//!   description when it changes.
 //! - A dedicated thread owns the tap and the device, like the microphone
 //!   capture in `crates/audio-cpal`. The IO proc writes into an `rtrb` ring.
 //!   The thread reads the ring, resamples with [`RateFollower`] and sends
@@ -98,20 +104,75 @@ fn failed(what: &str, e: impl std::fmt::Debug) -> Error {
     Error::SpeakerStreamInitializationFailed(format!("{what}: {e:?}"))
 }
 
-/// Longhand's own process, as the tap description wants it.
-fn exclusion() -> arc::R<ns::Array<ns::Number>> {
-    let excluded = own_process_exclusion(std::process::id(), |pid| {
+/// Longhand's own process object, or `None` when the lookup fails.
+fn own_process() -> Option<u32> {
+    let own = own_process_exclusion(std::process::id(), |pid| {
         let pid = i32::try_from(pid).map_err(|e| e.to_string())?;
         match ca::Process::with_pid(pid) {
             Ok(process) if process.0 == ca::Obj::UNKNOWN => Ok(None),
-            Ok(process) => Ok(Some(ns::Number::with_u32(process.0.0))),
+            Ok(process) => Ok(Some(process.0.0)),
             Err(e) => Err(format!("{e:?}")),
         }
     });
-    if !excluded.is_empty() {
-        log::info!("the system audio tap excludes Longhand's own process");
+    own.first().copied()
+}
+
+/// The process objects of the running mixer apps ([`crate::is_mixer`]),
+/// sorted, with their bundle IDs.
+fn mixers() -> Vec<(u32, String)> {
+    let processes = match ca::System::processes() {
+        Ok(processes) => processes,
+        Err(e) => {
+            log::warn!("could not list the audio processes: {e:?}; no mixer app is excluded");
+            return Vec::new();
+        }
+    };
+    let mut found: Vec<(u32, String)> = processes
+        .iter()
+        .filter_map(|p| {
+            let id = p.bundle_id().ok()?.to_string();
+            crate::is_mixer(&id).then_some((p.0.0, id))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The processes that the tap excludes: Longhand's own process and the
+/// running mixer apps.
+struct Exclusion {
+    own: Option<u32>,
+    mixers: Vec<(u32, String)>,
+}
+
+impl Exclusion {
+    fn now(own: Option<u32>) -> Self {
+        Self {
+            own,
+            mixers: mixers(),
+        }
     }
-    ns::Array::from_slice_retained(&excluded)
+
+    /// The tap description that excludes these processes.
+    fn desc(&self) -> arc::R<ca::TapDesc> {
+        let numbers: Vec<arc::R<ns::Number>> = self
+            .own
+            .into_iter()
+            .chain(self.mixers.iter().map(|(obj, _)| *obj))
+            .map(ns::Number::with_u32)
+            .collect();
+        let array = ns::Array::from_slice_retained(&numbers);
+        ca::TapDesc::with_mono_global_tap_excluding_processes(&array)
+    }
+
+    fn log(&self) {
+        if self.own.is_some() {
+            log::info!("the system audio tap excludes Longhand's own process");
+        }
+        for (_, id) in &self.mixers {
+            log::info!("the system audio tap excludes the mixer app {id}");
+        }
+    }
 }
 
 fn aggregate_desc(
@@ -216,8 +277,9 @@ fn run(
 ) {
     let dropped = Arc::new(AtomicU64::new(0));
     let opened = (|| {
-        let excluded = exclusion();
-        let desc = ca::TapDesc::with_mono_global_tap_excluding_processes(&excluded);
+        let exclusion = Exclusion::now(own_process());
+        exclusion.log();
+        let desc = exclusion.desc();
         let tap = desc
             .create_process_tap()
             .map_err(|e| failed("process tap", e))?;
@@ -243,11 +305,11 @@ fn run(
             "system audio tap started at {tap_rate} Hz, {} channel(s)",
             asbd.channels_per_frame
         );
-        Ok((tap, ctx, started, consumer, tap_rate))
+        Ok((tap, ctx, started, consumer, tap_rate, exclusion))
     })();
     // Drop order matters: `started` stops the device before `ctx`, which the
     // IO proc reads, is freed.
-    let (tap, ctx, started, consumer, tap_rate) = match opened {
+    let (mut tap, ctx, started, consumer, tap_rate, exclusion) = match opened {
         Ok(opened) => {
             let _ = init_tx.send(Ok(()));
             opened
@@ -263,7 +325,7 @@ fn run(
         sample_rate
     };
     drain(
-        consumer, &started, &tap, &dropped, tap_rate, out_rate, chunk_size, &tx,
+        consumer, &started, &mut tap, exclusion, &dropped, tap_rate, out_rate, chunk_size, &tx,
     );
     drop(started);
     drop(ctx);
@@ -275,7 +337,8 @@ fn run(
 fn drain(
     mut consumer: rtrb::Consumer<f32>,
     device: &ca::Device,
-    tap: &ca::TapGuard,
+    tap: &mut ca::TapGuard,
+    mut exclusion: Exclusion,
     dropped: &AtomicU64,
     tap_rate: u32,
     out_rate: u32,
@@ -310,6 +373,20 @@ fn drain(
             }
             if let Some(hz) = device_rate(device, tap) {
                 rate.set_in_hz(hz, |frame| send(frame, &mut closed));
+            }
+            // A mixer app that starts or quits after the tap opened: the tap
+            // takes a new exclusion list without a restart.
+            let now = Exclusion::now(exclusion.own);
+            if now.mixers != exclusion.mixers {
+                match tap.set_desc(now.desc()) {
+                    Ok(()) => {
+                        now.log();
+                        exclusion = now;
+                    }
+                    Err(e) => log::warn!(
+                        "the system audio tap did not take the new exclusion list: {e:?}"
+                    ),
+                }
             }
             let total = dropped.load(Ordering::Relaxed);
             if total != last_dropped {
