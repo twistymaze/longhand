@@ -20,7 +20,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     pending_asr_model: null,
     live_transcript: true,
     microphone: null,
-    computer_audio_default: false,
+    system_audio_default: false,
     learned_context_limits: {},
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
@@ -50,7 +50,7 @@ async function open({
     get_settings: () => state.settings,
     readiness: () => ({
       microphone_authorized: true,
-      computer_audio: "allowed",
+      system_audio: "allowed",
       destination: { kind: "unset" },
       armed: false,
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },
@@ -65,8 +65,8 @@ async function open({
       state.settings = { ...state.settings, microphone: microphone as Settings["microphone"] };
       return state.settings;
     },
-    set_computer_audio_default: ({ enabled }) => {
-      state.settings = { ...state.settings, computer_audio_default: enabled as boolean };
+    set_system_audio_default: ({ enabled }) => {
+      state.settings = { ...state.settings, system_audio_default: enabled as boolean };
       return state.settings;
     },
   });
@@ -175,7 +175,7 @@ describe("Recording pane", () => {
     const toggle = screen.getByRole("switch", { name: "Computer audio" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     await user.click(toggle);
-    expect(calls(mock, "set_computer_audio_default")).toEqual([{ enabled: true }]);
+    expect(calls(mock, "set_system_audio_default")).toEqual([{ enabled: true }]);
     await waitFor(() => expect(screen.getByRole("switch", { name: "Computer audio" }).getAttribute("aria-checked")).toBe("true"));
     expect(screen.getByText(/all sound that the computer plays/)).toBeTruthy();
   });

@@ -1,8 +1,8 @@
-//! The silent Computer audio flag (U5 step 6).
+//! The silent system audio flag (U5 step 6).
 //!
 //! When the permission check reports [`Permission::Unknown`], Longhand
 //! cannot tell a denied tap from a quiet computer. A denied tap gives
-//! digital silence: every sample is exactly zero. So while Computer audio is
+//! digital silence: every sample is exactly zero. So while system audio is
 //! on and the status is unknown, the capture watcher compares two facts:
 //!
 //! - the output device plays audio for some process
@@ -11,7 +11,7 @@
 //!   ([`SilenceRun`]).
 //!
 //! When both are true, [`SilentCheck`] sets the flag, and the recording page
-//! warns that computer audio can be missing (U7). The flag clears when audio
+//! warns that system audio can be missing (U7). The flag clears when audio
 //! appears on the right, or when the status is no longer unknown.
 
 use std::sync::Arc;
@@ -101,11 +101,11 @@ impl SilentCheck {
             if flagged {
                 log::warn!(
                     "the output plays, but system audio has been digital silence for {} s \
-                     and the permission is unknown; Computer audio can be missing",
+                     and the permission is unknown; system audio can be missing",
                     silent_for.as_secs()
                 );
             } else {
-                log::info!("the silent Computer audio flag cleared");
+                log::info!("the silent system audio flag cleared");
             }
         }
         self.flagged = flagged;

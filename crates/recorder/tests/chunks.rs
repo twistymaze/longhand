@@ -674,7 +674,7 @@ async fn a_stereo_segment_with_no_speaker_packets_pads_the_right_with_silence() 
 }
 
 #[tokio::test]
-async fn computer_audio_off_in_a_stereo_segment_writes_silence_right_in_one_segment() {
+async fn system_audio_off_in_a_stereo_segment_writes_silence_right_in_one_segment() {
     let dir = tempfile::tempdir().unwrap();
     let mut steps = vec![attach()];
     steps.extend(paired(50, 0.5, 0.25));
@@ -738,7 +738,7 @@ async fn a_speaker_stream_that_ends_is_a_speaker_end_not_a_segment_end() {
 
 #[tokio::test(start_paused = true)]
 async fn a_mono_segment_writes_mono_chunks_as_before() {
-    // AE7: Computer audio off from start to Stop.
+    // AE7: system audio off from start to Stop.
     let dir = tempfile::tempdir().unwrap();
     let rate = 48_000;
     let mock = MockAudio::tone(440.0, rate, Duration::from_secs(2));

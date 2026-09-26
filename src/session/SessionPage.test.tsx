@@ -17,7 +17,7 @@ import type { Sessions } from "./useSessions";
 
 const readiness: Readiness = {
   microphone_authorized: true,
-  computer_audio: "allowed",
+  system_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
@@ -37,12 +37,12 @@ const idle: RecordingStatus = {
   reserve_bytes: 0,
   microphone: null,
   microphone_fallback: false,
-  computer_audio_silent: false,
-  computer_audio: false,
-  computer_audio_recording: false,
-  computer_audio_failed: false,
-  computer_audio_permission: null,
-  computer_audio_other_output: false,
+  system_audio_silent: false,
+  system_audio: false,
+  system_audio_recording: false,
+  system_audio_failed: false,
+  system_audio_permission: null,
+  system_audio_other_output: false,
   microphone_choice: null,
 };
 
@@ -382,7 +382,7 @@ describe("SessionPage", () => {
       expect(within(bar()).getByText("MacBook Pro Microphone")).toBeTruthy();
       expect(bar().textContent).not.toContain("Computer audio");
 
-      view.rerenderWith(withStatus({ computer_audio: true, computer_audio_permission: "allowed" }), sessionsOf([rec]));
+      view.rerenderWith(withStatus({ system_audio: true, system_audio_permission: "allowed" }), sessionsOf([rec]));
       expect(within(bar()).getByText("MacBook Pro Microphone")).toBeTruthy();
       expect(within(bar()).getByText("Computer audio")).toBeTruthy();
     });
@@ -403,14 +403,14 @@ describe("SessionPage", () => {
       mockPage(rec);
       const view = renderPage({
         id: "rec",
-        capture: withStatus({ computer_audio: true, computer_audio_permission: "denied", computer_audio_failed: true }),
+        capture: withStatus({ system_audio: true, system_audio_permission: "denied", system_audio_failed: true }),
         sessions: sessionsOf([rec]),
       });
       expect(within(bar()).getByText("Computer audio is not recorded. Allow it in System Settings.")).toBeTruthy();
       // The denied permission explains the failure, so the failure text does not show too.
       expect(within(bar()).queryByText(/Computer audio stopped/)).toBeNull();
 
-      view.rerenderWith(withStatus({ computer_audio: false, computer_audio_permission: "denied" }), sessionsOf([rec]));
+      view.rerenderWith(withStatus({ system_audio: false, system_audio_permission: "denied" }), sessionsOf([rec]));
       expect(within(bar()).queryByText(/Computer audio is not recorded/)).toBeNull();
     });
 
@@ -418,7 +418,7 @@ describe("SessionPage", () => {
       mockPage(rec);
       renderPage({
         id: "rec",
-        capture: withStatus({ computer_audio: true, computer_audio_permission: "not_asked" }),
+        capture: withStatus({ system_audio: true, system_audio_permission: "not_asked" }),
         sessions: sessionsOf([rec]),
       });
       expect(within(bar()).getByText("Computer audio is not recorded until you allow it.")).toBeTruthy();
@@ -428,7 +428,7 @@ describe("SessionPage", () => {
       mockPage(rec);
       renderPage({
         id: "rec",
-        capture: withStatus({ computer_audio: true, computer_audio_permission: "allowed", computer_audio_failed: true }),
+        capture: withStatus({ system_audio: true, system_audio_permission: "allowed", system_audio_failed: true }),
         sessions: sessionsOf([rec]),
       });
       expect(within(bar()).getByText("Computer audio stopped. The microphone is still recording.")).toBeTruthy();
@@ -438,7 +438,7 @@ describe("SessionPage", () => {
       mockPage(rec);
       renderPage({
         id: "rec",
-        capture: withStatus({ computer_audio: true, computer_audio_permission: "unknown", computer_audio_silent: true }),
+        capture: withStatus({ system_audio: true, system_audio_permission: "unknown", system_audio_silent: true }),
         sessions: sessionsOf([rec]),
       });
       expect(
@@ -450,7 +450,7 @@ describe("SessionPage", () => {
       mockPage(rec);
       renderPage({
         id: "rec",
-        capture: withStatus({ computer_audio: true, computer_audio_permission: "allowed", computer_audio_other_output: true }),
+        capture: withStatus({ system_audio: true, system_audio_permission: "allowed", system_audio_other_output: true }),
         sessions: sessionsOf([rec]),
       });
       expect(
@@ -462,7 +462,7 @@ describe("SessionPage", () => {
       mockPage(rec);
       renderPage({
         id: "rec",
-        capture: withStatus({ computer_audio: true, computer_audio_permission: "allowed", computer_audio_recording: true }),
+        capture: withStatus({ system_audio: true, system_audio_permission: "allowed", system_audio_recording: true }),
         sessions: sessionsOf([rec]),
       });
       expect(within(bar()).queryByRole("status")).toBeNull();
@@ -510,25 +510,25 @@ describe("SessionPage", () => {
     test("the Record Computer Audio item shows a check mark when on and calls the command when chosen", async () => {
       const tauri = mockPage(rec, {}, {
         list_microphones: () => microphones,
-        set_note_computer_audio: () => ({ ...idle, session_id: "rec", recording: true }),
+        set_note_system_audio: () => ({ ...idle, session_id: "rec", recording: true }),
       });
-      const view = renderPage({ id: "rec", capture: withStatus({ computer_audio: false }), sessions: sessionsOf([rec]) });
+      const view = renderPage({ id: "rec", capture: withStatus({ system_audio: false }), sessions: sessionsOf([rec]) });
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Actions" }));
       const off = screen.getByRole("menuitemcheckbox", { name: "Record Computer Audio" });
       expect(off.getAttribute("aria-checked")).toBe("false");
       await user.click(off);
-      expect(tauri.calls.find((c) => c.cmd === "set_note_computer_audio")?.args).toEqual({
+      expect(tauri.calls.find((c) => c.cmd === "set_note_system_audio")?.args).toEqual({
         sessionId: "rec",
         enabled: true,
       });
 
-      view.rerenderWith(withStatus({ computer_audio: true, computer_audio_permission: "allowed" }), sessionsOf([rec]));
+      view.rerenderWith(withStatus({ system_audio: true, system_audio_permission: "allowed" }), sessionsOf([rec]));
       await user.click(screen.getByRole("button", { name: "Actions" }));
       const on = screen.getByRole("menuitemcheckbox", { name: "Record Computer Audio" });
       expect(on.getAttribute("aria-checked")).toBe("true");
       await user.click(on);
-      expect(tauri.calls.filter((c) => c.cmd === "set_note_computer_audio").pop()?.args).toEqual({
+      expect(tauri.calls.filter((c) => c.cmd === "set_note_system_audio").pop()?.args).toEqual({
         sessionId: "rec",
         enabled: false,
       });

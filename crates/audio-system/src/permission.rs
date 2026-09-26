@@ -1,4 +1,4 @@
-//! The Computer audio permission (R9, R10, KTD12).
+//! The system audio permission (R9, R10, KTD12).
 //!
 //! macOS has no public API for the "Screen & System Audio Recording"
 //! permission, and a tap without it records silence and returns no error.
@@ -14,7 +14,7 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::Instant;
 
-/// The state of the Computer audio permission.
+/// The state of the system audio permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
     Allowed,
@@ -39,7 +39,7 @@ const RAW_DENIED: i32 = 1;
 const RAW_NOT_ASKED: i32 = 2;
 
 /// The preflight function after it loads: one call returns its raw result
-/// for the Computer audio service.
+/// for the system audio service.
 pub(crate) type Preflight = Box<dyn FnOnce() -> i32>;
 
 fn from_raw(raw: i32) -> Permission {
@@ -48,9 +48,7 @@ fn from_raw(raw: i32) -> Permission {
         RAW_DENIED => Permission::Denied,
         RAW_NOT_ASKED => Permission::NotAsked,
         other => {
-            log::warn!(
-                "the Computer audio permission check returned {other}; the status is unknown"
-            );
+            log::warn!("the system audio permission check returned {other}; the status is unknown");
             Permission::Unknown
         }
     }
@@ -67,7 +65,7 @@ pub(crate) fn preflight_with(load: impl FnOnce() -> Option<Preflight>) -> Permis
     }
 }
 
-/// The state of the Computer audio permission. It asks the user nothing and
+/// The state of the system audio permission. It asks the user nothing and
 /// takes about a millisecond.
 pub fn preflight() -> Permission {
     #[cfg(target_os = "macos")]
@@ -142,13 +140,13 @@ mod tcc {
         unsafe {
             let handle = dlopen(TCC_PATH.as_ptr(), RTLD_NOW);
             if handle.is_null() {
-                log::warn!("TCC.framework did not load; the Computer audio permission is unknown");
+                log::warn!("TCC.framework did not load; the system audio permission is unknown");
                 return None;
             }
             let symbol = dlsym(handle, SYMBOL.as_ptr());
             if symbol.is_null() {
                 log::warn!(
-                    "TCC.framework has no TCCAccessPreflight; the Computer audio permission is unknown"
+                    "TCC.framework has no TCCAccessPreflight; the system audio permission is unknown"
                 );
                 return None;
             }

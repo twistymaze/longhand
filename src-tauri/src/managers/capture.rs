@@ -19,11 +19,11 @@
 //! chosen microphone is present in two polls in a row. Each input change
 //! is a segment boundary through `reopen`.
 //!
-//! With Computer audio on, a note records a stereo segment: the microphone
+//! With system audio on, a note records a stereo segment: the microphone
 //! on the left and system audio on the right (R11, KTD2–KTD6, KTD18). The
 //! first turn-on opens the speaker stream, and then `reopen` starts a stereo
 //! segment with it attached. After that the note's stereo mark is set, and
-//! every segment of the note is stereo. Turning Computer audio off or on
+//! every segment of the note is stereo. Turning system audio off or on
 //! inside a stereo segment detaches or attaches the speaker stream and does
 //! not split the segment. A speaker stream that ends leaves silence on the
 //! right, and the capture watcher opens a new one.
@@ -57,7 +57,7 @@ use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::audio::AppAudio;
-use crate::commands::readiness::ComputerAudioPermission;
+use crate::commands::readiness::SystemAudioPermission;
 use crate::managers::alerts::{self, AlertsManager};
 use crate::managers::live::LiveManager;
 use crate::managers::models::ModelsManager;
@@ -148,29 +148,29 @@ pub struct RecordingStatus {
     /// The microphone that the open note chose. With no note open, the
     /// microphone that the next note uses. `None` is "System default".
     pub microphone_choice: Option<MicrophoneChoice>,
-    /// The Computer audio permission is unknown, the output plays, and the
-    /// system audio channel has been digital silence for 10 s: Computer
+    /// The system audio permission is unknown, the output plays, and the
+    /// system audio channel has been digital silence for 10 s: system
     /// audio can be missing (U5 step 6). It clears when audio appears.
-    pub computer_audio_silent: bool,
+    pub system_audio_silent: bool,
     /// The Computer audio switch of the open note (R8). With no note open,
     /// the switch that the next note starts with (R6).
-    pub computer_audio: bool,
+    pub system_audio: bool,
     /// A speaker stream is attached to the recording segment: the note
     /// records system audio on the right now.
-    pub computer_audio_recording: bool,
-    /// Computer audio is on, but the speaker stream failed or did not open.
+    pub system_audio_recording: bool,
+    /// System audio is on, but the speaker stream failed or did not open.
     /// The microphone records, the right channel holds silence, and the
     /// capture watcher tries the speaker stream again (R10).
-    pub computer_audio_failed: bool,
-    /// The last Computer audio permission check while Computer audio is on
-    /// and a segment records (KTD12). The page uses it to say why computer
+    pub system_audio_failed: bool,
+    /// The last system audio permission check while system audio is on
+    /// and a segment records (KTD12). The page uses it to say why system
     /// audio is not recorded: denied, not asked (the prompt can wait for an
-    /// answer), or unknown. `None` while Computer audio is off.
-    pub computer_audio_permission: Option<ComputerAudioPermission>,
+    /// answer), or unknown. `None` while system audio is off.
+    pub system_audio_permission: Option<SystemAudioPermission>,
     /// The output that Longhand follows has been silent for 30 s while
     /// another output plays sound (Windows only, U4 step 6): the call can
     /// play on a device that the note does not record.
-    pub computer_audio_other_output: bool,
+    pub system_audio_other_output: bool,
 }
 
 #[derive(Serialize, Clone, Type, Debug)]
@@ -210,7 +210,7 @@ struct ActiveSegment {
     /// resampled to (KTD5).
     rate: u32,
     /// The note's Computer audio switch, as the capture manager knows it.
-    computer_audio: bool,
+    system_audio: bool,
     /// The speaker side of a stereo segment. `None` for a mono segment.
     speaker: Option<SpeakerLink>,
 }
@@ -228,7 +228,7 @@ struct SpeakerLink {
 struct SpeakerShared {
     /// A speaker stream is attached and has not ended.
     attached: AtomicBool,
-    /// Computer audio is on, but the speaker stream ended or did not open.
+    /// System audio is on, but the speaker stream ended or did not open.
     failed: AtomicBool,
     /// The digital silence at the end of the right channel (U5 step 6).
     silence: SilenceRun,
@@ -254,7 +254,7 @@ impl SpeakerLink {
         }
     }
 
-    /// Detach the speaker stream: Computer audio turned off. The right
+    /// Detach the speaker stream: system audio turned off. The right
     /// channel gets silence.
     fn detach(&self) {
         self.shared.attached.store(false, Ordering::Relaxed);
@@ -263,7 +263,7 @@ impl SpeakerLink {
         let _ = self.commands.send(SpeakerCommand::Detach);
     }
 
-    /// The speaker stream failed or did not open, while Computer audio is on.
+    /// The speaker stream failed or did not open, while system audio is on.
     fn fail(&self) {
         self.shared.attached.store(false, Ordering::Relaxed);
         self.shared.failed.store(true, Ordering::Relaxed);
@@ -300,12 +300,12 @@ struct Opening<'a> {
     /// An input change opens the segment (KTD3).
     at_switch: bool,
     /// The note's Computer audio switch.
-    computer_audio: bool,
+    system_audio: bool,
     /// The note's stereo mark is set: the segment is stereo also with
-    /// Computer audio off (KTD3).
+    /// system audio off (KTD3).
     stereo_mark: bool,
     /// A speaker stream opened before the segment, at the first turn-on of
-    /// Computer audio (KTD18). With Computer audio on and no stream here,
+    /// system audio (KTD18). With system audio on and no stream here,
     /// the speaker stream opens on a thread of its own after the segment.
     speaker: Option<Result<SystemAudioCapture, audio::Error>>,
 }
@@ -408,13 +408,13 @@ struct Inner {
     held_microphone: Option<Option<MicrophoneChoice>>,
     /// A Computer audio switch set on the recording page before the note's
     /// row exists (KTD2). The next start writes it with the row.
-    held_computer_audio: Option<bool>,
-    /// The silent Computer audio flag (U5 step 6). While Computer audio is
+    held_system_audio: Option<bool>,
+    /// The silent system audio flag (U5 step 6). While system audio is
     /// on and the permission is unknown, the capture watcher polls it with
     /// the permission, `audio_system::output_running()` and the right
     /// channel's `SilenceRun`. `status` reports it.
     silent_check: SilentCheck,
-    /// The last Computer audio permission check while Computer audio is on
+    /// The last system audio permission check while system audio is on
     /// (KTD12). `None` while it is off.
     permission: Option<Permission>,
 }
@@ -427,7 +427,7 @@ struct StatusSnapshot {
     /// The input name and the fallback flag of the recording segment.
     input: Option<(String, bool)>,
     held: Option<Option<MicrophoneChoice>>,
-    held_computer_audio: Option<bool>,
+    held_system_audio: Option<bool>,
     silent: bool,
     permission: Option<Permission>,
     /// For a stereo segment: the switch, attached, failed, and the
@@ -436,9 +436,9 @@ struct StatusSnapshot {
 }
 
 impl Inner {
-    /// Forget the Computer audio checks: Computer audio turns off, or the
+    /// Forget the system audio checks: system audio turns off, or the
     /// note stops, is superseded or is new.
-    fn reset_computer_audio_checks(&mut self) {
+    fn reset_system_audio_checks(&mut self) {
         self.silent_check = SilentCheck::default();
         self.permission = None;
     }
@@ -450,7 +450,7 @@ impl Inner {
             watch.cancel.cancel();
         }
         self.stop_capture_watch();
-        self.reset_computer_audio_checks();
+        self.reset_system_audio_checks();
         self.recovering.take().map(|p| {
             p.cancel.cancel();
             p.session_id
@@ -515,23 +515,23 @@ pub fn check_microphone(choice: Option<&MicrophoneChoice>) -> Result<(), String>
 
 /// The capture choice that a note records when it starts (KTD2): the
 /// microphone held from the recording page, else the one from Settings,
-/// and the Computer audio default.
+/// and the system audio default.
 pub fn capture_choice_at_start(
     held: Option<Option<MicrophoneChoice>>,
-    held_computer_audio: Option<bool>,
+    held_system_audio: Option<bool>,
     settings: &Settings,
 ) -> CaptureChoice {
     let microphone = held.unwrap_or_else(|| settings.microphone.clone());
     CaptureChoice {
         microphone: microphone.as_ref().map(Microphone::from),
-        computer_audio: held_computer_audio.unwrap_or(settings.computer_audio_default),
+        system_audio: held_system_audio.unwrap_or(settings.system_audio_default),
     }
 }
 
 /// The channel count of a new segment (KTD3): stereo when the note's
-/// stereo mark is set or Computer audio is on at the open.
-fn segment_channels(stereo_mark: bool, computer_audio: bool) -> u16 {
-    if stereo_mark || computer_audio { 2 } else { 1 }
+/// stereo mark is set or system audio is on at the open.
+fn segment_channels(stereo_mark: bool, system_audio: bool) -> u16 {
+    if stereo_mark || system_audio { 2 } else { 1 }
 }
 
 /// What a change of the Computer audio switch does to the segment that
@@ -641,7 +641,7 @@ enum WatchStep {
     /// A restart runs: do nothing at this poll.
     Wait,
     /// Watch the note. `move_back`: the note records on a fallback, so look
-    /// for the chosen microphone. `speaker`: Computer audio is on, and the
+    /// for the chosen microphone. `speaker`: system audio is on, and the
     /// speaker stream failed or the permission is not "allowed", so check
     /// the permission and open the speaker stream again when it helps
     /// (KTD12).
@@ -652,7 +652,7 @@ enum WatchStep {
 
 /// Whether the speaker side of `active` needs the watcher.
 fn speaker_needs_watch(active: &ActiveSegment, permission: Option<Permission>) -> bool {
-    active.computer_audio
+    active.system_audio
         && active.speaker.as_ref().is_some_and(|link| {
             link.failed() || permission.is_some_and(|p| p != Permission::Allowed)
         })
@@ -889,7 +889,7 @@ impl CaptureManager {
         let model = recording_model(&settings);
         let capture = capture_choice_at_start(
             inner.held_microphone.clone(),
-            inner.held_computer_audio,
+            inner.held_system_audio,
             &settings,
         );
         let live = model.live_transcript.then_some(model.asr_model.as_str());
@@ -901,7 +901,7 @@ impl CaptureManager {
             live,
             choice: choice.as_ref(),
             at_switch: false,
-            computer_audio: capture.computer_audio,
+            system_audio: capture.system_audio,
             stereo_mark: false,
             speaker: None,
         };
@@ -940,14 +940,14 @@ impl CaptureManager {
             log::info!("session {other} stopped by a new session");
         }
         inner.held_microphone = None;
-        inner.held_computer_audio = None;
+        inner.held_system_audio = None;
         inner.active = Some(active);
         inner.clock = Some(Clock::new(&id, timeline, Instant::now()));
         log::info!(
-            "session {id} recording with {} (live transcript: {}, Computer audio: {})",
+            "session {id} recording with {} (live transcript: {}, system audio: {})",
             model.asr_model,
             model.live_transcript,
-            capture.computer_audio
+            capture.system_audio
         );
         self.watch_capture(app, &mut inner, &id);
         changed(app, Some(&id));
@@ -1122,7 +1122,7 @@ impl CaptureManager {
             live: live.as_deref(),
             choice: choice.as_ref(),
             at_switch: false,
-            computer_audio: capture.computer_audio,
+            system_audio: capture.system_audio,
             stereo_mark: self.note_stereo(id),
             speaker: None,
         };
@@ -1190,7 +1190,7 @@ impl CaptureManager {
             let speaker = inner.active.as_ref().and_then(|a| {
                 a.speaker.as_ref().map(|link| {
                     (
-                        a.computer_audio,
+                        a.system_audio,
                         link.attached(),
                         link.failed(),
                         link.other_output_playing(),
@@ -1203,7 +1203,7 @@ impl CaptureManager {
                 sample_rate: inner.prepared.as_ref().map(|p| p.rate),
                 input: inner.active.as_ref().map(|a| (a.input.clone(), a.fallback)),
                 held: inner.held_microphone.clone(),
-                held_computer_audio: inner.held_computer_audio,
+                held_system_audio: inner.held_system_audio,
                 silent: inner.silent_check.flagged(),
                 permission: inner.permission,
                 speaker,
@@ -1215,19 +1215,19 @@ impl CaptureManager {
             sample_rate,
             input,
             held,
-            held_computer_audio,
-            silent: computer_audio_silent,
+            held_system_audio,
+            silent: system_audio_silent,
             permission,
             speaker,
         } = snapshot;
         let open = self.open_session()?;
-        let (microphone_choice, computer_audio, stereo_mark) = match open.as_ref() {
+        let (microphone_choice, system_audio, stereo_mark) = match open.as_ref() {
             Some((id, _)) => {
                 let store = self.store();
                 let choice = store.capture_choice(id)?;
                 (
                     choice.microphone.as_ref().map(MicrophoneChoice::from),
-                    choice.computer_audio,
+                    choice.system_audio,
                     store.stereo_from(id)?.is_some(),
                 )
             }
@@ -1235,17 +1235,17 @@ impl CaptureManager {
                 let settings = settings::get_settings(app);
                 (
                     held.unwrap_or(settings.microphone),
-                    held_computer_audio.unwrap_or(settings.computer_audio_default),
+                    held_system_audio.unwrap_or(settings.system_audio_default),
                     false,
                 )
             }
         };
-        let channels = segment_channels(stereo_mark, computer_audio);
-        let (computer_audio_recording, computer_audio_failed, computer_audio_other_output) =
-            match speaker {
-                Some((true, attached, failed, other_output)) => (attached, failed, other_output),
-                _ => (false, false, false),
-            };
+        let channels = segment_channels(stereo_mark, system_audio);
+        let (system_audio_recording, system_audio_failed, system_audio_other_output) = match speaker
+        {
+            Some((true, attached, failed, other_output)) => (attached, failed, other_output),
+            _ => (false, false, false),
+        };
         let interruption = match open.as_ref().map(|(_, state)| state) {
             Some(SessionState::Interrupted { reason, .. }) => Some(Interruption {
                 headline: alerts::headline(*reason).to_string(),
@@ -1274,20 +1274,20 @@ impl CaptureManager {
             microphone_fallback: input.as_ref().is_some_and(|(_, fallback)| *fallback),
             microphone: input.map(|(name, _)| name),
             microphone_choice,
-            computer_audio_silent,
-            computer_audio,
-            computer_audio_recording,
-            computer_audio_failed,
-            computer_audio_permission: permission
-                .filter(|_| computer_audio && recording)
-                .map(ComputerAudioPermission::from),
-            computer_audio_other_output,
+            system_audio_silent,
+            system_audio,
+            system_audio_recording,
+            system_audio_failed,
+            system_audio_permission: permission
+                .filter(|_| system_audio && recording)
+                .map(SystemAudioPermission::from),
+            system_audio_other_output,
         })
     }
 
     /// The capture choice of a note, from the store (KTD2). A note with no
     /// stored choice, or a store that cannot be read, records from the
-    /// system default with Computer audio off.
+    /// system default with system audio off.
     fn note_capture(&self, id: &str) -> CaptureChoice {
         self.store().capture_choice(id).unwrap_or_else(|e| {
             log::warn!("could not read the capture choice of {id}: {e}");
@@ -1307,7 +1307,7 @@ impl CaptureManager {
         }
     }
 
-    /// Turn Computer audio on or off for one note from the recording page
+    /// Turn system audio on or off for one note from the recording page
     /// (R8, KTD2). Settings does not change. With no `session_id`, the
     /// switch is held for the next note and written with its row. For a
     /// note, the stored choice changes, and the segment that records now
@@ -1321,35 +1321,35 @@ impl CaptureManager {
     ///
     /// During Interrupted, restart backoff or a sleep pause, the next
     /// segment reads the stored choice.
-    pub fn set_note_computer_audio(
+    pub fn set_note_system_audio(
         self: &Arc<Self>,
         app: &AppHandle,
         session_id: Option<&str>,
         enabled: bool,
     ) -> Result<(), CaptureError> {
         let Some(id) = session_id else {
-            log::info!("the next note starts with Computer audio {enabled}");
-            self.inner().held_computer_audio = Some(enabled);
+            log::info!("the next note starts with system audio {enabled}");
+            self.inner().held_system_audio = Some(enabled);
             return Ok(());
         };
         let change = {
             let mut inner = self.inner();
             let mut choice = self.store().capture_choice(id)?;
-            let was_on = choice.computer_audio;
+            let was_on = choice.system_audio;
             if was_on == enabled {
                 return Ok(());
             }
-            choice.computer_audio = enabled;
+            choice.system_audio = enabled;
             self.store().set_capture_choice(id, &choice)?;
-            log::info!("session {id} turns Computer audio {enabled}");
+            log::info!("session {id} turns system audio {enabled}");
             if !enabled {
-                inner.reset_computer_audio_checks();
+                inner.reset_system_audio_checks();
             }
             let reopens = change_reopens(&inner, id);
             let recording = inner.active.as_mut().filter(|_| reopens);
             let channels = recording.as_ref().map(|a| a.channels);
             if let Some(active) = recording {
-                active.computer_audio = enabled;
+                active.system_audio = enabled;
             }
             let change = switch_change(channels, was_on, enabled);
             let active = inner.active.as_ref();
@@ -1382,7 +1382,7 @@ impl CaptureManager {
             && inner
                 .active
                 .as_ref()
-                .is_some_and(|a| a.session_id == id && a.segment == segment && a.computer_audio);
+                .is_some_and(|a| a.session_id == id && a.segment == segment && a.system_audio);
         if !still {
             // Stop, a restart or another change came first: the next segment
             // reads the stored choice.
@@ -1391,9 +1391,7 @@ impl CaptureManager {
         inner.permission = Some(permission);
         match change {
             SwitchChange::ToStereo => {
-                log::info!(
-                    "session {id} records Computer audio from now on; the note turns stereo"
-                );
+                log::info!("session {id} records system audio from now on; the note turns stereo");
                 self.switch_to(app, &mut inner, id, Some(opened));
             }
             SwitchChange::Attach => {
@@ -1423,7 +1421,7 @@ impl CaptureManager {
     }
 
     /// Open the speaker stream of `segment` of `id` on a thread of its own,
-    /// then attach it (KTD18). A segment that opens with Computer audio on
+    /// then attach it (KTD18). A segment that opens with system audio on
     /// does this, so the microphone does not wait for the speaker stream
     /// (R3).
     fn open_speaker_later(&self, app: &AppHandle, id: &str, segment: u32, rate: u32) {
@@ -1437,9 +1435,10 @@ impl CaptureManager {
                     .audio
                     .open_system_audio(rate, (rate / FRAMES_PER_SECOND) as usize);
                 let mut inner = manager.inner();
-                let ours = inner.active.as_ref().is_some_and(|a| {
-                    a.session_id == id && a.segment == segment && a.computer_audio
-                });
+                let ours = inner
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.session_id == id && a.segment == segment && a.system_audio);
                 if !ours {
                     return;
                 }
@@ -1459,7 +1458,7 @@ impl CaptureManager {
         let Some(link) = inner
             .active
             .as_ref()
-            .filter(|a| a.session_id == id && a.segment == segment && a.computer_audio)
+            .filter(|a| a.session_id == id && a.segment == segment && a.system_audio)
             .and_then(|a| a.speaker.as_ref())
         else {
             return;
@@ -1529,7 +1528,7 @@ impl CaptureManager {
     }
 
     /// [`Self::switch_input`] with a speaker stream that opened before the
-    /// close: the first turn-on of Computer audio (KTD18).
+    /// close: the first turn-on of system audio (KTD18).
     fn switch_to(
         &self,
         app: &AppHandle,
@@ -1600,9 +1599,9 @@ impl CaptureManager {
     /// - While the note records on a fallback, it looks for the note's
     ///   chosen microphone, and after two polls in a row it moves back, in a
     ///   new segment.
-    /// - While Computer audio is on and the speaker stream failed or the
+    /// - While system audio is on and the speaker stream failed or the
     ///   permission is not "allowed", it checks the permission and polls the
-    ///   silent Computer audio flag (U5 step 6). When the permission changes
+    ///   silent system audio flag (U5 step 6). When the permission changes
     ///   to "allowed", or the speaker stream failed, it opens only a new
     ///   speaker stream and attaches it: a tap made before the grant records
     ///   silence.
@@ -1686,7 +1685,7 @@ impl CaptureManager {
                 }
                 let ours = inner.recovering.is_none()
                     && inner.active.as_ref().is_some_and(|a| {
-                        a.session_id == id && a.segment == segment && a.computer_audio
+                        a.session_id == id && a.segment == segment && a.system_audio
                     });
                 if ours {
                     self.attach_opened(&mut inner, opened);
@@ -2024,7 +2023,7 @@ impl CaptureManager {
     /// input's rate. `at_switch` marks an input change: the new segment is
     /// kept when it closes, even when it is short. `speaker` is a speaker
     /// stream that opened before the close, at the first turn-on of
-    /// Computer audio (KTD18).
+    /// system audio (KTD18).
     fn reopen(
         &self,
         app: &AppHandle,
@@ -2055,7 +2054,7 @@ impl CaptureManager {
             live: live.as_deref(),
             choice: choice.as_ref(),
             at_switch,
-            computer_audio: capture.computer_audio,
+            system_audio: capture.system_audio,
             stereo_mark: self.note_stereo(id),
             speaker,
         };
@@ -2143,13 +2142,13 @@ impl CaptureManager {
             live,
             choice,
             at_switch,
-            computer_audio,
+            system_audio,
             stereo_mark,
             speaker,
         } = opening;
         let (prepared, stream) = self.open_microphone(inner, choice)?;
         let rate = prepared.rate;
-        let channels = segment_channels(stereo_mark, computer_audio);
+        let channels = segment_channels(stereo_mark, system_audio);
         log::info!(
             "segment {segment} of {session_id} records from '{}' (fallback: {}, channels: {channels})",
             prepared.input.name,
@@ -2183,7 +2182,7 @@ impl CaptureManager {
             (None, None)
         };
         let mut open_later = false;
-        if computer_audio && let Some(link) = &link {
+        if system_audio && let Some(link) = &link {
             if speaker.is_none() {
                 inner.permission = Some(audio_system::permission::preflight());
             }
@@ -2333,7 +2332,7 @@ impl CaptureManager {
             opened_at_switch: at_switch,
             channels,
             rate,
-            computer_audio,
+            system_audio,
             speaker: link,
         })
     }
@@ -2464,7 +2463,7 @@ fn poll_speaker(
     let reopen = speaker_reopens(previous, permission, link.failed())
         .then_some((active.segment, active.rate));
     if previous != Some(permission) {
-        log::info!("the Computer audio permission is now {permission:?}");
+        log::info!("the system audio permission is now {permission:?}");
     }
     (reopen.is_some() || previous != Some(permission) || flagged != now_flagged).then_some(reopen)
 }
@@ -2726,10 +2725,10 @@ mod tests {
         MicChoice::from(choice)
     }
 
-    fn with_microphone(microphone: Option<MicrophoneChoice>, computer_audio: bool) -> Settings {
+    fn with_microphone(microphone: Option<MicrophoneChoice>, system_audio: bool) -> Settings {
         Settings {
             microphone,
-            computer_audio_default: computer_audio,
+            system_audio_default: system_audio,
             ..Settings::default()
         }
     }
@@ -2741,7 +2740,7 @@ mod tests {
             choice,
             CaptureChoice {
                 microphone: Some(Microphone::from(&usb())),
-                computer_audio: true,
+                system_audio: true,
             }
         );
         let default = capture_choice_at_start(None, None, &Settings::default());
@@ -2896,12 +2895,12 @@ mod tests {
             opened_at_switch: false,
             channels: 1,
             rate: 48_000,
-            computer_audio: false,
+            system_audio: false,
             speaker: None,
         }
     }
 
-    /// A stereo segment with Computer audio `on`, and the receiving end of
+    /// A stereo segment with system audio `on`, and the receiving end of
     /// its speaker commands.
     fn stereo(
         id: &str,
@@ -2913,7 +2912,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let segment = ActiveSegment {
             channels: 2,
-            computer_audio: on,
+            system_audio: on,
             speaker: Some(SpeakerLink {
                 commands: tx,
                 shared: Arc::new(SpeakerShared::default()),
@@ -2931,15 +2930,15 @@ mod tests {
     }
 
     #[test]
-    fn a_note_with_computer_audio_off_from_start_to_stop_records_mono() {
+    fn a_note_with_system_audio_off_from_start_to_stop_records_mono() {
         // AE7: its saved audio is as today.
         assert_eq!(segment_channels(false, false), 1);
     }
 
     #[test]
-    fn computer_audio_on_or_the_stereo_mark_opens_a_stereo_segment() {
+    fn system_audio_on_or_the_stereo_mark_opens_a_stereo_segment() {
         assert_eq!(segment_channels(false, true), 2);
-        // Computer audio on, then off, then a microphone loss: the next
+        // System audio on, then off, then a microphone loss: the next
         // segment is stereo, and no speaker stream opens for it, so the
         // right channel holds silence.
         assert_eq!(segment_channels(true, false), 2);
@@ -2996,12 +2995,12 @@ mod tests {
     }
 
     #[test]
-    fn computer_audio_set_before_the_row_exists_is_in_the_row() {
+    fn system_audio_set_before_the_row_exists_is_in_the_row() {
         let settings = with_microphone(None, false);
-        assert!(capture_choice_at_start(None, Some(true), &settings).computer_audio);
+        assert!(capture_choice_at_start(None, Some(true), &settings).system_audio);
         let on = with_microphone(None, true);
-        assert!(!capture_choice_at_start(None, Some(false), &on).computer_audio);
-        assert!(capture_choice_at_start(None, None, &on).computer_audio);
+        assert!(!capture_choice_at_start(None, Some(false), &on).system_audio);
+        assert!(capture_choice_at_start(None, None, &on).system_audio);
     }
 
     #[test]
@@ -3104,7 +3103,7 @@ mod tests {
             poll_speaker(&mut inner, Permission::Allowed, false),
             Some(Some((0, 48_000)))
         );
-        // Computer audio off: the right channel holds silence and nothing
+        // System audio off: the right channel holds silence and nothing
         // is watched.
         let (off, _commands) = stereo("s1", false);
         inner.active = Some(off);
@@ -3132,14 +3131,14 @@ mod tests {
             Some(None)
         );
         assert!(inner.silent_check.flagged());
-        // Computer audio off resets the flag.
-        inner.reset_computer_audio_checks();
+        // System audio off resets the flag.
+        inner.reset_system_audio_checks();
         assert!(!inner.silent_check.flagged());
         assert_eq!(inner.permission, None);
     }
 
     #[test]
-    fn supersede_resets_the_computer_audio_checks() {
+    fn supersede_resets_the_system_audio_checks() {
         let mut inner = Inner {
             permission: Some(Permission::Denied),
             ..Inner::default()
@@ -3256,7 +3255,7 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let stored = CaptureChoice {
             microphone: Some(Microphone::from(&usb())),
-            computer_audio: false,
+            system_audio: false,
         };
         let model = recording_model(&Settings::default());
         store
@@ -3281,7 +3280,7 @@ mod tests {
         assert_eq!(
             mic_of(&CaptureChoice {
                 microphone: Some(stored),
-                computer_audio: false,
+                system_audio: false,
             }),
             Some(MicChoice {
                 id: "id-USB mic".into(),

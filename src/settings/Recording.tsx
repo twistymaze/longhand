@@ -144,10 +144,10 @@ function MicrophoneGroup({ settings, onSettings }: { settings: Settings; onSetti
   );
 }
 
-function ComputerAudio({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+function SystemAudio({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
   const [error, setError] = useState<string | null>(null);
   const change = async (enabled: boolean) => {
-    const result = await commands.setComputerAudioDefault(enabled);
+    const result = await commands.setSystemAudioDefault(enabled);
     if (result.status === "error") setError(sentence(result.error));
     else {
       setError(null);
@@ -159,7 +159,7 @@ function ComputerAudio({ settings, onSettings }: { settings: Settings; onSetting
       <Row label="Computer audio" detail="Start each new note with Computer audio on">
         <Switch
           label="Computer audio"
-          checked={settings.computer_audio_default}
+          checked={settings.system_audio_default}
           onChange={(v) => void change(v)}
         />
       </Row>
@@ -172,7 +172,7 @@ export function RecordingPane({ settings, onSettings }: { settings: Settings; on
   return (
     <Pane title="Recording">
       <MicrophoneGroup settings={settings} onSettings={onSettings} />
-      <ComputerAudio settings={settings} onSettings={onSettings} />
+      <SystemAudio settings={settings} onSettings={onSettings} />
     </Pane>
   );
 }

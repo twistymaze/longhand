@@ -99,11 +99,11 @@ async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settin
 }
 },
 /**
- * Choose whether a new note starts with Computer audio on (R6).
+ * Choose whether a new note starts with system audio on (R6).
  */
-async setComputerAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
+async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_computer_audio_default", { enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_system_audio_default", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -289,25 +289,25 @@ async readiness() : Promise<Result<Readiness, string>> {
 }
 },
 /**
- * The Computer audio permission now. The General pane polls it after
+ * The system audio permission now. The General pane polls it after
  * "Allow…", while the macOS prompt waits for an answer.
  */
-async computerAudioPermission() : Promise<Result<ComputerAudioPermission, string>> {
+async systemAudioPermission() : Promise<Result<SystemAudioPermission, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("computer_audio_permission") };
+    return { status: "ok", data: await TAURI_INVOKE("system_audio_permission") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Ask for the Computer audio permission: a short tap makes macOS show its
+ * Ask for the system audio permission: a short tap makes macOS show its
  * prompt (KTD12). It runs away from the command thread and returns the
  * state after the tap, which is "not asked" while the prompt waits.
  */
-async requestComputerAudioPermission() : Promise<Result<ComputerAudioPermission, string>> {
+async requestSystemAudioPermission() : Promise<Result<SystemAudioPermission, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("request_computer_audio_permission") };
+    return { status: "ok", data: await TAURI_INVOKE("request_system_audio_permission") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -317,9 +317,9 @@ async requestComputerAudioPermission() : Promise<Result<ComputerAudioPermission,
  * Open the Screen & System Audio Recording page of System Settings, where
  * the user allows a denied permission.
  */
-async openComputerAudioSettings() : Promise<Result<null, string>> {
+async openSystemAudioSettings() : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("open_computer_audio_settings") };
+    return { status: "ok", data: await TAURI_INVOKE("open_system_audio_settings") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -371,13 +371,13 @@ async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice |
 }
 },
 /**
- * Turn Computer audio on or off for one note from the recording page (R8).
+ * Turn system audio on or off for one note from the recording page (R8).
  * With no `session_id`, the next note starts with it. Settings does not
  * change. Returns the status after the change.
  */
-async setNoteComputerAudio(sessionId: string | null, enabled: boolean) : Promise<Result<RecordingStatus, string>> {
+async setNoteSystemAudio(sessionId: string | null, enabled: boolean) : Promise<Result<RecordingStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_computer_audio", { sessionId, enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_system_audio", { sessionId, enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -706,18 +706,6 @@ position_ms: number;
  * jumping by the time spent away.
  */
 recorded_ms: number }
-/**
- * The Computer audio permission, as the page reads it (R9, R10, KTD12).
- */
-export type ComputerAudioPermission = "allowed" | "denied" | 
-/**
- * macOS has not asked yet, or its prompt waits for an answer.
- */
-"not_asked" | 
-/**
- * The private check is missing on this macOS.
- */
-"unknown"
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
@@ -923,10 +911,10 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
 export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
 export type Readiness = { microphone_authorized: boolean; 
 /**
- * The Computer audio permission (R9). It does not change `armed`: the
+ * The system audio permission (R9). It does not change `armed`: the
  * microphone alone is enough to record.
  */
-computer_audio: ComputerAudioPermission; destination: DestinationStatus; 
+system_audio: SystemAudioPermission; destination: DestinationStatus; 
 /**
  * Microphone authorized, a destination chosen, and the chord registered
  * or cleared (R1c, R13). A destination that is unreachable right now can be changed
@@ -998,40 +986,40 @@ microphone_fallback: boolean;
  */
 microphone_choice: MicrophoneChoice | null; 
 /**
- * The Computer audio permission is unknown, the output plays, and the
- * system audio channel has been digital silence for 10 s: Computer
+ * The system audio permission is unknown, the output plays, and the
+ * system audio channel has been digital silence for 10 s: system
  * audio can be missing (U5 step 6). It clears when audio appears.
  */
-computer_audio_silent: boolean; 
+system_audio_silent: boolean; 
 /**
  * The Computer audio switch of the open note (R8). With no note open,
  * the switch that the next note starts with (R6).
  */
-computer_audio: boolean; 
+system_audio: boolean; 
 /**
  * A speaker stream is attached to the recording segment: the note
  * records system audio on the right now.
  */
-computer_audio_recording: boolean; 
+system_audio_recording: boolean; 
 /**
- * Computer audio is on, but the speaker stream failed or did not open.
+ * System audio is on, but the speaker stream failed or did not open.
  * The microphone records, the right channel holds silence, and the
  * capture watcher tries the speaker stream again (R10).
  */
-computer_audio_failed: boolean; 
+system_audio_failed: boolean; 
 /**
- * The last Computer audio permission check while Computer audio is on
- * and a segment records (KTD12). The page uses it to say why computer
+ * The last system audio permission check while system audio is on
+ * and a segment records (KTD12). The page uses it to say why system
  * audio is not recorded: denied, not asked (the prompt can wait for an
- * answer), or unknown. `None` while Computer audio is off.
+ * answer), or unknown. `None` while system audio is off.
  */
-computer_audio_permission: ComputerAudioPermission | null; 
+system_audio_permission: SystemAudioPermission | null; 
 /**
  * The output that Longhand follows has been silent for 30 s while
  * another output plays sound (Windows only, U4 step 6): the call can
  * play on a device that the note does not record.
  */
-computer_audio_other_output: boolean }
+system_audio_other_output: boolean }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.
@@ -1168,9 +1156,9 @@ live_transcript: boolean;
  */
 microphone: MicrophoneChoice | null; 
 /**
- * Whether a new note starts with Computer audio on (R6, KD13).
+ * Whether a new note starts with system audio on (R6, KD13).
  */
-computer_audio_default: boolean; 
+system_audio_default: boolean; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).
@@ -1260,6 +1248,18 @@ stub: boolean; host: string | null; model: string | null;
  * prompts had names, and a stub, have none.
  */
 prompt: string | null }
+/**
+ * The system audio permission, as the page reads it (R9, R10, KTD12).
+ */
+export type SystemAudioPermission = "allowed" | "denied" | 
+/**
+ * macOS has not asked yet, or its prompt waits for an answer.
+ */
+"not_asked" | 
+/**
+ * The private check is missing on this macOS.
+ */
+"unknown"
 export type WebviewLogLevel = "error" | "warn" | "info"
 
 /** tauri-specta globals **/

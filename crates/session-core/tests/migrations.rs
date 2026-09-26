@@ -201,7 +201,7 @@ fn migration_six_gives_existing_segments_one_channel_and_no_capture_choice() {
     }
     let store = Store::open(&path).unwrap();
     assert_eq!(store.segments("s1").unwrap().len(), 1);
-    // A note from an older build resumes on "System default" with Computer
+    // A note from an older build resumes on "System default" with system
     // audio off (KTD2).
     assert_eq!(
         store.capture_choice("s1").unwrap(),

@@ -21,7 +21,7 @@ const baseSettings: Settings = {
   pending_asr_model: null,
   live_transcript: true,
   microphone: null,
-  computer_audio_default: false,
+  system_audio_default: false,
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
@@ -29,7 +29,7 @@ const baseSettings: Settings = {
 
 const readiness: Readiness = {
   microphone_authorized: true,
-  computer_audio: "allowed",
+  system_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },

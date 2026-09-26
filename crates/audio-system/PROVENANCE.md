@@ -1,6 +1,6 @@
 # Provenance
 
-Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent Computer audio flag, U5 step 6) is new.
+Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent system audio flag, U5 step 6) is new.
 
 ## `src/macos.rs`
 

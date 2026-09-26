@@ -91,7 +91,7 @@ function settings(asr_model: string, extra: Partial<Settings> = {}): Settings {
     pending_asr_model: null,
     live_transcript: true,
     microphone: null,
-    computer_audio_default: false,
+    system_audio_default: false,
     learned_context_limits: {},
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
@@ -117,7 +117,7 @@ async function open({
     get_settings: () => state.settings,
     readiness: () => ({
       microphone_authorized: true,
-      computer_audio: "allowed",
+      system_audio: "allowed",
       destination: { kind: "unset" },
       armed: false,
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },

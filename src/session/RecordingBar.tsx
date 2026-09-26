@@ -116,7 +116,7 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   return items;
 }
 
-/// Why the note records from another microphone, or without computer
+/// Why the note records from another microphone, or without system
 /// audio (R4, R5, R10). The microphone continues to record in each case.
 function inputWarnings(status: RecordingStatus): Warning[] {
   const items: Warning[] = [];
@@ -127,20 +127,20 @@ function inputWarnings(status: RecordingStatus): Warning[] {
       text: `Using ${status.microphone ?? "the system default"}: ${choice.label} is not connected.`,
     });
   }
-  if (!status.computer_audio) return items;
-  const permission = status.computer_audio_permission;
+  if (!status.system_audio) return items;
+  const permission = status.system_audio_permission;
   if (permission === "denied") {
     items.push({ tone: "caution", text: "Computer audio is not recorded. Allow it in System Settings." });
   } else if (permission === "not_asked") {
     // The macOS prompt can wait for an answer while the note records.
     items.push({ tone: "caution", text: "Computer audio is not recorded until you allow it." });
-  } else if (status.computer_audio_failed) {
+  } else if (status.system_audio_failed) {
     items.push({ tone: "caution", text: "Computer audio stopped. The microphone is still recording." });
   }
-  if (status.computer_audio_silent) {
+  if (status.system_audio_silent) {
     items.push({ tone: "caution", text: "Computer audio is silent. Check the permission in System Settings." });
   }
-  if (status.computer_audio_other_output) {
+  if (status.system_audio_other_output) {
     items.push({ tone: "caution", text: "Computer audio is silent. Sound is playing on another output." });
   }
   return items;
@@ -152,7 +152,7 @@ function InputsText({ status }: { status: RecordingStatus | null }) {
   return (
     <span className="min-w-0 max-w-[40%] truncate text-label-secondary">
       <span>{status.microphone}</span>
-      {status.computer_audio && (
+      {status.system_audio && (
         <>
           <span aria-hidden> · </span>
           <span>Computer audio</span>

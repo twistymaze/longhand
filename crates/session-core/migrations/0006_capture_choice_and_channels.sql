@@ -7,7 +7,7 @@
 ALTER TABLE sessions ADD COLUMN mic_id TEXT;
 ALTER TABLE sessions ADD COLUMN mic_label TEXT;
 -- 1 while the note's Computer audio switch is on. NULL is off.
-ALTER TABLE sessions ADD COLUMN computer_audio INTEGER;
+ALTER TABLE sessions ADD COLUMN system_audio INTEGER;
 -- The index of the first stereo segment of the note. NULL while every
 -- segment is mono.
 ALTER TABLE sessions ADD COLUMN stereo_from INTEGER;

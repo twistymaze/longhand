@@ -130,8 +130,8 @@ pub struct Settings {
     /// The microphone a new note records from. `None` is "System default"
     /// (R1, KTD17).
     pub microphone: Option<MicrophoneChoice>,
-    /// Whether a new note starts with Computer audio on (R6, KD13).
-    pub computer_audio_default: bool,
+    /// Whether a new note starts with system audio on (R6, KD13).
+    pub system_audio_default: bool,
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
@@ -249,7 +249,7 @@ impl Default for Settings {
             pending_asr_model: None,
             live_transcript: true,
             microphone: None,
-            computer_audio_default: false,
+            system_audio_default: false,
             learned_context_limits: Default::default(),
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn a_store_without_the_recording_keys_reads_as_system_default_and_no_computer_audio() {
+    fn a_store_without_the_recording_keys_reads_as_system_default_and_no_system_audio() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "endpoint_model": "kept",
@@ -828,10 +828,10 @@ mod tests {
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated, "the new keys need no migration (KTD17)");
         assert_eq!(settings.microphone, None);
-        assert!(!settings.computer_audio_default);
+        assert!(!settings.system_audio_default);
         assert_eq!(settings.endpoint_model, "kept");
         assert_eq!(Settings::default().microphone, None);
-        assert!(!Settings::default().computer_audio_default);
+        assert!(!Settings::default().system_audio_default);
     }
 
     #[test]
@@ -905,12 +905,12 @@ mod tests {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "microphone": "USB Audio",
-            "computer_audio_default": true,
+            "system_audio_default": true,
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
         assert_eq!(settings.microphone, None);
-        assert!(settings.computer_audio_default);
+        assert!(settings.system_audio_default);
     }
 
     #[test]

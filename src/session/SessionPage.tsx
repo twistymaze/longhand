@@ -320,11 +320,11 @@ export function SessionPage({
         void changeInput(() => commands.setNoteMicrophone(id, next)),
       ),
     });
-    const on = capture.status.computer_audio;
+    const on = capture.status.system_audio;
     items.push({
       label: "Record Computer Audio",
       checked: on,
-      onSelect: () => void changeInput(() => commands.setNoteComputerAudio(id, !on)),
+      onSelect: () => void changeInput(() => commands.setNoteSystemAudio(id, !on)),
     });
   }
   if (phase === "processing" || phase === "saved") {

@@ -87,7 +87,7 @@ describe("wording", () => {
 describe("missingPreconditions", () => {
   const readiness = (over: Partial<Readiness>): Readiness => ({
     microphone_authorized: true,
-    computer_audio: "allowed",
+    system_audio: "allowed",
     destination: { kind: "ready", path: "/notes", free_bytes: null },
     armed: true,
     shortcut: { chord: "Super+KeyR", registered: true, error: null },

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { DEFAULT_SHORTCUT, commands, type ComputerAudioPermission, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
@@ -101,7 +101,7 @@ export function StatusPane({
             )
           )}
         </Row>
-        <ComputerAudioRow permission={readiness.computer_audio} onRefresh={onRefresh} />
+        <SystemAudioRow permission={readiness.system_audio} onRefresh={onRefresh} />
         <Row label="Storage"detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
           {readiness.destination.kind !== "ready" && (
             <GoTo pane="destination" onNavigate={onNavigate}>
@@ -167,13 +167,13 @@ export function StatusPane({
   );
 }
 
-/// The Computer audio permission (R9, KTD12, KTD15). It follows the
-/// Microphone row: a status and at most one button.
-function ComputerAudioRow({
+/// The system audio permission, in the "Computer audio" row (R9, KTD12,
+/// KTD15). It follows the Microphone row: a status and at most one button.
+function SystemAudioRow({
   permission,
   onRefresh,
 }: {
-  permission: ComputerAudioPermission;
+  permission: SystemAudioPermission;
   onRefresh: () => Promise<void>;
 }) {
   const [asking, setAsking] = useState(false);
@@ -182,16 +182,16 @@ function ComputerAudioRow({
     setAsking(true);
     // The short tap shows the macOS prompt, and the prompt does not wait
     // for the tap. Poll until the user answers.
-    let state = await commands.requestComputerAudioPermission();
+    let state = await commands.requestSystemAudioPermission();
     for (let i = 0; i < 120 && state.status === "ok" && state.data === "not_asked"; i++) {
       await new Promise((r) => setTimeout(r, 500));
-      state = await commands.computerAudioPermission();
+      state = await commands.systemAudioPermission();
     }
     setAsking(false);
     await onRefresh();
   };
 
-  const openSettings = () => void commands.openComputerAudioSettings();
+  const openSettings = () => void commands.openSystemAudioSettings();
 
   const detail =
     permission === "allowed" ? (

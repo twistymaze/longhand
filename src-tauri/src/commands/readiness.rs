@@ -20,10 +20,10 @@ fn armed(microphone: bool, destination: bool, shortcut: &ShortcutStatus) -> bool
     microphone && destination && shortcut.is_ok()
 }
 
-/// The Computer audio permission, as the page reads it (R9, R10, KTD12).
+/// The system audio permission, as the page reads it (R9, R10, KTD12).
 #[derive(Serialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ComputerAudioPermission {
+pub enum SystemAudioPermission {
     Allowed,
     Denied,
     /// macOS has not asked yet, or its prompt waits for an answer.
@@ -32,7 +32,7 @@ pub enum ComputerAudioPermission {
     Unknown,
 }
 
-impl From<audio_system::Permission> for ComputerAudioPermission {
+impl From<audio_system::Permission> for SystemAudioPermission {
     fn from(permission: audio_system::Permission) -> Self {
         match permission {
             audio_system::Permission::Allowed => Self::Allowed,
@@ -45,34 +45,34 @@ impl From<audio_system::Permission> for ComputerAudioPermission {
 
 /// The Screen & System Audio Recording page of System Settings.
 #[cfg(target_os = "macos")]
-const COMPUTER_AUDIO_SETTINGS: &str =
+const SYSTEM_AUDIO_SETTINGS: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
-/// Check the Computer audio permission. It asks the user nothing.
-async fn check_computer_audio() -> Result<ComputerAudioPermission, String> {
+/// Check the system audio permission. It asks the user nothing.
+async fn check_system_audio() -> Result<SystemAudioPermission, String> {
     tauri::async_runtime::spawn_blocking(audio_system::permission::preflight)
         .await
-        .map(ComputerAudioPermission::from)
+        .map(SystemAudioPermission::from)
         .map_err(|e| e.to_string())
 }
 
-/// The Computer audio permission now. The General pane polls it after
+/// The system audio permission now. The General pane polls it after
 /// "Allow…", while the macOS prompt waits for an answer.
 #[tauri::command]
 #[specta::specta]
-pub async fn computer_audio_permission() -> Result<ComputerAudioPermission, String> {
-    check_computer_audio().await
+pub async fn system_audio_permission() -> Result<SystemAudioPermission, String> {
+    check_system_audio().await
 }
 
-/// Ask for the Computer audio permission: a short tap makes macOS show its
+/// Ask for the system audio permission: a short tap makes macOS show its
 /// prompt (KTD12). It runs away from the command thread and returns the
 /// state after the tap, which is "not asked" while the prompt waits.
 #[tauri::command]
 #[specta::specta]
-pub async fn request_computer_audio_permission() -> Result<ComputerAudioPermission, String> {
+pub async fn request_system_audio_permission() -> Result<SystemAudioPermission, String> {
     tauri::async_runtime::spawn_blocking(audio_system::permission::request)
         .await
-        .map(ComputerAudioPermission::from)
+        .map(SystemAudioPermission::from)
         .map_err(|e| e.to_string())
 }
 
@@ -80,11 +80,11 @@ pub async fn request_computer_audio_permission() -> Result<ComputerAudioPermissi
 /// the user allows a denied permission.
 #[tauri::command]
 #[specta::specta]
-pub async fn open_computer_audio_settings() -> Result<(), String> {
+pub async fn open_system_audio_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(COMPUTER_AUDIO_SETTINGS)
+            .arg(SYSTEM_AUDIO_SETTINGS)
             .status()
             .map_err(|e| e.to_string())
             .and_then(|status| {
@@ -97,16 +97,16 @@ pub async fn open_computer_audio_settings() -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err("this platform has no Computer audio permission".to_string())
+        Err("this platform has no system audio permission".to_string())
     }
 }
 
 #[derive(Serialize, Type)]
 pub struct Readiness {
     pub microphone_authorized: bool,
-    /// The Computer audio permission (R9). It does not change `armed`: the
+    /// The system audio permission (R9). It does not change `armed`: the
     /// microphone alone is enough to record.
-    pub computer_audio: ComputerAudioPermission,
+    pub system_audio: SystemAudioPermission,
     pub destination: DestinationStatus,
     /// Microphone authorized, a destination chosen, and the chord registered
     /// or cleared (R1c, R13). A destination that is unreachable right now can be changed
@@ -131,7 +131,7 @@ pub async fn readiness(
     let shortcut = registration.status(ShortcutKind::Recording);
     let settings = settings::get_settings(&app);
     let microphone_authorized = tauri_plugin_macos_permissions::check_microphone_permission().await;
-    let computer_audio = check_computer_audio().await?;
+    let system_audio = check_system_audio().await?;
     let current = settings.current_destination.clone();
     let destination =
         tauri::async_runtime::spawn_blocking(move || destination::status(current.as_deref()))
@@ -150,7 +150,7 @@ pub async fn readiness(
     };
     Ok(Readiness {
         microphone_authorized,
-        computer_audio,
+        system_audio,
         armed: armed(
             microphone_authorized,
             settings.current_destination.is_some(),
@@ -189,20 +189,20 @@ mod tests {
     fn each_permission_state_maps_to_its_page_value() {
         use audio_system::Permission;
         assert_eq!(
-            ComputerAudioPermission::from(Permission::Allowed),
-            ComputerAudioPermission::Allowed
+            SystemAudioPermission::from(Permission::Allowed),
+            SystemAudioPermission::Allowed
         );
         assert_eq!(
-            ComputerAudioPermission::from(Permission::Denied),
-            ComputerAudioPermission::Denied
+            SystemAudioPermission::from(Permission::Denied),
+            SystemAudioPermission::Denied
         );
         assert_eq!(
-            ComputerAudioPermission::from(Permission::NotAsked),
-            ComputerAudioPermission::NotAsked
+            SystemAudioPermission::from(Permission::NotAsked),
+            SystemAudioPermission::NotAsked
         );
         assert_eq!(
-            ComputerAudioPermission::from(Permission::Unknown),
-            ComputerAudioPermission::Unknown
+            SystemAudioPermission::from(Permission::Unknown),
+            SystemAudioPermission::Unknown
         );
     }
 
@@ -210,13 +210,13 @@ mod tests {
     /// microphone alone is enough to record, so `armed` does not change.
     #[test]
     fn a_denied_permission_is_reported_and_does_not_disarm() {
-        let value = serde_json::to_value(ComputerAudioPermission::from(
+        let value = serde_json::to_value(SystemAudioPermission::from(
             audio_system::Permission::Denied,
         ))
         .unwrap();
         assert_eq!(value, serde_json::json!("denied"));
         assert_eq!(
-            serde_json::to_value(ComputerAudioPermission::NotAsked).unwrap(),
+            serde_json::to_value(SystemAudioPermission::NotAsked).unwrap(),
             serde_json::json!("not_asked")
         );
         assert!(armed(true, true, &status(None, false)));

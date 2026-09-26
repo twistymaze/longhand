@@ -7,7 +7,7 @@ import { mockTauri, shortcutStatuses } from "./test/tauri";
 
 const readiness: Readiness = {
   microphone_authorized: true,
-  computer_audio: "allowed",
+  system_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
@@ -27,12 +27,12 @@ const idle: RecordingStatus = {
   reserve_bytes: 0,
   microphone: null,
   microphone_fallback: false,
-  computer_audio_silent: false,
-  computer_audio: false,
-  computer_audio_recording: false,
-  computer_audio_failed: false,
-  computer_audio_permission: null,
-  computer_audio_other_output: false,
+  system_audio_silent: false,
+  system_audio: false,
+  system_audio_recording: false,
+  system_audio_failed: false,
+  system_audio_permission: null,
+  system_audio_other_output: false,
   microphone_choice: null,
 };
 

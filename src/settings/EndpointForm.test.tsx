@@ -30,7 +30,7 @@ const baseSettings: Settings = {
   pending_asr_model: null,
   live_transcript: true,
   microphone: null,
-  computer_audio_default: false,
+  system_audio_default: false,
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
