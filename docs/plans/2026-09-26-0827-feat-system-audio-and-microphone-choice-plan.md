@@ -170,7 +170,7 @@ Since the recognition models plan (`docs/plans/2026-09-25-1121-feat-recognition-
 
 **System audio capture**
 
-- KTD4. **A new crate, `crates/audio-system`, holds the system audio backends that are borrowed from anarlog.** On macOS it creates a global Core Audio process tap through `cidre` 0.15. The tap excludes Longhand's own process, so the alert sound and other Longhand sounds are not in the note. It reads the tap's actual sample rate, not only the reported format. On Windows it uses WASAPI loopback through `wasapi` 0.23 and anarlog's `EndpointFollower`: the default output device, unless another process plays to a different device while the default has no active session. It switches only after two polls agree. On a Windows endpoint switch, the backend downmixes the new endpoint to mono and resets its resampler, with no segment boundary. The macOS own-process exclusion translates Longhand's PID to a Core Audio process object; when that lookup fails, the tap excludes nothing and logs it. Crate layout:
+- KTD4. **A new crate, `crates/audio-system`, holds the system audio backends that are borrowed from anarlog.** On macOS it creates a global Core Audio process tap through `cidre` 0.15. The tap excludes Longhand's own process, so the alert sound and other Longhand sounds are not in the note. It reads the tap's actual sample rate, not only the reported format. On Windows it uses WASAPI loopback through `wasapi` 0.23 and anarlog's `EndpointFollower`: the default output device, unless another process plays to a different device while the default has no active session. It switches only after two polls agree. The user kept this rule (session-settled): an app with an open, silent stream on the default keeps capture on the default, and the recording page then warns (U4 step 6, U7). On a Windows endpoint switch, the backend downmixes the new endpoint to mono and resets its resampler, with no segment boundary. The macOS own-process exclusion translates Longhand's PID to a Core Audio process object; when that lookup fails, the tap excludes nothing and logs it. Crate layout:
   - `FrameResampler` moves from `crates/audio-cpal` to `crates/audio`, so both backends use it with no dependency cycle.
   - `crates/audio-cpal` stays microphone-only.
   - A provider in `src-tauri` combines `CpalAudio` and `audio-system`.
@@ -269,7 +269,7 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 | Risk | Mitigation |
 |---|---|
 | The permission check uses a private function that a macOS update can remove or change. | The check reports "unknown" when the function is missing, recording continues, and the recording page shows a warning when the system channel stays silent while the output plays audio (U5 step 6, U7). |
-| On Windows, an app with an open but silent stream on the default output keeps the follower on the default while the call plays on a headset (KTD4). | A manual hardware scenario in U4 records the behaviour. Whether to capture more than one output is an open decision for the user. |
+| On Windows, an app with an open but silent stream on the default output keeps the follower on the default while the call plays on a headset (KTD4). | The user kept anarlog's rule. When the followed output stays silent for 30 s while another output's peak meter shows sound, the recording page warns (U4 step 6, U7). A manual hardware scenario in U4 records the behaviour. |
 | A denied or pending tap gives silence that looks like a quiet computer. | The status comes from the preflight check, not from the audio (KTD12). A pending prompt shows the R10 message. |
 | The echo canceller is slow for a four-hour note. | It runs only inside echo spans, after Stop, when processing already takes minutes. U8 measures the real-time factor on a 30-minute fixture. |
 | The permission is granted during a note, but the tap made before it stays silent. | The capture watcher reopens the speaker stream on "allowed" (KTD12). |
@@ -446,6 +446,7 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 3. Read the tap's actual sample rate on the first callback and when it changes, and resample with `FrameResampler`.
 4. The Windows backend keeps `EndpointFollower`, its 2 s poll and its two confirmations. On a switch it downmixes and resets the resampler (KTD4).
 5. A backend error ends the speaker stream with `SpeakerStreamEnded`. It never ends the microphone stream.
+6. On Windows, the backend reads the peak meter (`IAudioMeterInformation`) of each active output at each follower poll. When the followed output stays silent for 30 s while another output shows sound, `RecordingStatus` sets an other-output flag. The flag clears when the followed output has sound or the follower switches.
 
 **Execution note:** The backends need real hardware. Prove them with a hardware test that is ignored by default, like `crates/audio-cpal/tests/hardware.rs`, run from the signed bundle's identity.
 
@@ -458,7 +459,8 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 - When the PID lookup fails, the tap is created with no exclusion and a log line.
 - Hardware (ignored by default): with a test tone playing, the tap returns audio above the noise floor. A tone that Longhand itself plays is not in the tap.
 - Hardware (manual, signed bundle): switching the output from speakers to headphones during capture keeps audio coming, with no restart.
-- Hardware (manual, Windows): a call on a headset while a browser tab holds an open, silent stream on the default speakers. Record whether the follower picks the headset.
+- Hardware (manual, Windows): a call on a headset while a browser tab holds an open, silent stream on the default speakers. Record whether the follower picks the headset. When it does not, the other-output warning shows after 30 s.
+- The other-output rule, as a unit test: the followed output silent for 30 s while another shows sound sets the flag. Sound on the followed output clears it.
 
 **Verification:** `cargo test -p audio-system` passes, `scripts/check-windows.sh` passes, and `scripts/check-provenance.sh` passes.
 
@@ -567,12 +569,13 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 **Approach:**
 1. The rail shows the microphone name and "Computer audio" as secondary static text (KTD14).
 2. The "…" menu gets the "Microphone" submenu and the "Record Computer Audio" item. Both call the U3 and U6 commands.
-3. `warnings()` gets five texts:
+3. `warnings()` gets six texts:
    - fallback: "Using {name}: {chosen} is not connected."
    - denied: "Computer audio is not recorded. Allow it in System Settings."
    - pending: "Computer audio is not recorded until you allow it."
    - failure: "Computer audio stopped. The microphone is still recording."
    - silent (U5 step 6): "Computer audio is silent. Check the permission in System Settings."
+   - other output (U4 step 6): "Computer audio is silent. Sound is playing on another output."
 4. Level bars stay on the microphone peak, so the only motion on the page does not change.
 
 **Patterns to follow:** `SpeakerField` and its menu item, and `warnings()` in `RecordingBar.tsx`. Apply the apple-design skill.
@@ -583,6 +586,7 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 - Covers AE6. With the permission denied and Computer audio on, the denied warning shows.
 - With the permission not yet answered, the pending warning shows.
 - With the silent flag, the silent warning shows.
+- With the other-output flag, the other-output warning shows.
 - Choosing another microphone in the submenu calls the command with its ID.
 - The "Record Computer Audio" item shows a check mark when on and calls the command when chosen.
 
