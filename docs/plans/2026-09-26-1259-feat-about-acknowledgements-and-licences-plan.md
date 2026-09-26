@@ -215,12 +215,13 @@ flowchart TB
   2. Build the window in `window.rs` with `open_or_build`: title "Open Source Licences", a standard title bar, and a size that fits a text column.
   3. The open command is async, because a synchronous command that builds a window deadlocks on Windows (the note beside `open_settings`).
   4. Give the new window the Settings window's lifecycle handling outside its builder: the `WindowEvent::Destroyed` arm also calls `hide_dock_icon_if_no_window` for `LICENCES_WINDOW`, so closing it with no other window open removes the Dock icon, and the window-state denylist keeps the plugin from restoring an old size and place.
-  5. The view fetches the text once and renders it in a monospace, selectable, scrolling block with the pane's colour tokens. While it waits it shows nothing. If the fetch fails, it shows one plain line that asks the person to reopen the window.
+  5. The view fetches the text once and renders it in a monospace, selectable, scrolling block with the pane's colour tokens. It marks the three part titles from U2 (Rust crates, interface packages, native libraries) as headings, so VoiceOver users can jump between parts; nothing changes on screen. While it waits it shows nothing. If the fetch fails, it shows one plain line that asks the person to reopen the window.
 - **Patterns to follow:** `open_settings` in `src-tauri/src/window.rs` and `src-tauri/src/commands/window.rs`; the `window === "settings"` switch in `src/App.tsx`; `src-tauri/capabilities/settings.json`.
 - **Test scenarios:**
   - Rust: the command's text is not empty and contains "ggml", "ONNX Runtime" and "tauri".
   - Rust, macOS build: the text contains no Windows-only entry, such as the VC++ runtime notice.
   - The view renders the text from a mocked command, and the text node allows selection.
+  - The three part titles render as headings (`getAllByRole("heading")` finds three), and the text under each title follows it.
   - The view shows the reopen line when the mocked command rejects.
   - `App` renders the licences view, not the main window, for `?window=licences`.
 - **Verification:** In the signed bundle the window opens, a second open brings the same window to the front, closing it and opening it again works, the text scrolls and copies, and closing it with the main window hidden leaves no Dock icon.
