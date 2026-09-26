@@ -51,7 +51,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [System audio capture](system-audio-capture.md) | open | Record the computer's own audio for meetings on calls |
+| [System audio capture](system-audio-capture.md) | in-progress | Record the computer's own audio for meetings on calls, and choose the microphone |
 | [Let the laptop sleep during a session](prevent-sleep-opt-out.md) | open | An opt-out for the four-hour sleep assertion on battery |
 | [A recording shortcut per folder](shortcut-per-folder.md) | parked | A hotkey per destination; set aside for "move it later" |
 | [Import an existing recording](import-existing-recording.md) | open | Process a file from a dedicated recorder as a session |

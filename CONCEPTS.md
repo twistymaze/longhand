@@ -34,6 +34,17 @@ The folder that Save put a session into. A session keeps its home folder for lif
 ### Title
 The name of a session, shown on Home, on the session page and in the home folder's name. Processing proposes it. The user can rename it at any time, and a title the user set is never replaced automatically. A session with no title yet shows its start time.
 
+## Recording
+
+### Microphone choice
+The input that a note records from. The user chooses the usual microphone in Settings, or "System default", and can change it for one note on the recording page. A chosen microphone that is missing or disconnects is replaced by the system default, and the choice stays.
+
+### System audio
+All audio that the computer plays, from any app. A note records it only while its Computer audio switch is on. The UI calls it "Computer audio"; "system audio" is the term in code and docs only. A note with system audio saves the raw microphone on the left channel and the raw system audio on the right.
+
+### Echo removal
+The processing step after Stop that removes the system audio that the microphone heard from the speakers. It changes only the audio that processing uses, never the saved recording. It is distinct from the echo gate, which only leaves out microphone chunks that are mostly echo from the live mix during recording.
+
 ## Transcription
 
 ### Recognition model
