@@ -13,13 +13,17 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** A person who uses Longhand on several computers that sync one folder sees the same notes in Home on each computer, and can do anything with a note on any of them, whichever computer recorded it.
-- **Means:** `session.md` becomes the complete record of a saved note (KD2), and the note folder is the authority on every computer (KD4). Home lists saved notes from the storage folders, not only from this computer's database (R1). Longhand watches the storage folders while it is open (R7).
-- **Product authority:** This plan covers the shared library, the complete `session.md`, folder watching, and the change of the UI term "Destination" to "Storage". Search and the other parts of `docs/ideas/library-and-browsing.md` are not active scope. The Product Contract wins on behavior.
+- **Means:** `session.md` becomes the complete record of a saved note (KD2, KTD2). Notes from other computers become ordinary saved rows in this computer's database, built from their folders (KTD1). Every writer follows the folder first (KD4, KTD3). A library scan at launch and a folder watcher while open keep the rows current (KTD5–KTD7).
+- **Product authority:** This plan covers the shared library, the complete `session.md`, folder watching, and the change of the UI term "Destination" to "Storage". Search and the other parts of `docs/ideas/library-and-browsing.md` are not active scope. The Product Contract wins on behavior. A KTD wins on mechanism within the Rs that it cites.
+- **Stop conditions:** Stop and ask when a saved-row import cannot fit the session state machine without a new state, when `notify` cannot watch a folder under `~/Library/CloudStorage` at all, or when a change would alter a KD.
+- **Execution profile:** Eight units in four phases. `ce-work` implements in a worktree named `one-library-across-computers`. Commit per unit. Local checks are the gate (see Verification Contract). The synced-folder behavior is tested manually from the signed bundle on two computers.
 - **Open blockers:** None.
 
 ---
 
 ## Product Contract
+
+Product Contract preservation: unchanged by planning. The Outstanding Questions section now points to the KTDs that resolve each question.
 
 ### Summary
 
@@ -108,18 +112,17 @@ Walking-skeleton `KD5` and `R25` already say that the folders hold the content a
 
 ### Outstanding Questions
 
-**Deferred to Planning**
-
-- How Home and the database divide the work: whether saved notes are always read from the folders, or the database keeps a rebuildable index that the watcher updates (R1, R4, R8, R9).
-- How long the wait in R10 is, and how the watcher behaves on each sync service's folder on macOS and Windows, including events that come in bursts, files that are online-only, and File Provider clients that deliver a rename as a remove and an add (R7, R10, R12).
-- Two computers can start notes in the same minute and choose the same folder name before either sees the other's folder. Some sync services then merge the two folders instead of making a conflict copy. How does a new note get a folder name that cannot clash across computers, while the title still names the folder (R15)?
-- On a computer with no database row, how does Longhand tell the real folder from a conflict copy when two folders hold the same note id (R15)?
-- When a sync client is signed out, it can remove online-only files but leave the storage folder in place, so notes look deleted under R10. Removing a note from Home must never delete this computer's own working state for it. How is that kept safe (R10, KD7)?
-- A computer that runs an older Longhand can rewrite `session.md` without the new fields. How does a newer computer keep a proposed title from turning into a title set by the user (R3, R5)?
-- What an open note page does when a sync changes a file that the user is editing on this computer at the same time (R8, R13).
-- A Resume or Transcribe Again on one computer rewrites all four documents in place. What happens when another computer edits the note during that run (R9, R15)?
-- Whether the status of a Transcribe Again run (its error, or a summary that was not updated) stays on the computer that ran it, or other computers see it too (R4, R13).
-- In what order the launch catch-up (R11) and the existing folder reconcile run, so that the reconcile never acts on a database record that a sync made old (R9, R11).
+None remain. Planning resolved each question that the brainstorm deferred:
+- How Home and the database divide the work: KTD1, KTD6.
+- The wait in R10 and the watcher's behavior on synced folders: KTD6, KTD7.
+- Same-minute folder names on two computers: Risks.
+- The real folder versus a conflict copy on a computer with no row: KTD5.
+- A signed-out sync client: KTD5, KTD6.
+- An older Longhand that drops the new fields: KTD2, KTD3.
+- An open note page whose file a sync changes during an edit: KTD10.
+- Another computer's edit during a Resume or Transcribe Again: KTD3.
+- The status of a Transcribe Again run: KTD11.
+- The launch order: KTD9.
 
 ### Sources / Research
 
@@ -133,3 +136,389 @@ Walking-skeleton `KD5` and `R25` already say that the folders hold the content a
 - `crates/pipeline/src/assemble.rs`: Resume and Transcribe Again decode each segment from the audio in the home folder, including stereo segments and echo removal, so they need only the folder's audio plus a working location.
 - `crates/pipeline/src/folder_rename.rs`, `crates/session-save/src/naming.rs`: rename, the launch reconcile and the `-2` suffix rule.
 - No crate in the workspace watches files today.
+
+---
+
+## Planning Contract
+
+### Key Technical Decisions
+
+- KTD1. **A note from another computer becomes an ordinary Saved row in this computer's store.** A new store method adopts a note from its folder. It inserts a row in state Saved with the fields of `session.md`, its segments, the text of `notes.md` and its home path. It does this only for an id that has no row, and it goes around the state machine because the note never passed through Capturing on this computer. A second new method, forget, removes a row and its checkpoints without touching any folder. Rationale: every command already resolves a saved note through its row (`home_path`, `busy`, rename, delete, Regenerate Summary, Transcribe Again, Resume), so an adopted row makes each action work with no second code path. A separate read-only library table was rejected: every action would need two sources, and KD3 needs full actions. Covers R1, R4, R13.
+- KTD2. **`session.md` gets three new frontmatter fields: `title_source`, `asr_model` and `found_speakers`.** Each is optional, is read with a default and is written only when set, like `title` today. The frontmatter parser also accepts CRLF line ends, because a Windows tool can rewrite the file. The per-computer data stays out of the file (R4): the live mode, the microphone, the Computer audio switch, the prompt snapshot and the Transcribe Again marks. `stereo_from` is derived from the first segment record with two channels. A file with a title and no `title_source` counts as set by the user (R5). Covers R3, R5.
+- KTD3. **One refresh step brings a row up to date from its folder, and every writer calls it first.** The refresh reads `session.md` and `notes.md`, and updates the title, title source, recognition model, speakers found, segments, notes and home path. It is idempotent: an unchanged folder changes nothing and emits nothing. When an older Longhand wrote `session.md` without `title_source` and the title did not change, the refresh keeps the row's stored title source. It runs for a Saved row that no stage has claimed (`folder_rename::busy`). It runs at the start of rename, notes save, Regenerate Summary, Transcribe Again and Resume. It runs again inside `update_home` just before `notes.md` and `session.md` are written, so a notes edit or rename that another computer made during a long run is kept. The new transcript and summary of that run still replace the old ones. Covers R9, R14 (KD4).
+- KTD4. **Regenerate Summary reads its transcript from `transcript.md`.** `Transcript::parse` gives the same speaker, position and text as `summarize::Turn`, so it replaces `transcript_turns` on every computer. Echo spans and live parts do not matter at that point, because `transcript.md` already holds the final text. Covers R14.
+- KTD5. **The library scan reads only `session.md` in each note folder.** For each retained root that is present, it lists the top-level folders, skips names that start with a dot (staging, rename and temporary folders), and parses `session.md`. It never opens audio, so an online-only audio file is not downloaded by the scan. Reading `session.md` downloads that one small file, which is acceptable. The scan also records:
+  1. Waiting parts: `transcript.md`, `summary.md` or `notes.md` missing, or a segment's audio missing (R6).
+  2. Conflict copies: a sibling file whose name matches a conflict pattern of one of the four documents. The patterns are the OneDrive, Dropbox, Google Drive and iCloud forms (`notes (1).md`, `notes (Erv's conflicted copy 2026-09-25).md`, `notes-DESKTOP-ABC.md`, `notes 2.md`).
+  3. Duplicate ids: when two folders hold one note id, the real folder is the one at the row's home path, then the one whose name has no conflict pattern, then the older one. The other folder becomes a conflict notice (R15).
+  4. Root availability: a root that is missing or not a folder is unavailable. A root that is present but shows no note folders while the store holds saved rows under it also counts as unavailable. This covers a signed-out sync client that removes its online-only files (KD7).
+  Covers R1, R6, R10, R12, R15, R16.
+- KTD6. **Reconcile applies a scan to the store.** A new id is adopted (KTD1). A known id is refreshed (KTD3), and a new folder path updates the home path, which follows a rename by id (R8). An id that is gone from an available root gets a pending delete. It is forgotten only after 30 seconds with no folder for that id. It is forgotten only when its row is Saved and unclaimed, and has no rename in progress. Rows under an unavailable root are left alone. Forget removes only rows and checkpoints: a Saved row has no working copy. A note that comes back later is adopted again, and loses only this computer's stored recognition results. Covers R8, R10, R16.
+- KTD7. **The watcher is `notify` 8 with `notify-debouncer-full` 0.5, from anarlog's notify plugin (MIT).** There is one recursive watch for each retained root that is present, with a 900 ms debounce. An event only marks its top-level note folder for a targeted scan. A rescan or overflow event, an event with no usable path, or an unpaired rename runs a full scan of that root. A full scan of every root also runs every 60 seconds as a safety net, because FSEvents can drop events and File Provider folders behave in unusual ways. The watcher restarts when the retained roots change. Longhand's own writes need no own-writes registry, because the refresh is idempotent (KTD3). The path filter follows anarlog's `should_skip_path`, plus Longhand's hidden names. Covers R7, R8, R11.
+- KTD8. **A new crate `crates/library` holds the scan, conflict detection and reconcile, and `src-tauri/src/managers/library.rs` holds the watcher.** The crate has no Tauri dependency, so the two-computer tests run with two stores over one temporary folder. The manager owns the debouncer, the 60-second timer and the pending-delete timers, and it emits a `LibraryChanged` event. Runtime state (unavailable roots, waiting parts, conflict notices, pending deletes) stays in memory and is rebuilt by each scan. It is never stored. Covers R7–R12, R15, R16.
+- KTD9. **The launch order puts the library scan before the folder reconcile.** The steps are: reclaim, staging sweep, rename intents (`folder_rename::resolve_intents`), library full scan and reconcile, folder reconcile (the rest of `folder_rename::recover`), live attach, retry of notes waiting for a folder, the runner start and the watcher start. `recover` splits into its two halves. The staging sweep stays as it is: it removes staging only for an id recorded as completed, and a first save's staging has an id that no other computer has adopted. A test holds that rule. Covers R9, R11.
+- KTD10. **The UI refreshes on `LibraryChanged { changed, removed }`.**
+  - `useSessions` refreshes the list and bumps the version of each changed id.
+  - The note page reloads the detail and the document on a bump for its id. Today it reloads the document only on a phase change.
+  - The notes tab reloads the notes only when no save is waiting and the last keystroke was more than 2 seconds ago. Otherwise the local edit wins at its next save, as with any other write.
+  - A removed id turns an open page into "This note was deleted."
+  - `SessionEntry` gets the storage-unavailable flag. `SessionDetail` gets the waiting parts, the conflict file names and the storage-unavailable flag.
+  Covers R6, R8, R10, R15, R16.
+- KTD11. **The status of a Transcribe Again run stays on the computer that ran it.** Its error and its "summary not updated" mark are about a run on this computer. Other computers see the new files. Covers R4.
+- KTD12. **R18 uses a fingerprint of `transcript.md`.** The row stores a hash of the `transcript.md` that this computer last wrote or read. When the refresh finds a different hash, it removes this computer's Assemble, Transcribe and Diarize checkpoints for the note, so a later Resume or Transcribe Again decodes and transcribes from the folder. This needs one new column, added by the next free migration number at merge time (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`). Covers R18.
+- KTD13. **Backend errors that the note page can show say "storage folder".** The three save errors in `crates/pipeline/src/save.rs` and `crates/session-save/src/lib.rs` change their text. Identifiers and log text keep "destination". Covers R17 (KD8).
+
+### High-Level Technical Design
+
+How a synced change reaches the UI:
+
+```mermaid
+flowchart TB
+  F[Storage folder: note folders] -->|FSEvents or ReadDirectoryChangesW| W[Watcher: notify, 900 ms debounce]
+  T[60 s timer, launch, roots changed] --> S
+  W -->|note folder dirty, or rescan| S[Scan: read session.md, find waiting parts, conflicts, root state]
+  S --> R[Reconcile: adopt, refresh, follow rename, pending delete]
+  R --> DB[(This computer's store: saved rows)]
+  R -->|LibraryChanged| UI[Home and note page]
+  A[Actions: rename, notes, Regenerate Summary, Transcribe Again, Resume] -->|refresh first, KTD3| DB
+  A -->|write| F
+```
+
+The life of a row that a scan cannot find:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Listed
+  Listed --> PendingDelete: id gone from an available root
+  PendingDelete --> Listed: folder with the same id appears within 30 s
+  PendingDelete --> Forgotten: 30 s pass, row Saved and unclaimed
+  Listed --> Unavailable: root missing, or root empty while rows exist
+  Unavailable --> Listed: root back
+  Forgotten --> Listed: folder appears later (adopted again)
+```
+
+The launch order:
+
+```mermaid
+flowchart LR
+  A[reclaim] --> B[staging sweep] --> C[rename intents] --> D[library scan and reconcile] --> E[folder reconcile] --> G[live attach and retry] --> H[runner start] --> I[watcher start]
+```
+
+### Assumptions
+
+- A person rarely records on two computers in the same minute, so two notes rarely get one folder name (see Risks).
+- One recursive watch per root is enough for a library of hundreds of notes.
+
+### System-Wide Impact
+
+- **Store:** a new way to create a Saved row and to forget one. Every existing check that assumes a Saved row came through Processing must accept an adopted row.
+- **Every writer to a home folder** gains a refresh step. A missed writer brings back the database-wins defect.
+- **Launch time:** a full scan of every retained root. On a large synced library, reading every `session.md` can take seconds on the first launch.
+- **Per-computer settings** decide how an action runs on another computer's note (KD10).
+
+### Risks
+
+| Risk | Mitigation |
+|---|---|
+| Two computers start notes in the same minute with the same default name, and a sync service merges the two folders. The files of two notes then mix. | Rare for one person. The scan reports two `session.md` conflict copies as a notice (KTD5). A folder-name change is not in scope. |
+| FSEvents drops events or behaves in unusual ways in `~/Library/CloudStorage`. | The 60-second full scan (KTD7). The manual test covers OneDrive and Dropbox on macOS. |
+| A signed-out sync client keeps some files, so the root is neither empty nor complete. | The 30-second pending delete limits the damage to rows. Notes come back when the files return (KTD6). The manual test checks sign-out. |
+| An adopted row trips a check that expects a row that was processed on this computer. | Two-computer integration tests for every action (U4, U5). |
+| Resume or Transcribe Again on another computer transcribes the earlier segments again, and the text can change. | Accepted (KD3). |
+
+---
+
+## Implementation Units
+
+### Phase 1: The folder is the complete record
+
+### U1. Complete `session.md`
+
+**Goal:** `session.md` holds every field that Home and the note page need, and it parses from any line ending.
+
+**Requirements:** R3, R5 (KD2, KTD2).
+
+**Dependencies:** None.
+
+**Files:**
+- `crates/session-core/src/folder.rs`
+- `crates/pipeline/src/save.rs` (`session_doc`)
+- `crates/pipeline/src/folder_rename.rs` (`write_document`)
+- `crates/session-core/tests/folder.rs`
+- `crates/pipeline/tests/runner.rs`
+
+**Approach:**
+1. Add `title_source`, `asr_model` and `found_speakers` to `SessionDoc`, each optional and skipped when unset.
+2. Make the frontmatter split accept CRLF.
+3. Write the new fields from the row in `session_doc` and in the rename rewrite.
+4. Add a reader that gives the defaults of KTD2 for a file without the fields.
+
+**Patterns to follow:** the `title` field and `SegmentRecord.channels` in `folder.rs`.
+
+**Test scenarios:**
+- A saved note's `session.md` round-trips with all three new fields.
+- A `session.md` written before this change parses, and its title counts as set by the user.
+- A `session.md` with CRLF line ends parses.
+- A rename rewrites `session.md` and keeps the new fields.
+- A stereo segment keeps `channels: 2`, and `stereo_from` is derived from it.
+
+**Verification:** `cargo test -p session-core` and `cargo test -p pipeline` pass.
+
+### U2. Adopt and forget in the store
+
+**Goal:** The store can create a Saved row from a folder and remove a row without touching folders, and it records the transcript fingerprint.
+
+**Requirements:** R1, R4, R18 (KTD1, KTD12).
+
+**Dependencies:** U1.
+
+**Files:**
+- `crates/session-core/src/jobs.rs`
+- `crates/session-core/src/schema.rs`
+- `crates/session-core/migrations/0007_transcript_fingerprint.sql` (the next free number at merge time)
+- `crates/session-core/tests/jobs.rs`
+- `crates/session-core/tests/migrations.rs`
+
+**Approach:**
+1. `adopt` inserts a Saved row with its segments, notes, title, title source, recognition model, speakers found and home path. It refuses an id that already has a row.
+2. `forget` deletes a row, its segments, notes and checkpoints, and touches no folder.
+3. A new column holds the `transcript.md` fingerprint. A method clears the Assemble, Transcribe and Diarize checkpoints of one note.
+
+**Patterns to follow:** `create_session` and `delete_session` in `jobs.rs`. The migration tests from an old schema with rows (`docs/solutions/workflow-issues/edited-applied-migration-breaks-older-databases.md`).
+
+**Test scenarios:**
+- An adopted row is Saved, lists in `sessions()`, and accepts `SavedEdit` and `UserResume`.
+- Adopt refuses an id that has a row.
+- Forget removes the row and its checkpoints, and the home folder still exists.
+- The migration runs on a version-6 store that has saved rows, and the rows keep their data.
+
+**Verification:** `cargo test -p session-core` passes.
+
+### Phase 2: The library
+
+### U3. Library scan
+
+**Goal:** A scan of the retained roots finds every note folder, its waiting parts, its conflict copies and the state of each root.
+
+**Requirements:** R1, R6, R10, R12, R15, R16 (KTD5, KTD8).
+
+**Dependencies:** U1.
+
+**Files:**
+- `crates/library/Cargo.toml`
+- `crates/library/src/lib.rs`
+- `crates/library/src/scan.rs`
+- `crates/library/src/conflict.rs`
+- `crates/library/tests/scan.rs`
+- `Cargo.toml` (workspace member)
+
+**Approach:**
+1. List the top-level folders of each root and skip dot names.
+2. Parse `session.md` only. A folder without a valid one is not a note yet.
+3. Record the waiting parts, the conflict copies, and the real folder for each duplicate id (KTD5).
+4. Decide root availability, including the empty-root rule.
+
+**Patterns to follow:** anarlog `crates/fs-sync-core/src/scan.rs` for the directory scan.
+
+**Test scenarios:**
+- Covers AE7. A folder with `session.md` and no `notes.md` lists with notes waiting.
+- A folder with only audio is not listed.
+- `.longhand-staging-*`, `.longhand-rename-*` and temporary files are skipped.
+- Covers AE8. `notes (1).md` beside `notes.md` gives a conflict notice. The same holds for each of the four services' patterns.
+- Two folders with one id: the real one is chosen by the rule, and the other gives a notice.
+- A missing root is unavailable. An empty root with saved rows under it is unavailable. An empty root with no rows is available.
+- No audio file is opened.
+
+**Verification:** `cargo test -p library` passes.
+
+### U4. Reconcile into the store
+
+**Goal:** A scan adopts new notes, refreshes changed ones, follows renames and forgets deleted ones, as KTD3, KTD6 and KTD12 define.
+
+**Requirements:** R1, R4, R8, R9, R10, R11, R16, R18 (KTD3, KTD6, KTD12).
+
+**Dependencies:** U2, U3.
+
+**Files:**
+- `crates/library/src/reconcile.rs`
+- `crates/library/src/refresh.rs`
+- `crates/library/tests/two_computers.rs`
+
+**Approach:**
+1. The refresh step of KTD3, public so that the pipeline can call it.
+2. Reconcile applies a scan: adopt, refresh, a new home path, and pending deletes with their 30-second rule. The clock is injected.
+3. A different transcript fingerprint clears the stored recognition results (KTD12).
+
+**Execution note:** Build the two-computer test harness first: two stores and one shared temporary root, with a helper that saves a note through the real pipeline on one store.
+
+**Test scenarios:**
+- Covers AE1, AE2. A note that store A saved is adopted by store B with its title, date and notes.
+- Covers AE4. A folder renamed and then re-created with the same id within 30 seconds: B keeps the row and follows the new path.
+- Covers AE6. A folder removed from an available root is forgotten after 30 seconds, and its home folder is not touched. A root that goes missing leaves every row.
+- A claimed row, or a row that is not Saved, is never refreshed or forgotten.
+- A refresh with an unchanged folder changes nothing.
+- An older `session.md` without `title_source`, with the same title: the row keeps its title source.
+- Covers AE9. A new `transcript.md` from B clears A's recognition results for that note.
+
+**Verification:** `cargo test -p library` passes.
+
+### Phase 3: Writers and launch
+
+### U5. Every writer follows the folder
+
+**Goal:** Every action refreshes from the folder first, Regenerate Summary reads `transcript.md`, and the launch order puts the scan before the folder reconcile.
+
+**Requirements:** R9, R13, R14, R17, R18 (KD3, KD4, KD10, KTD3, KTD4, KTD9, KTD11, KTD13).
+
+**Dependencies:** U4.
+
+**Files:**
+- `crates/pipeline/src/save.rs` (`set_notes`, `update_home`, `summarize_again`, the error text)
+- `crates/pipeline/src/summarize.rs`
+- `crates/pipeline/src/folder_rename.rs` (`rename_session`, the split of `recover`)
+- `crates/pipeline/src/runner.rs` (Transcribe Again)
+- `crates/session-save/src/lib.rs` (the error text)
+- `src-tauri/src/managers/capture.rs` (`resume_session`)
+- `src-tauri/src/managers/processing.rs` (the launch order)
+- `crates/pipeline/tests/runner.rs`
+
+**Approach:**
+1. Call the refresh at the start of each writer, and again inside `update_home` before `notes.md` and `session.md` are written (KTD3).
+2. Regenerate Summary builds its turns from `Transcript::parse` of `transcript.md` (KTD4).
+3. Split `folder_rename::recover` into intents and reconcile, and run the library scan between them (KTD9).
+4. Change the three error texts (KTD13).
+
+**Patterns to follow:** `refresh_document` in `folder_rename.rs`. The rename crash tests in `crates/pipeline/tests/runner.rs`.
+
+**Test scenarios:**
+- Covers AE5. B renames the note and edits its notes. A runs Regenerate Summary: the summary uses B's notes, and the folder keeps B's title.
+- Covers AE3. B resumes a note that A recorded, records a new segment and stops. The folder holds the old audio, one new file and a transcript of both.
+- B runs Transcribe Again on A's note. It decodes from the folder audio and keeps the notes and title.
+- Regenerate Summary on a computer with no recognition results summarizes the text of `transcript.md`, not an empty transcript.
+- A notes edit on B during A's Transcribe Again is still in `notes.md` after A's save.
+- The launch reconcile does not rename a folder back after a synced rename.
+- The staging sweep never removes the staging folder of an id with no row.
+- The save error for a missing folder says "storage folder".
+
+**Verification:** `cargo test -p pipeline` and `cargo test --workspace` pass.
+
+### U6. The watcher
+
+**Goal:** While Longhand runs, a synced change reaches the store and the UI within seconds.
+
+**Requirements:** R7, R8, R10, R11 (KTD7, KTD8).
+
+**Dependencies:** U4, U5.
+
+**Files:**
+- `src-tauri/src/managers/library.rs`
+- `src-tauri/src/managers/mod.rs`
+- `src-tauri/src/lib.rs` (manage, event, launch order)
+- `src-tauri/src/commands/settings.rs` (`destination_changed` restarts the watcher)
+- `src-tauri/Cargo.toml` (`notify`, `notify-debouncer-full`)
+- `src-tauri/PROVENANCE.md`
+- `src/bindings.ts` (regenerated)
+
+**Approach:**
+1. Start one debounced recursive watch for each present root after the runner starts.
+2. Map events to targeted scans, and rescan events to full scans. Run a full scan every 60 seconds.
+3. Run reconcile off the UI thread, and emit `LibraryChanged` with the changed and removed ids.
+4. Restart the watches when the roots change. Stop them on quit.
+
+**Patterns to follow:** anarlog `plugins/notify/src/ext.rs` and `path.rs`. The thread and Drop shape of `crates/power/src/sleep/mod.rs`.
+
+**Test scenarios:**
+- A folder added under a watched temporary root emits `LibraryChanged` with its id within the debounce plus scan time.
+- A rescan event runs a full scan.
+- A roots change restarts the watches on the new set.
+- The path filter skips Longhand's hidden names and temporary files.
+
+**Verification:** `cargo test -p longhand` passes, and `scripts/check-provenance.sh` passes.
+
+### Phase 4: The UI and documents
+
+### U7. Home and the note page
+
+**Goal:** Home and an open note page show synced changes, waiting parts, conflict notices, an unavailable storage folder and a deleted note, and the UI says "Storage".
+
+**Requirements:** R6, R8, R10, R12, R15, R16, R17 (KTD10, KTD13).
+
+**Dependencies:** U6.
+
+**Files:**
+- `src-tauri/src/commands/session.rs` (`SessionEntry`, `SessionDetail`)
+- `src/session/useSessions.ts`
+- `src/session/SessionPage.tsx`
+- `src/session/NotesTab.tsx`
+- `src/session/RecordingBar.tsx`
+- `src/home/Home.tsx`
+- `src/session/SessionPage.test.tsx`
+- `src/home/Home.test.tsx`
+- `src/session/NotesTab.test.tsx`
+
+**Approach:**
+1. Add the flags and lists of KTD10 to the commands.
+2. Refresh on `LibraryChanged` as KTD10 describes.
+3. Show the lines: parts waiting for the sync; another version of the note exists (with the file names); storage folder unavailable; this note was deleted.
+4. Disable notes edits, Regenerate Summary, Transcribe Again and Resume while a part waits or the storage folder is unavailable.
+5. Change the recording-bar text to "Storage: …".
+
+**Execution note:** Invoke the `apple-design` skill before the UI work, as `CLAUDE.md` requires. Keep the notices quiet: one line in the page's secondary text style, with no motion.
+
+**Test scenarios:**
+- A `LibraryChanged` for the open note reloads its detail and document.
+- A synced notes change reloads the notes tab when no save waits, and does not replace a local edit that is still waiting.
+- A removed id shows "This note was deleted" on the open page.
+- Covers AE7. A note with notes waiting shows the line, and the editor does not accept input.
+- Covers AE8. A conflict notice names the file.
+- Covers AE6. A note in an unavailable storage folder lists with its line, and its actions are disabled.
+- The recording bar says "Storage: …" when the folder is not ready.
+
+**Verification:** `bun run build` and `bun run test` pass, and the bindings test leaves no diff.
+
+### U8. Vocabulary and ideas
+
+**Goal:** The shared documents use the terms of this work and show the state of the ideas.
+
+**Requirements:** None directly. It supports the Language rules in `CLAUDE.md`.
+
+**Dependencies:** U7.
+
+**Files:**
+- `CONCEPTS.md`
+- `docs/ideas/README.md`
+- `docs/ideas/cross-machine-library.md`
+- `docs/ideas/library-and-browsing.md`
+
+**Approach:**
+1. Add to `CONCEPTS.md`: Library (every saved note in the retained storage folders), Adopt, and Conflict copy.
+2. Set the idea to `done` and move its row to Done. Update the note in `library-and-browsing.md`.
+
+**Test scenarios:** Test expectation: none — documentation only.
+
+**Verification:** Each new term has one meaning, and every other document uses the same term.
+
+---
+
+## Verification Contract
+
+| Gate | Command | Applies to |
+|---|---|---|
+| Format | `cargo fmt --all --check` | every Rust unit |
+| Lint | `cargo clippy --workspace --all-targets -- -D warnings` | every Rust unit |
+| Rust tests | `cargo test --workspace` | U1–U6 |
+| Bindings | `cargo test -p longhand export_bindings`, then no diff in `src/bindings.ts` | U6, U7 |
+| Frontend | `bun run build` and `bun run test` | U7 |
+| Windows lint | `scripts/check-windows.sh` | every Rust unit |
+| Provenance | `scripts/check-provenance.sh` | U3, U6 |
+| Signed bundle, two computers | `bun tauri build --bundles app` on two Macs (or a Mac and Windows) that share a OneDrive or Dropbox folder. Check AE1–AE9 by hand. Also check an online-only audio file, a sync-client sign-out, and a quit during a scan. | U6, U7 |
+
+CI runs only on the pull request into main. Local checks are the gate.
+
+## Definition of Done
+
+- Every R1–R18 is true, and AE1–AE9 pass as tests or in the two-computer check.
+- Every gate in the Verification Contract passes.
+- A note recorded on one computer appears on the other within seconds while both apps are open.
+- No code from an abandoned approach stays in the diff.
+- `CONCEPTS.md` and `docs/ideas/` match the shipped behavior (U8).
