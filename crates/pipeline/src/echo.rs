@@ -24,6 +24,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use asr::Span;
+use audio::level::{MIN_SPEECH_FRAMES, SPEECH_FLOOR, rms};
 use audio_sync::{GccPhatLagEstimator, SyncProbeConfig};
 use serde::{Deserialize, Serialize};
 use session_core::Stage;
@@ -57,8 +58,6 @@ const LAG_TOLERANCE: isize = 48;
 /// A confident window is echo only when another confident window within
 /// this many probe hops has the same delay: one window alone can be chance.
 const CONFIRM_HOPS: u64 = 3;
-/// The power of a 20 ms frame with speech: above -50 dBFS.
-const SPEECH_FLOOR: f32 = 1e-5;
 /// An utterance of the system channel continues over pauses shorter than
 /// this many frames (500 ms).
 const UTTERANCE_GAP_FRAMES: usize = 25;
@@ -83,14 +82,6 @@ const OFF_MIN_FRAMES: usize = 1_500;
 /// the canceller kept at least this part of its power (-10 dB): what is left
 /// of an echo does not count.
 const NEAR_SPEECH_RATIO: f32 = 0.1;
-/// Each channel needs at least this many frames with speech (1 s) to get a
-/// gain other than 1.
-const MIN_SPEECH_FRAMES: usize = 50;
-/// The speech level that the mix gives each channel: -26 dBFS RMS.
-const TARGET_RMS: f32 = 0.05;
-/// The gain of a channel stays between -12 dB and +24 dB.
-const MIN_GAIN: f32 = 0.25;
-const MAX_GAIN: f32 = 16.0;
 /// Bytes of one pair of samples in the temporary file.
 const PAIR_BYTES: u64 = 8;
 
@@ -280,10 +271,6 @@ struct Run {
     start: usize,
     end: usize,
     delay: isize,
-}
-
-fn rms(x: &[f32]) -> f32 {
-    (x.iter().map(|s| s * s).sum::<f32>() / x.len().max(1) as f32).sqrt()
 }
 
 fn median(values: &mut [isize]) -> isize {
@@ -607,7 +594,7 @@ fn gains(m: &Measured) -> (f32, f32) {
     }
     let gain = |(sum, n): (f64, usize)| {
         let level = (sum / n as f64).sqrt() as f32;
-        (TARGET_RMS / level).clamp(MIN_GAIN, MAX_GAIN)
+        audio::level::gain(level)
     };
     (gain(mic), gain(system))
 }

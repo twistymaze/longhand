@@ -98,12 +98,8 @@ pub struct SegmentRecord {
     pub audio: String,
     /// 2 for a stereo segment. A mono segment writes no field, so its
     /// record stays as before (KTD6 of the system audio plan).
-    #[serde(default = "mono", skip_serializing_if = "is_mono")]
+    #[serde(default = "crate::timeline::mono", skip_serializing_if = "is_mono")]
     pub channels: u16,
-}
-
-fn mono() -> u16 {
-    1
 }
 
 fn is_mono(channels: &u16) -> bool {

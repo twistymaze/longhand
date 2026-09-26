@@ -26,7 +26,9 @@ pub struct Segment {
     pub channels: u16,
 }
 
-fn mono() -> u16 {
+/// The channel count of a record that has no `channels` field: mono. The
+/// timeline and the folder records both use it as their serde default.
+pub(crate) fn mono() -> u16 {
     1
 }
 

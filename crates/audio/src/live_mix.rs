@@ -41,17 +41,10 @@ const MIN_SPEAKER_RMS: f32 = 0.01;
 const MIN_CORRELATION: f32 = 0.55;
 const MAX_RESIDUAL_RATIO: f32 = 0.45;
 
-// The balance uses the constants of the mix in Assemble (KTD8 step 5).
-/// The power of a 20 ms frame with speech: above -50 dBFS.
-const SPEECH_FLOOR: f32 = 1e-5;
-/// Each channel needs this many frames with speech (1 s) before the mix
-/// gives it a gain other than 1.
-const MIN_SPEECH_FRAMES: usize = 50;
-/// The speech level that the mix gives each channel: -26 dBFS RMS.
-const TARGET_RMS: f32 = 0.05;
-/// The gain of a channel stays between -12 dB and +24 dB.
-pub const MIN_GAIN: f32 = 0.25;
-pub const MAX_GAIN: f32 = 16.0;
+// The balance and the mix in Assemble (KTD8 step 5) use the same constants
+// from the `level` module.
+pub use crate::level::{MAX_GAIN, MIN_GAIN};
+use crate::level::{MIN_SPEECH_FRAMES, SPEECH_FLOOR, rms};
 /// The running level follows the last 10 s of speech (500 frames).
 const LEVEL_FRAMES: f32 = 500.0;
 /// A gain moves to a new value over about 1 s (50 frames).
@@ -115,8 +108,7 @@ impl Level {
     /// The gain that gives this channel the target level. `None` while the
     /// channel has too little speech.
     fn gain(&self) -> Option<f32> {
-        (self.frames >= MIN_SPEECH_FRAMES)
-            .then(|| (TARGET_RMS / self.power.sqrt()).clamp(MIN_GAIN, MAX_GAIN))
+        (self.frames >= MIN_SPEECH_FRAMES).then(|| crate::level::gain(self.power.sqrt()))
     }
 }
 
@@ -288,10 +280,6 @@ fn echo_dominant(mic: &[f32], history: &[f32]) -> bool {
             && s.mic_rms >= MIN_MIC_RMS
             && s.speaker_rms >= MIN_SPEAKER_RMS
     })
-}
-
-fn rms(x: &[f32]) -> f32 {
-    (x.iter().map(|s| s * s).sum::<f32>() / x.len().max(1) as f32).sqrt()
 }
 
 #[derive(Debug, Clone, Copy)]

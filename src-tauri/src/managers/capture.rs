@@ -676,6 +676,34 @@ fn watch_step(inner: &Inner, id: &str) -> WatchStep {
     }
 }
 
+/// What the capture watcher of `id` does next, read under the inner lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NextWatch {
+    /// The watcher ends: it was cancelled, or it has nothing to watch.
+    Stop,
+    /// A restart runs: do nothing at this poll.
+    Wait,
+    /// Watch the note, as [`WatchStep::Watch`] says.
+    Watch { move_back: bool, speaker: bool },
+}
+
+/// The next action of the capture watcher of `id`. A cancelled watcher
+/// stops and changes nothing. A watcher with nothing to watch clears
+/// `capture_watch` and stops.
+fn next_watch(inner: &mut Inner, id: &str, cancel: &CancellationToken) -> NextWatch {
+    if cancel.is_cancelled() {
+        return NextWatch::Stop;
+    }
+    match watch_step(inner, id) {
+        WatchStep::Wait => NextWatch::Wait,
+        WatchStep::End => {
+            inner.capture_watch = None;
+            NextWatch::Stop
+        }
+        WatchStep::Watch { move_back, speaker } => NextWatch::Watch { move_back, speaker },
+    }
+}
+
 /// Whether a change of `id`'s choice opens a new segment now (KTD2). Only
 /// a segment that records does. During Interrupted, restart backoff or a
 /// sleep pause, the next segment reads the stored choice.
@@ -1590,27 +1618,43 @@ impl CaptureManager {
                 move_back = MoveBack::default();
                 watched.clone_from(&choice);
             }
-            let inputs = CpalAudio::inputs();
-            // Read before the lock: each asks the audio system.
-            let permission = audio_system::permission::preflight();
-            let output_running = audio_system::output_running().unwrap_or(false);
+            // Read the step first, to ask the audio system only for what
+            // the step needs.
+            let (need_inputs, need_speaker) = {
+                let mut inner = self.inner();
+                match next_watch(&mut inner, id, cancel) {
+                    NextWatch::Stop => return,
+                    NextWatch::Wait => {
+                        move_back = MoveBack::default();
+                        continue;
+                    }
+                    NextWatch::Watch { move_back, speaker } => (move_back, speaker),
+                }
+            };
+            // Read without the lock: each asks the audio system.
+            let inputs = need_inputs.then(CpalAudio::inputs);
+            let speaker_state = need_speaker.then(|| {
+                (
+                    audio_system::permission::preflight(),
+                    audio_system::output_running().unwrap_or(false),
+                )
+            });
             let mut inner = self.inner();
-            if cancel.is_cancelled() {
-                return;
-            }
-            let (watch_move_back, watch_speaker) = match watch_step(&inner, id) {
-                WatchStep::Wait => {
+            let (watch_move_back, watch_speaker) = match next_watch(&mut inner, id, cancel) {
+                NextWatch::Stop => return,
+                NextWatch::Wait => {
                     move_back = MoveBack::default();
                     continue;
                 }
-                WatchStep::End => {
-                    inner.capture_watch = None;
-                    return;
-                }
-                WatchStep::Watch { move_back, speaker } => (move_back, speaker),
+                NextWatch::Watch { move_back, speaker } => (move_back, speaker),
             };
             if watch_move_back {
-                if move_back.poll(chosen_present(choice.as_ref(), &inputs)) {
+                // The step changed after the first read: the next poll reads
+                // the inputs.
+                let Some(inputs) = &inputs else {
+                    continue;
+                };
+                if move_back.poll(chosen_present(choice.as_ref(), inputs)) {
                     log::info!("the chosen microphone of {id} is back; moving back to it");
                     // The new segment opens its own speaker stream.
                     self.switch_input(app, &mut inner, id);
@@ -1622,6 +1666,11 @@ impl CaptureManager {
             if !watch_speaker {
                 continue;
             }
+            // The step changed after the first read: the next poll reads the
+            // permission.
+            let Some((permission, output_running)) = speaker_state else {
+                continue;
+            };
             let Some(reopen) = poll_speaker(&mut inner, permission, output_running) else {
                 continue;
             };
@@ -3154,6 +3203,38 @@ mod tests {
         assert_eq!(watch_step(&inner, "s2"), WatchStep::End);
         inner.recovering = Some(Pending::new("s1"));
         assert_eq!(watch_step(&inner, "s1"), WatchStep::Wait);
+    }
+
+    #[test]
+    fn the_next_watch_stops_on_cancel_and_clears_the_watch_at_the_end() {
+        let mut inner = Inner {
+            active: Some(active("s1", true)),
+            ..Default::default()
+        };
+        let watch = Pending::new("s1");
+        let cancel = watch.cancel.clone();
+        inner.capture_watch = Some(watch);
+        assert_eq!(
+            next_watch(&mut inner, "s1", &cancel),
+            NextWatch::Watch {
+                move_back: true,
+                speaker: false
+            }
+        );
+        inner.recovering = Some(Pending::new("s1"));
+        assert_eq!(next_watch(&mut inner, "s1", &cancel), NextWatch::Wait);
+        inner.recovering = None;
+        // Nothing to watch: the watcher clears its own record.
+        inner.active = Some(active("s1", false));
+        assert_eq!(next_watch(&mut inner, "s1", &cancel), NextWatch::Stop);
+        assert!(inner.capture_watch.is_none());
+        // A cancelled watcher changes nothing.
+        let watch = Pending::new("s1");
+        let cancel = watch.cancel.clone();
+        inner.capture_watch = Some(watch);
+        cancel.cancel();
+        assert_eq!(next_watch(&mut inner, "s1", &cancel), NextWatch::Stop);
+        assert!(inner.capture_watch.is_some());
     }
 
     #[test]

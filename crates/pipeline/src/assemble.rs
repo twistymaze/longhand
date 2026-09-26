@@ -233,6 +233,13 @@ fn interleave(left: &[f32], right: &[f32]) -> Vec<f32> {
     left.iter().zip(right).flat_map(|(&l, &r)| [l, r]).collect()
 }
 
+/// Split interleaved stereo `pcm` into its left and right channels.
+fn deinterleave(pcm: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let left = pcm.iter().step_by(2).copied().collect();
+    let right = pcm.iter().skip(1).step_by(2).copied().collect();
+    (left, right)
+}
+
 impl Sink {
     fn new(rate: u32, channels: u16, processing: &Path) -> Result<Self, StageError> {
         Ok(match channels {
@@ -275,8 +282,7 @@ impl Sink {
                 to_proc,
                 analysis,
             } => {
-                let left: Vec<f32> = block.iter().step_by(2).copied().collect();
-                let right: Vec<f32> = block.iter().skip(1).step_by(2).copied().collect();
+                let (left, right) = deinterleave(block);
                 let [l, r] = resample_pair(to_opus, [&left, &right], false);
                 opus.push(&interleave(&l, &r))?;
                 let [l, r] = resample_pair(to_proc, [&left, &right], false);
@@ -516,8 +522,7 @@ impl Finishing {
                 proc.push(&out)
             }
             Finishing::Stereo(to_proc, analysis) => {
-                let left: Vec<f32> = pcm.iter().step_by(2).copied().collect();
-                let right: Vec<f32> = pcm.iter().skip(1).step_by(2).copied().collect();
+                let (left, right) = deinterleave(pcm);
                 let [l, r] = resample_pair(to_proc, [&left, &right], false);
                 analysis.push(&l, &r)
             }

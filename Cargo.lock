@@ -3804,6 +3804,7 @@ version = "0.1.0"
 dependencies = [
  "aec",
  "asr",
+ "audio",
  "audio-sync",
  "chrono",
  "diarize",
