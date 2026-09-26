@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use audio_cpal::{AudioProvider, CpalAudio};
+use audio_cpal::CpalAudio;
 use futures_util::StreamExt;
 
 #[tokio::test]
@@ -49,6 +49,7 @@ async fn three_seconds_of_the_real_microphone_arrive_as_a_playable_wav() {
         capture_started_at: 0,
         offset_ms: 0,
         sample_rate: rate,
+        channels: 1,
         floor_bytes: recorder::storage::DISK_RESERVE_BYTES,
     })
     .unwrap();

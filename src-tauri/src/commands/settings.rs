@@ -12,10 +12,13 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::capture::CaptureManager;
 use crate::managers::models::{self as model_manager, ModelsManager};
 use crate::managers::processing::ProcessingManager;
 use crate::managers::secrets::SecretsManager;
-use crate::managers::settings::{self, Settings, SpeakerCountSetting, SummaryPromptList};
+use crate::managers::settings::{
+    self, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
+};
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -140,6 +143,82 @@ pub fn select_asr_model(
 pub fn set_live_transcript(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
         s.live_transcript = enabled;
+        Ok(())
+    })
+}
+
+/// One connected input, with cpal's stable ID (KTD1).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneInput {
+    pub id: String,
+    pub name: String,
+}
+
+/// The connected inputs, and the ID of the system default among them.
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneList {
+    pub default_id: Option<String>,
+    /// By name. Inputs with the same name keep the order of the device list.
+    pub inputs: Vec<MicrophoneInput>,
+}
+
+impl From<audio_cpal::Inputs> for MicrophoneList {
+    fn from(inputs: audio_cpal::Inputs) -> Self {
+        Self {
+            default_id: inputs.default.map(|d| d.id),
+            inputs: inputs
+                .all
+                .into_iter()
+                .map(|i| MicrophoneInput {
+                    id: i.id,
+                    name: i.name,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The connected inputs for the Microphone choice (R1). The device list can
+/// block, so it runs on a blocking thread, not the command thread, as in
+/// Handy.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_microphones() -> Result<MicrophoneList, String> {
+    tauri::async_runtime::spawn_blocking(|| MicrophoneList::from(audio_cpal::CpalAudio::inputs()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Choose the usual microphone, or `None` for "System default" (R1).
+#[tauri::command]
+#[specta::specta]
+pub fn set_microphone(
+    app: AppHandle,
+    microphone: Option<MicrophoneChoice>,
+) -> Result<Settings, String> {
+    let updated = settings::update_settings(&app, |s| s.set_microphone(microphone))?;
+    // Resolve the new choice off the start path, so the next note starts
+    // at once (R3).
+    if let Some(capture) = app.try_state::<Arc<CaptureManager>>() {
+        let capture = Arc::clone(&capture);
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(e) = capture.prepare(&app) {
+                log::warn!("the chosen microphone was not prepared: {e}");
+            }
+        });
+    }
+    Ok(updated)
+}
+
+/// Choose whether a new note starts with system audio on (R6).
+#[tauri::command]
+#[specta::specta]
+pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
+        return Err(crate::commands::capture::SYSTEM_AUDIO_UNAVAILABLE.to_string());
+    }
+    settings::update_settings(&app, |s| {
+        s.system_audio_default = enabled;
         Ok(())
     })
 }
@@ -439,6 +518,29 @@ mod tests {
     use summarize::ModelList;
 
     const LOCAL: &str = "http://localhost:11434/v1";
+
+    #[test]
+    fn the_microphone_list_keeps_each_id_and_names_the_default_by_id() {
+        let input = |id: &str, name: &str| audio_cpal::Input {
+            id: id.into(),
+            name: name.into(),
+        };
+        let list = MicrophoneList::from(audio_cpal::Inputs {
+            default: Some(input("usb-2", "USB Audio")),
+            all: vec![input("usb-1", "USB Audio"), input("usb-2", "USB Audio")],
+        });
+        assert_eq!(list.default_id.as_deref(), Some("usb-2"));
+        let ids: Vec<&str> = list.inputs.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["usb-1", "usb-2"]);
+        assert_eq!(
+            serde_json::to_value(&list).unwrap()["inputs"][0],
+            serde_json::json!({ "id": "usb-1", "name": "USB Audio" })
+        );
+
+        let none = MicrophoneList::from(audio_cpal::Inputs::default());
+        assert_eq!(none.default_id, None);
+        assert!(none.inputs.is_empty());
+    }
 
     fn saved(base_url: &str) -> Settings {
         let mut s = Settings::default();

@@ -9,9 +9,11 @@
 pub mod assemble;
 pub mod checkpoint;
 pub mod diarize;
+pub mod echo;
 pub mod folder_rename;
 pub mod join;
 pub mod live;
+mod opus_ms;
 pub mod progress;
 pub mod recover;
 pub mod resample;

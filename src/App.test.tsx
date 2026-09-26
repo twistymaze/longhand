@@ -7,6 +7,7 @@ import { mockTauri, shortcutStatuses } from "./test/tauri";
 
 const readiness: Readiness = {
   microphone_authorized: true,
+  system_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
@@ -24,6 +25,16 @@ const idle: RecordingStatus = {
   session_demand_bytes: null,
   processing_bytes_per_second: 0,
   reserve_bytes: 0,
+  microphone: null,
+  microphone_fallback: false,
+  system_audio_silent: false,
+  system_audio: false,
+  system_audio_recording: false,
+  system_audio_failed: false,
+  system_audio_permission: null,
+  system_audio_other_output: false,
+  system_audio_mic_copy: false,
+  microphone_choice: null,
 };
 
 const recordingEntry: SessionEntry = {
@@ -38,7 +49,7 @@ const recordingEntry: SessionEntry = {
 
 function mockApp(status: { current: RecordingStatus }, entries: { current: SessionEntry[] }) {
   return mockTauri({
-    get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+    get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
     readiness: () => readiness,
     shortcut_status: () => shortcutStatuses,
     model_statuses: () => [],
@@ -105,7 +116,7 @@ describe("App", () => {
     const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
     const entries = [saved("a", "Alpha"), saved("b", "Beta")];
     const tauri = mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       model_statuses: () => [],
@@ -160,7 +171,7 @@ describe("App", () => {
     setURL("http://localhost/?window=settings");
     let fail = false;
     mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L", alert_tone_heard: true }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       model_statuses: () => {

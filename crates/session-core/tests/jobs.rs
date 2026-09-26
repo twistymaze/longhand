@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::jobs::Liveness;
 use session_core::{
-    Event, InterruptReason, RecordingModel, SessionState, SpeakerCount, Stage, Store, StoreError,
-    Title, TitleSource,
+    CaptureChoice, Event, InterruptReason, Microphone, RecordingModel, SessionState, SpeakerCount,
+    Stage, Store, StoreError, Title, TitleSource,
 };
 
 fn t(minutes: i64) -> DateTime<FixedOffset> {
@@ -332,6 +332,7 @@ fn segment(index: u32, offset_ms: u64) -> session_core::Segment {
         wall_start: t(0),
         wall_end: t(1),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
+        channels: 1,
     }
 }
 
@@ -342,7 +343,13 @@ fn the_shortcut_queues_the_open_session_and_starts_a_new_one() {
     store.put_segment("s1", &segment(0, 0)).unwrap();
     assert_eq!(
         store
-            .start_session("s2", t(5), None, &parakeet_live())
+            .start_session(
+                "s2",
+                t(5),
+                None,
+                &parakeet_live(),
+                &CaptureChoice::default()
+            )
             .unwrap(),
         ["s1"]
     );
@@ -361,7 +368,13 @@ fn the_shortcut_discards_an_open_session_that_kept_no_audio() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();
     store
-        .start_session("s2", t(5), None, &parakeet_live())
+        .start_session(
+            "s2",
+            t(5),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+        )
         .unwrap();
     assert_eq!(
         store.session("s1").unwrap().unwrap().state,
@@ -781,7 +794,13 @@ fn whisper() -> RecordingModel {
 fn a_session_records_its_model_and_live_mode_at_start() {
     let mut store = Store::open_in_memory().unwrap();
     store
-        .start_session("s1", t(0), None, &parakeet_live())
+        .start_session(
+            "s1",
+            t(0),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+        )
         .unwrap();
     let record = store.session("s1").unwrap().unwrap();
     assert_eq!(record.asr_model.as_deref(), Some(PARAKEET));
@@ -794,7 +813,13 @@ fn a_model_change_during_recording_does_not_change_the_session() {
     // keeps the model it started with.
     let mut store = Store::open_in_memory().unwrap();
     store
-        .start_session("s1", t(0), None, &parakeet_live())
+        .start_session(
+            "s1",
+            t(0),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+        )
         .unwrap();
     store.put_segment("s1", &segment(0, 0)).unwrap();
     stop(&mut store, "s1", 5);
@@ -822,7 +847,13 @@ fn a_session_with_no_model_at_stop_gets_the_selected_model_and_no_live_mode() {
 fn a_recording_model_replaces_the_model_and_the_live_mode() {
     let mut store = Store::open_in_memory().unwrap();
     store
-        .start_session("s1", t(0), None, &parakeet_live())
+        .start_session(
+            "s1",
+            t(0),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+        )
         .unwrap();
     store.set_recording_model("s1", &whisper()).unwrap();
     let record = store.session("s1").unwrap().unwrap();
@@ -834,11 +865,19 @@ fn a_recording_model_replaces_the_model_and_the_live_mode() {
 fn a_session_stopped_by_a_new_session_keeps_its_model() {
     let mut store = Store::open_in_memory().unwrap();
     store
-        .start_session("s1", t(0), None, &parakeet_live())
+        .start_session(
+            "s1",
+            t(0),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+        )
         .unwrap();
     store.put_segment("s1", &segment(0, 0)).unwrap();
     assert_eq!(
-        store.start_session("s2", t(5), None, &whisper()).unwrap(),
+        store
+            .start_session("s2", t(5), None, &whisper(), &CaptureChoice::default())
+            .unwrap(),
         ["s1"]
     );
     assert!(!store.record_model_if_unset("s1", WHISPER).unwrap());
@@ -872,7 +911,13 @@ const STAGES: [Stage; 7] = [
 fn saved_with_checkpoints() -> Store {
     let mut store = Store::open_in_memory().unwrap();
     store
-        .start_session("s1", t(0), None, &parakeet_live())
+        .start_session(
+            "s1",
+            t(0),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+        )
         .unwrap();
     store.put_segment("s1", &segment(0, 0)).unwrap();
     stop(&mut store, "s1", 5);
@@ -1060,4 +1105,116 @@ fn a_resume_of_a_queued_transcribe_again_is_a_resume_of_the_saved_note() {
     stop(&mut store, "s1", 30);
     store.dequeue("run", t(31)).unwrap();
     assert!(store.fail_transcribe_again("s1", "x").is_err());
+}
+
+fn usb_mic() -> CaptureChoice {
+    CaptureChoice {
+        microphone: Some(Microphone {
+            id: "usb-uid".into(),
+            label: "USB Audio".into(),
+        }),
+        system_audio: true,
+    }
+}
+
+#[test]
+fn a_session_records_its_capture_choice_at_start() {
+    // KTD2: restart, resume and the capture watcher read this, not Settings.
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live(), &usb_mic())
+        .unwrap();
+    assert_eq!(store.capture_choice("s1").unwrap(), usb_mic());
+}
+
+#[test]
+fn a_capture_choice_change_updates_only_its_session() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &parakeet_live(), &usb_mic())
+        .unwrap();
+    store.create_session("s2", t(1), None).unwrap();
+    store.set_capture_choice("s2", &usb_mic()).unwrap();
+    store
+        .set_capture_choice("s1", &CaptureChoice::default())
+        .unwrap();
+    assert_eq!(
+        store.capture_choice("s1").unwrap(),
+        CaptureChoice::default()
+    );
+    assert_eq!(store.capture_choice("s2").unwrap(), usb_mic());
+    assert!(matches!(
+        store.set_capture_choice("none", &usb_mic()),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.capture_choice("none"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn a_segment_row_keeps_its_channel_count() {
+    // KTD6: each segment row records its channel count.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    let stereo = session_core::Segment {
+        channels: 2,
+        ..segment(1, 120_000)
+    };
+    store.put_segment("s1", &stereo).unwrap();
+    let channels: Vec<u16> = store
+        .segments("s1")
+        .unwrap()
+        .iter()
+        .map(|s| s.channels)
+        .collect();
+    assert_eq!(channels, [1, 2]);
+}
+
+#[test]
+fn the_stereo_mark_is_the_first_stereo_segment() {
+    // KTD2: set when the first stereo segment is kept, and never moved.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.stereo_from("s1").unwrap(), None);
+    assert!(store.mark_stereo_from("s1", 2).unwrap());
+    assert!(!store.mark_stereo_from("s1", 5).unwrap());
+    assert_eq!(store.stereo_from("s1").unwrap(), Some(2));
+    assert!(matches!(
+        store.stereo_from("none"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.mark_stereo_from("none", 0),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn a_session_created_with_no_choice_has_the_system_default() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(
+        store.capture_choice("s1").unwrap(),
+        CaptureChoice::default()
+    );
+}
+
+#[test]
+fn the_capture_choice_survives_a_reopen_of_the_store() {
+    // A crash resume reads the stored choice (KTD2).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut store = Store::open(&path).unwrap();
+        store
+            .start_session("s1", t(0), None, &parakeet_live(), &usb_mic())
+            .unwrap();
+    }
+    assert_eq!(
+        Store::open(&path).unwrap().capture_choice("s1").unwrap(),
+        usb_mic()
+    );
 }

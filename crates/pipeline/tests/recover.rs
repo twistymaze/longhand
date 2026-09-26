@@ -3,7 +3,7 @@
 mod common;
 
 use chrono::TimeDelta;
-use common::{store, write_segment};
+use common::{store, write_segment, write_stereo_segment};
 use pipeline::RECOVERY_DIR;
 use pipeline::recover::recover_crashed;
 use session_core::{InterruptReason, SessionState};
@@ -62,6 +62,55 @@ fn a_crash_mid_segment_becomes_an_interrupted_session_with_the_segment_rebuilt()
         })
         .count();
     assert_eq!(parts, 0);
+}
+
+#[test]
+fn a_crash_in_a_stereo_segment_rebuilds_a_two_channel_row_and_the_stereo_mark() {
+    // KTD6: the open segment has no row, so the channel count comes from
+    // the first chunk's WAV header.
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("s", common::at(0), None)
+        .unwrap();
+    let dir = root.path().join("s");
+    // A mono first segment, closed and in the store (AE3).
+    let mono = write_segment(&dir, 0, 0, RATE, &tone(20.0), false);
+    store.lock().unwrap().put_segment("s", &mono).unwrap();
+    // The stereo second segment was recording when the process died.
+    write_stereo_segment(&dir, 1, 20_030, RATE, &tone(75.0), &tone(75.0), true);
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    interrupted_since(&recovered[0].state);
+    let store = store.lock().unwrap();
+    let segments = store.segments("s").unwrap();
+    let channels: Vec<u16> = segments.iter().map(|s| s.channels).collect();
+    assert_eq!(channels, [1, 2]);
+    assert!(
+        (74_900..=75_000).contains(&segments[1].duration_ms),
+        "{}",
+        segments[1].duration_ms
+    );
+    assert_eq!(store.stereo_from("s").unwrap(), Some(1));
+}
+
+#[test]
+fn a_crash_in_a_mono_note_sets_no_stereo_mark() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("s", common::at(0), None)
+        .unwrap();
+    write_segment(&root.path().join("s"), 0, 0, RATE, &tone(5.0), true);
+    recover_crashed(&store, root.path()).unwrap();
+    let store = store.lock().unwrap();
+    assert_eq!(store.segments("s").unwrap()[0].channels, 1);
+    assert_eq!(store.stereo_from("s").unwrap(), None);
 }
 
 #[test]

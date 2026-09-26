@@ -86,6 +86,9 @@ fn recover_one(
         // The segment's audio is its time: the wall clock at its start plus
         // its length is when the last sample was written.
         let wall_start = wall(first.capture_started_at).unwrap_or(created_at);
+        // The open segment has no row, so its channel count comes from the
+        // first chunk's WAV header (KTD6 of the system audio plan).
+        let channels = recorder::chunk_channels(first)?;
         let segment = Segment {
             index,
             offset_ms,
@@ -93,8 +96,14 @@ fn recover_one(
             wall_start,
             wall_end: wall_start + chrono::TimeDelta::milliseconds(duration_ms as i64),
             audio_file: segment_audio_file(index),
+            channels,
         };
-        lock(store).put_segment(id, &segment)?;
+        let store = lock(store);
+        store.put_segment(id, &segment)?;
+        // The first stereo segment that is kept sets the stereo mark (KTD2).
+        if channels == 2 && store.mark_stereo_from(id, index)? {
+            log::info!("segment {index} of {id} is the note's first stereo segment");
+        }
     }
 
     let mut store = lock(store);

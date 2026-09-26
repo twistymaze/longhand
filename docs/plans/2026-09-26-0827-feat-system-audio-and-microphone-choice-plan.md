@@ -19,6 +19,11 @@ deepened: 2026-09-26
 - **Stop conditions:** Stop and ask when the licence of anarlog's echo-canceller model weights does not permit redistribution, when a global process tap cannot exclude Longhand's own process, or when a change would alter a Key Decision.
 - **Execution profile:** Twelve units in four phases. `ce-work` implements in a worktree named `system-audio-and-microphone-choice`. Commit per unit. Local checks are the gate (see Verification Contract). Microphone, system audio and permission behavior are tested from the signed bundle.
 - **Open blockers:** None.
+- **Status (2026-09-26, after the signed-bundle tests):**
+  - All units are built. The microphone choice (U1–U3) and R18 (U11) ship.
+  - Computer audio is hidden and turned off (`SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`). Two Teams test calls failed Verify because the mono mix of KD4 fails when one channel has a fault. In the first call, a mixer app put a late copy of the microphone and extra copies of the call on the system channel. In the second, speaker echo gave false copy hits.
+  - KD4 and KD6 are open again. The likely replacement is [per-channel processing](../ideas/per-channel-processing.md), which needs [faster diarization](../ideas/faster-diarization.md) first.
+  - The findings are in [mixer apps and microphone copies](../ideas/mixer-apps-and-microphone-copies.md).
 
 ---
 
@@ -213,7 +218,7 @@ Since the recognition models plan (`docs/plans/2026-09-25-1121-feat-recognition-
 
   The General pane gets a "Computer audio" permission row next to the Microphone row, with an "Allow…" button that runs KTD12's request and then checks the status again, like the microphone row does. Covers R1, R6, R9.
 - KTD16. **The alert sound loses its test flow.** The recording-page warning, the "Did you hear it?" step, the `confirm_alert_sound` command, the `tone_heard` field in `AlertCheck` and the `alert_tone_heard` setting are removed. "Play Sound" stays as a plain button. Settings are `#[serde(default)]` with no unknown-field check, so an old settings file with the key still loads. Covers R18 (KD14).
-- KTD17. **The new settings fields need no settings migration.** `microphone` (ID and label, optional) and `computer_audio_default` (false) use `#[serde(default)]`, so `CURRENT_SETTINGS_SCHEMA_VERSION` stays at 4. The session-core migration of KTD6 takes the next free number at merge time (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`), and no applied migration file changes (`docs/solutions/workflow-issues/edited-applied-migration-breaks-older-databases.md`).
+- KTD17. **The new settings fields need no settings migration.** `microphone` (ID and label, optional) and `system_audio_default` (false) use `#[serde(default)]`, so `CURRENT_SETTINGS_SCHEMA_VERSION` stays at 4. The session-core migration of KTD6 takes the next free number at merge time (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`), and no applied migration file changes (`docs/solutions/workflow-issues/edited-applied-migration-breaks-older-databases.md`).
 
 ### High-Level Technical Design
 
@@ -325,7 +330,7 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 
 **Approach:**
 1. `Inputs` gains each device's ID and name. `resolve_input` takes a choice (ID plus label) and matches the ID first, then the exact name. The Bluetooth swap still applies only to the system default.
-2. Settings gets `microphone` and `computer_audio_default` (KTD17). "System default" is `None`.
+2. Settings gets `microphone` and `system_audio_default` (KTD17). "System default" is `None`.
 3. Commands follow `set_live_transcript`: each returns the updated settings.
 
 **Patterns to follow:** `set_live_transcript` in `src-tauri/src/commands/settings.rs`. The settings tests that build JSON and call `settings_from_value`.

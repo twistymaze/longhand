@@ -1,18 +1,21 @@
 // The bar at the bottom of the session page while it records (R12, KD2).
 // It keeps the two tiers of walking-skeleton U7, because a glance is all a
 // participant at the table should spend:
-// - always: the live dot, the elapsed time and Stop;
+// - always: the live dot, the elapsed time, the microphone as secondary
+//   text, the Computer audio toggle, and Stop (KTD14);
 // - only while a condition exists: the level meter and the warnings.
 // Nothing in the bar moves: the level bars on the Transcript tab show the
 // input. The warnings appear at once, with no fade: motion would pull the
 // eye.
 
 import { useState } from "react";
-import { commands, type Readiness, type SpeakerCountSetting } from "../bindings";
+import { commands, type Readiness, type RecordingStatus, type SpeakerCountSetting } from "../bindings";
+import { features } from "../lib/features";
 import { formatPosition, levelFraction } from "../lib/timeline";
 import type { InputStatus } from "../recording/inputStatus";
 import { type Capture, HISTORY } from "../recording/useCapture";
 import { describeDestination } from "../settings/DestinationPicker";
+import { CheckIcon } from "../settings/icons";
 import { Button, fieldClass, formatBytes } from "../settings/ui";
 
 const statusText: Record<InputStatus, string> = {
@@ -100,9 +103,6 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   }
   const problem = capture.alert?.output_problem;
   if (problem) items.push({ tone: "caution", text: `If recording fails, ${problem}` });
-  if (capture.alert && !capture.alert.tone_heard) {
-    items.push({ tone: "caution", text: "The alert sound has not been tested. Test it in Settings." });
-  }
   if (readiness && readiness.destination.kind !== "ready") {
     const d = describeDestination(readiness.destination);
     items.push({ tone: d.tone === "negative" ? "negative" : "caution", text: `Destination: ${d.text}` });
@@ -113,8 +113,76 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   if (readiness && !readiness.endpoint_configured) {
     items.push({ tone: "caution", text: "No summarization endpoint is set, so the summary will wait." });
   }
+  if (status) items.push(...inputWarnings(status));
   if (capture.lostReason) items.push({ tone: "negative", text: capture.lostReason });
   return items;
+}
+
+/// Why the note records from another microphone, or without system
+/// audio (R4, R5, R10). The microphone continues to record in each case.
+function inputWarnings(status: RecordingStatus): Warning[] {
+  const items: Warning[] = [];
+  const choice = status.microphone_choice;
+  if (status.microphone_fallback && choice) {
+    items.push({
+      tone: "caution",
+      text: `Using ${status.microphone ?? "the system default"}: ${choice.label} is not connected.`,
+    });
+  }
+  if (!status.system_audio) return items;
+  const permission = status.system_audio_permission;
+  if (permission === "denied") {
+    items.push({ tone: "caution", text: "Computer audio is not recorded. Allow it in System Settings." });
+  } else if (permission === "not_asked") {
+    // The macOS prompt can wait for an answer while the note records.
+    items.push({ tone: "caution", text: "Computer audio is not recorded until you allow it." });
+  } else if (status.system_audio_failed) {
+    items.push({ tone: "caution", text: "Computer audio stopped. The microphone is still recording." });
+  }
+  if (status.system_audio_silent) {
+    items.push({ tone: "caution", text: "Computer audio is silent. Check the permission in System Settings." });
+  }
+  if (status.system_audio_other_output) {
+    items.push({ tone: "caution", text: "Computer audio is silent. Sound is playing on another output." });
+  }
+  if (status.system_audio_mic_copy) {
+    items.push({
+      tone: "caution",
+      text: "Computer audio also has your microphone in it, so your voice is recorded twice. Check your audio mixer app.",
+    });
+  }
+  return items;
+}
+
+/// The microphone the note records from, as secondary text with no motion
+/// (KTD14). The full name shows on hover when it does not fit.
+function MicrophoneText({ status }: { status: RecordingStatus | null }) {
+  if (!status?.microphone) return null;
+  return (
+    <span title={status.microphone} className="min-w-0 truncate text-label-secondary">
+      {status.microphone}
+    </span>
+  );
+}
+
+/// The Computer audio switch of this note (R8). A toggle button: its fill
+/// and check mark show the state at a glance, and it does not move.
+function SystemAudioToggle({ on, disabled, onClick }: { on: boolean; disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      disabled={disabled}
+      onClick={onClick}
+      title={on ? "Computer audio is recorded. Click to stop recording it." : "Click to record computer audio too."}
+      className={`flex shrink-0 items-center gap-1 rounded-md py-[3px] pr-2.5 pl-2 whitespace-nowrap outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 ${
+        on ? "bg-accent/15 text-accent active:bg-accent/25" : "bg-fill text-label-secondary active:bg-fill-pressed"
+      }`}
+    >
+      <CheckIcon className={`size-3.5 ${on ? "" : "invisible"}`} />
+      Computer audio
+    </button>
+  );
 }
 
 /// The number of speakers in this session, a number or a range (R36).
@@ -194,8 +262,16 @@ export function RecordingBar({
           {interruption ? "Recording interrupted" : statusText[capture.input]}
         </span>
         <span className="shrink-0 tabular-nums text-label-secondary">{formatPosition(capture.recordedMs)}</span>
+        <MicrophoneText status={status} />
         {showsLevel.includes(capture.input) ? <LevelMeter levels={capture.levels} /> : <span className="flex-1" />}
         {speakers && <SpeakerField onDone={onSpeakersDone} />}
+        {features.systemAudio && status && id && !interruption && (
+          <SystemAudioToggle
+            on={status.system_audio}
+            disabled={busy}
+            onClick={() => void act(() => commands.setNoteSystemAudio(id, !status.system_audio))}
+          />
+        )}
         <StopButton disabled={busy} onClick={() => void act(() => commands.stopRecording())} />
         {interruption && id && (
           <Button prominent disabled={busy} onClick={() => void act(() => commands.resumeRecording(id))}>

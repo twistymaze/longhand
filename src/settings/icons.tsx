@@ -79,7 +79,15 @@ export const SlidersIcon = ({ className }: IconProps) => (
   </Icon>
 );
 
-export const FolderIcon = ({ className }: IconProps) => (
+/// A microphone on a stand: the Recording pane.
+export const MicrophoneIcon = ({ className }: IconProps) => (
+  <Icon className={className}>
+    <rect x="5.75" y="1.75" width="4.5" height="8" rx="2.25" />
+    <path d="M3.5 7.75a4.5 4.5 0 0 0 9 0M8 12.25v2M5.75 14.25h4.5" />
+  </Icon>
+);
+
+export const FolderIcon =({ className }: IconProps) => (
   <Icon className={className}>
     <path d="M1.75 4.25a1.5 1.5 0 0 1 1.5-1.5h2.8l1.5 1.5h5.2a1.5 1.5 0 0 1 1.5 1.5v5.75a1.5 1.5 0 0 1-1.5 1.5h-9.5a1.5 1.5 0 0 1-1.5-1.5Z" />
     <path d="M1.75 6.5h12.5" />

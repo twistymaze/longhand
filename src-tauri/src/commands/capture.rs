@@ -7,7 +7,7 @@ use tauri::{AppHandle, State};
 
 use crate::managers::capture::{CaptureManager, RecordingStatus};
 use crate::managers::processing::ProcessingManager;
-use crate::managers::settings::{self, SpeakerCountSetting};
+use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
 use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
 
 async fn blocking<T: Send + 'static>(
@@ -83,10 +83,59 @@ pub async fn resume_recording(
 #[tauri::command]
 #[specta::specta]
 pub async fn recording_status(
+    app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
 ) -> Result<RecordingStatus, String> {
     let manager = Arc::clone(&manager);
-    blocking(move || manager.status().map_err(|e| e.to_string())).await
+    blocking(move || manager.status(&app).map_err(|e| e.to_string())).await
+}
+
+/// Change the microphone of one note from the recording page (R2). With no
+/// `session_id`, the next note uses it. `None` is "System default". Settings
+/// does not change. Returns the status after the change.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_microphone(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+    session_id: Option<String>,
+    microphone: Option<MicrophoneChoice>,
+) -> Result<RecordingStatus, String> {
+    let manager = Arc::clone(&manager);
+    blocking(move || {
+        manager
+            .set_note_microphone(&app, session_id.as_deref(), microphone)
+            .and_then(|()| manager.status(&app))
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// The refusal while Computer audio is not available.
+pub const SYSTEM_AUDIO_UNAVAILABLE: &str = "Computer audio is not available yet.";
+
+/// Turn system audio on or off for one note from the recording page (R8).
+/// With no `session_id`, the next note starts with it. Settings does not
+/// change. Returns the status after the change.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_system_audio(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+    session_id: Option<String>,
+    enabled: bool,
+) -> Result<RecordingStatus, String> {
+    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
+        return Err(SYSTEM_AUDIO_UNAVAILABLE.to_string());
+    }
+    let manager = Arc::clone(&manager);
+    blocking(move || {
+        manager
+            .set_note_system_audio(&app, session_id.as_deref(), enabled)
+            .and_then(|()| manager.status(&app))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]

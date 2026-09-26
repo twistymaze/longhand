@@ -48,8 +48,6 @@ pub struct AlertsManager {
 pub struct AlertCheck {
     /// Why the cue would not be heard, when it would not.
     pub output_problem: Option<String>,
-    /// The user has confirmed hearing the cue at setup.
-    pub tone_heard: bool,
 }
 
 /// What the user is told, by the reason capture stopped.
@@ -135,7 +133,7 @@ impl AlertsManager {
     /// Check the alert path. The output is probed again only when `force`
     /// or when the default output has changed since the last probe, since
     /// the probe spawns a process on macOS.
-    pub fn check(&self, tone_heard: bool, force: bool) -> AlertCheck {
+    pub fn check(&self, force: bool) -> AlertCheck {
         let output = sfx::default_output_name();
         let mut checked = self.checked.lock().unwrap_or_else(|e| e.into_inner());
         let cached = checked
@@ -153,10 +151,7 @@ impl AlertsManager {
                 problem
             }
         };
-        AlertCheck {
-            output_problem,
-            tone_heard,
-        }
+        AlertCheck { output_problem }
     }
 
     /// Stop the cue at once for a session the user has acted on.

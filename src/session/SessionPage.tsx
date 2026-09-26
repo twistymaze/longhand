@@ -10,11 +10,14 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   commands,
+  type MicrophoneChoice,
+  type MicrophoneList,
   type Readiness,
   type SessionDetail,
   type SessionDocument,
 } from "../bindings";
 import { rowTitle } from "../home/group";
+import { features } from "../lib/features";
 import { formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
 import { Button } from "../settings/ui";
@@ -99,6 +102,48 @@ function AfterStop({ children }: { children: string }) {
   );
 }
 
+/// The "Microphone" submenu: "System default", then the connected inputs,
+/// with a check mark on the note's choice (R2, KTD14). The backend finds a
+/// choice by its ID first, then by the exact name. A chosen microphone
+/// that is not connected shows last, checked and disabled.
+export function microphoneItems(
+  list: MicrophoneList | null,
+  choice: MicrophoneChoice | null,
+  choose: (next: MicrophoneChoice | null) => void,
+): MenuItem[] {
+  const inputs = list?.inputs ?? [];
+  const current = inputs.find((i) => i.id === list?.default_id);
+  const match = choice && (inputs.find((i) => i.id === choice.id) ?? inputs.find((i) => i.name === choice.label));
+  const items: MenuItem[] = [
+    {
+      key: "default",
+      label: current ? `System default (${current.name})` : "System default",
+      checked: choice === null,
+      radio: true,
+      onSelect: () => choose(null),
+    },
+    ...inputs.map((input) => ({
+      key: `input:${input.id}`,
+      label: input.name,
+      checked: match === input,
+      radio: true,
+      onSelect: () => choose({ id: input.id, label: input.name }),
+    })),
+  ];
+  if (choice && !match) {
+    items.push({
+      key: "missing",
+      label: `${choice.label} (not connected)`,
+      checked: true,
+      radio: true,
+      disabled: true,
+      reason: "This microphone is not connected.",
+      onSelect: () => {},
+    });
+  }
+  return items;
+}
+
 function BackChevron() {
   return (
     <svg aria-hidden viewBox="0 0 10 16" className="h-[13px] w-[8px]">
@@ -134,6 +179,7 @@ export function SessionPage({
   const [notice, setNotice] = useState<Notice | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [speakers, setSpeakers] = useState(false);
+  const [microphones, setMicrophones] = useState<MicrophoneList | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -248,9 +294,41 @@ export function SessionPage({
     onFailed: (text) => setNotice({ tone: "negative", text }),
   });
 
+  // The inputs are read each time the menu opens, because a microphone can
+  // be connected or removed during the note.
+  const readMicrophones = async () => {
+    const result = await commands.listMicrophones();
+    if (result.status === "ok") setMicrophones(result.data);
+  };
+
+  // Each change is for this note only. Settings does not change (R2, R8).
+  const changeInput = async (change: () => ReturnType<typeof commands.setNoteMicrophone>) => {
+    const result = await change();
+    setNotice(result.status === "error" ? { tone: "negative", text: sentence(result.error) } : null);
+    await capture.refresh();
+  };
+
   const items: MenuItem[] = [];
   if (phase === "recording" && capture.status?.recording) {
     items.push({ label: "Number of Speakers…", onSelect: () => setSpeakers(true) });
+  }
+  if (phase === "recording" && capture.status?.session_id === id) {
+    const choice = capture.status.microphone_choice;
+    items.push({
+      label: "Microphone",
+      onSelect: () => {},
+      submenu: microphoneItems(microphones, choice, (next) =>
+        void changeInput(() => commands.setNoteMicrophone(id, next)),
+      ),
+    });
+    if (features.systemAudio) {
+      const on = capture.status.system_audio;
+      items.push({
+        label: "Record Computer Audio",
+        checked: on,
+        onSelect: () => void changeInput(() => commands.setNoteSystemAudio(id, !on)),
+      });
+    }
   }
   if (phase === "processing" || phase === "saved") {
     items.push({
@@ -398,7 +476,7 @@ export function SessionPage({
           >
             {copied ? "Copied" : "Copy"}
           </button>
-          <SessionMenu items={items} />
+          <SessionMenu items={items} onOpen={phase === "recording" ? () => void readMicrophones() : undefined} />
         </div>
       </header>
       <main

@@ -75,6 +75,41 @@ async setLiveTranscript(enabled: boolean) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * The connected inputs for the Microphone choice (R1). The device list can
+ * block, so it runs on a blocking thread, not the command thread, as in
+ * Handy.
+ */
+async listMicrophones() : Promise<Result<MicrophoneList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_microphones") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Choose the usual microphone, or `None` for "System default" (R1).
+ */
+async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_microphone", { microphone }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Choose whether a new note starts with system audio on (R6).
+ */
+async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_system_audio_default", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * The built-in summary prompts first, then the custom prompts (R1, R2).
  */
 async summaryPrompts() : Promise<SummaryPromptList> {
@@ -253,6 +288,43 @@ async readiness() : Promise<Result<Readiness, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The system audio permission now. The General pane polls it after
+ * "Allow…", while the macOS prompt waits for an answer.
+ */
+async systemAudioPermission() : Promise<Result<SystemAudioPermission, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("system_audio_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Ask for the system audio permission: a short tap makes macOS show its
+ * prompt (KTD12). It runs away from the command thread and returns the
+ * state after the tap, which is "not asked" while the prompt waits.
+ */
+async requestSystemAudioPermission() : Promise<Result<SystemAudioPermission, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("request_system_audio_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Open the Screen & System Audio Recording page of System Settings, where
+ * the user allows a denied permission.
+ */
+async openSystemAudioSettings() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_system_audio_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async startRecording() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_recording") };
@@ -280,6 +352,32 @@ async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
 async recordingStatus() : Promise<Result<RecordingStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("recording_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Change the microphone of one note from the recording page (R2). With no
+ * `session_id`, the next note uses it. `None` is "System default". Settings
+ * does not change. Returns the status after the change.
+ */
+async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice | null) : Promise<Result<RecordingStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_microphone", { sessionId, microphone }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Turn system audio on or off for one note from the recording page (R8).
+ * With no `session_id`, the next note starts with it. Settings does not
+ * change. Returns the status after the change.
+ */
+async setNoteSystemAudio(sessionId: string | null, enabled: boolean) : Promise<Result<RecordingStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_system_audio", { sessionId, enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -343,19 +441,11 @@ async alertCheck(force: boolean) : Promise<Result<AlertCheck, string>> {
 }
 },
 /**
- * Play the failed-capture cue once, for the user to confirm hearing it.
+ * Play the failed-capture cue once, so the user knows the sound (R18).
  */
 async playAlertSound() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("play_alert_sound") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async confirmAlertSound(heard: boolean) : Promise<Result<Settings, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("confirm_alert_sound", { heard }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -585,11 +675,7 @@ export type AlertCheck = {
 /**
  * Why the cue would not be heard, when it would not.
  */
-output_problem: string | null; 
-/**
- * The user has confirmed hearing the cue at setup.
- */
-tone_heard: boolean }
+output_problem: string | null }
 /**
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.
@@ -599,7 +685,16 @@ export type CaptureEnded = { session_id: string; reason: string }
  * A quarter-second of capture: level and position (R9). Ticks follow frame
  * arrival, so their absence is what a stalled input looks like.
  */
-export type CaptureTick = { session_id: string; peak: number; 
+export type CaptureTick = { session_id: string; 
+/**
+ * The microphone's peak, 0.0 to 1.0.
+ */
+peak: number; 
+/**
+ * The system audio peak of a stereo segment, 0.0 to 1.0. `None` while
+ * the segment is mono.
+ */
+speaker_peak: number | null; 
 /**
  * On the session timeline, gaps between segments included: where a
  * note typed now is anchored.
@@ -739,6 +834,24 @@ export type LiveTranscriptEvent = { session_id: string; segment: number; part: n
  * What the live worker does now, for the lines of the live view (U8).
  */
 export type LiveTranscriptStatus = { session_id: string; segment: number; state: LiveState }
+/**
+ * The usual microphone (R1, KTD1): cpal's stable device ID, with the device
+ * name as its label, so Settings can name a microphone that is not
+ * connected. Lookup is by ID first, then by the exact label.
+ */
+export type MicrophoneChoice = { id: string; label: string }
+/**
+ * One connected input, with cpal's stable ID (KTD1).
+ */
+export type MicrophoneInput = { id: string; name: string }
+/**
+ * The connected inputs, and the ID of the system default among them.
+ */
+export type MicrophoneList = { default_id: string | null; 
+/**
+ * By name. Inputs with the same name keep the order of the device list.
+ */
+inputs: MicrophoneInput[] }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
@@ -796,7 +909,12 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * What processing is doing, for the surface.
  */
 export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
-export type Readiness = { microphone_authorized: boolean; destination: DestinationStatus; 
+export type Readiness = { microphone_authorized: boolean; 
+/**
+ * The system audio permission (R9). It does not change `armed`: the
+ * microphone alone is enough to record.
+ */
+system_audio: SystemAudioPermission; destination: DestinationStatus; 
 /**
  * Microphone authorized, a destination chosen, and the chord registered
  * or cleared (R1c, R13). A destination that is unreachable right now can be changed
@@ -851,7 +969,63 @@ processing_bytes_per_second: number;
 /**
  * The free-space floor recording stops at (R7a).
  */
-reserve_bytes: number }
+reserve_bytes: number; 
+/**
+ * The name of the input that the segment records from, while a
+ * segment records (R2, R4).
+ */
+microphone: string | null; 
+/**
+ * The note's chosen microphone is missing, and the system default
+ * records in its place (R4, R5).
+ */
+microphone_fallback: boolean; 
+/**
+ * The microphone that the open note chose. With no note open, the
+ * microphone that the next note uses. `None` is "System default".
+ */
+microphone_choice: MicrophoneChoice | null; 
+/**
+ * The system audio permission is unknown, the output plays, and the
+ * system audio channel has been digital silence for 10 s: system
+ * audio can be missing (U5 step 6). It clears when audio appears.
+ */
+system_audio_silent: boolean; 
+/**
+ * The Computer audio switch of the open note (R8). With no note open,
+ * the switch that the next note starts with (R6).
+ */
+system_audio: boolean; 
+/**
+ * A speaker stream is attached to the recording segment: the note
+ * records system audio on the right now.
+ */
+system_audio_recording: boolean; 
+/**
+ * System audio is on, but the speaker stream failed or did not open.
+ * The microphone records, the right channel holds silence, and the
+ * capture watcher tries the speaker stream again (R10).
+ */
+system_audio_failed: boolean; 
+/**
+ * The last system audio permission check while system audio is on
+ * and a segment records (KTD12). The page uses it to say why system
+ * audio is not recorded: denied, not asked (the prompt can wait for an
+ * answer), or unknown. `None` while system audio is off.
+ */
+system_audio_permission: SystemAudioPermission | null; 
+/**
+ * The output that Longhand follows has been silent for 30 s while
+ * another output plays sound (Windows only, U4 step 6): the call can
+ * play on a device that the note does not record.
+ */
+system_audio_other_output: boolean; 
+/**
+ * The system audio of the last 30 s held a late copy of the
+ * microphone: an audio mixer app plays the microphone to an output, so
+ * the note hears the user twice.
+ */
+system_audio_mic_copy: boolean }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.
@@ -983,14 +1157,19 @@ pending_asr_model: string | null;
  */
 live_transcript: boolean; 
 /**
+ * The microphone a new note records from. `None` is "System default"
+ * (R1, KTD17).
+ */
+microphone: MicrophoneChoice | null; 
+/**
+ * Whether a new note starts with system audio on (R6, KD13).
+ */
+system_audio_default: boolean; 
+/**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).
  */
 learned_context_limits: Partial<{ [key in string]: number }>; 
-/**
- * The user heard the alert cue played at setup (R5a, KTD14).
- */
-alert_tone_heard: boolean; 
 /**
  * The custom summary prompts, in the order the user made them (KTD6).
  */
@@ -1075,6 +1254,18 @@ stub: boolean; host: string | null; model: string | null;
  * prompts had names, and a stub, have none.
  */
 prompt: string | null }
+/**
+ * The system audio permission, as the page reads it (R9, R10, KTD12).
+ */
+export type SystemAudioPermission = "allowed" | "denied" | 
+/**
+ * macOS has not asked yet, or its prompt waits for an answer.
+ */
+"not_asked" | 
+/**
+ * The private check is missing on this macOS.
+ */
+"unknown"
 export type WebviewLogLevel = "error" | "warn" | "info"
 
 /** tauri-specta globals **/

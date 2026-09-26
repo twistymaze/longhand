@@ -100,6 +100,7 @@ describe("Home", () => {
         recording={null}
         readiness={{
           microphone_authorized: true,
+          system_audio: "allowed",
           destination: { kind: "ready", path: "/x", free_bytes: null },
           armed: true,
           shortcut: { chord: "Alt+Shift+L", registered: true, error: null },

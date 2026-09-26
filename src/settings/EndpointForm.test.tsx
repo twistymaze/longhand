@@ -29,8 +29,9 @@ const baseSettings: Settings = {
   asr_model: "a",
   pending_asr_model: null,
   live_transcript: true,
+  microphone: null,
+  system_audio_default: false,
   learned_context_limits: {},
-  alert_tone_heard: true,
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
 };

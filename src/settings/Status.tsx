@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { DEFAULT_SHORTCUT, commands, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
 
 const isMac = navigator.userAgent.includes("Mac");
 
-export type PaneId = "status" | "destination" | "summarization" | "recognition" | "licences";
+export type PaneId = "status" | "recording" | "destination" | "summarization" | "recognition" | "licences";
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
@@ -101,7 +102,8 @@ export function StatusPane({
             )
           )}
         </Row>
-        <Row label="Storage" detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
+        {features.systemAudio && <SystemAudioRow permission={readiness.system_audio} onRefresh={onRefresh} />}
+        <Row label="Storage"detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
           {readiness.destination.kind !== "ready" && (
             <GoTo pane="destination" onNavigate={onNavigate}>
               {readiness.destination.kind === "unset" ? "Choose…" : "Fix…"}
@@ -166,27 +168,66 @@ export function StatusPane({
   );
 }
 
-/// The one-time test of the failed-capture cue (R5a, KTD14): the only check
-/// of the alert path that proves the user can hear it, not just that the
-/// output is on.
-function AlertSound() {
-  const [heard, setHeard] = useState<boolean | null>(null);
+/// The system audio permission, in the "Computer audio" row (R9, KTD12,
+/// KTD15). It follows the Microphone row: a status and at most one button.
+function SystemAudioRow({
+  permission,
+  onRefresh,
+}: {
+  permission: SystemAudioPermission;
+  onRefresh: () => Promise<void>;
+}) {
   const [asking, setAsking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void commands.getSettings().then((s) => setHeard(s.alert_tone_heard));
-  }, []);
+  const ask = async () => {
+    setAsking(true);
+    // The short tap shows the macOS prompt, and the prompt does not wait
+    // for the tap. Poll until the user answers.
+    let state = await commands.requestSystemAudioPermission();
+    for (let i = 0; i < 120 && state.status === "ok" && state.data === "not_asked"; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      state = await commands.systemAudioPermission();
+    }
+    setAsking(false);
+    await onRefresh();
+  };
+
+  const openSettings = () => void commands.openSystemAudioSettings();
+
+  const detail =
+    permission === "allowed" ? (
+      "Records what this computer plays while Computer audio is on"
+    ) : permission === "not_asked" ? (
+      <StatusText tone="neutral">Not allowed yet</StatusText>
+    ) : permission === "denied" ? (
+      <StatusText tone="negative">Not allowed</StatusText>
+    ) : (
+      <StatusText tone="caution">Cannot check</StatusText>
+    );
+
+  return (
+    <Row label="Computer audio" detail={detail}>
+      {permission === "allowed" ? (
+        <StatusText tone="positive">Allowed</StatusText>
+      ) : permission === "not_asked" ? (
+        <Button prominent disabled={asking} onClick={() => void ask()}>
+          {asking ? "Waiting…" : "Allow…"}
+        </Button>
+      ) : (
+        <Button onClick={openSettings}>Open System Settings</Button>
+      )}
+    </Row>
+  );
+}
+
+/// The failed-capture sound (R18, KTD16). The user can play it, and no test
+/// is asked for.
+function AlertSound() {
+  const [error, setError] = useState<string | null>(null);
 
   const play = async () => {
     const result = await commands.playAlertSound();
     setError(result.status === "error" ? result.error : null);
-    setAsking(result.status === "ok");
-  };
-  const answer = async (yes: boolean) => {
-    const result = await commands.confirmAlertSound(yes);
-    if (result.status === "ok") setHeard(result.data.alert_tone_heard);
-    setAsking(false);
   };
 
   return (
@@ -196,23 +237,9 @@ function AlertSound() {
     >
       <Row
         label="Alert sound"
-        detail={error ?? (asking ? "Did you hear it?" : heard ? "Heard at setup" : "Not tested yet")}
+        detail={error ?? "Plays when recording stops and cannot restart"}
       >
-        {asking ? (
-          <>
-            <Button onClick={() => void answer(false)}>No</Button>
-            <Button prominent onClick={() => void answer(true)}>
-              Yes
-            </Button>
-          </>
-        ) : (
-          <>
-            {heard && <StatusText tone="positive">Tested</StatusText>}
-            <Button prominent={heard === false} onClick={() => void play()}>
-              Play Sound
-            </Button>
-          </>
-        )}
+        <Button onClick={() => void play()}>Play Sound</Button>
       </Row>
     </Group>
   );

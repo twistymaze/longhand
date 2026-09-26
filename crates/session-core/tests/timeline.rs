@@ -15,6 +15,7 @@ fn two_segments() -> Timeline {
             wall_start: wall(0),
             wall_end: wall(1),
             audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
         },
         Segment {
             index: 1,
@@ -23,6 +24,7 @@ fn two_segments() -> Timeline {
             wall_start: wall(1),
             wall_end: wall(2),
             audio_file: "audio/segment-02.opus".into(),
+            channels: 1,
         },
     ])
     .unwrap()
@@ -54,6 +56,7 @@ fn gap_comes_from_the_monotonic_offsets_not_the_wall_clock() {
             wall_start: wall(2),
             wall_end: wall(2) + TimeDelta::minutes(1),
             audio_file: "a".into(),
+            channels: 1,
         },
         Segment {
             index: 1,
@@ -62,6 +65,7 @@ fn gap_comes_from_the_monotonic_offsets_not_the_wall_clock() {
             wall_start: wall(1),
             wall_end: wall(1) + TimeDelta::minutes(1),
             audio_file: "b".into(),
+            channels: 1,
         },
     ])
     .unwrap();
@@ -79,6 +83,49 @@ fn a_sub_second_segment_is_discarded_on_close() {
     assert!(timeline.is_empty());
     // Its index is reused by the next segment.
     assert_eq!(timeline.open(5_000, wall(0)).unwrap(), 0);
+}
+
+#[test]
+fn a_short_segment_that_ends_at_a_switch_is_kept() {
+    // KTD3: a quick microphone change, or a Stop just after one, loses no
+    // audio.
+    let mut timeline = Timeline::new();
+    timeline.open(0, wall(0)).unwrap();
+    let closed = timeline.close_at_switch(300, wall(0), "a".into()).unwrap();
+    assert!(matches!(closed, Closed::Kept(ref s) if s.duration_ms == 300));
+    assert_eq!(timeline.segments().len(), 1);
+}
+
+#[test]
+fn a_stereo_segment_keeps_its_channel_count_when_it_closes() {
+    // KTD6: each segment has one channel count.
+    let mut timeline = Timeline::new();
+    timeline.open(0, wall(0)).unwrap();
+    assert_eq!(
+        timeline.open_segment().unwrap().channels,
+        1,
+        "mono by default"
+    );
+    timeline.set_open_channels(2).unwrap();
+    let closed = timeline.close_at_switch(300, wall(0), "a".into()).unwrap();
+    assert!(matches!(closed, Closed::Kept(ref s) if s.channels == 2));
+    timeline.open(1_000, wall(0)).unwrap();
+    let closed = timeline.close(5_000, wall(0), "b".into()).unwrap();
+    assert!(matches!(closed, Closed::Kept(ref s) if s.channels == 1));
+    assert!(timeline.set_open_channels(2).is_err(), "no segment is open");
+}
+
+#[test]
+fn a_segment_with_no_audio_is_discarded_even_at_a_switch() {
+    let mut timeline = Timeline::new();
+    timeline.open(1_000, wall(0)).unwrap();
+    assert_eq!(
+        timeline
+            .close_at_switch(1_000, wall(0), "a".into())
+            .unwrap(),
+        Closed::Discarded
+    );
+    assert!(timeline.is_empty());
 }
 
 #[test]

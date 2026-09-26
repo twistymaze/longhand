@@ -65,6 +65,75 @@ struct Script {
     capturing: AtomicBool,
     /// The active summary prompt; unset is the "Topic summary" built-in.
     prompt: Mutex<Option<summarize::Prompt>>,
+    /// Named sentences that the recognizer hears: when set, each window
+    /// decodes the name of each sentence once for each time it finds the
+    /// sentence in the window's audio (see [`heard`]).
+    sentences_heard: Mutex<Vec<(String, Vec<f32>)>>,
+}
+
+/// The names of `sentences` in the order that `pcm` holds them, one for each
+/// copy: a place where the normalized cross-correlation with the sentence is
+/// at least 0.5 and the highest within 100 ms. An echo 250 ms late is a
+/// second copy.
+fn heard(pcm: &[f32], sentences: &[(String, Vec<f32>)]) -> Vec<String> {
+    heard_at(pcm, sentences)
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect()
+}
+
+/// [`heard`] with the first sample of each copy in `pcm`.
+fn heard_at(pcm: &[f32], sentences: &[(String, Vec<f32>)]) -> Vec<(usize, String)> {
+    use realfft::RealFftPlanner;
+    let mut found: Vec<(usize, String)> = Vec::new();
+    for (name, sentence) in sentences {
+        if pcm.len() < sentence.len() {
+            continue;
+        }
+        let n = (pcm.len() + sentence.len()).next_power_of_two();
+        let mut planner = RealFftPlanner::<f64>::new();
+        let forward = planner.plan_fft_forward(n);
+        let inverse = planner.plan_fft_inverse(n);
+        let mut a: Vec<f64> = pcm.iter().map(|&s| f64::from(s)).collect();
+        a.resize(n, 0.0);
+        let mut b: Vec<f64> = sentence.iter().map(|&s| f64::from(s)).collect();
+        b.resize(n, 0.0);
+        let mut fa = forward.make_output_vec();
+        let mut fb = forward.make_output_vec();
+        forward.process(&mut a, &mut fa).unwrap();
+        forward.process(&mut b, &mut fb).unwrap();
+        for (x, y) in fa.iter_mut().zip(&fb) {
+            *x *= y.conj();
+        }
+        let mut cross = inverse.make_output_vec();
+        inverse.process(&mut fa, &mut cross).unwrap();
+        let norm: f64 = sentence.iter().map(|&s| f64::from(s).powi(2)).sum();
+        let mut window_energy = vec![0.0f64; pcm.len() - sentence.len() + 1];
+        let mut sum: f64 = pcm[..sentence.len()]
+            .iter()
+            .map(|&s| f64::from(s).powi(2))
+            .sum();
+        for (i, e) in window_energy.iter_mut().enumerate() {
+            *e = sum;
+            if i + sentence.len() < pcm.len() {
+                sum += f64::from(pcm[i + sentence.len()]).powi(2) - f64::from(pcm[i]).powi(2);
+            }
+        }
+        let ncc: Vec<f64> = window_energy
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| cross[i] / n as f64 / (norm * e.max(1e-12)).sqrt())
+            .collect();
+        let near = 1_600;
+        for i in 0..ncc.len() {
+            let (lo, hi) = (i.saturating_sub(near), (i + near + 1).min(ncc.len()));
+            if ncc[i] >= 0.5 && ncc[lo..hi].iter().all(|&v| v <= ncc[i]) {
+                found.push((i, name.clone()));
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// Analyses without finding anyone: the stage runs, no speaker turns come out.
@@ -151,6 +220,35 @@ impl Recognizer for Fake {
             });
         }
         let ms = pcm.len() as u64 / 16;
+        let sentences = s.sentences_heard.lock().unwrap();
+        if !sentences.is_empty() {
+            // One segment for the call number over the window, and one for
+            // each sentence heard, at its time, so a gap fill keeps the
+            // sentence words by their time (U10).
+            let call = format!("call {n}.");
+            let mut text = call.clone();
+            let mut segments = vec![AsrSegment {
+                start_ms: 0,
+                end_ms: ms,
+                text: call,
+            }];
+            let lengths: std::collections::HashMap<&str, u64> = sentences
+                .iter()
+                .map(|(name, pcm)| (name.as_str(), pcm.len() as u64 / 16))
+                .collect();
+            for (at, name) in heard_at(pcm, &sentences) {
+                text.push(' ');
+                text.push_str(&name);
+                let start_ms = at as u64 / 16;
+                segments.push(AsrSegment {
+                    start_ms,
+                    end_ms: start_ms + lengths[name.as_str()],
+                    text: name,
+                });
+            }
+            return Ok(WindowText { text, segments });
+        }
+        drop(sentences);
         let mut text = format!("call {n}.");
         for _ in 0..s.sentences.load(Ordering::SeqCst) {
             text.push_str(" Someone talks at length about the rules of the game.");
@@ -3899,5 +3997,263 @@ async fn a_diarization_failure_during_transcribe_again_saves_the_new_transcript_
         !events
             .iter()
             .any(|e| matches!(e, RunnerEvent::TranscribeAgainFailed { .. }))
+    );
+}
+
+// ------------------------------------------- stereo notes and echo removal (U9)
+
+const ECHO_DELAY: usize = 4_000;
+
+/// Three remote sentences from the speech fixture, raised to a normal
+/// level, with their names.
+fn remote_sentences() -> Vec<(String, Vec<f32>)> {
+    let speech = speech();
+    let cut = |from: f64, to: f64| -> Vec<f32> {
+        speech[(from * 16_000.0) as usize..(to * 16_000.0) as usize]
+            .iter()
+            .map(|s| s * 10.0)
+            .collect()
+    };
+    vec![
+        ("alpha".into(), cut(0.5, 2.5)),
+        ("bravo".into(), cut(3.0, 5.0)),
+        ("charlie".into(), cut(16.0, 18.0)),
+    ]
+}
+
+/// A call on the laptop speakers: the system channel holds the remote
+/// sentences from `starts` (in seconds), and the microphone hears them 250
+/// ms late at 0.4, with `room` added.
+fn speaker_call(starts: [f64; 3], room: Option<(f64, f64, f64)>) -> (Vec<f32>, Vec<f32>) {
+    let len = 24 * 16_000;
+    let mut system = vec![0.0f32; len];
+    for ((_, sentence), start) in remote_sentences().iter().zip(starts) {
+        let at = (start * 16_000.0) as usize;
+        system[at..at + sentence.len()].copy_from_slice(sentence);
+    }
+    let mut mic = common::delayed(&system, ECHO_DELAY, 0.4);
+    if let Some((at, from, to)) = room {
+        let speech = speech();
+        let room = &speech[(from * 16_000.0) as usize..(to * 16_000.0) as usize];
+        let at = (at * 16_000.0) as usize;
+        for (m, s) in mic[at..].iter_mut().zip(room) {
+            *m += s * 8.0;
+        }
+    }
+    (mic, system)
+}
+
+async fn stereo_rig() -> Rig {
+    let r = rig().await;
+    *r.script.sentences_heard.lock().unwrap() = remote_sentences();
+    r
+}
+
+fn queue_stereo(r: &Rig, segments: &[common::Recorded]) {
+    common::queue_recorded_session(&r.store, &r.root, "s", 100, Some("m"), segments);
+}
+
+/// How many times the transcript holds each remote sentence.
+fn times_heard(r: &Rig) -> Vec<(String, usize)> {
+    let text: String = transcribe::results(&r.store, "s")
+        .unwrap()
+        .iter()
+        .map(|w| format!(" {} ", w.text))
+        .collect();
+    remote_sentences()
+        .into_iter()
+        .map(|(name, _)| {
+            let n = text.matches(&format!(" {name}")).count();
+            (name, n)
+        })
+        .collect()
+}
+
+fn once_each() -> Vec<(String, usize)> {
+    remote_sentences()
+        .into_iter()
+        .map(|(name, _)| (name, 1))
+        .collect()
+}
+
+#[test]
+fn the_test_recognizer_hears_an_echo_250_ms_late_as_a_second_sentence() {
+    // The check of each test below: without echo removal, the plain sum of
+    // the channels holds each sentence twice.
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    let sum = common::add(&mic.iter().map(|s| s * 2.5).collect::<Vec<_>>(), &system);
+    let names = heard(&sum, &remote_sentences());
+    assert_eq!(
+        names,
+        ["alpha", "alpha", "bravo", "bravo", "charlie", "charlie"]
+    );
+    assert_eq!(
+        heard(&system, &remote_sentences()),
+        ["alpha", "bravo", "charlie"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_on_the_speakers_is_transcribed_with_each_remote_sentence_once() {
+    // Covers AE2.
+    let r = stereo_rig().await;
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+    assert_eq!(echo.spans.len(), 3, "{:?}", echo.spans);
+    assert_eq!(times_heard(&r), once_each());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_text_inside_the_echo_spans_gives_way_to_the_cleaned_mix() {
+    // Covers AE2 with the live transcript on (U10): the live text holds each
+    // remote sentence twice, from the system channel and from its echo.
+    let r = stereo_rig().await;
+    let starts = [2.0, 9.0, 16.0];
+    let (mic, system) = speaker_call(starts, None);
+    let duration_ms = mic.len() as u64 / 16;
+    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
+    let word = |start_ms: u64, end_ms: u64, text: &str| asr::LiveWord {
+        start_ms,
+        end_ms,
+        text: text.into(),
+    };
+    // A room word before the call, outside every echo span.
+    let mut words = vec![word(500, 800, "hello")];
+    for ((name, sentence), start) in remote_sentences().iter().zip(starts) {
+        let at = (start * 1_000.0) as u64;
+        let len = sentence.len() as u64 / 16;
+        words.push(word(at, at + len, name));
+        words.push(word(at + 250, at + 250 + len, name));
+    }
+    let part = asr::LivePart {
+        start_ms: 0,
+        end_ms: duration_ms,
+        words,
+    };
+    pipeline::live::save_part(&r.store, "s", 0, 0, &part).unwrap();
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+    assert_eq!(echo.spans.len(), 3, "{:?}", echo.spans);
+    assert_eq!(times_heard(&r), once_each());
+    let live: Vec<String> = transcribe::results(&r.store, "s")
+        .unwrap()
+        .into_iter()
+        .filter(|w| w.live)
+        .map(|w| w.text)
+        .collect();
+    assert_eq!(live, ["hello"], "the live word outside the spans stays");
+    let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
+    assert!(transcript.contains("hello"), "{transcript}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_speech_over_the_call_keeps_each_remote_sentence_once() {
+    let r = stereo_rig().await;
+    // The room talks over the second sentence.
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0], Some((8.5, 20.0, 26.0)));
+    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+    assert!(
+        echo.spans
+            .iter()
+            .any(|s| s.start_ms <= 9_350 && s.end_ms >= 11_250),
+        "{:?}",
+        echo.spans
+    );
+    assert_eq!(times_heard(&r), once_each());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_sentence_that_starts_an_echo_span_is_heard_once() {
+    // The first sentence starts 1 s into the note, so its span starts 1.25 s
+    // in, and the sentences follow each other closely.
+    let r = stereo_rig().await;
+    let (mic, system) = speaker_call([1.0, 5.5, 10.0], None);
+    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+    assert!(
+        echo.spans[0].start_ms.abs_diff(1_250) <= 100,
+        "{:?}",
+        echo.spans
+    );
+    assert_eq!(times_heard(&r), once_each());
+}
+
+/// The note "s" with one stereo call segment, saved.
+async fn saved_stereo_note(r: &Rig, segments: &[common::Recorded]) -> std::path::PathBuf {
+    queue_stereo(r, segments);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    saved_folder(r, "s")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_on_a_stereo_note_finds_the_same_echo_spans_within_100_ms() {
+    let r = stereo_rig().await;
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
+    let first = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let again = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
+    assert_eq!(again.spans.len(), first.spans.len(), "{:?}", again.spans);
+    for (a, b) in first.spans.iter().zip(&again.spans) {
+        assert!(
+            a.start_ms.abs_diff(b.start_ms) <= 100 && a.end_ms.abs_diff(b.end_ms) <= 100,
+            "{a:?} against {b:?}"
+        );
+    }
+    assert_eq!(times_heard(&r), once_each(), "from the cleaned mix");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_each() {
+    let r = stereo_rig().await;
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    saved_stereo_note(
+        &r,
+        &[
+            common::Recorded::Mono(48_000, vec![0.0; 3 * 48_000]),
+            common::Recorded::Stereo(16_000, mic, system),
+        ],
+    )
+    .await;
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
+    assert_eq!(
+        pipeline::echo::saved(&r.store, "s", 1)
+            .unwrap()
+            .unwrap()
+            .spans
+            .len(),
+        3
+    );
+    assert_eq!(times_heard(&r), once_each());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_transcribe_again_restores_the_previous_echo_spans() {
+    let r = stereo_rig().await;
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
+    let before = checkpoint::all(&r.store, "s", Stage::Assemble).unwrap();
+    assert!(before.iter().any(|(k, _)| k == &checkpoint::echo_key(0)));
+
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    // Assemble runs again and saves a new echo spans row; then a resume
+    // takes the run back during its first window.
+    *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+    assert_eq!(state(&r.store, "s"), SessionState::Capturing);
+    assert_eq!(
+        checkpoint::all(&r.store, "s", Stage::Assemble).unwrap(),
+        before
     );
 }

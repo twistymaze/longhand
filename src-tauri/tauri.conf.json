@@ -28,7 +28,7 @@
     ],
     "macOS": {
       "hardenedRuntime": true,
-      "minimumSystemVersion": "13.0",
+      "minimumSystemVersion": "15.0",
       "signingIdentity": "Developer ID Application: Ervin Walter (7GLQLN8HXK)",
       "entitlements": "Entitlements.plist"
     }

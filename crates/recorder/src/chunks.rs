@@ -68,6 +68,10 @@ pub struct SegmentArgs {
     /// segment continues it rather than restarting at zero.
     pub offset_ms: u64,
     pub sample_rate: u32,
+    /// 1 for a mono segment. 2 for a stereo segment: the microphone on the
+    /// left and system audio on the right (R11, KTD6 of the system audio
+    /// plan).
+    pub channels: u16,
     pub floor_bytes: u64,
 }
 
@@ -91,11 +95,13 @@ pub struct ChunkedWriter {
     /// Logical start of the open chunk on the session timeline.
     start_ms: u64,
     audio_start_ms: u64,
-    /// New (non-lookback) samples in the open chunk.
+    /// New (non-lookback) frames in the open chunk. A frame is one sample
+    /// of each channel.
     chunk_samples: u64,
-    /// Every new sample of the segment, for its end on the timeline.
+    /// Every new frame of the segment, for its end on the timeline.
     segment_samples: u64,
     chunk: Option<WavFile>,
+    /// The lookback, as interleaved samples.
     history: VecDeque<f32>,
     since_flush: u64,
     since_space_check: u64,
@@ -110,6 +116,13 @@ impl ChunkedWriter {
     }
 
     pub fn with_probe(args: SegmentArgs, probe: SpaceProbe) -> Result<Self, RecorderError> {
+        if !matches!(args.channels, 1 | 2) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("a segment has 1 or 2 channels, not {}", args.channels),
+            )
+            .into());
+        }
         std::fs::create_dir_all(&args.dir)?;
         storage::check(probe(&args.dir), args.floor_bytes).map_err(|available| {
             RecorderError::LowDisk {
@@ -148,12 +161,20 @@ impl ChunkedWriter {
         self.args.sample_rate
     }
 
+    pub fn channels(&self) -> u16 {
+        self.args.channels
+    }
+
     fn rate(&self) -> u64 {
         self.args.sample_rate as u64
     }
 
-    fn ms(&self, samples: u64) -> u64 {
-        samples * 1000 / self.rate()
+    fn width(&self) -> usize {
+        usize::from(self.args.channels)
+    }
+
+    fn ms(&self, frames: u64) -> u64 {
+        frames * 1000 / self.rate()
     }
 
     fn partial_path(&self) -> PathBuf {
@@ -168,13 +189,26 @@ impl ChunkedWriter {
         self.args.offset_ms + self.ms(self.segment_samples)
     }
 
+    /// Write samples. A stereo segment takes interleaved frames, and a part
+    /// frame is refused, so the channels never move by a sample.
     pub fn write(&mut self, samples: &[f32]) -> Result<(), RecorderError> {
+        let width = self.width();
+        if !samples.len().is_multiple_of(width) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} samples are not whole frames of {width} channels",
+                    samples.len()
+                ),
+            )
+            .into());
+        }
         let chunk_len = CHUNK_SECONDS * self.rate();
         let mut rest = samples;
         // Split at the chunk boundary so every closed chunk holds exactly
         // 60 s of new audio and stems stay on whole-second marks.
         while !rest.is_empty() {
-            let room = (chunk_len - self.chunk_samples) as usize;
+            let room = (chunk_len - self.chunk_samples) as usize * width;
             let (now, later) = rest.split_at(room.min(rest.len()));
             self.write_within_chunk(now)?;
             rest = later;
@@ -195,11 +229,16 @@ impl ChunkedWriter {
                 },
             )?;
         }
+        let width = self.width();
         if self.chunk.is_none() {
             self.audio_start_ms = self
                 .start_ms
-                .saturating_sub(self.ms(self.history.len() as u64));
-            let mut chunk = WavFile::create(&self.partial_path(), self.args.sample_rate)?;
+                .saturating_sub(self.ms((self.history.len() / width) as u64));
+            let mut chunk = WavFile::create(
+                &self.partial_path(),
+                self.args.sample_rate,
+                self.args.channels,
+            )?;
             let (a, b) = self.history.as_slices();
             chunk.write(a)?;
             chunk.write(b)?;
@@ -208,13 +247,13 @@ impl ChunkedWriter {
         let rate = self.rate();
         let chunk = self.chunk.as_mut().expect("opened above");
         chunk.write(samples)?;
-        let n = samples.len() as u64;
+        let n = (samples.len() / width) as u64;
         self.chunk_samples += n;
         self.segment_samples += n;
         self.since_space_check += n;
         self.since_flush += n;
 
-        let limit = (LOOKBACK_SECONDS * rate) as usize;
+        let limit = (LOOKBACK_SECONDS * rate) as usize * width;
         self.history
             .extend(&samples[samples.len().saturating_sub(limit)..]);
         let excess = self.history.len().saturating_sub(limit);
@@ -349,6 +388,13 @@ pub fn list_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
     Ok(chunks)
 }
 
+/// The channel count of a chunk, from its WAV header: 1 for mono, 2 for
+/// stereo. After a crash the open segment has no row, so recovery reads it
+/// here (KTD6 of the system audio plan).
+pub fn chunk_channels(chunk: &ChunkInfo) -> std::io::Result<u16> {
+    wav::read_format(&chunk.path).map(|(_, channels)| channels)
+}
+
 /// Remove every chunk of `segment`, closed or open (R35).
 pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
@@ -392,14 +438,14 @@ pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
         let Some([segment, capture, start, audio_start]) = parse_numbers::<4>(stem) else {
             continue;
         };
-        let (rate, samples) = match wav::repair(&entry.path()) {
+        let repaired = match wav::repair(&entry.path()) {
             Ok(repaired) => repaired,
             Err(e) => {
                 log::warn!("partial chunk {name} is unreadable ({e}); left in place");
                 continue;
             }
         };
-        let end = audio_start + samples * 1000 / rate.max(1) as u64;
+        let end = audio_start + repaired.frames * 1000 / repaired.sample_rate.max(1) as u64;
         if end <= start {
             std::fs::remove_file(entry.path())?;
             continue;

@@ -3,6 +3,12 @@
 //! archive that is saved with the session, and the 16 kHz mono f32 tap that
 //! recognition and diarization read. Audio streams through in blocks; no
 //! segment is ever held in memory (R7).
+//!
+//! A stereo segment (the microphone on the left, system audio on the right)
+//! keeps both raw channels in its archive, as two uncoupled Opus streams
+//! (KTD7). Its processing file is the mono mix with the speaker echo removed
+//! from the microphone channel, and its echo spans are saved as a checkpoint
+//! (KTD8; see `echo.rs`).
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
@@ -12,16 +18,19 @@ use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use serde::{Deserialize, Serialize};
 use session_core::{Segment, Stage};
 
+use crate::echo::{self, Analysis, EchoSpans};
 use crate::resample::StreamResampler;
-use crate::{Control, RECOVERY_DIR, SharedStore, StageError, checkpoint, proc_file};
+use crate::{Control, RECOVERY_DIR, SharedStore, StageError, checkpoint, opus_ms, proc_file};
 
 pub const PROC_RATE: u32 = 16_000;
 /// Opus always runs at 48 kHz internally; other input rates are resampled.
 const OPUS_RATE: u32 = 48_000;
 const OPUS_FRAME: usize = 960; // 20 ms
+/// The bitrate of each channel's stream.
 const OPUS_BITRATE: i32 = 64_000;
 /// Packets per Ogg page: one second of audio.
 const PACKETS_PER_PAGE: u64 = 50;
+/// Samples of each channel in one block.
 const BLOCK: usize = 4_096;
 
 /// The assemble checkpoint for one segment.
@@ -29,35 +38,43 @@ const BLOCK: usize = 4_096;
 pub struct AssembledSegment {
     pub segment: u32,
     pub native_rate: u32,
-    /// Samples in the trimmed native-rate stream.
+    /// Samples of each channel in the trimmed native-rate stream.
     pub native_samples: u64,
     /// Samples in the 16 kHz processing file.
     pub proc_samples: u64,
 }
 
-/// Assemble every segment of the session that is not yet assembled. `home`
-/// is the folder a resumed session completed into (R6d): a segment whose
-/// archive is there is already assembled, and its processing file is decoded
-/// back from that archive.
+/// What assembling one segment made: its checkpoint and, for a stereo
+/// segment, its echo spans.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Assembled {
+    pub segment: AssembledSegment,
+    pub echo: Option<EchoSpans>,
+}
+
 /// Refuse to start when the working location cannot hold what assembling
 /// the remaining segments writes (R7b): better named now, with the session
-/// whole, than as a write failure part-way through.
-fn check_space(
+/// whole, than as a write failure part-way through. A stereo segment also
+/// needs its temporary 16 kHz stereo file (KTD8). `available` is the free
+/// space; `None` when unknown, which passes.
+pub fn check_space(
     store: &SharedStore,
     session_id: &str,
-    session_dir: &Path,
     segments: &[Segment],
+    available: Option<u64>,
 ) -> Result<(), StageError> {
-    let mut remaining_ms = 0;
+    let mut needed = 0;
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
         if checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?.is_none()
         {
-            remaining_ms += segment.duration_ms;
+            let seconds = segment.duration_ms.div_ceil(1_000);
+            needed += recorder::storage::processing_bytes_per_second(segment.channels) * seconds;
+            if segment.channels == 2 {
+                needed += echo::TEMPORARY_BYTES_PER_SECOND * seconds;
+            }
         }
     }
-    let needed = recorder::storage::processing_demand(remaining_ms.div_ceil(1_000));
-    let available = recorder::storage::available_space(session_dir);
     recorder::storage::check_headroom(available, needed, recorder::storage::DISK_RESERVE_BYTES)
         .map_err(|free| {
             StageError::Failed(format!(
@@ -72,6 +89,10 @@ fn gigabytes(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1e9)
 }
 
+/// Assemble every segment of the session that is not yet assembled. `home`
+/// is the folder a resumed session completed into (R6d): a segment whose
+/// archive is there is already assembled, and its processing file is decoded
+/// back from that archive.
 pub fn run(
     store: &SharedStore,
     session_id: &str,
@@ -83,14 +104,21 @@ pub fn run(
     let recovery = session_dir.join(RECOVERY_DIR);
     // A crash while capturing leaves a `.part` open; close it from its length.
     recorder::recover_partial_chunks(&recovery)?;
-    check_space(store, session_id, session_dir, segments)?;
+    check_space(
+        store,
+        session_id,
+        segments,
+        recorder::storage::available_space(session_dir),
+    )?;
     let mut out = Vec::new();
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
+        // A stereo segment is done only with its echo spans row too.
         if let Some(done) =
             checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
             && session_dir.join(&segment.audio_file).exists()
             && session_dir.join(proc_file(&segment.audio_file)).exists()
+            && (segment.channels != 2 || echo::saved(store, session_id, segment.index)?.is_some())
         {
             out.push(done);
             continue;
@@ -100,21 +128,14 @@ pub fn run(
             .filter(|archive| archive.exists())
         {
             control.proceed()?;
-            let proc_samples =
-                decode_archive(&archive, &session_dir.join(proc_file(&segment.audio_file)))?;
-            let done = AssembledSegment {
-                segment: segment.index,
-                native_rate: OPUS_RATE,
-                native_samples: proc_samples * (OPUS_RATE / PROC_RATE) as u64,
-                proc_samples,
-            };
-            checkpoint::put(store, session_id, Stage::Assemble, &key, &done)?;
+            let assembled = decode_segment(&archive, session_dir, segment, control)?;
+            record(store, session_id, &assembled)?;
             log::info!(
                 "decoded segment {} of {session_id} from {}",
                 segment.index,
                 archive.display()
             );
-            out.push(done);
+            out.push(assembled.segment);
             continue;
         }
         if let Some(home) = home
@@ -129,18 +150,209 @@ pub fn run(
             )));
         }
         control.proceed()?;
-        let done = assemble_segment(&recovery, session_dir, segment, control)?;
-        checkpoint::put(store, session_id, Stage::Assemble, &key, &done)?;
+        let assembled = assemble_segment(&recovery, session_dir, segment, control)?;
+        record(store, session_id, &assembled)?;
         log::info!(
             "assembled segment {} of {session_id}: {} samples at {} Hz",
             segment.index,
-            done.native_samples,
-            done.native_rate
+            assembled.segment.native_samples,
+            assembled.segment.native_rate
         );
-        out.push(done);
+        out.push(assembled.segment);
     }
     checkpoint::mark_complete(store, session_id, Stage::Assemble, segments.len())?;
     Ok(out)
+}
+
+/// Save the echo spans row, then record the segment as done (step, then
+/// record): a crash between the two assembles the segment again and replaces
+/// the row.
+fn record(store: &SharedStore, session_id: &str, assembled: &Assembled) -> Result<(), StageError> {
+    let index = assembled.segment.segment;
+    if let Some(echo) = &assembled.echo {
+        checkpoint::put(
+            store,
+            session_id,
+            Stage::Assemble,
+            &checkpoint::echo_key(index),
+            echo,
+        )?;
+        log::info!(
+            "segment {index} of {session_id}: {} echo spans, microphone gain {:.2}, system gain {:.2}",
+            echo.spans.len(),
+            echo.mic_gain,
+            echo.system_gain
+        );
+    }
+    checkpoint::put(
+        store,
+        session_id,
+        Stage::Assemble,
+        &checkpoint::segment_key(index),
+        &assembled.segment,
+    )
+}
+
+/// Where each block of a segment goes after the archive.
+#[allow(clippy::large_enum_variant, reason = "one value for each segment")]
+enum Sink {
+    Mono {
+        to_opus: StreamResampler,
+        to_proc: StreamResampler,
+        proc: ProcWriter,
+    },
+    Stereo {
+        to_opus: [StreamResampler; 2],
+        to_proc: [StreamResampler; 2],
+        analysis: Analysis,
+    },
+}
+
+/// Run each channel through its resampler and return the outputs
+/// interleaved. Both resamplers have one configuration and take the same
+/// lengths, so they give the same lengths.
+fn resample_pair(
+    resamplers: &mut [StreamResampler; 2],
+    channels: [&[f32]; 2],
+    finish: bool,
+) -> [Vec<f32>; 2] {
+    let mut out = [Vec::new(), Vec::new()];
+    for ((resampler, input), out) in resamplers.iter_mut().zip(channels).zip(&mut out) {
+        let mut emit = |s: &[f32]| out.extend_from_slice(s);
+        if finish {
+            resampler.finish(&mut emit);
+        } else {
+            resampler.push(input, &mut emit);
+        }
+    }
+    debug_assert_eq!(out[0].len(), out[1].len());
+    out
+}
+
+fn interleave(left: &[f32], right: &[f32]) -> Vec<f32> {
+    left.iter().zip(right).flat_map(|(&l, &r)| [l, r]).collect()
+}
+
+/// Split interleaved stereo `pcm` into its left and right channels.
+fn deinterleave(pcm: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let left = pcm.iter().step_by(2).copied().collect();
+    let right = pcm.iter().skip(1).step_by(2).copied().collect();
+    (left, right)
+}
+
+impl Sink {
+    fn new(rate: u32, channels: u16, processing: &Path) -> Result<Self, StageError> {
+        Ok(match channels {
+            1 => Sink::Mono {
+                to_opus: StreamResampler::new(rate, OPUS_RATE),
+                to_proc: StreamResampler::new(rate, PROC_RATE),
+                proc: ProcWriter::create(&temp_path(processing))?,
+            },
+            _ => Sink::Stereo {
+                to_opus: [
+                    StreamResampler::new(rate, OPUS_RATE),
+                    StreamResampler::new(rate, OPUS_RATE),
+                ],
+                to_proc: [
+                    StreamResampler::new(rate, PROC_RATE),
+                    StreamResampler::new(rate, PROC_RATE),
+                ],
+                analysis: Analysis::create(&stereo_temp_path(processing))?,
+            },
+        })
+    }
+
+    /// Take a block of interleaved native-rate samples.
+    fn push(&mut self, opus: &mut OpusWriter, block: &[f32]) -> Result<(), StageError> {
+        match self {
+            Sink::Mono {
+                to_opus,
+                to_proc,
+                proc,
+            } => {
+                let mut out = Vec::new();
+                to_opus.push(block, &mut |s| out.extend_from_slice(s));
+                opus.push(&out)?;
+                out.clear();
+                to_proc.push(block, &mut |s| out.extend_from_slice(s));
+                proc.push(&out)
+            }
+            Sink::Stereo {
+                to_opus,
+                to_proc,
+                analysis,
+            } => {
+                let (left, right) = deinterleave(block);
+                let [l, r] = resample_pair(to_opus, [&left, &right], false);
+                opus.push(&interleave(&l, &r))?;
+                let [l, r] = resample_pair(to_proc, [&left, &right], false);
+                analysis.push(&l, &r)
+            }
+        }
+    }
+
+    /// Flush the resamplers, and finish the processing file or the
+    /// temporary stereo file.
+    fn finish(self, opus: &mut OpusWriter) -> Result<Finished, StageError> {
+        match self {
+            Sink::Mono {
+                mut to_opus,
+                mut to_proc,
+                mut proc,
+            } => {
+                let mut out = Vec::new();
+                to_opus.finish(&mut |s| out.extend_from_slice(s));
+                opus.push(&out)?;
+                out.clear();
+                to_proc.finish(&mut |s| out.extend_from_slice(s));
+                proc.push(&out)?;
+                Ok(Finished::Mono(proc))
+            }
+            Sink::Stereo {
+                mut to_opus,
+                mut to_proc,
+                mut analysis,
+            } => {
+                let [l, r] = resample_pair(&mut to_opus, [&[], &[]], true);
+                opus.push(&interleave(&l, &r))?;
+                let [l, r] = resample_pair(&mut to_proc, [&[], &[]], true);
+                analysis.push(&l, &r)?;
+                Ok(Finished::Stereo(analysis.finish()?))
+            }
+        }
+    }
+}
+
+enum Finished {
+    Mono(ProcWriter),
+    Stereo(echo::Measured),
+}
+
+/// Write the processing file of a segment from what its first pass made:
+/// the mono file as it is, or the mix of the temporary stereo file (KTD8
+/// steps 2 to 6). Returns the processing samples and the echo spans.
+fn finish_processing(
+    finished: Finished,
+    processing: &Path,
+    segment: u32,
+    control: &dyn Control,
+) -> Result<(u64, Option<EchoSpans>), StageError> {
+    match finished {
+        Finished::Mono(proc) => {
+            let samples = proc.finish()?;
+            commit(&temp_path(processing), processing)?;
+            Ok((samples, None))
+        }
+        Finished::Stereo(measured) => {
+            let stereo = stereo_temp_path(processing);
+            let mut proc = ProcWriter::create(&temp_path(processing))?;
+            let spans = echo::finish(measured, &stereo, segment, control, &mut |s| proc.push(s))?;
+            let samples = proc.finish()?;
+            commit(&temp_path(processing), processing)?;
+            // The caller's `TempFiles` removes the temporary stereo file.
+            Ok((samples, Some(spans)))
+        }
+    }
 }
 
 pub fn assemble_segment(
@@ -148,7 +360,7 @@ pub fn assemble_segment(
     session_dir: &Path,
     segment: &Segment,
     control: &dyn Control,
-) -> Result<AssembledSegment, StageError> {
+) -> Result<Assembled, StageError> {
     let chunks: Vec<_> = recorder::list_chunks(recovery)?
         .into_iter()
         .filter(|c| c.segment == segment.index)
@@ -159,44 +371,39 @@ pub fn assemble_segment(
             segment.index
         )));
     };
-    let rate = hound::WavReader::open(&first.path)?.spec().sample_rate;
+    let spec = hound::WavReader::open(&first.path)?.spec();
+    let (rate, channels) = (spec.sample_rate, spec.channels);
+    if !matches!(channels, 1 | 2) || channels != segment.channels {
+        return Err(StageError::Failed(format!(
+            "segment {} has {} channels in {} and {} in the store",
+            segment.index,
+            channels,
+            first.path.display(),
+            segment.channels
+        )));
+    }
+    let width = usize::from(channels);
 
     let archive = session_dir.join(&segment.audio_file);
     let processing = session_dir.join(proc_file(&segment.audio_file));
-    let mut opus = OpusWriter::create(&temp_path(&archive), rate)?;
-    let mut proc = ProcWriter::create(&temp_path(&processing))?;
-    let mut to_opus = StreamResampler::new(rate, OPUS_RATE);
-    let mut to_proc = StreamResampler::new(rate, PROC_RATE);
+    let _temps = TempFiles(vec![
+        temp_path(&archive),
+        temp_path(&processing),
+        stereo_temp_path(&processing),
+    ]);
+    let mut opus = OpusWriter::create(&temp_path(&archive), rate, channels)?;
+    let mut sink = Sink::new(rate, channels, &processing)?;
 
     let mut native_samples = 0u64;
-    let mut failure: Option<StageError> = None;
-    let mut feed = |block: &[f32], native_samples: &mut u64| {
-        *native_samples += block.len() as u64;
-        to_opus.push(block, &mut |s| {
-            if failure.is_none()
-                && let Err(e) = opus.push(s)
-            {
-                failure = Some(e);
-            }
-        });
-        to_proc.push(block, &mut |s| {
-            if failure.is_none()
-                && let Err(e) = proc.push(s)
-            {
-                failure = Some(e);
-            }
-        });
-    };
-
     let mut expected_ms = first.start_ms;
-    let mut block = Vec::with_capacity(BLOCK);
+    let mut block = Vec::with_capacity(BLOCK * width);
     for chunk in &chunks {
         control.proceed()?;
         let mut reader = hound::WavReader::open(&chunk.path)?;
         let spec = reader.spec();
-        if spec.sample_rate != rate || spec.channels != 1 || spec.bits_per_sample != 16 {
+        if spec.sample_rate != rate || spec.channels != channels || spec.bits_per_sample != 16 {
             return Err(StageError::Failed(format!(
-                "chunk {} is not 16-bit mono at {rate} Hz",
+                "chunk {} is not 16-bit with {channels} channels at {rate} Hz",
                 chunk.path.display()
             )));
         }
@@ -209,119 +416,247 @@ pub fn assemble_segment(
                 chunk.start_ms - expected_ms,
                 chunk.path.display()
             );
-            for part in vec![0.0f32; gap as usize].chunks(BLOCK) {
-                feed(part, &mut native_samples);
+            for part in vec![0.0f32; gap as usize * width].chunks(BLOCK * width) {
+                native_samples += (part.len() / width) as u64;
+                sink.push(&mut opus, part)?;
             }
         }
         // The lookback repeats the previous chunk's tail; skip it.
         let lookback = ms_to_samples(chunk.start_ms.saturating_sub(chunk.audio_start_ms), rate);
         let overlap = ms_to_samples(expected_ms.saturating_sub(chunk.start_ms), rate);
-        let skip = lookback + overlap;
+        let skip = (lookback + overlap) * width as u64;
         for (i, sample) in reader.samples::<i16>().enumerate() {
             if (i as u64) < skip {
                 continue;
             }
             block.push(sample? as f32 / 32_768.0);
-            if block.len() == BLOCK {
-                feed(&block, &mut native_samples);
+            if block.len() == BLOCK * width {
+                native_samples += BLOCK as u64;
+                sink.push(&mut opus, &block)?;
                 block.clear();
             }
         }
         expected_ms = expected_ms.max(chunk.end_ms);
     }
+    // A chunk cut by a crash can end inside a frame; drop the part frame.
+    block.truncate(block.len() / width * width);
     if !block.is_empty() {
-        feed(&block, &mut native_samples);
+        native_samples += (block.len() / width) as u64;
+        sink.push(&mut opus, &block)?;
     }
-    to_opus.finish(&mut |s| {
-        if failure.is_none()
-            && let Err(e) = opus.push(s)
-        {
-            failure = Some(e);
-        }
-    });
-    to_proc.finish(&mut |s| {
-        if failure.is_none()
-            && let Err(e) = proc.push(s)
-        {
-            failure = Some(e);
-        }
-    });
-    if let Some(e) = failure {
-        return Err(e);
-    }
+    let finished = sink.finish(&mut opus)?;
     opus.finish()?;
-    let proc_samples = proc.finish()?;
+    let (proc_samples, echo) = finish_processing(finished, &processing, segment.index, control)?;
     commit(&temp_path(&archive), &archive)?;
-    commit(&temp_path(&processing), &processing)?;
 
-    Ok(AssembledSegment {
-        segment: segment.index,
-        native_rate: rate,
-        native_samples,
-        proc_samples,
+    Ok(Assembled {
+        segment: AssembledSegment {
+            segment: segment.index,
+            native_rate: rate,
+            native_samples,
+            proc_samples,
+        },
+        echo,
     })
 }
 
 /// Decode an archive this stage wrote back into a 16 kHz processing file,
-/// trimmed as a player would (RFC 7845: pre-skip at the start, the last
-/// granule at the end). Returns the processing samples written.
-pub fn decode_archive(archive: &Path, processing: &Path) -> Result<u64, StageError> {
-    let bad = |why: &str| StageError::Failed(format!("{}: {why}", archive.display()));
-    let mut packets = ogg::PacketReader::new(BufReader::new(File::open(archive)?));
-    let head = packets
-        .read_packet()
-        .map_err(|e| bad(&e.to_string()))?
-        .ok_or_else(|| bad("empty"))?;
-    if head.data.len() < 19 || &head.data[..8] != b"OpusHead" || head.data[9] != 1 {
-        return Err(bad("not a mono Opus stream"));
-    }
-    let pre_skip = u16::from_le_bytes([head.data[10], head.data[11]]) as u64;
-    packets
-        .read_packet()
-        .map_err(|e| bad(&e.to_string()))?
-        .ok_or_else(|| bad("no tags"))?;
-
-    let mut decoder = opus::Decoder::new(OPUS_RATE, opus::Channels::Mono)
-        .map_err(|e| bad(&format!("opus decoder: {e}")))?;
-    let mut to_proc = StreamResampler::new(OPUS_RATE, PROC_RATE);
-    let mut proc = ProcWriter::create(&temp_path(processing))?;
-    let mut failure: Option<StageError> = None;
-    let mut buf = vec![0f32; 5_760];
-    // 48 kHz samples decoded so far, pre-skip included.
-    let mut decoded = 0u64;
-    while let Some(packet) = packets.read_packet().map_err(|e| bad(&e.to_string()))? {
-        let n = decoder
-            .decode_float(&packet.data, &mut buf, false)
-            .map_err(|e| bad(&format!("opus decoder: {e}")))? as u64;
-        let end = if packet.last_in_stream() {
-            (decoded + n).min(packet.absgp_page())
-        } else {
-            decoded + n
-        };
-        let from = pre_skip.max(decoded).min(end);
-        let pcm = &buf[(from - decoded) as usize..(end - decoded) as usize];
-        decoded += n;
-        to_proc.push(pcm, &mut |s| {
-            if failure.is_none()
-                && let Err(e) = proc.push(s)
-            {
-                failure = Some(e);
-            }
-        });
-    }
-    to_proc.finish(&mut |s| {
-        if failure.is_none()
-            && let Err(e) = proc.push(s)
-        {
-            failure = Some(e);
+/// in the format of the archive: a mono archive as it is, a stereo archive
+/// through echo removal and the mix, as when it was assembled (R17).
+fn decode_segment(
+    archive: &Path,
+    session_dir: &Path,
+    segment: &Segment,
+    control: &dyn Control,
+) -> Result<Assembled, StageError> {
+    let processing = session_dir.join(proc_file(&segment.audio_file));
+    let _temps = TempFiles(vec![temp_path(&processing), stereo_temp_path(&processing)]);
+    let mut reader = ArchiveReader::open(archive)?;
+    let channels = reader.channels();
+    let mut sink = match channels {
+        1 => Finishing::Mono(
+            StreamResampler::new(OPUS_RATE, PROC_RATE),
+            ProcWriter::create(&temp_path(&processing))?,
+        ),
+        _ => Finishing::Stereo(
+            [
+                StreamResampler::new(OPUS_RATE, PROC_RATE),
+                StreamResampler::new(OPUS_RATE, PROC_RATE),
+            ],
+            Analysis::create(&stereo_temp_path(&processing))?,
+        ),
+    };
+    let mut pcm = Vec::new();
+    let mut packets = 0u64;
+    loop {
+        pcm.clear();
+        if !reader.read(&mut pcm)? {
+            break;
         }
-    });
-    if let Some(e) = failure {
-        return Err(e);
+        packets += 1;
+        if packets.is_multiple_of(PACKETS_PER_PAGE * 60) {
+            control.proceed()?;
+        }
+        sink.push(&pcm)?;
     }
-    let samples = proc.finish()?;
-    commit(&temp_path(processing), processing)?;
-    Ok(samples)
+    let finished = sink.finish()?;
+    let (proc_samples, echo) = finish_processing(finished, &processing, segment.index, control)?;
+    Ok(Assembled {
+        segment: AssembledSegment {
+            segment: segment.index,
+            native_rate: OPUS_RATE,
+            native_samples: proc_samples * (OPUS_RATE / PROC_RATE) as u64,
+            proc_samples,
+        },
+        echo,
+    })
+}
+
+/// The 16 kHz side of a decode, for one or two channels.
+#[allow(clippy::large_enum_variant, reason = "one value for each segment")]
+enum Finishing {
+    Mono(StreamResampler, ProcWriter),
+    Stereo([StreamResampler; 2], Analysis),
+}
+
+impl Finishing {
+    fn push(&mut self, pcm: &[f32]) -> Result<(), StageError> {
+        match self {
+            Finishing::Mono(to_proc, proc) => {
+                let mut out = Vec::new();
+                to_proc.push(pcm, &mut |s| out.extend_from_slice(s));
+                proc.push(&out)
+            }
+            Finishing::Stereo(to_proc, analysis) => {
+                let (left, right) = deinterleave(pcm);
+                let [l, r] = resample_pair(to_proc, [&left, &right], false);
+                analysis.push(&l, &r)
+            }
+        }
+    }
+
+    fn finish(self) -> Result<Finished, StageError> {
+        match self {
+            Finishing::Mono(mut to_proc, mut proc) => {
+                let mut out = Vec::new();
+                to_proc.finish(&mut |s| out.extend_from_slice(s));
+                proc.push(&out)?;
+                Ok(Finished::Mono(proc))
+            }
+            Finishing::Stereo(mut to_proc, mut analysis) => {
+                let [l, r] = resample_pair(&mut to_proc, [&[], &[]], true);
+                analysis.push(&l, &r)?;
+                Ok(Finished::Stereo(analysis.finish()?))
+            }
+        }
+    }
+}
+
+enum Decoder {
+    Mono(opus::Decoder),
+    Stereo(opus_ms::Decoder),
+}
+
+/// Reads an archive this stage wrote: mapping family 0 with one channel, or
+/// mapping family 1 with two uncoupled streams (KTD7). It gives 48 kHz
+/// interleaved samples, trimmed as a player would (RFC 7845: pre-skip at the
+/// start, the last granule at the end).
+pub struct ArchiveReader {
+    packets: ogg::PacketReader<BufReader<File>>,
+    decoder: Decoder,
+    channels: u16,
+    pre_skip: u64,
+    /// 48 kHz samples of each channel decoded so far, pre-skip included.
+    decoded: u64,
+    buf: Vec<f32>,
+    path: PathBuf,
+}
+
+impl ArchiveReader {
+    pub fn open(archive: &Path) -> Result<Self, StageError> {
+        let bad = |why: &str| StageError::Failed(format!("{}: {why}", archive.display()));
+        let mut packets = ogg::PacketReader::new(BufReader::new(File::open(archive)?));
+        let head = packets
+            .read_packet()
+            .map_err(|e| bad(&e.to_string()))?
+            .ok_or_else(|| bad("empty"))?
+            .data;
+        if head.len() < 19 || &head[..8] != b"OpusHead" {
+            return Err(bad("not an Opus stream"));
+        }
+        let (channels, family) = (head[9], head[18]);
+        let decoder = match (channels, family) {
+            (1, 0) => Decoder::Mono(
+                opus::Decoder::new(OPUS_RATE, opus::Channels::Mono)
+                    .map_err(|e| bad(&format!("opus decoder: {e}")))?,
+            ),
+            (2, 1)
+                if head.len() >= 23 && head[19] == 2 && head[20] == 0 && head[21..23] == [0, 1] =>
+            {
+                Decoder::Stereo(
+                    opus_ms::Decoder::new(OPUS_RATE, 2)
+                        .map_err(|e| bad(&format!("opus decoder: {e}")))?,
+                )
+            }
+            _ => {
+                return Err(bad(&format!(
+                    "{channels} channels in mapping family {family}, which Longhand does not write"
+                )));
+            }
+        };
+        let pre_skip = u16::from_le_bytes([head[10], head[11]]) as u64;
+        packets
+            .read_packet()
+            .map_err(|e| bad(&e.to_string()))?
+            .ok_or_else(|| bad("no tags"))?;
+        Ok(Self {
+            packets,
+            decoder,
+            channels: u16::from(channels),
+            pre_skip,
+            decoded: 0,
+            buf: vec![0f32; 5_760 * usize::from(channels)],
+            path: archive.to_path_buf(),
+        })
+    }
+
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    /// Decode the next packet and add its samples to `out`. Returns false
+    /// at the end of the stream.
+    pub fn read(&mut self, out: &mut Vec<f32>) -> Result<bool, StageError> {
+        let bad = |why: &str| StageError::Failed(format!("{}: {why}", self.path.display()));
+        let Some(packet) = self
+            .packets
+            .read_packet()
+            .map_err(|e| bad(&e.to_string()))?
+        else {
+            return Ok(false);
+        };
+        let n = match &mut self.decoder {
+            Decoder::Mono(decoder) => decoder
+                .decode_float(&packet.data, &mut self.buf, false)
+                .map_err(|e| bad(&format!("opus decoder: {e}")))?,
+            Decoder::Stereo(decoder) => decoder
+                .decode(&packet.data, &mut self.buf)
+                .map_err(|e| bad(&format!("opus decoder: {e}")))?,
+        } as u64;
+        let end = if packet.last_in_stream() {
+            (self.decoded + n).min(packet.absgp_page())
+        } else {
+            self.decoded + n
+        };
+        let from = self.pre_skip.max(self.decoded).min(end);
+        let width = self.channels as usize;
+        out.extend_from_slice(
+            &self.buf
+                [(from - self.decoded) as usize * width..(end - self.decoded) as usize * width],
+        );
+        self.decoded += n;
+        Ok(true)
+    }
 }
 
 fn ms_to_samples(ms: u64, rate: u32) -> u64 {
@@ -334,8 +669,35 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
+/// The temporary 16 kHz stereo file of a stereo segment, next to its
+/// processing file (KTD8 step 1). Its samples are interleaved little-endian
+/// f32 pairs with no header.
+fn stereo_temp_path(processing: &Path) -> PathBuf {
+    let mut name = processing.file_name().unwrap_or_default().to_os_string();
+    name.push(".stereo.tmp");
+    processing.with_file_name(name)
+}
+
+/// Removes the temporary files of one segment when it drops: after a
+/// cancel or an error, and after the success, when the commits have renamed
+/// the files that are kept. Declare it before the writers of these files,
+/// so the writers drop first and close their handles.
+struct TempFiles(Vec<PathBuf>);
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("removing {} failed: {e}", path.display()),
+            }
+        }
+    }
+}
+
 /// Create `path` fresh, replacing whatever an interrupted run left there.
-fn create_fresh(path: &Path) -> std::io::Result<File> {
+pub(crate) fn create_fresh(path: &Path) -> std::io::Result<File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -393,14 +755,23 @@ impl ProcWriter {
     }
 }
 
-/// Mono Opus in Ogg (RFC 7845), streamed a 20 ms frame at a time.
+enum Encoder {
+    Mono(opus::Encoder),
+    Stereo(opus_ms::Encoder),
+}
+
+/// Opus in Ogg (RFC 7845), streamed a 20 ms frame at a time: mono with
+/// mapping family 0, or stereo with mapping family 1 and one uncoupled
+/// stream for each channel (KTD7).
 struct OpusWriter {
-    encoder: opus::Encoder,
+    encoder: Encoder,
+    channels: usize,
     packets: PacketWriter<'static, BufWriter<File>>,
     serial: u32,
     pre_skip: u64,
+    /// Interleaved samples of the frame that is not full yet.
     frame: Vec<f32>,
-    /// Real (unpadded) 48 kHz samples encoded.
+    /// Real (unpadded) 48 kHz samples of each channel encoded.
     samples: u64,
     /// The newest packet, held back so the last one can close the stream.
     held: Option<Vec<u8>>,
@@ -409,28 +780,46 @@ struct OpusWriter {
 }
 
 impl OpusWriter {
-    fn create(path: &Path, input_rate: u32) -> Result<Self, StageError> {
-        let opus_error = |e: opus::Error| StageError::Failed(format!("opus encoder: {e}"));
-        let mut encoder =
-            opus::Encoder::new(OPUS_RATE, opus::Channels::Mono, opus::Application::Audio)
-                .map_err(opus_error)?;
-        encoder
-            .set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE))
-            .map_err(opus_error)?;
-        let pre_skip = encoder.get_lookahead().map_err(opus_error)?.max(0) as u64;
+    fn create(path: &Path, input_rate: u32, channels: u16) -> Result<Self, StageError> {
+        let failed = |e: String| StageError::Failed(format!("opus encoder: {e}"));
+        let (encoder, pre_skip) = match channels {
+            1 => {
+                let opus_error = |e: opus::Error| failed(e.to_string());
+                let mut encoder =
+                    opus::Encoder::new(OPUS_RATE, opus::Channels::Mono, opus::Application::Audio)
+                        .map_err(opus_error)?;
+                encoder
+                    .set_bitrate(opus::Bitrate::Bits(OPUS_BITRATE))
+                    .map_err(opus_error)?;
+                let pre_skip = encoder.get_lookahead().map_err(opus_error)?.max(0) as u64;
+                (Encoder::Mono(encoder), pre_skip)
+            }
+            _ => {
+                let mut encoder =
+                    opus_ms::Encoder::new(OPUS_RATE, 2, OPUS_BITRATE).map_err(failed)?;
+                let pre_skip = u64::from(encoder.lookahead().map_err(failed)?);
+                (Encoder::Stereo(encoder), pre_skip)
+            }
+        };
         let mut packets = PacketWriter::new(BufWriter::new(create_fresh(path)?));
         // A fixed serial: one logical stream per file, and assembly stays
         // byte-for-byte reproducible.
         let serial = 0x4c48_0001;
 
-        let mut head = Vec::with_capacity(19);
+        let mut head = Vec::with_capacity(23);
         head.extend_from_slice(b"OpusHead");
         head.push(1); // version
-        head.push(1); // channels
+        head.push(channels as u8);
         head.extend_from_slice(&(pre_skip as u16).to_le_bytes());
         head.extend_from_slice(&input_rate.to_le_bytes());
         head.extend_from_slice(&0i16.to_le_bytes()); // output gain
-        head.push(0); // mapping family: mono/stereo
+        if channels == 1 {
+            head.push(0); // mapping family: mono/stereo
+        } else {
+            // Mapping family 1 (RFC 7845 §5.1.1): two streams, none
+            // coupled; the left channel is stream 0 and the right stream 1.
+            head.extend_from_slice(&[1, 2, 0, 0, 1]);
+        }
         packets.write_packet(head, serial, PacketWriteEndInfo::EndPage, 0)?;
 
         let vendor = b"Longhand";
@@ -441,25 +830,29 @@ impl OpusWriter {
         tags.extend_from_slice(&0u32.to_le_bytes()); // no comments
         packets.write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0)?;
 
+        let channels = usize::from(channels);
         Ok(Self {
             encoder,
+            channels,
             packets,
             serial,
             pre_skip,
-            frame: Vec::with_capacity(OPUS_FRAME),
+            frame: Vec::with_capacity(OPUS_FRAME * channels),
             samples: 0,
             held: None,
             packets_written: 0,
-            buf: vec![0; 4_000],
+            buf: vec![0; 4_000 * channels],
         })
     }
 
+    /// Take interleaved 48 kHz samples.
     fn push(&mut self, mut samples: &[f32]) -> Result<(), StageError> {
+        let full = OPUS_FRAME * self.channels;
         while !samples.is_empty() {
-            let take = (OPUS_FRAME - self.frame.len()).min(samples.len());
+            let take = (full - self.frame.len()).min(samples.len());
             self.frame.extend_from_slice(&samples[..take]);
             samples = &samples[take..];
-            if self.frame.len() == OPUS_FRAME {
+            if self.frame.len() == full {
                 self.samples += OPUS_FRAME as u64;
                 self.encode_frame()?;
             }
@@ -468,10 +861,13 @@ impl OpusWriter {
     }
 
     fn encode_frame(&mut self) -> Result<(), StageError> {
-        let len = self
-            .encoder
-            .encode_float(&self.frame, &mut self.buf)
-            .map_err(|e| StageError::Failed(format!("opus encoder: {e}")))?;
+        let len = match &mut self.encoder {
+            Encoder::Mono(encoder) => encoder
+                .encode_float(&self.frame, &mut self.buf)
+                .map_err(|e| e.to_string()),
+            Encoder::Stereo(encoder) => encoder.encode(&self.frame, &mut self.buf),
+        }
+        .map_err(|e| StageError::Failed(format!("opus encoder: {e}")))?;
         self.frame.clear();
         if let Some(previous) = self.held.replace(self.buf[..len].to_vec()) {
             self.write(previous, false)?;
@@ -505,10 +901,11 @@ impl OpusWriter {
         // The decoder's output runs `pre_skip` samples behind the input, so
         // frames of silence past the end carry the last real samples out; the
         // final granule trims them again (RFC 7845 §4).
-        let real = self.samples + self.frame.len() as u64;
+        let full = OPUS_FRAME * self.channels;
+        let real = self.samples + (self.frame.len() / self.channels) as u64;
         let needed = (real + self.pre_skip).div_ceil(OPUS_FRAME as u64);
         while self.packets_written + u64::from(self.held.is_some()) < needed {
-            self.frame.resize(OPUS_FRAME, 0.0);
+            self.frame.resize(full, 0.0);
             self.encode_frame()?;
         }
         self.samples = real;
@@ -516,7 +913,7 @@ impl OpusWriter {
             Some(last) => self.write(last, true)?,
             None => {
                 // No audio at all: close the stream with one frame of silence.
-                self.frame.resize(OPUS_FRAME, 0.0);
+                self.frame.resize(full, 0.0);
                 self.encode_frame()?;
                 let last = self.held.take().expect("just encoded");
                 self.write(last, true)?;

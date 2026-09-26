@@ -39,6 +39,7 @@ sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
 audio = { path = "../crates/audio" }
 audio-cpal = { path = "../crates/audio-cpal" }
+audio-system = { path = "../crates/audio-system" }
 models = { path = "../crates/models" }
 power = { path = "../crates/power" }
 sfx = { path = "../crates/sfx" }
@@ -57,6 +58,8 @@ diarize = { path = "../crates/diarize" }
 session-core = { path = "../crates/session-core" }
 supervisor = { path = "../crates/supervisor" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The generation wrapper of a speaker stream (managers/capture.rs).
+futures-util = "0.3"
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"

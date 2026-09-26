@@ -96,6 +96,14 @@ pub struct SegmentRecord {
     pub offset_ms: u64,
     pub duration_ms: u64,
     pub audio: String,
+    /// 2 for a stereo segment. A mono segment writes no field, so its
+    /// record stays as before (KTD6 of the system audio plan).
+    #[serde(default = "crate::timeline::mono", skip_serializing_if = "is_mono")]
+    pub channels: u16,
+}
+
+fn is_mono(channels: &u16) -> bool {
+    *channels == 1
 }
 
 impl From<&Segment> for SegmentRecord {
@@ -107,6 +115,7 @@ impl From<&Segment> for SegmentRecord {
             offset_ms: s.offset_ms,
             duration_ms: s.duration_ms,
             audio: s.audio_file.clone(),
+            channels: s.channels,
         }
     }
 }
@@ -120,6 +129,7 @@ impl From<&SegmentRecord> for Segment {
             wall_start: r.wall_start,
             wall_end: r.wall_end,
             audio_file: r.audio.clone(),
+            channels: r.channels,
         }
     }
 }

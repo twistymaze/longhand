@@ -6,9 +6,10 @@ import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, use
 import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
 import { EndpointForm } from "./EndpointForm";
-import { AppIcon, BadgeIcon, FolderIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
+import { AppIcon, BadgeIcon, FolderIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
 import { Licences } from "./Licences";
 import { type Actions, Models } from "./Models";
+import { RecordingPane } from "./Recording";
 import { type PaneId, StatusPane } from "./Status";
 import { ErrorText, type Tone } from "./ui";
 import { sentence } from "../processing/describe";
@@ -21,6 +22,7 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
     label: "Settings",
     panes: [
       { id: "status", label: "General", icon: <SlidersIcon /> },
+      { id: "recording", label: "Recording", icon: <MicrophoneIcon /> },
       { id: "destination", label: "Storage", icon: <FolderIcon /> },
       // The order of processing: a note is saved, then transcribed, then
       // summarized. The General pane lists its rows in the same order.
@@ -46,6 +48,7 @@ function paneTone(id: PaneId, readiness: Readiness): Tone | null {
       return readiness.endpoint_configured ? null : "neutral";
     case "recognition":
       return readiness.missing_models.length === 0 ? null : "neutral";
+    case "recording":
     case "licences":
       return null;
   }
@@ -187,6 +190,7 @@ export function SettingsWindow() {
         )}
         <div>
           {pane === "status" && <StatusPane readiness={readiness} onRefresh={refresh} onNavigate={show} />}
+          {pane === "recording" && <RecordingPane settings={settings} onSettings={onSettings} />}
           {pane === "destination" && (
             <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
           )}

@@ -1,3 +1,4 @@
+mod audio;
 mod commands;
 mod managers;
 #[cfg(target_os = "macos")]
@@ -26,6 +27,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_default_speaker_count,
             commands::settings::select_asr_model,
             commands::settings::set_live_transcript,
+            commands::settings::list_microphones,
+            commands::settings::set_microphone,
+            commands::settings::set_system_audio_default,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
             commands::settings::duplicate_summary_prompt,
@@ -46,10 +50,15 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::models::speaker_models_status,
             commands::models::delete_model,
             commands::readiness::readiness,
+            commands::readiness::system_audio_permission,
+            commands::readiness::request_system_audio_permission,
+            commands::readiness::open_system_audio_settings,
             commands::capture::start_recording,
             commands::capture::stop_recording,
             commands::capture::resume_recording,
             commands::capture::recording_status,
+            commands::capture::set_note_microphone,
+            commands::capture::set_note_system_audio,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
             commands::capture::set_shortcut,
@@ -57,7 +66,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::resume_shortcuts,
             commands::alerts::alert_check,
             commands::alerts::play_alert_sound,
-            commands::alerts::confirm_alert_sound,
             commands::processing::regenerate_summary,
             commands::processing::transcribe_again,
             commands::processing::retry_session,
@@ -242,8 +250,9 @@ pub fn run() {
             // Resolving the microphone queries the audio HAL; keep it off the
             // launch path. A failure here is retried at the first press.
             let preparing = std::sync::Arc::clone(&capture);
+            let preparing_app = handle.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                if let Err(e) = preparing.prepare() {
+                if let Err(e) = preparing.prepare(&preparing_app) {
                     log::warn!("microphone not prepared at launch: {e}");
                 }
             });

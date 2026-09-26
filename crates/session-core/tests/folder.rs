@@ -18,6 +18,7 @@ fn session_md_round_trips_the_timeline() {
             wall_start: wall(0),
             wall_end: wall(90),
             audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
         },
         Segment {
             index: 1,
@@ -26,6 +27,7 @@ fn session_md_round_trips_the_timeline() {
             wall_start: wall(94),
             wall_end: wall(124),
             audio_file: "audio/segment-02.opus".into(),
+            channels: 1,
         },
     ];
     let doc = SessionDoc::new(
@@ -108,6 +110,7 @@ fn session_md_round_trips_with_a_title() {
         wall_start: wall(0),
         wall_end: wall(1),
         audio_file: "audio/segment-01.opus".into(),
+        channels: 1,
     }];
     let mut doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
     assert_eq!(doc.title, None);

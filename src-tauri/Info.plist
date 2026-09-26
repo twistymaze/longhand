@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Longhand records the conversation in the room so it can transcribe it on this Mac.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Longhand records the sound your Mac plays only while Computer audio is on, so it can transcribe the people on a call.</string>
 </dict>
 </plist>

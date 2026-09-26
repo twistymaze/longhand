@@ -21,6 +21,7 @@ fn segment(index: u32, offset_ms: u64, duration_ms: u64) -> Segment {
         wall_start: wall(),
         wall_end: wall(),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
+        channels: 1,
     }
 }
 

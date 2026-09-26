@@ -15,6 +15,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aec"
+version = "0.1.0"
+dependencies = [
+ "onnx",
+ "realfft",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "aes"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -292,6 +301,8 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "log",
+ "rubato",
  "thiserror 2.0.20",
 ]
 
@@ -306,7 +317,6 @@ dependencies = [
  "log",
  "recorder",
  "rtrb",
- "rubato",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -324,6 +334,30 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+]
+
+[[package]]
+name = "audio-sync"
+version = "0.1.0"
+dependencies = [
+ "realfft",
+]
+
+[[package]]
+name = "audio-system"
+version = "0.1.0"
+dependencies = [
+ "audio",
+ "cidre",
+ "cpal",
+ "futures-util",
+ "hound",
+ "log",
+ "rtrb",
+ "tokio",
+ "tokio-stream",
+ "wasapi",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -662,6 +696,22 @@ dependencies = [
  "wasm-bindgen",
  "windows-link 0.2.1",
 ]
+
+[[package]]
+name = "cidre"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a38ded03d3ce8433da5d62ee0a7c8628519e707e9cc3b14e7ea1f67786c5d7c4"
+dependencies = [
+ "cc",
+ "cidre-macros",
+]
+
+[[package]]
+name = "cidre-macros"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6facfeffa8b9792dc014bb4e65e364d13518b74e06783d56249810a3e48cfad7"
 
 [[package]]
 name = "cipher"
@@ -2777,8 +2827,10 @@ dependencies = [
  "asr",
  "audio",
  "audio-cpal",
+ "audio-system",
  "chrono",
  "diarize",
+ "futures-util",
  "log",
  "models",
  "objc2",
@@ -3751,13 +3803,18 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "pipeline"
 version = "0.1.0"
 dependencies = [
+ "aec",
  "asr",
+ "audio",
+ "audio-sync",
  "chrono",
  "diarize",
  "hound",
  "log",
  "ogg",
  "opus",
+ "opusic-sys",
+ "realfft",
  "recorder",
  "rubato",
  "serde",
@@ -6433,6 +6490,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
+]
+
+[[package]]
+name = "wasapi"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80c3aa5d6b0e7acc3ea10cb19c334df0c8d825060f14a30d9e3b03385e6e5175"
+dependencies = [
+ "log",
+ "num-integer",
+ "thiserror 2.0.20",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
