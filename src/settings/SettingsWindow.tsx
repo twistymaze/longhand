@@ -6,8 +6,8 @@ import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, use
 import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
 import { EndpointForm } from "./EndpointForm";
-import { AppIcon, BadgeIcon, FolderIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
-import { Licences } from "./Licences";
+import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
+import { About } from "./About";
 import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
 import { type PaneId, StatusPane } from "./Status";
@@ -32,7 +32,7 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
   },
   {
     label: "About",
-    panes: [{ id: "licences", label: "Licences", icon: <BadgeIcon /> }],
+    panes: [{ id: "about", label: "About", icon: <InfoIcon /> }],
   },
 ];
 
@@ -49,7 +49,7 @@ function paneTone(id: PaneId, readiness: Readiness): Tone | null {
     case "recognition":
       return readiness.missing_models.length === 0 ? null : "neutral";
     case "recording":
-    case "licences":
+    case "about":
       return null;
   }
 }
@@ -198,7 +198,7 @@ export function SettingsWindow() {
           {pane === "recognition" && (
             <Models models={models} speakers={speakers} live={live} actions={actions} settings={settings} onSettings={onSettings} />
           )}
-          {pane === "licences" && <Licences models={models} />}
+          {pane === "about" && <About models={models} />}
         </div>
       </main>
     </div>

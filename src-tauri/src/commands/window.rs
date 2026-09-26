@@ -10,6 +10,14 @@ pub async fn open_settings(app: AppHandle) {
     crate::window::open_settings(&app);
 }
 
+/// Show the window with the full licence list, and build it first when it
+/// is not open. Async for the same reason as `open_settings`.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_licences(app: AppHandle) {
+    crate::window::open_licences(&app);
+}
+
 /// Destroy the Settings window that calls this. The page calls this when its
 /// own destroy call fails, so that the window still closes. The call needs
 /// no window permission, and it does not send a close request that a

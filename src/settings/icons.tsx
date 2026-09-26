@@ -117,10 +117,18 @@ export const CheckIcon = ({ className }: IconProps) => (
   </Icon>
 );
 
-/// A seal with a check mark: licences.
-export const BadgeIcon = ({ className }: IconProps) => (
+/// A circle with an "i": the About pane.
+export const InfoIcon = ({ className }: IconProps) => (
   <Icon className={className}>
     <circle cx="8" cy="8" r="6" />
-    <path d="m5.5 8.1 1.7 1.7 3.3-3.4" strokeWidth={1.4} />
+    <path d="M8 7.25v3.75" strokeWidth={1.5} />
+    <path d="M8 5v.01" strokeWidth={1.8} />
+  </Icon>
+);
+
+/// An arrow up and to the right: the link opens outside the app.
+export const ExternalIcon = ({ className }: IconProps) => (
+  <Icon className={className}>
+    <path d="M5.5 10.5 10.5 5.5M6.5 5.5h4v4" strokeWidth={1.5} />
   </Icon>
 );

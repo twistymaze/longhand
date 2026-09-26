@@ -7,6 +7,19 @@
     "core:default",
     "core:window:allow-destroy",
     "dialog:allow-open",
-    "macos-permissions:default"
+    "macos-permissions:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/fastrepl/anarlog" },
+        { "url": "https://github.com/cjpais/Handy" },
+        { "url": "https://github.com/ggml-org/whisper.cpp" },
+        { "url": "https://github.com/ggml-org/ggml" },
+        { "url": "https://github.com/handy-computer/transcribe.cpp" },
+        { "url": "https://github.com/microsoft/onnxruntime" },
+        { "url": "https://github.com/pyannote/pyannote-audio" },
+        { "url": "https://tauri.app" }
+      ]
+    }
   ]
 }

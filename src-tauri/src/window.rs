@@ -12,6 +12,7 @@ use tauri::{
 
 pub const MAIN_WINDOW: &str = "main";
 pub const SETTINGS_WINDOW: &str = "settings";
+pub const LICENCES_WINDOW: &str = "licences";
 
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
@@ -170,6 +171,33 @@ pub fn open_settings(app: &AppHandle) {
     }
 }
 
+/// Show the window with the full licence list, and build it first when it
+/// is not open (R9, KTD7). It loads the same page with its own query. The
+/// page registers no close listener, so a close always destroys the window.
+pub fn open_licences(app: &AppHandle) {
+    let opened = open_or_build(
+        app.get_webview_window(LICENCES_WINDOW),
+        |window| front(app, window),
+        || {
+            WebviewWindowBuilder::new(
+                app,
+                LICENCES_WINDOW,
+                WebviewUrl::App("index.html?window=licences".into()),
+            )
+            .title("Open Source Licences")
+            .inner_size(680.0, 640.0)
+            .min_inner_size(480.0, 320.0)
+            .center()
+            .build()
+        },
+    );
+    match opened {
+        Ok((window, Opened::Built)) => front(app, &window),
+        Ok((_, Opened::Focused)) => {}
+        Err(e) => log::error!("failed to open the licences window: {e}"),
+    }
+}
+
 /// The time from a close request of the Settings window to the destroy
 /// here. The page's close takes at most 5 s (2 s for the save and 1 s for
 /// each of three later steps), so this limit applies only when the page did
@@ -270,6 +298,11 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             // change in progress holds the lock and waits on the main thread.
             let app = window.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || crate::shortcut::resume(&app));
+        }
+        // The Dock icon goes when the licences window was the last visible
+        // window.
+        WindowEvent::Destroyed if window.label() == LICENCES_WINDOW => {
+            hide_dock_icon_if_no_window(window);
         }
         _ => {}
     }
