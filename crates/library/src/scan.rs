@@ -39,6 +39,18 @@ impl Default for ScanOptions {
     }
 }
 
+/// Write the library marker in `root`. Returns false, and logs the error,
+/// when the marker cannot be written.
+pub fn write_marker(root: &Path) -> bool {
+    match session_save::home_write::write_atomic(root, MARKER, b"") {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("library: cannot write {MARKER} in {}: {e}", root.display());
+            false
+        }
+    }
+}
+
 /// What the store knows before the scan: the home folder of each row.
 #[derive(Debug, Clone, Default)]
 pub struct Known {
@@ -292,10 +304,7 @@ fn scan_root(
         if notes.is_empty() && known.has_rows_in(root) {
             return unavailable(Unavailable::NoMarker);
         }
-        match session_save::home_write::write_atomic(root, MARKER, b"") {
-            Ok(()) => marker_written = true,
-            Err(e) => log::warn!("library: cannot write {MARKER} in {}: {e}", root.display()),
-        }
+        marker_written = write_marker(root);
     }
     result.unreadable.extend(unreadable);
     result.invalid.extend(invalid);

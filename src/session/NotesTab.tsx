@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import { NoteEditor } from "../editor/NoteEditor";
+import { folderName } from "../settings/ui";
 
 /// A sync reloads the notes only after this long with no input.
 export const RELOAD_AFTER_INPUT_MS = 2000;
@@ -140,7 +141,7 @@ export function NotesTab({
           // The file keeps the other computer's text: the editor shows it
           // when the edit stops. An edit sent before then goes into a
           // draft too.
-          onConflict?.(fileName(r.data.draft));
+          onConflict?.(folderName(r.data.draft));
           stale.current = true;
         }
       }
@@ -172,9 +173,4 @@ export function NotesTab({
       )}
     </div>
   );
-}
-
-/// The last part of a path, as Finder shows it.
-function fileName(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
 }

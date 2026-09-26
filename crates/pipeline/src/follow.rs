@@ -10,7 +10,6 @@ use library::refresh::{self, Refresh, RefreshError, Scope};
 use library::scan::{MARKER, READ_TIMEOUT};
 use session_core::Store;
 use session_core::jobs::busy;
-use session_save::home_write;
 
 use crate::StageError;
 
@@ -66,10 +65,7 @@ pub fn follow_scoped(
 /// none: Longhand saves to the root now. A marker that cannot be written
 /// does not stop the save; the next library scan writes it.
 pub fn mark_destination(root: &Path) {
-    if root.join(MARKER).exists() {
-        return;
-    }
-    if let Err(e) = home_write::write_atomic(root, MARKER, b"") {
-        log::warn!("cannot write {MARKER} in {}: {e}", root.display());
+    if !root.join(MARKER).exists() {
+        library::scan::write_marker(root);
     }
 }

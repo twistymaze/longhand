@@ -72,10 +72,7 @@ fn write_title(store: &Store, session_id: &str) {
     let Some(home) = record.home_path.as_deref().map(Path::new) else {
         return;
     };
-    let Some(mut doc) = std::fs::read_to_string(home.join(SESSION_FILE))
-        .ok()
-        .and_then(|text| SessionDoc::parse(&text).ok())
-    else {
+    let Some(mut doc) = read_document(home) else {
         return;
     };
     let title = record.title.as_ref().map(|t| t.text.clone());
@@ -275,14 +272,19 @@ fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), Stag
     Ok(())
 }
 
+/// The `session.md` in `folder`, or `None` when it is not there or does not
+/// parse.
+fn read_document(folder: &Path) -> Option<SessionDoc> {
+    std::fs::read_to_string(folder.join(SESSION_FILE))
+        .ok()
+        .and_then(|text| SessionDoc::parse(&text).ok())
+}
+
 /// Rewrite `session.md` in `folder` when it is not what the stored record
 /// and the folder's files give: for example a new title or title source,
 /// or a fingerprint that an earlier write left out of date.
 fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path) {
-    let written = std::fs::read_to_string(folder.join(SESSION_FILE))
-        .ok()
-        .and_then(|text| SessionDoc::parse(&text).ok());
-    let Some(written) = written else {
+    let Some(written) = read_document(folder) else {
         return;
     };
     let result = match session_doc(record, segments, folder) {
