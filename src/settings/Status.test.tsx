@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
@@ -7,6 +7,7 @@ import { StatusPane } from "./Status";
 
 const readiness: Readiness = {
   microphone_authorized: true,
+  computer_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: shortcutStatuses.recording,
@@ -48,5 +49,69 @@ describe("the alert sound row", () => {
     });
     await userEvent.setup().click(within(row()).getByRole("button", { name: "Play Sound" }));
     expect(await within(row()).findByText("no output device")).toBeTruthy();
+  });
+});
+
+function renderComputerAudio(
+  state: Readiness["computer_audio"],
+  handlers: Record<string, (args: Record<string, unknown>) => unknown> = {},
+) {
+  const tauri = mockTauri({ shortcut_status: () => shortcutStatuses, ...handlers });
+  let refreshed = 0;
+  render(
+    <StatusPane
+      readiness={{ ...readiness, computer_audio: state }}
+      onRefresh={async () => {
+        refreshed += 1;
+      }}
+      onNavigate={() => {}}
+    />,
+  );
+  const row = () => screen.getByText("Computer audio").closest(".settings-row") as HTMLElement;
+  return { tauri, row, refreshed: () => refreshed };
+}
+
+describe("the Computer audio permission row", () => {
+  test("not asked: says so and offers Allow…", () => {
+    const { row } = renderComputerAudio("not_asked");
+    expect(row().textContent).toContain("Not allowed yet");
+    expect(within(row()).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow…"]);
+  });
+
+  test("denied: says so and opens System Settings", async () => {
+    const { tauri, row } = renderComputerAudio("denied", { open_computer_audio_settings: () => null });
+    expect(row().textContent).toContain("Not allowed");
+    expect(row().textContent).not.toContain("Not allowed yet");
+    const buttons = within(row()).getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Open System Settings"]);
+    await userEvent.setup().click(buttons[0]);
+    expect(tauri.calls.filter((c) => c.cmd === "open_computer_audio_settings")).toHaveLength(1);
+  });
+
+  test("unknown: cannot check, and opens System Settings", () => {
+    const { row } = renderComputerAudio("unknown");
+    expect(row().textContent).toContain("Cannot check");
+    expect(within(row()).getAllByRole("button").map((b) => b.textContent)).toEqual(["Open System Settings"]);
+  });
+
+  test("allowed: says so and shows no button", () => {
+    const { row } = renderComputerAudio("allowed");
+    expect(row().textContent).toContain("Allowed");
+    expect(within(row()).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  test("Allow… asks, checks the status again, and refreshes the pane", async () => {
+    let checks = 0;
+    const { tauri, row, refreshed } = renderComputerAudio("not_asked", {
+      request_computer_audio_permission: () => "not_asked",
+      computer_audio_permission: () => {
+        checks += 1;
+        return checks < 2 ? "not_asked" : "allowed";
+      },
+    });
+    await userEvent.setup().click(within(row()).getByRole("button", { name: "Allow…" }));
+    await waitFor(() => expect(refreshed()).toBe(1), { timeout: 3000 });
+    expect(tauri.calls.filter((c) => c.cmd === "request_computer_audio_permission")).toHaveLength(1);
+    expect(checks).toBe(2);
   });
 });

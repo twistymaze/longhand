@@ -288,6 +288,43 @@ async readiness() : Promise<Result<Readiness, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The Computer audio permission now. The General pane polls it after
+ * "Allow…", while the macOS prompt waits for an answer.
+ */
+async computerAudioPermission() : Promise<Result<ComputerAudioPermission, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("computer_audio_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Ask for the Computer audio permission: a short tap makes macOS show its
+ * prompt (KTD12). It runs away from the command thread and returns the
+ * state after the tap, which is "not asked" while the prompt waits.
+ */
+async requestComputerAudioPermission() : Promise<Result<ComputerAudioPermission, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("request_computer_audio_permission") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Open the Screen & System Audio Recording page of System Settings, where
+ * the user allows a denied permission.
+ */
+async openComputerAudioSettings() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_computer_audio_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async startRecording() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("start_recording") };
@@ -647,6 +684,18 @@ position_ms: number;
  * jumping by the time spent away.
  */
 recorded_ms: number }
+/**
+ * The Computer audio permission, as the page reads it (R9, R10, KTD12).
+ */
+export type ComputerAudioPermission = "allowed" | "denied" | 
+/**
+ * macOS has not asked yet, or its prompt waits for an answer.
+ */
+"not_asked" | 
+/**
+ * The private check is missing on this macOS.
+ */
+"unknown"
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
@@ -850,7 +899,12 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * What processing is doing, for the surface.
  */
 export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
-export type Readiness = { microphone_authorized: boolean; destination: DestinationStatus; 
+export type Readiness = { microphone_authorized: boolean; 
+/**
+ * The Computer audio permission (R9). It does not change `armed`: the
+ * microphone alone is enough to record.
+ */
+computer_audio: ComputerAudioPermission; destination: DestinationStatus; 
 /**
  * Microphone authorized, a destination chosen, and the chord registered
  * or cleared (R1c, R13). A destination that is unreachable right now can be changed
@@ -920,7 +974,13 @@ microphone_fallback: boolean;
  * The microphone that the open note chose. With no note open, the
  * microphone that the next note uses. `None` is "System default".
  */
-microphone_choice: MicrophoneChoice | null }
+microphone_choice: MicrophoneChoice | null; 
+/**
+ * The Computer audio permission is unknown, the output plays, and the
+ * system audio channel has been digital silence for 10 s: Computer
+ * audio can be missing (U5 step 6). It clears when audio appears.
+ */
+computer_audio_silent: boolean }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { DEFAULT_SHORTCUT, commands, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type ComputerAudioPermission, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
@@ -101,7 +101,8 @@ export function StatusPane({
             )
           )}
         </Row>
-        <Row label="Storage" detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
+        <ComputerAudioRow permission={readiness.computer_audio} onRefresh={onRefresh} />
+        <Row label="Storage"detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
           {readiness.destination.kind !== "ready" && (
             <GoTo pane="destination" onNavigate={onNavigate}>
               {readiness.destination.kind === "unset" ? "Choose…" : "Fix…"}
@@ -163,6 +164,58 @@ export function StatusPane({
 
       <AlertSound />
     </Pane>
+  );
+}
+
+/// The Computer audio permission (R9, KTD12, KTD15). It follows the
+/// Microphone row: a status and at most one button.
+function ComputerAudioRow({
+  permission,
+  onRefresh,
+}: {
+  permission: ComputerAudioPermission;
+  onRefresh: () => Promise<void>;
+}) {
+  const [asking, setAsking] = useState(false);
+
+  const ask = async () => {
+    setAsking(true);
+    // The short tap shows the macOS prompt, and the prompt does not wait
+    // for the tap. Poll until the user answers.
+    let state = await commands.requestComputerAudioPermission();
+    for (let i = 0; i < 120 && state.status === "ok" && state.data === "not_asked"; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      state = await commands.computerAudioPermission();
+    }
+    setAsking(false);
+    await onRefresh();
+  };
+
+  const openSettings = () => void commands.openComputerAudioSettings();
+
+  const detail =
+    permission === "allowed" ? (
+      "Records what this computer plays while Computer audio is on"
+    ) : permission === "not_asked" ? (
+      <StatusText tone="neutral">Not allowed yet</StatusText>
+    ) : permission === "denied" ? (
+      <StatusText tone="negative">Not allowed</StatusText>
+    ) : (
+      <StatusText tone="caution">Cannot check</StatusText>
+    );
+
+  return (
+    <Row label="Computer audio" detail={detail}>
+      {permission === "allowed" ? (
+        <StatusText tone="positive">Allowed</StatusText>
+      ) : permission === "not_asked" ? (
+        <Button prominent disabled={asking} onClick={() => void ask()}>
+          {asking ? "Waiting…" : "Allow…"}
+        </Button>
+      ) : (
+        <Button onClick={openSettings}>Open System Settings</Button>
+      )}
+    </Row>
   );
 }
 

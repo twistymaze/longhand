@@ -1,6 +1,6 @@
 # Provenance
 
-Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4).
+Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent Computer audio flag, U5 step 6) is new.
 
 ## `src/macos.rs`
 
@@ -46,3 +46,12 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, LICENSES/anarlog-MIT.txt
 - Status: modified — reads fixed-size frames through the public API; the macOS tone comes from another process (`afplay`), and a second test checks that a tone from the test process is not in the tap
+
+## `src/permission.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Source paths: `crates/tcc/swift-lib/src/lib.swift` (`_audio_capture_permission_status`), `crates/tcc/src/lib.rs` (the result codes); anarlog took the Swift function from AudioCap (https://github.com/insidegui/AudioCap, `AudioCap/ProcessTap/AudioRecordingPermission.swift` at 93881a4)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, LICENSES/anarlog-MIT.txt
+- Status: modified — Rust in place of Swift: `dlopen` and `dlsym` load `TCCAccessPreflight` directly, so no Swift build step is needed (KTD12); the function returns a C `int`; a missing function or an unknown result gives "unknown"; the loader is a test seam; `request` (a short tap) and the Windows result are new

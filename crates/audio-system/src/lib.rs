@@ -21,6 +21,8 @@ mod rate;
 
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod permission;
+pub mod silence;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -28,6 +30,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use audio::{CaptureFrame, CaptureStream, Error};
+pub use permission::Permission;
+pub use silence::{SilenceRun, SilentCheck};
 
 /// Whether this platform has a system audio backend.
 pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
@@ -122,6 +126,21 @@ pub fn probe() -> Result<(), Error> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(Error::SpeakerStreamSetupFailed)
+    }
+}
+
+/// Whether the default output device plays audio for some process now
+/// (`kAudioDevicePropertyDeviceIsRunningSomewhere`, U5 step 6). `None`
+/// when the device cannot be read, and on the platforms that do not need
+/// the check: only an unknown macOS permission needs it.
+pub fn output_running() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::output_running()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

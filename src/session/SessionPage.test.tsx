@@ -17,6 +17,7 @@ import type { Sessions } from "./useSessions";
 
 const readiness: Readiness = {
   microphone_authorized: true,
+  computer_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
@@ -36,6 +37,7 @@ const idle: RecordingStatus = {
   reserve_bytes: 0,
   microphone: null,
   microphone_fallback: false,
+  computer_audio_silent: false,
   microphone_choice: null,
 };
 

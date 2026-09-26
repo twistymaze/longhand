@@ -50,6 +50,7 @@ async function open({
     get_settings: () => state.settings,
     readiness: () => ({
       microphone_authorized: true,
+      computer_audio: "allowed",
       destination: { kind: "unset" },
       armed: false,
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },

@@ -29,6 +29,7 @@ const baseSettings: Settings = {
 
 const readiness: Readiness = {
   microphone_authorized: true,
+  computer_audio: "allowed",
   destination: { kind: "ready", path: "/x", free_bytes: null },
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },

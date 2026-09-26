@@ -61,6 +61,24 @@ pub(crate) fn probe() -> Result<(), Error> {
     Ok(())
 }
 
+pub(crate) fn output_running() -> Option<bool> {
+    let device = match ca::System::default_output_device() {
+        Ok(device) if !device.is_unknown() => device,
+        Ok(_) => return None,
+        Err(e) => {
+            log::warn!("could not read the default output device: {e:?}");
+            return None;
+        }
+    };
+    match device.prop::<u32>(&ca::PropSelector::DEVICE_IS_RUNNING_SOMEWHERE.global_addr()) {
+        Ok(running) => Some(running != 0),
+        Err(e) => {
+            log::warn!("could not read whether the output device runs: {e:?}");
+            None
+        }
+    }
+}
+
 pub(crate) fn open(
     sample_rate: u32,
     chunk_size: usize,

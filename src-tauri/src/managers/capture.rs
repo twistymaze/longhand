@@ -129,6 +129,10 @@ pub struct RecordingStatus {
     /// The microphone that the open note chose. With no note open, the
     /// microphone that the next note uses. `None` is "System default".
     pub microphone_choice: Option<MicrophoneChoice>,
+    /// The Computer audio permission is unknown, the output plays, and the
+    /// system audio channel has been digital silence for 10 s: Computer
+    /// audio can be missing (U5 step 6). It clears when audio appears.
+    pub computer_audio_silent: bool,
 }
 
 #[derive(Serialize, Clone, Type, Debug)]
@@ -273,6 +277,11 @@ struct Inner {
     /// exists (KTD2). The next start writes it with the row. The inner
     /// `None` is "System default".
     held_microphone: Option<Option<MicrophoneChoice>>,
+    /// The silent Computer audio flag (U5 step 6). While Computer audio is
+    /// on and the permission is unknown, the capture watcher polls it with
+    /// the permission, `audio_system::output_running()` and the right
+    /// channel's `SilenceRun` (U6). `status` reports it.
+    silent_check: audio_system::SilentCheck,
 }
 
 impl Inner {
@@ -911,7 +920,7 @@ impl CaptureManager {
     }
 
     pub fn status(&self, app: &AppHandle) -> Result<RecordingStatus, CaptureError> {
-        let (recording, reconnecting, sample_rate, input, held) = {
+        let (recording, reconnecting, sample_rate, input, held, computer_audio_silent) = {
             let inner = self.inner();
             let reconnecting = inner.recovering.is_some();
             (
@@ -920,6 +929,7 @@ impl CaptureManager {
                 inner.prepared.as_ref().map(|p| p.rate),
                 inner.active.as_ref().map(|a| (a.input.clone(), a.fallback)),
                 inner.held_microphone.clone(),
+                inner.silent_check.flagged(),
             )
         };
         let open = self.open_session()?;
@@ -956,6 +966,7 @@ impl CaptureManager {
             microphone_fallback: input.as_ref().is_some_and(|(_, fallback)| *fallback),
             microphone: input.map(|(name, _)| name),
             microphone_choice,
+            computer_audio_silent,
         })
     }
 
