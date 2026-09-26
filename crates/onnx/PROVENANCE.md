@@ -18,7 +18,7 @@ Borrowed material in this crate, one record per file (R27). `Cargo.toml` follows
 - Source paths: `crates/onnx/src/lib.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, LICENSES/anarlog-MIT.txt
-- Status: copied
+- Status: modified — `load_model_from_bytes_with_threads` added, for the echo canceller in `crates/aec`
 
 ## `src/error.rs`
 

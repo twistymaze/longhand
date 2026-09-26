@@ -14,8 +14,10 @@ set -euo pipefail
 # Directories that contain borrowed code. A unit that borrows into a new
 # directory adds it here, so the record cannot be forgotten.
 BORROWED_DIRS=(
+  crates/aec
   crates/audio
   crates/audio-cpal
+  crates/audio-sync
   crates/asr
   crates/audio-mock
   crates/diarize
