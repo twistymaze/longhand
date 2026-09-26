@@ -71,6 +71,14 @@ impl Known {
         self.homes.get(path).map(String::as_str)
     }
 
+    /// The home folder of the row `id`.
+    pub fn home_of(&self, id: &str) -> Option<&Path> {
+        self.homes
+            .iter()
+            .find(|(_, known)| known.as_str() == id)
+            .map(|(home, _)| home.as_path())
+    }
+
     /// Whether a row has its home folder in `root`.
     pub fn has_rows_in(&self, root: &Path) -> bool {
         self.roots.contains(root)
@@ -180,6 +188,63 @@ pub fn scan(roots: &[PathBuf], known: &Known, options: &ScanOptions) -> LibraryS
     result
 }
 
+/// A targeted scan (KTD7): only the note folders `folders` in `root`, and
+/// the home folder of each note id that one of them holds, so that a
+/// duplicate folder does not take the place of the real one. Returns the
+/// scan and the folders that it read. `None` when `root` is not a folder
+/// with its marker: only a full scan can tell the state of such a root.
+pub fn scan_folders(
+    root: &Path,
+    folders: &HashSet<PathBuf>,
+    known: &Known,
+    options: &ScanOptions,
+) -> Option<(LibraryScan, HashSet<PathBuf>)> {
+    if !root.is_dir() || !root.join(MARKER).exists() {
+        return None;
+    }
+    let mut read: HashSet<PathBuf> = HashSet::new();
+    let mut reads = Reads::default();
+    let mut sorted: Vec<&PathBuf> = folders.iter().collect();
+    sorted.sort();
+    for path in sorted {
+        read.insert(path.clone());
+        let hidden = path
+            .file_name()
+            .is_none_or(|name| is_hidden(&name.to_string_lossy()));
+        if hidden || path.parent() != Some(root) || !path.is_dir() {
+            continue;
+        }
+        reads.read(root, path, known, options);
+    }
+    let ids: Vec<String> = reads
+        .notes
+        .iter()
+        .map(|note| note.doc.session_id.clone())
+        .collect();
+    for id in ids {
+        let Some(home) = known.home_of(&id) else {
+            continue;
+        };
+        if read.contains(home) || !home.is_dir() {
+            continue;
+        }
+        read.insert(home.to_path_buf());
+        let home_root = home.parent().unwrap_or(root).to_path_buf();
+        reads.read(&home_root, home, known, options);
+    }
+    let result = LibraryScan {
+        roots: vec![RootScan {
+            root: root.to_path_buf(),
+            state: RootState::Available,
+            marker_written: false,
+        }],
+        notes: choose_real_folders(reads.notes, known),
+        unreadable: reads.unreadable,
+        invalid: reads.invalid,
+    };
+    Some((result, read))
+}
+
 fn scan_root(
     root: &Path,
     known: &Known,
@@ -207,34 +272,20 @@ fn scan_root(
         Err(e) => return unavailable(Unavailable::Unreadable(e.to_string())),
     };
 
-    let mut notes = Vec::new();
-    let mut unreadable = Vec::new();
-    let mut invalid = Vec::new();
+    let mut reads = Reads::default();
     for entry in entries.flatten() {
         let path = entry.path();
         // Staging, rename and temporary folders start with a dot.
         if is_hidden(&entry.file_name().to_string_lossy()) || !path.is_dir() {
             continue;
         }
-        let problem = |reason: String| ProblemFolder {
-            root: root.to_path_buf(),
-            known_id: known.id_at(&path).map(str::to_string),
-            path: path.clone(),
-            reason,
-        };
-        match read_folder(&path, options) {
-            FolderRead::NotANote => {}
-            FolderRead::Note(note) => notes.push(Found {
-                root: root.to_path_buf(),
-                ..*note
-            }),
-            FolderRead::Unreadable(reason) => {
-                log::warn!("library: cannot read {}: {reason}", path.display());
-                unreadable.push(problem(reason));
-            }
-            FolderRead::Invalid(reason) => invalid.push(problem(reason)),
-        }
+        reads.read(root, &path, known, options);
     }
+    let Reads {
+        notes,
+        unreadable,
+        invalid,
+    } = reads;
 
     let mut marker_written = false;
     if !root.join(MARKER).exists() {
@@ -256,6 +307,38 @@ fn scan_root(
         },
         notes,
     )
+}
+
+/// The folders that one scan read, by kind.
+#[derive(Default)]
+struct Reads {
+    notes: Vec<Found>,
+    unreadable: Vec<ProblemFolder>,
+    invalid: Vec<ProblemFolder>,
+}
+
+impl Reads {
+    /// Read the folder at `path` in `root`.
+    fn read(&mut self, root: &Path, path: &Path, known: &Known, options: &ScanOptions) {
+        let problem = |reason: String| ProblemFolder {
+            root: root.to_path_buf(),
+            known_id: known.id_at(path).map(str::to_string),
+            path: path.to_path_buf(),
+            reason,
+        };
+        match read_folder(path, options) {
+            FolderRead::NotANote => {}
+            FolderRead::Note(note) => self.notes.push(Found {
+                root: root.to_path_buf(),
+                ..*note
+            }),
+            FolderRead::Unreadable(reason) => {
+                log::warn!("library: cannot read {}: {reason}", path.display());
+                self.unreadable.push(problem(reason));
+            }
+            FolderRead::Invalid(reason) => self.invalid.push(problem(reason)),
+        }
+    }
 }
 
 fn is_hidden(name: &str) -> bool {

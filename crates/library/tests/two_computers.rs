@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset};
-use library::reconcile::{Changes, Coverage, DELETE_WAIT, Reconciler};
+use library::reconcile::{Changes, Coverage, DELETE_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
 use library::scan::{Known, ScanOptions, scan};
 use pipeline::SharedStore;
@@ -641,4 +641,98 @@ fn a_refresh_inside_a_run_keeps_the_runs_title_over_a_proposal_in_the_folder() {
     .unwrap();
     assert_eq!(refreshed, Refresh::default());
     assert_eq!(a.record("n1").unwrap().title, proposed("Budget"));
+}
+
+impl Computer {
+    /// A targeted scan of `folders` in `root`, as the watcher runs it (U6).
+    fn sync_folders(&mut self, root: &Path, folders: &[&Path]) -> Changes {
+        let target = Target::Folders {
+            root: root.to_path_buf(),
+            folders: folders.iter().map(|f| f.to_path_buf()).collect(),
+        };
+        self.reconciler
+            .run(&self.store, &target, &never_claimed)
+            .unwrap()
+    }
+
+    fn sync_roots(&mut self, roots: &[&Path]) -> Changes {
+        let target = Target::Full(roots.iter().map(|r| r.to_path_buf()).collect());
+        self.reconciler
+            .run(&self.store, &target, &never_claimed)
+            .unwrap()
+    }
+}
+
+// Covers R7 (U6).
+#[test]
+fn a_targeted_scan_adopts_a_new_folder_and_starts_no_delete_for_the_others() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let first = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync(&root, Instant::now());
+
+    let second = b.save_note("n2", &root, user_title("Budget"), "");
+    take_away(&first, dir.path());
+    assert_eq!(a.sync_folders(&root, &[&second]), changed(&["n2"]));
+    assert_eq!(a.home("n2"), second);
+    assert!(!a.reconciler.is_pending("n1"), "n1 was not in the scan");
+    assert_eq!(a.sync_folders(&root, &[&second]), Changes::default());
+}
+
+// Covers R10 (U6).
+#[test]
+fn a_targeted_scan_of_a_removed_folder_starts_its_pending_delete() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync(&root, Instant::now());
+
+    take_away(&folder, dir.path());
+    assert_eq!(a.sync_folders(&root, &[&folder]), Changes::default());
+    assert!(a.reconciler.is_pending("n1"));
+    assert!(a.record("n1").is_some());
+}
+
+// Covers R8, R15 (U6).
+#[test]
+fn a_targeted_scan_of_a_duplicate_folder_keeps_the_home_folder() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync(&root, Instant::now());
+
+    let name = folder.file_name().unwrap().to_string_lossy().into_owned();
+    let copy = root.join(format!("{name} (1)"));
+    fs::create_dir(&copy).unwrap();
+    for entry in fs::read_dir(&folder).unwrap().flatten() {
+        if entry.path().is_file() {
+            fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+        }
+    }
+    assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
+    assert_eq!(a.home("n1"), folder);
+}
+
+// Covers KD7, R10 (U6).
+#[test]
+fn a_scan_of_one_root_keeps_the_pending_deletes_of_another() {
+    let (dir, root) = shared_root();
+    let other = dir.path().join("Dropbox");
+    fs::create_dir(&other).unwrap();
+    let away = dir.path().join("away");
+    fs::create_dir(&away).unwrap();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    b.save_note("n2", &other, user_title("Budget"), "");
+    assert_eq!(a.sync_roots(&[&root, &other]), changed(&["n1", "n2"]));
+
+    take_away(&folder, &away);
+    a.sync_roots(&[&root]);
+    assert!(a.reconciler.is_pending("n1"));
+    a.sync_roots(&[&other]);
+    assert!(a.reconciler.is_pending("n1"), "a scan of another root");
 }

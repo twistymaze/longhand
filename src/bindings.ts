@@ -679,6 +679,7 @@ async logFromWebview(level: WebviewLogLevel, message: string) : Promise<void> {
 export const events = __makeEvents__<{
 captureEnded: CaptureEnded,
 captureTick: CaptureTick,
+libraryChanged: LibraryChanged,
 livePartSaved: LivePartSaved,
 liveTranscriptEvent: LiveTranscriptEvent,
 liveTranscriptStatus: LiveTranscriptStatus,
@@ -690,6 +691,7 @@ showSession: ShowSession
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
+libraryChanged: "library-changed",
 livePartSaved: "live-part-saved",
 liveTranscriptEvent: "live-transcript-event",
 liveTranscriptStatus: "live-transcript-status",
@@ -819,6 +821,12 @@ export type Interruption = { headline: string;
  * A disk interruption resumes only once space is freed (R7a).
  */
 disk: boolean }
+/**
+ * The rows that a library reconcile changed (KTD10). `changed` holds
+ * adopted notes, refreshed notes and notes in a new folder. `removed`
+ * holds notes whose folder is gone.
+ */
+export type LibraryChanged = { changed: string[]; removed: string[] }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 /**
  * Why Longhand sent no model list request (R4, R16, R17).

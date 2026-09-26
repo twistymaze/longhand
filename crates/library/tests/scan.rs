@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::DateTime;
 use library::scan::{
-    Known, LibraryScan, MARKER, RootState, ScanOptions, Unavailable, Waiting, scan,
+    Known, LibraryScan, MARKER, RootState, ScanOptions, Unavailable, Waiting, scan, scan_folders,
 };
 use session_core::Segment;
 use session_core::folder::{SessionDoc, fingerprint};
@@ -437,4 +438,62 @@ fn no_audio_file_is_opened() {
     let result = within(move || scan(&[path], &Known::default(), &options()));
     assert_eq!(result.notes.len(), 1);
     assert!(result.notes[0].waiting.is_empty());
+}
+
+fn folders(paths: &[&Path]) -> HashSet<PathBuf> {
+    paths.iter().map(|p| p.to_path_buf()).collect()
+}
+
+#[test]
+fn a_targeted_scan_reads_only_the_folders_it_names() {
+    let root = marked_root();
+    let planning = note(root.path(), "Planning", "A1");
+    note(root.path(), "Budget", "B1");
+    let staging = note(root.path(), ".staging-C1", "C1");
+    let gone = root.path().join("Gone");
+    let (result, read) = scan_folders(
+        root.path(),
+        &folders(&[&planning, &staging, &gone]),
+        &Known::default(),
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(root_state(&result), &RootState::Available);
+    let ids: Vec<&str> = result
+        .notes
+        .iter()
+        .map(|n| n.doc.session_id.as_str())
+        .collect();
+    assert_eq!(ids, ["A1"]);
+    assert_eq!(read, folders(&[&planning, &staging, &gone]));
+}
+
+#[test]
+fn a_targeted_scan_of_a_duplicate_also_reads_the_home_folder() {
+    let root = marked_root();
+    let home = note(root.path(), "Planning", "A1");
+    let copy = note(root.path(), "Planning (1)", "A1");
+    let mut known = Known::default();
+    known.add("A1", &home);
+    let (result, read) = scan_folders(root.path(), &folders(&[&copy]), &known, &options()).unwrap();
+    assert_eq!(result.notes.len(), 1);
+    assert_eq!(result.notes[0].path, home);
+    assert_eq!(result.notes[0].duplicate_folders, [copy.as_path()]);
+    assert_eq!(read, folders(&[&home, &copy]));
+}
+
+#[test]
+fn a_targeted_scan_of_a_root_without_its_marker_gives_no_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let planning = note(root.path(), "Planning", "A1");
+    let targeted = scan_folders(
+        root.path(),
+        &folders(&[&planning]),
+        &Known::default(),
+        &options(),
+    );
+    assert!(targeted.is_none());
+    assert!(!root.path().join(MARKER).exists());
+    let missing = root.path().join("missing");
+    assert!(scan_folders(&missing, &HashSet::new(), &Known::default(), &options()).is_none());
 }

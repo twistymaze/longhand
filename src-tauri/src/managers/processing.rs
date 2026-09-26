@@ -18,6 +18,7 @@ use tauri::AppHandle;
 use tauri_specta::Event as _;
 
 use crate::managers::capture::CaptureManager;
+use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
 use crate::managers::models::ModelsManager;
 use crate::managers::settings;
@@ -333,6 +334,12 @@ fn completed(store: &pipeline::SharedStore, id: &str) -> bool {
         .is_some_and(|r| r.state == session_core::SessionState::Saved)
 }
 
+fn emit_library_changed(app: &AppHandle, changes: LibraryChanged) {
+    if let Err(e) = changes.emit(app) {
+        log::warn!("could not emit a library change: {e}");
+    }
+}
+
 fn notify_saved(app: &AppHandle, path: &std::path::Path) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
@@ -364,6 +371,15 @@ pub struct ProcessingManager {
     app: AppHandle,
     store: pipeline::SharedStore,
     liveness: session_core::jobs::Liveness,
+    library: std::sync::Mutex<LibrarySlot>,
+}
+
+/// The library watcher, which starts at the end of the launch steps
+/// (KTD9), and whether the quit stopped it.
+#[derive(Default)]
+struct LibrarySlot {
+    watcher: Option<LibraryWatcher>,
+    stopped: bool,
 }
 
 impl ProcessingManager {
@@ -424,13 +440,15 @@ impl ProcessingManager {
             app: app.clone(),
             store: capture.shared_store(),
             liveness,
+            library: std::sync::Mutex::default(),
         }
     }
 
     /// The rest of the launch steps, in order, on one background thread,
     /// so the window opens at once with the stored rows (KTD9): the library
     /// scan and reconcile, the folder reconcile, the live workers, the
-    /// retry of notes that wait for a folder, and the runner.
+    /// retry of notes that wait for a folder, the runner and the library
+    /// watcher.
     pub fn start(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         let spawned = std::thread::Builder::new()
@@ -442,20 +460,21 @@ impl ProcessingManager {
     }
 
     fn launch(&self) {
-        let roots: Vec<std::path::PathBuf> = settings::get_settings(&self.app)
-            .destination_roots
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect();
+        let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
         let mut reconciler = library::reconcile::Reconciler::default();
         match self.runner.reconcile_library(&roots, &mut reconciler) {
-            Ok(changes) => log::info!(
-                "library: the launch scan changed {} note(s) and removed {}",
-                changes.changed.len(),
-                changes.removed.len()
-            ),
+            Ok(changes) => {
+                log::info!(
+                    "library: the launch scan changed {} note(s) and removed {}",
+                    changes.changed.len(),
+                    changes.removed.len()
+                );
+                if !changes.is_empty() {
+                    emit_library_changed(&self.app, changes.into());
+                }
+            }
             Err(e) => log::error!("the launch scan of the library failed: {e}"),
         }
         if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
@@ -477,18 +496,79 @@ impl ProcessingManager {
         // The volume may be back, or the folder restored (U18).
         self.retry_awaiting();
         tauri::async_runtime::spawn(Arc::clone(&self.runner).run());
-        // The folder watcher starts after the runner (KTD9).
+        // The folder watcher starts after the runner (KTD9), and keeps the
+        // pending deletes of the launch reconcile.
+        self.start_library(reconciler);
     }
 
-    /// A session was queued or capture ended.
-    /// Before the process exits: stop processing and free the models.
-    /// The live workers stop first: a worker holds the engine slot while it
-    /// streams, and the runner frees the engine after it (KTD9).
+    /// The retained Destinations, as the settings hold them.
+    fn roots(&self) -> Vec<std::path::PathBuf> {
+        settings::get_settings(&self.app)
+            .destination_roots
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    fn start_library(&self, reconciler: library::reconcile::Reconciler) {
+        let store = Arc::clone(&self.store);
+        let claims = self.runner.claims().clone();
+        let events = self.app.clone();
+        let started = LibraryWatcher::start(
+            self.roots(),
+            reconciler,
+            Box::new(move |target, reconciler| {
+                reconciler
+                    .run(&store, target, &|id| claims.busy(id))
+                    .map_err(|e| e.to_string())
+            }),
+            Box::new(move |changes| emit_library_changed(&events, changes)),
+            Timing::default(),
+        );
+        let watcher = match started {
+            Ok(watcher) => watcher,
+            Err(e) => {
+                log::error!("could not start the library watcher: {e}");
+                return;
+            }
+        };
+        let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+        if library.stopped {
+            // The quit came during the launch steps.
+            drop(library);
+            watcher.stop();
+        } else {
+            library.watcher = Some(watcher);
+        }
+    }
+
+    /// The retained Destinations changed: the library watches start again
+    /// on the new set (KTD7).
+    pub fn roots_changed(&self) {
+        let library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(watcher) = &library.watcher {
+            watcher.set_roots(self.roots());
+        }
+    }
+
+    /// Before the process exits: stop the library watcher and processing,
+    /// and free the models. The live workers stop first: a worker holds the
+    /// engine slot while it streams, and the runner frees the engine after
+    /// it (KTD9).
     pub fn shutdown(&self) {
+        let watcher = {
+            let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+            library.stopped = true;
+            library.watcher.take()
+        };
+        if let Some(watcher) = watcher {
+            watcher.stop();
+        }
         self.live.shutdown();
         self.runner.shutdown();
     }
 
+    /// A session was queued or capture ended.
     pub fn wake(&self) {
         self.runner.wake();
     }

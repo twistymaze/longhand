@@ -306,10 +306,12 @@ pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, Stri
     Ok(Some(settings))
 }
 
-/// Sessions waiting for a destination try the new one (R22b).
+/// Sessions waiting for a destination try the new one (R22b), and the
+/// library watches start again on the retained roots (KTD7).
 fn destination_changed(app: &AppHandle) {
     if let Some(processing) = app.try_state::<std::sync::Arc<ProcessingManager>>() {
         processing.retry_awaiting();
+        processing.roots_changed();
     }
 }
 

@@ -67,6 +67,9 @@ tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }
 trash = "5"
+# The library watcher (managers/library.rs), as anarlog's notify plugin uses them.
+notify = "8"
+notify-debouncer-full = "0.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The Settings window's zoom method (src/zoom.rs). tao already uses it.

@@ -24,8 +24,7 @@ use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
 use diarize::{DiarizeError, SpeakerAnalyzer};
-use library::reconcile::{Changes, Coverage, Reconciler};
-use library::scan::{Known, ScanOptions};
+use library::reconcile::{Changes, Reconciler, Target};
 
 /// The stages, in order.
 pub const STAGES: &[Stage] = &[
@@ -451,16 +450,11 @@ impl Runner {
         roots: &[PathBuf],
         reconciler: &mut Reconciler,
     ) -> Result<Changes, StageError> {
-        let known = Known::from_records(&lock(&self.env.store).sessions()?);
-        let scan = library::scan::scan(roots, &known, &ScanOptions::default());
-        let mut store = lock(&self.env.store);
-        Ok(reconciler.reconcile(
-            &mut store,
-            &scan,
-            &Coverage::Full,
-            std::time::Instant::now(),
-            &|id| self.claims.busy(id),
-        )?)
+        Ok(
+            reconciler.run(&self.env.store, &Target::Full(roots.to_vec()), &|id| {
+                self.claims.busy(id)
+            })?,
+        )
     }
 
     /// At launch, after the library reconcile and before [`Runner::run`]:

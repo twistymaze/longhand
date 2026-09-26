@@ -12,6 +12,8 @@
 //!   row is forgotten, if it is Saved, unclaimed and has no rename intent
 //!   (R10). Forget changes no folder.
 //! - Rows in an unavailable Destination stay as they are (KD7, R16).
+//! - A scan of some Destinations, or of some note folders (the watcher's
+//!   targeted scan, KTD7), changes no pending delete of a row outside them.
 //!
 //! The scan runs without the store. Reconcile runs under the store lock,
 //! and reads a folder again before it writes from it, so a change that
@@ -19,13 +21,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use session_core::jobs::busy;
 use session_core::{Adoption, SessionRecord, Store, StoreError};
 
 use crate::refresh::{self, FolderContents};
-use crate::scan::{LibraryScan, NoteFolder, READ_TIMEOUT, ScanOptions};
+use crate::scan::{self, Known, LibraryScan, NoteFolder, READ_TIMEOUT, ScanOptions};
 
 /// How long a row stays after its folder is gone from an available
 /// Destination (R10). A sync can deliver a rename as a removed folder and
@@ -49,6 +52,19 @@ impl Coverage {
             Coverage::Folders(folders) => folders.contains(home),
         }
     }
+}
+
+/// The folders that one reconcile reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// Every note folder in each of these Destinations.
+    Full(Vec<PathBuf>),
+    /// Only these note folders of one Destination (KTD7). When the
+    /// Destination has no marker, the scan reads all of it.
+    Folders {
+        root: PathBuf,
+        folders: HashSet<PathBuf>,
+    },
 }
 
 /// The rows that a reconcile changed, for the `LibraryChanged` event
@@ -108,6 +124,34 @@ impl Reconciler {
             .map(|since| *since + DELETE_WAIT)
     }
 
+    /// Scan `target` without the store lock, then apply the scan to the
+    /// store under the lock. `claimed` is as for [`Reconciler::reconcile`].
+    pub fn run(
+        &mut self,
+        store: &Mutex<Store>,
+        target: &Target,
+        claimed: &dyn Fn(&str) -> bool,
+    ) -> Result<Changes, StoreError> {
+        let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
+        let known = Known::from_records(&lock().sessions()?);
+        let options = ScanOptions {
+            read_timeout: self.read_timeout,
+        };
+        let (result, coverage) = match target {
+            Target::Full(roots) => (scan::scan(roots, &known, &options), Coverage::Full),
+            Target::Folders { root, folders } => {
+                match scan::scan_folders(root, folders, &known, &options) {
+                    Some((result, read)) => (result, Coverage::Folders(read)),
+                    None => (
+                        scan::scan(std::slice::from_ref(root), &known, &options),
+                        Coverage::Full,
+                    ),
+                }
+            }
+        };
+        self.reconcile(&mut lock(), &result, &coverage, Instant::now(), claimed)
+    }
+
     /// Apply `scan` to `store`. `now` is the time of the scan. `claimed`
     /// tells whether a stage holds a claim on a session (a summary
     /// regeneration or a delete).
@@ -165,7 +209,12 @@ impl Reconciler {
             if present.contains(record.id.as_str()) || !coverage.covers(home) {
                 continue;
             }
-            if !home.parent().is_some_and(|root| scan.is_available(root)) {
+            // A scan of some Destinations says nothing about the others.
+            let root = home.parent();
+            if !scan.roots.iter().any(|r| Some(r.root.as_path()) == root) {
+                continue;
+            }
+            if !root.is_some_and(|root| scan.is_available(root)) {
                 self.pending.remove(&record.id);
                 continue;
             }
