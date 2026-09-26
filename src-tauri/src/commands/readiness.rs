@@ -11,14 +11,21 @@ use crate::managers::destination::{self, DestinationStatus};
 use crate::managers::models::ModelsManager;
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings;
-use crate::shortcut::{ShortcutRegistration, ShortcutStatus};
+use crate::shortcut::{ShortcutKind, ShortcutRegistration, ShortcutStatus};
+
+/// Ready to record: the microphone authorized, a destination chosen, and the
+/// recording chord either registered or cleared. No chord is a choice; a
+/// chord that failed to register is a fault (KTD7, R13).
+fn armed(microphone: bool, destination: bool, shortcut: &ShortcutStatus) -> bool {
+    microphone && destination && shortcut.is_ok()
+}
 
 #[derive(Serialize, Type)]
 pub struct Readiness {
     pub microphone_authorized: bool,
     pub destination: DestinationStatus,
     /// Microphone authorized, a destination chosen, and the chord registered
-    /// (R1c). A destination that is unreachable right now can be changed
+    /// or cleared (R1c, R13). A destination that is unreachable right now can be changed
     /// before the session is saved (R23), so it is shown rather than blocking.
     pub armed: bool,
     pub shortcut: ShortcutStatus,
@@ -37,7 +44,7 @@ pub async fn readiness(
     registration: State<'_, ShortcutRegistration>,
     secrets: State<'_, SecretsManager>,
 ) -> Result<Readiness, String> {
-    let shortcut = registration.status();
+    let shortcut = registration.status(ShortcutKind::Recording);
     let settings = settings::get_settings(&app);
     let microphone_authorized = tauri_plugin_macos_permissions::check_microphone_permission().await;
     let current = settings.current_destination.clone();
@@ -58,12 +65,44 @@ pub async fn readiness(
     };
     Ok(Readiness {
         microphone_authorized,
-        armed: microphone_authorized
-            && settings.current_destination.is_some()
-            && shortcut.registered,
+        armed: armed(
+            microphone_authorized,
+            settings.current_destination.is_some(),
+            &shortcut,
+        ),
         shortcut,
         destination,
         missing_models: models.missing(&settings.asr_model),
         endpoint_configured,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(chord: Option<&str>, registered: bool) -> ShortcutStatus {
+        ShortcutStatus {
+            chord: chord.map(str::to_string),
+            registered,
+            error: (!registered && chord.is_some()).then(|| "refused".to_string()),
+        }
+    }
+
+    #[test]
+    fn a_cleared_shortcut_is_ready_to_record() {
+        assert!(armed(true, true, &status(None, false)));
+    }
+
+    #[test]
+    fn a_failed_shortcut_is_not_ready() {
+        assert!(!armed(true, true, &status(Some("Super+KeyR"), false)));
+    }
+
+    #[test]
+    fn a_registered_shortcut_is_ready() {
+        assert!(armed(true, true, &status(Some("Super+KeyR"), true)));
+        assert!(!armed(false, true, &status(Some("Super+KeyR"), true)));
+        assert!(!armed(true, false, &status(None, false)));
+    }
 }

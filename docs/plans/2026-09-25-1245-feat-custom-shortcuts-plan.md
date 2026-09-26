@@ -146,7 +146,8 @@ flowchart TB
 
 ### Assumptions
 
-- The two worktrees in progress, summary prompts and recognition models, also change `managers/settings.rs`, `lib.rs` and `src/bindings.ts`. This work starts from `origin/main` after they merge, or rebases onto them, and regenerates `src/bindings.ts` after the rebase.
+- PR #6 and PR #8 are merged. The summary-model-picker branch is in progress, and it also changes `managers/settings.rs`, `lib.rs`, `src/bindings.ts` and the `Settings` type. Merge `main` into this branch before this branch merges, and regenerate `src/bindings.ts` after the merge.
+- KTD3's approach stays: no settings migration. A build from a branch without this work reads a cleared shortcut as the default and drops the show chord at its next settings save. That is acceptable, but no such build runs between the manual set checks and the relaunch check (Verification Contract).
 - The app menu's own key equivalents (Cmd+Q, Cmd+W, Cmd+,) are caught by the menu before the web view sees them, so the control cannot capture them. That is acceptable: those chords would take a key from Longhand itself.
 
 ---
@@ -158,11 +159,12 @@ flowchart TB
 - **Goal:** Settings hold both chords as optional values, and one pure function decides whether a chord is valid.
 - **Requirements:** R3, R5, R8, R9, R12. KTD3.
 - **Dependencies:** None.
-- **Files:** `src-tauri/src/managers/settings.rs`, `src-tauri/src/shortcut.rs`.
+- **Files:** `src-tauri/src/managers/settings.rs`, `src-tauri/src/shortcut.rs`, `src/settings/Models.test.tsx`, `src/settings/SummaryPrompts.test.tsx`.
 - **Approach:**
   1. `shortcut` becomes `Option<String>` with default `Some(DEFAULT_SHORTCUT)`. Add `show_window_shortcut: Option<String>` with default `None`.
   2. Add a pure chord check in `shortcut.rs`: the chord parses as a plugin `Shortcut`, has at least one modifier, and has one key that is not a modifier and not fn. It returns a plain-language reason on failure (R8).
   3. Add a pure duplicate check that compares parsed shortcuts, not strings, so `Super+KeyR` and `Command+KeyR` count as the same chord on macOS (R9).
+  4. Add `show_window_shortcut` and the nullable `shortcut` to the literal `Settings` fixtures in `src/settings/Models.test.tsx` and `src/settings/SummaryPrompts.test.tsx`. Without them, `tsc` fails after `src/bindings.ts` regenerates.
 - **Patterns to follow:** `validate_shortcut` in `reference-source/Handy/src-tauri/src/shortcut/tauri_impl.rs`. Tests next to `settings_from_value` in `managers/settings.rs`.
 - **Test scenarios:**
   - A stored settings value with `"shortcut": "CommandOrControl+Alt+Shift+L"` reads as `Some` of that chord, and no rewrite is reported.
@@ -275,7 +277,7 @@ flowchart TB
 | Frontend | `bun run typecheck` and `bun run test` | U4, U5 |
 | Manual, signed bundle | From `bun tauri build --bundles app`: set a new recording chord and start a recording from another app. Clear the chord and confirm that Settings shows "Off" and "Ready". Set a show chord and toggle the window from the menu bar, from behind another app and during a recording. Try a chord that another app holds: Windows refuses it, and on macOS the check passes when the row either says "not available" or accepts the chord (KTD4). Relaunch and confirm that both chords stay. | R1–R7, R10, R12, R13, AE1–AE5, AE7 |
 
-The `cargo` commands need the sandbox bypass. A global shortcut from another app is tested from the signed bundle, not `tauri dev`.
+The `cargo` commands need the sandbox bypass. A global shortcut from another app is tested from the signed bundle, not `tauri dev`. Run no build from another branch between the manual set checks and the relaunch check: such a build resets a cleared shortcut and drops the show chord at its next save, and the relaunch check then fails for a reason that is not in this work.
 
 ---
 
@@ -285,3 +287,29 @@ The `cargo` commands need the sandbox bypass. A global shortcut from another app
 - On the signed bundle, both shortcuts can be set, cleared and used from another app, and a refused chord leaves the previous chord working.
 - A cleared recording shortcut shows "Off" and still counts as ready to record.
 - No experimental code, abandoned approaches or debug output stay in the diff.
+
+---
+
+## Completion record
+
+**Shipped 2026-09-26** in PR #10 (merge commit fcf59ea). Units U1–U5 are implemented.
+
+**Changes after the units:**
+
+- Simplification: the settings are read once at launch and at resume. The default chord comes from Rust through the `DEFAULT_SHORTCUT` binding constant. The recording row reads its status only from readiness.
+- The code review confirmed 3 findings, and all 3 are fixed. Both rows share one pause, and its calls go in order, so the finish of one row does not resume the shortcuts while the other row captures. The pane reads the statuses after the resume. `set_shortcut` records the status before it saves the settings.
+- The chord button keeps one width while it captures keys.
+
+**The user's test of the signed bundle** found two defects, which PR #10 also fixes:
+
+- Keys and Escape did nothing during capture. WebKit does not focus a button when it is clicked, so the key handler on the button did not receive the keys. The row now focuses its button when capture starts. The unit tests did not find this defect, because they send key events to the button directly, and the Chromium preview gives focus on a click.
+- Both rows could wait for keys at the same time. A row that starts to wait now ends the wait of the other row.
+
+**Verification.** All the gates in the Verification Contract pass. The user confirmed from the signed bundle that a chord can now be set.
+
+**Not done:**
+
+- The other manual checks in the Verification Contract (a chord held by another app, and the relaunch check) are not recorded as run.
+- Deferred from the review:
+  - When a new chord is refused and the old chord cannot be registered again, only a log line records it.
+  - A chord saved in one row registers at once.

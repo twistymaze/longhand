@@ -50,6 +50,7 @@ const document = (body: string): SessionDocument => ({
 function renderHome({
   entries = [] as SessionEntry[],
   recording = null as RecordingNow | null,
+  chord = "⌥⇧L" as string | null,
   onOpen = (_id: string) => {},
   onChanged = () => {},
 } = {}) {
@@ -59,7 +60,7 @@ function renderHome({
       stages={{}}
       recording={recording}
       readiness={null}
-      chord="⌥⇧L"
+      chord={chord}
       onOpen={onOpen}
       onChanged={onChanged}
       now={now}
@@ -79,6 +80,15 @@ describe("Home", () => {
       screen.getByText((_, el) => el?.tagName === "P" && /Press ⌥⇧L .*to start a new note/.test(el.textContent ?? "")),
     ).toBeTruthy();
     expect(screen.queryByRole("option")).toBeNull();
+  });
+
+  test("with no sessions and no shortcut, the line names New Note and shows no key cap", () => {
+    mockTauri();
+    const { container } = renderHome({ chord: null });
+    expect(
+      screen.getByText((_, el) => el?.tagName === "P" && /New Note/.test(el.textContent ?? "")),
+    ).toBeTruthy();
+    expect(container.querySelector("kbd")).toBeNull();
   });
 
   test("New Note starts a recording", async () => {

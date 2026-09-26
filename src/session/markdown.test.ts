@@ -21,15 +21,15 @@ describe("summary markdown", () => {
   test("a bold-label bullet with indented children gives one item with a child list", () => {
     const blocks = parseMarkdown(
       [
-        "## Camp Office Encounter",
+        "## Launch Plan",
         "",
-        "The party searched the office.",
+        "The team set the launch plan.",
         "",
-        "*   **Loot:** coins and gear",
-        "    *   40 gold pieces",
-        "    *   a silver ring",
-        "    *   two healing potions",
-        "*   **Documents:** a map",
+        "*   **Budget:** costs and staff",
+        "    *   $40,000 for ads",
+        "    *   two contractors",
+        "    *   one new laptop",
+        "*   **Decision:** launch on May 12",
       ].join("\n"),
     );
     expect(blocks.map((b) => b.kind)).toEqual(["heading", "paragraph", "list"]);
@@ -37,20 +37,20 @@ describe("summary markdown", () => {
     if (list.kind !== "list") throw new Error("not a list");
     expect(list.items).toHaveLength(2);
     expect(list.items[0].content).toEqual([
-      { kind: "strong", text: "Loot:" },
-      { kind: "text", text: " coins and gear" },
+      { kind: "strong", text: "Budget:" },
+      { kind: "text", text: " costs and staff" },
     ]);
     expect(list.items[0].children).toHaveLength(1);
     expect(list.items[0].children[0]).toMatchObject({
       kind: "list",
       ordered: false,
       items: [
-        { content: [{ text: "40 gold pieces" }], children: [] },
-        { content: [{ text: "a silver ring" }], children: [] },
-        { content: [{ text: "two healing potions" }], children: [] },
+        { content: [{ text: "$40,000 for ads" }], children: [] },
+        { content: [{ text: "two contractors" }], children: [] },
+        { content: [{ text: "one new laptop" }], children: [] },
       ],
     });
-    expect(list.items[1]).toMatchObject({ content: [{ text: "Documents:" }, { text: " a map" }], children: [] });
+    expect(list.items[1]).toMatchObject({ content: [{ text: "Decision:" }, { text: " launch on May 12" }], children: [] });
   });
 
   test("a wrapped, indented continuation line joins its item and starts no child list", () => {

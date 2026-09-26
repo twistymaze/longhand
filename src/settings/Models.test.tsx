@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelState, ModelStatus, Settings } from "../bindings";
-import { mockTauri } from "../test/tauri";
+import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
 
 const PARAKEET = "parakeet-unified-en-0.6b-q80";
@@ -80,6 +80,7 @@ function settings(asr_model: string, extra: Partial<Settings> = {}): Settings {
   return {
     settings_schema_version: 1,
     shortcut: "CmdOrCtrl+Shift+R",
+    show_window_shortcut: null,
     destination_roots: [],
     current_destination: null,
     endpoint_base_url: "",
@@ -121,6 +122,7 @@ async function open({
       missing_models: [],
       endpoint_configured: false,
     }),
+    shortcut_status: () => shortcutStatuses,
     model_statuses: () => catalog(state.settings.asr_model, state.states),
     speaker_models_status: () => {
       const weights = [SEGMENTATION, EMBEDDING];

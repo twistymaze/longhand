@@ -5,6 +5,8 @@ mod menu;
 mod shortcut;
 mod tray;
 mod window;
+#[cfg(target_os = "macos")]
+mod zoom;
 
 use tauri::Manager;
 use tauri_specta::{Builder, collect_commands, collect_events};
@@ -50,6 +52,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::recording_status,
             commands::capture::set_session_speaker_count,
             commands::capture::shortcut_status,
+            commands::capture::set_shortcut,
+            commands::capture::suspend_shortcuts,
+            commands::capture::resume_shortcuts,
             commands::alerts::alert_check,
             commands::alerts::play_alert_sound,
             commands::alerts::confirm_alert_sound,
@@ -67,6 +72,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::delete_session,
             commands::session::delete_session_permanently,
             commands::window::open_settings,
+            commands::window::close_settings_window,
+            commands::webview_log::log_from_webview,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
@@ -80,6 +87,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,
         ])
+        .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)
 }
 
 pub fn export_bindings(builder: &Builder<tauri::Wry>) {

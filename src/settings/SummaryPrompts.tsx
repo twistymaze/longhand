@@ -7,10 +7,39 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
+import { log, logText } from "../lib/log";
 import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
 const saveDelay = 1000;
+
+/// The longest time that a window close waits for the save, in
+/// milliseconds. A save that does not complete must not keep the window
+/// open.
+const defaultCloseSaveLimit = 2000;
+
+/// The longest time that a window close waits for each later step (the
+/// listener removal, the destroy), in milliseconds.
+const stepLimit = 1000;
+
+type Outcome<T> = { kind: "done"; value: T } | { kind: "error"; error: unknown } | { kind: "timeout" };
+
+/// The result of `promise`, or a timeout when it does not settle in `ms`.
+function within<T>(promise: Promise<T>, ms: number): Promise<Outcome<T>> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ kind: "timeout" }), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve({ kind: "done", value });
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        resolve({ kind: "error", error });
+      },
+    );
+  });
+}
 
 const format = (n: number) => n.toLocaleString("en-US");
 
@@ -83,7 +112,14 @@ function without<T>(map: Record<string, T>, id: string): Record<string, T> {
   return rest;
 }
 
-export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => void }) {
+export function SummaryPrompts({
+  onSettings,
+  closeSaveLimit = defaultCloseSaveLimit,
+}: {
+  onSettings: (s: Settings) => void;
+  /// Tests set a shorter limit.
+  closeSaveLimit?: number;
+}) {
   const [list, setList] = useState<SummaryPromptList | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The unsaved text of each prompt, by id. A prompt with no entry shows its
@@ -162,24 +198,64 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
 
   // A pane change unmounts the pane, and the save then runs with no wait.
   // A window close destroys the page but does not unmount the pane, so the
-  // close waits for the save. The window closes also if the save fails, and
-  // the close asks nothing. When the app quits, the page events start the
-  // save, but nothing waits for it.
+  // close waits for the save, for at most `closeSaveLimit`. The window
+  // closes also if the save fails or does not complete, and the close asks
+  // nothing. When the app quits, the page events start the save, but
+  // nothing waits for it. Each close step goes to the app log.
   useEffect(() => {
     const onHide = () => void flush();
     window.addEventListener("pagehide", onHide);
     window.addEventListener("beforeunload", onHide);
     const win = getCurrentWindow();
-    let stop: (() => void) | undefined;
+    let stop: (() => unknown) | undefined;
     let gone = false;
+    let closing = false;
+    const close = async () => {
+      log("info", "close requested");
+      const saved = await within(flush(), closeSaveLimit);
+      if (saved.kind === "timeout") log("warn", `the save did not complete in ${closeSaveLimit} ms; the window closes`);
+      else if (saved.kind === "error") log("error", `the save failed: ${logText(saved.error)}`);
+      else if (saved.value) log("info", "the save is complete");
+      else log("error", "the save failed; the window closes with prompt text that is not saved");
+      // Remove the listener before the destroy. Tauri keeps the listener
+      // record of a destroyed webview, and that record stops the close of
+      // the next Settings window.
+      const removed = await within(Promise.resolve(stop?.()), stepLimit);
+      if (removed.kind !== "done") log("warn", `the close listener was not removed (${removed.kind})`);
+      stop = undefined;
+      log("info", "destroy called");
+      const destroyed = await within(win.destroy(), stepLimit);
+      if (destroyed.kind === "done") return;
+      log(
+        "error",
+        destroyed.kind === "error"
+          ? `destroy failed: ${logText(destroyed.error)}`
+          : `destroy did not complete in ${stepLimit} ms`,
+      );
+      // The backend destroys the window with no window permission and no
+      // close request.
+      const closed = await within(commands.closeSettingsWindow(), stepLimit);
+      if (closed.kind === "done" && closed.value.status === "ok") return;
+      const why =
+        closed.kind === "timeout"
+          ? `no answer in ${stepLimit} ms`
+          : closed.kind === "error"
+            ? logText(closed.error)
+            : closed.value.status === "error"
+              ? closed.value.error
+              : "";
+      log("error", `the backend close failed: ${why}`);
+    };
     win
       .onCloseRequested(async (event) => {
         event.preventDefault();
-        if (!(await flush())) console.error("The Settings window closes with prompt text that is not saved.");
+        // A second request while the window closes changes nothing.
+        if (closing) return;
+        closing = true;
         try {
-          await win.destroy();
-        } catch (e) {
-          console.error("The Settings window could not close:", e);
+          await close();
+        } finally {
+          closing = false;
         }
       })
       .then((f) => {
@@ -187,7 +263,7 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
         if (gone) f();
         else stop = f;
       })
-      .catch((e: unknown) => console.error("The close listener could not be registered:", e));
+      .catch((e: unknown) => log("error", `the close listener could not be registered: ${logText(e)}`));
     return () => {
       gone = true;
       stop?.();
@@ -195,7 +271,7 @@ export function SummaryPrompts({ onSettings }: { onSettings: (s: Settings) => vo
       window.removeEventListener("beforeunload", onHide);
       void flush();
     };
-  }, [flush]);
+  }, [flush, closeSaveLimit]);
 
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =

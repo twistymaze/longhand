@@ -21,7 +21,7 @@ import { Button } from "../settings/ui";
 import { useDeleteSession } from "./DeleteSession";
 import { LevelBars } from "./LevelBars";
 import { NotesTab } from "./NotesTab";
-import { ProcessingStatus } from "./ProcessingStatus";
+import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { RecordingBar } from "./RecordingBar";
 import { copyText, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
@@ -198,16 +198,32 @@ export function SessionPage({
       changed();
     });
 
+  // The progress event of an earlier run stays in `sessions.live`. Only an
+  // event that arrives after this run starts shows as its progress.
+  const liveAtStart = useRef(sessions.live[id]);
   const regenerate = () => {
+    liveAtStart.current = sessions.live[id];
     setRegenerating(true);
     setNotice(null);
-    void commands.regenerateSummary(id).then(async (r) => {
-      if (r.status === "error") setNotice({ tone: "negative", text: sentence(r.error) });
-      await loadDocument();
-      setRegenerating(false);
+    // The status shows on Summary, so the page moves there, as it does
+    // after Stop.
+    setTab("summary");
+    // A rejected call must also end the status, or the tab shows it with
+    // no end.
+    void (async () => {
+      try {
+        const r = await commands.regenerateSummary(id);
+        if (r.status === "error") setNotice({ tone: "negative", text: sentence(r.error) });
+        await loadDocument();
+      } catch (e) {
+        console.error("Regenerate failed:", e);
+        setNotice({ tone: "negative", text: "The summary could not be updated." });
+      } finally {
+        setRegenerating(false);
+      }
       // Regenerate can propose a new title (R31).
       void sessions.refresh();
-    });
+    })();
   };
 
   const deletion = useDeleteSession({
@@ -263,10 +279,9 @@ export function SessionPage({
   const summaryKept = phase === "saved" && detail?.summary_not_updated != null;
 
   const live = sessions.live[id];
-  const progress = regenerating && live?.stage === "summarize" && live.total > 1 ? ` part ${live.done} of ${live.total}` : "";
   const regenerateControl = (
-    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} disabled={regenerating} onClick={regenerate}>
-      {regenerating ? `Summarizing…${progress}` : "Regenerate Summary"}
+    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} onClick={regenerate}>
+      Regenerate Summary
     </Button>
   );
 
@@ -302,6 +317,11 @@ export function SessionPage({
       return processing;
     }
     if (error) return <p className="text-negative">{error}</p>;
+    // While the summary is written again, Summary shows the summarize stage
+    // in place of the previous summary. A failed run shows it again.
+    if (which === "summary" && regenerating && detail) {
+      return <RegenerateStatus detail={detail} live={live === liveAtStart.current ? undefined : live} />;
+    }
     if (!doc) return which === "transcript" && liveMode ? liveView("loading") : null;
     return which === "summary" ? (
       <>

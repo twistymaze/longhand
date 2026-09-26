@@ -140,7 +140,8 @@ export function missingPreconditions(readiness: Readiness): string {
   const missing: string[] = [];
   if (!readiness.microphone_authorized) missing.push("allow microphone access");
   if (readiness.destination.kind === "unset") missing.push("choose a folder for notes");
-  if (!readiness.shortcut.registered) missing.push("choose a different shortcut");
+  // A cleared shortcut is a choice; only one that failed to register is missing.
+  if (readiness.shortcut.chord && !readiness.shortcut.registered) missing.push("choose a different shortcut");
   return missing.join(", ");
 }
 

@@ -8,7 +8,7 @@ use tauri::{AppHandle, State};
 use crate::managers::capture::{CaptureManager, RecordingStatus};
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, SpeakerCountSetting};
-use crate::shortcut::{self, ShortcutRegistration, ShortcutStatus};
+use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
 
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -109,6 +109,40 @@ pub async fn set_session_speaker_count(
 
 #[tauri::command]
 #[specta::specta]
-pub fn shortcut_status(registration: State<'_, ShortcutRegistration>) -> ShortcutStatus {
-    registration.status()
+pub fn shortcut_status(registration: State<'_, ShortcutRegistration>) -> ShortcutStatuses {
+    registration.statuses()
+}
+
+/// Set, change or clear one shortcut. `None` clears it. Async, so the plugin
+/// calls it makes run off the main thread.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_shortcut(
+    app: AppHandle,
+    kind: ShortcutKind,
+    chord: Option<String>,
+) -> Result<ShortcutStatuses, String> {
+    blocking(move || shortcut::set_shortcut(&app, kind, chord)).await
+}
+
+/// Pause both shortcuts while the user presses keys for a new one (R11).
+#[tauri::command]
+#[specta::specta]
+pub async fn suspend_shortcuts(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        shortcut::suspend(&app);
+        Ok(())
+    })
+    .await
+}
+
+/// Register the saved chords again after capture ends.
+#[tauri::command]
+#[specta::specta]
+pub async fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
+    blocking(move || {
+        shortcut::resume(&app);
+        Ok(())
+    })
+    .await
 }

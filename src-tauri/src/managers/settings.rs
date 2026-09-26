@@ -91,7 +91,12 @@ const BUILT_IN_PROMPT: &str = "A built-in prompt can't be changed. Duplicate it 
 #[serde(default)]
 pub struct Settings {
     pub settings_schema_version: u32,
-    pub shortcut: String,
+    /// The chord that starts and stops a recording. `None` when the user
+    /// cleared it (R3). A stored string reads as `Some`, so no migration is
+    /// needed (KTD3).
+    pub shortcut: Option<String>,
+    /// The chord that shows or hides the main window. Off by default (R5).
+    pub show_window_shortcut: Option<String>,
     /// Every folder the user has ever chosen, oldest first (R25a). The index
     /// is rebuilt by scanning these, so a root is never dropped silently.
     pub destination_roots: Vec<String>,
@@ -220,7 +225,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             settings_schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
-            shortcut: DEFAULT_SHORTCUT.to_string(),
+            shortcut: Some(DEFAULT_SHORTCUT.to_string()),
+            show_window_shortcut: None,
             destination_roots: Vec::new(),
             current_destination: None,
             endpoint_base_url: None,
@@ -751,6 +757,44 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_chord_reads_as_set_with_no_rewrite() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "shortcut": "CommandOrControl+Alt+Shift+L",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(
+            settings.shortcut.as_deref(),
+            Some("CommandOrControl+Alt+Shift+L")
+        );
+    }
+
+    #[test]
+    fn missing_chords_take_their_defaults() {
+        let stored = json!({ "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.shortcut.as_deref(), Some(DEFAULT_SHORTCUT));
+        assert_eq!(settings.show_window_shortcut, None);
+    }
+
+    #[test]
+    fn a_stored_null_chord_reads_as_cleared() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "shortcut": null,
+            "show_window_shortcut": "Super+Shift+KeyL",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(settings.shortcut, None);
+        assert_eq!(
+            settings.show_window_shortcut.as_deref(),
+            Some("Super+Shift+KeyL")
+        );
+    }
+
+    #[test]
     fn present_fields_survive_a_version_migration() {
         let (settings, updated) =
             settings_from_value(&json!({ "endpoint_model": "gpt-5", "destination_roots": ["/a"] }));
@@ -875,7 +919,7 @@ mod tests {
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "endpoint_model": "kept",
             "summary_prompts": [
-                { "id": "a", "name": "Game recap", "text": "Recap." },
+                { "id": "a", "name": "Team sync", "text": "Recap." },
                 { "id": "b", "name": 7 },
                 { "id": "c", "name": "One on one", "text": "Notes." },
             ],
@@ -883,7 +927,7 @@ mod tests {
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
         assert_eq!(settings.endpoint_model, "kept");
-        assert_eq!(names(&settings), ["Game recap", "One on one"]);
+        assert_eq!(names(&settings), ["Team sync", "One on one"]);
     }
 
     #[test]
@@ -892,13 +936,13 @@ mod tests {
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "summary_prompts": [
                 { "id": TOPIC_SUMMARY_ID, "name": "Shadow", "text": "x" },
-                { "id": "a", "name": "Game recap", "text": "Recap." },
+                { "id": "a", "name": "Team sync", "text": "Recap." },
                 { "id": "a", "name": "Again", "text": "x" },
             ],
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(names(&settings), ["Game recap"]);
+        assert_eq!(names(&settings), ["Team sync"]);
     }
 
     #[test]
@@ -928,10 +972,10 @@ mod tests {
             ["Topic summary copy", "Topic summary copy 2"]
         );
 
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
         settings.duplicate_summary_prompt("g").unwrap();
         let copy = settings.summary_prompts.last().unwrap();
-        assert_eq!(copy.name, "Game recap copy");
+        assert_eq!(copy.name, "Team sync copy");
         assert_eq!(copy.text, "Write a recap.");
         assert_ne!(copy.id, "g");
 
@@ -941,7 +985,7 @@ mod tests {
     #[test]
     fn rename_refuses_a_taken_empty_or_built_in_name() {
         let mut settings = Settings::default();
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
         settings.summary_prompts.push(custom("o", "One on one"));
 
         assert!(
@@ -957,20 +1001,20 @@ mod tests {
                 .is_err()
         );
         assert!(settings.rename_summary_prompt("missing", "Mine").is_err());
-        assert_eq!(names(&settings), ["Game recap", "One on one"]);
+        assert_eq!(names(&settings), ["Team sync", "One on one"]);
 
         settings
-            .rename_summary_prompt("g", "  Game night ")
+            .rename_summary_prompt("g", "  Team meeting ")
             .unwrap();
         // A change of case on the prompt's own name is not a clash.
         settings.rename_summary_prompt("o", "One On One").unwrap();
-        assert_eq!(names(&settings), ["Game night", "One On One"]);
+        assert_eq!(names(&settings), ["Team meeting", "One On One"]);
     }
 
     #[test]
     fn set_text_refuses_empty_or_too_long_text_and_built_ins() {
         let mut settings = Settings::default();
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
         let before = settings.clone();
 
         assert!(settings.set_summary_prompt_text("g", " \n ").is_err());
@@ -994,7 +1038,7 @@ mod tests {
     fn deleting_the_active_prompt_makes_topic_summary_active() {
         // Covers AE5.
         let mut settings = Settings::default();
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
         settings.summary_prompts.push(custom("o", "One on one"));
         settings.activate_summary_prompt("g").unwrap();
 
@@ -1012,7 +1056,7 @@ mod tests {
     #[test]
     fn activate_accepts_any_known_prompt_and_refuses_an_unknown_id() {
         let mut settings = Settings::default();
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
         settings.activate_summary_prompt(PLAY_BY_PLAY_ID).unwrap();
         assert_eq!(settings.active_summary_prompt, PLAY_BY_PLAY_ID);
         settings.activate_summary_prompt("g").unwrap();
@@ -1024,7 +1068,7 @@ mod tests {
     #[test]
     fn the_list_puts_built_ins_first_and_marks_them_read_only() {
         let mut settings = Settings::default();
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
         settings.active_summary_prompt = "g".into();
         let list = settings.summary_prompt_list();
         let rows: Vec<_> = list
@@ -1037,7 +1081,7 @@ mod tests {
             [
                 (TOPIC_SUMMARY_ID, "Topic summary", true),
                 (PLAY_BY_PLAY_ID, "Play-by-play summary", true),
-                ("g", "Game recap", false),
+                ("g", "Team sync", false),
             ]
         );
         assert_eq!(list.prompts[2].text, "Write a recap.");
@@ -1050,7 +1094,7 @@ mod tests {
     #[test]
     fn the_snapshot_falls_back_to_topic_summary_for_an_unknown_id() {
         let mut settings = Settings::default();
-        settings.summary_prompts.push(custom("g", "Game recap"));
+        settings.summary_prompts.push(custom("g", "Team sync"));
 
         settings.active_summary_prompt = "gone".into();
         assert_eq!(
@@ -1063,7 +1107,7 @@ mod tests {
             settings.active_summary_prompt_snapshot(),
             summarize::Prompt {
                 id: "g".into(),
-                name: "Game recap".into(),
+                name: "Team sync".into(),
                 text: "Write a recap.".into(),
             }
         );

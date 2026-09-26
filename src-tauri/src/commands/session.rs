@@ -726,8 +726,8 @@ mod tests {
             },
             body: "We agreed.".into(),
         };
-        let named = summary_view(complete(Some("Game recap")));
-        assert_eq!(named.prompt.as_deref(), Some("Game recap"));
+        let named = summary_view(complete(Some("Team sync")));
+        assert_eq!(named.prompt.as_deref(), Some("Team sync"));
         assert_eq!(named.host.as_deref(), Some("api.example.com"));
         assert!(summary_view(complete(None)).prompt.is_none());
     }
