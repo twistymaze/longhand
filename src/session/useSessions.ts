@@ -32,9 +32,12 @@ const increment = (ids: string[]) => (v: Record<string, number>) => {
   return next;
 };
 
-export function useSessions(): Sessions & { loaded: boolean; loadError: string | null } {
+export function useSessions(): Sessions & { loaded: boolean; loadError: string | null; listRevision: number; getListRevision: () => number } {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [listRevision, setListRevision] = useState(0);
+  const acceptedRevision = useRef(0);
+  const getListRevision = useCallback(() => acceptedRevision.current, []);
   const request = useRef(0);
   const [entries, setEntries] = useState<SessionEntry[]>([]);
   const [stages, setStages] = useState<Record<string, string>>({});
@@ -50,7 +53,9 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
       const result = await commands.listSessions();
       if (current !== request.current) return;
       if (result.status === "ok") {
+        acceptedRevision.current = current;
         setEntries(result.data);
+        setListRevision(current);
         setLoaded(true);
         setLoadError(null);
       } else {
@@ -110,5 +115,5 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
     };
   }, [refresh, bump]);
 
-  return { entries, loaded, loadError, stages, live, version, synced, removed, refresh };
+  return { entries, loaded, loadError, listRevision, getListRevision, stages, live, version, synced, removed, refresh };
 }

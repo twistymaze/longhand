@@ -81,9 +81,12 @@ function MainWindow() {
       )}
       <div hidden={view.kind === "session"} className="h-full">
         <Home
+          active={view.kind === "home"}
           entries={sessions.entries}
           loaded={sessions.loaded}
           loadError={sessions.loadError}
+          listRevision={sessions.listRevision}
+          getListRevision={sessions.getListRevision}
           revisions={sessions.version}
           stages={sessions.stages}
           recording={recording}

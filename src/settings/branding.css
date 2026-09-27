@@ -1,0 +1,37 @@
+.app-brand {
+  --mark-top: #5b6678;
+  --mark-bottom: #293449;
+  --frame-top: #7b8494;
+  --frame-bottom: #465166;
+  position: relative;
+  display: inline-block;
+}
+
+.app-brand-mark, .app-brand-frame {
+  position: absolute;
+  inset: 0;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+}
+
+.app-brand-mark {
+  mask-image: url("../assets/longhand-mark.svg");
+  background: linear-gradient(to bottom, var(--mark-top) 18%, var(--mark-bottom) 74%);
+  /* Center the original mark in the header outline. App icons retain its placement. */
+  transform: translateY(4%);
+}
+
+.app-brand-frame {
+  mask-image: url("../assets/longhand-frame.svg");
+  background: linear-gradient(to bottom, var(--frame-top), var(--frame-bottom));
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-brand {
+    --mark-top: #f7f1e3;
+    --mark-bottom: #c6bfae;
+    --frame-top: #c2bcaf;
+    --frame-bottom: #79766e;
+  }
+}

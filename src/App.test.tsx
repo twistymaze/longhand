@@ -53,6 +53,7 @@ function mockApp(status: { current: RecordingStatus }, entries: { current: Sessi
     get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
     readiness: () => readiness,
     shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled",
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     recording_status: () => status.current,
@@ -130,6 +131,7 @@ describe("App", () => {
       get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
+      login_item_status: () => "disabled",
       model_statuses: () => [],
       recording_status: () => idle,
       list_sessions: () => entries,
@@ -171,6 +173,7 @@ describe("App", () => {
       },
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
+      login_item_status: () => "disabled",
       model_statuses: () => [],
     });
     render(<App />);
@@ -184,6 +187,7 @@ describe("App", () => {
       get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
+      login_item_status: () => "disabled",
       model_statuses: () => {
         if (fail) throw "the models folder cannot be read";
         return [];

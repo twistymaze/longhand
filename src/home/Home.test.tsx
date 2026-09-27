@@ -5,6 +5,7 @@ import type { SessionDetail, SessionDocument, SessionEntry } from "../bindings";
 import { sessionTitle } from "../processing/describe";
 import { mockTauri } from "../test/tauri";
 import { Home, type RecordingNow } from "./Home";
+import { useSessions } from "../session/useSessions";
 
 const now = new Date(2026, 8, 24, 18, 0);
 
@@ -567,4 +568,164 @@ test("a background refresh does not move focus from New Note", async () => {
   view.rerender(home([...entries, entry("b", { title: "Beta" })], { readiness: ready }));
   await act(async () => {});
   expect(globalThis.document.activeElement).toBe(button);
+});
+
+test("arrow navigation starts from the selected note when the page has focus", async () => {
+  previewMocks();
+  render(home([entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })]));
+  const user = userEvent.setup();
+  expect(globalThis.document.activeElement).toBe(globalThis.document.body);
+  await user.keyboard("{ArrowDown}");
+  expect(row("Beta").getAttribute("aria-selected")).toBe("true");
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Beta")));
+  await user.click(screen.getByRole("heading", { name: "Notes" }));
+  expect(globalThis.document.activeElement).toBe(globalThis.document.body);
+  await user.keyboard("{ArrowUp}");
+  expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
+});
+
+
+test("page arrow navigation leaves controls, modified keys, and hidden Home alone", async () => {
+  previewMocks();
+  const entries = [entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })];
+  const view = render(home(entries, { readiness: ready }));
+  const user = userEvent.setup();
+  screen.getByRole("button", { name: "New Note" }).focus();
+  await user.keyboard("{ArrowDown}");
+  expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
+  await user.click(screen.getByRole("heading", { name: "Notes" }));
+  await user.keyboard("{Shift>}{ArrowDown}{/Shift}");
+  expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
+  view.rerender(home(entries, { active: false }));
+  await user.keyboard("{ArrowDown}");
+  expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
+});
+
+test("a restored note returns after a failed deletion refresh without accepting an older read", async () => {
+  const note = entry("a", { title: "Alpha" });
+  let reads = 0;
+  let finishOld!: (value: SessionEntry[]) => void;
+  let restored = false;
+  const ipc = mockTauri({
+    list_sessions: () => {
+      reads++;
+      if (reads === 1 || restored) return [{ ...note }];
+      if (reads === 2) return new Promise<SessionEntry[]>(resolve => { finishOld = resolve; });
+      throw "Read failed";
+    },
+    session_document: () => document("Summary."),
+    session_detail: () => detail(note, null),
+    delete_session: () => null,
+  });
+  function Library() {
+    const sessions = useSessions();
+    return home(sessions.entries, {
+      loaded: sessions.loaded,
+      loadError: sessions.loadError,
+      listRevision: sessions.listRevision,
+      getListRevision: sessions.getListRevision,
+      revisions: sessions.version,
+      onChanged: () => void sessions.refresh(),
+    });
+  }
+  render(<Library />);
+  await screen.findByRole("option", { name: /Alpha/ });
+  fireEvent(window, new Event("focus"));
+  const user = userEvent.setup();
+  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  await screen.findByText("Could not load notes.");
+  await act(async () => finishOld([note]));
+  expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
+  expect(screen.getByText("Could not load notes.")).toBeTruthy();
+  restored = true;
+  await act(async () => ipc.emit("library-changed", { changed: [note.id], removed: [] }));
+  expect(await screen.findByRole("option", { name: /Alpha/ })).toBeTruthy();
+  expect(screen.queryByText("Could not load notes.")).toBeNull();
+});
+
+test("a preview stays visible during a same-note refresh and reports a later error", async () => {
+  const note = entry("a", { title: "Alpha" });
+  let hold = false;
+  let fail!: (reason: string) => void;
+  mockTauri({
+    session_document: () => hold ? new Promise<SessionDocument>((_, reject) => { fail = reject; }) : document("Current summary."),
+    session_detail: () => detail(note, "/notes/Alpha"),
+  });
+  const view = render(home([note], { revisions: { a: 0 } }));
+  await screen.findByText("Current summary.");
+  hold = true;
+  view.rerender(home([note], { revisions: { a: 1 } }));
+  expect(screen.getByText("Current summary.")).toBeTruthy();
+  expect(screen.queryByText("Loading summary…")).toBeNull();
+  await act(async () => fail("Read failed"));
+  expect(screen.getByText("Could not read this note.")).toBeTruthy();
+  expect(screen.queryByText("Current summary.")).toBeNull();
+});
+
+test("a read accepted during a pending delete cannot end deletion suppression", async () => {
+  const note = entry("a", { title: "Alpha" });
+  let reads = 0;
+  let finishRead!: (value: SessionEntry[]) => void;
+  let finishDelete!: (value: null) => void;
+  let acceptedRevision!: () => number;
+  const ipc = mockTauri({
+    list_sessions: () => {
+      reads++;
+      if (reads === 1 || reads > 3) return [{ ...note }];
+      if (reads === 2) return new Promise<SessionEntry[]>(resolve => { finishRead = resolve; });
+      throw "Read failed";
+    },
+    session_document: () => document("Summary."),
+    session_detail: () => detail(note, null),
+    delete_session: () => new Promise<null>(resolve => { finishDelete = resolve; }),
+  });
+  function Library() {
+    const sessions = useSessions();
+    acceptedRevision = sessions.getListRevision;
+    return home(sessions.entries, {
+      loaded: sessions.loaded,
+      loadError: sessions.loadError,
+      listRevision: sessions.listRevision,
+      getListRevision: sessions.getListRevision,
+      onChanged: () => void sessions.refresh(),
+    });
+  }
+  render(<Library />);
+  await screen.findByRole("option", { name: /Alpha/ });
+  const user = userEvent.setup();
+  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  fireEvent(window, new Event("focus"));
+  await act(async () => {
+    finishRead([note]);
+    // Complete the IPC read while React still batches this operation.
+    for (let step = 0; step < 10; step++) await Promise.resolve();
+    expect(acceptedRevision()).toBe(2);
+    finishDelete(null);
+  });
+  await screen.findByText("Could not load notes.");
+  expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
+  await act(async () => ipc.emit("library-changed", { changed: [note.id], removed: [] }));
+  expect(await screen.findByRole("option", { name: /Alpha/ })).toBeTruthy();
+});
+
+test("a changed note or state never retains the previous summary", async () => {
+  const note = entry("a", { title: "Alpha" });
+  let hold = false;
+  mockTauri({
+    session_document: () => hold ? new Promise<SessionDocument>(() => {}) : document("Alpha summary."),
+    session_detail: () => hold ? new Promise<SessionDetail>(() => {}) : detail(note, null),
+  });
+  const view = render(home([note]));
+  await screen.findByText("Alpha summary.");
+  hold = true;
+  view.rerender(home([entry("b", { title: "Beta" })]));
+  expect(screen.queryByText("Alpha summary.")).toBeNull();
+  expect(screen.getByText("Loading summary…")).toBeTruthy();
+  view.rerender(home([{ ...note, state: "processing" }]));
+  expect(screen.queryByText("Alpha summary.")).toBeNull();
+  expect(screen.queryByText("Loading summary…")).toBeNull();
 });

@@ -16,8 +16,11 @@ export type { RecordingNow };
 
 export function Home({
   entries,
+  active = true,
   loaded = true,
   loadError = null,
+  listRevision = 0,
+  getListRevision,
   revisions = {},
   stages,
   recording,
@@ -28,8 +31,11 @@ export function Home({
   now,
 }: {
   entries: SessionEntry[];
+  active?: boolean;
   loaded?: boolean;
   loadError?: string | null;
+  listRevision?: number;
+  getListRevision?: () => number;
   revisions?: Record<string, number>;
   stages: Record<string, string>;
   /// The open session: recording, or interrupted.
@@ -44,13 +50,16 @@ export function Home({
   onChanged: () => void;
   now?: Date;
 }) {
-  const [deleted, setDeleted] = useState<Set<string>>(() => new Set());
+  const [deleted, setDeleted] = useState<Map<string, number>>(() => new Map());
+  const latestListRevision = useRef(listRevision);
+  latestListRevision.current = listRevision;
   useEffect(() => {
     setDeleted((ids) => {
-      const remaining = new Set([...ids].filter((id) => entries.some((e) => e.id === id)));
+      // A successful read after deletion is authoritative, including a restored note.
+      const remaining = new Map([...ids].filter(([id, revision]) => revision === listRevision && entries.some((e) => e.id === id)));
       return remaining.size === ids.size ? ids : remaining;
     });
-  }, [entries]);
+  }, [entries, listRevision]);
   const listed = useMemo(() => entries.filter((e) => !deleted.has(e.id)), [entries, deleted]);
   const groups = useMemo(() => groupByDay(listed, now), [listed, now]);
   const order = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
@@ -93,7 +102,9 @@ export function Home({
     titleOf: (entry) => rowTitle(entry, now),
     onDeleted: (entry) => {
       setNotice(null);
-      setDeleted((ids) => new Set([...ids, entry.id]));
+      // Delete can finish after this callback's render or before a queued render.
+      const revision = getListRevision?.() ?? latestListRevision.current;
+      setDeleted((ids) => new Map(ids).set(entry.id, revision));
       onChanged();
     },
     onFailed: (text) => {
@@ -109,6 +120,20 @@ export function Home({
     else requestAnimationFrame(() => newNote.current?.focus());
   }, [deletion.dialog, selected?.id]);
 
+  useEffect(() => {
+    const navigateFromPage = (event: KeyboardEvent) => {
+      if (!active || renamingId || deletion.dialog || list.current?.querySelector('[role="menu"]')) return;
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.target !== document.body && event.target !== document.documentElement) return;
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      if (order.length === 0) return;
+      event.preventDefault();
+      moveSelection(event.key === "ArrowDown" ? 1 : -1);
+    };
+    window.addEventListener("keydown", navigateFromPage);
+    return () => window.removeEventListener("keydown", navigateFromPage);
+  }, [active, order, selected?.id, renamingId, deletion.dialog]);
+
   const record = async () => {
     setStarting(true);
     const result = await commands.startRecording();
@@ -123,10 +148,10 @@ export function Home({
     <div className="flex h-full min-h-0 flex-col">
         <header
           data-tauri-drag-region
-          className="flex shrink-0 items-center gap-2.5 border-b border-separator px-[24px] pt-1 pb-3.5 select-none"
+          className="flex shrink-0 flex-wrap items-center gap-2 border-b border-separator px-[24px] pt-1 pb-3.5 select-none"
         >
-          <AppIcon className="pointer-events-none size-8 drop-shadow-[0_1px_1.5px_rgb(0_0_0/0.18)] dark:drop-shadow-[0_0_0.5px_rgb(255_255_255/0.55)]" />
-          <span data-tauri-drag-region className="min-w-0 flex-1 text-[0.95rem] font-semibold tracking-[-0.01em]">
+          <AppIcon className="pointer-events-none size-10" />
+          <span data-tauri-drag-region className="min-w-0 flex-1 text-[2rem] leading-[1.1] font-semibold tracking-[-0.02em]">
             Longhand
           </span>
           {readiness && !recording && (

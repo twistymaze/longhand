@@ -36,7 +36,8 @@ export function PreviewPanel({
   // A rename can move the folder, and a save gives the summary, so a new
   // title or a new state reads the session again.
   const key = `${id}\n${entry.title ?? ""}\n${entry.state}\n${revision}`;
-  const [loaded, setLoaded] = useState<{ key: string; value: Loaded } | null>(null);
+  const state = entry.state;
+  const [loaded, setLoaded] = useState<{ id: string; state: string; value: Loaded } | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -50,16 +51,17 @@ export function PreviewPanel({
         error: doc?.status === "error" || detail.status === "error",
         folder: detail.status === "ok" ? detail.data.home_path : null,
       };
-      if (current) setLoaded({ key, value });
+      if (current) setLoaded({ id, state, value });
     }).catch(() => {
-      if (current) setLoaded({ key, value: { overview: null, folder: null, error: true } });
+      if (current) setLoaded({ id, state, value: { overview: null, folder: null, error: true } });
     });
     return () => {
       current = false;
     };
-  }, [key, id, saved]);
+  }, [key, id, saved, state]);
 
-  const shown = loaded?.key === key ? loaded.value : null;
+  // Keep the current preview during a refresh, but never across notes or states.
+  const shown = loaded?.id === id && loaded.state === state ? loaded.value : null;
   const tone = entryTone(entry.state) ?? "neutral";
 
   return (
