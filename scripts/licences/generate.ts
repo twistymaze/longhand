@@ -5,7 +5,7 @@
 //   - cargo-about, run once for each target (about.toml), for the Rust crates;
 //   - licences/generated/js-packages.json, which `bun run build` writes, for the
 //     interface packages;
-//   - licences/native/manifest.json, for what no tool can read.
+//   - licences/manifest.json, for what no tool can read.
 //
 //   bun scripts/licences/generate.ts [--js-packages <file>]
 
@@ -123,7 +123,7 @@ function jsComponents(
 ): LicensedComponent[] {
   for (const name of Object.keys(replacements)) {
     if (!packages.some((pkg) => pkg.name === name)) {
-      fail(`the build does not include ${name}; remove its packageLicences entry from licences/native/manifest.json`);
+      fail(`the build does not include ${name}; remove its packageLicences entry from licences/manifest.json`);
     }
   }
   return packages.flatMap((pkg) => {
@@ -157,7 +157,7 @@ function checkNpmVersions(manifest: Manifest): void {
 
 function checkOrtVersion(about: CargoAboutOutput, manifest: Manifest): void {
   const ortSys = about.crates.find((c) => c.package.name === "ort-sys");
-  if (!ortSys) fail("ort-sys is not in the cargo-about output; review the ONNX Runtime entries in licences/native/manifest.json");
+  if (!ortSys) fail("ort-sys is not in the cargo-about output; review the ONNX Runtime entries in licences/manifest.json");
   const distFile = join(dirname(ortSys.package.manifest_path), "dist.txt");
   if (!existsSync(distFile)) fail(`ort-sys ${ortSys.package.version} has no dist.txt`);
   try {
@@ -184,7 +184,7 @@ function main(): void {
   const packages = JSON.parse(readFileSync(jsFile, "utf8")) as JsPackage[];
   if (packages.length === 0) fail(`${jsFile} lists no packages; check rollup-plugin-license in vite.config.ts`);
 
-  const manifest = JSON.parse(readFileSync(join(ROOT, "licences/native/manifest.json"), "utf8")) as Manifest;
+  const manifest = JSON.parse(readFileSync(join(ROOT, "licences/manifest.json"), "utf8")) as Manifest;
   const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
   checkNpmVersions(manifest);
   const js = jsComponents(packages, manifest.packageLicences ?? {}, read);

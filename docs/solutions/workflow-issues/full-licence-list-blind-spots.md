@@ -2,7 +2,7 @@
 title: What the full licence list's tools cannot see, and the checks that cover each gap
 date: 2026-09-26
 category: workflow-issues
-module: Full licence list generator (scripts/licences/generate.ts, scripts/licences/group.ts, licences/native/manifest.json, scripts/check-licences.sh)
+module: Full licence list generator (scripts/licences/generate.ts, scripts/licences/group.ts, licences/manifest.json, scripts/check-licences.sh)
 problem_type: workflow_issue
 component: development_workflow
 related_components:
@@ -37,7 +37,7 @@ The About pane's full licence list (PR #13) is stored per platform in `licences/
 
 - cargo-about 0.9.2, once for each target, for the Rust crates;
 - rollup-plugin-license in `vite.config.ts`, for the JavaScript packages in the bundle;
-- the hand-kept `licences/native/manifest.json`, for everything else.
+- the hand-kept `licences/manifest.json`, for everything else.
 
 A drift check only proves that the list matches what the tools see. Four gaps showed up in this work where a tool sees nothing, or sees the wrong thing, and the check still passes. Three have a check now. One does not.
 
@@ -45,7 +45,7 @@ A drift check only proves that the list matches what the tools see. Four gaps sh
 
 **1. cargo-about reports a changed licence file only as a warning.** A `[[<crate>.clarify]]` entry in `about.toml` records a checksum for each vendored licence file. When the file changes, cargo-about 0.9.2 prints a `[WARN]` line (with colour codes, even when stderr is not a terminal), uses the files it finds itself, and exits 0. The generator strips the colour codes and fails on any `[WARN]` or `[ERROR]` line: `cargoAboutProblems` at `scripts/licences/group.ts:341`, called at `scripts/licences/generate.ts:86`. Tests in `group.test.ts` use the real line format. During the review, a checksum was changed by hand and cargo-about was run: the check caught the warning.
 
-**2. cargo-about does not see Longhand's own crates.** It lists third-party crates only. A file that a workspace crate compiles in with `include_bytes!` is invisible to it. In PR #12, `crates/aec/src/onnx/model.rs:3-4` started to compile in the two DTLN-aec models (MIT, Nils L. Westhausen, recorded in `crates/aec/PROVENANCE.md`). The list gained no entry, and nothing failed. The gap was found only by reading the rebase diff. The fix was a hand-kept native entry (`licences/native/manifest.json:69`) and a curated About row. **No check covers this gap yet.** When a workspace crate adds a bundled model, weights or another vendored file, add a native entry. `PROVENANCE.md` already names the licence, so copy it from there. (`src-tauri/src/tray.rs:17` also uses `include_bytes!`, for Longhand's own tray icon, which needs no entry.)
+**2. cargo-about does not see Longhand's own crates.** It lists third-party crates only. A file that a workspace crate compiles in with `include_bytes!` is invisible to it. In PR #12, `crates/aec/src/onnx/model.rs:3-4` started to compile in the two DTLN-aec models (MIT, Nils L. Westhausen, recorded in `crates/aec/PROVENANCE.md`). The list gained no entry, and nothing failed. The gap was found only by reading the rebase diff. The fix was a hand-kept native entry (`licences/manifest.json:69`) and a curated About row. **No check covers this gap yet.** When a workspace crate adds a bundled model, weights or another vendored file, add a native entry. `PROVENANCE.md` already names the licence, so copy it from there. (`src-tauri/src/tray.rs:17` also uses `include_bytes!`, for Longhand's own tray icon, which needs no entry.)
 
 **3. An npm package can ship only SPDX metadata.** `@tauri-apps/plugin-opener` includes `LICENSE.spdx` and no licence text. rollup-plugin-license passes that file as `licenseText`, so the list showed an SPDX record where the terms belong. `isSpdxMetadata` (`group.ts:285`) finds such a text. `packageLicenceTexts` (`group.ts:295`) swaps in the files that `packageLicences` in the manifest names, and fails when there is no replacement or when its version does not match. For the opener, the replacement files come from the `tauri-plugin-opener` crate of the same version and repository.
 
@@ -67,7 +67,7 @@ A bundled model with no native entry passes today:
 
 ```
 crates/aec/src/onnx/model.rs:3  include_bytes!("../../data/model_128_1.onnx")
-licences/native/manifest.json   (no DTLN-aec entry)
+licences/manifest.json   (no DTLN-aec entry)
 scripts/check-licences.sh       licences ok
 ```
 
@@ -80,7 +80,7 @@ The native entry that closes it:
   "part": "native",
   "note": "compiled into the app",
   "platforms": ["macos", "windows"],
-  "files": ["LICENSES/DTLN-aec-MIT.txt"],
+  "files": ["licences/sources/DTLN-aec-MIT.txt"],
   "source": "https://github.com/breizhn/DTLN-aec"
 }
 ```
