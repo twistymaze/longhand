@@ -8,6 +8,30 @@ export const commands = {
 async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
+async loginItemStatus() : Promise<Result<LoginItemStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("login_item_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setLoginItem(enabled: boolean) : Promise<Result<LoginItemStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_login_item", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async openLoginItemSettings() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_login_item_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Serialize zoom changes off the main thread, which native webviews use.
  */
@@ -857,6 +881,7 @@ export type LiveTranscriptStatus = { session_id: string; segment: number; state:
  * (KTD10).
  */
 export type LoadedNotes = { markdown: string; fingerprint: string }
+export type LoginItemStatus = "disabled" | "enabled" | "approval_required" | "unavailable"
 /**
  * The usual microphone (R1, KTD1): cpal's stable device ID, with the device
  * name as its label, so Settings can name a microphone that is not

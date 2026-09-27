@@ -126,6 +126,7 @@ async function open({
       endpoint_configured: false,
     }),
     shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled",
     model_statuses: () => catalog(state.settings.asr_model, state.states),
     speaker_models_status: () => {
       const weights = [SEGMENTATION, EMBEDDING];

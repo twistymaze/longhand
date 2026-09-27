@@ -1,4 +1,5 @@
 mod audio;
+mod autostart;
 mod commands;
 mod interface_zoom;
 mod managers;
@@ -22,6 +23,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::settings::get_settings,
+            commands::settings::login_item_status,
+            commands::settings::set_login_item,
+            commands::settings::open_login_item_settings,
             commands::settings::change_interface_zoom,
             commands::settings::set_endpoint_base_url,
             commands::settings::set_endpoint_model,
@@ -168,8 +172,10 @@ pub fn run() {
     let builder = tauri::Builder::default()
         // First, so a second launch goes no further than fronting this one
         // (R34, AE21).
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            window::show_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !autostart::background_request(&args) {
+                window::show_main_window(app);
+            }
         }))
         .plugin(
             // onnxruntime logs every graph pass at INFO; left in, it rotates
@@ -182,9 +188,8 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_store::Builder::default().build())
-        // The main window opens at the size and place it had when the app
-        // quit. The Settings and licences windows open at their own sizes,
-        // centred.
+        // Restore the main and Settings windows to their saved size and position.
+        // The licences window keeps its centred default.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -192,7 +197,7 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&[window::SETTINGS_WINDOW, window::LICENCES_WINDOW])
+                .with_denylist(&[window::LICENCES_WINDOW])
                 .build(),
         )
         // The About pane opens the acknowledged projects' pages in the
@@ -203,8 +208,18 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_macos_permissions::init());
 
-    let app = builder
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(
+        tauri_plugin_autostart::Builder::new()
+            .args([autostart::LOGIN_ARGUMENT])
+            .build(),
+    );
+
+    #[allow(unused_mut)]
+    let mut app = builder
         .setup(move |app| {
+            let launch_reason = autostart::launch_reason();
+            log::info!("startup launch reason: {launch_reason:?}");
             specta_builder.mount_events(app);
 
             let handle = app.handle().clone();
@@ -280,13 +295,20 @@ pub fn run() {
             // After the tray exists, so the restored alert can mark it.
             alerts.restore(&handle, &capture);
 
-            window::show_main_window(&handle);
+            if launch_reason == autostart::LaunchReason::Manual {
+                window::show_main_window(&handle);
+            }
             Ok(())
         })
         .on_window_event(window::on_window_event)
         .invoke_handler(invoke_handler)
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
+
+    // Before the event loop, as Handy does. An ordinary show promotes the
+    // app to Regular; a login launch never acquires a Dock icon first.
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
     app.run(|app, event| match event {
         // Stop the live workers and free the recognition engine before
@@ -302,7 +324,9 @@ pub fn run() {
         tauri::RunEvent::Reopen { .. } => {
             // Launching the running bundle again (Finder, Spotlight, Dock) is a
             // request to see the window it hid on close.
-            window::show_main_window(app);
+            if !autostart::background_request(&[]) {
+                window::show_main_window(app);
+            }
         }
         _ => {}
     });

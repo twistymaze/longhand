@@ -60,6 +60,7 @@ async function open({
       endpoint_configured: false,
     }),
     shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled",
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     list_microphones: () => state.microphones,

@@ -149,6 +149,18 @@ pub fn open_settings(app: &AppHandle) {
     tauri::async_runtime::spawn_blocking(move || open_settings_window(&app));
 }
 
+fn settings_initial_size(percent: u16, work_area: Option<tauri::LogicalSize<f64>>) -> (f64, f64) {
+    let Some(area) = work_area else {
+        return (760.0, 540.0);
+    };
+    let scale = (f64::from(crate::interface_zoom::normalize(percent)) / 100.0).max(1.0);
+    // Leave room for the title bar and screen edges. Saved geometry takes precedence.
+    (
+        (760.0 * scale).min((area.width - 32.0).max(640.0)),
+        (540.0 * scale).min((area.height - 64.0).max(440.0)),
+    )
+}
+
 fn open_settings_window(app: &AppHandle) {
     let opened = open_or_build(
         app.get_webview_window(SETTINGS_WINDOW),
@@ -160,6 +172,12 @@ fn open_settings_window(app: &AppHandle) {
             crate::zoom::stop_zoom_of_windows_that_cannot_maximize();
             SETTINGS_OPENS.opened();
             crate::interface_zoom::build(app, |percent| {
+                let monitor = app
+                    .get_webview_window(MAIN_WINDOW)
+                    .and_then(|window| window.current_monitor().ok().flatten())
+                    .or_else(|| app.primary_monitor().ok().flatten());
+                let work_area = monitor.map(|m| m.work_area().size.to_logical(m.scale_factor()));
+                let (width, height) = settings_initial_size(percent, work_area);
                 WebviewWindowBuilder::new(
                     app,
                     SETTINGS_WINDOW,
@@ -169,7 +187,7 @@ fn open_settings_window(app: &AppHandle) {
                 .zoom_hotkeys_enabled(false)
                 .initialization_script(crate::interface_zoom::initialization(percent))
                 .title("Settings")
-                .inner_size(760.0, 540.0)
+                .inner_size(width, height)
                 .min_inner_size(640.0, 440.0)
                 .maximizable(false)
                 .minimizable(false)
@@ -359,6 +377,17 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn new_settings_windows_allow_for_zoom_without_exceeding_the_work_area() {
+        let large = Some(tauri::LogicalSize::new(2560.0, 1440.0));
+        assert_eq!(settings_initial_size(100, large), (760.0, 540.0));
+        assert_eq!(settings_initial_size(150, large), (1140.0, 810.0));
+        assert_eq!(settings_initial_size(50, large), (760.0, 540.0));
+        let laptop = Some(tauri::LogicalSize::new(1280.0, 800.0));
+        assert_eq!(settings_initial_size(200, laptop), (1248.0, 736.0));
+        assert_eq!(settings_initial_size(200, None), (760.0, 540.0));
+    }
 
     /// A stand-in for the app's window set: a second open call focuses the
     /// window the first call built.
