@@ -66,6 +66,9 @@ A part of a stereo segment where the microphone holds echo of the system audio. 
 ### Recognition model
 The model that turns speech into text. The user selects one recognition model in Settings from the catalog of nine. A session records its recognition model when recording starts and keeps it through processing. The speaker-detection weights are not recognition models: the user does not select them, and the UI shows them as one item, "Other required models".
 
+### Speaker recognition
+The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A transcription model can supply labels itself, or a separate speaker model can supply a timeline to join with the text.
+
 ### Live transcript
 The text that a streaming recognition model makes during recording. It shows in the Transcript tab. A live transcript runs only when the session's recognition model streams and the Live transcript switch is on; the session records this live mode when recording starts. The text of the live transcript is final: processing after Stop does not transcribe it again.
 

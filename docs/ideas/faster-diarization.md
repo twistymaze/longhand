@@ -1,6 +1,6 @@
 ---
 title: Faster diarization
-status: open
+status: in-progress
 area: processing
 added: 2026-09-26
 source: "The user, during the PR #12 review of stereo processing"
@@ -15,8 +15,8 @@ Make the Diarize stage much faster, so that a long note is ready soon after Stop
 ## Why
 The user reports that diarization is too slow now. [Per-channel processing](per-channel-processing.md) would diarize two full-length channels, which doubles the cost, so this work comes first.
 
-## Notes
-- Needs its own plan. Start by measuring where the time goes, stage by stage, on a real long note (embedding, clustering, windows).
-- Related options already recorded:
-  - [alternative diarization architectures](alternative-diarization-architectures.md), such as models that report speaker labels during recognition;
-  - [a diarization evaluation loop](diarization-evaluation-loop.md), so that a faster path is not also a worse one.
+## Current state
+
+The [flexible speaker recognition plan](../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md) covers accelerated embeddings, recognition during recording, and user-selected model routes. The preferred target is a usable transcript and summary within two minutes after a three-hour recording stops on the intended laptop. Slower choices remain available.
+
+A five-minute M3 Ultra probe reduced existing-pipeline analysis from 60.547 seconds on CPU to 9.200 seconds with Core ML embeddings. This does not establish full-note or laptop performance. Focused long-recording checks are in scope; an accuracy leaderboard is not.

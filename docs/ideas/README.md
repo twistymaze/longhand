@@ -68,7 +68,7 @@ This folder is our own convention, not something compound engineering defines, s
 | [Custom vocabulary per folder](custom-vocabulary.md) | open | A word list that corrects names and jargon |
 | [Carry context from the previous session](session-to-session-context.md) | open | "Previously on" for recurring sessions |
 | [A diarization evaluation loop](diarization-evaluation-loop.md) | open | Measure speaker turns on real sessions, repeatedly |
-| [Alternative diarization architectures](alternative-diarization-architectures.md) | parked | MOSS or Sortformer, or speaker labels from the recognition model |
+| [Alternative diarization architectures](alternative-diarization-architectures.md) | in-progress | Integrated model labels and separate NeMo or pyannote speaker models |
 | [Transcript review and correction](transcript-review-and-correction.md) | open | Seek, merge and split turns, fix mangled names |
 
 ## Processing
@@ -78,7 +78,8 @@ This folder is our own convention, not something compound engineering defines, s
 | [Schedule processing around power and thermals](power-aware-processing.md) | open | Wait for idle and plugged in before heavy compute |
 | [Follow-ups from the live transcript review](live-transcript-review-follow-ups.md) | open | Eight small residual risks from the PR #8 review; a stuck live-model mark and a lost re-pick first |
 | [Process each channel of a stereo note on its own](per-channel-processing.md) | open | Recognize and diarize room and call separately, in place of the fragile mono mix |
-| [Faster diarization](faster-diarization.md) | open | Diarize is too slow now; comes before per-channel processing |
+| [Faster diarization](faster-diarization.md) | in-progress | Acceleration and recognition during recording; comes before per-channel processing |
+| [Prevent sleep during processing](prevent-sleep-during-processing.md) | in-progress | Keep active processing running through idle and screen lock |
 
 ## Library and sharing
 
@@ -92,6 +93,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
+| [Model capabilities and speaker options](model-capabilities-and-speaker-options.md) | in-progress | Show live support, speaker limits, and published assessments; defaults and per-note choices |
 | [Library and desktop UI polish](ui-polish.md) | in-progress | Stable note selection, keyboard zoom, login startup, and a shared vector mark |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 | [Clickable links in notes](clickable-links-in-notes.md) | open | Open a link in a note's markdown in the default browser |

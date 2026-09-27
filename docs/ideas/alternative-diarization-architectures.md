@@ -1,17 +1,20 @@
 ---
 title: Alternative diarization architectures
-status: parked
+status: in-progress
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"
-related: [diarization-evaluation-loop]
+related: [diarization-evaluation-loop, faster-diarization, model-capabilities-and-speaker-options]
 ---
 
 # Alternative diarization architectures
 
 ## Idea
-If the pyannote path disappoints: MOSS does joint transcription and diarization with no speaker ceiling; Sortformer runs as a separate speaker track joined against a strong transcription model.
 
-## Notes
-Both have caveats recorded in `docs/reference/borrowing-notes.md`. Parked until an evaluation shows the current path falling short.
-- `transcribe-cpp` 0.2.3 already reports speaker labels for models that produce them (`Feature::Diarization`: MOSS, Sortformer). Handy's catalog also has Multitalker Parakeet Streaming. The recognition-model plan (`docs/plans/2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md`, KD4) adds MOSS Transcribe Diarize and Multitalker Parakeet as recognizers only. Their own speaker labels are the next step.
+Offer model-provided speaker labels and separate speaker models, plus an off option. Keep runtime selection inside Longhand.
+
+## Current state
+
+The [flexible speaker recognition plan](../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md) covers MOSS, the speaker-capable Multitalker bundle, and the new Granite Speech 4.1 2B Plus catalog entry. Separate choices include Nemotron 3 Diarization, Sortformer, and the existing pyannote/WeSpeaker pipeline.
+
+Planning compares combined NeMo-Speech.cpp transcription and speaker recognition with transcribe.cpp transcription plus separate NeMo speaker analysis. Both approaches are in scope. No maintained transcribe.cpp fork is planned. User-facing text calls this "speaker recognition"; named speaker identity remains outside scope.
