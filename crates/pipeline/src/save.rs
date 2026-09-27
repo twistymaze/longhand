@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, FixedOffset};
 
 use library::refresh::Scope;
+use library::scan::{READ_TIMEOUT, Read, read_timed};
 use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
-use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store};
+use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
 
 use crate::folder_rename::{self, FolderRename};
@@ -578,13 +579,23 @@ fn record_transcript_fingerprint(
 }
 
 /// The fingerprint of the file `name` in `folder`, or `None` when the file
-/// is not there.
+/// is not there. The read has a timeout, because a synced folder can hold
+/// a file that does not download.
 fn fingerprint_of(folder: &Path, name: &str) -> Result<Option<String>, StageError> {
-    match std::fs::read(folder.join(name)) {
-        Ok(bytes) => Ok(Some(folder::fingerprint(&bytes))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+    let path = folder.join(name);
+    match read_timed(path.clone(), READ_TIMEOUT) {
+        Read::Bytes(bytes) => Ok(Some(folder::fingerprint(&bytes))),
+        Read::Missing => Ok(None),
+        Read::Failed(why) => Err(unreadable(&path, &why)),
     }
+}
+
+/// The error for a file in the storage folder that cannot be read.
+fn unreadable(path: &Path, why: &str) -> StageError {
+    StageError::Failed(format!(
+        "the storage folder is not available: {} cannot be read: {why}",
+        path.display()
+    ))
 }
 
 /// After the save records `Done`: the save used the folder name it
@@ -717,9 +728,17 @@ pub fn save_notes(
         .home_path
         .map(PathBuf::from)
         .filter(|home| saved || home.is_dir());
+    // A `notes.md` that cannot be read in time is not replaced: this
+    // computer cannot tell what it holds, so the edit goes into a draft.
     if let (Some(home), Some(loaded)) = (&home, loaded)
-        && let Some(current) = fingerprint_of(home, NOTES_FILE)?
-        && current != loaded
+        && match read_timed(home.join(NOTES_FILE), READ_TIMEOUT) {
+            Read::Bytes(bytes) => folder::fingerprint(&bytes) != loaded,
+            Read::Missing => false,
+            Read::Failed(why) => {
+                log::warn!("cannot read the notes of {session_id}: {why}");
+                true
+            }
+        }
     {
         let draft = write_draft(home, document)?;
         log::info!(
@@ -804,7 +823,9 @@ fn summarize_again(
         (home, guard.segments(session_id)?)
     };
     // A stub resumes from the calls made before the failure, but only when
-    // they were made with the active prompt's text (KTD5). A complete
+    // they were made with the active prompt's text (KTD5), and from the
+    // transcript and the notes that the folder holds now
+    // ([`summarize::INPUT`]). A complete
     // summary, or a stub made with another prompt or with no saved prompt,
     // starts over. The title call always runs again, so a new proposal
     // follows (R31). A title that the user set stays.
@@ -835,6 +856,10 @@ fn summarize_again(
     let path = {
         let guard = lock(store);
         let path = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        // The model calls can take long. A user title that another
+        // computer wrote in the meantime goes into the row first, so the
+        // `session.md` below keeps it.
+        keep_folder_user_title(&guard, session_id, &path)?;
         home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
         // `session.md` follows with the new fingerprint (KTD2). The summary
         // is saved, so a failure here does not fail the regeneration: the
@@ -855,6 +880,44 @@ fn summarize_again(
     guard.clear_summary_not_updated(session_id)?;
     guard.apply(session_id, &Event::SavedEdit)?;
     Ok(path.join(SUMMARY_FILE))
+}
+
+/// Store the user title of the `session.md` in `folder` as the row's
+/// title, when the row has another title. A title that the folder gives
+/// with no source is the user's when it is not the stored one (R5). Only a
+/// user title is taken: a proposed title in the folder is older than the
+/// proposal that the regeneration stored. A `session.md` that cannot be
+/// read or parsed changes nothing. The caller holds the store lock.
+fn keep_folder_user_title(
+    store: &Store,
+    session_id: &str,
+    folder: &Path,
+) -> Result<(), StageError> {
+    let Read::Bytes(bytes) = read_timed(folder.join(SESSION_FILE), READ_TIMEOUT) else {
+        return Ok(());
+    };
+    let Some(doc) = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| SessionDoc::parse(text).ok())
+    else {
+        return Ok(());
+    };
+    let Some(text) = doc
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    else {
+        return Ok(());
+    };
+    let stored = store.title(session_id)?;
+    if stored.as_ref().is_some_and(|t| t.text == text) {
+        return Ok(());
+    }
+    if matches!(doc.title_source, None | Some(TitleSource::User)) {
+        store.set_title(session_id, text, TitleSource::User)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

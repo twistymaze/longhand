@@ -54,17 +54,22 @@ pub fn rename_session(
     crate::follow::follow_folder(&mut guard, session_id, claimed)?;
     guard.set_title(session_id, title, TitleSource::User)?;
     let renamed = reconcile(&guard, session_id, claimed, true, fs)?;
-    if renamed == FolderRename::Later {
+    // A folder that moves later, or that keeps its name because the move
+    // failed, gets the title in its `session.md` now. Otherwise the next
+    // library refresh reads the old title and puts it back in the row.
+    if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
         write_title(&guard, session_id);
     }
     Ok(renamed)
 }
 
-/// Write the stored title into the `session.md` of a busy session's
-/// folder, which takes its new name later. A writer that follows the
-/// folder in the meantime (KTD3) then reads this title, not the old one.
-/// A folder that is not there, or a `session.md` that cannot be read or
-/// written, is logged: the reconcile after the work writes the document.
+/// Write the stored title into the `session.md` of the session's folder
+/// where it is now: a busy session's folder takes its new name later, and
+/// a folder whose move failed keeps its name. A writer or a library
+/// refresh that follows the folder in the meantime (KTD3) then reads this
+/// title, not the old one. A folder that is not there, or a `session.md`
+/// that cannot be read or written, is logged: the reconcile after the
+/// work writes the document.
 fn write_title(store: &Store, session_id: &str) {
     let Ok(Some(record)) = store.session(session_id) else {
         return;
@@ -72,6 +77,13 @@ fn write_title(store: &Store, session_id: &str) {
     let Some(home) = record.home_path.as_deref().map(Path::new) else {
         return;
     };
+    write_title_in(&record, home);
+}
+
+/// Write the title of `record` into the `session.md` in `home`, and change
+/// nothing else in the document. Nothing is written when the document
+/// holds the title.
+fn write_title_in(record: &SessionRecord, home: &Path) {
     let Some(mut doc) = read_document(home) else {
         return;
     };
@@ -256,9 +268,10 @@ fn settle(
 
 /// Steps 3 and 4 of the rename: rewrite `session.md` in the folder at
 /// `path`, set `home_path`, then clear the intent. Each step can run
-/// again. A `session.md` that cannot be written does not stop the rename,
-/// because the folder has moved: the next reconcile with the document
-/// check writes it.
+/// again. A `session.md` that cannot be rewritten does not stop the
+/// rename, because the folder has moved: the title then goes into the
+/// document as it is, so that a library refresh keeps the title, and the
+/// next reconcile with the document check writes the rest.
 fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), StageError> {
     let segments = store.segments(&record.id)?;
     if let Err(e) = write_document(record, &segments, path) {
@@ -266,6 +279,7 @@ fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), Stag
             "could not rewrite {SESSION_FILE} in {}: {e}",
             path.display()
         );
+        write_title_in(record, path);
     }
     store.set_home_path(&record.id, &path.to_string_lossy())?;
     store.clear_rename_intent(&record.id)?;

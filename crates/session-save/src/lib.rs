@@ -166,7 +166,7 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
                     });
                 }
                 return Err(SaveError::Lost(format!(
-                    "the working copy at {} is gone and the destination holds no staged copy",
+                    "the working copy at {} is gone and the storage folder holds no staged copy",
                     job.working.display()
                 )));
             }

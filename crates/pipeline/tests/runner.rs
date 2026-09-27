@@ -4731,3 +4731,132 @@ async fn a_notes_save_over_a_file_that_another_computer_changed_writes_a_draft_b
     );
     assert_eq!(read(&folder, "notes.md"), "- both notes\n");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_save_over_a_file_that_cannot_be_read_writes_a_draft_and_keeps_the_file() {
+    use pipeline::save::{notes_fingerprint, save_notes};
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let mut s = a.store.lock().unwrap();
+    let loaded = notes_fingerprint(&s.notes("s").unwrap());
+    // A `notes.md` that cannot be read, as a file that does not download.
+    std::fs::remove_file(folder.join("notes.md")).unwrap();
+    std::fs::create_dir(folder.join("notes.md")).unwrap();
+
+    let NotesSave::Conflict { draft } =
+        save_notes(&mut s, "s", "- my notes\n", Some(&loaded)).unwrap()
+    else {
+        panic!("no conflict");
+    };
+    assert!(folder.join("notes.md").is_dir());
+    assert_eq!(std::fs::read_to_string(&draft).unwrap(), "- my notes\n");
+    assert_eq!(draft.parent(), Some(folder.as_path()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_with_a_transcript_that_cannot_be_read_names_the_storage_folder() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let summary = read(&folder, "summary.md");
+    std::fs::remove_file(folder.join(TRANSCRIPT_FILE)).unwrap();
+    std::fs::create_dir(folder.join(TRANSCRIPT_FILE)).unwrap();
+
+    let error = a.runner.regenerate_summary("s").await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("the storage folder is not available"),
+        "{error}"
+    );
+    assert_eq!(read(&folder, "summary.md"), summary);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_whose_folder_move_fails_keeps_the_title_after_a_library_scan() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let fs = AlwaysInUse(AtomicUsize::new(0));
+    let result =
+        folder_rename::rename_session(&r.store, "s", "Budget review", &|_| false, &fs).unwrap();
+    assert!(matches!(result, FolderRename::Kept(_)), "{result:?}");
+    assert_eq!(document_title(&old).as_deref(), Some("Budget review"));
+
+    sync(&r, &r.dest);
+    assert_eq!(
+        title_of(&r),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User,
+        })
+    );
+    // The launch reconcile then moves the folder.
+    folder_rename::reconcile_saved(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_another_computer_replaced_the_transcript_makes_every_call_again()
+{
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five(&r).await;
+    let folder = path.parent().unwrap().to_path_buf();
+
+    // Another computer replaces `transcript.md`, and its `session.md`
+    // records the new fingerprint.
+    let mut transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE)).unwrap();
+    for line in &mut transcript.lines {
+        if let TranscriptLine::Turn { text, .. } = line {
+            *text = format!("{text} REMOTE-MARKER");
+        }
+    }
+    let rendered = transcript.render();
+    std::fs::write(folder.join(TRANSCRIPT_FILE), &rendered).unwrap();
+    edit_session_md(&folder, |doc| {
+        doc.transcript_fingerprint = Some(session_core::folder::fingerprint(rendered.as_bytes()));
+    });
+    sync(&r, &r.dest);
+
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    // The regeneration starts at part 1 again, from the new text.
+    let again = &calls[5..];
+    assert!(
+        again[0].contains("<transcript part=\"1\">"),
+        "{}",
+        &again[0][..80]
+    );
+    assert!(calls[..5].iter().all(|c| !c.contains("REMOTE-MARKER")));
+    assert!(again.iter().any(|c| c.contains("REMOTE-MARKER")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_keeps_a_user_title_that_another_computer_wrote_during_its_calls() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let written = Arc::new(AtomicUsize::new(0));
+    let at = folder.clone();
+    let reply = http::Reply::With(Arc::new(move |_| {
+        // Another computer sets the title while the call runs.
+        if written.fetch_add(1, Ordering::SeqCst) == 0 {
+            edit_session_md(&at, |doc| {
+                doc.title = Some("Budget review".into());
+                doc.title_source = Some(TitleSource::User);
+            });
+        }
+        (200, http::completion("A new summary."))
+    }));
+    summaries_from(&a, reply, None).await;
+
+    a.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(
+        title_of(&a),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User,
+        })
+    );
+    let renamed = saved_folder(&a, "s");
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+    assert_eq!(session_md(&renamed).title.as_deref(), Some("Budget review"));
+    assert!(read(&renamed, "summary.md").contains("A new summary."));
+}

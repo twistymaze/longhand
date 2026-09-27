@@ -17,6 +17,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, Stage, TitleSource};
@@ -47,6 +48,10 @@ shorten the prompt in Settings or choose a model with a larger context";
 /// The proposed title, a string, once the title call has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
+/// The fingerprint of the transcript and the notes that the cached calls
+/// were made from, a string. A run whose input has another fingerprint
+/// makes every call again.
+pub const INPUT: &str = "input";
 /// How far a context rejection shrinks the budget, and the floor below
 /// which a model is too small to summarize with.
 const SHRINK: f64 = 0.7;
@@ -118,17 +123,43 @@ fn call_key(layer: usize, index: usize) -> String {
 /// final text, so the turns are the same on every computer, also on one
 /// that has no recognition results for the note.
 pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
+    turns_of(folder, &read_transcript(folder)?)
+}
+
+/// The text of the `transcript.md` in `folder`.
+fn read_transcript(folder: &Path) -> Result<String, StageError> {
     let path = folder.join(TRANSCRIPT_FILE);
-    let text = std::fs::read_to_string(&path).map_err(|e| {
+    // The read has a timeout: a synced folder can hold a file that does
+    // not download.
+    let bytes = match read_timed(path.clone(), READ_TIMEOUT) {
+        Read::Bytes(bytes) => bytes,
+        Read::Missing => {
+            return Err(StageError::Failed(format!(
+                "the transcript {} is not there",
+                path.display()
+            )));
+        }
+        Read::Failed(why) => {
+            return Err(StageError::Failed(format!(
+                "the storage folder is not available: the transcript {} cannot be read: {why}",
+                path.display()
+            )));
+        }
+    };
+    String::from_utf8(bytes).map_err(|e| {
         StageError::Failed(format!(
             "the transcript {} cannot be read: {e}",
             path.display()
         ))
-    })?;
-    let transcript = Transcript::parse(&text).map_err(|e| {
+    })
+}
+
+/// The turns of `text`, the `transcript.md` in `folder`.
+fn turns_of(folder: &Path, text: &str) -> Result<Vec<Turn>, StageError> {
+    let transcript = Transcript::parse(text).map_err(|e| {
         StageError::Failed(format!(
             "the transcript {} is not valid: {e}",
-            path.display()
+            folder.join(TRANSCRIPT_FILE).display()
         ))
     })?;
     Ok(transcript
@@ -147,6 +178,16 @@ pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
             _ => None,
         })
         .collect())
+}
+
+/// The fingerprint of the input to the calls: the transcript text and the
+/// notes document.
+fn input_fingerprint(transcript: &str, notes: &str) -> String {
+    let mut bytes = Vec::with_capacity(transcript.len() + notes.len() + 1);
+    bytes.extend_from_slice(transcript.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(notes.as_bytes());
+    session_core::folder::fingerprint(&bytes)
 }
 
 /// The notes document as it is now. A run reads it once, when it starts,
@@ -239,8 +280,18 @@ pub fn produce(
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
-    let turns = transcript_turns(folder)?;
+    let transcript = read_transcript(folder)?;
+    let turns = turns_of(folder, &transcript)?;
     let notes = session_notes(store, session_id)?;
+    // Cached calls stand only for the transcript and the notes that they
+    // were made from. Another computer can replace `transcript.md`, and
+    // the notes can change, between a failed run and a regeneration.
+    let input = input_fingerprint(&transcript, &notes);
+    let saved = checkpoint::get::<String>(store, session_id, Stage::Summarize, INPUT)?;
+    if saved.as_deref() != Some(input.as_str()) {
+        forget_calls(store, session_id)?;
+        checkpoint::put(store, session_id, Stage::Summarize, INPUT, &input)?;
+    }
     let client = Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),

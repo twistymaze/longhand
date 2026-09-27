@@ -733,12 +733,6 @@ mod tests {
         worker.watches.keys().cloned().collect()
     }
 
-    fn wait_for<T>(received: &Receiver<T>, what: &str) -> T {
-        received
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap_or_else(|_| panic!("no {what} in 10 seconds"))
-    }
-
     #[test]
     fn a_folder_added_under_a_watched_root_emits_its_id() {
         let root = marked_root();
@@ -755,14 +749,23 @@ mod tests {
             fast(),
         )
         .unwrap();
-        // Let FSEvents start the stream before the change.
+        // FSEvents can start the stream after the first change, and then
+        // it reports nothing. Write `session.md` again until a change
+        // arrives, but never run a full scan.
         std::thread::sleep(Duration::from_millis(500));
-        note(root.path(), "2026-09-25 0900 Planning", "A1");
-
-        let mut changes = wait_for(&emitted, "LibraryChanged");
-        while changes.changed.is_empty() {
-            changes = wait_for(&emitted, "LibraryChanged");
+        let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+        let mut changes = None;
+        for _ in 0..5 {
+            match emitted.recv_timeout(Duration::from_secs(2)) {
+                Ok(c) if !c.changed.is_empty() => {
+                    changes = Some(c);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => std::fs::write(dir.join("session.md"), doc("A1").render()).unwrap(),
+            }
         }
+        let changes = changes.expect("no LibraryChanged in 10 seconds");
         assert_eq!(changes.changed, ["A1"]);
         assert!(changes.removed.is_empty());
         assert!(store.lock().unwrap().session("A1").unwrap().is_some());
