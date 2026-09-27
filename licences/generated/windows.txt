@@ -1481,6 +1481,8 @@ aho-corasick 1.1.5
     Copyright (c) 2015 Andrew Gallant
 anyhow 1.0.104
 atomic-waker 1.1.2
+auto-launch 0.5.0
+    Copyright (c) 2022 zzzgydi
 base64 0.22.1
     Copyright (c) 2015 Alice Maz
 base64 0.23.1
@@ -1863,6 +1865,8 @@ tauri-codegen 2.6.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-macros 2.6.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
+tauri-plugin-autostart 2.5.1
+    Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-dialog 2.7.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-fs 2.5.2
@@ -1987,6 +1991,8 @@ web_atoms 0.2.6
 webview2-com 0.38.2
 webview2-com-macros 0.8.1
 webview2-com-sys 0.38.2
+winapi 0.3.9
+    Copyright (c) 2015-2018 The winapi-rs Developers
 winapi-util 0.1.11
     Copyright (c) 2017 Andrew Gallant
 window-vibrancy 0.6.0
@@ -2022,6 +2028,8 @@ windows-version 0.1.7
 windows_x86_64_msvc 0.52.6
 windows_x86_64_msvc 0.53.1
 winnow 1.0.4
+winreg 0.10.1
+    Copyright (c) 2015 Igor Shaula
 wry 0.55.1
     Copyright (c) 2020-2023 Ngo Iok Ui & Tauri Programme within The Commons Conservancy
 zerocopy 0.8.57

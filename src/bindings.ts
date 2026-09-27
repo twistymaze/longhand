@@ -8,6 +8,41 @@ export const commands = {
 async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
+async loginItemStatus() : Promise<Result<LoginItemStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("login_item_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setLoginItem(enabled: boolean) : Promise<Result<LoginItemStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_login_item", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async openLoginItemSettings() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_login_item_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Serialize zoom changes off the main thread, which native webviews use.
+ */
+async changeInterfaceZoom(action: ZoomAction) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_interface_zoom", { action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Save the Base URL of the summarization endpoint (R32). An empty value
  * clears it and stays empty (R2). Any other value must be a URL with a
@@ -429,18 +464,6 @@ async resumeShortcuts() : Promise<Result<null, string>> {
 }
 },
 /**
- * Whether an alert would reach the user now. Run as recording starts and
- * polled while it lasts; the output is probed again when it changes.
- */
-async alertCheck(force: boolean) : Promise<Result<AlertCheck, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("alert_check", { force }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Play the failed-capture cue once, so the user knows the sound (R18).
  */
 async playAlertSound() : Promise<Result<null, string>> {
@@ -689,14 +712,6 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 /** user-defined types **/
 
 /**
- * Whether an alert raised now would reach the user (R5a).
- */
-export type AlertCheck = { 
-/**
- * Why the cue would not be heard, when it would not.
- */
-output_problem: string | null }
-/**
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.
  */
@@ -866,6 +881,7 @@ export type LiveTranscriptStatus = { session_id: string; segment: number; state:
  * (KTD10).
  */
 export type LoadedNotes = { markdown: string; fingerprint: string }
+export type LoginItemStatus = "disabled" | "enabled" | "approval_required" | "unavailable"
 /**
  * The usual microphone (R1, KTD1): cpal's stable device ID, with the device
  * name as its label, so Settings can name a microphone that is not
@@ -1174,7 +1190,7 @@ found_speakers: number | null;
  * be read now (R16). Opening it and its actions wait.
  */
 storage_unavailable: boolean }
-export type Settings = { settings_schema_version: number; 
+export type Settings = { settings_schema_version: number; interface_zoom_percent: number; 
 /**
  * The chord that starts and stops a recording. `None` when the user
  * cleared it (R3). A stored string reads as `Some`, so no migration is
@@ -1333,6 +1349,7 @@ export type SystemAudioPermission = "allowed" | "denied" |
  */
 export type WaitingPart = "transcript" | "summary" | "notes" | "audio"
 export type WebviewLogLevel = "error" | "warn" | "info"
+export type ZoomAction = "increase" | "decrease" | "reset"
 
 /** tauri-specta globals **/
 

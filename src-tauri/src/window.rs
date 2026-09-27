@@ -15,20 +15,24 @@ pub const SETTINGS_WINDOW: &str = "settings";
 pub const LICENCES_WINDOW: &str = "licences";
 
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
-    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
-        .title("Longhand")
-        .inner_size(960.0, 680.0)
-        .min_inner_size(640.0, 480.0)
-        .visible(false);
-    // On macOS the title bar is empty and has the window's colour: the page
-    // draws a strip under it, and the window buttons are centred in that
-    // strip (`.title-strip` in index.css). Windows keeps its own title bar.
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(20.0, window_button_inset()));
-    builder.build()?;
+    crate::interface_zoom::build(app, |percent| {
+        let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
+            .zoom_hotkeys_enabled(false)
+            .initialization_script(crate::interface_zoom::initialization(percent))
+            .title("Longhand")
+            .inner_size(960.0, 680.0)
+            .min_inner_size(640.0, 480.0)
+            .visible(false);
+        // On macOS the title bar is empty and has the window's colour: the page
+        // draws a strip under it, and the window buttons are centred in that
+        // strip (`.title-strip` in index.css). Windows keeps its own title bar.
+        #[cfg(target_os = "macos")]
+        let builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(20.0, window_button_inset()));
+        builder.build()
+    })?;
     Ok(())
 }
 
@@ -141,6 +145,23 @@ pub fn open_or_build<W, E>(
 /// It loads the same page as the main window, with a query that tells the
 /// page which window it is in.
 pub fn open_settings(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || open_settings_window(&app));
+}
+
+fn settings_initial_size(percent: u16, work_area: Option<tauri::LogicalSize<f64>>) -> (f64, f64) {
+    let Some(area) = work_area else {
+        return (760.0, 540.0);
+    };
+    let scale = (f64::from(crate::interface_zoom::normalize(percent)) / 100.0).max(1.0);
+    // Leave room for the title bar and screen edges. Saved geometry takes precedence.
+    (
+        (760.0 * scale).min((area.width - 32.0).max(640.0)),
+        (540.0 * scale).min((area.height - 64.0).max(440.0)),
+    )
+}
+
+fn open_settings_window(app: &AppHandle) {
     let opened = open_or_build(
         app.get_webview_window(SETTINGS_WINDOW),
         |window| front(app, window),
@@ -150,18 +171,29 @@ pub fn open_settings(app: &AppHandle) {
             #[cfg(target_os = "macos")]
             crate::zoom::stop_zoom_of_windows_that_cannot_maximize();
             SETTINGS_OPENS.opened();
-            WebviewWindowBuilder::new(
-                app,
-                SETTINGS_WINDOW,
-                WebviewUrl::App("index.html?window=settings".into()),
-            )
-            .title("Settings")
-            .inner_size(760.0, 540.0)
-            .min_inner_size(640.0, 440.0)
-            .maximizable(false)
-            .minimizable(false)
-            .center()
-            .build()
+            crate::interface_zoom::build(app, |percent| {
+                let monitor = app
+                    .get_webview_window(MAIN_WINDOW)
+                    .and_then(|window| window.current_monitor().ok().flatten())
+                    .or_else(|| app.primary_monitor().ok().flatten());
+                let work_area = monitor.map(|m| m.work_area().size.to_logical(m.scale_factor()));
+                let (width, height) = settings_initial_size(percent, work_area);
+                WebviewWindowBuilder::new(
+                    app,
+                    SETTINGS_WINDOW,
+                    WebviewUrl::App("index.html?window=settings".into()),
+                )
+                .visible(false)
+                .zoom_hotkeys_enabled(false)
+                .initialization_script(crate::interface_zoom::initialization(percent))
+                .title("Settings")
+                .inner_size(width, height)
+                .min_inner_size(640.0, 440.0)
+                .maximizable(false)
+                .minimizable(false)
+                .center()
+                .build()
+            })
         },
     );
     match opened {
@@ -175,20 +207,30 @@ pub fn open_settings(app: &AppHandle) {
 /// is not open (R9, KTD7). It loads the same page with its own query. The
 /// page registers no close listener, so a close always destroys the window.
 pub fn open_licences(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || open_licences_window(&app));
+}
+
+fn open_licences_window(app: &AppHandle) {
     let opened = open_or_build(
         app.get_webview_window(LICENCES_WINDOW),
         |window| front(app, window),
         || {
-            WebviewWindowBuilder::new(
-                app,
-                LICENCES_WINDOW,
-                WebviewUrl::App("index.html?window=licences".into()),
-            )
-            .title("Open Source Licences")
-            .inner_size(680.0, 640.0)
-            .min_inner_size(480.0, 320.0)
-            .center()
-            .build()
+            crate::interface_zoom::build(app, |percent| {
+                WebviewWindowBuilder::new(
+                    app,
+                    LICENCES_WINDOW,
+                    WebviewUrl::App("index.html?window=licences".into()),
+                )
+                .visible(false)
+                .zoom_hotkeys_enabled(false)
+                .initialization_script(crate::interface_zoom::initialization(percent))
+                .title("Open Source Licences")
+                .inner_size(680.0, 640.0)
+                .min_inner_size(480.0, 320.0)
+                .center()
+                .build()
+            })
         },
     );
     match opened {
@@ -335,6 +377,17 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn new_settings_windows_allow_for_zoom_without_exceeding_the_work_area() {
+        let large = Some(tauri::LogicalSize::new(2560.0, 1440.0));
+        assert_eq!(settings_initial_size(100, large), (760.0, 540.0));
+        assert_eq!(settings_initial_size(150, large), (1140.0, 810.0));
+        assert_eq!(settings_initial_size(50, large), (760.0, 540.0));
+        let laptop = Some(tauri::LogicalSize::new(1280.0, 800.0));
+        assert_eq!(settings_initial_size(200, laptop), (1248.0, 736.0));
+        assert_eq!(settings_initial_size(200, None), (760.0, 540.0));
+    }
 
     /// A stand-in for the app's window set: a second open call focuses the
     /// window the first call built.

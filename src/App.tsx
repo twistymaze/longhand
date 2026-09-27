@@ -3,6 +3,7 @@
 // main window with no query.
 
 import { useEffect, useState } from "react";
+import { useInterfaceZoom } from "./lib/useInterfaceZoom";
 import { events } from "./bindings";
 import { Home } from "./home/Home";
 import { LicencesWindow } from "./licences/LicencesWindow";
@@ -80,7 +81,13 @@ function MainWindow() {
       )}
       <div hidden={view.kind === "session"} className="h-full">
         <Home
+          active={view.kind === "home"}
           entries={sessions.entries}
+          loaded={sessions.loaded}
+          loadError={sessions.loadError}
+          listRevision={sessions.listRevision}
+          getListRevision={sessions.getListRevision}
+          revisions={sessions.version}
           stages={sessions.stages}
           recording={recording}
           readiness={readiness}
@@ -97,8 +104,13 @@ function MainWindow() {
 }
 
 export default function App() {
+  const zoom = useInterfaceZoom();
   const which = new URLSearchParams(window.location.search).get("window");
-  if (which === "settings") return <SettingsWindow />;
-  if (which === "licences") return <LicencesWindow />;
-  return <MainWindow />;
+  return <>
+    {which === "settings" ? <SettingsWindow /> : which === "licences" ? <LicencesWindow /> : <MainWindow />}
+    {zoom.error && <div role="alert" className="fixed inset-x-3 bottom-3 z-50 rounded-lg bg-group p-3 text-label shadow-lg">
+      <p>Could not change the interface size: {zoom.error}</p>
+      <button onClick={zoom.dismiss} className="mt-2 text-accent">Dismiss</button>
+    </div>}
+  </>;
 }

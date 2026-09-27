@@ -42,10 +42,19 @@ Handy-derived modules in the application crate, one record per file (R27).
 
 - Repository: https://github.com/cjpais/Handy
 - Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
-- Source paths: `src-tauri/src/lib.rs` (tauri-specta builder, bindings export, `RunEvent::Reopen`)
+- Source paths: `src-tauri/src/lib.rs` (tauri-specta builder, bindings export, `RunEvent::Reopen`, startup activation policy before the event loop)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
 - Status: modified
+
+## `src/autostart.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
+- Source paths: `src-tauri/src/autostart.rs` (macOS `SMAppService.mainAppService` registration and platform split)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, licences/sources/Handy-MIT.txt
+- Status: modified — returns OS state and errors to Settings; no stored preference, startup registration, or legacy LaunchAgent removal; launch classification is Longhand's own
 
 ## `Entitlements.plist`
 

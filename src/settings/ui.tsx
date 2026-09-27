@@ -15,7 +15,7 @@ import { ConfirmDialog } from "../lib/ConfirmDialog";
 
 export function Pane({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="mx-auto max-w-[40rem] px-8 pt-7 pb-10">
+    <div className="mx-auto settings-pane max-w-[40rem] px-[clamp(0.5rem,3vw,2rem)] pt-7 pb-10">
       <h1 className="mb-5 text-[1.6rem] leading-tight font-bold tracking-[-0.025em]">{title}</h1>
       {/* minmax(0, 1fr): a group never grows past the pane to fit a line that does not wrap. */}
       <div className="grid grid-cols-[minmax(0,1fr)] gap-6">{children}</div>
@@ -57,12 +57,12 @@ export function Row({
 }) {
   return (
     <div className="settings-row px-4">
-      <div className="flex min-h-[3.25rem] items-center gap-4 py-2.5">
+      <div className="settings-row-content flex min-h-[3.25rem] flex-wrap items-center gap-4 py-2.5">
         <div className="min-w-0 flex-1">
           <div className="font-medium">{label}</div>
           {detail && <div className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">{detail}</div>}
         </div>
-        {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
+        {children && <div className="settings-row-controls flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>}
       </div>
     </div>
   );

@@ -1,49 +1,58 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pillow>=10"]
+# dependencies = ["pillow==11.3.0", "resvg-py==0.5.0"]
 # ///
-"""Draw Longhand's source icon and tray template icon.
+"""Render the shared SVG mark as the desktop source and tray template.
 
-The source icon feeds `bun tauri icon`, which generates every platform size.
-The tray icon is a macOS template image: black on transparent, recoloured by
-the menu bar for light and dark appearance.
+The source PNG feeds `bun tauri icon` for macOS and Windows. The tray
+stays black on transparent so macOS can set its appearance.
 """
 
+import io
 import sys
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
-from PIL import Image, ImageDraw
+from PIL import Image
+import resvg_py
+
+MARK = Path(__file__).resolve().parents[2] / "src/assets/longhand-mark.svg"
+ET.register_namespace("", "http://www.w3.org/2000/svg")
 
 
-def draw_mark(draw: ImageDraw.ImageDraw, size: int, ink) -> None:
-    """A capital L with a pen dot past the end of its foot."""
-    s = size / 100
-    stroke = round(11 * s)
-    # Upright.
-    draw.rounded_rectangle([30 * s, 18 * s, 30 * s + stroke, 74 * s], radius=stroke / 2, fill=ink)
-    # Foot, then the dot.
-    draw.rounded_rectangle([30 * s, 74 * s - stroke, 60 * s, 74 * s], radius=stroke / 2, fill=ink)
-    draw.ellipse([66 * s, 74 * s - stroke, 66 * s + stroke, 74 * s], fill=ink)
+def mark_geometry() -> str:
+    root = ET.fromstring(MARK.read_text())
+    return "".join(ET.tostring(child, encoding="unicode") for child in root)
+
+
+def render(svg: str, size: int) -> Image.Image:
+    png = resvg_py.svg_to_bytes(
+        svg_string=svg, width=size, height=size, skip_system_fonts=True
+    )
+    return Image.open(io.BytesIO(png)).convert("RGBA")
 
 
 def source_icon(path: Path) -> None:
-    size = 1024
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    inset = round(size * 0.09)
-    draw.rounded_rectangle(
-        [inset, inset, size - inset, size - inset], radius=round(size * 0.2), fill=(28, 36, 52, 255)
-    )
-    draw_mark(draw, size, (242, 236, 222, 255))
-    img.save(path)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+      <defs>
+        <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="0" y1="18" x2="0" y2="74">
+          <stop stop-color="#f7f1e3" />
+          <stop offset="1" stop-color="#c6bfae" />
+        </linearGradient>
+      </defs>
+      <rect x="9" y="9" width="82" height="82" rx="20" fill="#1c2434" />
+      <g fill="url(#ink)">{mark_geometry()}</g>
+    </svg>'''
+    render(svg, 1024).save(path)
 
 
 def tray_icon(path: Path) -> None:
-    size = 44  # 22 pt at 2x, the macOS menu-bar height.
-    scale = 8  # supersample, then downsample for smooth edges
-    big = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
-    draw_mark(ImageDraw.Draw(big), size * scale, (0, 0, 0, 255))
-    big.resize((size, size), Image.LANCZOS).save(path)
+    # Enlarge the visible mark by 25% in the same 22 pt slot.
+    # The viewBox center matches the mark's bounds (53.5, 46).
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="13.5 6 80 80">
+      <g fill="black">{mark_geometry()}</g>
+    </svg>'''
+    render(svg, 44 * 8).resize((44, 44), Image.Resampling.LANCZOS).save(path)
 
 
 if __name__ == "__main__":

@@ -131,10 +131,10 @@ export function SettingsWindow() {
 
   return (
     <div className="flex h-screen bg-pane">
-      <div className="flex w-[13.5rem] shrink-0 flex-col border-r border-separator bg-sidebar select-none">
-        <div className="flex items-center gap-2 px-4 pt-4 pb-3">
-          <AppIcon className="size-7" />
-          <span className="text-[0.95rem] font-semibold tracking-[-0.01em]">Longhand</span>
+      <div className="settings-navigation flex min-h-0 w-[30%] max-w-[13.5rem] min-w-0 shrink-0 flex-col border-r border-separator bg-sidebar select-none">
+        <div className="settings-brand flex shrink-0 flex-wrap items-center gap-2 px-4 pt-4 pb-3">
+          <AppIcon className="size-7 shrink-0" />
+          <span className="min-w-0 [overflow-wrap:anywhere] text-[0.95rem] font-semibold tracking-[-0.01em]">Longhand</span>
         </div>
         <div
           ref={nav}
@@ -142,7 +142,7 @@ export function SettingsWindow() {
           aria-label="Settings"
           aria-orientation="vertical"
           onKeyDown={onNavKey}
-          className="flex-1 overflow-y-auto px-2.5 pb-3"
+          className="min-h-0 flex-1 overflow-y-auto px-2.5 pb-3"
         >
           {sections.map((section) => (
             <div key={section.label} role="presentation" className="pt-2">
@@ -169,7 +169,7 @@ export function SettingsWindow() {
                     } outline-offset-0 focus-visible:outline-2 focus-visible:outline-accent`}
                   >
                     <span className={selected ? "text-accent" : "text-label-secondary"}>{p.icon}</span>
-                    <span className="min-w-0 flex-1 truncate">{p.label}</span>
+                    <span className="settings-tab-label min-w-0 flex-1 truncate">{p.label}</span>
                     {tone && (
                       <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${badgeClass[tone]}`} />
                     )}

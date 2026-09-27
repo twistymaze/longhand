@@ -58,6 +58,27 @@ pub fn get_settings(app: AppHandle) -> Settings {
     settings::get_settings(&app)
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn login_item_status(app: AppHandle) -> Result<crate::autostart::LoginItemStatus, String> {
+    crate::autostart::status(&app)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_login_item(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<crate::autostart::LoginItemStatus, String> {
+    crate::autostart::set_enabled(&app, enabled)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn open_login_item_settings() -> Result<(), String> {
+    crate::autostart::open_settings()
+}
+
 /// Save the Base URL of the summarization endpoint (R32). An empty value
 /// clears it and stays empty (R2). Any other value must be a URL with a
 /// host, because the credential is keyed by that host (R30a). The Model does
@@ -704,4 +725,16 @@ mod tests {
             );
         }
     }
+}
+
+/// Serialize zoom changes off the main thread, which native webviews use.
+#[tauri::command]
+#[specta::specta]
+pub async fn change_interface_zoom(
+    app: AppHandle,
+    action: crate::interface_zoom::ZoomAction,
+) -> Result<u16, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::interface_zoom::change(&app, action))
+        .await
+        .map_err(|e| e.to_string())?
 }

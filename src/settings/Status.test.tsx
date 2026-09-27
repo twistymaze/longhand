@@ -19,6 +19,7 @@ const readiness: Readiness = {
 function renderPane(playResult: () => unknown = () => null) {
   const tauri = mockTauri({
     shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled",
     play_alert_sound: playResult,
   });
   render(<StatusPane readiness={readiness} onRefresh={async () => {}} onNavigate={() => {}} />);
@@ -30,7 +31,7 @@ describe("the alert sound row", () => {
   test("says what the sound is for and asks for no test", () => {
     const { row } = renderPane();
     expect(row().textContent).toContain("Plays when recording stops and cannot restart");
-    expect(row().textContent).not.toMatch(/Not tested|Heard at setup|Tested/);
+    expect(document.body.textContent).not.toMatch(/Not tested|Heard at setup|Tested|Do Not Disturb|silence the notification/);
   });
 
   test("Play Sound plays the sound and asks no question", async () => {
@@ -57,7 +58,8 @@ function renderSystemAudio(
   state: Readiness["system_audio"],
   handlers: Record<string, (args: Record<string, unknown>) => unknown> = {},
 ) {
-  const tauri = mockTauri({ shortcut_status: () => shortcutStatuses, ...handlers });
+  const tauri = mockTauri({ shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled", ...handlers });
   let refreshed = 0;
   render(
     <StatusPane
@@ -73,7 +75,7 @@ function renderSystemAudio(
 }
 
 test("while Computer audio is hidden, the General pane has no Computer audio row", () => {
-  mockTauri({ shortcut_status: () => shortcutStatuses });
+  mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
   render(<StatusPane readiness={{ ...readiness, system_audio: "not_asked" }} onRefresh={async () => {}} onNavigate={() => {}} />);
   expect(screen.queryByText("Computer audio")).toBeNull();
 });

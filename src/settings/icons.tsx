@@ -2,7 +2,7 @@
 // sidebar. Each icon draws on a 16-unit grid with the current text colour.
 
 import type { ReactNode } from "react";
-import appIcon from "../assets/longhand-icon.png";
+import "./branding.css";
 
 function Icon({ children, className = "size-4" }: { children: ReactNode; className?: string }) {
   return (
@@ -23,9 +23,12 @@ function Icon({ children, className = "size-4" }: { children: ReactNode; classNa
 
 type IconProps = { className?: string };
 
-/// The app icon: the dark rounded square with the cream "L.".
+/// The transparent in-app emblem, from the same mark as the desktop icons.
 export function AppIcon({ className = "size-7" }: IconProps) {
-  return <img src={appIcon} alt="" aria-hidden draggable={false} className={`shrink-0 ${className}`} />;
+  return <span aria-hidden className={`app-brand shrink-0 ${className}`}>
+    <span className="app-brand-frame" />
+    <span className="app-brand-mark" />
+  </span>;
 }
 
 export const PlusIcon = ({ className }: IconProps) => (

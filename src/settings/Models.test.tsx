@@ -79,6 +79,7 @@ function catalog(selected: string, states: Record<string, ModelState>): ModelSta
 function settings(asr_model: string, extra: Partial<Settings> = {}): Settings {
   return {
     settings_schema_version: 1,
+    interface_zoom_percent: 100,
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
     destination_roots: [],
@@ -125,6 +126,7 @@ async function open({
       endpoint_configured: false,
     }),
     shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled",
     model_statuses: () => catalog(state.settings.asr_model, state.states),
     speaker_models_status: () => {
       const weights = [SEGMENTATION, EMBEDDING];

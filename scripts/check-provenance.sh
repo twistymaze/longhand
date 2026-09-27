@@ -30,7 +30,6 @@ BORROWED_DIRS=(
   crates/pyannote-local
   crates/recorder
   crates/secrets
-  crates/sfx
   crates/supervisor
   crates/vad
   src-tauri
