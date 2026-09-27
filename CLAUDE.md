@@ -2,6 +2,16 @@
 
 Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, bun) that records an in-person session on one microphone and produces a transcript and summary. The working plan is `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`; its units (U1–U23) and checkpoint log are the source of truth for scope and sequencing.
 
+## Shared project memory
+
+The user alternates between Claude Code and Codex. `AGENTS.md` links to this file so both tools use the same project guidance.
+
+- At the start of a session, read `~/.claude/projects/-Users-erv-Development-transcription/memory/MEMORY.md` when it exists. Read the linked entries that apply to the task before planning, reviewing, or implementing. Use this same project memory directory when working in a worktree.
+- If that index is absent, check `~/.claude/projects/` for this repository's memory directory. Verify that it belongs to Longhand before using it. If no matching directory exists, continue with the repository documentation and state that the local Claude memories were unavailable.
+- Keep important Longhand knowledge in shared repository documentation. Put required project rules in `CLAUDE.md`, domain terms in `CONCEPTS.md`, and verified lessons and solutions in `docs/solutions/`. Search the relevant documentation before starting work. Read the memory index first; do not load every memory file into each session.
+- Codex: do not deliberately save important project-specific knowledge for this repository in your normal Codex-only memory store (`~/.codex/memories/`), including its update-note directory. Claude Code cannot discover those entries through its normal memory loading. Save the shared lesson in the appropriate repository document instead. Background-generated Codex memories are supplementary, not the authoritative project record.
+- When an existing Claude memory contains a lasting project lesson, verify it against current evidence before adding it to shared documentation. Keep machine-specific details in local memory, and keep secrets and private session data out of shared documentation. Do not merge or symlink the tools' internal memory stores.
+
 ## UI design
 
 Before designing, building, or reviewing any UI surface (the probe window, settings, the recording rail and scratchpad, the processing and session views), invoke the `apple-design` skill and follow it. Pair it as the work calls for:
