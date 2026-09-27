@@ -39,6 +39,8 @@ The name of a session, shown on Home, on the session page and in the home folder
 ### Library
 Every saved session in the retained Destinations: the Destination that the user chose now, and each earlier one that the settings keep. Several computers of one person can share a Destination through a sync service (OneDrive, Google Drive, Dropbox, iCloud). Each computer lists the whole library, including the sessions that other computers recorded. The home folders are the authority: each computer keeps its store in step with them through a library scan at launch and a folder watcher while Longhand runs.
 
+A computer that only receives a sync changes no home folder. An automatic step, such as a launch reconcile, writes into a home folder only for work that this computer started and recorded. A partial sync can make the files of one home folder disagree for a time, so the shared files cannot tell which computer made a change.
+
 ### Adopt
 The step that makes a Saved row in this computer's store from a home folder that another computer saved. The row is built from `session.md` and `notes.md`. Its opposite, forget, removes a row from the store and does not touch any folder: a computer forgets a session when its home folder is deleted from an available Destination.
 
