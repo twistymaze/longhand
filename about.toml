@@ -31,6 +31,9 @@ dtoa-short = { accepted = ["MPL-2.0"] }
 selectors = { accepted = ["MPL-2.0"] }
 option-ext = { accepted = ["MPL-2.0"] }
 
+# The CC0-1.0 exception in deny.toml: the storage folder watcher.
+notify = { accepted = ["CC0-1.0"] }
+
 
 # Native code vendored inside -sys crates. Each clarify entry names the licence
 # files that ship with the native code, with a checksum, so a crate update that
