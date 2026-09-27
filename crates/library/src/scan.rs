@@ -284,14 +284,33 @@ fn scan_root(
         Err(e) => return unavailable(Unavailable::Unreadable(e.to_string())),
     };
 
+    // An entry that cannot be listed or examined can be a note folder. The
+    // list is then incomplete, so the root is unreadable and its missing
+    // notes are not deletes (KTD5).
     let mut reads = Reads::default();
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::warn!("library: cannot list {}: {e}", root.display());
+                return unavailable(Unavailable::Unreadable(e.to_string()));
+            }
+        };
         // Staging, rename and temporary folders start with a dot.
-        if is_hidden(&entry.file_name().to_string_lossy()) || !path.is_dir() {
+        if is_hidden(&entry.file_name().to_string_lossy()) {
             continue;
         }
-        reads.read(root, &path, known, options);
+        let path = entry.path();
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_dir() => reads.read(root, &path, known, options),
+            Ok(_) => {}
+            // Removed since the list, or a link to nothing.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                log::warn!("library: cannot read {}: {e}", path.display());
+                return unavailable(Unavailable::Unreadable(e.to_string()));
+            }
+        }
     }
     let Reads {
         notes,
@@ -492,15 +511,17 @@ fn exists(path: &Path) -> bool {
     path.try_exists().unwrap_or(false)
 }
 
-pub(crate) enum Read {
+/// The result of [`read_timed`].
+pub enum Read {
     Missing,
     Bytes(Vec<u8>),
+    /// The read failed or did not finish in time.
     Failed(String),
 }
 
 /// Read `path` on a separate thread, and stop waiting after `timeout`. A
 /// read that does not finish keeps its thread until the read returns.
-pub(crate) fn read_timed(path: PathBuf, timeout: Duration) -> Read {
+pub fn read_timed(path: PathBuf, timeout: Duration) -> Read {
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("library-read".into())

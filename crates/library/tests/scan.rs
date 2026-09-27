@@ -386,6 +386,34 @@ fn a_session_md_that_cannot_be_read_is_unreadable_not_missing() {
     assert_eq!(result.unreadable[0].known_id.as_deref(), Some("A1"));
 }
 
+/// A root that lists its entries but cannot tell what one of them is gives
+/// an incomplete list, so its missing notes are not deletes (KTD5).
+#[cfg(unix)]
+#[test]
+fn a_root_whose_entries_cannot_be_read_is_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    let mut known = Known::default();
+    known.add("A1", &dir);
+    // Read but no search permission: the list works, the metadata does not.
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o444)).unwrap();
+    let with_row = run(root.path(), &known);
+    let without_row = run(root.path(), &Known::default());
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    for result in [&with_row, &without_row] {
+        assert!(
+            matches!(
+                root_state(result),
+                RootState::Unavailable(Unavailable::Unreadable(_))
+            ),
+            "{:?}",
+            root_state(result)
+        );
+        assert!(result.notes.is_empty());
+    }
+}
+
 #[cfg(unix)]
 fn fifo(path: &Path) {
     let status = std::process::Command::new("mkfifo")

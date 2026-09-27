@@ -15,9 +15,12 @@
 //! - A scan of some Destinations, or of some note folders (the watcher's
 //!   targeted scan, KTD7), changes no pending delete of a row outside them.
 //!
-//! The scan runs without the store. Reconcile runs under the store lock,
-//! and reads a folder again before it writes from it, so a change that
-//! this computer made after the scan is not undone.
+//! The scan runs without the store. Before reconcile writes from a folder,
+//! it reads that folder again, so a change that this computer made after
+//! the scan is not undone. [`Reconciler::run`] does that read without the
+//! store lock: under the lock it records each row that it reads for, and
+//! after the read it writes to a row only when the row did not change in
+//! the meantime. A row that changed waits for the next scan.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,9 +28,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use session_core::jobs::busy;
-use session_core::{Adoption, SessionRecord, Store, StoreError};
+use session_core::{Adoption, Segment, SessionRecord, Store, StoreError};
 
-use crate::refresh::{self, FolderContents};
+use crate::refresh::{self, FolderContents, RefreshError};
 use crate::scan::{self, Known, LibraryScan, NoteFolder, READ_TIMEOUT, ScanOptions};
 use crate::status::LibraryStatus;
 
@@ -142,7 +145,9 @@ impl Reconciler {
     }
 
     /// Scan `target` without the store lock, then apply the scan to the
-    /// store and to the status under the lock. `claimed` is as for [`Reconciler::reconcile`].
+    /// store and to the status under the lock. The folders of the rows that
+    /// the scan changes are read again without the lock. `claimed` is as
+    /// for [`Reconciler::reconcile`].
     pub fn run(
         &mut self,
         store: &Mutex<Store>,
@@ -166,9 +171,18 @@ impl Reconciler {
                 }
             }
         };
+        let stale = self.stale(&lock(), &result, claimed)?;
+        // A cloud file can take seconds to read: the lock is free meanwhile.
+        let rereads = self.read_again(stale);
         let mut store = lock();
-        let mut changes =
-            self.reconcile(&mut store, &result, &coverage, Instant::now(), claimed)?;
+        let mut changes = self.apply(
+            &mut store,
+            &result,
+            &coverage,
+            Instant::now(),
+            claimed,
+            &rereads,
+        )?;
         let noted = self.status.apply(&result, &coverage, &store.sessions()?);
         changes
             .changed
@@ -180,7 +194,9 @@ impl Reconciler {
 
     /// Apply `scan` to `store`. `now` is the time of the scan. `claimed`
     /// tells whether a stage holds a claim on a session (a summary
-    /// regeneration or a delete).
+    /// regeneration or a delete). This reads folders again with `store` in
+    /// the caller's hands: [`Reconciler::run`] does those reads without the
+    /// store lock.
     pub fn reconcile(
         &mut self,
         store: &mut Store,
@@ -188,6 +204,85 @@ impl Reconciler {
         coverage: &Coverage,
         now: Instant,
         claimed: &dyn Fn(&str) -> bool,
+    ) -> Result<Changes, StoreError> {
+        let stale = self.stale(store, scan, claimed)?;
+        let rereads = self.read_again(stale);
+        self.apply(store, scan, coverage, now, claimed, &rereads)
+    }
+
+    /// The known rows that `scan` changes: a new home path or a refresh.
+    /// Each comes with its row as it is now, so that [`Reconciler::apply`]
+    /// can see a change that this computer makes after this call.
+    fn stale(
+        &self,
+        store: &Store,
+        scan: &LibraryScan,
+        claimed: &dyn Fn(&str) -> bool,
+    ) -> Result<Vec<Stale>, StoreError> {
+        let intents: HashSet<String> = store
+            .rename_intents()?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let mut stale = Vec::new();
+        for note in &scan.notes {
+            let id = note.doc.session_id.as_str();
+            if intents.contains(id) {
+                continue;
+            }
+            let Some(record) = store.session(id)? else {
+                continue;
+            };
+            let claimed = claimed(id);
+            let moved = record
+                .home_path
+                .as_deref()
+                .is_some_and(|home| Path::new(home) != note.path);
+            let refreshable = !busy(&record, claimed);
+            let changes = moved
+                || refreshable && refresh::differs(store, id, &FolderContents::from_scan(note))?;
+            if !changes {
+                continue;
+            }
+            if let Some(before) = RowState::of(store, id, claimed)? {
+                stale.push(Stale {
+                    id: id.to_string(),
+                    folder: note.path.clone(),
+                    before,
+                });
+            }
+        }
+        Ok(stale)
+    }
+
+    /// Read the folder of each stale row again. The caller does not hold
+    /// the store lock.
+    fn read_again(&self, stale: Vec<Stale>) -> HashMap<String, Reread> {
+        stale
+            .into_iter()
+            .map(|stale| {
+                let contents = FolderContents::read(&stale.folder, self.read_timeout);
+                (
+                    stale.id,
+                    Reread {
+                        folder: stale.folder,
+                        before: stale.before,
+                        contents,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Apply `scan` to `store`, with the folders that [`Reconciler::read_again`] read.
+    fn apply(
+        &mut self,
+        store: &mut Store,
+        scan: &LibraryScan,
+        coverage: &Coverage,
+        now: Instant,
+        claimed: &dyn Fn(&str) -> bool,
+        rereads: &HashMap<String, Reread>,
     ) -> Result<Changes, StoreError> {
         let records: HashMap<String, SessionRecord> = store
             .sessions()?
@@ -208,7 +303,7 @@ impl Reconciler {
             let updated = match records.get(id) {
                 None => adopt(store, note)?,
                 Some(_) if intents.contains(id) => false,
-                Some(record) => self.follow(store, record, note, claimed)?,
+                Some(record) => follow(store, record, note, claimed, rereads.get(id))?,
             };
             if updated {
                 changed.push(id.clone());
@@ -265,49 +360,103 @@ impl Reconciler {
         removed.sort();
         Ok(Changes { changed, removed })
     }
+}
 
-    /// Follow the note's folder for a known row: a new home path, then the
-    /// refresh. Returns whether the row changed.
-    fn follow(
-        &self,
-        store: &mut Store,
-        record: &SessionRecord,
-        note: &NoteFolder,
-        claimed: &dyn Fn(&str) -> bool,
-    ) -> Result<bool, StoreError> {
-        let id = record.id.as_str();
-        let moved = record
-            .home_path
-            .as_deref()
-            .is_some_and(|home| Path::new(home) != note.path);
-        let refreshable = !busy(record, claimed(id));
-        let stale = refreshable && refresh::differs(store, id, &FolderContents::from_scan(note))?;
-        if !moved && !stale {
+/// A known row that a scan changes, before its folder is read again.
+struct Stale {
+    id: String,
+    folder: PathBuf,
+    before: RowState,
+}
+
+/// The second read of a stale row's folder.
+struct Reread {
+    folder: PathBuf,
+    /// The row when the reconcile decided to read the folder again.
+    before: RowState,
+    contents: Result<FolderContents, RefreshError>,
+}
+
+/// The parts of a row that a reconcile compares with the folder, and the
+/// facts that tell whether it follows the folder. When one of them changes
+/// between the decision and the write, this computer changed the row, and
+/// the folder that the reconcile read can be older than that change.
+#[derive(Debug, PartialEq, Eq)]
+struct RowState {
+    record: SessionRecord,
+    notes: String,
+    segments: Vec<Segment>,
+    stereo_from: Option<u32>,
+    transcript_fingerprint: Option<String>,
+    rename_intent: bool,
+    claimed: bool,
+}
+
+impl RowState {
+    fn of(store: &Store, id: &str, claimed: bool) -> Result<Option<Self>, StoreError> {
+        let Some(record) = store.session(id)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            record,
+            notes: store.notes(id)?,
+            segments: store.segments(id)?,
+            stereo_from: store.stereo_from(id)?,
+            transcript_fingerprint: store.transcript_fingerprint(id)?,
+            rename_intent: store.rename_intent(id)?.is_some(),
+            claimed,
+        }))
+    }
+}
+
+/// Follow the note's folder for a known row: a new home path, then the
+/// refresh. `reread` is the second read of the folder, when the row was
+/// stale before that read. Returns whether the row changed.
+fn follow(
+    store: &mut Store,
+    record: &SessionRecord,
+    note: &NoteFolder,
+    claimed: &dyn Fn(&str) -> bool,
+    reread: Option<&Reread>,
+) -> Result<bool, StoreError> {
+    let id = record.id.as_str();
+    // A row that was not stale before the read, and is now, changed on
+    // this computer after the scan: the next scan follows its folder.
+    let Some(reread) = reread.filter(|reread| reread.folder == note.path) else {
+        return Ok(false);
+    };
+    let claimed = claimed(id);
+    if RowState::of(store, id, claimed)?.as_ref() != Some(&reread.before) {
+        log::info!(
+            "library: {id} changed during the reconcile, so the next scan follows its folder"
+        );
+        return Ok(false);
+    }
+    let contents = match &reread.contents {
+        Ok(contents) if contents.doc.session_id == id => contents,
+        Ok(_) => return Ok(false),
+        Err(e) => {
+            log::warn!("library: cannot refresh {id}: {e}");
             return Ok(false);
         }
-        // Read the folder again: the scan ran without the store lock.
-        let contents = match FolderContents::read(&note.path, self.read_timeout) {
-            Ok(contents) if contents.doc.session_id == id => contents,
-            Ok(_) => return Ok(false),
-            Err(e) => {
-                log::warn!("library: cannot refresh {id}: {e}");
-                return Ok(false);
-            }
-        };
-        if moved {
-            log::info!("library: the folder of {id} is now {}", note.path.display());
-            store.set_home_path(id, &note.path.to_string_lossy())?;
-        }
-        if !refreshable {
-            return Ok(moved);
-        }
-        match refresh::apply(store, id, &contents) {
-            Ok(refreshed) => Ok(moved || refreshed.changed),
-            Err(refresh::RefreshError::Store(e)) => Err(e),
-            Err(e) => {
-                log::warn!("library: cannot refresh {id}: {e}");
-                Ok(moved)
-            }
+    };
+    let moved = record
+        .home_path
+        .as_deref()
+        .is_some_and(|home| Path::new(home) != note.path);
+    if moved {
+        log::info!("library: the folder of {id} is now {}", note.path.display());
+        store.set_home_path(id, &note.path.to_string_lossy())?;
+    }
+    if busy(record, claimed) {
+        return Ok(moved);
+    }
+    match refresh::apply(store, id, contents) {
+        Ok(refreshed) => Ok(moved || refreshed.changed),
+        Err(RefreshError::Store(e)) => Err(e),
+        Err(e) => {
+            log::warn!("library: cannot refresh {id}: {e}");
+            Ok(moved)
         }
     }
 }
@@ -330,4 +479,145 @@ fn adopt(store: &mut Store, note: &NoteFolder) -> Result<bool, StoreError> {
         );
     }
     Ok(adopted)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use chrono::DateTime;
+    use session_core::folder::SessionDoc;
+
+    use super::*;
+    use crate::scan::MARKER;
+
+    fn never_claimed(_: &str) -> bool {
+        false
+    }
+
+    /// A Destination with one note folder of the note `A1`, and a store
+    /// that adopted it.
+    fn adopted() -> (tempfile::TempDir, PathBuf, Mutex<Store>, Reconciler) {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(MARKER), "").unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let segment = Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: start,
+            wall_end: start + chrono::TimeDelta::minutes(1),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        };
+        let folder = root.path().join("2026-09-25 0900 Planning");
+        fs::create_dir(&folder).unwrap();
+        let doc = SessionDoc::new("A1", None, &[segment]).unwrap();
+        fs::write(folder.join("session.md"), doc.render()).unwrap();
+        fs::write(folder.join("notes.md"), "first\n").unwrap();
+        let store = Mutex::new(Store::open_in_memory().unwrap());
+        let mut reconciler = Reconciler::default();
+        let target = Target::Full(vec![root.path().to_path_buf()]);
+        let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
+        assert_eq!(changes.changed, vec!["A1".to_string()]);
+        (root, folder, store, reconciler)
+    }
+
+    fn scan_of(root: &Path, store: &Mutex<Store>) -> LibraryScan {
+        let known = Known::from_records(&store.lock().unwrap().sessions().unwrap());
+        scan::scan(&[root.to_path_buf()], &known, &ScanOptions::default())
+    }
+
+    /// Scan `root` and read the stale folders again, as [`Reconciler::run`]
+    /// does before it takes the lock the second time.
+    fn scan_and_read(
+        root: &Path,
+        store: &Mutex<Store>,
+        reconciler: &Reconciler,
+    ) -> (LibraryScan, HashMap<String, Reread>) {
+        let result = scan_of(root, store);
+        let stale = reconciler
+            .stale(&store.lock().unwrap(), &result, &never_claimed)
+            .unwrap();
+        assert_eq!(stale.len(), 1);
+        (result, reconciler.read_again(stale))
+    }
+
+    fn apply(
+        store: &mut Store,
+        reconciler: &mut Reconciler,
+        result: &LibraryScan,
+        rereads: &HashMap<String, Reread>,
+    ) -> Changes {
+        reconciler
+            .apply(
+                store,
+                result,
+                &Coverage::Full,
+                Instant::now(),
+                &never_claimed,
+                rereads,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_notes_save_after_the_second_read_is_not_undone() {
+        let (root, folder, store, mut reconciler) = adopted();
+        // Another computer changes the notes, and this computer scans.
+        fs::write(folder.join("notes.md"), "theirs\n").unwrap();
+        let (result, rereads) = scan_and_read(root.path(), &store, &reconciler);
+
+        // Before the write, this computer saves its own notes under the
+        // lock, as `save_notes` does.
+        {
+            let s = store.lock().unwrap();
+            s.set_notes("A1", "mine\n").unwrap();
+            fs::write(folder.join("notes.md"), "mine\n").unwrap();
+        }
+
+        let mut s = store.lock().unwrap();
+        let changes = apply(&mut s, &mut reconciler, &result, &rereads);
+        assert!(changes.is_empty(), "{changes:?}");
+        assert_eq!(s.notes("A1").unwrap(), "mine\n");
+        drop(s);
+
+        // The next scan reads the folder with this computer's notes.
+        let target = Target::Full(vec![root.path().to_path_buf()]);
+        reconciler.run(&store, &target, &never_claimed).unwrap();
+        assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "mine\n");
+    }
+
+    #[test]
+    fn a_rename_after_the_second_read_keeps_its_home_path() {
+        let (root, folder, store, mut reconciler) = adopted();
+        // A sync moves the folder, and this computer scans.
+        let synced = root.path().join("2026-09-25 0900 Budget");
+        fs::rename(&folder, &synced).unwrap();
+        let (result, rereads) = scan_and_read(root.path(), &store, &reconciler);
+
+        // Before the write, this computer renames the folder itself.
+        let renamed = root.path().join("2026-09-25 0900 Review");
+        {
+            let s = store.lock().unwrap();
+            fs::rename(&synced, &renamed).unwrap();
+            s.set_home_path("A1", &renamed.to_string_lossy()).unwrap();
+        }
+
+        let mut s = store.lock().unwrap();
+        let changes = apply(&mut s, &mut reconciler, &result, &rereads);
+        assert!(changes.changed.is_empty(), "{changes:?}");
+        let home = s.session("A1").unwrap().unwrap().home_path.unwrap();
+        assert_eq!(PathBuf::from(home), renamed);
+    }
+
+    #[test]
+    fn a_note_that_changes_only_in_its_folder_is_refreshed_by_a_run() {
+        let (root, folder, store, mut reconciler) = adopted();
+        fs::write(folder.join("notes.md"), "theirs\n").unwrap();
+        let target = Target::Full(vec![root.path().to_path_buf()]);
+        let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
+        assert_eq!(changes.changed, vec!["A1".to_string()]);
+        assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "theirs\n");
+    }
 }
