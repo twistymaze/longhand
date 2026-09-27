@@ -21,5 +21,6 @@ transcribe-cpp = { version = "0.2.3", default-features = false, features = ["dyn
 transcribe-cpp = { version = "0.2.3", default-features = false }
 
 [dev-dependencies]
+serde_json.workspace = true
 hound = "3.5.1"
 models = { path = "../models" }
