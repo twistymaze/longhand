@@ -651,6 +651,7 @@ async fn stalled_body_keeps_partial_and_a_retry_resumes_from_it() {
 
 fn model_for(url: String, body: &[u8], sha256: String) -> crate::catalog::CatalogModel {
     crate::catalog::CatalogModel {
+        assessment: None,
         id: "test".into(),
         kind: crate::catalog::ModelKind::Segmentation,
         name: "test".into(),
@@ -721,4 +722,67 @@ async fn ensure_model_rejects_a_hash_mismatch_and_leaves_nothing() {
     assert!(matches!(err, DownloadError::HashMismatch { .. }), "{err:?}");
     assert!(!is_present(dir.path(), &model));
     assert!(!partial_path(&dir.path().join("weights.onnx")).exists());
+}
+
+#[tokio::test]
+async fn pinned_download_preserves_current_artifact_and_verifies_before_ready() {
+    let dir = TempDir::new().unwrap();
+    let mut artifact =
+        crate::recognition::resolve(&crate::recognition::RecognitionConfig::default())
+            .unwrap()
+            .artifacts
+            .remove(0);
+    artifact.size_bytes = 3;
+    artifact.sha256 = format!("{:x}", Sha256::digest(b"old"));
+    fs::write(dir.path().join(&artifact.filename), b"new").unwrap();
+    let path = pinned_artifact_path(dir.path(), &artifact).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(partial_path(&path), b"old").unwrap();
+    assert!(!pinned_artifact_present(dir.path(), &artifact));
+    assert_eq!(
+        ensure_artifact(
+            dir.path(),
+            &artifact,
+            Limits::default(),
+            &CancellationToken::new(),
+            &|_| {}
+        )
+        .await
+        .unwrap(),
+        Outcome::Completed
+    );
+    assert!(pinned_artifact_present(dir.path(), &artifact));
+    assert_eq!(fs::read(path).unwrap(), b"old");
+    assert_eq!(
+        fs::read(dir.path().join(&artifact.filename)).unwrap(),
+        b"new"
+    );
+}
+
+#[tokio::test]
+async fn pinned_bad_hash_never_becomes_ready() {
+    let dir = TempDir::new().unwrap();
+    let mut artifact =
+        crate::recognition::resolve(&crate::recognition::RecognitionConfig::default())
+            .unwrap()
+            .artifacts
+            .remove(0);
+    artifact.size_bytes = 3;
+    artifact.sha256 = format!("{:x}", Sha256::digest(b"old"));
+    let path = pinned_artifact_path(dir.path(), &artifact).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(partial_path(&path), b"bad").unwrap();
+    assert!(
+        ensure_artifact(
+            dir.path(),
+            &artifact,
+            Limits::default(),
+            &CancellationToken::new(),
+            &|_| {}
+        )
+        .await
+        .is_err()
+    );
+    assert!(!path.exists());
+    assert!(!pinned_artifact_present(dir.path(), &artifact));
 }

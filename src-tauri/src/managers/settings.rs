@@ -19,7 +19,7 @@ use tauri_plugin_store::StoreExt;
 pub const SETTINGS_STORE_PATH: &str = "settings.json";
 const SETTINGS_KEY: &str = "settings";
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 5;
 
 /// The Base URL that Longhand uses when the user never saved one (R1, KD3).
 pub const DEFAULT_ENDPOINT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -128,6 +128,10 @@ pub struct Settings {
     pub pending_asr_model: Option<String>,
     /// A streaming model transcribes during recording (R18, KD9).
     pub live_transcript: bool,
+    pub speaker_source: models::recognition::SpeakerSource,
+    pub speaker_processing_mode: models::recognition::ProcessingMode,
+    pub recognition_language: Option<String>,
+    pub pending_recognition: Option<models::recognition::RecognitionConfig>,
     /// The microphone a new note records from. `None` is "System default"
     /// (R1, KTD17).
     pub microphone: Option<MicrophoneChoice>,
@@ -250,6 +254,10 @@ impl Default for Settings {
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
             pending_asr_model: None,
             live_transcript: true,
+            speaker_source: Default::default(),
+            speaker_processing_mode: Default::default(),
+            recognition_language: None,
+            pending_recognition: None,
             microphone: None,
             system_audio_default: false,
             learned_context_limits: Default::default(),
@@ -260,6 +268,40 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn recognition_config(&self) -> models::recognition::RecognitionConfig {
+        use models::recognition::{ProcessingMode, RecognitionConfig, SpeakerCount};
+        let live_supported = models::model(&self.asr_model).is_some_and(|m| m.streaming);
+        RecognitionConfig {
+            asr_model: self.asr_model.clone(),
+            speaker_source: self.speaker_source,
+            processing_mode: if self.live_transcript && live_supported {
+                ProcessingMode::DuringRecording
+            } else {
+                ProcessingMode::AfterStop
+            },
+            speaker_count: self.default_speaker_count.map(|c| match c {
+                SpeakerCountSetting::Exact { count } => SpeakerCount::Exact { count },
+                SpeakerCountSetting::Range { min, max } => SpeakerCount::Range { min, max },
+            }),
+            language: self.recognition_language.clone(),
+            speaker_processing_mode: self.speaker_processing_mode,
+        }
+    }
+
+    pub fn apply_recognition(&mut self, config: &models::recognition::RecognitionConfig) {
+        use models::recognition::{ProcessingMode, SpeakerCount};
+        self.asr_model = config.asr_model.clone();
+        self.speaker_source = config.speaker_source;
+        self.speaker_processing_mode = config.speaker_processing_mode;
+        self.live_transcript = config.processing_mode == ProcessingMode::DuringRecording;
+        self.recognition_language = config.language.clone();
+        self.default_speaker_count = config.speaker_count.map(|c| match c {
+            SpeakerCount::Exact { count } => SpeakerCountSetting::Exact { count },
+            SpeakerCount::Range { min, max } => SpeakerCountSetting::Range { min, max },
+        });
+        self.pending_recognition = None;
+    }
+
     /// Choose the usual microphone, or `None` for "System default" (R1).
     /// A choice with a blank ID or label is refused and changes nothing.
     pub fn set_microphone(&mut self, choice: Option<MicrophoneChoice>) -> Result<(), String> {
@@ -539,6 +581,10 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
         if stored_version >= 1 && stored.get("asr_model").is_none() {
             settings.asr_model = PREVIOUS_DEFAULT_ASR_MODEL.to_string();
         }
+        updated = true;
+    }
+    if stored_version < 5 {
+        // Serde defaults preserve the existing separate speaker pipeline.
         updated = true;
     }
     let zoom = crate::interface_zoom::normalize(settings.interface_zoom_percent);
@@ -1494,5 +1540,41 @@ mod tests {
             ["/vault/a", "/vault/b", "/vault/c"]
         );
         assert_eq!(settings.current_destination.as_deref(), Some("/vault/c"));
+    }
+}
+
+#[cfg(test)]
+mod recognition_tests {
+    use super::*;
+    use models::recognition::{ProcessingMode, SpeakerSource};
+
+    #[test]
+    fn old_live_choice_does_not_enable_live_speaker_analysis() {
+        for live in [true, false] {
+            let (settings, changed) = settings_from_value(&serde_json::json!({
+                "settings_schema_version":4,"asr_model":"parakeet-unified-en-0.6b-q80","live_transcript":live
+            }));
+            assert!(changed);
+            assert_eq!(settings.live_transcript, live);
+            assert_eq!(settings.speaker_source, SpeakerSource::Pyannote);
+            assert_eq!(
+                settings.recognition_config().speaker_processing_mode,
+                ProcessingMode::AfterStop
+            );
+        }
+    }
+
+    #[test]
+    fn live_speaker_analysis_does_not_enable_live_transcription() {
+        let settings = Settings {
+            asr_model: "whisper-large-v3-turbo-q5km".into(),
+            live_transcript: false,
+            speaker_source: SpeakerSource::Sortformer,
+            speaker_processing_mode: ProcessingMode::DuringRecording,
+            ..Settings::default()
+        };
+        let spec = models::recognition::resolve(&settings.recognition_config()).unwrap();
+        assert!(!spec.enabled_live_transcription);
+        assert!(spec.enabled_live_speaker_analysis);
     }
 }

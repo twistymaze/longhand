@@ -68,6 +68,7 @@ pub struct ModelStatus {
     pub repository: String,
     pub revision: String,
     pub licence: LicenceInfo,
+    pub assessment: Option<models::catalog::Assessment>,
 }
 
 /// The speaker-detection weights as one item (R7).
@@ -111,6 +112,7 @@ pub struct Pick {
 /// model is not downloaded. Otherwise the selected model stays in use and the
 /// pick waits as the pending pick until its download is verified.
 pub fn apply_pick(settings: &mut Settings, id: &str, is_present: impl Fn(&str) -> bool) -> Pick {
+    settings.pending_recognition = None;
     let cancel = settings.pending_asr_model.take().filter(|p| p != id);
     let picked_present = is_present(id);
     if id == settings.asr_model || picked_present || !is_present(&settings.asr_model) {
@@ -161,6 +163,14 @@ pub fn delete_refusal(
     if settings.asr_model == id {
         return Some("This model is selected. Select another model first.".into());
     }
+    if settings
+        .pending_recognition
+        .as_ref()
+        .and_then(|c| models::recognition::resolve(c).ok())
+        .is_some_and(|spec| spec.artifacts.iter().any(|a| a.id == id))
+    {
+        return Some("This model is part of a pending configuration.".into());
+    }
     if settings.pending_asr_model.as_deref() == Some(id) {
         return Some("This model is downloading to become the selected model.".into());
     }
@@ -174,7 +184,15 @@ pub fn delete_refusal(
             .transcribe_again_model
             .as_deref()
             .or(s.asr_model.as_deref());
-        model == Some(id) && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
+        let snapshot_needs = s
+            .recognition_snapshot
+            .as_ref()
+            .and_then(|v| {
+                serde_json::from_value::<models::recognition::ExecutionSpec>(v.clone()).ok()
+            })
+            .is_some_and(|spec| spec.artifacts.iter().any(|a| a.id == id));
+        (model == Some(id) || snapshot_needs)
+            && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
     });
     if needed {
         return Some("A note that isn't finished needs this model.".into());
@@ -186,7 +204,7 @@ pub fn delete_refusal(
 pub fn speaker_models(statuses: &[ModelStatus]) -> SpeakerModelsStatus {
     let weights: Vec<_> = statuses
         .iter()
-        .filter(|s| matches!(s.role, ModelRole::Segmentation | ModelRole::Embedding))
+        .filter(|s| s.required && matches!(s.role, ModelRole::Segmentation | ModelRole::Embedding))
         .collect();
     let state = if weights.iter().all(|s| s.state == ModelState::Present) {
         ModelState::Present
@@ -259,6 +277,7 @@ impl ModelsManager {
             .iter()
             .map(|m| ModelStatus {
                 id: m.id.clone(),
+                assessment: m.assessment.clone(),
                 role: m.kind.into(),
                 name: m.name.clone(),
                 description: m.description.clone(),
@@ -267,7 +286,11 @@ impl ModelsManager {
                 languages: m.languages.clone(),
                 recommended: m.recommended,
                 required: required.contains(&m.id.as_str()),
-                state: self.state_of(m, active.contains_key(&m.id)),
+                state: self.state_of(
+                    m,
+                    active.contains_key(&m.id)
+                        || active.contains_key(&format!("{}@{}", m.id, m.sha256)),
+                ),
                 repository: m.repository.clone(),
                 revision: m.revision.clone(),
                 licence: LicenceInfo {
@@ -280,14 +303,24 @@ impl ModelsManager {
     }
 
     fn state_of(&self, model: &CatalogModel, downloading: bool) -> ModelState {
-        if models::is_present(&self.dir, model) {
+        if self.is_present(&model.id) {
             ModelState::Present
         } else if downloading {
             ModelState::Downloading
         } else {
-            let partial_bytes = partial_path(&self.dir.join(&model.filename))
-                .metadata()
+            let legacy = partial_path(&self.dir.join(&model.filename));
+            let pinned = partial_path(
+                &self
+                    .dir
+                    .join("pinned")
+                    .join(&model.sha256)
+                    .join(&model.filename),
+            );
+            let partial_bytes = [legacy, pinned]
+                .iter()
+                .filter_map(|p| p.metadata().ok())
                 .map(|m| m.len())
+                .max()
                 .unwrap_or(0);
             ModelState::Absent { partial_bytes }
         }
@@ -295,19 +328,145 @@ impl ModelsManager {
 
     /// Where a catalog model lives on disk, present or not.
     pub fn file_path(&self, id: &str) -> Option<PathBuf> {
-        models::model(id).map(|m| self.dir.join(&m.filename))
+        models::model(id).map(|m| {
+            let pinned = self.dir.join("pinned").join(&m.sha256).join(&m.filename);
+            if pinned
+                .metadata()
+                .is_ok_and(|f| f.is_file() && f.len() == m.size_bytes)
+            {
+                pinned
+            } else {
+                self.dir.join(&m.filename)
+            }
+        })
     }
 
     /// Whether the catalog model `id` is on disk and complete.
     pub fn is_present(&self, id: &str) -> bool {
-        models::model(id).is_some_and(|m| models::is_present(&self.dir, m))
+        models::model(id).is_some_and(|m| {
+            self.file_path(id).is_some_and(|p| {
+                p.metadata()
+                    .is_ok_and(|f| f.is_file() && f.len() == m.size_bytes)
+            })
+        })
+    }
+
+    /// Resolve an exact snapshot file. Prefer its isolated pinned copy.
+    pub fn artifact_path(&self, artifact: &models::recognition::ArtifactSpec) -> Option<PathBuf> {
+        if models::download::pinned_artifact_present(&self.dir, artifact) {
+            return models::download::pinned_artifact_path(&self.dir, artifact).ok();
+        }
+        models::model(&artifact.id)
+            .filter(|m| {
+                m.sha256 == artifact.sha256
+                    && m.filename == artifact.filename
+                    && m.revision == artifact.revision
+                    && m.size_bytes == artifact.size_bytes
+                    && models::is_present(&self.dir, m)
+            })
+            .map(|m| self.dir.join(&m.filename))
+    }
+
+    pub fn missing_spec(&self, spec: &models::recognition::ExecutionSpec) -> Vec<String> {
+        spec.artifacts
+            .iter()
+            .filter(|a| self.artifact_path(a).is_none())
+            .map(|a| a.id.clone())
+            .collect()
+    }
+
+    /// Download immutable snapshot artifacts without replacing catalog files.
+    pub fn start_spec_downloads(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        spec: &models::recognition::ExecutionSpec,
+    ) -> Result<(), String> {
+        self.start_artifact_downloads(app, &spec.artifacts)
+    }
+
+    fn start_artifact_downloads(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        artifacts: &[models::recognition::ArtifactSpec],
+    ) -> Result<(), String> {
+        for artifact in artifacts {
+            models::download::pinned_artifact_path(&self.dir, artifact)
+                .map_err(|e| e.to_string())?;
+        }
+        let mut wanted = Vec::new();
+        {
+            let mut active = self.active();
+            for artifact in artifacts {
+                let key = format!("{}@{}", artifact.id, artifact.sha256);
+                if self.artifact_path(artifact).is_none() && !active.contains_key(&key) {
+                    let token = CancellationToken::new();
+                    active.insert(key.clone(), token.clone());
+                    wanted.push((key, artifact.clone(), token));
+                }
+            }
+        }
+        let manager = Arc::clone(self);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            for (key, artifact, token) in wanted {
+                let progress = |event: DownloadProgress<'_>| match event {
+                    DownloadProgress::Progress(p) => emit(
+                        &app,
+                        &artifact.id,
+                        DownloadUpdate::Progress {
+                            downloaded: p.downloaded,
+                            total: p.total,
+                        },
+                    ),
+                    DownloadProgress::VerificationStarted => {
+                        emit(&app, &artifact.id, DownloadUpdate::Verifying)
+                    }
+                    DownloadProgress::VerificationCompleted => {}
+                };
+                let update = match models::download::ensure_artifact(
+                    &manager.dir,
+                    &artifact,
+                    Limits::default(),
+                    &token,
+                    &progress,
+                )
+                .await
+                {
+                    Ok(Outcome::Completed) => DownloadUpdate::Completed,
+                    Ok(Outcome::Cancelled) => DownloadUpdate::Cancelled,
+                    Err(e) => DownloadUpdate::Failed {
+                        message: e.to_string(),
+                    },
+                };
+                manager.active().remove(&key);
+                if models::model(&artifact.id)
+                    .is_some_and(|m| m.sha256 == artifact.sha256 && m.revision == artifact.revision)
+                {
+                    settle_pending_pick(&app, &artifact.id, &update);
+                }
+                emit(&app, &artifact.id, update);
+            }
+        });
+        Ok(())
+    }
+
+    pub fn statuses_for(
+        &self,
+        config: &models::recognition::RecognitionConfig,
+    ) -> Result<Vec<ModelStatus>, String> {
+        let spec = models::recognition::resolve(config).map_err(|e| e.to_string())?;
+        let mut statuses = self.statuses(&config.asr_model);
+        for status in &mut statuses {
+            status.required = spec.artifacts.iter().any(|a| a.id == status.id);
+        }
+        Ok(statuses)
     }
 
     /// Catalog ids required by `asr_model` that are not on disk.
     pub fn missing(&self, asr_model: &str) -> Vec<String> {
         models::required_for(asr_model)
             .into_iter()
-            .filter(|m| !models::is_present(&self.dir, m))
+            .filter(|m| !self.is_present(&m.id))
             .map(|m| m.id.clone())
             .collect()
     }
@@ -316,13 +475,21 @@ impl ModelsManager {
     /// caller applies [`delete_refusal`] first. A download in progress is
     /// refused, because it continues to write the partial file.
     pub fn delete_files(&self, id: &str) -> Result<(), String> {
-        let path = self
-            .file_path(id)
-            .ok_or_else(|| format!("no model named '{id}'"))?;
-        if self.active().contains_key(id) {
+        let model = models::model(id).ok_or_else(|| format!("no model named '{id}'"))?;
+        let legacy = self.dir.join(&model.filename);
+        let pinned = self
+            .dir
+            .join("pinned")
+            .join(&model.sha256)
+            .join(&model.filename);
+        if self
+            .active()
+            .keys()
+            .any(|key| key == id || key.starts_with(&format!("{id}@")))
+        {
             return Err("This model is downloading. Cancel the download first.".into());
         }
-        for path in [partial_path(&path), path] {
+        for path in [partial_path(&legacy), legacy, partial_path(&pinned), pinned] {
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -345,94 +512,31 @@ impl ModelsManager {
         app: &AppHandle,
         ids: Vec<String>,
     ) -> Result<(), String> {
-        let mut wanted = Vec::new();
-        for id in &ids {
-            let model = models::model(id).ok_or_else(|| format!("no model named '{id}'"))?;
-            if !models::is_present(&self.dir, model) {
-                wanted.push(model);
-            }
-        }
-        let wanted: Vec<_> = {
-            let mut active = self.active();
-            wanted.retain(|m| !active.contains_key(&m.id));
-            wanted
-                .into_iter()
-                .map(|model| {
-                    let token = CancellationToken::new();
-                    active.insert(model.id.clone(), token.clone());
-                    (model, token)
+        let artifacts = ids
+            .iter()
+            .map(|id| {
+                let m = models::model(id).ok_or_else(|| format!("no model named '{id}'"))?;
+                Ok(models::recognition::ArtifactSpec {
+                    id: m.id.clone(),
+                    filename: m.filename.clone(),
+                    sha256: m.sha256.clone(),
+                    revision: m.revision.clone(),
+                    url: m.url.clone(),
+                    size_bytes: m.size_bytes,
+                    format: String::new(),
                 })
-                .collect()
-        };
-        if wanted.is_empty() {
-            return Ok(());
-        }
-        let manager = Arc::clone(self);
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            for (model, token) in wanted {
-                let update = manager.download_one(&app, model, &token).await;
-                manager.active().remove(&model.id);
-                settle_pending_pick(&app, &model.id, &update);
-                emit(&app, &model.id, update);
-            }
-        });
-        Ok(())
-    }
-
-    async fn download_one(
-        &self,
-        app: &AppHandle,
-        model: &'static CatalogModel,
-        token: &CancellationToken,
-    ) -> DownloadUpdate {
-        if token.is_cancelled() {
-            return DownloadUpdate::Cancelled;
-        }
-        // Progress arrives per network chunk; the surface needs a whole
-        // percent at most.
-        let last_percent = Mutex::new(u64::MAX);
-        let on_event = |event: DownloadProgress<'_>| match event {
-            DownloadProgress::Progress(p) => {
-                let percent = (p.downloaded * 100).checked_div(p.total).unwrap_or(0);
-                let mut last = last_percent.lock().unwrap_or_else(|e| e.into_inner());
-                if *last != percent {
-                    *last = percent;
-                    emit(
-                        app,
-                        &model.id,
-                        DownloadUpdate::Progress {
-                            downloaded: p.downloaded,
-                            total: p.total,
-                        },
-                    );
-                }
-            }
-            DownloadProgress::VerificationStarted => {
-                emit(app, &model.id, DownloadUpdate::Verifying)
-            }
-            DownloadProgress::VerificationCompleted => {}
-        };
-        match models::ensure_model(&self.dir, model, Limits::default(), token, &on_event).await {
-            Ok(Outcome::Completed) => {
-                log::info!("model '{}' downloaded and verified", model.id);
-                DownloadUpdate::Completed
-            }
-            Ok(Outcome::Cancelled) => DownloadUpdate::Cancelled,
-            Err(e) => {
-                log::warn!("model '{}' download failed: {e}", model.id);
-                DownloadUpdate::Failed {
-                    message: e.to_string(),
-                }
-            }
-        }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.start_artifact_downloads(app, &artifacts)
     }
 
     /// Stop the download of `id`, if one is in progress. The partial is
     /// kept.
     pub fn cancel(&self, id: &str) {
-        if let Some(token) = self.active().get(id) {
-            token.cancel();
+        for (key, token) in self.active().iter() {
+            if key == id || key.starts_with(&format!("{id}@")) {
+                token.cancel();
+            }
         }
     }
 
@@ -450,12 +554,35 @@ impl ModelsManager {
 /// event is emitted, so a surface that reads the settings on the event sees
 /// the new selection.
 fn settle_pending_pick(app: &AppHandle, id: &str, update: &DownloadUpdate) {
-    if settings::get_settings(app).pending_asr_model.as_deref() != Some(id) {
+    let current = settings::get_settings(app);
+    if current.pending_asr_model.as_deref() != Some(id) && current.pending_recognition.is_none() {
         return;
     }
     let mut changed = false;
     match settings::update_settings(app, |s| {
         changed = settle_pending(s, id, update);
+        if let Some(config) = s.pending_recognition.clone() {
+            let spec = models::recognition::resolve(&config).map_err(|e| e.to_string())?;
+            if spec.artifacts.iter().any(|a| a.id == id) {
+                match update {
+                    DownloadUpdate::Completed => {
+                        if app
+                            .state::<Arc<ModelsManager>>()
+                            .missing_spec(&spec)
+                            .is_empty()
+                        {
+                            s.apply_recognition(&config);
+                            changed = true;
+                        }
+                    }
+                    DownloadUpdate::Failed { .. } | DownloadUpdate::Cancelled => {
+                        s.pending_recognition = None;
+                        changed = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
         Ok(())
     }) {
         Ok(settings) if changed => {
@@ -631,6 +758,7 @@ mod tests {
             queue_seq: None,
             speaker_count: None,
             asr_model: Some(model.into()),
+            recognition_snapshot: None,
             home_path: None,
             title: None,
             found_speakers: None,
@@ -789,7 +917,7 @@ mod tests {
             .iter()
             .filter(|s| s.role == ModelRole::Recognition)
             .collect();
-        assert_eq!(asr.len(), 9);
+        assert_eq!(asr.len(), 10);
         let parakeet = asr.iter().find(|s| s.id == PARAKEET).unwrap();
         assert!(parakeet.recommended && parakeet.streaming && parakeet.required);
         assert_eq!(parakeet.languages, ["en"]);

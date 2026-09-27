@@ -116,6 +116,8 @@ pub struct SessionDoc {
     /// The recognition model that made the transcript (R3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asr_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition_snapshot: Option<serde_json::Value>,
     /// The number of speakers that processing found (R3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found_speakers: Option<u32>,
@@ -188,6 +190,7 @@ impl SessionDoc {
             title_source: None,
             speaker_count,
             asr_model: None,
+            recognition_snapshot: None,
             found_speakers: None,
             transcript_fingerprint: None,
             summary_fingerprint: None,

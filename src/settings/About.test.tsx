@@ -11,6 +11,7 @@ const model = (id: string, name: string, role: ModelStatus["role"]): ModelStatus
   role,
   name,
   description: "",
+  assessment: null,
   streaming: false,
   languages: [],
   recommended: false,

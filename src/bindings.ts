@@ -8,6 +8,47 @@ export const commands = {
 async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
+/**
+ * Keep the complete default until every new artifact is downloaded.
+ */
+async setRecognitionDefaults(config: RecognitionConfig) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_recognition_defaults", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resolveRecognition(config: RecognitionConfig) : Promise<Result<ExecutionSpec, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resolve_recognition", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch the exact artifacts of a saved configuration.
+ */
+async downloadRecognitionArtifacts(spec: ExecutionSpec) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("download_recognition_artifacts", { spec }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Hold one validated configuration for the next note.
+ */
+async setRecognitionOverride(config: RecognitionConfig | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_recognition_override", { config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async loginItemStatus() : Promise<Result<LoginItemStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("login_item_status") };
@@ -711,6 +752,13 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 /** user-defined types **/
 
+export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
+export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
+export type Capabilities = { live_transcription: boolean; live_speaker_analysis: boolean; live_attributed_text: boolean; maximum_speakers: number | null; 
+/**
+ * Catalog support is distinct from an installed-package acceptance test.
+ */
+locally_verified: boolean }
 /**
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.
@@ -789,6 +837,7 @@ export type EndpointView = { host: string; model: string;
  * False when the transcript would cross the network unencrypted.
  */
 encrypted: boolean }
+export type ExecutionSpec = { schema_version: number; catalog_revision: string; config: RecognitionConfig; artifacts: ArtifactSpec[]; runtimes: RuntimeSpec[]; capabilities: Capabilities; enabled_live_transcription: boolean; enabled_live_speaker_analysis: boolean; preprocessing_revision: string }
 /**
  * What a rename did to the session's folder. The title changes in every
  * case.
@@ -920,7 +969,7 @@ recommended: boolean; size_bytes: number;
  * Needed by the current settings: the selected recognition model and
  * both diarization weights.
  */
-required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo }
+required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo; assessment: Assessment | null }
 /**
  * What a notes save did.
  */
@@ -936,6 +985,7 @@ export type NotesSaveResult =
  * beside it. The editor loads the notes again.
  */
 { kind: "conflict"; draft: string }
+export type ProcessingMode = "during_recording" | "after_stop"
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
  * The secret store holding the endpoint credential is locked (R20b).
@@ -993,6 +1043,7 @@ missing_models: string[];
  * processing use them (KTD3). A locked Keychain does not clear it.
  */
 endpoint_configured: boolean }
+export type RecognitionConfig = { asr_model: string; speaker_source: SpeakerSource; processing_mode: ProcessingMode; speaker_processing_mode?: ProcessingMode; speaker_count: SpeakerCount | null; language: string | null }
 /**
  * A session started, stopped, or resumed recording.
  */
@@ -1089,6 +1140,7 @@ system_audio_other_output: boolean;
  * the note hears the user twice.
  */
 system_audio_mic_copy: boolean }
+export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**
  * Stages whose work is complete.
@@ -1233,7 +1285,7 @@ pending_asr_model: string | null;
 /**
  * A streaming model transcribes during recording (R18, KD9).
  */
-live_transcript: boolean; 
+live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; pending_recognition: RecognitionConfig | null; 
 /**
  * The microphone a new note records from. `None` is "System default"
  * (R1, KTD17).
@@ -1276,6 +1328,7 @@ export type ShortcutStatuses = { recording: ShortcutStatus; show_window: Shortcu
  * The main window must show the page of this session (R3).
  */
 export type ShowSession = { session_id: string }
+export type SpeakerCount = { kind: "exact"; count: number } | { kind: "range"; min: number; max: number }
 /**
  * An optional bound on how many people are speaking (R36).
  */
@@ -1296,6 +1349,7 @@ size_bytes: number;
  * Present only when every weight is present.
  */
 state: ModelState }
+export type SpeakerSource = "off" | "integrated" | "pyannote" | "sortformer" | "nemotron"
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.

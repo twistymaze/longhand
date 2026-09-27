@@ -1250,6 +1250,7 @@ fn adoption(id: &str, home: &str) -> session_core::Adoption {
             source: TitleSource::User,
         }),
         asr_model: Some("whisper-large-v3-turbo-q5km".to_string()),
+        recognition_snapshot: None,
         found_speakers: Some(3),
         home_path: home.to_string(),
         transcript_fingerprint: Some("abc123".to_string()),
@@ -1509,4 +1510,40 @@ fn only_a_saved_unclaimed_session_with_a_home_folder_is_not_busy() {
     let mut recording = record;
     recording.state = SessionState::Capturing;
     assert!(busy(&recording, false));
+}
+
+#[test]
+fn recognition_snapshot_is_immutable_across_default_and_count_changes() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("snapshot", t(0), None).unwrap();
+    let snapshot = serde_json::json!({"schema_version":1,"config":{"asr_model":"pinned"}});
+    store
+        .set_recognition_snapshot("snapshot", &snapshot)
+        .unwrap();
+    store
+        .set_speaker_count("snapshot", Some(SpeakerCount::Exact(3)))
+        .unwrap();
+    assert_eq!(
+        store.recognition_snapshot("snapshot").unwrap(),
+        Some(snapshot)
+    );
+    assert!(
+        store
+            .set_recognition_snapshot("snapshot", &serde_json::json!({"different":true}))
+            .is_err()
+    );
+}
+
+#[test]
+fn adoption_preserves_recognition_snapshot_without_queuing_work() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut note = adoption("portable", "/notes/portable");
+    note.recognition_snapshot =
+        Some(serde_json::json!({"schema_version":1,"artifacts":[{"sha256":"pinned"}]}));
+    store.adopt(&note).unwrap();
+    assert_eq!(
+        store.recognition_snapshot("portable").unwrap(),
+        note.recognition_snapshot
+    );
+    assert!(store.queue().unwrap().is_empty());
 }

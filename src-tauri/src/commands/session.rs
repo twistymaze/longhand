@@ -861,6 +861,7 @@ mod entry_tests {
             queue_seq: None,
             speaker_count: None,
             asr_model: None,
+            recognition_snapshot: None,
             home_path: None,
             title: Some(Title {
                 text: "Budget review".into(),

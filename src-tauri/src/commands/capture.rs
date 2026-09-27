@@ -195,3 +195,15 @@ pub async fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
     })
     .await
 }
+
+/// Hold one validated configuration for the next note.
+#[tauri::command]
+#[specta::specta]
+pub fn set_recognition_override(
+    manager: State<'_, Arc<CaptureManager>>,
+    config: Option<models::recognition::RecognitionConfig>,
+) -> Result<(), String> {
+    manager
+        .set_recognition_override(config)
+        .map_err(|e| e.to_string())
+}

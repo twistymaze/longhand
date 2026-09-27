@@ -560,6 +560,7 @@ pub fn session_doc(
         .clone()
         .or_else(|| record.asr_model.clone());
     doc.found_speakers = record.found_speakers;
+    doc.recognition_snapshot = record.recognition_snapshot.clone();
     doc.transcript_fingerprint = fingerprint_of(folder, TRANSCRIPT_FILE)?;
     doc.summary_fingerprint = fingerprint_of(folder, SUMMARY_FILE)?;
     Ok(doc)
