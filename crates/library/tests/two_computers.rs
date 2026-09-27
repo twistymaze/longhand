@@ -678,7 +678,9 @@ fn a_targeted_scan_adopts_a_new_folder_and_starts_no_delete_for_the_others() {
     assert_eq!(a.sync_folders(&root, &[&second]), changed(&["n2"]));
     assert_eq!(a.home("n2"), second);
     assert!(!a.reconciler.is_pending("n1"), "n1 was not in the scan");
-    assert_eq!(a.sync_folders(&root, &[&second]), Changes::default());
+    // A targeted scan follows a file change in its folders, so it reports
+    // the note in them again, and nothing else.
+    assert_eq!(a.sync_folders(&root, &[&second]), changed(&["n2"]));
 }
 
 // Covers R10 (U6).
@@ -721,6 +723,27 @@ fn a_targeted_scan_of_a_duplicate_folder_keeps_the_home_folder() {
         std::slice::from_ref(&copy)
     );
     assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
+}
+
+// Covers R8 (U6).
+#[test]
+fn a_targeted_scan_reports_a_note_whose_summary_alone_changed() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync(&root, Instant::now());
+
+    // Another computer regenerated the summary: the row does not change,
+    // but an open note page must read the documents again.
+    // The sync delivers summary.md and session.md together.
+    let summary = "# Summary\n\nA new summary.\n";
+    fs::write(folder.join("summary.md"), summary).unwrap();
+    edit_doc(&folder, |doc| {
+        doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
+    });
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert!(a.reconciler.status().note("n1").waiting.is_empty());
 }
 
 #[test]

@@ -184,9 +184,24 @@ impl Reconciler {
             &rereads,
         )?;
         let noted = self.status.apply(&result, &coverage, &store.sessions()?);
-        changes
-            .changed
-            .extend(noted.into_iter().filter(|id| !changes.removed.contains(id)));
+        // A file that changed in a note folder can leave the row as it is,
+        // for example a new summary.md. The note is reported as changed, so
+        // an open note page reads its documents again.
+        let touched = match target {
+            Target::Folders { folders, .. } => result
+                .notes
+                .iter()
+                .filter(|note| folders.contains(&note.path))
+                .map(|note| note.doc.session_id.clone())
+                .collect(),
+            Target::Full(_) => Vec::new(),
+        };
+        changes.changed.extend(
+            noted
+                .into_iter()
+                .chain(touched)
+                .filter(|id| !changes.removed.contains(id)),
+        );
         changes.changed.sort();
         changes.changed.dedup();
         Ok(changes)
