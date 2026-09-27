@@ -1,6 +1,6 @@
 // Run the production recognition stages on local audio. Keep raw output local.
 import { join, resolve } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, copyFile, chmod } from 'node:fs/promises';
 
 const [pathsFile, wav, helper, directory] = process.argv.slice(2);
 if (!pathsFile || !wav || !helper || !directory) {
@@ -40,12 +40,15 @@ if (buildCode !== 0) throw new Error(`Test build failed; see ${join(output, 'bui
 const executable = messages.split('\n').filter(Boolean).map(line => JSON.parse(line))
   .find(message => message.reason === 'compiler-artifact' && message.target?.name === 'recognition_native' && message.executable)?.executable;
 if (!executable) throw new Error('The route test executable is absent');
+const testBinary = join(output, process.platform === 'win32' ? 'recognition-test.exe' : 'recognition-test');
+await copyFile(executable, testBinary);
+await chmod(testBinary, 0o755);
 const results: object[] = [];
 let failures = 0;
 for (const item of cases) {
   const id = `${item.model}--${item.speaker}--${item.runtime}`;
   const started = performance.now();
-  const child = Bun.spawn([executable, '--ignored', '--nocapture'], {
+  const child = Bun.spawn([testBinary, '--ignored', '--nocapture'], {
     cwd: root,
     env: {
       ...process.env,
