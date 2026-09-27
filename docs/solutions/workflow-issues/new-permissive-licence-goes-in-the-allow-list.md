@@ -38,7 +38,7 @@ A per-crate exception says that the licence was a special decision for that crat
 ## When to Apply
 
 - Adding or updating a Rust dependency that the licence gate rejects.
-- Reviewing `deny.toml` or `about.toml` for an exception whose licence is permissive. The `webpki-root-certs` exception (CDLA-Permissive-2.0, which reaches the graph only as a build dependency) was not reviewed under this rule when CC0 moved.
+- Reviewing `deny.toml` or `about.toml` for an exception whose licence is permissive. A permissive licence that is rare can stay a per-crate exception: the allow-list is for licences that many crates use. For this reason, the `webpki-root-certs` exception (CDLA-Permissive-2.0, which reaches the graph only as a build dependency) stays an exception. The user decided this when CC0 moved.
 
 ## Examples
 
