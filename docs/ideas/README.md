@@ -92,6 +92,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
+| [Library and desktop UI polish](ui-polish.md) | in-progress | Stable note selection, keyboard zoom, login startup, and a shared vector mark |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 | [Clickable links in notes](clickable-links-in-notes.md) | open | Open a link in a note's markdown in the default browser |
 
