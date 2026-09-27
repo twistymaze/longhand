@@ -30,7 +30,7 @@ describe("the alert sound row", () => {
   test("says what the sound is for and asks for no test", () => {
     const { row } = renderPane();
     expect(row().textContent).toContain("Plays when recording stops and cannot restart");
-    expect(row().textContent).not.toMatch(/Not tested|Heard at setup|Tested/);
+    expect(document.body.textContent).not.toMatch(/Not tested|Heard at setup|Tested|Do Not Disturb|silence the notification/);
   });
 
   test("Play Sound plays the sound and asks no question", async () => {

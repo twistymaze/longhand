@@ -5026,7 +5026,6 @@ dependencies = [
  "cpal",
  "log",
  "thiserror 2.0.20",
- "windows 0.61.3",
 ]
 
 [[package]]

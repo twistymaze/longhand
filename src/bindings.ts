@@ -429,18 +429,6 @@ async resumeShortcuts() : Promise<Result<null, string>> {
 }
 },
 /**
- * Whether an alert would reach the user now. Run as recording starts and
- * polled while it lasts; the output is probed again when it changes.
- */
-async alertCheck(force: boolean) : Promise<Result<AlertCheck, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("alert_check", { force }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Play the failed-capture cue once, so the user knows the sound (R18).
  */
 async playAlertSound() : Promise<Result<null, string>> {
@@ -688,14 +676,6 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 /** user-defined types **/
 
-/**
- * Whether an alert raised now would reach the user (R5a).
- */
-export type AlertCheck = { 
-/**
- * Why the cue would not be heard, when it would not.
- */
-output_problem: string | null }
 /**
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.

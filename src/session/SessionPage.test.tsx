@@ -100,7 +100,6 @@ function captureOf(over: Partial<Capture> = {}): Capture {
     levels: [],
     recordedMs: 0,
     lostReason: null,
-    alert: { output_problem: null },
     refresh: async () => {},
     ...over,
   };
@@ -347,23 +346,18 @@ describe("SessionPage", () => {
     expect(within(bar).getByText("No audio arriving")).toBeTruthy();
   });
 
-  test("the recording bar has no alert sound test warning, and warns when the output is muted", () => {
+  test("the recording bar has no alert audibility warning", () => {
     const e = entry("rec", { state: "capturing" });
     mockPage(e);
-    const view = renderPage({
+    renderPage({
       id: "rec",
-      capture: recordingCapture("rec", { alert: { output_problem: null } }),
+      capture: recordingCapture("rec"),
       sessions: sessionsOf([e]),
     });
     const bar = screen.getByRole("region", { name: "Recording" });
     expect(bar.textContent).not.toMatch(/alert sound/i);
 
-    view.rerenderWith(
-      recordingCapture("rec", { alert: { output_problem: "the output is muted." } }),
-      sessionsOf([e]),
-    );
-    expect(within(bar).getByText("If recording fails, the output is muted.")).toBeTruthy();
-    expect(bar.textContent).not.toMatch(/alert sound/i);
+    expect(bar.textContent).not.toMatch(/If recording fails|output is muted/i);
   });
 
   test("while Computer audio is hidden, the bar and the menu have no Computer audio control", async () => {

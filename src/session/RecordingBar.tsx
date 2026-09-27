@@ -101,8 +101,6 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
       });
     }
   }
-  const problem = capture.alert?.output_problem;
-  if (problem) items.push({ tone: "caution", text: `If recording fails, ${problem}` });
   if (readiness && readiness.destination.kind !== "ready") {
     const d = describeDestination(readiness.destination);
     items.push({ tone: d.tone === "negative" ? "negative" : "caution", text: `Storage: ${d.text}` });

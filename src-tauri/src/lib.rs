@@ -64,7 +64,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::set_shortcut,
             commands::capture::suspend_shortcuts,
             commands::capture::resume_shortcuts,
-            commands::alerts::alert_check,
             commands::alerts::play_alert_sound,
             commands::processing::regenerate_summary,
             commands::processing::transcribe_again,

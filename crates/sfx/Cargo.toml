@@ -9,12 +9,3 @@ publish.workspace = true
 cpal = "0.18.2"
 log.workspace = true
 thiserror.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.3", features = [
-  "Win32_Media_Audio",
-  "Win32_Media_Audio_Endpoints",
-  "Win32_System_Com",
-  "Win32_System_Com_StructuredStorage",
-  "Win32_System_Variant",
-] }

@@ -231,10 +231,7 @@ function AlertSound() {
   };
 
   return (
-    <Group
-      header="Alerts"
-      footer="If recording stops and cannot restart, Longhand plays this sound three times over 90 seconds and posts a notification. Focus and Do Not Disturb can silence the notification, and Longhand cannot tell when they do."
-    >
+    <Group header="Alerts">
       <Row
         label="Alert sound"
         detail={error ?? "Plays when recording stops and cannot restart"}
