@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use pyannote_local::segmentation::WindowActivity;
 pub use pyannote_local::{
-    Analysis, AudioSource, DiarizationConfig, DiarizeRequest, Diarizer, SpeakerBounds,
-    SpeakerSegment, WindowEmbedding,
+    Analysis, AnalysisChunk, AnalysisLayout, AudioSource, Backend, DiarizationConfig,
+    DiarizeRequest, Diarizer, SpeakerBounds, SpeakerSegment, WindowEmbedding,
 };
 
 pub use turns::{Turn, smooth, turn_cuts};
@@ -67,9 +67,31 @@ impl OnnxAnalyzer {
             max_windows: usize::MAX,
             ..DiarizationConfig::default()
         };
-        Ok(Self {
-            diarizer: Diarizer::new(config, segmentation, embedding)?,
-        })
+        let diarizer = Diarizer::new(config, segmentation, embedding)?;
+        log::info!(
+            "speaker embedding provider: {:?}; fallback: {:?}; segmentation provider: CPU",
+            diarizer.embedding_backend(),
+            diarizer.embedding_fallback_reason()
+        );
+        Ok(Self { diarizer })
+    }
+
+    pub fn embedding_backend(&self) -> Backend {
+        self.diarizer.embedding_backend()
+    }
+
+    pub fn embedding_fallback_reason(&self) -> Option<&str> {
+        self.diarizer.embedding_fallback_reason()
+    }
+
+    /// Deliver overlapping extraction windows without clustering or output retention.
+    pub fn analyze_chunks(
+        &mut self,
+        audio: &mut dyn AudioSource,
+        request: &DiarizeRequest<'_>,
+        on_chunk: &mut dyn FnMut(AnalysisChunk) -> Result<(), pyannote_local::Error>,
+    ) -> Result<AnalysisLayout, DiarizeError> {
+        Ok(self.diarizer.analyze_chunks(audio, request, on_chunk)?)
     }
 }
 
