@@ -623,7 +623,11 @@ impl Calls<'_> {
         // The title and its checkpoint change together, so a resumed run
         // does not propose again over an edit the user made after.
         let guard = lock(self.store);
-        guard.set_title(self.session_id, &title, TitleSource::Proposed)?;
+        if guard.set_title(self.session_id, &title, TitleSource::Proposed)? {
+            // The folder takes the new name when the work ends, or at the
+            // next launch after a crash.
+            guard.set_rename_owed(self.session_id, true)?;
+        }
         guard.put_checkpoint(
             self.session_id,
             Stage::Summarize,

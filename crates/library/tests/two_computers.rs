@@ -455,7 +455,7 @@ fn the_last_note_of_a_marked_root_removed_on_b_is_forgotten_by_a_after_30_second
     let now = Instant::now();
     a.sync(&root, now);
     b.sync(&root, now);
-    assert!(root.join(library::scan::MARKER).is_file());
+    assert!(library::scan::marker(&root).is_file());
 
     // B moves the note to the Trash.
     fs::remove_dir_all(&folder).unwrap();

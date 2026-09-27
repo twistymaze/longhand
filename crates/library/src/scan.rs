@@ -19,9 +19,18 @@ use session_core::folder::{SessionDoc, fingerprint};
 
 use crate::conflict;
 
-/// The hidden file that tells an available Destination from one whose sync
-/// client removed its files (KTD5, KD7).
-pub const MARKER: &str = ".longhand-library";
+/// The hidden folder in a Destination root that holds Longhand's own files.
+/// The scan skips it, as it skips each hidden name.
+pub const LONGHAND_FOLDER: &str = ".longhand";
+
+/// The file in [`LONGHAND_FOLDER`] that tells an available Destination from
+/// one whose sync client removed its files (KTD5, KD7).
+pub const MARKER: &str = "library";
+
+/// The path of the library marker in `root`.
+pub fn marker(root: &Path) -> PathBuf {
+    root.join(LONGHAND_FOLDER).join(MARKER)
+}
 
 /// The default time limit of one file read.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -42,10 +51,16 @@ impl Default for ScanOptions {
 /// Write the library marker in `root`. Returns false, and logs the error,
 /// when the marker cannot be written.
 pub fn write_marker(root: &Path) -> bool {
-    match session_save::home_write::write_atomic(root, MARKER, b"") {
+    let folder = root.join(LONGHAND_FOLDER);
+    let written = std::fs::create_dir_all(&folder)
+        .and_then(|()| session_save::home_write::write_atomic(&folder, MARKER, b""));
+    match written {
         Ok(()) => true,
         Err(e) => {
-            log::warn!("library: cannot write {MARKER} in {}: {e}", root.display());
+            log::warn!(
+                "library: cannot write the marker {}: {e}",
+                marker(root).display()
+            );
             false
         }
     }
@@ -211,7 +226,7 @@ pub fn scan_folders(
     known: &Known,
     options: &ScanOptions,
 ) -> Option<(LibraryScan, HashSet<PathBuf>)> {
-    if !root.is_dir() || !root.join(MARKER).exists() {
+    if !root.is_dir() || !marker(root).exists() {
         return None;
     }
     let mut read: HashSet<PathBuf> = HashSet::new();
@@ -319,7 +334,7 @@ fn scan_root(
     } = reads;
 
     let mut marker_written = false;
-    if !root.join(MARKER).exists() {
+    if !marker(root).exists() {
         if notes.is_empty() && known.has_rows_in(root) {
             return unavailable(Unavailable::NoMarker);
         }

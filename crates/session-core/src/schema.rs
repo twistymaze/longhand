@@ -23,6 +23,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../migrations/0007_transcript_fingerprint.sql"
         )),
+        M::up(include_str!("../migrations/0008_owed_renames.sql")),
     ])
 }
 

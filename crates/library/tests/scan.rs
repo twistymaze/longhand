@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use library::scan::{
-    Known, LibraryScan, MARKER, RootState, ScanOptions, Unavailable, Waiting, scan, scan_folders,
+    Known, LibraryScan, RootState, ScanOptions, Unavailable, Waiting, scan, scan_folders,
 };
 use session_core::Segment;
 use session_core::folder::{SessionDoc, fingerprint};
@@ -51,7 +51,7 @@ fn note(root: &Path, name: &str, id: &str) -> PathBuf {
 
 fn marked_root() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join(MARKER), "").unwrap();
+    library::scan::write_marker(root.path());
     root
 }
 
@@ -324,7 +324,7 @@ fn a_root_without_its_marker_and_with_saved_rows_is_unavailable() {
         root_state(&result),
         &RootState::Unavailable(Unavailable::NoMarker)
     );
-    assert!(!root.path().join(MARKER).exists());
+    assert!(!library::scan::marker(root.path()).exists());
 }
 
 #[test]
@@ -336,7 +336,7 @@ fn a_root_without_its_marker_and_with_note_folders_gets_the_marker() {
     let result = run(root.path(), &known);
     assert_eq!(root_state(&result), &RootState::Available);
     assert!(result.roots[0].marker_written);
-    assert!(root.path().join(MARKER).exists());
+    assert!(library::scan::marker(root.path()).exists());
     assert_eq!(result.notes.len(), 1);
 }
 
@@ -350,7 +350,7 @@ fn a_root_without_its_marker_and_without_saved_rows_gets_the_marker() {
     let result = run(root.path(), &known);
     assert!(result.roots[0].marker_written);
     assert_eq!(root_state(&result), &RootState::Available);
-    assert!(root.path().join(MARKER).exists());
+    assert!(library::scan::marker(root.path()).exists());
 }
 
 #[test]
@@ -536,7 +536,7 @@ fn a_targeted_scan_of_a_root_without_its_marker_gives_no_scan() {
         &options(),
     );
     assert!(targeted.is_none());
-    assert!(!root.path().join(MARKER).exists());
+    assert!(!library::scan::marker(root.path()).exists());
     let missing = root.path().join("missing");
     assert!(scan_folders(&missing, &HashSet::new(), &Known::default(), &options()).is_none());
 }

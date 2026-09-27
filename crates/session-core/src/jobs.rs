@@ -878,6 +878,35 @@ impl Store {
         Ok(())
     }
 
+    // ------------------------------------------------------------ owed rename
+
+    /// Record that this computer owes the session's folder a rename: a
+    /// reconcile could not give the folder the name its title gives.
+    pub fn set_rename_owed(&self, id: &str, owed: bool) -> Result<()> {
+        self.require(id)?;
+        if owed {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO owed_renames (session_id) VALUES (?1)",
+                [id],
+            )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM owed_renames WHERE session_id = ?1", [id])?;
+        }
+        Ok(())
+    }
+
+    /// The ids of the sessions whose folders this computer owes a rename.
+    pub fn owed_renames(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id FROM owed_renames ORDER BY session_id")?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
     // ------------------------------------------------------------ notes
 
     /// The session's notes: one markdown document (KTD5).

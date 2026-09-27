@@ -53,6 +53,9 @@ pub fn rename_session(
     let claimed = claimed(session_id);
     crate::follow::follow_folder(&mut guard, session_id, claimed)?;
     guard.set_title(session_id, title, TitleSource::User)?;
+    // Recorded before the move, so a crash before the reconcile ends leaves
+    // the rename to the next launch.
+    guard.set_rename_owed(session_id, true)?;
     let renamed = reconcile(&guard, session_id, claimed, true, fs)?;
     // A folder that moves later, or that keeps its name because the move
     // failed, gets the title in its `session.md` now. Otherwise the next
@@ -107,7 +110,24 @@ fn write_title_in(record: &SessionRecord, home: &Path) {
 /// a folder that keeps its name gets `session.md` rewritten when its title
 /// is not the stored one. The caller holds the store lock for the whole
 /// call, so no other writer sees the folder between two steps.
+///
+/// A result of `Later` or `Kept` records that this computer owes the
+/// folder a rename, and the launch reconcile tries again. `Unchanged` or
+/// `Moved` clears the record.
 pub fn reconcile(
+    store: &Store,
+    session_id: &str,
+    claimed: bool,
+    check_document: bool,
+    fs: &dyn Fs,
+) -> Result<FolderRename, StageError> {
+    let result = reconcile_once(store, session_id, claimed, check_document, fs)?;
+    let owed = matches!(result, FolderRename::Later | FolderRename::Kept(_));
+    store.set_rename_owed(session_id, owed)?;
+    Ok(result)
+}
+
+fn reconcile_once(
     store: &Store,
     session_id: &str,
     claimed: bool,
@@ -213,20 +233,25 @@ pub fn resolve_intents(store: &SharedStore, fs: &dyn Fs) -> Result<Vec<String>, 
 }
 
 /// At launch, after [`resolve_intents`] and the library reconcile, and
-/// before the processing queue starts: run the reconcile for every saved
-/// session (KTD9). The library reconcile ran first, so a title that a sync
-/// delivered is in the row, and no folder is renamed back. Nothing
+/// before the processing queue starts: run the reconcile for each saved
+/// session whose folder this computer owes a rename (KTD9). A folder that
+/// another computer renamed is not in that list, so the reconcile does not
+/// rename it back when its new `session.md` has not synced yet. Nothing
 /// regenerates at launch. A failure on one session does not stop the
 /// others.
 pub fn reconcile_saved(store: &SharedStore, fs: &dyn Fs) -> Result<(), StageError> {
     let guard = lock(store);
-    for record in guard.sessions_in(SessionState::Saved.name())? {
-        match reconcile(&guard, &record.id, false, false, fs) {
+    let saved = SessionState::Saved.name();
+    for id in guard.owed_renames()? {
+        if require(&guard, &id)?.state.name() != saved {
+            continue;
+        }
+        match reconcile(&guard, &id, false, false, fs) {
             Ok(FolderRename::Kept(why)) => {
-                log::warn!("the folder of {} keeps its name: {why}", record.id)
+                log::warn!("the folder of {id} keeps its name: {why}")
             }
             Ok(_) => {}
-            Err(e) => log::warn!("could not reconcile the folder of {}: {e}", record.id),
+            Err(e) => log::warn!("could not reconcile the folder of {id}: {e}"),
         }
     }
     Ok(())
@@ -250,6 +275,8 @@ fn settle(
             Ok(Some(path))
         }
         Resolved::NotMoved => {
+            // The move did not happen, so this computer still owes it.
+            store.set_rename_owed(&record.id, true)?;
             store.clear_rename_intent(&record.id)?;
             Ok(None)
         }

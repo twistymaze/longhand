@@ -746,6 +746,21 @@ fn deleting_no_such_session_is_an_error() {
 }
 
 #[test]
+fn an_owed_rename_is_kept_until_it_is_cleared() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.create_session("s2", t(1), None).unwrap();
+    assert!(store.owed_renames().unwrap().is_empty());
+    store.set_rename_owed("s1", true).unwrap();
+    store.set_rename_owed("s1", true).unwrap();
+    store.set_rename_owed("s2", true).unwrap();
+    assert_eq!(store.owed_renames().unwrap(), ["s1", "s2"]);
+    store.set_rename_owed("s1", false).unwrap();
+    assert_eq!(store.owed_renames().unwrap(), ["s2"]);
+    assert!(store.set_rename_owed("nobody", true).is_err());
+}
+
+#[test]
 fn a_rename_intent_is_kept_until_it_is_cleared_and_goes_with_its_session() {
     use session_core::RenameIntent;
     let mut store = Store::open_in_memory().unwrap();

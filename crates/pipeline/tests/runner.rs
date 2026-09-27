@@ -2435,12 +2435,14 @@ impl session_save::Fs for FailsFinalRename {
     }
 }
 
+/// A title change on this computer: the row takes the title, and the
+/// folder is owed the name it gives.
 fn set_title(store: &SharedStore, id: &str, title: &str) {
-    store
-        .lock()
-        .unwrap()
+    let guard = store.lock().unwrap();
+    guard
         .set_title(id, title, session_core::TitleSource::User)
         .unwrap();
+    guard.set_rename_owed(id, true).unwrap();
 }
 
 /// Run a titled session up to the save, then run the save stage by hand
@@ -2508,7 +2510,7 @@ fn destination_entries(r: &Rig) -> Vec<String> {
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|name| name != library::scan::MARKER)
+        .filter(|name| name != library::scan::LONGHAND_FOLDER)
         .collect();
     names.sort();
     names
@@ -2937,7 +2939,7 @@ async fn killed_after_every_stage_the_session_is_saved_once_with_the_same_transc
     let folders: Vec<_> = std::fs::read_dir(dest.path())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name != library::scan::MARKER)
+        .filter(|name| name != library::scan::LONGHAND_FOLDER)
         .collect();
     assert_eq!(folders.len(), 1, "{folders:?}");
     let record = store.lock().unwrap().session("s").unwrap().unwrap();
@@ -4694,11 +4696,32 @@ async fn the_launch_reconcile_does_not_rename_a_folder_back_after_a_synced_renam
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_launch_reconcile_does_not_rename_a_folder_whose_new_session_md_has_not_synced() {
+    let a = rig().await;
+    let folder = saved_session(&a, Some("Planning")).await;
+    // Another computer renamed the note. The folder move synced, but the
+    // session.md with the new title did not.
+    let renamed = folder
+        .parent()
+        .unwrap()
+        .join(name_for(Some("Budget review")));
+    std::fs::rename(&folder, &renamed).unwrap();
+
+    folder_rename::resolve_intents(&a.store, &session_save::RealFs).unwrap();
+    sync(&a, &a.dest);
+    folder_rename::reconcile_saved(&a.store, &session_save::RealFs).unwrap();
+
+    assert_eq!(saved_folder(&a, "s"), renamed);
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+    assert_eq!(document_title(&renamed).as_deref(), Some("Planning"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_first_save_writes_the_library_marker_in_the_destination() {
     let a = rig().await;
-    assert!(!a.dest.join(library::scan::MARKER).exists());
+    assert!(!library::scan::marker(&a.dest).exists());
     saved_session(&a, None).await;
-    assert!(a.dest.join(library::scan::MARKER).is_file());
+    assert!(library::scan::marker(&a.dest).is_file());
 }
 
 #[tokio::test(flavor = "multi_thread")]

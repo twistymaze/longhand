@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use library::refresh::{self, Refresh, RefreshError, Scope};
-use library::scan::{MARKER, READ_TIMEOUT};
+use library::scan::{READ_TIMEOUT, marker};
 use session_core::Store;
 use session_core::jobs::busy;
 
@@ -65,7 +65,7 @@ pub fn follow_scoped(
 /// none: Longhand saves to the root now. A marker that cannot be written
 /// does not stop the save; the next library scan writes it.
 pub fn mark_destination(root: &Path) {
-    if !root.join(MARKER).exists() {
+    if !marker(root).exists() {
         library::scan::write_marker(root);
     }
 }

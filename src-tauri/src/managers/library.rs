@@ -523,7 +523,7 @@ mod tests {
         assert!(skip(".tmp6s1cca"));
         assert!(skip("Planning/.tmpABC123"));
         assert!(skip("Planning/notes.md.tmp"));
-        assert!(skip(".longhand-library"));
+        assert!(skip(".longhand/library"));
         assert!(skip(".staging-A1/transcript.md"));
         assert!(skip(".rename-A1"));
         assert!(skip("Planning/.notes.md.partial"));
@@ -685,7 +685,7 @@ mod tests {
 
     fn marked_root() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join(library::scan::MARKER), "").unwrap();
+        library::scan::write_marker(root.path());
         root
     }
 

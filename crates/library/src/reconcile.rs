@@ -489,7 +489,6 @@ mod tests {
     use session_core::folder::SessionDoc;
 
     use super::*;
-    use crate::scan::MARKER;
 
     fn never_claimed(_: &str) -> bool {
         false
@@ -499,7 +498,7 @@ mod tests {
     /// that adopted it.
     fn adopted() -> (tempfile::TempDir, PathBuf, Mutex<Store>, Reconciler) {
         let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join(MARKER), "").unwrap();
+        crate::scan::write_marker(root.path());
         let start = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
         let segment = Segment {
             index: 0,
