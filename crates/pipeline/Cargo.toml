@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+power = { path = "../power" }
 aec = { path = "../aec" }
 asr = { path = "../asr" }
 audio = { path = "../audio" }

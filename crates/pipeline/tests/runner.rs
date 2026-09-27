@@ -4883,3 +4883,142 @@ async fn a_regeneration_keeps_a_user_title_that_another_computer_wrote_during_it
     assert_eq!(session_md(&renamed).title.as_deref(), Some("Budget review"));
     assert!(read(&renamed, "summary.md").contains("A new summary."));
 }
+
+struct ObservedAssertion(Arc<AtomicUsize>);
+
+impl Drop for ObservedAssertion {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn observed_power() -> (power::ProcessingPower, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let held = Arc::new(AtomicUsize::new(0));
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let live = Arc::clone(&held);
+    let starts = Arc::clone(&acquired);
+    let owner = power::ProcessingPower::with_factory(move || {
+        live.fetch_add(1, Ordering::SeqCst);
+        starts.fetch_add(1, Ordering::SeqCst);
+        Some(ObservedAssertion(Arc::clone(&live)))
+    })
+    .unwrap();
+    (owner, held, acquired)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn processing_power_releases_during_capture_and_after_summary_regeneration() {
+    let r = rig().await;
+    let (power, held, acquired) = observed_power();
+    let script = Arc::clone(&r.script);
+    let capturing = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&capturing);
+    let runner = Runner::with_power(
+        Environment {
+            store: Arc::clone(&r.store),
+            working_root: r.root.clone(),
+            engines: Box::new(Provider(Arc::clone(&script))),
+            suspended: Box::new(move || flag.load(Ordering::SeqCst)),
+            events: Box::new(|_| {}),
+        },
+        power,
+    );
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert!(runner.run_next().await.is_none());
+    assert_eq!(
+        acquired.load(Ordering::SeqCst),
+        0,
+        "queued work holds no assertion"
+    );
+    capturing.store(false, Ordering::SeqCst);
+    *script.capture_after.lock().unwrap() = Some((1, Arc::clone(&capturing)));
+    let job = Arc::clone(&runner);
+    let task = tokio::spawn(async move { job.run_next().await });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !capturing.load(Ordering::SeqCst) || held.load(Ordering::SeqCst) != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let before = acquired.load(Ordering::SeqCst);
+    assert!(before > 0);
+    capturing.store(false, Ordering::SeqCst);
+    assert_eq!(task.await.unwrap().unwrap().1, Outcome::Finished);
+    assert!(
+        acquired.load(Ordering::SeqCst) > before,
+        "resumption acquires protection"
+    );
+    assert_eq!(held.load(Ordering::SeqCst), 0);
+    let before = acquired.load(Ordering::SeqCst);
+    let active = Arc::clone(&held);
+    let mock = summaries_from(
+        &r,
+        http::Reply::With(Arc::new(move |_| {
+            assert_eq!(
+                active.load(Ordering::SeqCst),
+                1,
+                "summary request holds protection"
+            );
+            (200, http::completion("A replacement summary."))
+        })),
+        None,
+    )
+    .await;
+    runner.regenerate_summary("s").await.unwrap();
+    assert!(!chat_calls(&mock).is_empty());
+    assert!(acquired.load(Ordering::SeqCst) > before);
+    assert_eq!(held.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn processing_power_releases_after_failure_and_cancellation() {
+    for cancel in [false, true] {
+        let r = rig().await;
+        let (power, held, acquired) = observed_power();
+        let runner = Runner::with_power(
+            Environment {
+                store: Arc::clone(&r.store),
+                working_root: r.root.clone(),
+                engines: Box::new(Provider(Arc::clone(&r.script))),
+                suspended: Box::new(|| false),
+                events: Box::new(|_| {}),
+            },
+            power,
+        );
+        queue_session(
+            &r.store,
+            &r.root,
+            "s",
+            100,
+            Some("m"),
+            &[(16_000, conversation())],
+        );
+        if cancel {
+            *r.script.cancel_after.lock().unwrap() = Some((1, Arc::clone(&runner), "s".into()));
+        } else {
+            *r.script.fail_on.lock().unwrap() = Some(0);
+        }
+        let outcome = runner.run_next().await.unwrap().1;
+        if cancel {
+            assert_eq!(outcome, Outcome::Cancelled);
+        } else {
+            assert!(matches!(
+                outcome,
+                Outcome::Failed {
+                    stage: Stage::Transcribe,
+                    ..
+                }
+            ));
+        }
+        assert!(acquired.load(Ordering::SeqCst) > 0);
+        assert_eq!(held.load(Ordering::SeqCst), 0);
+    }
+}

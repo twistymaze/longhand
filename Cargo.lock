@@ -4032,6 +4032,7 @@ dependencies = [
  "ogg",
  "opus",
  "opusic-sys",
+ "power",
  "realfft",
  "recorder",
  "rubato",

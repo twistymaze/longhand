@@ -23,10 +23,14 @@ impl IdleGuard {
     /// matters more than the assertion, and sleep detection still covers a
     /// machine that sleeps anyway.
     pub fn acquire() -> Option<Self> {
+        Self::acquire_for(REASON)
+    }
+
+    pub(crate) fn acquire_for(reason: &str) -> Option<Self> {
         match keepawake::Builder::default()
             .idle(true)
             .display(false)
-            .reason(REASON)
+            .reason(reason)
             .app_name("Longhand")
             .app_reverse_domain("net.ewal.longhand")
             .create()

@@ -176,6 +176,7 @@ pub struct Runner {
     /// Summary regenerations and deletes that run on a session. They
     /// exclude each other, and a folder rename waits for both (R8, KTD8).
     claims: Claims,
+    power: power::ProcessingPower,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -186,6 +187,7 @@ struct StageControl {
     cancel: CancellationToken,
     env: Arc<Environment>,
     session_id: String,
+    power: ActivePower,
 }
 
 impl StageControl {
@@ -206,8 +208,10 @@ impl Control for StageControl {
                 return Err(StageError::Cancelled);
             }
             if !(self.env.suspended)() {
+                self.power.resume();
                 return Ok(());
             }
+            self.power.suspend();
             std::thread::sleep(SUSPENDED_POLL);
         }
     }
@@ -219,6 +223,11 @@ impl Control for StageControl {
 
 impl Runner {
     pub fn new(env: Environment) -> Arc<Self> {
+        Self::with_power(env, power::ProcessingPower::default())
+    }
+
+    /// Use the supplied owner for processing assertions.
+    pub fn with_power(env: Environment, power: power::ProcessingPower) -> Arc<Self> {
         let owner = format!(
             "{}-{}",
             std::process::id(),
@@ -233,6 +242,7 @@ impl Runner {
             engine: Arc::new(Mutex::new(None)),
             permit: Arc::new(Semaphore::new(1)),
             claims: Claims::default(),
+            power,
         })
     }
 
@@ -330,13 +340,16 @@ impl Runner {
         let env = Arc::clone(&self.env);
         let cancel = self.shutdown.child_token();
         let id = session_id.to_string();
+        let power = self.power.clone();
         tokio::task::spawn_blocking(move || {
-            let endpoint = endpoint(&env)?;
-            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             let control = Unattended {
                 cancel,
                 env: Arc::clone(&env),
+                power: ActivePower::new(power),
             };
+            control.proceed()?;
+            let endpoint = endpoint(&env)?;
+            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             save::regenerate_summary(
                 &env.store,
                 &id,
@@ -756,12 +769,15 @@ impl Runner {
         let env = Arc::clone(&self.env);
         let engine = Arc::clone(&self.engine);
         let (id_owned, model) = (id.to_string(), model.to_string());
+        let power = self.power.clone();
         let result = tokio::task::spawn_blocking(move || {
             let control = StageControl {
                 cancel,
                 env: Arc::clone(&env),
                 session_id: id_owned.clone(),
+                power: ActivePower::new(power),
             };
+            control.proceed()?;
             execute(&env, &engine, &id_owned, &model, stage, &segments, &control)
         })
         .await;
@@ -948,6 +964,7 @@ fn unload_if<E: ?Sized>(
 struct Unattended {
     cancel: CancellationToken,
     env: Arc<Environment>,
+    power: ActivePower,
 }
 
 impl Control for Unattended {
@@ -957,14 +974,46 @@ impl Control for Unattended {
                 return Err(StageError::Cancelled);
             }
             if !(self.env.suspended)() {
+                self.power.resume();
                 return Ok(());
             }
+            self.power.suspend();
             std::thread::sleep(SUSPENDED_POLL);
         }
     }
 
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+}
+
+/// A blocking job releases its lease at a suspension boundary. Dropping
+/// the control also releases it on failure, cancellation, or unwind.
+struct ActivePower {
+    owner: power::ProcessingPower,
+    lease: Mutex<Option<power::ProcessingLease>>,
+}
+
+impl ActivePower {
+    fn new(owner: power::ProcessingPower) -> Self {
+        Self {
+            owner,
+            lease: Mutex::new(None),
+        }
+    }
+
+    fn resume(&self) {
+        let mut lease = self.lease.lock().unwrap_or_else(|error| error.into_inner());
+        if lease.is_none() {
+            *lease = Some(self.owner.acquire());
+        }
+    }
+
+    fn suspend(&self) {
+        self.lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
     }
 }
 
