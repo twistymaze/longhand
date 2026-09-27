@@ -188,6 +188,85 @@ describe("NotesTab", () => {
     expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
   });
 
+  test("a later edit after a conflict makes one more draft, not one for each save", async () => {
+    let file = notes("Old notes", "f0");
+    const conflicts: string[] = [];
+    let drafts = 0;
+    const tauri = mockTauri({
+      load_session_notes: () => file,
+      // As save_notes does: a save with another fingerprint writes a draft.
+      save_session_notes: (args) => {
+        if (args.loadedFingerprint === file.fingerprint) return saved(file.fingerprint);
+        return { kind: "conflict", draft: `/n/Planning/notes (Longhand conflict ${++drafts}).md` };
+      },
+    });
+    render(<NotesTab sessionId="s" autoFocus={false} onConflict={(d) => conflicts.push(d)} />);
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    // Another computer changes the file, and the sync has not told the tab.
+    file = notes("Notes from the other computer", "f1");
+    await typeAndSend(box, "1");
+    await act(async () => {});
+    // The user types on after the conflict: these saves wait.
+    await typeAndSend(box, "2");
+    await act(async () => {});
+    await typeAndSend(box, "3");
+    await act(async () => {});
+    expect(saves(tauri).map((s) => s.markdown)).toEqual(["1Old notes"]);
+
+    // When the user stops, the latest edit goes into one draft, and the
+    // editor shows the file.
+    await act(async () => {
+      clock += RELOAD_AFTER_INPUT_MS;
+      await new Promise((r) => setTimeout(r, RELOAD_AFTER_INPUT_MS + 50));
+    });
+    expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
+    expect(saves(tauri)).toEqual([
+      { sessionId: "s", markdown: "1Old notes", loadedFingerprint: "f0" },
+      { sessionId: "s", markdown: "1Old notes23", loadedFingerprint: "f0" },
+    ]);
+    expect(drafts).toBe(2);
+    expect(conflicts).toEqual(["notes (Longhand conflict 1).md", "notes (Longhand conflict 2).md"]);
+  });
+
+  test("an edit that waits after a conflict is sent when the tab closes", async () => {
+    let file = notes("Old notes", "f0");
+    const tauri = mockTauri({
+      load_session_notes: () => file,
+      save_session_notes: () => {
+        file = notes("Notes from the other computer", "f1");
+        return { kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" };
+      },
+    });
+    const view = render(<NotesTab sessionId="s" autoFocus={false} />);
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    await typeAndSend(box, "1");
+    await act(async () => {});
+    await typeAndSend(box, "2");
+    await act(async () => {});
+    view.unmount();
+    await act(async () => {});
+    expect(saves(tauri)).toEqual([
+      { sessionId: "s", markdown: "1Old notes", loadedFingerprint: "f0" },
+      { sessionId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" },
+    ]);
+  });
+
+  test("an older read that ends last does not replace a newer read", async () => {
+    const reads = [deferred<unknown>(), deferred<unknown>()];
+    let n = 0;
+    mockTauri({ load_session_notes: () => reads[n++].promise });
+    const view = render(<NotesTab sessionId="s" autoFocus={false} synced={0} />);
+    await act(async () => {});
+    view.rerender(<NotesTab sessionId="s" autoFocus={false} synced={1} />);
+    await act(async () => {});
+    expect(n).toBe(2);
+    await act(async () => reads[1].resolve(notes("New notes", "f1")));
+    expect(await screen.findByText("New notes")).toBeTruthy();
+    await act(async () => reads[0].resolve(notes("Old notes", "f0")));
+    await act(async () => {});
+    expect(screen.getByRole("textbox", { name: "My Notes" }).textContent).toBe("New notes");
+  });
+
   // Covers AE7.
   test("an editor that is not editable takes no input", async () => {
     const tauri = mockTauri({ load_session_notes: () => notes("", "f0") });

@@ -6,7 +6,9 @@
 // Each save sends the fingerprint of the notes.md that the editor loaded
 // (KTD10). When another computer changed the file since then, the edit goes
 // into a draft file beside it, and the editor loads the file again as a
-// sync does. A sync
+// sync does. Edits after the conflict wait, and the latest one goes into one
+// more draft before that load, so a user who types on makes no more drafts.
+// A sync
 // that changes the notes reloads them only when no save waits and the user
 // has not typed for 2 seconds, so a sync never replaces a local edit.
 
@@ -47,12 +49,17 @@ export function NotesTab({
   const lastInput = useRef(0);
   const onMarkdownRef = useRef(onMarkdown);
   onMarkdownRef.current = onMarkdown;
+  const onConflictRef = useRef(onConflict);
+  onConflictRef.current = onConflict;
 
   // One save at a time, so that an older document never replaces a newer
   // one. While a save runs, only the latest document waits. Each document
   // keeps the session id it was typed for, and a document that waits when
   // the tab closes is still sent.
-  const saving = useRef<{ busy: boolean; next: { id: string; markdown: string } | null }>({
+  const saving = useRef<{
+    busy: boolean;
+    next: { id: string; markdown: string; loaded?: string | null } | null;
+  }>({
     busy: false,
     next: null,
   });
@@ -63,10 +70,26 @@ export function NotesTab({
   current.current = sessionId;
   const reload = useRef<() => void>(() => {});
 
+  // After a save conflicts, later saves of the same session wait here, since
+  // each one would fail the same check and write another draft. The latest
+  // one goes into one more draft before the editor reads the file again,
+  // or when the tab closes.
+  const held = useRef<{ id: string; fingerprint: string | null; markdown: string | null } | null>(null);
+  const open = useRef(true);
+
+  // Each read has a number. The tab ignores a response from an older read,
+  // so a late response never replaces a newer one. A forced read that a
+  // newer read replaces gives its force to that read.
+  const readSeq = useRef(0);
+  const forceRead = useRef(false);
   const read = useCallback(
-    async (id: string, force: boolean) => {
+    async (id: string, forceThis: boolean) => {
+      const seq = ++readSeq.current;
+      if (forceThis) forceRead.current = true;
       const r = await commands.loadSessionNotes(id);
-      if (current.current !== id) return;
+      if (current.current !== id || seq !== readSeq.current) return;
+      const force = forceRead.current;
+      forceRead.current = false;
       if (r.status === "error") {
         setError(r.error);
         return;
@@ -80,6 +103,7 @@ export function NotesTab({
       }
       if (!force && r.data.fingerprint === fingerprint.current) return;
       fingerprint.current = r.data.fingerprint;
+      if (held.current?.id === id) held.current = null;
       setLoaded((l) => ({ markdown: r.data.markdown, generation: (l?.generation ?? 0) + 1 }));
       onMarkdownRef.current?.(r.data.markdown);
     },
@@ -101,6 +125,8 @@ export function NotesTab({
       retry.current = setTimeout(reloadWhenIdle, wait);
       return;
     }
+    // An edit that waits after a conflict goes into a draft first.
+    if (sendHeld()) return;
     stale.current = false;
     void read(current.current, false);
   }, [read]);
@@ -110,8 +136,20 @@ export function NotesTab({
     fingerprint.current = null;
     setLoaded(null);
     void read(sessionId, true);
-    return () => clearTimeout(retry.current);
+    return () => {
+      clearTimeout(retry.current);
+      sendHeld();
+      held.current = null;
+    };
   }, [sessionId, read]);
+
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+      sendHeld();
+    };
+  }, []);
 
   const first = useRef(true);
   useEffect(() => {
@@ -122,33 +160,55 @@ export function NotesTab({
     reloadWhenIdle();
   }, [synced, reloadWhenIdle]);
 
-  const save = (id: string, markdown: string) => {
+  // Send the edit that waits after a conflict, with the fingerprint that the
+  // conflicting save sent. Return true when an edit was sent.
+  function sendHeld() {
+    const h = held.current;
+    if (!h?.markdown) return false;
+    held.current = null;
+    save(h.id, h.markdown, h.fingerprint);
+    return true;
+  }
+
+  // `loaded` is the fingerprint to send; without it, the save sends the
+  // fingerprint of the notes that the editor holds.
+  function save(id: string, text: string, loaded?: string | null) {
+    const h = held.current;
+    if (loaded === undefined && h?.id === id && id === current.current && open.current) {
+      h.markdown = text;
+      return;
+    }
     const s = saving.current;
     if (s.busy) {
-      s.next = { id, markdown };
+      s.next = { id, markdown: text, loaded };
       return;
     }
     s.busy = true;
-    const loadedFingerprint = id === current.current ? fingerprint.current : null;
-    void commands.saveSessionNotes(id, markdown, loadedFingerprint).then((r) => {
+    const loadedFingerprint = loaded !== undefined ? loaded : id === current.current ? fingerprint.current : null;
+    void commands.saveSessionNotes(id, text, loadedFingerprint).then((r) => {
       s.busy = false;
-      const next = s.next;
+      let next = s.next;
       s.next = null;
       if (id === current.current) {
         setError(r.status === "error" ? r.error : null);
         if (r.status === "ok" && r.data.kind === "saved") fingerprint.current = r.data.fingerprint;
         if (r.status === "ok" && r.data.kind === "conflict") {
           // The file keeps the other computer's text: the editor shows it
-          // when the edit stops. An edit sent before then goes into a
-          // draft too.
-          onConflict?.(folderName(r.data.draft));
+          // when the edit stops. Until then, later edits wait, and the
+          // latest one goes into one more draft.
+          onConflictRef.current?.(folderName(r.data.draft));
           stale.current = true;
+          held.current = { id, fingerprint: loadedFingerprint, markdown: null };
+          if (next?.id === id && open.current) {
+            held.current.markdown = next.markdown;
+            next = null;
+          }
         }
       }
-      if (next) save(next.id, next.markdown);
+      if (next) save(next.id, next.markdown, next.loaded);
       else if (stale.current) reloadWhenIdle();
     });
-  };
+  }
 
   const send = (next: string) => {
     onMarkdown?.(next);
