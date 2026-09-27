@@ -1,0 +1,23 @@
+[package]
+name = "nemo-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[features]
+test-helper = []
+
+[[bin]]
+name = "nemo-test-helper"
+path = "tests/fixtures/helper.rs"
+required-features = ["test-helper"]

@@ -89,6 +89,63 @@
       "platforms": ["macos", "windows"],
       "files": ["licences/sources/Handy-MIT.txt"],
       "source": "https://github.com/cjpais/Handy"
+    },
+    {
+      "name": "NeMo-Speech.cpp",
+      "version": "97a15afa5caa9bce5baaa86c1184103877af4101",
+      "part": "native",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "files": [
+        "licences/sources/nemo-speech-LICENSE.txt",
+        "licences/sources/nemo-speech-NOTICE.txt",
+        "licences/sources/nemo-speech-THIRD-PARTY-NOTICES.txt"
+      ],
+      "source": "https://github.com/NVIDIA/NeMo-Speech.cpp/tree/97a15afa5caa9bce5baaa86c1184103877af4101"
+    },
+    {
+      "name": "ggml (NeMo runtime)",
+      "version": "c03b4e2bcece5134827881af90242086daf75be5",
+      "part": "native",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "files": [
+        "licences/sources/nemo-ggml-LICENSE.txt"
+      ],
+      "source": "https://github.com/ggml-org/ggml/tree/c03b4e2bcece5134827881af90242086daf75be5"
+    },
+    {
+      "name": "nlohmann JSON (NeMo helper)",
+      "version": "560445bf34c87356ad0f8d80fb03ec5488850b65",
+      "part": "native",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "files": [
+        "licences/sources/nemo-json-LICENSE.txt"
+      ],
+      "source": "https://github.com/ggml-org/llama.cpp/tree/560445bf34c87356ad0f8d80fb03ec5488850b65"
+    },
+    {
+      "name": "SentencePiece (NeMo runtime)",
+      "version": "17d7580d6407802f85855d2cc9190634e2c95624",
+      "part": "native",
+      "platforms": [
+        "macos",
+        "windows"
+      ],
+      "files": [
+        "licences/sources/nemo-sentencepiece-LICENSE.txt",
+        "licences/sources/nemo-sentencepiece-absl-LICENSE.txt",
+        "licences/sources/nemo-sentencepiece-darts-LICENSE.txt",
+        "licences/sources/nemo-sentencepiece-protobuf-LICENSE.txt"
+      ],
+      "source": "https://github.com/google/sentencepiece/tree/17d7580d6407802f85855d2cc9190634e2c95624"
     }
   ],
   "packageLicences": {

@@ -1,0 +1,11 @@
+{
+  "protocolVersion": 1,
+  "source": "https://github.com/NVIDIA/NeMo-Speech.cpp",
+  "revision": "97a15afa5caa9bce5baaa86c1184103877af4101",
+  "sampleRate": 16000,
+  "maxJsonBytes": 1048576,
+  "maxPcmSamples": 16000,
+  "routes": ["separate", "combined_stream", "combined_offline"],
+  "cppInterfaces": ["Recognizer", "RecognitionStream::set_interim_words", "RecognitionStream::stable_speaker_time", "RecognitionStream::refresh_speaker_tags"],
+  "jsonHeader": "llama.cpp/vendor/nlohmann/json.hpp"
+}

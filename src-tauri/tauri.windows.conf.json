@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "transcribe-libs": "."
+      "transcribe-libs": ".",
+      "nemo-runtime": "nemo-runtime"
     }
   }
 }
