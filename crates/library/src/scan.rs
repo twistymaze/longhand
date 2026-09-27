@@ -539,7 +539,8 @@ pub fn read_timed(path: PathBuf, timeout: Duration) -> Read {
     }
 }
 
-/// Keep one folder for each note id (KTD5): the folder at the row's home
+/// Keep one folder for each note id (KTD5): the one folder whose name is
+/// the name that its `session.md` gives, then the folder at the row's home
 /// folder, then a folder whose name is not a conflict copy of another's
 /// name, then the older folder. The others are duplicate folders.
 fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
@@ -572,6 +573,21 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
 }
 
 fn real_index(id: &str, group: &[Found], known: &Known) -> usize {
+    // The folder name that the note's start time and title give. A conflict
+    // copy has another name, also when it synced first and became the home
+    // folder.
+    let expected = |f: &Found| {
+        session_save::naming::folder_name(f.doc.started, f.doc.title.as_deref()) == f.name
+    };
+    if let [only] = group
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| expected(f))
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>()[..]
+    {
+        return only;
+    }
     if let Some(home) = group.iter().position(|f| known.id_at(&f.path) == Some(id)) {
         return home;
     }

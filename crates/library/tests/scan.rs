@@ -238,6 +238,21 @@ fn a_duplicate_id_prefers_the_home_path() {
 }
 
 #[test]
+fn a_duplicate_id_prefers_the_name_that_session_md_gives_over_the_home_path() {
+    // The conflict copy synced first and became the home folder. The real
+    // folder has the name that its start time and title give.
+    let root = marked_root();
+    let copy = note(root.path(), "2026-09-25 0900 Planning (1)", "A1");
+    let real = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let mut known = Known::default();
+    known.add("A1", &copy);
+    let result = run(root.path(), &known);
+    assert_eq!(result.notes.len(), 1);
+    assert_eq!(result.notes[0].path, real);
+    assert_eq!(result.notes[0].duplicate_folders, vec![copy]);
+}
+
+#[test]
 fn a_duplicate_id_prefers_the_name_without_a_conflict_pattern() {
     let root = marked_root();
     let copy = note(

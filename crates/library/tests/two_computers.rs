@@ -723,6 +723,47 @@ fn a_targeted_scan_of_a_duplicate_folder_keeps_the_home_folder() {
     assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
 }
 
+#[test]
+fn a_conflict_copy_that_syncs_first_gives_way_to_the_real_folder() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let name = folder.file_name().unwrap().to_string_lossy().into_owned();
+
+    // Only the conflict copy is in the storage folder at first, so A adopts
+    // the note from it.
+    let away = dir.path().join("real");
+    fs::rename(&folder, &away).unwrap();
+    let copy = root.join(format!("{name} (1)"));
+    fs::create_dir(&copy).unwrap();
+    copy_files(&away, &copy);
+    a.sync(&root, Instant::now());
+    assert_eq!(a.home("n1"), copy);
+
+    // The real folder arrives: A moves to it and lists the copy as another
+    // version.
+    fs::rename(&away, &folder).unwrap();
+    a.sync_roots(&[&root]);
+    assert_eq!(a.home("n1"), folder);
+    assert_eq!(
+        a.reconciler.status().note("n1").other_versions,
+        std::slice::from_ref(&copy)
+    );
+}
+
+fn copy_files(from: &Path, to: &Path) {
+    for entry in fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            fs::create_dir_all(&target).unwrap();
+            copy_files(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
 // Covers AE7, R6 (U7).
 #[test]
 fn a_part_that_arrives_later_clears_its_wait_and_reports_the_note() {
