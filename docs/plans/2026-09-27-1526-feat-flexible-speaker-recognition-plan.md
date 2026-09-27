@@ -12,7 +12,7 @@ deepened: 2026-09-27
 
 ## Goal Capsule
 
-- **Objective:** Users choose how to recognize speakers and how long to wait for a usable transcript and summary after a long recording.
+- **Objective:** Users can choose transcription models, speaker-recognition methods, and processing during recording or after Stop, with clear information about capabilities, speed, and quality.
 - **Means:** Capability-based routing, native model labels, and separate speaker analysis through an app-owned NeMo helper or the accelerated existing pipeline (KTD1-KTD4).
 - **Authority:** The user approved this Product Contract on 2026-09-27, including Granite Speech 4.1 2B Plus. It governs the Planning Contract, which governs the implementation units. R1-R29, KD1-KD8, F1-F4, and AE1-AE8 retain their approved meaning.
 - **Execution profile:** Implement the full scope after execution is authorized. The executor owns the units, verification, documentation, and shipping under the repository workflow. Track execution outside this plan.
