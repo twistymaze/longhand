@@ -43,6 +43,38 @@ const SUSPENDED_POLL: Duration = Duration::from_millis(250);
 
 /// Where recognition engines come from.
 pub trait EngineProvider: Send + Sync {
+    /// Resolve the exact artifact selected in the note's immutable snapshot.
+    fn artifact_path(
+        &self,
+        artifact: &models::recognition::ArtifactSpec,
+    ) -> Result<PathBuf, String> {
+        Err(format!("exact artifact is unavailable: {}", artifact.id))
+    }
+    fn load_exact(
+        &self,
+        _spec: &models::recognition::ExecutionSpec,
+    ) -> Result<Box<dyn Recognizer>, String> {
+        Err("exact transcription runtime is unavailable".into())
+    }
+    fn analyzer_exact(
+        &self,
+        _spec: &models::recognition::ExecutionSpec,
+    ) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+        Err(DiarizeError::MissingWeights(
+            "exact speaker artifacts are unavailable".into(),
+        ))
+    }
+    fn nemo_helper(&self) -> Result<PathBuf, String> {
+        Err("packaged NeMo helper is unavailable".into())
+    }
+    fn nemo_gpu(&self) -> i32 {
+        -1
+    }
+
+    /// A cheap readiness check. Exact loaders still validate artifact bytes.
+    fn ready_exact(&self, spec: &models::recognition::ExecutionSpec) -> bool {
+        spec.artifacts.iter().all(|a| self.artifact_path(a).is_ok())
+    }
     /// Whether everything processing needs for `model_id` is on disk.
     fn ready(&self, model_id: &str) -> bool;
     fn load(&self, model_id: &str) -> Result<Box<dyn Recognizer>, String>;
@@ -287,7 +319,14 @@ impl Runner {
         if let Some(SessionState::ProcessingFailed { stage, .. }) = failed
             && stage == Stage::Verify
         {
-            verify::prepare_retry(&self.env.store, session_id)?;
+            if lock(&self.env.store)
+                .recognition_snapshot(session_id)?
+                .is_some()
+            {
+                crate::recognition::prepare_retry(&self.env.store, session_id)?;
+            } else {
+                verify::prepare_retry(&self.env.store, session_id)?;
+            }
         }
         {
             let mut store = lock(&self.env.store);
@@ -551,7 +590,16 @@ impl Runner {
                 let model = again
                     .or(record.asr_model)
                     .unwrap_or_else(|| self.env.engines.default_model());
-                self.env.engines.ready(&model).then_some((id, model))
+                let ready = if let Some(value) = record.recognition_snapshot {
+                    match serde_json::from_value::<models::recognition::ExecutionSpec>(value) {
+                        Ok(spec) => self.env.engines.ready_exact(&spec),
+                        // Claim invalid snapshots so their precise failure is visible.
+                        Err(_) => true,
+                    }
+                } else {
+                    self.env.engines.ready(&model)
+                };
+                ready.then_some((id, model))
             })?;
             let id = match store.dequeue_session(&next, &self.owner, now()) {
                 Ok(Some(id)) => id,
@@ -579,7 +627,29 @@ impl Runner {
         let again = lock(&self.env.store)
             .transcribe_again_marks(id)
             .is_ok_and(|marks| marks.model.is_some());
-        for &stage in STAGES {
+        let snapshot = crate::recognition::snapshot(&self.env.store, id);
+        let exact = matches!(&snapshot, Ok(Some(_)));
+        let stages = match snapshot {
+            Ok(Some(spec)) => match crate::recognition::TaskGraph::resolve(&spec) {
+                Ok(graph) => graph.stages,
+                Err(error) => {
+                    return Outcome::Failed {
+                        stage: Stage::Transcribe,
+                        message: error.to_string(),
+                    };
+                }
+            },
+            Ok(None) => STAGES.to_vec(),
+            Err(error) => {
+                let message = error.to_string();
+                let _ = lock(&self.env.store).apply(id, &Event::StageFailed(Stage::Transcribe));
+                return Outcome::Failed {
+                    stage: Stage::Transcribe,
+                    message,
+                };
+            }
+        };
+        for stage in stages {
             if saving && stage != Stage::Save {
                 continue;
             }
@@ -605,7 +675,7 @@ impl Runner {
                 // writes the folder again and then finishes the run.
                 Err(StageError::Failed(message) | StageError::NoDestination(message))
                     if again
-                        && stage != Stage::Diarize
+                        && (stage != Stage::Diarize || exact)
                         && !(stage == Stage::Save
                             && save::home_changed(&lock(&self.env.store), id).unwrap_or(true)) =>
                 {
@@ -626,7 +696,7 @@ impl Runner {
                 }
                 // Speaker separation failing costs the speaker marks, not the
                 // transcript (R20a).
-                Err(StageError::Failed(message)) if stage == Stage::Diarize => {
+                Err(StageError::Failed(message)) if stage == Stage::Diarize && !exact => {
                     log::warn!(
                         "diarization failed for {id}; continuing without speakers: {message}"
                     );
@@ -739,7 +809,23 @@ impl Runner {
     ) -> Result<(), StageError> {
         let segments = lock(&self.env.store).segments(id)?;
         if checkpoint::is_complete(&self.env.store, id, stage, segments.len())? {
-            return Ok(());
+            let exact = lock(&self.env.store).recognition_snapshot(id)?.is_some();
+            let route_complete = match stage {
+                Stage::Transcribe if exact => {
+                    crate::recognition::saved_result(&self.env.store, id)?.is_some()
+                }
+                Stage::Diarize if exact => checkpoint::get::<serde_json::Value>(
+                    &self.env.store,
+                    id,
+                    stage,
+                    crate::recognition::SPEAKERS_KEY,
+                )?
+                .is_some(),
+                _ => true,
+            };
+            if route_complete {
+                return Ok(());
+            }
         }
         let _permit = self
             .permit
@@ -801,6 +887,31 @@ fn execute(
     control: &dyn Control,
 ) -> Result<(), StageError> {
     let dir = env.working_root.join(id);
+    if matches!(
+        stage,
+        Stage::Diarize | Stage::Transcribe | Stage::Join | Stage::Verify
+    ) && let Some(spec) = crate::recognition::snapshot(&env.store, id)?
+    {
+        return crate::recognition::execute(
+            &env.store,
+            id,
+            &dir,
+            segments,
+            &spec,
+            env.engines.as_ref(),
+            stage,
+            control,
+            &mut |p| {
+                (env.events)(RunnerEvent::Progress {
+                    session_id: id.into(),
+                    stage,
+                    segment: p.segment,
+                    done: p.windows_done,
+                    total: p.windows_total,
+                });
+            },
+        );
+    }
     match stage {
         Stage::Assemble => {
             let home = lock(&env.store)

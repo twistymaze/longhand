@@ -63,6 +63,9 @@ pub enum TimingPrecision {
     /// A native segment whose end was clipped by an explicit adapter tolerance.
     /// This does not improve or guarantee the model's timestamp accuracy.
     NativeSegmentClipped,
+    /// A model timestamp with no known duration, including a clipped tail word.
+    /// Its range is a single point and contributes no timed speech coverage.
+    NativeTimePoint,
     /// Only the complete source window is known. Row order remains meaningful.
     SourceWindow,
 }

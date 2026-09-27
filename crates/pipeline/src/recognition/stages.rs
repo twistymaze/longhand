@@ -1,0 +1,655 @@
+use super::{
+    RESULT_KEY, Route, RouteResult, SPEAKERS_KEY, TaskGraph, failed, join_separate, validate_result,
+};
+use crate::{
+    Control, SharedStore, StageError, checkpoint, lock, runner::EngineProvider, transcribe,
+};
+use asr::{
+    Attribution, Finality, RecognitionId, RecognitionRequest, RecognitionSegment, SampleRange,
+    SpeakerKey, SpeakerScope, SpeakerTurn, TimingPrecision,
+};
+use models::recognition::{ExecutionSpec, SpeakerCount};
+use session_core::{Segment, Stage};
+use std::{collections::BTreeMap, path::Path, sync::Mutex};
+
+pub fn snapshot(store: &SharedStore, id: &str) -> Result<Option<ExecutionSpec>, StageError> {
+    let record = lock(store)
+        .session(id)?
+        .ok_or_else(|| failed("session is absent"))?;
+    let Some(value) = record.recognition_snapshot else {
+        return Ok(None);
+    };
+    let spec: ExecutionSpec = serde_json::from_value(value)?;
+    TaskGraph::resolve(&spec)?;
+    let count = record.speaker_count.map(|c| match c {
+        session_core::SpeakerCount::Exact(count) => SpeakerCount::Exact { count },
+        session_core::SpeakerCount::Range { min, max } => SpeakerCount::Range { min, max },
+    });
+    spec.validate_count(count)
+        .map_err(|e| failed(e.to_string()))?;
+    Ok(Some(spec))
+}
+/// A processing attempt keeps its generation across checkpoints. A replacement
+/// that clears recognition checkpoints must create a fresh generation.
+fn generation(store: &SharedStore, id: &str) -> Result<String, StageError> {
+    const KEY: &str = "recognition-generation-v1";
+    if let Some(saved) = checkpoint::get(store, id, Stage::Transcribe, KEY)? {
+        return Ok(saved);
+    }
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let value = format!(
+        "{id}:{}:{}:{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    checkpoint::put(store, id, Stage::Transcribe, KEY, &value)?;
+    Ok(value)
+}
+pub fn saved_result(store: &SharedStore, id: &str) -> Result<Option<RouteResult>, StageError> {
+    checkpoint::get(store, id, Stage::Transcribe, RESULT_KEY)
+}
+
+/// Execute one route-specific recognition stage. Other stages remain owned by
+/// the runner. U7 adds portable neutral artifacts around these result values.
+#[allow(clippy::too_many_arguments)]
+pub fn execute(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    provider: &dyn EngineProvider,
+    stage: Stage,
+    control: &dyn Control,
+    progress: &mut dyn FnMut(transcribe::Progress),
+) -> Result<(), StageError> {
+    let graph = TaskGraph::resolve(spec)?;
+    match stage {
+        Stage::Diarize => analyze(
+            store,
+            id,
+            dir,
+            segments,
+            spec,
+            provider,
+            graph.route,
+            control,
+        ),
+        Stage::Transcribe => transcribe_route(
+            store,
+            id,
+            dir,
+            segments,
+            spec,
+            provider,
+            graph.route,
+            control,
+            progress,
+        ),
+        Stage::Join => write_transcript(store, id, dir, segments),
+        Stage::Verify => verify(store, id, dir, segments),
+        _ => Err(failed("stage is not part of the recognition route")),
+    }
+}
+fn ranges(dir: &Path, segments: &[Segment]) -> Result<Vec<SampleRange>, StageError> {
+    segments
+        .iter()
+        .map(|s| {
+            let reader = crate::assemble::open_proc(dir, s)?;
+            Ok(SampleRange {
+                start: s.offset_ms * 16,
+                end: s.offset_ms * 16 + reader.duration() as u64,
+            })
+        })
+        .collect()
+}
+#[allow(clippy::too_many_arguments)]
+fn analyze(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    provider: &dyn EngineProvider,
+    route: Route,
+    control: &dyn Control,
+) -> Result<(), StageError> {
+    let generation = generation(store, id)?;
+    let mut turns = Vec::new();
+    let mut limitations = Vec::<String>::new();
+    match route {
+        Route::SeparatePyannote => {
+            let mut analyzer = provider.analyzer_exact(spec).map_err(|e| match e {
+                diarize::DiarizeError::MissingWeights(path) => StageError::Waiting(path),
+                e => failed(e.to_string()),
+            })?;
+            let count = lock(store).session(id)?.and_then(|r| r.speaker_count);
+            crate::diarize::run(
+                store,
+                id,
+                dir,
+                segments,
+                count,
+                analyzer.as_mut(),
+                control,
+                &mut |_, _| {},
+            )?;
+            let crate::diarize::Speakers::Turns(native) = crate::diarize::speakers(store, id)?
+            else {
+                return Err(failed("requested speaker analysis did not complete"));
+            };
+            for turn in native {
+                let segment = segments
+                    .iter()
+                    .find(|s| s.index == turn.segment)
+                    .ok_or_else(|| failed("speaker turn references absent segment"))?;
+                turns.push(SpeakerTurn {
+                    range: SampleRange {
+                        start: (segment.offset_ms + turn.start_ms) * 16,
+                        end: (segment.offset_ms + turn.end_ms) * 16,
+                    },
+                    timing: TimingPrecision::NativeSegment,
+                    speaker: SpeakerKey {
+                        scope: SpeakerScope {
+                            generation: generation.clone(),
+                            epoch: 0,
+                        },
+                        input_start_sample: 0,
+                        local_id: turn.speaker,
+                    },
+                    finality: Finality::Final,
+                });
+            }
+        }
+        Route::SeparateNemo => {
+            for (segment, range) in segments.iter().zip(ranges(dir, segments)?) {
+                let key = format!("recognition-speaker-segment-{}", segment.index);
+                let result = match checkpoint::get::<RouteResult>(store, id, Stage::Diarize, &key)?
+                {
+                    Some(saved) if super::covers(&saved.coverage, range) => saved,
+                    _ => {
+                        let value = super::nemo::run_file(
+                            spec,
+                            provider,
+                            &dir.join(crate::proc_file(&segment.audio_file)),
+                            range,
+                            &generation,
+                            false,
+                            control,
+                        )?;
+                        checkpoint::put(store, id, Stage::Diarize, &key, &value)?;
+                        value
+                    }
+                };
+                turns.extend(result.speakers);
+                limitations.extend(result.coverage_limitations);
+            }
+        }
+        _ => return Err(failed("this route does not use separate speaker analysis")),
+    }
+    checkpoint::put(
+        store,
+        id,
+        Stage::Diarize,
+        "recognition-speaker-limitations-v1",
+        &limitations,
+    )?;
+    checkpoint::put(store, id, Stage::Diarize, SPEAKERS_KEY, &turns)?;
+    checkpoint::mark_complete(store, id, Stage::Diarize, segments.len())
+}
+#[allow(clippy::too_many_arguments)]
+fn transcribe_route(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    provider: &dyn EngineProvider,
+    route: Route,
+    control: &dyn Control,
+    progress: &mut dyn FnMut(transcribe::Progress),
+) -> Result<(), StageError> {
+    let expected = ranges(dir, segments)?;
+    let generation = generation(store, id)?;
+    let speakers: Vec<SpeakerTurn> =
+        if matches!(route, Route::SeparateNemo | Route::SeparatePyannote) {
+            checkpoint::get(store, id, Stage::Diarize, SPEAKERS_KEY)?
+                .ok_or_else(|| failed("speaker task has not completed"))?
+        } else {
+            vec![]
+        };
+    let limitations = checkpoint::get(
+        store,
+        id,
+        Stage::Diarize,
+        "recognition-speaker-limitations-v1",
+    )?
+    .unwrap_or_default();
+    let mut result = RouteResult {
+        route,
+        coverage: vec![],
+        rows: vec![],
+        speakers,
+        coverage_limitations: limitations,
+    };
+    if matches!(
+        route,
+        Route::Off | Route::SeparateNemo | Route::SeparatePyannote
+    ) {
+        // Reuse successful live text and the established ordered gap-fill
+        // contract. The fresh slot prevents reuse of a different artifact.
+        let live_rows = crate::live::rows(store, id)?;
+        let mut needs_batch = false;
+        for segment in segments {
+            if !live_rows.iter().any(|row| row.segment == segment.index)
+                && !checkpoint::get::<bool>(
+                    store,
+                    id,
+                    Stage::Transcribe,
+                    &checkpoint::segment_done_key(segment.index),
+                )?
+                .unwrap_or(false)
+            {
+                needs_batch = true;
+                break;
+            }
+        }
+        // A completed live result needs no additional model load. New batch
+        // work queries the actual loaded artifact's timestamp capabilities.
+        let loaded = if needs_batch {
+            Some(provider.load_exact(spec).map_err(failed)?)
+        } else {
+            None
+        };
+        let native_tokens = loaded
+            .as_ref()
+            .is_some_and(|engine| engine.native_token_timestamps());
+        let slot = Mutex::new(loaded);
+        let load = |_: &str| provider.load_exact(spec);
+        let engine = transcribe::Slot {
+            slot: &slot,
+            model: &spec.config.asr_model,
+            load: &load,
+        };
+        let cuts: transcribe::TurnCuts =
+            if !native_tokens && matches!(route, Route::SeparatePyannote | Route::SeparateNemo) {
+                segments
+                    .iter()
+                    .map(|segment| {
+                        let start = segment.offset_ms * 16;
+                        let end = start + segment.duration_ms * 16;
+                        let mut turns: Vec<_> = result
+                            .speakers
+                            .iter()
+                            .filter(|t| t.range.start < end && t.range.end > start)
+                            .collect();
+                        turns.sort_by_key(|t| t.range.start);
+                        let mut previous = None;
+                        let mut cuts = Vec::new();
+                        for turn in turns {
+                            if previous.is_some_and(|key: &SpeakerKey| key != &turn.speaker)
+                                && turn.range.start > start
+                            {
+                                cuts.push((turn.range.start - start) / 16);
+                            }
+                            previous = Some(&turn.speaker);
+                        }
+                        cuts.sort_unstable();
+                        cuts.dedup();
+                        (segment.index, cuts)
+                    })
+                    .collect()
+            } else {
+                BTreeMap::new()
+            };
+        transcribe::run_with_timing(
+            store,
+            id,
+            dir,
+            segments,
+            &cuts,
+            &engine,
+            native_tokens,
+            control,
+            progress,
+        )?;
+        for (ordinal, window) in transcribe::results(store, id)?.into_iter().enumerate() {
+            let segment = segments
+                .iter()
+                .find(|s| s.index == window.segment)
+                .ok_or_else(|| failed("text references absent segment"))?;
+            let scope = SpeakerScope {
+                generation: generation.clone(),
+                epoch: segment.index as u64,
+            };
+            let mut pieces = Vec::new();
+            if let Some(words) = window.words {
+                pieces.extend(
+                    words
+                        .into_iter()
+                        .map(|w| (w.start_ms, w.end_ms, w.text, TimingPrecision::NativeSegment)),
+                );
+                result
+                    .coverage_limitations
+                    .push("Word timestamps are model estimates, not exact word alignments.".into());
+            } else if window.segments.is_empty() && !window.text.trim().is_empty() {
+                pieces.push((
+                    window.start_ms,
+                    window.end_ms,
+                    window.text,
+                    TimingPrecision::SourceWindow,
+                ));
+            } else {
+                pieces.extend(window.segments.into_iter().map(|s| {
+                    if s.start_ms == 0 && s.end_ms == 0 {
+                        (
+                            window.start_ms,
+                            window.end_ms,
+                            s.text,
+                            TimingPrecision::SourceWindow,
+                        )
+                    } else {
+                        (
+                            window.start_ms + s.start_ms,
+                            window.start_ms + s.end_ms,
+                            s.text,
+                            TimingPrecision::NativeSegment,
+                        )
+                    }
+                }));
+            }
+            for (index, (start, end, text, timing)) in pieces.into_iter().enumerate() {
+                if text.trim().is_empty() {
+                    continue;
+                }
+                result.rows.push(RecognitionSegment {
+                    id: RecognitionId {
+                        scope: scope.clone(),
+                        input_start_sample: (segment.offset_ms + window.start_ms) * 16,
+                        ordinal: ((ordinal as u64) << 32) | index as u64,
+                    },
+                    range: SampleRange {
+                        start: (segment.offset_ms + start) * 16,
+                        end: (segment.offset_ms + end) * 16,
+                    },
+                    timing: if start == end {
+                        TimingPrecision::NativeTimePoint
+                    } else {
+                        timing
+                    },
+                    text,
+                    speaker: None,
+                    revision: 0,
+                    text_finality: Finality::Final,
+                    speaker_finality: Finality::Final,
+                });
+            }
+        }
+        result.coverage = expected.clone();
+        if route != Route::Off {
+            join_separate(&mut result.rows, &result.speakers);
+        }
+    } else {
+        if route == Route::CombinedNemo && !crate::live::rows(store, id)?.is_empty() {
+            return Err(failed(
+                "saved live text lacks this route's speaker output; a second transcription pass requires an explicit replacement choice",
+            ));
+        }
+        let mut recognizer = None;
+        for (segment, range) in segments.iter().zip(&expected) {
+            control.proceed()?;
+            let key = format!("recognition-segment-{}", segment.index);
+            let output = if let Some(saved) =
+                checkpoint::get::<RouteResult>(store, id, Stage::Transcribe, &key)?
+            {
+                saved
+            } else {
+                let mut own = RouteResult {
+                    route,
+                    coverage: vec![*range],
+                    rows: vec![],
+                    speakers: vec![],
+                    coverage_limitations: vec![],
+                };
+                if route == Route::CombinedNemo {
+                    own = super::nemo::run_file(
+                        spec,
+                        provider,
+                        &dir.join(crate::proc_file(&segment.audio_file)),
+                        *range,
+                        &generation,
+                        true,
+                        control,
+                    )?;
+                } else {
+                    let plan = transcribe::plan_segment(dir, segment, &[])?;
+                    checkpoint::put(
+                        store,
+                        id,
+                        Stage::Transcribe,
+                        &checkpoint::plan_key(segment.index),
+                        &plan,
+                    )?;
+                    let engine = match &mut recognizer {
+                        Some(engine) => engine,
+                        None => recognizer.insert(provider.load_exact(spec).map_err(failed)?),
+                    };
+                    let mut reader = crate::assemble::open_proc(dir, segment)?;
+                    for (index, window) in plan.windows.iter().enumerate() {
+                        control.proceed()?;
+                        reader.seek(
+                            u32::try_from(window.start_ms * 16)
+                                .map_err(|_| failed("audio seek overflow"))?,
+                        )?;
+                        let pcm = reader
+                            .samples::<f32>()
+                            .take((window.duration_ms() * 16) as usize)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let output = engine
+                            .transcribe_normalized(
+                                &pcm,
+                                &RecognitionRequest {
+                                    scope: SpeakerScope {
+                                        generation: generation.clone(),
+                                        epoch: segment.index as u64,
+                                    },
+                                    start_sample: range.start + window.start_ms * 16,
+                                    revision: 0,
+                                    attribution: Attribution::Native,
+                                },
+                            )
+                            .map_err(|e| failed(e.to_string()))?;
+                        if output.coverage
+                            != (SampleRange {
+                                start: range.start + window.start_ms * 16,
+                                end: range.start + window.start_ms * 16 + pcm.len() as u64,
+                            })
+                        {
+                            return Err(failed("native transcription coverage is incomplete"));
+                        }
+                        own.rows.extend(output.segments);
+                        own.speakers.extend(output.speaker_turns);
+                        progress(transcribe::Progress {
+                            segment: segment.index,
+                            windows_done: index + 1,
+                            windows_total: plan.windows.len(),
+                        });
+                    }
+                }
+                checkpoint::put(store, id, Stage::Transcribe, &key, &own)?;
+                own
+            };
+            result.coverage.extend(output.coverage);
+            result.rows.extend(output.rows);
+            result.speakers.extend(output.speakers);
+            result
+                .coverage_limitations
+                .extend(output.coverage_limitations);
+        }
+    }
+    if result
+        .rows
+        .iter()
+        .any(|r| r.timing == TimingPrecision::NativeTimePoint)
+    {
+        result.coverage_limitations.push("Some text has a model time point with unknown duration; it contributes no timed speech coverage.".into());
+    }
+    if result
+        .rows
+        .iter()
+        .any(|r| r.timing == TimingPrecision::SourceWindow)
+    {
+        result.coverage_limitations.push("Some text has source-window timing only. Timed word coverage cannot be established for that text.".into());
+    }
+    if route != Route::Off && result.rows.iter().any(|r| r.speaker.is_none()) {
+        result
+            .coverage_limitations
+            .push("Some text has no unambiguous speaker assignment.".into());
+    }
+    if result.rows.iter().any(|r| r.speaker.is_some()) && super::found_speakers(&result).is_none() {
+        result
+            .coverage_limitations
+            .push(super::SCOPED_LABELS_NOTE.into());
+    }
+    result.coverage_limitations.sort();
+    result.coverage_limitations.dedup();
+    validate_result(&result, &expected)?;
+    checkpoint::put(store, id, Stage::Transcribe, RESULT_KEY, &result)?;
+    checkpoint::mark_complete(store, id, Stage::Transcribe, segments.len())
+}
+fn write_transcript(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+) -> Result<(), StageError> {
+    let result = saved_result(store, id)?.ok_or_else(|| failed("recognition result is absent"))?;
+    let transcript = super::transcript(&result);
+    lock(store).set_found_speakers(id, super::found_speakers(&result))?;
+    let temporary = dir.join("transcript.md.tmp");
+    let text = if result.route == Route::Off {
+        transcript.render_speaker_off()
+    } else {
+        transcript.render()
+    };
+    std::fs::write(&temporary, text)?;
+    crate::sync_file(&temporary)?;
+    std::fs::rename(temporary, dir.join("transcript.md"))?;
+    checkpoint::mark_complete(store, id, Stage::Join, segments.len())
+}
+fn verify(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+) -> Result<(), StageError> {
+    let result = saved_result(store, id)?.ok_or_else(|| failed("recognition result is absent"))?;
+    validate_result(&result, &ranges(dir, segments)?)?;
+    for segment in segments {
+        let plan = transcribe::plan_segment(dir, segment, &[])?;
+        let start = segment.offset_ms * 16;
+        let end = start + plan.duration_ms * 16;
+        let own: Vec<_> = result
+            .rows
+            .iter()
+            .filter(|r| r.range.start >= start && r.range.start < end)
+            .collect();
+        if plan.voiced_ms > 0 && own.is_empty() {
+            return Err(failed(format!(
+                "segment {} has speech but no text",
+                segment.index
+            )));
+        }
+        if own
+            .iter()
+            .any(|r| r.timing == TimingPrecision::SourceWindow)
+        {
+            // Preserve the evidence limit. Source-window text cannot establish
+            // timed word coverage; accepted input must not masquerade as it.
+            log::warn!(
+                "segment {} has source-window timing; timed text coverage is unavailable",
+                segment.index
+            );
+            continue;
+        }
+        let text: Vec<_> = own
+            .iter()
+            .filter(|r| r.timing != TimingPrecision::NativeTimePoint)
+            .map(|r| asr::Span {
+                start_ms: r.range.start.saturating_sub(start) / 16,
+                end_ms: r.range.end.saturating_sub(start) / 16,
+            })
+            .collect();
+        let coverage = crate::verify::measure(segment.index, &plan.voiced, &text);
+        checkpoint::put(
+            store,
+            id,
+            Stage::Verify,
+            &checkpoint::segment_key(segment.index),
+            &coverage,
+        )?;
+        if !coverage.passes() {
+            let saved_plan: Option<transcribe::WindowPlan> = checkpoint::get(
+                store,
+                id,
+                Stage::Transcribe,
+                &checkpoint::plan_key(segment.index),
+            )?;
+            let redo = saved_plan
+                .as_ref()
+                .map(|p| {
+                    (0..p.windows.len())
+                        .map(|window| (segment.index, window))
+                        .collect()
+                })
+                .unwrap_or_default();
+            checkpoint::put(
+                store,
+                id,
+                Stage::Verify,
+                crate::verify::FAILED,
+                &crate::verify::VerifyFailure {
+                    segments: vec![coverage.clone()],
+                    redo,
+                },
+            )?;
+            return Err(failed(format!(
+                "segment {} text covers {:.1}% of detected speech",
+                segment.index,
+                coverage.ratio() * 100.0
+            )));
+        }
+    }
+    checkpoint::mark_complete(store, id, Stage::Verify, segments.len())
+}
+
+/// A user-requested retry discards failed segment results, not successful live
+/// rows or the original audio. Native state is reconstructed on the next run.
+pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
+    let failure: Option<crate::verify::VerifyFailure> =
+        checkpoint::get(store, id, Stage::Verify, crate::verify::FAILED)?;
+    crate::verify::prepare_retry(store, id)?;
+    let guard = lock(store);
+    if let Some(failure) = failure {
+        for segment in failure.segments {
+            guard.delete_checkpoint(
+                id,
+                Stage::Transcribe,
+                &format!("recognition-segment-{}", segment.segment),
+            )?;
+        }
+    } else {
+        // A structural/finality error has no timed coverage measurement.
+        for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
+            if key.starts_with("recognition-segment-") {
+                guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
+            }
+        }
+    }
+    guard.delete_checkpoint(id, Stage::Transcribe, RESULT_KEY)?;
+    guard.delete_checkpoint(id, Stage::Transcribe, checkpoint::DONE)?;
+    guard.delete_checkpoint(id, Stage::Join, checkpoint::DONE)?;
+    guard.clear_checkpoints(id, Stage::Verify)?;
+    Ok(())
+}

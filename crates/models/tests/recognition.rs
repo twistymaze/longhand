@@ -130,3 +130,18 @@ fn one_family_uses_distinct_artifacts_for_each_runtime() {
     assert_eq!(combined.artifacts[0].format, "nemo-gguf");
     assert_eq!(combined.runtimes.len(), 1);
 }
+
+#[test]
+fn native_after_stop_accepts_live_preview_but_does_not_claim_live_labels() {
+    let mut config = RecognitionConfig {
+        asr_model: "multitalker-parakeet-streaming-0.6b-v1-q80".into(),
+        speaker_source: SpeakerSource::Integrated,
+        processing_mode: ProcessingMode::DuringRecording,
+        ..Default::default()
+    };
+    assert!(resolve(&config).is_ok());
+    config.speaker_processing_mode = ProcessingMode::DuringRecording;
+    assert!(resolve(&config).is_err());
+    config.speaker_source = SpeakerSource::Sortformer;
+    assert!(resolve(&config).is_ok());
+}

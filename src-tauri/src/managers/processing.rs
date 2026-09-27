@@ -228,6 +228,36 @@ fn endpoint_from_settings(
     })
 }
 
+/// Resolve the private helper beside the application, without a PATH search.
+fn packaged_nemo_helper() -> Result<std::path::PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let parent = executable
+        .parent()
+        .ok_or("The application path has no parent")?;
+    #[cfg(target_os = "macos")]
+    let packaged = parent.join("../Frameworks/LonghandNeMo/longhand-nemo-helper");
+    #[cfg(not(target_os = "macos"))]
+    let packaged = parent.join("nemo-runtime/bin/longhand-nemo-helper.exe");
+    if packaged.is_file() {
+        return Ok(packaged);
+    }
+    #[cfg(debug_assertions)]
+    {
+        let name = if cfg!(target_os = "windows") {
+            "longhand-nemo-helper.exe"
+        } else {
+            "longhand-nemo-helper"
+        };
+        let development = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("nemo-runtime/bin")
+            .join(name);
+        if development.is_file() {
+            return Ok(development);
+        }
+    }
+    Err("The application package does not contain its NeMo helper".into())
+}
+
 struct Models {
     app: AppHandle,
     models: Arc<ModelsManager>,
@@ -235,6 +265,85 @@ struct Models {
 }
 
 impl EngineProvider for Models {
+    fn ready_exact(&self, spec: &models::recognition::ExecutionSpec) -> bool {
+        self.models.missing_spec(spec).is_empty()
+    }
+
+    fn artifact_path(
+        &self,
+        artifact: &models::recognition::ArtifactSpec,
+    ) -> Result<std::path::PathBuf, String> {
+        let path = self
+            .models
+            .artifact_path(artifact)
+            .ok_or_else(|| format!("The selected artifact is not installed: {}", artifact.id))?;
+        // This runs on the processing worker. UI readiness checks use metadata.
+        let actual = models::download::compute_sha256(&path).map_err(|error| error.to_string())?;
+        if actual != artifact.sha256 {
+            return Err(format!(
+                "The installed artifact does not match its selected SHA-256: {}",
+                artifact.id
+            ));
+        }
+        Ok(path)
+    }
+
+    fn load_exact(
+        &self,
+        spec: &models::recognition::ExecutionSpec,
+    ) -> Result<Box<dyn Recognizer>, String> {
+        if !spec.runtimes.iter().any(|runtime| {
+            runtime.name == "transcribe.cpp"
+                && runtime.revision == models::recognition::TRANSCRIBE_REVISION
+        }) {
+            return Err("The selected transcription runtime is not installed".into());
+        }
+        let artifact = spec
+            .artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.id == spec.config.asr_model && artifact.format == "transcribe-gguf"
+            })
+            .ok_or("The selected transcription artifact is missing from the note configuration")?;
+        let path = self.artifact_path(artifact)?;
+        let mut engine = Engine::load_with(
+            &spec.config.asr_model,
+            &path,
+            spec.capabilities.live_transcription,
+        )
+        .map_err(|error| error.to_string())?;
+        engine.set_language(spec.config.language.clone());
+        Ok(Box::new(engine))
+    }
+
+    fn analyzer_exact(
+        &self,
+        spec: &models::recognition::ExecutionSpec,
+    ) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+        let path = |id: &str| {
+            let artifact = spec
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == id)
+                .ok_or_else(|| DiarizeError::MissingWeights(id.into()))?;
+            self.artifact_path(artifact)
+                .map_err(DiarizeError::MissingWeights)
+        };
+        OnnxAnalyzer::load(
+            &path("pyannote-segmentation-3.0")?,
+            &path("wespeaker-voxceleb-resnet34-lm")?,
+        )
+        .map(|analyzer| Box::new(analyzer) as Box<dyn SpeakerAnalyzer>)
+    }
+
+    fn nemo_helper(&self) -> Result<std::path::PathBuf, String> {
+        packaged_nemo_helper()
+    }
+
+    fn nemo_gpu(&self) -> i32 {
+        0
+    }
+
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
         endpoint_from_settings(settings::get_settings(&self.app), |base_url| {
             self.secrets.endpoint_credential(base_url)

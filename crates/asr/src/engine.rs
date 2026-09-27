@@ -50,6 +50,11 @@ pub struct WindowText {
 pub trait Recognizer: Send {
     /// The catalog id of the loaded model.
     fn model_id(&self) -> &str;
+    /// True only when the loaded model supplies native token timestamps.
+    /// The default token adapter estimates times from segments.
+    fn native_token_timestamps(&self) -> bool {
+        false
+    }
     /// Transcribe one window of mono 16 kHz audio.
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError>;
     /// Transcribe one independent input window on the canonical sample timeline.
@@ -176,10 +181,17 @@ pub struct Engine {
     is_moss: bool,
     is_multitalker: bool,
     streaming: bool,
+    native_token_timestamps: bool,
     max_audio_ms: i64,
+    language: Option<String>,
 }
 
 impl Engine {
+    /// Set the source language hint from the note configuration.
+    pub fn set_language(&mut self, language: Option<String>) {
+        self.language = language;
+    }
+
     /// Load a model for batch recognition only.
     pub fn load(model_id: &str, path: &Path) -> Result<Self, AsrError> {
         Self::load_with(model_id, path, false)
@@ -207,6 +219,8 @@ impl Engine {
             catalog_streaming,
             model.capabilities().supports_streaming,
         );
+        let native_token_timestamps =
+            model.capabilities().max_timestamp_kind == TimestampKind::Token;
         let max_audio_ms = model.capabilities().max_audio_ms;
         log::info!(
             "loaded {model_id} ({} on {})",
@@ -221,7 +235,9 @@ impl Engine {
             is_moss,
             is_multitalker,
             streaming,
+            native_token_timestamps,
             max_audio_ms,
+            language: None,
         })
     }
 
@@ -232,6 +248,7 @@ impl Engine {
         let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
         let audio = pad_to_minimum(pcm);
         let options = RunOptions {
+            language: self.language.clone(),
             timestamps: TimestampKind::Token,
             diarize: Diarize::Off,
             family: self.family(),
@@ -321,6 +338,10 @@ impl LiveStream for EngineStream<'_> {
 }
 
 impl Recognizer for Engine {
+    fn native_token_timestamps(&self) -> bool {
+        self.native_token_timestamps
+    }
+
     fn model_id(&self) -> &str {
         &self.model_id
     }
@@ -329,6 +350,7 @@ impl Recognizer for Engine {
         let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
         let audio = pad_to_minimum(pcm);
         let options = RunOptions {
+            language: self.language.clone(),
             timestamps: TimestampKind::Segment,
             diarize: Diarize::Off,
             family: self.family(),
@@ -384,6 +406,7 @@ impl Recognizer for Engine {
         // Granite Plus cannot combine explicit word times with attribution.
         // Auto retains the model's supported timing and attribution contract.
         let options = RunOptions {
+            language: self.language.clone(),
             timestamps: TimestampKind::Auto,
             diarize: request.attribution.diarize(),
             family: self.family(),
@@ -404,6 +427,7 @@ impl Recognizer for Engine {
             return Ok(None);
         }
         let options = RunOptions {
+            language: self.language.clone(),
             timestamps: TimestampKind::Token,
             diarize: Diarize::Off,
             ..Default::default()

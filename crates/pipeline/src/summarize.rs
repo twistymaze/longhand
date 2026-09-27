@@ -193,7 +193,20 @@ fn input_fingerprint(transcript: &str, notes: &str) -> String {
 /// The notes document as it is now. A run reads it once, when it starts,
 /// and sends that copy with every call (R36).
 fn session_notes(store: &SharedStore, session_id: &str) -> Result<String, StageError> {
-    Ok(lock(store).notes(session_id)?)
+    let notes = lock(store).notes(session_id)?;
+    if let Some(result) = crate::recognition::saved_result(store, session_id)?
+        && result
+            .coverage_limitations
+            .iter()
+            .any(|note| note == crate::recognition::SCOPED_LABELS_NOTE)
+    {
+        return Ok(format!(
+            "Recognition limitation: {}\n\n{}",
+            crate::recognition::SCOPED_LABELS_NOTE,
+            notes
+        ));
+    }
+    Ok(notes)
 }
 
 /// The title call's reply as a title: its first line with text, with no
