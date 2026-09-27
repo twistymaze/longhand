@@ -71,8 +71,9 @@
 # on your session model and the run says so. Invalid/commented/missing -> no
 # elevation.
 
-plan_model: opus              # model alias for plan authoring; candidate preference when a Bake-off runs (no default)
-brainstorm_model: opus        # model alias for approach generation; candidate preference when a Bake-off runs (no default)
+# Leave authoring on the current host's model; see CLAUDE.md.
+# plan_model: opus              # model alias for plan authoring; candidate preference when a Bake-off runs (no default)
+# brainstorm_model: opus        # model alias for approach generation; candidate preference when a Bake-off runs (no default)
 
 # --- PR concept teaching (ce-commit-push-pr) ---
 # When a PR introduces a concept new to the codebase, the generated PR
@@ -129,9 +130,10 @@ brainstorm_model: opus        # model alias for approach generation; candidate p
 # the pass with a stated reason -- never substituted.
 
 # cross_model_review_mode: off   # auto | off (default: auto)
-cross_model_peer: codex          # codex | claude | grok | cursor | composer | opencode
-cross_model_model: gpt-6-sol    # model alias or full id for the resolved peer target (no default)
-cross_model_effort: high        # reasoning effort for the resolved peer target (no default)
+# Let the skill select a different model family for the current host.
+# cross_model_peer: codex          # codex | claude | grok | cursor | composer | opencode
+# cross_model_model: gpt-6-sol    # model alias or full id for the resolved peer target (no default)
+# cross_model_effort: high        # reasoning effort for the resolved peer target (no default)
 
 # --- ce-work implementation engine ---
 # Standing preferences for who authors implementation units. Live
