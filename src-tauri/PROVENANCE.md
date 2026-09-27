@@ -84,6 +84,15 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Licence: MIT, LICENSES/anarlog-MIT.txt
 - Status: modified — `available_space` only, returning the figure instead of an error; the reserve becomes the destination's reporting floor; the existence, directory and write-probe checks are new
 
+## `src/managers/library.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Source paths: `plugins/notify/src/ext.rs` (`Notify::start` and `Notify::stop`: a `notify-debouncer-full` debouncer with a 900 ms delay, one recursive watch, the event-kind filter), `plugins/notify/src/path.rs` (`should_skip_path`, `to_relative_path`)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, LICENSES/anarlog-MIT.txt
+- Status: modified — one watch for each retained Destination on a thread that owns the watches, a minute's full scan and the pending-delete timer; an event marks its top-level note folder for a targeted scan, and a rescan, an unpaired rename or an event with no usable path runs a full scan; the path filter also skips every hidden name and keeps audio files; no own-writes registry and no vault settings
+
 ## `src/shortcut.rs`
 
 - Repository: https://github.com/cjpais/Handy

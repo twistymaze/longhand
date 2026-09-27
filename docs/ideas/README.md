@@ -85,7 +85,6 @@ This folder is our own convention, not something compound engineering defines, s
 | Idea | Status | In short |
 |---|---|---|
 | [Library and browsing](library-and-browsing.md) | open | Search and a wider index; the list, preview, rename and delete shipped |
-| [One library across computers](cross-machine-library.md) | in-progress | A shared storage folder listed as one library |
 | [Obsidian vault sync](obsidian-vault-sync.md) | open | Keep sessions in step with a vault |
 | [A local CLI](local-cli.md) | open | Command-line access to the session store |
 
@@ -109,6 +108,7 @@ Ideas that shipped: first those from the original list that the walking skeleton
 - **[Choose the shortcuts](custom-shortcuts.md).** Set, reset or clear the recording shortcut in Settings with no relaunch, and an optional shortcut that shows or hides the window (`docs/plans/2026-09-25-1245-feat-custom-shortcuts-plan.md`).
 - **[Choose the summary model from the server's list](summary-model-picker.md).** A searchable Model picker filled from the endpoint's model list, a status line that checks the Base URL and API key, and OpenAI as the Base URL on a new install (`docs/plans/2026-09-25-1244-feat-summary-model-picker-plan.md`).
 - **[Acknowledgements and full licences in an About pane](about-acknowledgements-and-licences.md).** Settings → About thanks anarlog and Handy and the core engines, lists the models and major components with their licences, and opens a window with the full licence text of every shipped component, checked for drift in CI (`docs/plans/2026-09-26-1259-feat-about-acknowledgements-and-licences-plan.md`, PR #13).
+- **[One library across computers](cross-machine-library.md).** Every computer that shares a synced storage folder lists every note in it, follows changes from the other computers while it runs, and can do every action on every note, Resume included (`docs/plans/2026-09-25-1217-feat-one-library-across-computers-plan.md`).
 
 ## Ruled out
 

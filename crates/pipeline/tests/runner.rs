@@ -418,6 +418,31 @@ fn saved_folder(r: &Rig, id: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(record.home_path.expect("a home path"))
 }
 
+/// The parsed `session.md` of a saved folder.
+fn session_md(folder: &std::path::Path) -> session_core::folder::SessionDoc {
+    let text = std::fs::read_to_string(folder.join(pipeline::save::SESSION_FILE)).unwrap();
+    session_core::folder::SessionDoc::parse(&text).unwrap()
+}
+
+/// `session.md` records the fingerprints of the folder's `transcript.md`
+/// and `summary.md` as they are now (KTD2).
+fn assert_fingerprints_match(folder: &std::path::Path) {
+    use session_core::folder::fingerprint;
+    let doc = session_md(folder);
+    let of = |name: &str| fingerprint(&std::fs::read(folder.join(name)).unwrap());
+    assert_eq!(doc.transcript_fingerprint, Some(of(TRANSCRIPT_FILE)));
+    assert_eq!(doc.summary_fingerprint, Some(of("summary.md")));
+}
+
+/// The store records the fingerprint of the `transcript.md` that this
+/// computer wrote into the folder (KTD12).
+fn assert_stored_fingerprint(r: &Rig, id: &str, folder: &std::path::Path) {
+    use session_core::folder::fingerprint;
+    let written = fingerprint(&std::fs::read(folder.join(TRANSCRIPT_FILE)).unwrap());
+    let stored = r.store.lock().unwrap().transcript_fingerprint(id).unwrap();
+    assert_eq!(stored, Some(written));
+}
+
 async fn rig() -> Rig {
     let r = rig_with(store(), tempfile::tempdir().unwrap(), Arc::default());
     with_summaries(&r.script).await;
@@ -1335,6 +1360,49 @@ async fn regenerating_rewrites_the_summary_without_transcribing_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_md_holds_the_complete_record_after_a_save_and_a_regeneration() {
+    use session_core::{Title, TitleSource};
+    let r = rig().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&n);
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let k = count.fetch_add(1, Ordering::SeqCst);
+        (200, http::completion(&format!("Version {k}.")))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    set_title(&r.store, "s", "Budget review");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    let record = r.store.lock().unwrap().session("s").unwrap().unwrap();
+    let doc = session_md(&folder);
+    assert_eq!(doc.asr_model.as_deref(), Some("m"));
+    assert_eq!(doc.found_speakers, record.found_speakers);
+    assert_eq!(
+        doc.title_and_source(),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User
+        })
+    );
+    assert_fingerprints_match(&folder);
+    assert_stored_fingerprint(&r, "s", &folder);
+
+    let before = read(&folder, "summary.md");
+    r.runner.regenerate_summary("s").await.unwrap();
+    let folder = saved_folder(&r, "s");
+    assert_ne!(read(&folder, "summary.md"), before);
+    assert_fingerprints_match(&folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_unannotated_decision_survives_the_layers_to_the_final_summary() {
     let r = rig().await;
     // A model that echoes what it was given, so only the framing can lose it.
@@ -1929,7 +1997,7 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
     assert!(folder.join("audio/segment-01.opus").exists());
     assert!(folder.join("audio/segment-02.opus").exists());
     // Only the folder itself is in the destination: no staging left.
-    assert_eq!(std::fs::read_dir(&r.dest).unwrap().count(), 1);
+    assert_eq!(destination_entries(&r).len(), 1);
 
     // The folder alone rebuilds the session (R25).
     let doc =
@@ -2127,7 +2195,7 @@ async fn without_a_destination_the_session_waits_whole_and_is_saved_in_the_last_
     add_notes(&r.store, "s");
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(
-        matches!(&outcome, Outcome::AwaitingDestination { problem } if problem.contains("no destination")),
+        matches!(&outcome, Outcome::AwaitingDestination { problem } if problem.contains("no storage folder")),
         "{outcome:?}"
     );
     assert!(matches!(
@@ -2367,12 +2435,14 @@ impl session_save::Fs for FailsFinalRename {
     }
 }
 
+/// A title change on this computer: the row takes the title, and the
+/// folder is owed the name it gives.
 fn set_title(store: &SharedStore, id: &str, title: &str) {
-    store
-        .lock()
-        .unwrap()
+    let guard = store.lock().unwrap();
+    guard
         .set_title(id, title, session_core::TitleSource::User)
         .unwrap();
+    guard.set_rename_owed(id, true).unwrap();
 }
 
 /// Run a titled session up to the save, then run the save stage by hand
@@ -2440,6 +2510,7 @@ fn destination_entries(r: &Rig) -> Vec<String> {
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| name != library::scan::LONGHAND_FOLDER)
         .collect();
     names.sort();
     names
@@ -2624,6 +2695,14 @@ fn resume_completed(r: &Rig, id: &str, audio: &[f32]) {
         },
     )
     .unwrap();
+    drop(s);
+    record_resumed_segment(r, id, audio);
+}
+
+/// Record one more segment of `audio` into the resumed session `id`, a day
+/// after its last one, and stop.
+fn record_resumed_segment(r: &Rig, id: &str, audio: &[f32]) {
+    let mut s = r.store.lock().unwrap();
     let last = s.segments(id).unwrap().last().unwrap().clone();
     let segment = common::write_segment(
         &r.root.join(id),
@@ -2669,7 +2748,7 @@ async fn a_resumed_completed_session_updates_its_folder_in_place() {
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
 
     assert_eq!(saved_folder(&r, "s"), folder, "the same folder");
-    assert_eq!(std::fs::read_dir(&r.dest).unwrap().count(), 1);
+    assert_eq!(destination_entries(&r).len(), 1);
     assert!(!r.root.join("s").exists(), "the working copy is gone");
     for (file, bytes) in ["audio/segment-01.opus", "audio/segment-02.opus"]
         .iter()
@@ -2860,6 +2939,7 @@ async fn killed_after_every_stage_the_session_is_saved_once_with_the_same_transc
     let folders: Vec<_> = std::fs::read_dir(dest.path())
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != library::scan::LONGHAND_FOLDER)
         .collect();
     assert_eq!(folders.len(), 1, "{folders:?}");
     let record = store.lock().unwrap().session("s").unwrap().unwrap();
@@ -2940,6 +3020,13 @@ fn intent(r: &Rig) -> Option<RenameIntent> {
     r.store.lock().unwrap().rename_intent("s").unwrap()
 }
 
+/// The folder steps of a launch (KTD9): settle the rename intents, then
+/// give every saved folder the name its title gives.
+fn launch_folders(r: &Rig) {
+    folder_rename::resolve_intents(&r.store, &session_save::RealFs).unwrap();
+    folder_rename::reconcile_saved(&r.store, &session_save::RealFs).unwrap();
+}
+
 /// Record a move as the rename does before it takes it.
 fn record_intent(r: &Rig, from: &std::path::Path, to: &std::path::Path, temp: Option<&str>) {
     r.store
@@ -2971,6 +3058,11 @@ async fn a_saved_session_renamed_has_one_folder_under_the_new_name() {
     assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
     assert!(new.join("audio/segment-01.opus").exists());
     assert_eq!(intent(&r), None);
+    // The rewrite keeps the complete record (KTD2).
+    let doc = session_md(&new);
+    assert_eq!(doc.title_source, Some(session_core::TitleSource::User));
+    assert_eq!(doc.asr_model.as_deref(), Some("m"));
+    assert_fingerprints_match(&new);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3028,7 +3120,7 @@ async fn a_crash_after_the_intent_and_before_the_rename_resolves_at_launch_to_th
     assert_eq!(destination_entries(&r), [name_for(None)]);
 
     // The reconcile at launch then completes the rename.
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     assert_eq!(saved_folder(&r, "s"), new);
     assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
 }
@@ -3042,7 +3134,7 @@ async fn a_crash_after_the_rename_and_before_home_path_resolves_at_launch_to_the
     record_intent(&r, &old, &new, None);
     std::fs::rename(&old, &new).unwrap();
 
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     assert_eq!(saved_folder(&r, "s"), new);
     assert_eq!(intent(&r), None);
     assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
@@ -3062,7 +3154,7 @@ async fn a_crash_after_session_md_and_before_home_path_resolves_at_launch_to_the
     doc.title = Some("Budget review".into());
     std::fs::write(new.join("session.md"), doc.render()).unwrap();
 
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     assert_eq!(saved_folder(&r, "s"), new);
     assert_eq!(intent(&r), None);
     assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
@@ -3079,7 +3171,7 @@ async fn a_crash_after_home_path_and_before_the_intent_is_cleared_keeps_the_new_
     // The record that the rename ended is lost.
     record_intent(&r, &old, &new, None);
 
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     assert_eq!(saved_folder(&r, "s"), new);
     assert_eq!(intent(&r), None);
     assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
@@ -3099,7 +3191,7 @@ async fn a_rename_to_a_name_another_folder_uses_takes_the_next_suffix() {
     );
     assert_eq!(destination_entries(&r), [taken.clone(), suffixed.clone()]);
     // The suffixed folder has its name: a launch does not move it again.
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     assert_eq!(saved_folder(&r, "s"), r.dest.join(&suffixed));
 }
 
@@ -3130,7 +3222,7 @@ async fn a_change_of_case_stopped_at_the_temporary_name_resolves_at_launch_to_th
     std::fs::rename(&old, r.dest.join(&temp)).unwrap();
     assert_eq!(destination_entries(&r), [temp]);
 
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
     assert_eq!(saved_folder(&r, "s"), new);
     assert_eq!(intent(&r), None);
@@ -3144,7 +3236,7 @@ async fn a_crash_after_done_and_before_a_deferred_rename_ends_renames_at_the_nex
     // stopped before the reconcile after Done ran.
     set_title(&r.store, "s", "Second");
 
-    folder_rename::recover(&r.store, &session_save::RealFs).unwrap();
+    launch_folders(&r);
     let second = r.dest.join(name_for(Some("Second")));
     assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
     assert_eq!(saved_folder(&r, "s"), second);
@@ -3668,6 +3760,7 @@ async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_
     assert_eq!(saved_folder(&r, "s"), folder, "the same folder");
     assert_eq!(destination_entries(&r).len(), 1);
     assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_stored_fingerprint(&r, "s", &folder);
     assert_ne!(read(&folder, "summary.md"), summary);
     assert!(summary_is_complete(&folder));
     assert_eq!(read(&folder, "notes.md"), notes);
@@ -3698,6 +3791,17 @@ async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
     assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
 }
 
+/// The transcript that the stored checkpoints of "s" give.
+fn rebuilt_transcript(r: &Rig) -> String {
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    pipeline::join::build(
+        &segments,
+        &transcribe::results(&r.store, "s").unwrap(),
+        &pipeline::diarize::speakers(&r.store, "s").unwrap(),
+    )
+    .render()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcript() {
     // Covers AE12.
@@ -3708,8 +3812,7 @@ async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcr
         .iter()
         .map(|name| read(&folder, name))
         .collect();
-    let segments = r.store.lock().unwrap().segments("s").unwrap();
-    let turns = pipeline::summarize::transcript_turns(&r.store, "s", &segments).unwrap();
+    let turns = rebuilt_transcript(&r);
 
     r.runner.transcribe_again("s", "tdt").unwrap();
     *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
@@ -3745,13 +3848,9 @@ async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcr
     assert!(r.events.lock().unwrap().iter().any(
         |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
     ));
-    // The previous checkpoints came back: the transcript the summary reads
-    // is the saved one, and a regeneration works from it.
-    let segments = r.store.lock().unwrap().segments("s").unwrap();
-    assert_eq!(
-        pipeline::summarize::transcript_turns(&r.store, "s", &segments).unwrap(),
-        turns
-    );
+    // The previous checkpoints came back: they rebuild the saved
+    // transcript, and a regeneration works from it.
+    assert_eq!(rebuilt_transcript(&r), turns);
     r.runner.regenerate_summary("s").await.unwrap();
 }
 
@@ -3770,6 +3869,8 @@ async fn an_offline_summary_endpoint_keeps_the_previous_summary_with_the_new_tra
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
     assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
     assert_eq!(read(&folder, "summary.md"), summary, "the previous summary");
+    assert_fingerprints_match(&folder);
+    assert_eq!(session_md(&folder).asr_model.as_deref(), Some("tdt"));
     assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
     let marks = marks(&r);
     assert!(marks.summary_error.is_some(), "{marks:?}");
@@ -4223,6 +4324,15 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
         ],
     )
     .await;
+    // `session.md` keeps each segment's channels; the stereo mark follows.
+    let doc = session_md(&saved_folder(&r, "s"));
+    assert_eq!(doc.segments[0].channels, 1);
+    assert_eq!(doc.segments[1].channels, 2);
+    assert_eq!(doc.stereo_from(), Some(1));
+    assert_eq!(
+        doc.stereo_from(),
+        r.store.lock().unwrap().stereo_from("s").unwrap()
+    );
     r.runner.transcribe_again("s", "tdt").unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
@@ -4256,4 +4366,520 @@ async fn a_cancelled_transcribe_again_restores_the_previous_echo_spans() {
         checkpoint::all(&r.store, "s", Stage::Assemble).unwrap(),
         before
     );
+}
+
+// ---------------------------------------------------- the folder is the authority
+
+use library::reconcile::{Changes, Reconciler};
+use pipeline::save::NotesSave;
+use session_core::folder::{SessionDoc, Transcript, TranscriptLine};
+
+/// A second computer: its own store, working location and recognizer, and
+/// the Destination of `a`, which a sync shares.
+async fn other_computer(a: &Rig) -> Rig {
+    let b = rig_with(store(), tempfile::tempdir().unwrap(), Arc::default());
+    *b.script.destination.lock().unwrap() = Some(a.dest.clone());
+    with_summaries(&b.script).await;
+    b
+}
+
+/// A library scan of `root` applied to the store of `r` (KTD5, KTD6).
+fn sync(r: &Rig, root: &std::path::Path) -> Changes {
+    r.runner
+        .reconcile_library(&[root.to_path_buf()], &mut Reconciler::default())
+        .unwrap()
+}
+
+/// Change `session.md` in `folder`, as another computer's write does.
+fn edit_session_md(folder: &std::path::Path, edit: impl FnOnce(&mut SessionDoc)) {
+    let mut doc = session_md(folder);
+    edit(&mut doc);
+    std::fs::write(folder.join(pipeline::save::SESSION_FILE), doc.render()).unwrap();
+}
+
+/// Another computer renames the note: the folder takes the new name, and
+/// its `session.md` the user's title. Returns the new folder.
+fn rename_on_other_computer(folder: &std::path::Path, title: &str) -> std::path::PathBuf {
+    let started = session_md(folder).timeline_segments()[0].wall_start;
+    let renamed = folder
+        .parent()
+        .unwrap()
+        .join(session_save::naming::folder_name(started, Some(title)));
+    std::fs::rename(folder, &renamed).unwrap();
+    edit_session_md(&renamed, |doc| {
+        doc.title = Some(title.into());
+        doc.title_source = Some(TitleSource::User);
+    });
+    renamed
+}
+
+/// The text of the turns before the first gap of the folder's transcript:
+/// what the first recording said.
+fn first_recording_text(folder: &std::path::Path) -> String {
+    Transcript::parse(&read(folder, TRANSCRIPT_FILE))
+        .unwrap()
+        .lines
+        .into_iter()
+        .take_while(|line| !matches!(line, TranscriptLine::Gap { .. }))
+        .filter_map(|line| match line {
+            TranscriptLine::Turn { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Resume the saved note `id` as capture does: the row follows its folder
+/// (KTD3), and a note with no recognition results takes the text of its
+/// recorded segments from `transcript.md` (KTD12). Then record one more
+/// segment and stop.
+fn resume_from_folder(r: &Rig, id: &str, audio: &[f32]) {
+    {
+        let mut s = r.store.lock().unwrap();
+        pipeline::follow::follow_folder(&mut s, id, false).unwrap();
+        let home = s.session(id).unwrap().unwrap().home_path.unwrap();
+        assert!(pipeline::save::home_intact(&s, id).unwrap());
+        s.apply(
+            id,
+            &session_core::Event::UserResume {
+                space_ok: true,
+                audio_intact: true,
+            },
+        )
+        .unwrap();
+        pipeline::transcribe::seed_from_transcript(&s, id, std::path::Path::new(&home)).unwrap();
+    }
+    record_resumed_segment(r, id, audio);
+}
+
+fn calls(r: &Rig) -> usize {
+    r.script.calls.load(Ordering::SeqCst)
+}
+
+/// The windows planned for the segment `index` of "s".
+fn windows_of(r: &Rig, index: u32) -> usize {
+    let plan: WindowPlan = checkpoint::get(
+        &r.store,
+        "s",
+        Stage::Transcribe,
+        &checkpoint::plan_key(index),
+    )
+    .unwrap()
+    .unwrap();
+    plan.windows.len()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_uses_the_notes_and_keeps_the_title_that_another_computer_wrote() {
+    // Covers AE5.
+    let a = rig().await;
+    saved_note(&a, None).await;
+    let b = other_computer(&a).await;
+    assert_eq!(sync(&b, &a.dest).changed, ["s"]);
+
+    // The desktop renames the note, and the laptop's scan follows the
+    // folder. Then the desktop edits the notes.
+    assert!(matches!(
+        b.runner.rename_session("s", "Budget review").unwrap(),
+        FolderRename::Moved(_)
+    ));
+    let renamed = saved_folder(&b, "s");
+    sync(&a, &a.dest);
+    assert_eq!(saved_folder(&a, "s"), renamed);
+    assert!(
+        pipeline::save::set_notes(&mut b.store.lock().unwrap(), "s", "- the desktop notes\n")
+            .unwrap()
+    );
+
+    let mock = numbered_summaries(&a).await;
+    a.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_calls(&mock);
+    assert!(
+        calls.iter().all(|c| c.contains("- the desktop notes")),
+        "{calls:?}"
+    );
+    assert_eq!(saved_folder(&a, "s"), renamed);
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+    assert_eq!(session_md(&renamed).title.as_deref(), Some("Budget review"));
+    assert_eq!(read(&renamed, "notes.md"), "- the desktop notes\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_on_a_computer_with_no_recognition_results_summarizes_transcript_md() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let b = other_computer(&a).await;
+    sync(&b, &a.dest);
+    assert!(
+        checkpoint::all(&b.store, "s", Stage::Transcribe)
+            .unwrap()
+            .is_empty()
+    );
+
+    let mock = numbered_summaries(&b).await;
+    b.runner.regenerate_summary("s").await.unwrap();
+    let turns: Vec<String> = Transcript::parse(&read(&folder, TRANSCRIPT_FILE))
+        .unwrap()
+        .lines
+        .into_iter()
+        .filter_map(|line| match line {
+            TranscriptLine::Turn { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(!turns.is_empty());
+    let calls = chat_calls(&mock);
+    assert!(
+        turns
+            .iter()
+            .all(|t| calls.iter().any(|c| c.contains(t.as_str()))),
+        "{calls:?}"
+    );
+    assert!(read(&folder, "summary.md").contains("Summary number"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_the_new_segment() {
+    // Covers AE3.
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let audio = std::fs::read(folder.join("audio/segment-01.opus")).unwrap();
+    let said = first_recording_text(&folder);
+    let b = other_computer(&a).await;
+    sync(&b, &a.dest);
+
+    resume_from_folder(&b, "s", &speech());
+    assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(saved_folder(&b, "s"), folder);
+    assert_eq!(
+        std::fs::read(folder.join("audio/segment-01.opus")).unwrap(),
+        audio
+    );
+    assert!(folder.join("audio/segment-02.opus").exists());
+    let transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE)).unwrap();
+    let gaps = transcript
+        .lines
+        .iter()
+        .filter(|l| matches!(l, TranscriptLine::Gap { .. }))
+        .count();
+    assert_eq!(gaps, 1, "both recordings");
+    assert_eq!(first_recording_text(&folder), said);
+    assert_eq!(calls(&b), windows_of(&b, 1), "only the new segment");
+    assert_fingerprints_match(&folder);
+
+    // The laptop then shows the updated note.
+    sync(&a, &a.dest);
+    assert_eq!(a.store.lock().unwrap().segments("s").unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_on_another_computer_decodes_the_folder_audio_and_keeps_notes_and_title() {
+    let a = rig().await;
+    let folder = saved_note(&a, Some("Budget review")).await;
+    let notes = read(&folder, "notes.md");
+    let b = other_computer(&a).await;
+    sync(&b, &a.dest);
+
+    b.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert!(calls(&b) > 0);
+    assert!(
+        b.script
+            .models_called
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|m| m == "tdt")
+    );
+    assert_eq!(saved_folder(&b, "s"), folder);
+    assert_eq!(read(&folder, "notes.md"), notes);
+    let doc = session_md(&folder);
+    assert_eq!(doc.title.as_deref(), Some("Budget review"));
+    assert_eq!(doc.asr_model.as_deref(), Some("tdt"));
+    assert_fingerprints_match(&folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_after_another_computer_transcribed_again_keeps_its_text_for_the_earlier_segments()
+{
+    // Covers AE9.
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let b = other_computer(&a).await;
+    sync(&b, &a.dest);
+    *b.script.says.lock().unwrap() = Some((0, "Heard on the desktop.".into()));
+    b.runner.transcribe_again("s", "tdt").unwrap();
+    assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let desktop = first_recording_text(&folder);
+    assert!(desktop.contains("Heard on the desktop."), "{desktop}");
+
+    let before = calls(&a);
+    resume_from_folder(&a, "s", &speech());
+    assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(first_recording_text(&folder), desktop);
+    assert_eq!(
+        calls(&a) - before,
+        windows_of(&a, 1),
+        "only the new segment"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_from_another_computer_during_transcribe_again_is_kept() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    a.runner.transcribe_again("s", "tdt").unwrap();
+    // The other computer edits the notes while the run waits in line.
+    std::fs::write(folder.join("notes.md"), "- the desktop notes\n").unwrap();
+
+    assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(read(&folder, "notes.md"), "- the desktop notes\n");
+    assert_eq!(
+        a.store.lock().unwrap().notes("s").unwrap(),
+        "- the desktop notes\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_on_this_computer_during_transcribe_again_is_kept() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    a.runner.transcribe_again("s", "tdt").unwrap();
+    // The folder takes the edit at once, so the run's refresh keeps it.
+    assert!(pipeline::save::set_notes(&mut a.store.lock().unwrap(), "s", "- my notes\n").unwrap());
+    assert_eq!(read(&folder, "notes.md"), "- my notes\n");
+
+    assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(read(&folder, "notes.md"), "- my notes\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_from_another_computer_during_transcribe_again_saves_into_the_new_folder() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    a.runner.transcribe_again("s", "tdt").unwrap();
+    let renamed = rename_on_other_computer(&folder, "Budget review");
+    // The scan follows the folder of a row in a run (KTD6).
+    sync(&a, &a.dest);
+
+    assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_folder(&a, "s"), renamed);
+    assert!(!folder.exists());
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+    let doc = session_md(&renamed);
+    assert_eq!(doc.title.as_deref(), Some("Budget review"));
+    assert_eq!(doc.asr_model.as_deref(), Some("tdt"));
+    assert_eq!(
+        title_of(&a),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User,
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_launch_reconcile_does_not_rename_a_folder_back_after_a_synced_rename() {
+    let a = rig().await;
+    let folder = saved_session(&a, Some("Planning")).await;
+    let renamed = rename_on_other_computer(&folder, "Budget review");
+
+    // The launch steps in their order (KTD9).
+    folder_rename::resolve_intents(&a.store, &session_save::RealFs).unwrap();
+    sync(&a, &a.dest);
+    folder_rename::reconcile_saved(&a.store, &session_save::RealFs).unwrap();
+
+    assert_eq!(saved_folder(&a, "s"), renamed);
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_launch_reconcile_does_not_rename_a_folder_whose_new_session_md_has_not_synced() {
+    let a = rig().await;
+    let folder = saved_session(&a, Some("Planning")).await;
+    // Another computer renamed the note. The folder move synced, but the
+    // session.md with the new title did not.
+    let renamed = folder
+        .parent()
+        .unwrap()
+        .join(name_for(Some("Budget review")));
+    std::fs::rename(&folder, &renamed).unwrap();
+
+    folder_rename::resolve_intents(&a.store, &session_save::RealFs).unwrap();
+    sync(&a, &a.dest);
+    folder_rename::reconcile_saved(&a.store, &session_save::RealFs).unwrap();
+
+    assert_eq!(saved_folder(&a, "s"), renamed);
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+    assert_eq!(document_title(&renamed).as_deref(), Some("Planning"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_save_writes_the_library_marker_in_the_destination() {
+    let a = rig().await;
+    assert!(!library::scan::marker(&a.dest).exists());
+    saved_session(&a, None).await;
+    assert!(library::scan::marker(&a.dest).is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_save_over_a_file_that_another_computer_changed_writes_a_draft_beside_it() {
+    use pipeline::save::{notes_fingerprint, save_notes};
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let mut s = a.store.lock().unwrap();
+    let loaded = notes_fingerprint(&s.notes("s").unwrap());
+    std::fs::write(folder.join("notes.md"), "- the desktop notes\n").unwrap();
+
+    let NotesSave::Conflict { draft } =
+        save_notes(&mut s, "s", "- my notes\n", Some(&loaded)).unwrap()
+    else {
+        panic!("no conflict");
+    };
+    assert_eq!(read(&folder, "notes.md"), "- the desktop notes\n");
+    assert_eq!(s.notes("s").unwrap(), "- the desktop notes\n");
+    assert_eq!(std::fs::read_to_string(&draft).unwrap(), "- my notes\n");
+    assert_eq!(draft.parent(), Some(folder.as_path()));
+    let name = draft.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("notes (Longhand conflict "), "{name}");
+    assert_eq!(library::conflict::document_copy(name), Some("notes.md"));
+
+    // An edit of the file as it is now saves.
+    let current = notes_fingerprint("- the desktop notes\n");
+    assert_eq!(
+        save_notes(&mut s, "s", "- both notes\n", Some(&current)).unwrap(),
+        NotesSave::Saved { written: true }
+    );
+    assert_eq!(read(&folder, "notes.md"), "- both notes\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_save_over_a_file_that_cannot_be_read_writes_a_draft_and_keeps_the_file() {
+    use pipeline::save::{notes_fingerprint, save_notes};
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let mut s = a.store.lock().unwrap();
+    let loaded = notes_fingerprint(&s.notes("s").unwrap());
+    // A `notes.md` that cannot be read, as a file that does not download.
+    std::fs::remove_file(folder.join("notes.md")).unwrap();
+    std::fs::create_dir(folder.join("notes.md")).unwrap();
+
+    let NotesSave::Conflict { draft } =
+        save_notes(&mut s, "s", "- my notes\n", Some(&loaded)).unwrap()
+    else {
+        panic!("no conflict");
+    };
+    assert!(folder.join("notes.md").is_dir());
+    assert_eq!(std::fs::read_to_string(&draft).unwrap(), "- my notes\n");
+    assert_eq!(draft.parent(), Some(folder.as_path()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_with_a_transcript_that_cannot_be_read_names_the_storage_folder() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let summary = read(&folder, "summary.md");
+    std::fs::remove_file(folder.join(TRANSCRIPT_FILE)).unwrap();
+    std::fs::create_dir(folder.join(TRANSCRIPT_FILE)).unwrap();
+
+    let error = a.runner.regenerate_summary("s").await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("the storage folder is not available"),
+        "{error}"
+    );
+    assert_eq!(read(&folder, "summary.md"), summary);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_whose_folder_move_fails_keeps_the_title_after_a_library_scan() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let fs = AlwaysInUse(AtomicUsize::new(0));
+    let result =
+        folder_rename::rename_session(&r.store, "s", "Budget review", &|_| false, &fs).unwrap();
+    assert!(matches!(result, FolderRename::Kept(_)), "{result:?}");
+    assert_eq!(document_title(&old).as_deref(), Some("Budget review"));
+
+    sync(&r, &r.dest);
+    assert_eq!(
+        title_of(&r),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User,
+        })
+    );
+    // The launch reconcile then moves the folder.
+    folder_rename::reconcile_saved(&r.store, &session_save::RealFs).unwrap();
+    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_another_computer_replaced_the_transcript_makes_every_call_again()
+{
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five(&r).await;
+    let folder = path.parent().unwrap().to_path_buf();
+
+    // Another computer replaces `transcript.md`, and its `session.md`
+    // records the new fingerprint.
+    let mut transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE)).unwrap();
+    for line in &mut transcript.lines {
+        if let TranscriptLine::Turn { text, .. } = line {
+            *text = format!("{text} REMOTE-MARKER");
+        }
+    }
+    let rendered = transcript.render();
+    std::fs::write(folder.join(TRANSCRIPT_FILE), &rendered).unwrap();
+    edit_session_md(&folder, |doc| {
+        doc.transcript_fingerprint = Some(session_core::folder::fingerprint(rendered.as_bytes()));
+    });
+    sync(&r, &r.dest);
+
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    // The regeneration starts at part 1 again, from the new text.
+    let again = &calls[5..];
+    assert!(
+        again[0].contains("<transcript part=\"1\">"),
+        "{}",
+        &again[0][..80]
+    );
+    assert!(calls[..5].iter().all(|c| !c.contains("REMOTE-MARKER")));
+    assert!(again.iter().any(|c| c.contains("REMOTE-MARKER")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_keeps_a_user_title_that_another_computer_wrote_during_its_calls() {
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let written = Arc::new(AtomicUsize::new(0));
+    let at = folder.clone();
+    let reply = http::Reply::With(Arc::new(move |_| {
+        // Another computer sets the title while the call runs.
+        if written.fetch_add(1, Ordering::SeqCst) == 0 {
+            edit_session_md(&at, |doc| {
+                doc.title = Some("Budget review".into());
+                doc.title_source = Some(TitleSource::User);
+            });
+        }
+        (200, http::completion("A new summary."))
+    }));
+    summaries_from(&a, reply, None).await;
+
+    a.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(
+        title_of(&a),
+        Some(Title {
+            text: "Budget review".into(),
+            source: TitleSource::User,
+        })
+    );
+    let renamed = saved_folder(&a, "s");
+    assert_eq!(destination_entries(&a), [name_for(Some("Budget review"))]);
+    assert_eq!(session_md(&renamed).title.as_deref(), Some("Budget review"));
+    assert!(read(&renamed, "summary.md").contains("A new summary."));
 }

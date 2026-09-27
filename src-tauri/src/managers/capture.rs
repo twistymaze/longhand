@@ -1172,20 +1172,37 @@ impl CaptureManager {
         let state = {
             let mut store = self.store();
             let other = |e: pipeline::StageError| CaptureError::Other(e.to_string());
-            let completed = store
-                .session(id)?
+            // The row follows its folder first (KTD3): the resume keeps the
+            // title, notes and segments that another computer wrote, and a
+            // transcript from another computer clears this computer's
+            // recognition results (KTD12).
+            pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
+            let record = store.session(id)?;
+            let completed = record
+                .as_ref()
                 .is_some_and(|r| r.state == SessionState::Saved);
             if !completed && pipeline::save::begun(&store, id).map_err(other)? {
                 return Err(CaptureError::Save);
             }
             let audio_intact = pipeline::save::home_intact(&store, id).map_err(other)?;
-            store.apply(
+            let state = store.apply(
                 id,
                 &Event::UserResume {
                     space_ok,
                     audio_intact,
                 },
-            )?
+            )?;
+            // A note with no recognition results on this computer takes
+            // the text of its recorded segments from `transcript.md`, and
+            // only the new segment is transcribed (KD3, KTD12).
+            if completed
+                && matches!(state, SessionState::Capturing)
+                && let Some(home) = record.and_then(|r| r.home_path)
+            {
+                pipeline::transcribe::seed_from_transcript(&store, id, Path::new(&home))
+                    .map_err(other)?;
+            }
+            state
         };
         if !matches!(state, SessionState::Capturing) {
             return Ok(state);
@@ -1816,15 +1833,22 @@ impl CaptureManager {
         Ok(self.store().notes(session_id)?)
     }
 
-    /// Replace a session's notes document (KTD5). On a saved session the
-    /// home folder's `notes.md` is rewritten whole under the store lock
-    /// (R20). A session id that the store does not hold is refused: the
-    /// app keeps no notes outside a session (R27).
-    pub fn set_session_notes(&self, session_id: &str, document: &str) -> Result<(), CaptureError> {
+    /// Replace a session's notes document (KTD5), and check the `notes.md`
+    /// that the editor loaded (KTD10): `loaded` is its fingerprint. On a
+    /// saved session the home folder's `notes.md` is rewritten whole under
+    /// the store lock (R20). When another computer changed the file since
+    /// the editor loaded it, the file stays and the document goes into a
+    /// draft beside it. A session id that the store does not hold is
+    /// refused: the app keeps no notes outside a session (R27).
+    pub fn save_session_notes(
+        &self,
+        session_id: &str,
+        document: &str,
+        loaded: Option<&str>,
+    ) -> Result<pipeline::save::NotesSave, CaptureError> {
         let mut store = self.store();
-        pipeline::save::set_notes(&mut store, session_id, document)
-            .map_err(|e| CaptureError::Other(e.to_string()))?;
-        Ok(())
+        pipeline::save::save_notes(&mut store, session_id, document, loaded)
+            .map_err(|e| CaptureError::Other(e.to_string()))
     }
 
     /// Bound the open session's diarization (R36).

@@ -746,6 +746,21 @@ fn deleting_no_such_session_is_an_error() {
 }
 
 #[test]
+fn an_owed_rename_is_kept_until_it_is_cleared() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.create_session("s2", t(1), None).unwrap();
+    assert!(store.owed_renames().unwrap().is_empty());
+    store.set_rename_owed("s1", true).unwrap();
+    store.set_rename_owed("s1", true).unwrap();
+    store.set_rename_owed("s2", true).unwrap();
+    assert_eq!(store.owed_renames().unwrap(), ["s1", "s2"]);
+    store.set_rename_owed("s1", false).unwrap();
+    assert_eq!(store.owed_renames().unwrap(), ["s2"]);
+    assert!(store.set_rename_owed("nobody", true).is_err());
+}
+
+#[test]
 fn a_rename_intent_is_kept_until_it_is_cleared_and_goes_with_its_session() {
     use session_core::RenameIntent;
     let mut store = Store::open_in_memory().unwrap();
@@ -1217,4 +1232,281 @@ fn the_capture_choice_survives_a_reopen_of_the_store() {
         Store::open(&path).unwrap().capture_choice("s1").unwrap(),
         usb_mic()
     );
+}
+
+// ---------------------------------------------------------------- adopt and forget
+
+fn adoption(id: &str, home: &str) -> session_core::Adoption {
+    let mut stereo = segment(1, 60_000);
+    stereo.channels = 2;
+    session_core::Adoption {
+        id: id.to_string(),
+        created_at: t(0),
+        speaker_count: Some(SpeakerCount::Exact(2)),
+        segments: vec![segment(0, 0), stereo],
+        notes: "- agenda\n".to_string(),
+        title: Some(Title {
+            text: "Budget".to_string(),
+            source: TitleSource::User,
+        }),
+        asr_model: Some("whisper-large-v3-turbo-q5km".to_string()),
+        found_speakers: Some(3),
+        home_path: home.to_string(),
+        transcript_fingerprint: Some("abc123".to_string()),
+    }
+}
+
+#[test]
+fn an_adopted_note_is_saved_with_the_fields_of_its_folder() {
+    let mut store = Store::open_in_memory().unwrap();
+    assert!(store.adopt(&adoption("s1", "/notes/Budget")).unwrap());
+    let sessions = store.sessions().unwrap();
+    assert_eq!(sessions.len(), 1);
+    let record = &sessions[0];
+    assert_eq!(record.id, "s1");
+    assert_eq!(record.state, SessionState::Saved);
+    assert_eq!(record.created_at, t(0));
+    assert_eq!(record.queue_seq, None);
+    assert_eq!(record.speaker_count, Some(SpeakerCount::Exact(2)));
+    assert_eq!(
+        record.asr_model.as_deref(),
+        Some("whisper-large-v3-turbo-q5km")
+    );
+    assert_eq!(record.home_path.as_deref(), Some("/notes/Budget"));
+    assert_eq!(
+        record.title,
+        Some(Title {
+            text: "Budget".to_string(),
+            source: TitleSource::User,
+        })
+    );
+    assert_eq!(record.found_speakers, Some(3));
+    assert_eq!(store.notes("s1").unwrap(), "- agenda\n");
+    assert_eq!(store.segments("s1").unwrap(), adoption("s1", "").segments);
+    assert_eq!(store.stereo_from("s1").unwrap(), Some(1));
+    assert_eq!(
+        store.transcript_fingerprint("s1").unwrap().as_deref(),
+        Some("abc123")
+    );
+    assert!(store.queue().unwrap().is_empty());
+    // No capture choice comes with the folder (R4).
+    assert_eq!(
+        store.capture_choice("s1").unwrap(),
+        CaptureChoice::default()
+    );
+}
+
+#[test]
+fn an_adopted_note_accepts_an_edit_and_a_resume() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.adopt(&adoption("s1", "/notes/Budget")).unwrap();
+    assert_eq!(
+        store.apply("s1", &Event::SavedEdit).unwrap(),
+        SessionState::Saved
+    );
+    assert_eq!(
+        store
+            .apply(
+                "s1",
+                &Event::UserResume {
+                    space_ok: true,
+                    audio_intact: true,
+                },
+            )
+            .unwrap(),
+        SessionState::Capturing
+    );
+    // The resumed note keeps its folder as its home.
+    assert_eq!(
+        store.session("s1").unwrap().unwrap().home_path.as_deref(),
+        Some("/notes/Budget")
+    );
+}
+
+#[test]
+fn an_adopted_proposed_title_accepts_a_new_proposal() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut note = adoption("s1", "/notes/Budget");
+    note.title = Some(Title {
+        text: "Budget".to_string(),
+        source: TitleSource::Proposed,
+    });
+    store.adopt(&note).unwrap();
+    assert!(
+        store
+            .set_title("s1", "Budget review", TitleSource::Proposed)
+            .unwrap()
+    );
+}
+
+#[test]
+fn adopt_refuses_an_id_that_has_a_row() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert!(!store.adopt(&adoption("s1", "/notes/Budget")).unwrap());
+    // The row is as it was: capturing, with no segments, notes or home.
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.state, SessionState::Capturing);
+    assert_eq!(record.home_path, None);
+    assert!(store.segments("s1").unwrap().is_empty());
+    assert_eq!(store.notes("s1").unwrap(), "");
+    assert_eq!(store.transcript_fingerprint("s1").unwrap(), None);
+}
+
+#[test]
+fn an_adoption_from_session_md_takes_its_fields() {
+    let mut doc = session_core::folder::SessionDoc::new("s1", None, &[segment(0, 0)]).unwrap();
+    doc.title = Some("Budget".to_string());
+    doc.asr_model = Some("parakeet".to_string());
+    doc.found_speakers = Some(2);
+    let note = session_core::Adoption::from_doc(
+        &doc,
+        "- agenda\n".to_string(),
+        "/notes/Budget".to_string(),
+        Some("abc123".to_string()),
+    );
+    assert_eq!(note.id, "s1");
+    assert_eq!(note.created_at, t(0));
+    assert_eq!(note.segments, vec![segment(0, 0)]);
+    // A title with no recorded source counts as set by the user (R5).
+    assert_eq!(note.title.unwrap().source, TitleSource::User);
+    assert_eq!(note.asr_model.as_deref(), Some("parakeet"));
+    assert_eq!(note.found_speakers, Some(2));
+    assert_eq!(note.notes, "- agenda\n");
+    assert_eq!(note.home_path, "/notes/Budget");
+    assert_eq!(note.transcript_fingerprint.as_deref(), Some("abc123"));
+}
+
+#[test]
+fn forget_removes_the_row_and_its_checkpoints_and_leaves_the_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("Budget");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("session.md"), "---\n---\n").unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = Store::open(&path).unwrap();
+    store
+        .adopt(&adoption("s1", home.to_str().unwrap()))
+        .unwrap();
+    store
+        .put_checkpoint("s1", Stage::Transcribe, "w1", "{}")
+        .unwrap();
+    store.adopt(&adoption("s2", "/notes/Other")).unwrap();
+    assert!(store.forget("s1").unwrap());
+    assert!(store.session("s1").unwrap().is_none());
+    assert!(home.join("session.md").exists(), "forget touches no folder");
+    // The other note stays.
+    assert!(store.session("s2").unwrap().is_some());
+    drop(store);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let left: i64 = conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM checkpoints WHERE session_id = 's1')
+                  + (SELECT COUNT(*) FROM segments WHERE session_id = 's1')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn forget_refuses_a_note_that_is_not_saved_or_that_a_rename_moves() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("capturing", t(0), None).unwrap();
+    assert!(!store.forget("capturing").unwrap());
+    assert!(store.session("capturing").unwrap().is_some());
+
+    store.adopt(&adoption("renamed", "/notes/A")).unwrap();
+    store
+        .set_rename_intent(
+            "renamed",
+            &session_core::RenameIntent {
+                from: "/notes/A".into(),
+                to: "/notes/B".into(),
+                temp: None,
+            },
+        )
+        .unwrap();
+    assert!(!store.forget("renamed").unwrap());
+    assert!(store.session("renamed").unwrap().is_some());
+
+    assert!(!store.forget("nope").unwrap());
+}
+
+#[test]
+fn the_transcript_fingerprint_is_kept_and_replaced() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.transcript_fingerprint("s1").unwrap(), None);
+    store.set_transcript_fingerprint("s1", Some("abc")).unwrap();
+    assert_eq!(
+        store.transcript_fingerprint("s1").unwrap().as_deref(),
+        Some("abc")
+    );
+    store.set_transcript_fingerprint("s1", None).unwrap();
+    assert_eq!(store.transcript_fingerprint("s1").unwrap(), None);
+    assert!(matches!(
+        store.set_transcript_fingerprint("nope", Some("abc")),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.transcript_fingerprint("nope"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn clearing_recognition_results_removes_assemble_transcribe_and_diarize_only() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.adopt(&adoption("s1", "/notes/Budget")).unwrap();
+    store.adopt(&adoption("s2", "/notes/Other")).unwrap();
+    for id in ["s1", "s2"] {
+        for stage in [
+            Stage::Assemble,
+            Stage::Transcribe,
+            Stage::Diarize,
+            Stage::Summarize,
+            Stage::Save,
+        ] {
+            store.put_checkpoint(id, stage, "k", "{}").unwrap();
+        }
+    }
+    store.clear_recognition_results("s1").unwrap();
+    for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
+        assert!(
+            store.checkpoints("s1", stage).unwrap().is_empty(),
+            "{stage:?}"
+        );
+        assert_eq!(store.checkpoints("s2", stage).unwrap().len(), 1);
+    }
+    for stage in [Stage::Summarize, Stage::Save] {
+        assert_eq!(
+            store.checkpoints("s1", stage).unwrap().len(),
+            1,
+            "{stage:?}"
+        );
+    }
+    assert!(matches!(
+        store.clear_recognition_results("nope"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn only_a_saved_unclaimed_session_with_a_home_folder_is_not_busy() {
+    use session_core::jobs::busy;
+    let d = saved_session();
+    let record = d.store.lock().unwrap().session("s").unwrap().unwrap();
+    assert!(!busy(&record, false));
+    assert!(
+        busy(&record, true),
+        "a regeneration or a delete holds a claim"
+    );
+    let mut homeless = record.clone();
+    homeless.home_path = None;
+    assert!(busy(&homeless, false));
+    let mut recording = record;
+    recording.state = SessionState::Capturing;
+    assert!(busy(&recording, false));
 }

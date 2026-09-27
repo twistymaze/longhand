@@ -1,6 +1,6 @@
 ---
 title: One library across computers that share a destination
-status: in-progress
+status: done
 area: library-and-sharing
 added: 2026-09-23
 source: "Session conversation, recorded in docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md (How This Work Fits Together)"
@@ -16,3 +16,4 @@ When several computers save to the same synced destination (for example OneDrive
 - Saving works today: both computers' folders sit side by side, and each only writes to folders it created. Names clash only if both start a session in the same minute (a `-2` suffix, or a cloud conflict copy if the other folder has not synced yet).
 - Would have to settle whether one computer may resume or re-summarize a session another computer recorded.
 - Picked up in `docs/plans/2026-09-25-1217-feat-one-library-across-computers-plan.md`: one person on several computers, a complete `session.md`, live folder watching, the folder as the authority on every computer, and every action (Resume included) on every computer.
+- Built on branch `worktree-one-library-across-computers`. `session.md` holds the complete record, a library scan at launch and a folder watcher while Longhand runs keep each computer's store in step with the folders, and every writer refreshes from the folder first.

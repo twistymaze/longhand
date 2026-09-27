@@ -7,13 +7,15 @@
 //! 3. rewrite `session.md` in the new folder with the title;
 //! 4. set `home_path`, then clear the intent.
 //!
-//! At launch, [`recover`] settles each intent that is left from disk, then
-//! runs the reconcile for every saved session. A rename that was deferred,
-//! lost to a crash or failed then completes.
+//! At launch, [`resolve_intents`] settles each intent that is left from
+//! disk. After the library reconcile, [`reconcile_saved`] runs the
+//! reconcile for every saved session. A rename that was deferred, lost to
+//! a crash or failed then completes.
 
 use std::path::{Path, PathBuf};
 
 use session_core::folder::SessionDoc;
+use session_core::jobs::busy;
 use session_core::{RenameIntent, Segment, SessionRecord, SessionState, Store, TitleSource};
 use session_save::rename_home::{self, Move, RenameError, Resolved};
 use session_save::{Fs, home_write};
@@ -36,20 +38,10 @@ pub enum FolderRename {
     Kept(String),
 }
 
-/// Whether a session is too busy for a folder rename (KTD8). This is the
-/// one busy check: every reconcile calls it. A session that records, is
-/// queued or processes is not in the saved state. `claimed` is true while
-/// a summary regeneration or a delete holds a claim on the session
-/// (`session_core::jobs::Claims`); the caller reads it under the store
-/// lock, so a regeneration or a delete that starts later reads the renamed
-/// folder.
-pub fn busy(record: &SessionRecord, claimed: bool) -> bool {
-    record.state != SessionState::Saved || record.home_path.is_none() || claimed
-}
-
-/// The user's rename (R9, R35): store `title` as the user's title, which
-/// changes it at once, then run the reconcile. `claimed` tells whether a
-/// summary regeneration or a delete holds a claim on the session now.
+/// The user's rename (R9, R35): bring the row up to date from its folder
+/// (KTD3), store `title` as the user's title, which changes it at once,
+/// then run the reconcile. `claimed` tells whether a summary regeneration
+/// or a delete holds a claim on the session now.
 pub fn rename_session(
     store: &SharedStore,
     session_id: &str,
@@ -57,10 +49,60 @@ pub fn rename_session(
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    let guard = lock(store);
-    guard.set_title(session_id, title, TitleSource::User)?;
+    let mut guard = lock(store);
     let claimed = claimed(session_id);
-    reconcile(&guard, session_id, claimed, true, fs)
+    crate::follow::follow_folder(&mut guard, session_id, claimed)?;
+    guard.set_title(session_id, title, TitleSource::User)?;
+    // Recorded before the move, so a crash before the reconcile ends leaves
+    // the rename to the next launch.
+    guard.set_rename_owed(session_id, true)?;
+    let renamed = reconcile(&guard, session_id, claimed, true, fs)?;
+    // A folder that moves later, or that keeps its name because the move
+    // failed, gets the title in its `session.md` now. Otherwise the next
+    // library refresh reads the old title and puts it back in the row.
+    if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
+        write_title(&guard, session_id);
+    }
+    Ok(renamed)
+}
+
+/// Write the stored title into the `session.md` of the session's folder
+/// where it is now: a busy session's folder takes its new name later, and
+/// a folder whose move failed keeps its name. A writer or a library
+/// refresh that follows the folder in the meantime (KTD3) then reads this
+/// title, not the old one. A folder that is not there, or a `session.md`
+/// that cannot be read or written, is logged: the reconcile after the
+/// work writes the document.
+fn write_title(store: &Store, session_id: &str) {
+    let Ok(Some(record)) = store.session(session_id) else {
+        return;
+    };
+    let Some(home) = record.home_path.as_deref().map(Path::new) else {
+        return;
+    };
+    write_title_in(&record, home);
+}
+
+/// Write the title of `record` into the `session.md` in `home`, and change
+/// nothing else in the document. Nothing is written when the document
+/// holds the title.
+fn write_title_in(record: &SessionRecord, home: &Path) {
+    let Some(mut doc) = read_document(home) else {
+        return;
+    };
+    let title = record.title.as_ref().map(|t| t.text.clone());
+    let source = record.title.as_ref().map(|t| t.source);
+    if doc.title == title && doc.title_source == source {
+        return;
+    }
+    doc.title = title;
+    doc.title_source = source;
+    if let Err(e) = home_write::write_atomic(home, SESSION_FILE, doc.render().as_bytes()) {
+        log::warn!(
+            "could not write the title into {SESSION_FILE} in {}: {e}",
+            home.display()
+        );
+    }
 }
 
 /// Compare a saved, idle session's folder name with the name its title
@@ -68,7 +110,24 @@ pub fn rename_session(
 /// a folder that keeps its name gets `session.md` rewritten when its title
 /// is not the stored one. The caller holds the store lock for the whole
 /// call, so no other writer sees the folder between two steps.
+///
+/// A result of `Later` or `Kept` records that this computer owes the
+/// folder a rename, and the launch reconcile tries again. `Unchanged` or
+/// `Moved` clears the record.
 pub fn reconcile(
+    store: &Store,
+    session_id: &str,
+    claimed: bool,
+    check_document: bool,
+    fs: &dyn Fs,
+) -> Result<FolderRename, StageError> {
+    let result = reconcile_once(store, session_id, claimed, check_document, fs)?;
+    let owed = matches!(result, FolderRename::Later | FolderRename::Kept(_));
+    store.set_rename_owed(session_id, owed)?;
+    Ok(result)
+}
+
+fn reconcile_once(
     store: &Store,
     session_id: &str,
     claimed: bool,
@@ -173,20 +232,26 @@ pub fn resolve_intents(store: &SharedStore, fs: &dyn Fs) -> Result<Vec<String>, 
     Ok(settled)
 }
 
-/// At launch, before the processing queue starts: settle the intents that
-/// are left, then run the reconcile for every saved session. Nothing
+/// At launch, after [`resolve_intents`] and the library reconcile, and
+/// before the processing queue starts: run the reconcile for each saved
+/// session whose folder this computer owes a rename (KTD9). A folder that
+/// another computer renamed is not in that list, so the reconcile does not
+/// rename it back when its new `session.md` has not synced yet. Nothing
 /// regenerates at launch. A failure on one session does not stop the
 /// others.
-pub fn recover(store: &SharedStore, fs: &dyn Fs) -> Result<(), StageError> {
-    resolve_intents(store, fs)?;
+pub fn reconcile_saved(store: &SharedStore, fs: &dyn Fs) -> Result<(), StageError> {
     let guard = lock(store);
-    for record in guard.sessions_in(SessionState::Saved.name())? {
-        match reconcile(&guard, &record.id, false, false, fs) {
+    let saved = SessionState::Saved.name();
+    for id in guard.owed_renames()? {
+        if require(&guard, &id)?.state.name() != saved {
+            continue;
+        }
+        match reconcile(&guard, &id, false, false, fs) {
             Ok(FolderRename::Kept(why)) => {
-                log::warn!("the folder of {} keeps its name: {why}", record.id)
+                log::warn!("the folder of {id} keeps its name: {why}")
             }
             Ok(_) => {}
-            Err(e) => log::warn!("could not reconcile the folder of {}: {e}", record.id),
+            Err(e) => log::warn!("could not reconcile the folder of {id}: {e}"),
         }
     }
     Ok(())
@@ -210,6 +275,8 @@ fn settle(
             Ok(Some(path))
         }
         Resolved::NotMoved => {
+            // The move did not happen, so this computer still owes it.
+            store.set_rename_owed(&record.id, true)?;
             store.clear_rename_intent(&record.id)?;
             Ok(None)
         }
@@ -228,9 +295,10 @@ fn settle(
 
 /// Steps 3 and 4 of the rename: rewrite `session.md` in the folder at
 /// `path`, set `home_path`, then clear the intent. Each step can run
-/// again. A `session.md` that cannot be written does not stop the rename,
-/// because the folder has moved: the next reconcile with the document
-/// check writes it.
+/// again. A `session.md` that cannot be rewritten does not stop the
+/// rename, because the folder has moved: the title then goes into the
+/// document as it is, so that a library refresh keeps the title, and the
+/// next reconcile with the document check writes the rest.
 fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), StageError> {
     let segments = store.segments(&record.id)?;
     if let Err(e) = write_document(record, &segments, path) {
@@ -238,22 +306,35 @@ fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), Stag
             "could not rewrite {SESSION_FILE} in {}: {e}",
             path.display()
         );
+        write_title_in(record, path);
     }
     store.set_home_path(&record.id, &path.to_string_lossy())?;
     store.clear_rename_intent(&record.id)?;
     Ok(())
 }
 
-/// Rewrite `session.md` in `folder` when its title is not the stored one.
-fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path) {
-    let stored = record.title.as_ref().map(|t| t.text.as_str());
-    let written = std::fs::read_to_string(folder.join(SESSION_FILE))
+/// The `session.md` in `folder`, or `None` when it is not there or does not
+/// parse.
+fn read_document(folder: &Path) -> Option<SessionDoc> {
+    std::fs::read_to_string(folder.join(SESSION_FILE))
         .ok()
-        .and_then(|text| SessionDoc::parse(&text).ok());
-    if let Some(doc) = written
-        && doc.title.as_deref() != stored
-        && let Err(e) = write_document(record, segments, folder)
-    {
+        .and_then(|text| SessionDoc::parse(&text).ok())
+}
+
+/// Rewrite `session.md` in `folder` when it is not what the stored record
+/// and the folder's files give: for example a new title or title source,
+/// or a fingerprint that an earlier write left out of date.
+fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path) {
+    let Some(written) = read_document(folder) else {
+        return;
+    };
+    let result = match session_doc(record, segments, folder) {
+        Ok(doc) if doc == written => Ok(()),
+        Ok(doc) => home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())
+            .map_err(StageError::from),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
         log::warn!(
             "could not rewrite {SESSION_FILE} in {}: {e}",
             folder.display()
@@ -261,12 +342,14 @@ fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path)
     }
 }
 
-fn write_document(
+/// Write `session.md` in `folder` from the stored record, with the
+/// fingerprints of the folder's `transcript.md` and `summary.md`.
+pub(crate) fn write_document(
     record: &SessionRecord,
     segments: &[Segment],
     folder: &Path,
 ) -> Result<(), StageError> {
-    let doc = session_doc(record, segments)?;
+    let doc = session_doc(record, segments, folder)?;
     home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())?;
     Ok(())
 }

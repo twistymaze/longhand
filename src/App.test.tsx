@@ -45,6 +45,7 @@ const recordingEntry: SessionEntry = {
   stage: null,
   title: null,
   found_speakers: null,
+  storage_unavailable: false,
 };
 
 function mockApp(status: { current: RecordingStatus }, entries: { current: SessionEntry[] }) {
@@ -57,7 +58,7 @@ function mockApp(status: { current: RecordingStatus }, entries: { current: Sessi
     recording_status: () => status.current,
     list_sessions: () => entries.current,
     alert_check: () => ({ reason: null }),
-    session_notes: () => "",
+    load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
     session_detail: () => ({ entry: recordingEntry, done: [], current: null, resumable: false }),
   });
 }
@@ -133,7 +134,7 @@ describe("App", () => {
       recording_status: () => idle,
       list_sessions: () => entries,
       alert_check: () => ({ reason: null }),
-      session_notes: () => "",
+      load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
       session_detail: ({ sessionId }) => ({
         entry: entries.find((e) => e.id === sessionId),
         done: [],

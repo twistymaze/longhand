@@ -24,6 +24,7 @@ use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
 use diarize::{DiarizeError, SpeakerAnalyzer};
+use library::reconcile::{Changes, Reconciler, Target};
 
 /// The stages, in order.
 pub const STAGES: &[Stage] = &[
@@ -368,6 +369,12 @@ impl Runner {
         let capture_active = (self.env.suspended)();
         {
             let mut store = lock(&self.env.store);
+            // The row follows its folder first (KTD3): the run keeps the
+            // notes and the title that another computer wrote, and decodes
+            // the segments that the folder holds.
+            if !regenerating {
+                crate::follow::follow_folder(&mut store, session_id, false)?;
+            }
             let audio_intact = save::home_intact(&store, session_id)?;
             let refusal = if regenerating {
                 Some("The summary of this note is being made again. Try again when it is done.")
@@ -427,11 +434,33 @@ impl Runner {
         )
     }
 
-    /// At launch, before [`Runner::run`]: settle the folder renames that a
-    /// crash left, then give every saved folder the name its title gives
-    /// (KTD8).
-    pub fn recover_folders(&self) -> Result<(), StageError> {
-        folder_rename::recover(&self.env.store, &session_save::RealFs)
+    /// At launch, before the library scan: settle the folder renames that a
+    /// crash left (KTD8, KTD9).
+    pub fn resolve_rename_intents(&self) -> Result<Vec<String>, StageError> {
+        folder_rename::resolve_intents(&self.env.store, &session_save::RealFs)
+    }
+
+    /// Scan every note folder in `roots` and apply the scan to the store
+    /// (KTD5, KTD6): notes from other computers are adopted, and known
+    /// rows follow their folders. The scan runs without the store lock. A
+    /// row that a regeneration or a delete claims is not refreshed or
+    /// forgotten. `reconciler` keeps the pending deletes between scans.
+    pub fn reconcile_library(
+        &self,
+        roots: &[PathBuf],
+        reconciler: &mut Reconciler,
+    ) -> Result<Changes, StageError> {
+        Ok(
+            reconciler.run(&self.env.store, &Target::Full(roots.to_vec()), &|id| {
+                self.claims.busy(id)
+            })?,
+        )
+    }
+
+    /// At launch, after the library reconcile and before [`Runner::run`]:
+    /// give every saved folder the name its title gives (KTD8, KTD9).
+    pub fn reconcile_folders(&self) -> Result<(), StageError> {
+        folder_rename::reconcile_saved(&self.env.store, &session_save::RealFs)
     }
 
     /// Stop at the next window and free the recognition engine. Called as

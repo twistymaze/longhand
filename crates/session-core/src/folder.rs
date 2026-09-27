@@ -7,6 +7,7 @@
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
+use crate::jobs::{Title, TitleSource};
 use crate::timeline::Segment;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -54,17 +55,40 @@ pub fn parse_position(text: &str) -> Option<u64> {
     (m < 60 && s < 60).then_some(((h * 60 + m) * 60 + s) * 1_000)
 }
 
+/// Split a file into its frontmatter and its body. The file can have LF or
+/// CRLF line ends, because a Windows tool can rewrite it (KTD2).
 fn split_frontmatter<'a>(
     file: &'static str,
     text: &'a str,
 ) -> Result<(&'a str, &'a str), FolderError> {
+    let missing = FolderError::MissingFrontmatter { file };
     let rest = text
         .strip_prefix("---\n")
-        .ok_or(FolderError::MissingFrontmatter { file })?;
-    let end = rest
-        .find("\n---\n")
-        .ok_or(FolderError::MissingFrontmatter { file })?;
-    Ok((&rest[..end + 1], &rest[end + 5..]))
+        .or_else(|| text.strip_prefix("---\r\n"))
+        .ok_or(missing.clone())?;
+    let mut from = 0;
+    loop {
+        let end = from + rest[from..].find("\n---").ok_or(missing.clone())?;
+        let after = &rest[end + 4..];
+        if let Some(body) = after
+            .strip_prefix('\n')
+            .or_else(|| after.strip_prefix("\r\n"))
+        {
+            return Ok((&rest[..end + 1], body));
+        }
+        from = end + 4;
+    }
+}
+
+/// The fingerprint of a file's bytes: the SHA-256 as lowercase hex.
+/// `session.md` records the fingerprints of `transcript.md` and
+/// `summary.md` (KTD2).
+pub fn fingerprint(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn yaml_error(file: &'static str) -> impl Fn(serde_yaml::Error) -> FolderError {
@@ -83,8 +107,24 @@ pub struct SessionDoc {
     /// `None` until processing proposes a title or the user sets one (R28).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Where the title came from. A file written before this field has
+    /// none; [`SessionDoc::title_and_source`] then gives the user (R5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<TitleSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speaker_count: Option<SpeakerCount>,
+    /// The recognition model that made the transcript (R3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_model: Option<String>,
+    /// The number of speakers that processing found (R3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found_speakers: Option<u32>,
+    /// The [`fingerprint`] of `transcript.md` when `session.md` was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_fingerprint: Option<String>,
+    /// The [`fingerprint`] of `summary.md` when `session.md` was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_fingerprint: Option<String>,
     pub segments: Vec<SegmentRecord>,
 }
 
@@ -145,13 +185,36 @@ impl SessionDoc {
             session_id: session_id.into(),
             started: first.wall_start,
             title: None,
+            title_source: None,
             speaker_count,
+            asr_model: None,
+            found_speakers: None,
+            transcript_fingerprint: None,
+            summary_fingerprint: None,
             segments: segments.iter().map(SegmentRecord::from).collect(),
         })
     }
 
     pub fn timeline_segments(&self) -> Vec<Segment> {
         self.segments.iter().map(Segment::from).collect()
+    }
+
+    /// The title with its source. A title with no recorded source counts as
+    /// set by the user, so a proposal never replaces it (R5, KTD2).
+    pub fn title_and_source(&self) -> Option<Title> {
+        self.title.as_ref().map(|text| Title {
+            text: text.clone(),
+            source: self.title_source.unwrap_or(TitleSource::User),
+        })
+    }
+
+    /// The index of the first stereo segment, from the segment records
+    /// (KTD2). `None` when every segment is mono.
+    pub fn stereo_from(&self) -> Option<u32> {
+        self.segments
+            .iter()
+            .find(|s| s.channels == 2)
+            .map(|s| s.index)
     }
 
     pub fn render(&self) -> String {

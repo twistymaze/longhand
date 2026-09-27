@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod diarize;
 pub mod echo;
 pub mod folder_rename;
+pub mod follow;
 pub mod join;
 pub mod live;
 mod opus_ms;
@@ -73,6 +74,12 @@ impl From<std::io::Error> for StageError {
 
 impl From<session_core::StoreError> for StageError {
     fn from(e: session_core::StoreError) -> Self {
+        StageError::Failed(e.to_string())
+    }
+}
+
+impl From<library::refresh::RefreshError> for StageError {
+    fn from(e: library::refresh::RefreshError) -> Self {
         StageError::Failed(e.to_string())
     }
 }

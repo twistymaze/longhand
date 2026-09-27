@@ -1,5 +1,5 @@
 //! The summarize stage (KTD16, R17, R18, R19, R24b). The transcript is
-//! rebuilt from the join's inputs, the context budget resolved, and the
+//! read from `transcript.md` (KTD4), the context budget resolved, and the
 //! summary produced in one call when it fits, which is the normal case, or
 //! in parts merged layer by layer when it does not. Every call's result is
 //! checkpointed, so a quit resumes at the first missing one; a rejection
@@ -17,15 +17,15 @@
 use std::path::Path;
 use std::time::Duration;
 
+use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
-use session_core::folder::{Summary, SummaryMeta, TranscriptLine};
+use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Turn};
 use summarize::client::Message;
 use summarize::{Budget, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
-use crate::diarize::speakers;
-use crate::transcribe::results;
+use crate::join::TRANSCRIPT_FILE;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
 pub use summarize::Prompt;
@@ -48,6 +48,10 @@ shorten the prompt in Settings or choose a model with a larger context";
 /// The proposed title, a string, once the title call has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
+/// The fingerprint of the transcript and the notes that the cached calls
+/// were made from, a string. A run whose input has another fingerprint
+/// makes every call again.
+pub const INPUT: &str = "input";
 /// How far a context rejection shrinks the budget, and the floor below
 /// which a model is too small to summarize with.
 const SHRINK: f64 = 0.7;
@@ -115,17 +119,49 @@ fn call_key(layer: usize, index: usize) -> String {
     format!("l{layer:02}-{index:05}")
 }
 
-/// The transcript's turns, rebuilt exactly as the join rendered them.
-pub fn transcript_turns(
-    store: &SharedStore,
-    session_id: &str,
-    segments: &[Segment],
-) -> Result<Vec<Turn>, StageError> {
-    let transcript = crate::join::build(
-        segments,
-        &results(store, session_id)?,
-        &speakers(store, session_id)?,
-    );
+/// The turns of the `transcript.md` in `folder` (KTD4). The file holds the
+/// final text, so the turns are the same on every computer, also on one
+/// that has no recognition results for the note.
+pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
+    turns_of(folder, &read_transcript(folder)?)
+}
+
+/// The text of the `transcript.md` in `folder`.
+fn read_transcript(folder: &Path) -> Result<String, StageError> {
+    let path = folder.join(TRANSCRIPT_FILE);
+    // The read has a timeout: a synced folder can hold a file that does
+    // not download.
+    let bytes = match read_timed(path.clone(), READ_TIMEOUT) {
+        Read::Bytes(bytes) => bytes,
+        Read::Missing => {
+            return Err(StageError::Failed(format!(
+                "the transcript {} is not there",
+                path.display()
+            )));
+        }
+        Read::Failed(why) => {
+            return Err(StageError::Failed(format!(
+                "the storage folder is not available: the transcript {} cannot be read: {why}",
+                path.display()
+            )));
+        }
+    };
+    String::from_utf8(bytes).map_err(|e| {
+        StageError::Failed(format!(
+            "the transcript {} cannot be read: {e}",
+            path.display()
+        ))
+    })
+}
+
+/// The turns of `text`, the `transcript.md` in `folder`.
+fn turns_of(folder: &Path, text: &str) -> Result<Vec<Turn>, StageError> {
+    let transcript = Transcript::parse(text).map_err(|e| {
+        StageError::Failed(format!(
+            "the transcript {} is not valid: {e}",
+            folder.join(TRANSCRIPT_FILE).display()
+        ))
+    })?;
     Ok(transcript
         .lines
         .into_iter()
@@ -142,6 +178,16 @@ pub fn transcript_turns(
             _ => None,
         })
         .collect())
+}
+
+/// The fingerprint of the input to the calls: the transcript text and the
+/// notes document.
+fn input_fingerprint(transcript: &str, notes: &str) -> String {
+    let mut bytes = Vec::with_capacity(transcript.len() + notes.len() + 1);
+    bytes.extend_from_slice(transcript.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(notes.as_bytes());
+    session_core::folder::fingerprint(&bytes)
 }
 
 /// The notes document as it is now. A run reads it once, when it starts,
@@ -203,7 +249,14 @@ pub fn run(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
-        store, session_id, segments, endpoint, active, learn, control, progress,
+        store,
+        session_id,
+        session_dir,
+        endpoint,
+        active,
+        learn,
+        control,
+        progress,
     )?;
     let path = session_dir.join(SUMMARY_FILE);
     let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
@@ -213,22 +266,32 @@ pub fn run(
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
 }
 
-/// Summarize the session from its checkpoints, resuming any calls already
+/// Summarize the `transcript.md` in `folder`, resuming any calls already
 /// made. Writes nothing but checkpoints. `active` is the active summary
 /// prompt, which the run uses only when it saved no snapshot before.
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
     session_id: &str,
-    segments: &[Segment],
+    folder: &Path,
     endpoint: SummaryEndpoint,
     active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
-    let turns = transcript_turns(store, session_id, segments)?;
+    let transcript = read_transcript(folder)?;
+    let turns = turns_of(folder, &transcript)?;
     let notes = session_notes(store, session_id)?;
+    // Cached calls stand only for the transcript and the notes that they
+    // were made from. Another computer can replace `transcript.md`, and
+    // the notes can change, between a failed run and a regeneration.
+    let input = input_fingerprint(&transcript, &notes);
+    let saved = checkpoint::get::<String>(store, session_id, Stage::Summarize, INPUT)?;
+    if saved.as_deref() != Some(input.as_str()) {
+        forget_calls(store, session_id)?;
+        checkpoint::put(store, session_id, Stage::Summarize, INPUT, &input)?;
+    }
     let client = Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
@@ -560,7 +623,11 @@ impl Calls<'_> {
         // The title and its checkpoint change together, so a resumed run
         // does not propose again over an edit the user made after.
         let guard = lock(self.store);
-        guard.set_title(self.session_id, &title, TitleSource::Proposed)?;
+        if guard.set_title(self.session_id, &title, TitleSource::Proposed)? {
+            // The folder takes the new name when the work ends, or at the
+            // next launch after a crash.
+            guard.set_rename_owed(self.session_id, true)?;
+        }
         guard.put_checkpoint(
             self.session_id,
             Stage::Summarize,

@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod capture;
 pub mod destination;
+pub mod library;
 pub mod live;
 pub mod models;
 pub mod processing;

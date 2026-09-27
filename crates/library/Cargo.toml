@@ -1,0 +1,18 @@
+[package]
+name = "library"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+log.workspace = true
+session-core = { path = "../session-core" }
+session-save = { path = "../session-save" }
+thiserror.workspace = true
+
+[dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The two-computer tests save notes through the real save stage (KTD8).
+pipeline = { path = "../pipeline" }
+tempfile = "3"

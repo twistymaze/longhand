@@ -1,7 +1,7 @@
 // The session list's state. The store is the truth: the list is read on
-// mount, on focus and on every lifecycle event, and runner events only
-// refine it between reads (AE4). A view asks for its session again when
-// that session's `version` moves.
+// mount, on focus, on every lifecycle event and on every library change,
+// and runner events only refine it between reads (AE4). A view asks for its
+// session again when that session's `version` moves.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type SessionEntry } from "../bindings";
@@ -15,17 +15,30 @@ export type Sessions = {
   /// The latest progress event per session.
   live: Record<string, Live>;
   version: Record<string, number>;
+  /// Moves when a library change names the session: a sync changed its
+  /// folder (KTD10). The notes tab reads the notes again on it.
+  synced: Record<string, number>;
+  /// The sessions whose folder a sync removed while Longhand was open.
+  removed: Record<string, true>;
   refresh: () => Promise<void>;
 };
 
 /// Progress arrives per window; views re-read the store at most this often.
 const REREAD_MS = 1000;
 
+const increment = (ids: string[]) => (v: Record<string, number>) => {
+  const next = { ...v };
+  for (const id of ids) next[id] = (next[id] ?? 0) + 1;
+  return next;
+};
+
 export function useSessions(): Sessions {
   const [entries, setEntries] = useState<SessionEntry[]>([]);
   const [stages, setStages] = useState<Record<string, string>>({});
   const [live, setLive] = useState<Record<string, Live>>({});
   const [version, setVersion] = useState<Record<string, number>>({});
+  const [synced, setSynced] = useState<Record<string, number>>({});
+  const [removed, setRemoved] = useState<Record<string, true>>({});
   const lastBump = useRef<Record<string, number>>({});
 
   const refresh = useCallback(async () => {
@@ -35,7 +48,7 @@ export function useSessions(): Sessions {
 
   const bump = useCallback((id: string) => {
     lastBump.current[id] = performance.now();
-    setVersion((v) => ({ ...v, [id]: (v[id] ?? 0) + 1 }));
+    setVersion(increment([id]));
   }, []);
 
   useEffect(() => {
@@ -61,6 +74,20 @@ export function useSessions(): Sessions {
         void refresh();
       }),
       events.recordingChanged.listen(() => void refresh()),
+      events.libraryChanged.listen(({ payload }) => {
+        const { changed, removed: gone } = payload;
+        for (const id of changed) lastBump.current[id] = performance.now();
+        setVersion(increment(changed));
+        setSynced(increment(changed));
+        setRemoved((r) => {
+          const next = { ...r };
+          // A note that comes back is listed again.
+          for (const id of changed) delete next[id];
+          for (const id of gone) next[id] = true;
+          return next;
+        });
+        void refresh();
+      }),
     ];
     return () => {
       window.removeEventListener("focus", refresh);
@@ -68,5 +95,5 @@ export function useSessions(): Sessions {
     };
   }, [refresh, bump]);
 
-  return { entries, stages, live, version, refresh };
+  return { entries, stages, live, version, synced, removed, refresh };
 }

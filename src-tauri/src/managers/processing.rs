@@ -18,6 +18,7 @@ use tauri::AppHandle;
 use tauri_specta::Event as _;
 
 use crate::managers::capture::CaptureManager;
+use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
 use crate::managers::models::ModelsManager;
 use crate::managers::settings;
@@ -307,17 +308,8 @@ impl EngineProvider for Models {
 /// saving into them.
 fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
     let roots = crate::managers::settings::get_settings(app).destination_roots;
-    let completed = |id: &str| {
-        store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .session(id)
-            .ok()
-            .flatten()
-            .is_some_and(|r| r.state == session_core::SessionState::Saved)
-    };
     for root in roots {
-        match session_save::sweep_staging(std::path::Path::new(&root), completed) {
+        match session_save::sweep_staging(std::path::Path::new(&root), |id| completed(store, id)) {
             Ok(removed) => {
                 for path in removed {
                     log::info!("removed leftover staging folder {}", path.display());
@@ -325,6 +317,26 @@ fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
             }
             Err(e) => log::warn!("could not sweep {root} for staging folders: {e}"),
         }
+    }
+}
+
+/// Whether the staging folder of `id` is left over from a save that
+/// completed: the id has a Saved row. A first save's staging has an id
+/// that no other computer knows, so its row is not Saved until the save
+/// completes, and an id with no row keeps its staging (KTD9).
+fn completed(store: &pipeline::SharedStore, id: &str) -> bool {
+    store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .session(id)
+        .ok()
+        .flatten()
+        .is_some_and(|r| r.state == session_core::SessionState::Saved)
+}
+
+fn emit_library_changed(app: &AppHandle, changes: LibraryChanged) {
+    if let Err(e) = changes.emit(app) {
+        log::warn!("could not emit a library change: {e}");
     }
 }
 
@@ -356,12 +368,28 @@ fn notify_saved(app: &AppHandle, path: &std::path::Path) {
 pub struct ProcessingManager {
     runner: Arc<Runner>,
     live: Arc<LiveManager>,
+    app: AppHandle,
+    store: pipeline::SharedStore,
+    liveness: session_core::jobs::Liveness,
+    library: std::sync::Mutex<LibrarySlot>,
+    /// What the latest library scans found. The launch scan and the
+    /// watcher write it, and the note commands read it (KTD10).
+    library_status: Arc<library::status::LibraryStatus>,
+}
+
+/// The library watcher, which starts at the end of the launch steps
+/// (KTD9), and whether the quit stopped it.
+#[derive(Default)]
+struct LibrarySlot {
+    watcher: Option<LibraryWatcher>,
+    stopped: bool,
 }
 
 impl ProcessingManager {
-    /// Build the runner and return sessions a previous run left mid-stage to
-    /// the queue. Call [`ProcessingManager::start`] to begin working. The
-    /// live workers get the runner's engine slot (KTD9).
+    /// Build the runner, return sessions a previous run left mid-stage to
+    /// the queue, remove leftover staging folders and settle the folder
+    /// renames that a crash left (KTD9). Call [`ProcessingManager::start`]
+    /// for the rest of the launch steps.
     pub fn new(
         app: &AppHandle,
         capture: &Arc<CaptureManager>,
@@ -402,44 +430,155 @@ impl ProcessingManager {
         }
         if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
             sweep_staging(app, &capture.shared_store());
-            // Before the queue starts: a folder rename that a crash
-            // stopped completes, and each saved folder takes the name its
-            // title gives (KTD8). Only with the instance lock held, so no
-            // other run renames a folder at the same time.
-            if let Err(e) = runner.recover_folders() {
+            // Before the library scan: a folder rename that a crash stopped
+            // completes (KTD8, KTD9). Only with the instance lock held, so
+            // no other run renames a folder at the same time.
+            if let Err(e) = runner.resolve_rename_intents() {
                 log::error!("launch recovery of folder renames failed: {e}");
             }
         }
-        let woken = Arc::downgrade(&runner);
-        live.attach(
-            Workers::new(capture.shared_store(), runner.engine_access()).with_idle(move || {
-                if let Some(runner) = woken.upgrade() {
-                    runner.wake();
-                }
-            }),
-        );
-        let manager = Self {
+        Self {
             runner,
             live: Arc::clone(live),
-        };
+            app: app.clone(),
+            store: capture.shared_store(),
+            liveness,
+            library: std::sync::Mutex::default(),
+            library_status: Arc::default(),
+        }
+    }
+
+    /// What the latest library scans found about each note.
+    pub fn library_status(&self) -> &library::status::LibraryStatus {
+        &self.library_status
+    }
+
+    /// The rest of the launch steps, in order, on one background thread,
+    /// so the window opens at once with the stored rows (KTD9): the library
+    /// scan and reconcile, the folder reconcile, the live workers, the
+    /// retry of notes that wait for a folder, the runner and the library
+    /// watcher.
+    pub fn start(self: &Arc<Self>) {
+        let manager = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("launch".into())
+            .spawn(move || manager.launch());
+        if let Err(e) = spawned {
+            log::error!("could not start the launch steps: {e}");
+        }
+    }
+
+    fn launch(&self) {
+        let roots = self.roots();
+        // Before the folder reconcile: a title that a sync delivered is in
+        // the row first, so no folder is renamed back (KTD9).
+        let mut reconciler =
+            library::reconcile::Reconciler::default().with_status(Arc::clone(&self.library_status));
+        match self.runner.reconcile_library(&roots, &mut reconciler) {
+            Ok(changes) => {
+                log::info!(
+                    "library: the launch scan changed {} note(s) and removed {}",
+                    changes.changed.len(),
+                    changes.removed.len()
+                );
+                if !changes.is_empty() {
+                    emit_library_changed(&self.app, changes.into());
+                }
+            }
+            Err(e) => log::error!("the launch scan of the library failed: {e}"),
+        }
+        if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
+            // Each saved folder takes the name its title gives (KTD8).
+            if let Err(e) = self.runner.reconcile_folders() {
+                log::error!("launch reconcile of folder names failed: {e}");
+            }
+        }
+        let woken = Arc::downgrade(&self.runner);
+        self.live.attach(
+            Workers::new(Arc::clone(&self.store), self.runner.engine_access()).with_idle(
+                move || {
+                    if let Some(runner) = woken.upgrade() {
+                        runner.wake();
+                    }
+                },
+            ),
+        );
         // The volume may be back, or the folder restored (U18).
-        manager.retry_awaiting();
-        manager
-    }
-
-    pub fn start(&self) {
+        self.retry_awaiting();
         tauri::async_runtime::spawn(Arc::clone(&self.runner).run());
+        // The folder watcher starts after the runner (KTD9), and keeps the
+        // pending deletes of the launch reconcile.
+        self.start_library(reconciler);
     }
 
-    /// A session was queued or capture ended.
-    /// Before the process exits: stop processing and free the models.
-    /// The live workers stop first: a worker holds the engine slot while it
-    /// streams, and the runner frees the engine after it (KTD9).
+    /// The retained Destinations, as the settings hold them.
+    fn roots(&self) -> Vec<std::path::PathBuf> {
+        settings::get_settings(&self.app)
+            .destination_roots
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    fn start_library(&self, reconciler: library::reconcile::Reconciler) {
+        let store = Arc::clone(&self.store);
+        let claims = self.runner.claims().clone();
+        let events = self.app.clone();
+        let started = LibraryWatcher::start(
+            self.roots(),
+            reconciler,
+            Box::new(move |target, reconciler| {
+                reconciler
+                    .run(&store, target, &|id| claims.busy(id))
+                    .map_err(|e| e.to_string())
+            }),
+            Box::new(move |changes| emit_library_changed(&events, changes)),
+            Timing::default(),
+        );
+        let watcher = match started {
+            Ok(watcher) => watcher,
+            Err(e) => {
+                log::error!("could not start the library watcher: {e}");
+                return;
+            }
+        };
+        let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+        if library.stopped {
+            // The quit came during the launch steps.
+            drop(library);
+            watcher.stop();
+        } else {
+            library.watcher = Some(watcher);
+        }
+    }
+
+    /// The retained Destinations changed: the library watches start again
+    /// on the new set (KTD7).
+    pub fn roots_changed(&self) {
+        let library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(watcher) = &library.watcher {
+            watcher.set_roots(self.roots());
+        }
+    }
+
+    /// Before the process exits: stop the library watcher and processing,
+    /// and free the models. The live workers stop first: a worker holds the
+    /// engine slot while it streams, and the runner frees the engine after
+    /// it (KTD9).
     pub fn shutdown(&self) {
+        let watcher = {
+            let mut library = self.library.lock().unwrap_or_else(|e| e.into_inner());
+            library.stopped = true;
+            library.watcher.take()
+        };
+        if let Some(watcher) = watcher {
+            watcher.stop();
+        }
         self.live.shutdown();
         self.runner.shutdown();
     }
 
+    /// A session was queued or capture ended.
     pub fn wake(&self) {
         self.runner.wake();
     }
@@ -522,6 +661,21 @@ mod tests {
             endpoint_model: "gpt-4o".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_staging_sweep_keeps_the_staging_of_an_id_with_no_row() {
+        let root = tempfile::tempdir().unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        let staging = root
+            .path()
+            .join(session_save::naming::staging_name("unknown"));
+        std::fs::create_dir_all(&staging).unwrap();
+        let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
+        assert!(removed.is_empty());
+        assert!(staging.is_dir());
     }
 
     #[test]

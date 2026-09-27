@@ -330,6 +330,12 @@ fn a_missing_destination_waits_with_the_session_whole_in_the_working_location() 
         panic!("{err:?}");
     };
     assert_eq!(problem, "is missing");
+    // The note page shows this text: the UI calls the folder "storage"
+    // (KTD13).
+    assert_eq!(
+        err.to_string(),
+        format!("the storage folder {} is missing", dest.display())
+    );
     assert!(work.join("proc/segment-01.wav").exists());
 }
 
