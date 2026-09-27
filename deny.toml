@@ -1,5 +1,11 @@
 # Licence gate for everything linked into the binary (Implementation Constraints).
 # LGPL, GPL and MPL fail the build; the allow-list is the whole policy.
+#
+# The allow-list holds permissive licences: they ask at most for a notice.
+# When a new dependency brings a licence of that kind, add it to the list
+# (and to `accepted` in about.toml). Public domain (CC0-1.0) is even more
+# permissive than the rest. A per-crate exception below is only for a
+# licence that asks for more, such as MPL-2.0.
 
 [graph]
 all-features = false
@@ -14,6 +20,7 @@ allow = [
   "ISC",
   "Zlib",
   "Unicode-3.0",
+  "CC0-1.0",
 ]
 confidence-threshold = 0.9
 
@@ -32,9 +39,6 @@ exceptions = [
   # graph only as a build dependency of ort-sys (its ONNX Runtime download);
   # nothing of it is linked into the binary.
   { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
-  # A public-domain dedication on `notify`, the storage folder watcher. It
-  # asks nothing of a binary distribution.
-  { crate = "notify", allow = ["CC0-1.0"] },
 ]
 
 # Workspace crates are unpublished and carry no licence field of their own.
