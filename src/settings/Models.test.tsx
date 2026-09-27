@@ -79,6 +79,7 @@ function catalog(selected: string, states: Record<string, ModelState>): ModelSta
 function settings(asr_model: string, extra: Partial<Settings> = {}): Settings {
   return {
     settings_schema_version: 1,
+    interface_zoom_percent: 100,
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
     destination_roots: [],

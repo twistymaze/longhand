@@ -9,6 +9,7 @@ import { SummaryPrompts } from "./SummaryPrompts";
 
 const baseSettings: Settings = {
   settings_schema_version: 4,
+    interface_zoom_percent: 100,
   shortcut: "Alt+Shift+L",
   show_window_shortcut: null,
   destination_roots: [],

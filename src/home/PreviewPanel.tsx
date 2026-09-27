@@ -11,9 +11,9 @@ type Loaded = { overview: string | null; folder: string | null; error: boolean }
 
 function Detail({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="flex items-baseline gap-3 px-3 py-2">
+    <div className="preview-detail flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2">
       <dt className="shrink-0 text-label-secondary">{label}</dt>
-      <dd className="min-w-0 flex-1 truncate text-right" title={title}>
+      <dd className="min-w-0 flex-[1_1_4rem] truncate text-right" title={title}>
         {value}
       </dd>
     </div>
@@ -65,7 +65,7 @@ export function PreviewPanel({
   return (
     <section
       aria-label="Preview"
-      className="flex w-[22rem] shrink-0 flex-col overflow-x-hidden overflow-y-auto border-l border-separator bg-sidebar/60 px-6 pt-6 pb-6 select-text"
+      className="flex w-[45%] max-w-[22rem] min-w-0 shrink-0 flex-col overflow-x-hidden overflow-y-auto border-l border-separator bg-sidebar/60 px-[clamp(0.5rem,2vw,1.5rem)] pt-6 pb-6 select-text"
     >
       <h2 className="text-[1.15rem] leading-[1.25] font-semibold tracking-[-0.015em] break-words">
         {rowTitle(entry, now)}

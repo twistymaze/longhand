@@ -100,6 +100,7 @@ const BUILT_IN_PROMPT: &str = "A built-in prompt can't be changed. Duplicate it 
 #[serde(default)]
 pub struct Settings {
     pub settings_schema_version: u32,
+    pub interface_zoom_percent: u16,
     /// The chord that starts and stops a recording. `None` when the user
     /// cleared it (R3). A stored string reads as `Some`, so no migration is
     /// needed (KTD3).
@@ -237,6 +238,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             settings_schema_version: CURRENT_SETTINGS_SCHEMA_VERSION,
+            interface_zoom_percent: 100,
             shortcut: Some(DEFAULT_SHORTCUT.to_string()),
             show_window_shortcut: None,
             destination_roots: Vec::new(),
@@ -539,6 +541,11 @@ fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
         }
         updated = true;
     }
+    let zoom = crate::interface_zoom::normalize(settings.interface_zoom_percent);
+    if zoom != settings.interface_zoom_percent {
+        settings.interface_zoom_percent = zoom;
+        updated = true;
+    }
     if drop_unusable_prompts(&mut settings.summary_prompts) {
         updated = true;
     }
@@ -664,11 +671,21 @@ pub fn update_settings(
 /// setting changed just before quitting must survive the quit.
 fn write_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let store = app.store(SETTINGS_STORE_PATH).map_err(|e| e.to_string())?;
+    let previous = store.get(SETTINGS_KEY);
     store.set(
         SETTINGS_KEY,
         serde_json::to_value(settings).map_err(|e| e.to_string())?,
     );
-    store.save().map_err(|e| e.to_string())
+    if let Err(error) = store.save() {
+        match previous {
+            Some(value) => store.set(SETTINGS_KEY, value),
+            None => {
+                store.delete(SETTINGS_KEY);
+            }
+        }
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -678,6 +695,30 @@ mod tests {
     use summarize::prompts::PLAY_BY_PLAY_ID;
 
     use super::*;
+
+    #[test]
+    fn interface_zoom_defaults_and_invalid_fields_keep_other_settings() {
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(51),
+            serde_json::json!(201),
+            serde_json::json!(-10),
+            serde_json::json!(125.5),
+            serde_json::json!("bad"),
+        ] {
+            let (settings, _) = settings_from_value(
+                &serde_json::json!({ "settings_schema_version": 4, "interface_zoom_percent": value, "live_transcript": false }),
+            );
+            assert_eq!(settings.interface_zoom_percent, 100);
+            assert!(!settings.live_transcript);
+        }
+        let (settings, _) = settings_from_value(
+            &serde_json::json!({ "settings_schema_version": 4, "interface_zoom_percent": 160 }),
+        );
+        assert_eq!(settings.interface_zoom_percent, 160);
+        assert_eq!(Settings::default().interface_zoom_percent, 100);
+    }
 
     #[test]
     fn missing_fields_and_version_fill_defaults_and_migrate() {

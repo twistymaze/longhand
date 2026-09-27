@@ -705,3 +705,15 @@ mod tests {
         }
     }
 }
+
+/// Serialize zoom changes off the main thread, which native webviews use.
+#[tauri::command]
+#[specta::specta]
+pub async fn change_interface_zoom(
+    app: AppHandle,
+    action: crate::interface_zoom::ZoomAction,
+) -> Result<u16, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::interface_zoom::change(&app, action))
+        .await
+        .map_err(|e| e.to_string())?
+}

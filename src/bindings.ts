@@ -9,6 +9,17 @@ async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
 /**
+ * Serialize zoom changes off the main thread, which native webviews use.
+ */
+async changeInterfaceZoom(action: ZoomAction) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_interface_zoom", { action }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Save the Base URL of the summarization endpoint (R32). An empty value
  * clears it and stays empty (R2). Any other value must be a URL with a
  * host, because the credential is keyed by that host (R30a). The Model does
@@ -1154,7 +1165,7 @@ found_speakers: number | null;
  * be read now (R16). Opening it and its actions wait.
  */
 storage_unavailable: boolean }
-export type Settings = { settings_schema_version: number; 
+export type Settings = { settings_schema_version: number; interface_zoom_percent: number; 
 /**
  * The chord that starts and stops a recording. `None` when the user
  * cleared it (R3). A stored string reads as `Some`, so no migration is
@@ -1313,6 +1324,7 @@ export type SystemAudioPermission = "allowed" | "denied" |
  */
 export type WaitingPart = "transcript" | "summary" | "notes" | "audio"
 export type WebviewLogLevel = "error" | "warn" | "info"
+export type ZoomAction = "increase" | "decrease" | "reset"
 
 /** tauri-specta globals **/
 

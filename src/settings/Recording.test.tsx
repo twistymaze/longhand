@@ -9,6 +9,7 @@ import { SettingsWindow } from "./SettingsWindow";
 function settings(extra: Partial<Settings> = {}): Settings {
   return {
     settings_schema_version: 4,
+    interface_zoom_percent: 100,
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
     destination_roots: [],
