@@ -41,29 +41,38 @@ fn transact(
     Ok(next)
 }
 
-pub fn change(app: &AppHandle, action: ZoomAction) -> Result<u16, String> {
+fn with_saved_scale<T>(read: impl FnOnce() -> u16, operation: impl FnOnce(u16) -> T) -> T {
     let _guard = OPERATIONS.lock().unwrap_or_else(|e| e.into_inner());
-    transact(
-        settings::get_settings(app).interface_zoom_percent,
-        action,
-        |percent| {
-            settings::update_settings(app, |s| {
-                s.interface_zoom_percent = percent;
-                Ok(())
-            })
-            .map(drop)
-        },
-        |percent| {
-            let errors: Vec<_> = app
-                .webview_windows()
-                .values()
-                .filter_map(|window| apply(window, percent).err())
-                .collect();
-            if errors.is_empty() {
-                Ok(())
-            } else {
-                Err(errors.join("; "))
-            }
+    operation(normalize(read()))
+}
+
+pub fn change(app: &AppHandle, action: ZoomAction) -> Result<u16, String> {
+    with_saved_scale(
+        || settings::get_settings(app).interface_zoom_percent,
+        |current| {
+            transact(
+                current,
+                action,
+                |percent| {
+                    settings::update_settings(app, |s| {
+                        s.interface_zoom_percent = percent;
+                        Ok(())
+                    })
+                    .map(drop)
+                },
+                |percent| {
+                    let errors: Vec<_> = app
+                        .webview_windows()
+                        .values()
+                        .filter_map(|window| apply(window, percent).err())
+                        .collect();
+                    if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(errors.join("; "))
+                    }
+                },
+            )
         },
     )
 }
@@ -73,14 +82,17 @@ pub fn build(
     app: &AppHandle,
     create: impl FnOnce(u16) -> tauri::Result<WebviewWindow>,
 ) -> tauri::Result<WebviewWindow> {
-    let _guard = OPERATIONS.lock().unwrap_or_else(|e| e.into_inner());
-    let percent = normalize(settings::get_settings(app).interface_zoom_percent);
-    let window = create(percent)?;
-    if let Err(error) = window.set_zoom(f64::from(percent) / 100.0) {
-        let _ = window.destroy();
-        return Err(error);
-    }
-    Ok(window)
+    with_saved_scale(
+        || settings::get_settings(app).interface_zoom_percent,
+        |percent| {
+            let window = create(percent)?;
+            if let Err(error) = window.set_zoom(f64::from(percent) / 100.0) {
+                let _ = window.destroy();
+                return Err(error);
+            }
+            Ok(window)
+        },
+    )
 }
 
 pub fn initialization(percent: u16) -> String {
@@ -94,7 +106,7 @@ fn apply(window: &WebviewWindow, percent: u16) -> Result<(), String> {
     window
         .set_zoom(f64::from(percent) / 100.0)
         .map_err(|e| format!("{}: {e}", window.label()))?;
-    window.eval(&format!("window.__interfaceScale = '{}'; document.documentElement?.style.setProperty('--interface-scale', window.__interfaceScale);", f64::from(percent) / 100.0)).map_err(|e| format!("{}: {e}", window.label()))
+    window.eval(format!("window.__interfaceScale = '{}'; document.documentElement?.style.setProperty('--interface-scale', window.__interfaceScale);", f64::from(percent) / 100.0)).map_err(|e| format!("{}: {e}", window.label()))
 }
 
 #[cfg(test)]
@@ -115,17 +127,27 @@ mod tests {
                 let applied = Arc::clone(&applied);
                 scope.spawn(move || {
                     for _ in 0..3 {
-                        let _guard = OPERATIONS.lock().unwrap();
-                        transact(
-                            saved.load(Ordering::SeqCst),
-                            ZoomAction::Increase,
-                            |p| {
-                                saved.store(p, Ordering::SeqCst);
-                                Ok(())
+                        with_saved_scale(
+                            || {
+                                assert!(matches!(
+                                    OPERATIONS.try_lock(),
+                                    Err(std::sync::TryLockError::WouldBlock)
+                                ));
+                                saved.load(Ordering::SeqCst)
                             },
-                            |p| {
-                                applied.lock().unwrap().push(p);
-                                Ok(())
+                            |current| {
+                                transact(
+                                    current,
+                                    ZoomAction::Increase,
+                                    |p| {
+                                        saved.store(p, Ordering::SeqCst);
+                                        Ok(())
+                                    },
+                                    |p| {
+                                        applied.lock().unwrap().push(p);
+                                        Ok(())
+                                    },
+                                )
                             },
                         )
                         .unwrap();
@@ -136,6 +158,63 @@ mod tests {
         assert_eq!(saved.load(Ordering::SeqCst), 160);
         assert_eq!(*applied.lock().unwrap(), [110, 120, 130, 140, 150, 160]);
     }
+    #[test]
+    fn window_creation_finishes_before_a_waiting_zoom_change() {
+        use std::sync::{
+            atomic::{AtomicU16, Ordering},
+            mpsc,
+        };
+        let saved = AtomicU16::new(100);
+        let applied = Mutex::new(Vec::new());
+        let (created, created_rx) = mpsc::channel();
+        let (finish, finish_rx) = mpsc::channel();
+        let (requested, requested_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let saved = &saved;
+            let applied = &applied;
+            scope.spawn(move || {
+                with_saved_scale(
+                    || saved.load(Ordering::SeqCst),
+                    |percent| {
+                        created.send(()).unwrap();
+                        finish_rx.recv().unwrap();
+                        assert!(matches!(
+                            OPERATIONS.try_lock(),
+                            Err(std::sync::TryLockError::WouldBlock)
+                        ));
+                        applied.lock().unwrap().push(percent);
+                    },
+                )
+            });
+            created_rx.recv().unwrap();
+            scope.spawn(|| {
+                requested.send(()).unwrap();
+                with_saved_scale(
+                    || saved.load(Ordering::SeqCst),
+                    |current| {
+                        transact(
+                            current,
+                            ZoomAction::Increase,
+                            |percent| {
+                                saved.store(percent, Ordering::SeqCst);
+                                Ok(())
+                            },
+                            |percent| {
+                                applied.lock().unwrap().push(percent);
+                                Ok(())
+                            },
+                        )
+                    },
+                )
+                .unwrap();
+            });
+            requested_rx.recv().unwrap();
+            finish.send(()).unwrap();
+        });
+        assert_eq!(*applied.lock().unwrap(), [100, 110]);
+        assert_eq!(saved.load(Ordering::SeqCst), 110);
+    }
+
     #[test]
     fn bounds_reset_and_invalid_values() {
         let mut current = 100;
