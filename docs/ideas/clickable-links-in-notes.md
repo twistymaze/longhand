@@ -22,4 +22,5 @@ People paste links into notes and expect to follow them. The user raised it whil
   - whether a click opens the link directly, or first shows the full address, because a note can contain text pasted from anywhere;
   - how the editor tells a click that opens a link from a click that edits the text (Cmd-click, or a click outside edit mode);
   - how to stop the webview itself from going to the page.
-- The opener's URL scope uses glob patterns, and `*` also matches `/`.
+- The opener's URL scope uses glob patterns, and `*` also matches `/`. How to write a scope: `docs/solutions/tooling-decisions/opener-url-scope-glob-matching.md`.
+- anarlog's editor already handles links (paths in `reference-source/anarlog/`): an autolink plugin (`packages/editor/src/plugins/autolink.ts`), a link mark with `rel="noopener noreferrer nofollow"` (`packages/editor/src/note/schema.ts`), and `packages/editor/src/plugins/link-boundary-guard.ts`. Read them before designing this.
