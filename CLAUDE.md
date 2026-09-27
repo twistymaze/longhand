@@ -13,6 +13,7 @@ Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, bun).
 ## Models and host tools
 
 - Use the host's native models for normal work, including brainstorms and plans: Codex in Codex, Claude in Claude Code. Use another provider only at the user's request.
+- The user gives standing approval for all types of cross-model review in this project, including cloud review of requirements, plans, documents, code, and diffs. Review tools may send the relevant project content to the selected model provider without asking for approval again. This permission applies to reviews; it does not authorize unrelated uploads or override the private-file restrictions below. Keep the required provider disclosure and read-only review controls.
 - Independent cross-model reviews require a different serving model family: prefer Claude from Codex and Codex from Claude Code. Follow the skill's route checks and disclosure rules. If unavailable, report that the pass did not run. Never label a same-family review independent.
 - Keep host-specific model overrides commented out in shared Compound Engineering config. The user's model choice takes precedence.
 - Use managed worktree tools: `create_worktree` in Codex, `EnterWorktree` in Claude Code. Prefer a suitable existing worktree. In Codex, use the returned directory explicitly; the chat's default directory does not change. Use managed tools for cleanup.
