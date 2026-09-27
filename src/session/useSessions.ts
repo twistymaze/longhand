@@ -32,7 +32,10 @@ const increment = (ids: string[]) => (v: Record<string, number>) => {
   return next;
 };
 
-export function useSessions(): Sessions {
+export function useSessions(): Sessions & { loaded: boolean; loadError: string | null } {
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const request = useRef(0);
   const [entries, setEntries] = useState<SessionEntry[]>([]);
   const [stages, setStages] = useState<Record<string, string>>({});
   const [live, setLive] = useState<Record<string, Live>>({});
@@ -42,8 +45,20 @@ export function useSessions(): Sessions {
   const lastBump = useRef<Record<string, number>>({});
 
   const refresh = useCallback(async () => {
-    const result = await commands.listSessions();
-    if (result.status === "ok") setEntries(result.data);
+    const current = ++request.current;
+    try {
+      const result = await commands.listSessions();
+      if (current !== request.current) return;
+      if (result.status === "ok") {
+        setEntries(result.data);
+        setLoaded(true);
+        setLoadError(null);
+      } else {
+        setLoadError("Could not load notes.");
+      }
+    } catch {
+      if (current === request.current) setLoadError("Could not load notes.");
+    }
   }, []);
 
   const bump = useCallback((id: string) => {
@@ -95,5 +110,5 @@ export function useSessions(): Sessions {
     };
   }, [refresh, bump]);
 
-  return { entries, stages, live, version, synced, removed, refresh };
+  return { entries, loaded, loadError, stages, live, version, synced, removed, refresh };
 }

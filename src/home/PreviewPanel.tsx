@@ -1,8 +1,4 @@
-// The previewed session beside Home's list (R6): the title, the date, the
-// summary overview, the duration, the speaker count and the folder name.
-// Home shows the panel only for a hovered or selected row. The overview and
-// the folder are read when the previewed row changes, not for each row
-// (KTD11). Home keeps each result, so a second look shows it at once.
+// The selected note shows its summary or its current status.
 
 import { useEffect, useState } from "react";
 import { commands, type SessionEntry } from "../bindings";
@@ -11,7 +7,7 @@ import { firstParagraph } from "../session/markdown";
 import { folderName, Status } from "../settings/ui";
 import { rowTitle } from "./group";
 
-export type Loaded = { overview: string | null; folder: string | null };
+type Loaded = { overview: string | null; folder: string | null; error: boolean };
 
 function Detail({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -27,28 +23,22 @@ function Detail({ label, value, title }: { label: string; value: string; title?:
 export function PreviewPanel({
   entry,
   stage,
-  cache,
+  revision,
   now,
-  onPointerEnter,
-  onPointerLeave,
 }: {
   entry: SessionEntry;
   stage: string | null;
-  /// Earlier results, by `cacheKey`.
-  cache: Map<string, Loaded>;
+  revision: number;
   now?: Date;
-  onPointerEnter: () => void;
-  onPointerLeave: () => void;
 }) {
   const id = entry.id;
   const saved = entry.state === "saved";
   // A rename can move the folder, and a save gives the summary, so a new
   // title or a new state reads the session again.
-  const key = `${id}\n${entry.title ?? ""}\n${entry.state}`;
+  const key = `${id}\n${entry.title ?? ""}\n${entry.state}\n${revision}`;
   const [loaded, setLoaded] = useState<{ key: string; value: Loaded } | null>(null);
 
   useEffect(() => {
-    if (cache.has(key)) return;
     let current = true;
     void Promise.all([
       saved ? commands.sessionDocument(id) : Promise.resolve(null),
@@ -57,25 +47,25 @@ export function PreviewPanel({
       const body = doc?.status === "ok" ? doc.data.summary?.body : undefined;
       const value = {
         overview: body ? firstParagraph(body) : null,
+        error: doc?.status === "error" || detail.status === "error",
         folder: detail.status === "ok" ? detail.data.home_path : null,
       };
-      cache.set(key, value);
       if (current) setLoaded({ key, value });
+    }).catch(() => {
+      if (current) setLoaded({ key, value: { overview: null, folder: null, error: true } });
     });
     return () => {
       current = false;
     };
-  }, [cache, key, id, saved]);
+  }, [key, id, saved]);
 
-  const shown = cache.get(key) ?? (loaded?.key === key ? loaded.value : null);
+  const shown = loaded?.key === key ? loaded.value : null;
   const tone = entryTone(entry.state) ?? "neutral";
 
   return (
     <section
       aria-label="Preview"
-      onPointerEnter={onPointerEnter}
-      onPointerLeave={onPointerLeave}
-      className="preview-in flex w-[22rem] shrink-0 flex-col overflow-x-hidden overflow-y-auto border-l border-separator bg-sidebar/60 px-6 pt-6 pb-6 select-text"
+      className="flex w-[22rem] shrink-0 flex-col overflow-x-hidden overflow-y-auto border-l border-separator bg-sidebar/60 px-6 pt-6 pb-6 select-text"
     >
       <h2 className="text-[1.15rem] leading-[1.25] font-semibold tracking-[-0.015em] break-words">
         {rowTitle(entry, now)}
@@ -87,6 +77,9 @@ export function PreviewPanel({
         </p>
       )}
 
+      {shown?.error && <p role="status" className="mt-3 text-negative">Could not read this note.</p>}
+      {saved && !shown && <p role="status" className="mt-3 text-label-secondary">Loading summary…</p>}
+      {saved && shown && !shown.error && !shown.overview && <p className="mt-3 text-label-secondary">No summary yet.</p>}
       {shown?.overview && (
         <div className="mt-5">
           <h3 className="mb-1.5 text-[0.72rem] font-semibold tracking-[0.06em] text-label-tertiary uppercase">

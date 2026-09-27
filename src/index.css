@@ -137,27 +137,6 @@ html {
   letter-spacing: 0.04em;
 }
 
-/* Home's preview panel comes in from the right edge, where it sits. The
-   motion is short and has no overshoot: a list is used many times a day. */
-.preview-in {
-  transition:
-    opacity 180ms cubic-bezier(0.23, 1, 0.32, 1),
-    translate 180ms cubic-bezier(0.23, 1, 0.32, 1);
-  @starting-style {
-    opacity: 0;
-    translate: 12px 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .preview-in {
-    transition: opacity 120ms ease-out;
-    @starting-style {
-      translate: 0 0;
-    }
-  }
-}
-
 /* A separator above each row after the first, inset to the text. */
 .settings-row + .settings-row > div {
   border-top: 1px solid var(--separator);

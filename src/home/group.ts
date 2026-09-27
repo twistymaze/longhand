@@ -24,7 +24,7 @@ export function dayLabel(date: Date, now: Date = new Date()): string {
 /// Sessions by local day of their start, newest day first and newest session
 /// first in each day.
 export function groupByDay(entries: SessionEntry[], now: Date = new Date()): DayGroup[] {
-  const sorted = [...entries].sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
+  const sorted = [...entries].sort((a, b) => Date.parse(b.started) - Date.parse(a.started) || a.id.localeCompare(b.id));
   const groups: DayGroup[] = [];
   for (const entry of sorted) {
     const started = new Date(entry.started);

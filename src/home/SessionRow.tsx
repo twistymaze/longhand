@@ -1,6 +1,6 @@
 // One session in Home's list (R5, R7): the title, the start time, the
 // duration, the speaker count, and a status while the session is not
-// ready. A click opens the note. The row menu holds Rename and Delete.
+// ready. A click selects the note. A double-click opens it. The row menu holds Rename and Delete.
 // Hover, selection and the menu change at once, with no motion: a list is
 // moved through many times a day.
 
@@ -56,10 +56,8 @@ export function SessionRow({
   time,
   stage,
   selected,
-  previewed,
-  focusable,
   renaming,
-  onHover,
+  onSelect,
   onOpen,
   onRename,
   onRenameCommit,
@@ -72,15 +70,9 @@ export function SessionRow({
   time: string;
   /// The stage an event named since the list was read.
   stage: string | null;
-  /// The keys selected this row.
   selected: boolean;
-  /// The preview panel shows this row.
-  previewed: boolean;
-  /// The one row that Tab moves to: the selected row, or else the first.
-  focusable: boolean;
   renaming: boolean;
-  /// The pointer came onto the row (true) or went off it (false).
-  onHover: (on: boolean) => void;
+  onSelect: () => void;
   onOpen: () => void;
   onRename: () => void;
   onRenameCommit: (title: string) => void;
@@ -100,7 +92,7 @@ export function SessionRow({
         .filter(Boolean)
         .join(" · ");
   const secondary = selected ? "text-white/75" : "text-label-secondary";
-  const surface = selected ? "bg-accent text-white" : previewed || menuOpen ? "bg-row-hover text-label" : "text-label";
+  const surface = selected ? "bg-accent text-white" : menuOpen ? "bg-row-hover text-label" : "text-label";
 
   const closeMenu = () => {
     setMenuOpen(false);
@@ -112,11 +104,10 @@ export function SessionRow({
       ref={row}
       role="option"
       aria-selected={selected}
-      tabIndex={focusable ? 0 : -1}
+      tabIndex={selected ? 0 : -1}
       data-session={entry.id}
-      onClick={renaming ? undefined : onOpen}
-      onPointerEnter={() => onHover(true)}
-      onPointerLeave={() => onHover(false)}
+      onClick={renaming ? undefined : () => { row.current?.focus(); onSelect(); }}
+      onDoubleClick={renaming ? undefined : onOpen}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenuOpen(true);
@@ -159,7 +150,7 @@ export function SessionRow({
           {selected ? status : <Status tone={tone}>{status}</Status>}
         </span>
       )}
-      <div className="relative shrink-0">
+      <div className="relative shrink-0" onDoubleClick={(e) => e.stopPropagation()}>
         <button
           type="button"
           aria-label="Actions"
@@ -172,7 +163,7 @@ export function SessionRow({
           }}
           className={`flex h-6 w-7 items-center justify-center rounded-md ${
             selected ? "text-white hover:bg-white/15 active:bg-white/25" : "text-label-secondary hover:bg-fill active:bg-fill-pressed"
-          } ${menuOpen || selected || previewed ? "" : "opacity-0 group-hover:opacity-100"}`}
+          } ${menuOpen || selected ? "" : "opacity-0 group-hover:opacity-100"}`}
         >
           <MoreIcon />
         </button>

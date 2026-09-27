@@ -1,8 +1,4 @@
-// Home (R5–R8, R33): every session by day, newest first. The UI calls a
-// session a "note". The open session shows as a recording row above the
-// list. A click or Return opens a session's page. The preview panel shows
-// only while the pointer is on a row or a row is selected with the keys;
-// otherwise the list uses the full width.
+// The library keeps one selected note and its preview through navigation.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { commands, type Readiness, type SessionEntry } from "../bindings";
@@ -12,21 +8,17 @@ import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon, PlusIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { groupByDay, rowTitle } from "./group";
-import { type Loaded, PreviewPanel } from "./PreviewPanel";
+import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
 
 export type { RecordingNow };
 
-/// The pointer must rest this long on a row before the panel first shows,
-/// so a pointer that crosses the list on its way to a button shows nothing.
-const SHOW_DELAY_MS = 90;
-/// The panel stays this long after the pointer leaves a row, so a move
-/// across a day heading to the next row keeps the panel.
-const HIDE_DELAY_MS = 160;
-
 export function Home({
   entries,
+  loaded = true,
+  loadError = null,
+  revisions = {},
   stages,
   recording,
   readiness,
@@ -36,6 +28,9 @@ export function Home({
   now,
 }: {
   entries: SessionEntry[];
+  loaded?: boolean;
+  loadError?: string | null;
+  revisions?: Record<string, number>;
   stages: Record<string, string>;
   /// The open session: recording, or interrupted.
   recording: RecordingNow | null;
@@ -49,43 +44,28 @@ export function Home({
   onChanged: () => void;
   now?: Date;
 }) {
-  const listed = useMemo(() => entries.filter((e) => !isOpen(e.state)), [entries]);
+  const [deleted, setDeleted] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setDeleted((ids) => {
+      const remaining = new Set([...ids].filter((id) => entries.some((e) => e.id === id)));
+      return remaining.size === ids.size ? ids : remaining;
+    });
+  }, [entries]);
+  const listed = useMemo(() => entries.filter((e) => !deleted.has(e.id)), [entries, deleted]);
   const groups = useMemo(() => groupByDay(listed, now), [listed, now]);
   const order = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [starting, setStarting] = useState(false);
   const list = useRef<HTMLDivElement>(null);
-  const hoverTimer = useRef<number | undefined>(undefined);
-  // The overview and folder of each previewed session, so a move back to a
-  // row shows its preview at once.
-  const previews = useRef(new Map<string, Loaded>());
-
-  const selected = order.find((e) => e.id === selectedId) ?? null;
-  const previewed = order.find((e) => e.id === (hoveredId ?? selectedId)) ?? null;
-
-  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
-
-  const hover = (id: string | null) => {
-    window.clearTimeout(hoverTimer.current);
-    if (id === null) {
-      hoverTimer.current = window.setTimeout(() => setHoveredId(null), HIDE_DELAY_MS);
-    } else if (previewed !== null) {
-      setHoveredId(id);
-    } else {
-      hoverTimer.current = window.setTimeout(() => setHoveredId(id), SHOW_DELAY_MS);
-    }
-  };
-  // The pointer on the panel keeps the panel.
-  const keepPanel = () => window.clearTimeout(hoverTimer.current);
-
-  const open = (id: string) => {
-    window.clearTimeout(hoverTimer.current);
-    setHoveredId(null);
-    onOpen(id);
-  };
+  const newNote = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
+  const selected = order.find((e) => e.id === selectedId) ?? order[0] ?? null;
+  const pendingCapture = recording !== null && !entries.some((e) => e.id === recording.sessionId);
+  useEffect(() => {
+    setSelectedId(selected?.id ?? null);
+  }, [selected?.id]);
 
   const focusRow = (id: string) =>
     requestAnimationFrame(() =>
@@ -94,11 +74,9 @@ export function Home({
 
   const moveSelection = (step: number) => {
     if (order.length === 0) return;
-    const at = order.findIndex((e) => e.id === selectedId);
+    const at = order.findIndex((e) => e.id === selected?.id);
     const next = order[at < 0 ? 0 : Math.min(order.length - 1, Math.max(0, at + step))];
     setSelectedId(next.id);
-    // The keys move the preview, not the pointer.
-    setHoveredId(null);
     // The row takes the focus after it renders as selected.
     focusRow(next.id);
   };
@@ -115,8 +93,7 @@ export function Home({
     titleOf: (entry) => rowTitle(entry, now),
     onDeleted: (entry) => {
       setNotice(null);
-      if (selectedId === entry.id) setSelectedId(null);
-      if (hoveredId === entry.id) setHoveredId(null);
+      setDeleted((ids) => new Set([...ids, entry.id]));
       onChanged();
     },
     onFailed: (text) => {
@@ -124,6 +101,13 @@ export function Home({
       onChanged();
     },
   });
+
+  useEffect(() => {
+    if (!restoreFocus.current || deletion.dialog !== null) return;
+    restoreFocus.current = false;
+    if (selected) focusRow(selected.id);
+    else requestAnimationFrame(() => newNote.current?.focus());
+  }, [deletion.dialog, selected?.id]);
 
   const record = async () => {
     setStarting(true);
@@ -146,7 +130,7 @@ export function Home({
             Longhand
           </span>
           {readiness && !recording && (
-            <Button prominent disabled={starting || !readiness.armed} onClick={() => void record()}>
+            <Button ref={newNote} prominent disabled={starting || !readiness.armed} onClick={() => void record()}>
               <span className="inline-flex items-center gap-1.5">
                 <PlusIcon className="-ml-0.5 size-3.5" />
                 New Note
@@ -154,8 +138,6 @@ export function Home({
             </Button>
           )}
         </header>
-      {/* The preview panel changes the list's width, so nothing here may
-          scroll sideways, and the panel's motion stays inside this row. */}
       <div className="flex min-h-0 flex-1 overflow-hidden bg-pane">
       <div className="flex min-w-0 flex-1 flex-col">
 
@@ -189,13 +171,10 @@ export function Home({
         )}
 
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-[16px] pt-1 pb-6 select-none">
-          {recording && (
-            <div className="px-2 pt-1 pb-3">
-              <RecordingRow recording={recording} onOpen={open} />
-            </div>
-          )}
-          {groups.length === 0 && !recording && <EmptyState chord={chord} />}
-          {groups.length > 0 && (
+          {loadError && <div className="flex items-center gap-3 px-2 py-3"><p role="status" className="text-negative">{loadError}</p><Button onClick={onChanged}>Retry</Button></div>}
+          {order.length === 0 && (!loaded || pendingCapture) && !loadError && <p role="status" className="px-2 py-3 text-label-secondary">Loading notes…</p>}
+          {loaded && order.length === 0 && !pendingCapture && <EmptyState chord={chord} />}
+          {order.length > 0 && (
             <div
               ref={list}
               role="listbox"
@@ -213,26 +192,35 @@ export function Home({
                     {group.label}
                   </h2>
                   <div className="grid gap-px">
-                    {group.entries.map((entry) => (
+                    {group.entries.map((entry) => isOpen(entry.state) ? (
+                      <RecordingRow
+                        key={entry.id}
+                        recording={{ sessionId: entry.id, elapsedMs: recording?.sessionId === entry.id ? recording.elapsedMs : entry.duration_ms, interrupted: entry.state === "interrupted" }}
+                        selected={entry.id === selected?.id}
+                        onSelect={() => setSelectedId(entry.id)}
+                        onOpen={onOpen}
+                      />
+                    ) : (
                       <SessionRow
                         key={entry.id}
                         entry={entry}
                         title={rowTitle(entry, now)}
                         time={clockTime(entry.started)}
                         stage={stages[entry.id] ?? null}
-                        selected={entry.id === selectedId}
-                        previewed={entry.id === previewed?.id}
-                        focusable={selected ? entry.id === selected.id : entry.id === order[0]?.id}
+                        selected={entry.id === selected?.id}
                         renaming={entry.id === renamingId}
-                        onHover={(on) => hover(on ? entry.id : null)}
-                        onOpen={() => open(entry.id)}
+                        onSelect={() => setSelectedId(entry.id)}
+                        onOpen={() => onOpen(entry.id)}
                         onRename={() => setRenamingId(entry.id)}
                         onRenameCommit={(title) => void rename(entry, title)}
                         onRenameCancel={() => {
                           setRenamingId(null);
                           focusRow(entry.id);
                         }}
-                        onDelete={() => deletion.ask(entry)}
+                        onDelete={() => {
+                          restoreFocus.current = list.current?.contains(document.activeElement) ?? false;
+                          deletion.ask(entry);
+                        }}
                       />
                     ))}
                   </div>
@@ -242,14 +230,12 @@ export function Home({
           )}
         </div>
       </div>
-      {previewed && (
+      {selected && (
         <PreviewPanel
-          entry={previewed}
-          stage={stages[previewed.id] ?? null}
-          cache={previews.current}
+          entry={selected}
+          stage={stages[selected.id] ?? null}
+          revision={revisions[selected.id] ?? 0}
           now={now}
-          onPointerEnter={keepPanel}
-          onPointerLeave={() => hover(null)}
         />
       )}
       </div>

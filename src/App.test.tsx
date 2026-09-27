@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness, RecordingStatus, SessionEntry, Settings } from "./bindings";
 import App from "./App";
@@ -57,9 +57,9 @@ function mockApp(status: { current: RecordingStatus }, entries: { current: Sessi
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     recording_status: () => status.current,
     list_sessions: () => entries.current,
-    alert_check: () => ({ reason: null }),
     load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
-    session_detail: () => ({ entry: recordingEntry, done: [], current: null, resumable: false }),
+    session_detail: ({ sessionId }) => ({ entry: entries.current.find((e) => e.id === sessionId) ?? recordingEntry, done: [], current: null, resumable: false }),
+    session_document: () => ({ has_speakers: false, lines: [], transcript_markdown: "", summary: null }),
   });
 }
 
@@ -105,7 +105,7 @@ describe("App", () => {
     const back = await screen.findByRole("button", { name: "Back" });
 
     await userEvent.setup().click(back);
-    expect(screen.getByRole("button", { name: /Recording/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Recording/ })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
   });
 
@@ -133,8 +133,7 @@ describe("App", () => {
       model_statuses: () => [],
       recording_status: () => idle,
       list_sessions: () => entries,
-      alert_check: () => ({ reason: null }),
-      load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
+        load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
       session_detail: ({ sessionId }) => ({
         entry: entries.find((e) => e.id === sessionId),
         done: [],
@@ -200,4 +199,24 @@ describe("App", () => {
     expect(await screen.findByText("The models folder cannot be read.")).toBeTruthy();
     expect(screen.getByRole("tab", { name: "General" })).toBeTruthy();
   });
+});
+
+
+test("an older selection survives opening, returning, and a newly synced note", async () => {
+  const entries = { current: [
+    { ...recordingEntry, id: "a", title: "Older", state: "saved", started: "2026-09-23T12:00:00Z" },
+    { ...recordingEntry, id: "b", title: "Recent", state: "saved", started: "2026-09-24T12:00:00Z" },
+  ] };
+  const tauri = mockApp({ current: idle }, entries);
+  render(<App />);
+  const older = await screen.findByRole("option", { name: /Older/ });
+  const user = userEvent.setup();
+  await user.dblClick(older);
+  expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
+  entries.current = [...entries.current, { ...recordingEntry, id: "c", title: "Newest", state: "saved", started: "2026-09-25T12:00:00Z" }];
+  await act(() => tauri.emit("library-changed", { changed: ["c"], removed: [] }));
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(screen.getByRole("option", { name: /Older/ }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("option", { name: /Newest/ })).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("option", { name: /Older/ })));
 });

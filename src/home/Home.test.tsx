@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SessionDetail, SessionDocument, SessionEntry } from "../bindings";
 import { sessionTitle } from "../processing/describe";
@@ -128,21 +128,21 @@ describe("Home", () => {
     expect(row("Budget review")).toBeTruthy();
   });
 
-  test("with no row hovered or selected, there is no preview panel", () => {
+  test("a loaded nonempty library selects its newest note and shows the preview", () => {
     mockTauri();
     renderHome({ entries: [entry("a")] });
-    expect(screen.queryByRole("region", { name: "Preview" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Preview" })).toBeTruthy();
   });
 
-  test("hovering a row shows its overview in the preview panel, and leaving the list removes it", async () => {
+  test("the selected overview remains after the pointer leaves the list", async () => {
     const e = entry("a", { title: "Budget review" });
-    const tauri = mockTauri({
+    mockTauri({
       session_document: () => document("## Overview\n\nWe agreed the **budget** for next year.\n\n## Decisions\n\n- More"),
       session_detail: () => detail(e, "/Users/me/Longhand/2026-09-24 1405 Budget review"),
     });
     const onOpen = mock((_id: string) => {});
     renderHome({ entries: [e], onOpen });
-    expect(tauri.calls.filter((c) => c.cmd === "session_document")).toEqual([]);
+
     const user = userEvent.setup();
     await user.hover(row("Budget review"));
     const preview = await screen.findByRole("region", { name: "Preview" });
@@ -151,9 +151,9 @@ describe("Home", () => {
     expect(within(preview).getByText("3")).toBeTruthy();
     expect(onOpen).not.toHaveBeenCalled();
     await user.unhover(row("Budget review"));
-    // The panel stays for a short time after the pointer goes off the row.
+    // Pointer movement does not clear the selection.
     await act(() => new Promise((done) => setTimeout(done, 300)));
-    expect(screen.queryByRole("region", { name: "Preview" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Preview" })).toBeTruthy();
   });
 
   test("the arrow keys select a row and show its preview", async () => {
@@ -164,12 +164,12 @@ describe("Home", () => {
     renderHome({ entries: [entry("a", { title: "Budget review" }), entry("b", { title: "Standup" })] });
     row("Budget review").focus();
     await userEvent.setup().keyboard("{ArrowDown}");
-    expect(row("Budget review").getAttribute("aria-selected")).toBe("true");
+    expect(row("Standup").getAttribute("aria-selected")).toBe("true");
     const preview = await screen.findByRole("region", { name: "Preview" });
-    expect(within(preview).getByRole("heading", { name: "Budget review" })).toBeTruthy();
+    expect(within(preview).getByRole("heading", { name: "Standup" })).toBeTruthy();
   });
 
-  test("a single click and Return open the note", async () => {
+  test("a click selects and focuses; double-click and Return open the note", async () => {
     mockTauri({
       session_document: () => document("Text."),
       session_detail: () => detail(entry("a"), null),
@@ -178,6 +178,9 @@ describe("Home", () => {
     renderHome({ entries: [entry("a", { title: "Budget review" })], onOpen });
     const user = userEvent.setup();
     await user.click(row("Budget review"));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(globalThis.document.activeElement).toBe(row("Budget review"));
+    await user.dblClick(row("Budget review"));
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onOpen).toHaveBeenCalledWith("a");
     onOpen.mockClear();
@@ -199,7 +202,7 @@ describe("Home", () => {
   });
 
   // Covers AE6.
-  test("with a recording in progress, shows the recording row with the elapsed time, and selecting it opens the page", async () => {
+  test("with a recording in progress, selects the recording row with its elapsed time and status preview", async () => {
     mockTauri();
     const onOpen = mock((_id: string) => {});
     renderHome({
@@ -207,11 +210,12 @@ describe("Home", () => {
       recording: { sessionId: "rec", elapsedMs: 5 * 60_000 + 7_000, interrupted: false },
       onOpen,
     });
-    const recording = screen.getByRole("button", { name: /Recording/ });
+    const recording = screen.getByRole("option", { name: /Recording/ });
     expect(recording.textContent).toContain("00:05:07");
     // The open session is the recording row, not a row in the list.
-    expect(screen.queryByRole("option")).toBeNull();
-    await userEvent.setup().click(recording);
+    expect(recording.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("region", { name: "Preview" })).toBeTruthy();
+    await userEvent.setup().dblClick(recording);
     expect(onOpen).toHaveBeenCalledWith("rec");
   });
 
@@ -313,7 +317,8 @@ describe("Home", () => {
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
     expect(await screen.findByText("The store is locked.")).toBeTruthy();
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(row("Budget review")).toBeTruthy();
+    expect(row("Budget review").getAttribute("aria-selected")).toBe("true");
+    await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Budget review")));
     expect(tauri.calls.some((c) => c.cmd === "delete_session_permanently")).toBe(false);
     expect(onChanged).toHaveBeenCalled();
   });
@@ -396,4 +401,170 @@ describe("Home", () => {
     await userEvent.setup().click(within(away).getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menuitem", { name: "Delete…" }).hasAttribute("disabled")).toBe(true);
   });
+});
+
+const ready = {
+  microphone_authorized: true, system_audio: "allowed" as const,
+  destination: { kind: "ready" as const, path: "/x", free_bytes: null }, armed: true,
+  shortcut: { chord: "Alt+Shift+L", registered: true, error: null }, missing_models: [], endpoint_configured: true,
+};
+const home = (entries: SessionEntry[], extra: Partial<React.ComponentProps<typeof Home>> = {}) =>
+  <Home entries={entries} stages={{}} recording={null} readiness={null} chord={null} onOpen={() => {}} onChanged={() => {}} {...extra} />;
+const previewMocks = () => mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null) });
+
+test("selection survives refresh, new notes, and pointer movement without taking focus", async () => {
+  previewMocks();
+  const old = entry("old", { title: "Older", started: "2026-09-23T12:00:00Z" });
+  const recent = entry("recent", { title: "Recent" });
+  const view = render(home([old, recent]));
+  expect(row("Recent").getAttribute("aria-selected")).toBe("true");
+  const user = userEvent.setup();
+  await user.click(row("Older"));
+  expect(globalThis.document.activeElement).toBe(row("Older"));
+  await user.hover(row("Recent"));
+  await user.unhover(row("Recent"));
+  view.rerender(home([old, recent, entry("new", { title: "Newest", started: "2026-09-26T12:00:00Z" })]));
+  expect(row("Older").getAttribute("aria-selected")).toBe("true");
+  expect(globalThis.document.activeElement).toBe(row("Older"));
+  expect(within(screen.getByRole("region", { name: "Preview" })).getByRole("heading", { name: "Older" })).toBeTruthy();
+});
+
+test("tied starts choose by ID regardless of input order", async () => {
+  previewMocks();
+  render(home([entry("b", { title: "Beta" }), entry("a", { title: "Alpha" })]));
+  await act(async () => {});
+  expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
+});
+
+test("loading, initial error and pending capture do not show an empty library", async () => {
+  previewMocks();
+  const view = render(home([], { loaded: false }));
+  expect(screen.getByText("Loading notes…")).toBeTruthy();
+  expect(screen.queryByText("No notes yet")).toBeNull();
+  view.rerender(home([], { loaded: false, loadError: "Could not load notes." }));
+  expect(screen.getByText("Could not load notes.")).toBeTruthy();
+  expect(screen.queryByText("No notes yet")).toBeNull();
+  view.rerender(home([], { recording: { sessionId: "a", elapsedMs: 0, interrupted: false } }));
+  expect(screen.queryByText("No notes yet")).toBeNull();
+  view.rerender(home([entry("a", { state: "capturing" })]));
+  await act(async () => {});
+  expect(screen.getByRole("option").getAttribute("aria-selected")).toBe("true");
+});
+
+test("arrow keys include interrupted and recording notes after a pointer selection", async () => {
+  previewMocks();
+  const onOpen = mock(() => {});
+  render(home([entry("a", { title: "Alpha" }), entry("b", { state: "interrupted" }), entry("c", { state: "capturing" })], { onOpen }));
+  const user = userEvent.setup();
+  await user.click(row("Alpha"));
+  await user.keyboard("{ArrowDown}");
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Recording interrupted")));
+  await user.keyboard("{ArrowDown}");
+  await waitFor(() => expect(globalThis.document.activeElement?.getAttribute("data-session")).toBe("c"));
+  await user.keyboard("{Enter}");
+  expect(onOpen).toHaveBeenCalledWith("c");
+});
+
+test("double-clicks on actions and rename stay inside those controls", async () => {
+  previewMocks();
+  const onOpen = mock(() => {});
+  render(home([entry("a", { title: "Alpha" })], { onOpen }));
+  const user = userEvent.setup();
+  const actions = within(row("Alpha")).getByRole("button", { name: "Actions" });
+  await user.dblClick(actions);
+  if (!screen.queryByRole("menuitem", { name: "Rename" })) await user.click(actions);
+  fireEvent.doubleClick(screen.getByRole("menuitem", { name: "Rename" }));
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+  await user.dblClick(screen.getByRole("textbox", { name: "Title" }));
+  expect(onOpen).not.toHaveBeenCalled();
+});
+
+test("successful deletion excludes stale data and restores keyboard focus to the newest remaining row", async () => {
+  mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null), delete_session: () => null });
+  const onOpen = mock(() => {});
+  render(home([entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })], { onOpen }));
+  const user = userEvent.setup();
+  await user.click(row("Alpha"));
+  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Beta")));
+  await user.keyboard("{ArrowDown}{Enter}");
+  expect(onOpen).toHaveBeenCalledWith("b");
+});
+
+test("final deletion removes the sidebar and focuses New Note", async () => {
+  mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null), delete_session: () => null });
+  render(home([entry("a", { title: "Alpha" })], { readiness: ready }));
+  const user = userEvent.setup();
+  await user.click(row("Alpha"));
+  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  expect(screen.getByText("No notes yet")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Preview" })).toBeNull();
+  await waitFor(() => expect(globalThis.document.activeElement).toBe(screen.getByRole("button", { name: "New Note" })));
+});
+
+test("preview revisions refresh saved summaries and late results cannot replace another note", async () => {
+  let finishA!: (value: SessionDocument) => void;
+  let text = "Beta summary.";
+  mockTauri({ session_document: ({ sessionId }) => sessionId === "a" ? new Promise<SessionDocument>((resolve) => { finishA = resolve; }) : document(text), session_detail: () => detail(entry("a"), null) });
+  const entries = [entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })];
+  const view = render(home(entries));
+  await userEvent.setup().click(row("Beta"));
+  expect(await screen.findByText("Beta summary.")).toBeTruthy();
+  await act(async () => finishA(document("Late Alpha summary.")));
+  expect(screen.queryByText("Late Alpha summary.")).toBeNull();
+  text = "Revised Beta summary.";
+  view.rerender(home(entries, { revisions: { b: 1 } }));
+  expect(await screen.findByText("Revised Beta summary.")).toBeTruthy();
+});
+
+test("missing summaries and read errors have distinct preview messages", async () => {
+  let fail = false;
+  mockTauri({ session_document: () => { if (fail) throw "unavailable"; return { ...document(""), summary: null }; }, session_detail: () => detail(entry("a"), null) });
+  const entries = [entry("a")];
+  const view = render(home(entries));
+  expect(await screen.findByText("No summary yet.")).toBeTruthy();
+  fail = true;
+  view.rerender(home(entries, { revisions: { a: 1 } }));
+  expect(await screen.findByText("Could not read this note.")).toBeTruthy();
+  expect(screen.queryByText("No summary yet.")).toBeNull();
+});
+
+
+test("a restored note returns after a successful deletion refresh", async () => {
+  mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null), delete_session: () => null });
+  const entries = [entry("a", { title: "Alpha" })];
+  const view = render(home(entries));
+  const user = userEvent.setup();
+  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  view.rerender(home([]));
+  view.rerender(home(entries));
+  expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
+  await act(async () => {});
+});
+
+test("a list read error offers Retry", async () => {
+  previewMocks();
+  const onChanged = mock(() => {});
+  render(home([], { loaded: false, loadError: "Could not load notes.", onChanged }));
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+  expect(onChanged).toHaveBeenCalledTimes(1);
+});
+
+
+test("a background refresh does not move focus from New Note", async () => {
+  previewMocks();
+  const entries = [entry("a", { title: "Alpha" })];
+  const view = render(home(entries, { readiness: ready }));
+  const button = screen.getByRole("button", { name: "New Note" });
+  button.focus();
+  view.rerender(home([...entries, entry("b", { title: "Beta" })], { readiness: ready }));
+  await act(async () => {});
+  expect(globalThis.document.activeElement).toBe(button);
 });
