@@ -6,7 +6,7 @@
       "version": "1.94.0",
       "part": "rust",
       "platforms": ["macos", "windows"],
-      "files": ["licences/native/rust-LICENSE-MIT.txt"],
+      "files": ["licences/sources/rust-LICENSE-MIT.txt"],
       "source": "https://raw.githubusercontent.com/rust-lang/rust/1.94.0/LICENSE-MIT"
     },
     {
@@ -16,7 +16,7 @@
       "part": "interface",
       "note": "generated base styles",
       "platforms": ["macos", "windows"],
-      "files": ["licences/native/tailwindcss-LICENSE.txt"],
+      "files": ["licences/sources/tailwindcss-LICENSE.txt"],
       "source": "https://github.com/tailwindlabs/tailwindcss/blob/v4.3.3/LICENSE"
     },
     {
@@ -25,7 +25,7 @@
       "part": "native",
       "note": "linked through ort-sys",
       "platforms": ["macos", "windows"],
-      "files": ["licences/native/onnxruntime-LICENSE.txt"],
+      "files": ["licences/sources/onnxruntime-LICENSE.txt"],
       "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.22.0/LICENSE"
     },
     {
@@ -34,7 +34,7 @@
       "part": "native",
       "note": "third-party notices",
       "platforms": ["macos", "windows"],
-      "files": ["licences/native/onnxruntime-ThirdPartyNotices.txt"],
+      "files": ["licences/sources/onnxruntime-ThirdPartyNotices.txt"],
       "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.22.0/ThirdPartyNotices.txt"
     },
     {
@@ -44,7 +44,7 @@
       "note": "compiled into ggml-vulkan.dll",
       "copyright": ["Copyright 2015-2025 The Khronos Group Inc."],
       "platforms": ["windows"],
-      "files": ["licences/native/vulkan-headers-LICENSE.txt"],
+      "files": ["licences/sources/vulkan-headers-LICENSE.txt"],
       "source": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/v1.4.309/LICENSES/Apache-2.0.txt"
     },
     {
@@ -54,7 +54,7 @@
       "note": "compiled into ggml-vulkan.dll",
       "copyright": ["Copyright 2015-2025 The Khronos Group Inc."],
       "platforms": ["windows"],
-      "files": ["licences/native/vulkan-hpp-LICENSE.txt"],
+      "files": ["licences/sources/vulkan-hpp-LICENSE.txt"],
       "source": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Hpp/v1.4.309/LICENSE.txt"
     },
     {
@@ -62,7 +62,7 @@
       "version": "",
       "part": "native",
       "platforms": ["windows"],
-      "files": ["licences/native/vcruntime-NOTICE.txt"],
+      "files": ["licences/sources/vcruntime-NOTICE.txt"],
       "source": "https://visualstudio.microsoft.com/license-terms/"
     },
     {
@@ -71,7 +71,7 @@
       "part": "native",
       "note": "compiled into the app",
       "platforms": ["macos", "windows"],
-      "files": ["LICENSES/DTLN-aec-MIT.txt"],
+      "files": ["licences/sources/DTLN-aec-MIT.txt"],
       "source": "https://github.com/breizhn/DTLN-aec"
     },
     {
@@ -79,7 +79,7 @@
       "version": "",
       "part": "native",
       "platforms": ["macos", "windows"],
-      "files": ["LICENSES/anarlog-MIT.txt"],
+      "files": ["licences/sources/anarlog-MIT.txt"],
       "source": "https://github.com/fastrepl/anarlog"
     },
     {
@@ -87,7 +87,7 @@
       "version": "",
       "part": "native",
       "platforms": ["macos", "windows"],
-      "files": ["LICENSES/Handy-MIT.txt"],
+      "files": ["licences/sources/Handy-MIT.txt"],
       "source": "https://github.com/cjpais/Handy"
     }
   ],
@@ -96,8 +96,8 @@
       "version": "2.5.5",
       "copyright": ["Copyright (c) 2017 - Present Tauri Apps Contributors"],
       "files": [
-        "licences/native/tauri-plugin-opener-LICENSE_MIT.txt",
-        "licences/native/tauri-plugin-opener-LICENSE_APACHE-2.0.txt"
+        "licences/sources/tauri-plugin-opener-LICENSE_MIT.txt",
+        "licences/sources/tauri-plugin-opener-LICENSE_APACHE-2.0.txt"
       ],
       "source": "The npm package includes only LICENSE.spdx. These files are LICENSE_MIT and LICENSE_APACHE-2.0 of the tauri-plugin-opener 2.5.5 crate, from the same repository and version: https://crates.io/crates/tauri-plugin-opener/2.5.5"
     }

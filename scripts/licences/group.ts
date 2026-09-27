@@ -21,7 +21,7 @@ export interface LicensedComponent {
   text: string;
 }
 
-/** One entry of licences/native/manifest.json. */
+/** One entry of licences/manifest.json. */
 export interface NativeEntry {
   name: string;
   version: string;
@@ -39,7 +39,7 @@ export interface NativeEntry {
 
 /**
  * Replacement licence files for an interface package whose own licence file
- * is not a licence text (the `packageLicences` of licences/native/manifest.json).
+ * is not a licence text (the `packageLicences` of licences/manifest.json).
  */
 export interface PackageLicence {
   /** The package version that the files are for. */
@@ -301,9 +301,9 @@ export function packageLicenceTexts(
   if (replacement) {
     if (replacement.version !== pkg.version) {
       throw new Error(
-        `${pkg.name} version mismatch: the packageLicences entry in licences/native/manifest.json is for ` +
+        `${pkg.name} version mismatch: the packageLicences entry in licences/manifest.json is for ` +
           `${replacement.version}, but the build includes ${pkg.version}. ` +
-          "Fetch the licence files of that version into licences/native/ and update the entry.",
+          "Fetch the licence files of that version into licences/sources/ and update the entry.",
       );
     }
     return replacement.files.map((file) => [...(replacement.copyright ?? []), "", read(file)].join("\n"));
@@ -312,7 +312,7 @@ export function packageLicenceTexts(
   if (isSpdxMetadata(pkg.licenseText)) {
     throw new Error(
       `${pkg.name} ${pkg.version} includes SPDX metadata and no licence text. ` +
-        "Add its licence files to licences/native/ and an entry for it to packageLicences in licences/native/manifest.json.",
+        "Add its licence files to licences/sources/ and an entry for it to packageLicences in licences/manifest.json.",
     );
   }
   return [pkg.licenseText];
@@ -325,9 +325,9 @@ export function packageLicenceTexts(
 export function checkNpmVersion(entry: NativeEntry, installedVersion: string): void {
   if (installedVersion !== entry.version) {
     throw new Error(
-      `${entry.npmPackage} version mismatch: licences/native/manifest.json names ${entry.version} for ` +
+      `${entry.npmPackage} version mismatch: licences/manifest.json names ${entry.version} for ` +
         `"${entry.name}", but node_modules has ${installedVersion}. ` +
-        "Fetch the licence file of that version into licences/native/ and update the entry's version and source.",
+        "Fetch the licence file of that version into licences/sources/ and update the entry's version and source.",
     );
   }
 }
@@ -356,9 +356,9 @@ export function checkOnnxRuntimeVersion(distText: string, manifestVersion: strin
   }
   if (versions.length > 1 || versions[0] !== manifestVersion) {
     throw new Error(
-      `ONNX Runtime version mismatch: licences/native/manifest.json names ${manifestVersion}, ` +
+      `ONNX Runtime version mismatch: licences/manifest.json names ${manifestVersion}, ` +
         `but ort-sys dist.txt names ${versions.join(", ")}. ` +
-        "Fetch the LICENSE and ThirdPartyNotices.txt of that version into licences/native/ and update the manifest.",
+        "Fetch the LICENSE and ThirdPartyNotices.txt of that version into licences/sources/ and update the manifest.",
     );
   }
 }

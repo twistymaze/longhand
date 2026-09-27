@@ -116,8 +116,8 @@ self_test() {
   local tmp status=0
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
-  mkdir -p "$tmp/LICENSES" "$tmp/crates/audio/src"
-  echo "MIT" > "$tmp/LICENSES/anarlog-MIT.txt"
+  mkdir -p "$tmp/licences/sources" "$tmp/crates/audio/src"
+  echo "MIT" > "$tmp/licences/sources/anarlog-MIT.txt"
   touch "$tmp/crates/audio/src/x.rs"
   write_record() {
     cat > "$tmp/crates/audio/PROVENANCE.md" <<RECORD
@@ -129,7 +129,7 @@ self_test() {
 - Revision: 7040ace23d1606dcc4371b5bb8c5aca1c3450044
 - Source paths: $1
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
-- Licence: MIT, LICENSES/anarlog-MIT.txt
+- Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: copied
 RECORD
   }
