@@ -2,12 +2,54 @@
 
 Measured on 2026-09-27 during the flexible speaker-recognition implementation. These are local engineering measurements. They do not rank transcription or speaker-label accuracy.
 
+## Choosing by the wait after a meeting
+
+**For each 30 minutes you record, budget the extra processing time below after you press Stop.** These are early ballpark estimates for the tested M3 Ultra. Summary generation adds a separate wait that is not measured here. Other computers can take substantially longer.
+
+The estimates multiply a five-minute observation by six and round outward to whole-minute ranges. They are extrapolations, not measured 30-minute results. Live finalization includes fixed work and any backlog, so its time may not grow in proportion to recording length. Use these estimates for planning and comparison; verify longer runs before publishing them as expected product performance.
+
+### Choose when processing happens
+
+These rows use the labels in Settings. The example transcription model is **Nemotron Speech Streaming EN 0.6B**, with **Nemotron 3** selected under **Speaker recognition**.
+
+| Transcription timing | Speaker timing | Extra processing per 30 minutes recorded | What happens after Stop |
+|---|---|---|---|
+| During recording | During recording | **About 1–2 minutes** | Finish the work already in progress and prepare the final transcript. |
+| During recording | After Stop | **About 2–3 minutes** | Keep the completed text, then finish speaker recognition and join the labels. |
+| After Stop | During recording | **About 4–5 minutes** | Transcribe the recording and join the speaker work completed during recording. |
+| After Stop | After Stop | **About 3–4 minutes** | Transcribe and identify speakers after recording ends. |
+
+The live rows come from paced five-minute tests: 16.612, 25.763, and 44.465 seconds after Stop respectively. The last row uses the normal after-Stop choice in the 49-case matrix: 31.519 seconds. These are different processing paths, not a controlled experiment that changes only one switch. In this implementation, live speaker work alone did not reduce the observed finish time. Do not promise that every live setting is faster.
+
+With both timings set to **During recording**, **Sortformer** gave the same rough **1–2 minute** estimate. **Nemotron 3.5 ASR Streaming 0.6B** also gave **1–2 minutes** with either **Sortformer** or **Nemotron 3**. Other live model/timing combinations do not yet have a comparable estimate. Unavailable choices remain disabled in the app.
+
+### Choose the models when processing After Stop
+
+Set **Transcription timing** and **Speaker timing** to **After Stop**. Pick your transcription model from the left column and your **Speaker recognition** option across the top. Each cell is **extra minutes per 30 minutes recorded**, excluding the summary. A dash means the transcription model does not provide that speaker-label option.
+
+| Transcription model | Off | Transcription model labels | pyannote / WeSpeaker | Sortformer | Nemotron 3 |
+|---|---:|---:|---:|---:|---:|
+| Parakeet Unified EN 0.6B | 3–4 min | — | 4–5 min | 3–4 min | 3–4 min |
+| Nemotron Speech Streaming EN 0.6B | 2–3 min | — | 4–5 min | 3–4 min | 3–4 min |
+| Nemotron 3.5 ASR Streaming 0.6B | 2–3 min | — | 4–5 min | 3–4 min | 3–4 min |
+| Multitalker Parakeet Streaming 0.6B | 2–3 min | 4–5 min | 4–5 min | 3–4 min | 3–4 min |
+| Parakeet TDT 0.6B v2 | 2–3 min | — | 5–6 min | 3–4 min | 3–4 min |
+| Parakeet TDT 0.6B v3 | 2–3 min | — | 4–5 min | 3–4 min | 3–4 min |
+| Parakeet TDT 1.1B | 2–3 min | — | 4–5 min | 3–4 min | 3–4 min |
+| Whisper large-v3-turbo | 2–3 min | — | 5–6 min | 4–5 min | 4–5 min |
+| MOSS Transcribe Diarize | 3–4 min | 3–4 min | 5–6 min | 5–6 min | 5–6 min |
+| Granite Speech 4.1 2B Plus | 3–4 min | 3–4 min | 5–6 min | 4–5 min | 4–5 min |
+
+These cells use the normal user-facing after-Stop selections. The alternative internal-runtime comparisons below are engineering evidence; users do not choose a runtime. Quantization and exact artifacts are recorded in the technical tables and hashes.
+
+**Example:** For a 90-minute meeting using Whisper with **pyannote / WeSpeaker**, the table suggests roughly **15–18 extra minutes**, plus summary generation. This is a linear planning estimate from the short test, not a measured 90-minute result.
+
 ## Conditions and limits
 
 - Host: Apple M3 Ultra, 512 GiB memory, 32 logical CPUs, macOS 26.6.2, AC power. This is not the intended laptop acceptance result.
 - Input: a five-minute, mono, 16 kHz excerpt from the existing 176.2-minute RPG recording. The recording and raw transcripts remain local.
 - Build: Rust debug test harness, native libraries built with the configured acceleration. The route matrix enabled `diarize/coreml`; NeMo selected GPU device 0 (Metal). transcribe.cpp used its normal engine defaults. This is not a CPU-only comparison.
-- Other builds and tests ran during these measurements. Each case has one observation. Cases ran in sequence, with a new test process per case. Filesystem caches were not cleared. Do not treat small differences as significant or extrapolate these times to three hours.
+- Other builds and tests ran during these measurements. Each case has one observation. Cases ran in sequence, with a new test process per case. Filesystem caches were not cleared. Do not treat small differences as significant. The rounded extrapolations above are planning estimates; they do not establish three-hour performance.
 - The matrix used a frozen test executable from the implementation before code-review fixes. It includes the U11 runtime policy change at `9ab0495`. The exact full source tree was not recorded at build time; the binary hash below identifies this run. Later batching, recovery, and reuse fixes can change these results.
 - All 49 route cases passed. A pass means the production recognition stages and their verification completed; it does not establish word accuracy, correct real speaker identities, or signed-app recording behavior.
 
