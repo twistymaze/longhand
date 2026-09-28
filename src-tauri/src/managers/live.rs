@@ -19,7 +19,7 @@ use tauri_specta::Event as _;
 use crate::managers::models::ModelsManager;
 
 /// Durable text or speaker revisions on the canonical 16 kHz timeline.
-#[derive(Serialize, Clone, Type, tauri_specta::Event)]
+#[derive(Serialize, Clone, Type, Debug, PartialEq, Eq, tauri_specta::Event)]
 pub struct LiveRecognitionEvent {
     pub session_id: String,
     pub phase: LiveRecognitionPhase,
@@ -29,7 +29,7 @@ pub struct LiveRecognitionEvent {
     pub revision: u64,
     pub rows: Vec<LiveRecognitionRow>,
 }
-#[derive(Serialize, Clone, Copy, Type)]
+#[derive(Serialize, Clone, Copy, Type, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveRecognitionPhase {
     Patch,
@@ -41,7 +41,7 @@ pub enum LiveRecognitionPhase {
     SnapshotEnd,
     Failed,
 }
-#[derive(Serialize, Clone, Type)]
+#[derive(Serialize, Clone, Type, Debug, PartialEq, Eq)]
 pub struct LiveRecognitionRow {
     pub start_sample: u64,
     pub end_sample: u64,
@@ -142,6 +142,8 @@ pub struct LiveCurrent {
 /// recording (KTD10).
 #[derive(Serialize, Clone, Type, Debug, PartialEq, Eq)]
 pub struct LiveTranscript {
+    /// Durable native output for a tab opened after processing began.
+    pub recognition: Vec<LiveRecognitionEvent>,
     pub parts: Vec<LivePartText>,
     /// `None` when no worker of this note has text open.
     pub current: Option<LiveCurrent>,
@@ -155,6 +157,7 @@ struct Now {
     session_id: String,
     current: LiveCurrent,
     state: LiveState,
+    failure: Option<LiveRecognitionEvent>,
 }
 
 pub struct LiveManager {
@@ -274,7 +277,12 @@ impl LiveManager {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
             .filter(|now| now.session_id == session_id);
+        let mut recognition = recognition_catchup(store, session_id)?;
+        if let Some(failure) = now.as_ref().and_then(|n| n.failure.clone()) {
+            recognition.push(failure);
+        }
         Ok(LiveTranscript {
+            recognition,
             parts,
             current: now
                 .as_ref()
@@ -308,6 +316,7 @@ impl AppSink {
                 tentative: String::new(),
             },
             state: LiveState::Starting,
+            failure: None,
         };
         let entry = now.get_or_insert_with(fresh);
         if entry.session_id != self.session_id || entry.current.segment != self.segment {
@@ -336,7 +345,7 @@ impl LiveSink for AppSink {
     }
 
     fn failed(&mut self, message: &str) {
-        let _ = LiveRecognitionEvent {
+        let failure = LiveRecognitionEvent {
             session_id: self.session_id.clone(),
             phase: LiveRecognitionPhase::Failed,
             key: "failure".into(),
@@ -351,8 +360,9 @@ impl LiveSink for AppSink {
                 text_final: false,
                 speaker_final: false,
             }],
-        }
-        .emit(&self.app);
+        };
+        self.update(|now| now.failure = Some(failure.clone()));
+        let _ = failure.emit(&self.app);
     }
 
     fn snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
@@ -373,48 +383,7 @@ impl LiveSink for AppSink {
     }
 
     fn recognition(&mut self, block: &session_core::recognition::OutputBlock) {
-        let speaker = |key: &asr::SpeakerKey| {
-            format!(
-                "{}:{}:{}:{}",
-                key.scope.generation, key.scope.epoch, key.input_start_sample, key.local_id
-            )
-        };
-        let mut rows: Vec<_> = block
-            .rows
-            .iter()
-            .map(|row| LiveRecognitionRow {
-                start_sample: row.range.start,
-                end_sample: row.range.end,
-                text: Some(row.text.clone()),
-                speaker: row.speaker.as_ref().map(&speaker),
-                text_final: row.text_finality == asr::Finality::Final,
-                speaker_final: row.speaker_finality == asr::Finality::Final,
-            })
-            .collect();
-        rows.extend(block.speakers.iter().map(|turn| LiveRecognitionRow {
-            start_sample: turn.range.start,
-            end_sample: turn.range.end,
-            text: None,
-            speaker: Some(speaker(&turn.speaker)),
-            text_final: false,
-            speaker_final: turn.finality == asr::Finality::Final,
-        }));
-        let _ = LiveRecognitionEvent {
-            session_id: self.session_id.clone(),
-            phase: if !block.speakers.is_empty() {
-                LiveRecognitionPhase::SnapshotBatch
-            } else if block.key.contains("/interim/") {
-                LiveRecognitionPhase::InterimBatch
-            } else {
-                LiveRecognitionPhase::Patch
-            },
-            key: block.key.clone(),
-            generation: block.scope.generation.clone(),
-            epoch: block.scope.epoch,
-            revision: block.revision,
-            rows,
-        }
-        .emit(&self.app);
+        let _ = recognition_event(&self.session_id, block).emit(&self.app);
     }
 
     fn model(&mut self, held: Option<&str>) {
@@ -477,6 +446,119 @@ impl LiveSink for AppSink {
     }
 }
 
+fn recognition_catchup(
+    store: &pipeline::SharedStore,
+    session_id: &str,
+) -> Result<Vec<LiveRecognitionEvent>, String> {
+    let generation: Option<String> = pipeline::checkpoint::get(
+        store,
+        session_id,
+        session_core::Stage::Transcribe,
+        "recognition-generation-v1",
+    )
+    .map_err(|e| e.to_string())?;
+    let Some(generation) = generation else {
+        return Ok(vec![]);
+    };
+    let store = store.lock().map_err(|e| e.to_string())?;
+    let mut events = Vec::new();
+    let mut batches = std::collections::BTreeMap::<(u64, bool), Vec<LiveRecognitionEvent>>::new();
+    store
+        .visit_recognition(session_id, &generation, |block| {
+            let event = recognition_event(session_id, &block);
+            match event.phase {
+                LiveRecognitionPhase::Patch => events.push(event),
+                LiveRecognitionPhase::SnapshotBatch => {
+                    batches.entry((event.epoch, true)).or_default().push(event)
+                }
+                LiveRecognitionPhase::InterimBatch => {
+                    batches.entry((event.epoch, false)).or_default().push(event)
+                }
+                _ => {}
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+    for ((epoch, speakers), mut batch) in batches {
+        let revision = batch.iter().map(|e| e.revision).max().unwrap_or_default();
+        let marker = LiveRecognitionEvent {
+            session_id: session_id.into(),
+            phase: if speakers {
+                LiveRecognitionPhase::SnapshotBegin
+            } else {
+                LiveRecognitionPhase::InterimBegin
+            },
+            key: String::new(),
+            generation: generation.clone(),
+            epoch,
+            revision,
+            rows: vec![],
+        };
+        events.push(marker.clone());
+        // Catch-up publishes the full durable set as one completed snapshot.
+        for event in &mut batch {
+            event.revision = revision;
+        }
+        events.extend(batch);
+        events.push(LiveRecognitionEvent {
+            phase: if speakers {
+                LiveRecognitionPhase::SnapshotEnd
+            } else {
+                LiveRecognitionPhase::InterimEnd
+            },
+            ..marker
+        });
+    }
+    Ok(events)
+}
+
+fn recognition_event(
+    session_id: &str,
+    block: &session_core::recognition::OutputBlock,
+) -> LiveRecognitionEvent {
+    let speaker = |key: &asr::SpeakerKey| {
+        format!(
+            "{}:{}:{}:{}",
+            key.scope.generation, key.scope.epoch, key.input_start_sample, key.local_id
+        )
+    };
+    let mut rows: Vec<_> = block
+        .rows
+        .iter()
+        .map(|row| LiveRecognitionRow {
+            start_sample: row.range.start,
+            end_sample: row.range.end,
+            text: Some(row.text.clone()),
+            speaker: row.speaker.as_ref().map(&speaker),
+            text_final: row.text_finality == asr::Finality::Final,
+            speaker_final: row.speaker_finality == asr::Finality::Final,
+        })
+        .collect();
+    rows.extend(block.speakers.iter().map(|turn| LiveRecognitionRow {
+        start_sample: turn.range.start,
+        end_sample: turn.range.end,
+        text: None,
+        speaker: Some(speaker(&turn.speaker)),
+        text_final: false,
+        speaker_final: turn.finality == asr::Finality::Final,
+    }));
+    LiveRecognitionEvent {
+        session_id: session_id.into(),
+        phase: if !block.speakers.is_empty() {
+            LiveRecognitionPhase::SnapshotBatch
+        } else if block.key.contains("/interim/") {
+            LiveRecognitionPhase::InterimBatch
+        } else {
+            LiveRecognitionPhase::Patch
+        },
+        key: block.key.clone(),
+        generation: block.scope.generation.clone(),
+        epoch: block.scope.epoch,
+        revision: block.revision,
+        rows,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +574,7 @@ mod tests {
 
     fn now(session_id: &str, committed: &str) -> Now {
         Now {
+            failure: None,
             session_id: session_id.into(),
             current: LiveCurrent {
                 segment: 0,
@@ -544,6 +627,113 @@ mod tests {
         assert!(got.parts.is_empty());
         assert_eq!(got.current, None);
         assert_eq!(got.state, None);
+    }
+
+    #[test]
+    fn native_catchup_reads_current_durable_generation_and_complete_batches() {
+        use session_core::recognition::{
+            Coverage, Finality, OutputBlock, RecognitionId, RecognitionSegment, SampleRange,
+            SpeakerScope, TimingPrecision,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let live = manager(dir.path());
+        let store = store();
+        store
+            .lock()
+            .unwrap()
+            .create_session("native", chrono::Local::now().fixed_offset(), None)
+            .unwrap();
+        pipeline::checkpoint::put(
+            &store,
+            "native",
+            session_core::Stage::Transcribe,
+            "recognition-generation-v1",
+            &"current",
+        )
+        .unwrap();
+        for (generation, key, text, revision) in [
+            ("old", "old", "Stale", 1),
+            ("current", "native/interim/0", "Provisional", 1),
+            ("current", "native/final/0", "Final", 2),
+        ] {
+            let scope = SpeakerScope {
+                generation: generation.into(),
+                epoch: 0,
+            };
+            let range = SampleRange {
+                start: 0,
+                end: 16000,
+            };
+            let finality = if revision == 2 {
+                Finality::Final
+            } else {
+                Finality::Provisional
+            };
+            let block = OutputBlock {
+                key: key.into(),
+                scope: scope.clone(),
+                revision,
+                coverage: Coverage {
+                    received: Some(range),
+                    computed: Some(range),
+                    provisional: Some(range),
+                    committed: None,
+                },
+                rows: vec![RecognitionSegment {
+                    id: RecognitionId {
+                        scope,
+                        input_start_sample: 0,
+                        ordinal: 0,
+                    },
+                    range,
+                    timing: TimingPrecision::NativeSegment,
+                    text: text.into(),
+                    speaker: None,
+                    revision,
+                    text_finality: finality,
+                    speaker_finality: finality,
+                }],
+                speakers: vec![],
+            };
+            store
+                .lock()
+                .unwrap()
+                .commit_recognition("native", &block)
+                .unwrap();
+        }
+        let got = live.transcript(&store, "native").unwrap();
+        assert!(got.recognition.iter().all(|e| e.generation == "current"));
+        assert_eq!(
+            got.recognition.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            vec![
+                LiveRecognitionPhase::Patch,
+                LiveRecognitionPhase::InterimBegin,
+                LiveRecognitionPhase::InterimBatch,
+                LiveRecognitionPhase::InterimEnd
+            ]
+        );
+        assert_eq!(got.recognition[0].rows[0].text.as_deref(), Some("Final"));
+        assert!(got.recognition[0].rows[0].text_final);
+        let mut state = now("native", "");
+        state.failure = Some(LiveRecognitionEvent {
+            session_id: "native".into(),
+            phase: LiveRecognitionPhase::Failed,
+            key: "failure".into(),
+            generation: String::new(),
+            epoch: 0,
+            revision: 0,
+            rows: vec![],
+        });
+        *live.now.lock().unwrap() = Some(state);
+        let reopened = live.transcript(&store, "native").unwrap();
+        assert_eq!(
+            reopened.recognition.last().unwrap().phase,
+            LiveRecognitionPhase::Failed
+        );
+        assert_eq!(
+            reopened.recognition[0].rows[0].text.as_deref(),
+            Some("Final")
+        );
     }
 
     #[test]

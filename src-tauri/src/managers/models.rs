@@ -19,6 +19,7 @@ use crate::managers::settings::{self, Settings, SettingsChanged};
 #[serde(rename_all = "snake_case")]
 pub enum ModelRole {
     Recognition,
+    RecognitionArtifact,
     Segmentation,
     Embedding,
 }
@@ -160,7 +161,10 @@ pub fn delete_refusal(
     if model.kind != ModelKind::Asr {
         return Some("Speaker detection needs this model.".into());
     }
-    if settings.asr_model == id {
+    if settings.asr_model == id
+        || models::recognition::resolve(&settings.recognition_config())
+            .is_ok_and(|spec| spec.artifacts.iter().any(|artifact| artifact.id == id))
+    {
         return Some("This model is selected. Select another model first.".into());
     }
     if settings
@@ -275,10 +279,16 @@ impl ModelsManager {
         let active = self.active();
         models::CATALOG
             .iter()
-            .map(|m| ModelStatus {
+            .map(|m| (m, m.kind.into()))
+            .chain(
+                models::catalog::RUNTIME_ARTIFACTS
+                    .iter()
+                    .map(|m| (m, ModelRole::RecognitionArtifact)),
+            )
+            .map(|(m, role)| ModelStatus {
                 id: m.id.clone(),
                 assessment: m.assessment.clone(),
-                role: m.kind.into(),
+                role,
                 name: m.name.clone(),
                 description: m.description.clone(),
                 size_bytes: m.size_bytes,
@@ -780,6 +790,45 @@ mod tests {
         };
         assert!(delete_refusal(PARAKEET, &settings, None, &[]).is_some());
         assert_eq!(delete_refusal(WHISPER, &settings, None, &[]), None);
+    }
+
+    #[test]
+    fn status_includes_the_exact_native_artifact_required_by_the_live_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().into());
+        let config = models::recognition::RecognitionConfig {
+            asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+            processing_mode: models::recognition::ProcessingMode::DuringRecording,
+            speaker_source: models::recognition::SpeakerSource::Nemotron,
+            ..Default::default()
+        };
+        let statuses = manager.statuses_for(&config).unwrap();
+        let native = statuses
+            .iter()
+            .find(|s| s.id == "nemo-nemotron-speech-streaming-en-0.6b-q80")
+            .expect("native artifact status");
+        assert!(native.required);
+        assert!(matches!(native.state, ModelState::Absent { .. }));
+        assert_ne!(native.role, ModelRole::Recognition);
+    }
+
+    #[test]
+    fn delete_refuses_the_native_artifact_selected_by_the_live_route() {
+        let settings = Settings {
+            asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+            live_transcript: true,
+            speaker_source: models::recognition::SpeakerSource::Nemotron,
+            ..Settings::default()
+        };
+        assert!(
+            delete_refusal(
+                "nemo-nemotron-speech-streaming-en-0.6b-q80",
+                &settings,
+                None,
+                &[]
+            )
+            .is_some()
+        );
     }
 
     #[test]

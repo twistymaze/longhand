@@ -75,6 +75,11 @@ function renderHome({
 const row = (name: string) => screen.getByRole("option", { name: new RegExp(name) });
 
 describe("Home", () => {
+  test("a new note offers recognition choices before recording", () => {
+    mockTauri();
+    render(<Home entries={[]} stages={{}} recording={null} readiness={{ armed: true, microphone_authorized: true, destination: { kind: "ready", path: "/notes", free_bytes: null }, shortcut: { chord: null, registered: false, error: null }, system_audio: "allowed", missing_models: [], endpoint_configured: true }} chord={null} onOpen={() => {}} onChanged={() => {}} />);
+    expect(screen.getByRole("button", { name: "Choices for next note…" })).toBeTruthy();
+  });
   test("with no sessions, shows the line that names the shortcut and says it starts a new note", () => {
     mockTauri();
     renderHome();

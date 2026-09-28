@@ -13,7 +13,9 @@ import {
   type LiveTranscript,
   type LiveTranscriptEvent,
   type LiveTranscriptStatus,
+  type LiveRecognitionEvent,
 } from "../bindings";
+import { applyRecognition, emptyRecognition, type RecognitionView } from "./liveRecognition";
 
 export type LiveView = {
   /// The saved parts, in order of segment and part.
@@ -24,11 +26,13 @@ export type LiveView = {
   state: LiveState | null;
   /// The catch-up returned.
   loaded: boolean;
+  recognition: RecognitionView;
 };
 
-const none: LiveView = { parts: [], current: null, state: null, loaded: false };
+const none: LiveView = { parts: [], current: null, state: null, loaded: false, recognition: emptyRecognition };
 
 type Change =
+  | { kind: "recognition"; data: LiveRecognitionEvent }
   | { kind: "catchup"; data: LiveTranscript }
   | { kind: "text"; data: LiveTranscriptEvent }
   | { kind: "saved"; data: LivePartSaved }
@@ -46,6 +50,7 @@ function withPart(parts: LivePartText[], part: LivePartText): LivePartText[] {
 
 export function apply(live: LiveView, change: Change): LiveView {
   switch (change.kind) {
+    case "recognition": return { ...live, recognition: applyRecognition(live.recognition, change.data) };
     case "catchup": {
       // One merge and one sort: a long note has many saved parts.
       const byKey = new Map(live.parts.map((p) => [`${p.segment}-${p.part}`, p]));
@@ -53,6 +58,7 @@ export function apply(live: LiveView, change: Change): LiveView {
       const parts = [...byKey.values()].sort(order);
       const current = change.data.current;
       return {
+        recognition: (change.data as LiveTranscript & { recognition?: LiveRecognitionEvent[] }).recognition?.reduce(applyRecognition, emptyRecognition) ?? live.recognition,
         parts,
         current: current && !parts.some((p) => same(p, current)) ? current : null,
         state: change.data.state,
@@ -93,6 +99,9 @@ export function useLiveTranscript(sessionId: string): LiveView {
       else setLive((l) => apply(l, change));
     };
     const unlisteners = [
+      events.liveRecognitionEvent.listen(({ payload }) => {
+        if (payload.session_id === sessionId) take({ kind: "recognition", data: payload });
+      }),
       events.liveTranscriptEvent.listen(({ payload }) => {
         if (payload.session_id === sessionId) take({ kind: "text", data: payload });
       }),

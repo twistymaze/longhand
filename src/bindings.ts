@@ -930,7 +930,11 @@ export type LiveState =
  * The live transcript so far: the catch-up for a tab that opens during
  * recording (KTD10).
  */
-export type LiveTranscript = { parts: LivePartText[]; 
+export type LiveTranscript = { 
+/**
+ * Durable native output for a tab opened after processing began.
+ */
+recognition: LiveRecognitionEvent[]; parts: LivePartText[]; 
 /**
  * `None` when no worker of this note has text open.
  */
@@ -974,7 +978,7 @@ export type MicrophoneList = { default_id: string | null;
  */
 inputs: MicrophoneInput[] }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
-export type ModelRole = "recognition" | "segmentation" | "embedding"
+export type ModelRole = "recognition" | "recognition_artifact" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
 export type ModelStatus = { id: string; role: ModelRole; name: string; description: string; 
 /**

@@ -11,6 +11,7 @@ import { groupByDay, rowTitle } from "./group";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
+import { NewNoteChoices } from "../session/NewNoteChoices";
 
 export type { RecordingNow };
 
@@ -136,9 +137,14 @@ export function Home({
 
   const record = async () => {
     setStarting(true);
-    const result = await commands.startRecording();
-    setStarting(false);
-    setNotice(result.status === "error" ? { tone: "negative", text: sentence(result.error) } : null);
+    try {
+      const result = await commands.startRecording();
+      setNotice(result.status === "error" ? { tone: "negative", text: sentence(result.error) } : null);
+      return result.status === "ok";
+    } catch {
+      setNotice({ tone: "negative", text: "Could not start recording." });
+      return false;
+    } finally { setStarting(false); }
   };
 
   const missing = readiness ? missingPreconditions(readiness) : "";
@@ -155,12 +161,15 @@ export function Home({
             Longhand
           </span>
           {readiness && !recording && (
+            <>
+            <NewNoteChoices disabled={starting || !readiness.armed} onStart={record} />
             <Button ref={newNote} prominent disabled={starting || !readiness.armed} onClick={() => void record()}>
               <span className="inline-flex items-center gap-1.5">
                 <PlusIcon className="-ml-0.5 size-3.5" />
                 New Note
               </span>
             </Button>
+            </>
           )}
         </header>
       <div className="flex min-h-0 flex-1 overflow-hidden bg-pane">
