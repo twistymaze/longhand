@@ -36,6 +36,16 @@ Docs-only changes need no PR. Commit and push them directly on `main`; CI costs 
 
 Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, watch it until CI passes.
 
+### Local recognition checks
+
+Keep real-model route matrices, paced recording tests, and long-audio tests local and opt-in. Do not add them to normal CI. Run the applicable local checks when capture, preprocessing, transcription, speaker recognition, routing, result reuse, or publication code changes. Keep audio, model paths, and raw results outside tracked files.
+
+Use a short excerpt to diagnose a failure. Before completing a processing change, run the affected model and route combinations on at least five minutes of real audio. For changes to live processing, also use input paced at recording speed. For changes to checkpoints, restarts, or long-session state, add a test that crosses the affected duration boundary. Record the source duration, input pace, models, runtime, coverage, and result. A compressed-input stress test does not establish real-time performance.
+
+Normal CI runs fast synthetic tests and a small public-audio test of the installed helper. That test checks package dependencies and native execution; it does not run the full model matrix or establish recognition quality. The recorder soak remains an explicit workflow-dispatch option.
+
+The [recognition timing reference](reference/recognition-timings-2026-09-27.md) records the initial route measurements and their limits. Add a dated result when later processing changes need comparison. Keep earlier results identifiable by their build and test conditions.
+
 ## After a merge
 
 Offer cleanup as the next step and ask before starting. Use the blocking question tool when available, with "Clean up now" recommended; otherwise ask in chat. Compound Engineering skills stop at the merge report, so make this offer explicitly.
