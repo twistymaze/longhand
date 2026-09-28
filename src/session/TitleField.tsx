@@ -7,7 +7,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { commands } from "../bindings";
 import { sentence } from "../processing/describe";
 
-export type Notice = { tone: "caution" | "negative"; text: string };
+/// `settings` shows an "Open Settings…" button, when the fix is in Settings.
+export type Notice = { tone: "caution" | "negative"; text: string; settings?: boolean };
 
 /// Rename a session, and say what the user must know about the result:
 /// an error, or a folder that kept its old name. Null when all is well.

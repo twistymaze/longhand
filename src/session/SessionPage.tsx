@@ -321,12 +321,12 @@ export function SessionPage({
 
   const again = useTranscribeAgain({
     sessionId: id,
-    noteModel: detail?.asr_model ?? null,
+    available: phase === "saved" && !unavailable && !regenerating,
     onQueued: () => {
       setNotice(null);
       changed();
     },
-    onFailed: (text) => setNotice({ tone: "negative", text }),
+    onFailed: (refusal) => setNotice({ tone: "negative", text: refusal.message, settings: refusal.in_settings }),
   });
 
   // The inputs are read each time the menu opens, because a microphone can
@@ -570,12 +570,17 @@ export function SessionPage({
             </p>
           ))}
           {notice && (
-            <p
-              role="status"
-              className={`mt-2 text-[0.85rem] ${notice.tone === "caution" ? "text-caution" : "text-negative"}`}
-            >
-              {notice.text}
-            </p>
+            <div className="mt-2 flex items-center gap-2.5">
+              <p
+                role="status"
+                className={`min-w-0 text-[0.85rem] ${notice.tone === "caution" ? "text-caution" : "text-negative"}`}
+              >
+                {notice.text}
+              </p>
+              {notice.settings && (
+                <Button onClick={() => void commands.openSettings()}>Open Settings…</Button>
+              )}
+            </div>
           )}
           {!notice && againFailed && (
             <p role="status" className="mt-2 text-[0.85rem] text-negative" title={detail?.transcribe_again_error ?? undefined}>
