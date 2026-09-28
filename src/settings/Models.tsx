@@ -9,7 +9,7 @@ import {
 } from "../bindings";
 import { sentence } from "../processing/describe";
 import { RecognitionOptions, recognitionDefaults } from "./RecognitionOptions";
-import { Button, ErrorText, Group, Pane, Row, formatBytes } from "./ui";
+import { Button, ErrorText, Group, Pane, Row, ProgressBar, formatBytes } from "./ui";
 
 export const roleLabel: Record<ModelRole, string> = {
   recognition: "Speech recognition",
@@ -41,6 +41,7 @@ export function Models({
   const saveQueue = useRef(Promise.resolve());
   const saveVersion = useRef(0);
   const [saving, setSaving] = useState(false);
+  const [savingModel, setSavingModel] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const remove = async (id: string) => {
@@ -62,6 +63,7 @@ export function Models({
   const apply = (next: ExecutionSpec) => {
     const version = ++saveVersion.current;
     setSaving(true);
+    setSavingModel(next.config.asr_model);
     setError(null);
     saveQueue.current = saveQueue.current.then(async () => {
       if (version !== saveVersion.current) return;
@@ -102,6 +104,23 @@ export function Models({
   const active = Object.values(live).some(
     (v) => v.kind === "progress" || v.kind === "verifying",
   );
+  const modelActivity = (m: ModelStatus) => {
+    const ids = new Set([m.id]);
+    if (spec?.config.asr_model === m.id) for (const artifact of spec.artifacts) ids.add(artifact.id);
+    const updates = [...ids].map((id) => live[id]).filter(Boolean);
+    const progress = updates.filter((u): u is Extract<DownloadUpdate, { kind: "progress" }> => u.kind === "progress");
+    if (progress.length) {
+      const downloaded = progress.reduce((n, u) => n + u.downloaded, 0);
+      const total = progress.reduce((n, u) => n + u.total, 0);
+      return <div className="grid gap-2 text-[0.85rem] text-accent"><span>Downloading… {formatBytes(downloaded)} of {formatBytes(total)}</span><ProgressBar fraction={total ? downloaded / total : 0} /></div>;
+    }
+    const failed = updates.find((u) => u.kind === "failed");
+    if (failed?.kind === "failed") return <p className="text-[0.85rem] text-negative">{failed.message}</p>;
+    const message = updates.some((u) => u.kind === "verifying") ? "Checking download…"
+      : saving && savingModel === m.id ? "Preparing model…"
+      : m.state.state === "downloading" || settings.pending_recognition?.asr_model === m.id ? "Downloading required models…" : null;
+    return message && <p role="status" className="text-[0.85rem] text-accent">{message}</p>;
+  };
   const modelAction = (m: ModelStatus) =>
     m.state.state !== "present" ? null : deleting === m.id ? (
       <>
@@ -123,8 +142,7 @@ export function Models({
   return (
     <Pane title="Transcription">
       <p className="text-[0.85rem] text-label-secondary">
-        New notes use these choices. You can change them for one note before
-        recording.
+        New notes use these choices.
       </p>
       {settings.pending_recognition && (
         <p role="status" className="px-4 pt-3">
@@ -140,6 +158,7 @@ export function Models({
         onResolved={setSpec}
         onChanged={apply}
         modelAction={modelAction}
+        modelActivity={modelActivity}
       />
       <Group header="Downloads">
         {saving && (

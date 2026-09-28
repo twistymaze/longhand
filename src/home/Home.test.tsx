@@ -83,7 +83,7 @@ const row = (name: string) =>
   screen.getByRole("option", { name: new RegExp(name) });
 
 describe("Home", () => {
-  test("a new note offers recognition choices before recording", () => {
+  test("a new note starts without a separate recognition chooser", () => {
     mockTauri();
     render(
       <Home
@@ -105,8 +105,9 @@ describe("Home", () => {
       />,
     );
     expect(
-      screen.getByRole("button", { name: "Choices for next note…" }),
-    ).toBeTruthy();
+      screen.queryByRole("button", { name: "Choices for next note…" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "New Note" })).toBeTruthy();
   });
   test("with no sessions, shows the line that names the shortcut and says it starts a new note", () => {
     mockTauri();

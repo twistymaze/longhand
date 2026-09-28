@@ -53,11 +53,13 @@ export function RecognitionModelPicker({
   value,
   onChange,
   modelAction,
+  modelActivity,
 }: {
   models: ModelStatus[];
   value: string;
   onChange: (id: string) => void;
   modelAction?: (model: ModelStatus) => ReactNode;
+  modelActivity?: (model: ModelStatus) => ReactNode;
 }) {
   const groupId = useId();
   const choices = models
@@ -79,6 +81,7 @@ export function RecognitionModelPicker({
           const nativeSpeakers =
             m.speaker_preferences?.after_stop.includes("integrated");
           const selected = m.id === value;
+          const activity = modelActivity?.(m);
           return (
             <div
               key={m.id}
@@ -166,6 +169,7 @@ export function RecognitionModelPicker({
                   </span>
                 </span>
               </button>
+              {activity && <div className="px-3 pb-2">{activity}</div>}
               {modelAction && (
                 <div className="flex justify-end gap-2 px-2.5 pb-3">
                   {modelAction(m)}

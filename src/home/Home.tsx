@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   commands,
   type Readiness,
-  type RecognitionConfig,
   type SessionEntry,
 } from "../bindings";
 import {
@@ -21,7 +20,6 @@ import { groupByDay, rowTitle } from "./group";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
-import { NewNoteChoices } from "../session/NewNoteChoices";
 
 export type { RecordingNow };
 
@@ -175,10 +173,10 @@ export function Home({
     return () => window.removeEventListener("keydown", navigateFromPage);
   }, [active, order, selected?.id, renamingId, deletion.dialog]);
 
-  const record = async (config: RecognitionConfig | null = null) => {
+  const record = async () => {
     setStarting(true);
     try {
-      const result = await commands.startRecording(config);
+      const result = await commands.startRecording(null);
       setNotice(
         result.status === "error"
           ? { tone: "negative", text: sentence(result.error) }
@@ -211,10 +209,6 @@ export function Home({
         </span>
         {readiness && !recording && (
           <>
-            <NewNoteChoices
-              disabled={starting || !readiness.armed}
-              onStart={record}
-            />
             <Button
               ref={newNote}
               prominent

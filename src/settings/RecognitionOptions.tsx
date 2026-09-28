@@ -42,12 +42,14 @@ export function RecognitionOptions({
   onResolved,
   onChanged,
   modelAction,
+  modelActivity,
 }: {
   models: ModelStatus[];
   initial: RecognitionConfig;
   onResolved: (spec: ExecutionSpec | null) => void;
   onChanged?: (spec: ExecutionSpec) => void;
   modelAction?: (model: ModelStatus) => ReactNode;
+  modelActivity?: (model: ModelStatus) => ReactNode;
 }) {
   const [draft, setDraft] = useState(initial);
   const edited = useRef(false);
@@ -267,6 +269,7 @@ export function RecognitionOptions({
           <RecognitionModelPicker
             models={models}
             modelAction={modelAction}
+            modelActivity={modelActivity}
             value={draft.asr_model}
             onChange={(asr_model) => {
               if (asr_model === draft.asr_model) return;

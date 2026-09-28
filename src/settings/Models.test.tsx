@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   ExecutionSpec,
+  DownloadUpdate,
   ModelStatus,
   RecognitionConfig,
   Settings,
@@ -107,6 +108,7 @@ function open(
   handlers: Record<string, (args: Record<string, unknown>) => unknown> = {},
   initial = settings,
   catalog = models,
+  live: Record<string, DownloadUpdate> = {},
 ) {
   const tauri = mockTauri({
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
@@ -117,7 +119,7 @@ function open(
   render(
     <Models
       models={catalog}
-      live={{}}
+      live={live}
       settings={initial}
       onSettings={() => {}}
       actions={{
@@ -496,4 +498,24 @@ test("opening settings preserves a saved speaker model override", async () => {
   expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(
     false,
   );
+});
+
+
+test("model download progress appears beside that model", async () => {
+  open({}, settings, models, { [offline]: { kind: "progress", downloaded: 25_000_000, total: 100_000_000 } });
+  await ready();
+  const row = screen.getByRole("radio", { name: "MOSS" }).parentElement!;
+  expect(row.textContent).toContain("Downloading… 25 MB of 100 MB");
+  expect(row.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("25");
+});
+
+test("choosing a model gives immediate feedback while its request is pending", async () => {
+  let release: (s: Settings) => void = () => {};
+  const { user } = open({set_recognition_defaults: () => new Promise<Settings>(resolve => { release = resolve; })});
+  await ready();
+  await user.click(screen.getByRole("radio", { name: "MOSS" }));
+  await screen.findByText("Preparing model…");
+  expect(screen.getByRole("radio", { name: "MOSS" }).parentElement!.textContent).toContain("Preparing model…");
+  await act(async () => release({...settings, asr_model: offline}));
+  await waitFor(() => expect(screen.queryByText("Preparing model…")).toBeNull());
 });

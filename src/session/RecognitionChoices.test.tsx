@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import type { ExecutionSpec, RecognitionConfig } from "../bindings";
 import { mockTauri } from "../test/tauri";
 import { Home } from "../home/Home";
-import { NewNoteChoices } from "./NewNoteChoices";
 import { useTranscribeAgain } from "./TranscribeAgain";
 
 const config: RecognitionConfig = {
@@ -69,152 +68,6 @@ function Replacement() {
     </>
   );
 }
-
-test("one-note choices pass their config directly to capture without global state", async () => {
-  const tauri = mockTauri({
-    ...handlers,
-    set_recognition_override: () => null,
-  });
-  let started = false;
-  render(
-    <NewNoteChoices
-      disabled={false}
-      onStart={async (selected) => {
-        started = true;
-        expect(selected).toEqual(config);
-        return true;
-      }}
-    />,
-  );
-  const user = userEvent.setup();
-  await user.click(
-    screen.getByRole("button", { name: "Choices for next note…" }),
-  );
-  const record = await screen.findByRole("button", {
-    name: "Record this note",
-  });
-  await waitFor(() =>
-    expect((record as HTMLButtonElement).disabled).toBe(false),
-  );
-  await user.click(record);
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(started).toBe(true);
-  expect(
-    tauri.calls
-      .filter((c) => c.cmd === "set_recognition_override")
-      .map((c) => c.args),
-  ).toEqual([]);
-  expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(
-    false,
-  );
-});
-
-test("cancel before recording changes neither defaults nor override", async () => {
-  const tauri = mockTauri(handlers);
-  render(
-    <NewNoteChoices
-      disabled={false}
-      onStart={async () => {
-        throw new Error("must not record");
-      }}
-    />,
-  );
-  const user = userEvent.setup();
-  await user.click(
-    screen.getByRole("button", { name: "Choices for next note…" }),
-  );
-  await user.click(await screen.findByRole("button", { name: "Cancel" }));
-  expect(tauri.calls.some((c) => c.cmd.startsWith("set_"))).toBe(false);
-});
-
-test("one-note choices can download their resolved artifacts before recording", async () => {
-  const tauri = mockTauri({
-    ...handlers,
-    download_recognition_artifacts: () => null,
-  });
-  render(<NewNoteChoices disabled={false} onStart={async () => false} />);
-  const user = userEvent.setup();
-  await user.click(
-    screen.getByRole("button", { name: "Choices for next note…" }),
-  );
-  const download = await screen.findByRole("button", {
-    name: "Download required models",
-  });
-  await waitFor(() =>
-    expect((download as HTMLButtonElement).disabled).toBe(false),
-  );
-  await user.click(download);
-  expect(
-    tauri.calls.find((c) => c.cmd === "download_recognition_artifacts")?.args
-      .spec,
-  ).toEqual(execution(config));
-  expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(
-    false,
-  );
-});
-
-test("recording stays disabled until the exact native artifact finishes downloading", async () => {
-  let present = false;
-  const artifact = {
-    id: "native-artifact",
-    filename: "native.gguf",
-    sha256: "hash",
-    revision: "revision",
-    url: "https://example.com/native",
-    size_bytes: 10,
-    format: "gguf",
-  };
-  const tauri = mockTauri({
-    ...handlers,
-    resolve_recognition: ({ config }) => ({
-      ...execution(config as RecognitionConfig),
-      artifacts: [artifact],
-    }),
-    model_statuses: () => [
-      ...handlers.model_statuses(),
-      {
-        id: artifact.id,
-        name: "Native artifact",
-        role: "recognition_artifact",
-        state: present
-          ? { state: "present" }
-          : { state: "absent", partial_bytes: 0 },
-      },
-    ],
-    download_recognition_artifacts: () => null,
-  });
-  render(
-    <NewNoteChoices
-      disabled={false}
-      onStart={async () => {
-        throw new Error("not requested");
-      }}
-    />,
-  );
-  const user = userEvent.setup();
-  await user.click(
-    screen.getByRole("button", { name: "Choices for next note…" }),
-  );
-  expect(
-    await screen.findByText("1 required model file is not downloaded."),
-  ).toBeTruthy();
-  const record = screen.getByRole("button", { name: "Record this note" });
-  expect((record as HTMLButtonElement).disabled).toBe(true);
-  await user.click(
-    screen.getByRole("button", { name: "Download required models" }),
-  );
-  expect((record as HTMLButtonElement).disabled).toBe(true);
-  present = true;
-  await act(() =>
-    tauri.emit("model-download-event", {
-      model_id: artifact.id,
-      update: { kind: "completed" },
-    }),
-  );
-  await waitFor(() =>
-    expect((record as HTMLButtonElement).disabled).toBe(false),
-  );
-});
 
 test("replacement previews retranscription and needs explicit consent before queuing", async () => {
   const preview = {
@@ -355,40 +208,7 @@ test("speaker-only preview uses a reprocessing dialog title", async () => {
   expect(screen.queryByRole("checkbox")).toBeNull();
 });
 
-test("failed atomic start retains choices and cannot affect a later default start", async () => {
-  const tauri = mockTauri(handlers);
-  let attempts = 0;
-  render(
-    <NewNoteChoices
-      disabled={false}
-      onStart={async (selected) => {
-        expect(selected).toEqual(config);
-        attempts += 1;
-        return false;
-      }}
-    />,
-  );
-  const user = userEvent.setup();
-  await user.click(
-    screen.getByRole("button", { name: "Choices for next note…" }),
-  );
-  const button = await screen.findByRole("button", {
-    name: "Record this note",
-  });
-  await waitFor(() =>
-    expect((button as HTMLButtonElement).disabled).toBe(false),
-  );
-  await user.click(button);
-  expect(
-    await screen.findByText(
-      "Could not start recording. Your app defaults are unchanged.",
-    ),
-  ).toBeTruthy();
-  expect(attempts).toBe(1);
-  expect(tauri.calls.some((call) => call.cmd.startsWith("set_"))).toBe(false);
-});
-
-test("Home sends the selected configuration in the recording command", async () => {
+test("Home starts immediately with the saved default configuration", async () => {
   const tauri = mockTauri({ ...handlers, start_recording: () => "new-note" });
   render(
     <Home
@@ -410,19 +230,10 @@ test("Home sends the selected configuration in the recording command", async () 
     />,
   );
   const user = userEvent.setup();
-  await user.click(
-    screen.getByRole("button", { name: "Choices for next note…" }),
-  );
-  const button = await screen.findByRole("button", {
-    name: "Record this note",
-  });
-  await waitFor(() =>
-    expect((button as HTMLButtonElement).disabled).toBe(false),
-  );
-  await user.click(button);
+  await user.click(screen.getByRole("button", { name: "New Note" }));
   expect(
     tauri.calls.find((call) => call.cmd === "start_recording")?.args,
-  ).toEqual({ config });
+  ).toEqual({ config: null });
   expect(
     tauri.calls.some((call) => call.cmd === "set_recognition_override"),
   ).toBe(false);
