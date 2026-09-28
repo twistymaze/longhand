@@ -242,31 +242,16 @@ fn transcribe_route(
             .map(std::path::PathBuf::from);
         if let Some(home) = home {
             let doc = session_core::generation::manifest(&home)?;
-            if crate::reprocess::reusable(&home, &doc, spec)? {
-                let reference = doc
-                    .recognition_artifact
-                    .as_ref()
-                    .ok_or_else(|| failed("recognition artifact is absent"))?;
-                let source = doc
-                    .result_generation
-                    .as_ref()
-                    .map(|g| g.directory(&home))
-                    .transpose()?
-                    .unwrap_or(home);
-                let header = session_core::recognition::read_artifact(
-                    &source.join(&reference.filename),
-                    reference,
-                    |block| {
-                        for mut row in block.rows {
-                            row.id.scope.generation = generation.clone();
-                            row.speaker = None;
-                            row.speaker_finality = Finality::Final;
-                            result.rows.push(row);
-                        }
-                        Ok(())
-                    },
-                )
-                .map_err(|e| failed(e.to_string()))?;
+            let mut rows = Vec::new();
+            if let Some(header) = crate::reprocess::read_reusable(&home, &doc, spec, |block| {
+                for mut row in block.rows {
+                    row.id.scope.generation = generation.clone();
+                    row.speaker = None;
+                    row.speaker_finality = Finality::Final;
+                    rows.push(row);
+                }
+            })? {
+                result.rows = rows;
                 result.coverage = header.coverage;
                 if route != Route::Off {
                     join_separate(&mut result.rows, &result.speakers);

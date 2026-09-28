@@ -46,16 +46,26 @@ pub(crate) fn reusable(
     doc: &SessionDoc,
     spec: &ExecutionSpec,
 ) -> Result<bool, StageError> {
+    Ok(read_reusable(home, doc, spec, |_| {})?.is_some())
+}
+
+/// Callers retain visited rows only when the returned header confirms reuse.
+pub(crate) fn read_reusable(
+    home: &Path,
+    doc: &SessionDoc,
+    spec: &ExecutionSpec,
+    mut visit: impl FnMut(recognition::OutputBlock),
+) -> Result<Option<recognition::ArtifactHeader>, StageError> {
     let (Some(reference), Some(audio)) = (&doc.recognition_artifact, &doc.recognition_audio) else {
-        return Ok(false);
+        return Ok(None);
     };
     if audio.len() != doc.segments.len() {
-        return Ok(false);
+        return Ok(None);
     }
     for segment in &doc.segments {
         if audio.get(&segment.audio) != Some(&recognition::file_digest(&home.join(&segment.audio))?)
         {
-            return Ok(false);
+            return Ok(None);
         }
     }
     let dir = doc
@@ -67,10 +77,11 @@ pub(crate) fn reusable(
     let mut timed = true;
     let header = recognition::read_artifact(&dir.join(&reference.filename), reference, |b| {
         timed &= b.timed_asr();
+        visit(b);
         Ok(())
     })
     .map_err(|e| StageError::Failed(e.to_string()))?;
     let transcript = std::fs::read(home.join("transcript.md"))?;
     let next = durable::spec_fingerprints(header.fingerprints.audio.clone(), spec)?;
-    Ok(timed && header.reuse(&next, &transcript) != Reuse::TranscribeAgain)
+    Ok((timed && header.reuse(&next, &transcript) != Reuse::TranscribeAgain).then_some(header))
 }
