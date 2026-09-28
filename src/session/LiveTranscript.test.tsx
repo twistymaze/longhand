@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef } from "react";
@@ -37,7 +37,135 @@ function sized(el: HTMLElement, scrollHeight: () => number, clientHeight: number
   Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
 }
 
+function controlledRecognitionSchedule() {
+  const timers: {
+    setTimeout: (callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => ReturnType<typeof setTimeout>;
+    clearTimeout: (id: ReturnType<typeof setTimeout> | number | undefined) => void;
+  } = globalThis;
+  let frame: FrameRequestCallback | undefined;
+  let timer: (() => void) | undefined;
+  const timerId = 456 as unknown as ReturnType<typeof setTimeout>;
+  const originalSetTimeout = timers.setTimeout;
+  const originalClearTimeout = timers.clearTimeout;
+  const request = spyOn(globalThis, "requestAnimationFrame").mockImplementation((next) => {
+    frame = next;
+    return 123;
+  });
+  const cancel = spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => {});
+  const setTimer = spyOn(timers, "setTimeout").mockImplementation((callback, delay, ...args) => {
+    if (delay !== 100) return originalSetTimeout(callback, delay, ...args);
+    timer = () => callback(...args);
+    return timerId;
+  });
+  const clearTimer = spyOn(timers, "clearTimeout").mockImplementation((id) => {
+    if (id !== timerId) originalClearTimeout(id);
+  });
+  return {
+    request, cancel, setTimer, clearTimer, timerId,
+    frame: () => frame?.(0),
+    timer: () => timer?.(),
+    restore: () => {
+      request.mockRestore();
+      cancel.mockRestore();
+      setTimer.mockRestore();
+      clearTimer.mockRestore();
+    },
+  };
+}
+
 describe("LiveTranscript", () => {
+  test("recognition still updates when a hidden window does not run animation frames", async () => {
+    const tauri = mockLive();
+    render(<Harness />);
+    await screen.findByText("The transcript shows here as people speak.");
+    const schedule = controlledRecognitionSchedule();
+    try {
+      await act(() => tauri.emit("live-recognition-event", {
+        session_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch", revision: 1,
+        rows: [{ start_sample: 0, end_sample: 16000, text: "Hidden window words", speaker: null, text_final: true, speaker_final: true }],
+      }));
+      expect(screen.queryByText("Hidden window words")).toBeNull();
+      await act(async () => schedule.timer());
+      expect(screen.getByText("Hidden window words")).toBeTruthy();
+      expect(schedule.cancel).toHaveBeenCalledWith(123);
+      expect(schedule.clearTimer).toHaveBeenCalledWith(schedule.timerId);
+    } finally {
+      schedule.restore();
+    }
+  });
+
+  test("a burst of recognition events waits for one frame and retains every word", async () => {
+    const tauri = mockLive();
+    render(<Harness />);
+    await screen.findByText("The transcript shows here as people speak.");
+    const schedule = controlledRecognitionSchedule();
+    try {
+      await act(async () => {
+        for (let i = 0; i < 1000; i++) await tauri.emit("live-recognition-event", {
+          session_id: "rec", generation: "g", epoch: 0, key: `word${i}`, phase: "patch", revision: 1,
+          rows: [{ start_sample: i * 16000, end_sample: (i + 1) * 16000, text: `word${i}`, speaker: "g:0:0:1", text_final: true, speaker_final: true }],
+        });
+      });
+      expect(schedule.request).toHaveBeenCalledTimes(1);
+      expect(schedule.setTimer).toHaveBeenCalledWith(expect.any(Function), 100);
+      expect(screen.queryByText(/word999/)).toBeNull();
+      await act(async () => schedule.frame());
+      const words = screen.getAllByTestId("live-part").flatMap((part) => part.lastElementChild?.textContent?.split(" ") ?? []);
+      expect(words).toEqual(Array.from({ length: 1000 }, (_, i) => `word${i}`));
+      expect(schedule.cancel).toHaveBeenCalledWith(123);
+      expect(schedule.clearTimer).toHaveBeenCalledWith(schedule.timerId);
+    } finally {
+      schedule.restore();
+    }
+  });
+
+  test("switching notes cancels queued recognition and does not show it in the next note", async () => {
+    const tauri = mockLive();
+    const { rerender } = render(<Harness />);
+    await screen.findByText("The transcript shows here as people speak.");
+    const schedule = controlledRecognitionSchedule();
+    try {
+      await act(() => tauri.emit("live-recognition-event", {
+        session_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch", revision: 1,
+        rows: [{ start_sample: 0, end_sample: 16000, text: "Previous note", speaker: null, text_final: true, speaker_final: true }],
+      }));
+      rerender(<Harness id="next" />);
+      await act(async () => { schedule.frame(); schedule.timer(); });
+      expect(schedule.cancel).toHaveBeenCalledWith(123);
+      expect(schedule.clearTimer).toHaveBeenCalledWith(schedule.timerId);
+      expect(screen.queryByText("Previous note")).toBeNull();
+    } finally {
+      schedule.restore();
+    }
+  });
+
+  test("a status event flushes an earlier recognition correction and cancels both callbacks", async () => {
+    const initial = {
+      session_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch" as const, revision: 1,
+      rows: [{ start_sample: 0, end_sample: 16000, text: "Earlier words", speaker: "g:0:0:1", text_final: true, speaker_final: true }],
+    };
+    const tauri = mockLive({ ...empty, recognition: [initial] });
+    render(<Harness />);
+    await screen.findByText("Earlier words");
+    const schedule = controlledRecognitionSchedule();
+    try {
+      await act(() => tauri.emit("live-recognition-event", {
+        ...initial, revision: 2, rows: [{ ...initial.rows[0], text: "Corrected words", speaker: "g:0:0:2" }],
+      }));
+      expect(screen.queryByText("Corrected words")).toBeNull();
+      await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "paused" }));
+      expect(screen.getByText("Corrected words")).toBeTruthy();
+      expect(screen.getByText("Speaker labels updated.")).toBeTruthy();
+      expect(screen.getByText("Live transcript paused. The missing part is transcribed after you stop.")).toBeTruthy();
+      expect(schedule.cancel).toHaveBeenCalledWith(123);
+      expect(schedule.clearTimer).toHaveBeenCalledWith(schedule.timerId);
+      await act(async () => { schedule.frame(); schedule.timer(); });
+      expect(screen.getAllByText("Corrected words")).toHaveLength(1);
+    } finally {
+      schedule.restore();
+    }
+  });
+
   test("native interim batches publish at End and final corrections announce once", async () => {
     const tauri = mockLive();
     render(<Harness />);
