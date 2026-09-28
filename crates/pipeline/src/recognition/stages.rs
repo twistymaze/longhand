@@ -235,7 +235,7 @@ fn transcribe_route(
         coverage_limitations: limitations,
     };
     let pending = lock(store).result_state(id, "pending-snapshot")?.is_some();
-    if pending && !matches!(route, Route::Integrated | Route::CombinedNemo) {
+    if pending {
         let home = lock(store)
             .session(id)?
             .and_then(|r| r.home_path)
