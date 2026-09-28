@@ -28,11 +28,11 @@ async resolveRecognition(config: RecognitionConfig) : Promise<Result<ExecutionSp
 }
 },
 /**
- * Fetch the exact artifacts of a saved configuration.
+ * Download the missing files of the bundle of `asr_model` (R10).
  */
-async downloadRecognitionArtifacts(spec: ExecutionSpec) : Promise<Result<null, string>> {
+async downloadModelBundle(asrModel: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_recognition_artifacts", { spec }) };
+    return { status: "ok", data: await TAURI_INVOKE("download_model_bundle", { asrModel }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -348,38 +348,13 @@ async speakerModelsStatus() : Promise<SpeakerModelsStatus> {
     return await TAURI_INVOKE("speaker_models_status");
 },
 /**
- * Delete a downloaded recognition model to recover disk space (R6). The
- * app refuses a model that it still needs (KTD12).
+ * Delete a downloaded transcription model, and each supporting model that
+ * no kept bundle needs (R8). The app refuses a model that it still needs
+ * (KTD12).
  */
 async deleteModel(modelId: string) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("delete_model", { modelId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * The data of the "Delete models…" dialog: the downloaded models with the
- * `unused` flag, the count of unfinished notes, and why "Delete all" is
- * off (KTD4).
- */
-async modelDeletionSummary() : Promise<Result<ModelDeletionSummary, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("model_deletion_summary") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
- * Delete the downloaded models of `scope` (KTD5). Returns the models that
- * the app could not delete. The `all` scope refuses while a recording, a
- * download, or a transcription is in progress.
- */
-async deleteModels(scope: DeleteScope) : Promise<Result<ModelDeleteFailure[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_models", { scope }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -842,31 +817,6 @@ export type CredentialStatus = { kind: "present"; host: string; length: number; 
  */
 { kind: "needs_unlock"; message: string } | { kind: "failed"; message: string }
 /**
- * Why "Delete all" is off (R6).
- */
-export type DeleteAllBlock = 
-/**
- * A recording is in progress, or the live worker still saves its
- * last part after Stop.
- */
-"recording" | "download" | 
-/**
- * A note is transcribing.
- */
-"transcription"
-/**
- * Which downloaded models a bulk delete removes (KTD5).
- */
-export type DeleteScope = 
-/**
- * The models that [`delete_refusal`] allows at the time of the call.
- */
-"unused" | 
-/**
- * Every downloaded model, also the models in use.
- */
-"all"
-/**
  * Why a delete did not complete (R8, R33). Nothing after the failed step
  * changed.
  */
@@ -898,15 +848,6 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
  */
 { kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
-/**
- * A downloaded model, for the delete dialog (R7).
- */
-export type DownloadedModel = { id: string; name: string; size_bytes: number; 
-/**
- * The app can delete the model now without an override:
- * [`delete_refusal`] gives no reason.
- */
-unused: boolean }
 /**
  * The result of a model list request, for the Summaries pane (KTD2). It
  * has every `ModelList` outcome, and `NotRequested` when the request gate
@@ -1040,23 +981,6 @@ export type MicrophoneList = { default_id: string | null;
  * By name. Inputs with the same name keep the order of the device list.
  */
 inputs: MicrophoneInput[] }
-/**
- * A model that a bulk delete could not delete (R10).
- */
-export type ModelDeleteFailure = { id: string; name: string; message: string }
-/**
- * The data of the delete dialog (KTD4).
- */
-export type ModelDeletionSummary = { models: DownloadedModel[]; 
-/**
- * The notes that are not finished. They wait for the models after
- * "Delete all" (R8).
- */
-unfinished_notes: number; 
-/**
- * Why "Delete all" is off, or `None` when it is available.
- */
-delete_all_block: DeleteAllBlock | null }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "recognition_artifact" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
@@ -1077,7 +1001,20 @@ recommended: boolean; size_bytes: number;
  * Needed by the current settings: the selected recognition model and
  * both diarization weights.
  */
-required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo; assessment: Assessment | null }
+required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo; assessment: Assessment | null; 
+/**
+ * The artifact ids of the model bundle (KTD6). A model that is not a
+ * transcription model has only its own id.
+ */
+bundle: string[]; 
+/**
+ * The total size of the bundle.
+ */
+bundle_size_bytes: number; 
+/**
+ * Every file of the bundle is on disk.
+ */
+bundle_complete: boolean }
 /**
  * What a notes save did.
  */

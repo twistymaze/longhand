@@ -25,7 +25,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::get_settings,
             commands::settings::set_recognition_defaults,
             commands::models::resolve_recognition,
-            commands::models::download_recognition_artifacts,
+            commands::models::download_model_bundle,
             commands::settings::login_item_status,
             commands::settings::set_login_item,
             commands::settings::open_login_item_settings,
@@ -59,8 +59,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::models::cancel_model_downloads,
             commands::models::speaker_models_status,
             commands::models::delete_model,
-            commands::models::model_deletion_summary,
-            commands::models::delete_models,
             commands::readiness::readiness,
             commands::readiness::system_audio_permission,
             commands::readiness::request_system_audio_permission,
@@ -247,6 +245,9 @@ pub fn run() {
             // only when no other instance can be recording.
             if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
                 capture.recover_at_launch();
+                // After the recovery, so that the notes it recovers keep
+                // their models (R9).
+                commands::models::remove_unneeded_supporting_models(&handle);
             }
             let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
             app.manage(std::sync::Arc::clone(&alerts));

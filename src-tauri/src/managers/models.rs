@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use models::download::{Event as DownloadProgress, partial_path};
 use models::{CancellationToken, CatalogModel, Limits, ModelKind, Outcome};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use session_core::{SessionRecord, SessionState};
 use specta::Type;
 use tauri::{AppHandle, Manager};
@@ -71,6 +71,13 @@ pub struct ModelStatus {
     pub revision: String,
     pub licence: LicenceInfo,
     pub assessment: Option<models::catalog::Assessment>,
+    /// The artifact ids of the model bundle (KTD6). A model that is not a
+    /// transcription model has only its own id.
+    pub bundle: Vec<String>,
+    /// The total size of the bundle.
+    pub bundle_size_bytes: u64,
+    /// Every file of the bundle is on disk.
+    pub bundle_complete: bool,
 }
 
 /// The speaker-detection weights as one item (R7).
@@ -213,172 +220,36 @@ fn is_unfinished(session: &SessionRecord) -> bool {
     !matches!(session.state, SessionState::Saved | SessionState::Discarded)
 }
 
-/// The state that the delete rules read (KTD4, KTD5).
-#[derive(Debug, Clone, Copy)]
-pub struct DeleteInputs<'a> {
-    pub settings: &'a Settings,
-    /// The model of the live worker. It stays set while the live worker
-    /// saves its last part after Stop.
-    pub live_model: Option<&'a str>,
-    pub sessions: &'a [SessionRecord],
-    /// A recording is in progress.
-    pub recording: bool,
-    /// A model download is in progress.
-    pub downloading: bool,
-}
-
-/// Why "Delete all" is off (R6).
-#[derive(Serialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DeleteAllBlock {
-    /// A recording is in progress, or the live worker still saves its
-    /// last part after Stop.
-    Recording,
-    Download,
-    /// A note is transcribing.
-    Transcription,
-}
-
-impl DeleteAllBlock {
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::Recording => "You can't delete all models while a recording is in progress.",
-            Self::Download => "You can't delete all models while a download is in progress.",
-            Self::Transcription => "You can't delete all models while a note is transcribing.",
-        }
-    }
-}
-
-/// A downloaded model, for the delete dialog (R7).
-#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
-pub struct DownloadedModel {
-    pub id: String,
-    pub name: String,
-    pub size_bytes: u64,
-    /// The app can delete the model now without an override:
-    /// [`delete_refusal`] gives no reason.
-    pub unused: bool,
-}
-
-/// The data of the delete dialog (KTD4).
-#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
-pub struct ModelDeletionSummary {
-    pub models: Vec<DownloadedModel>,
-    /// The notes that are not finished. They wait for the models after
-    /// "Delete all" (R8).
-    pub unfinished_notes: u32,
-    /// Why "Delete all" is off, or `None` when it is available.
-    pub delete_all_block: Option<DeleteAllBlock>,
-}
-
-/// Which downloaded models a bulk delete removes (KTD5).
-#[derive(Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DeleteScope {
-    /// The models that [`delete_refusal`] allows at the time of the call.
-    Unused,
-    /// Every downloaded model, also the models in use.
-    All,
-}
-
-/// A model that a bulk delete could not delete (R10).
-#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
-pub struct ModelDeleteFailure {
-    pub id: String,
-    pub name: String,
-    pub message: String,
-}
-
-/// Why "Delete all" is off now, or `None` (R6, KTD5).
-pub fn delete_all_block(inputs: &DeleteInputs<'_>) -> Option<DeleteAllBlock> {
-    // A session in Capturing is a recording that the capture manager has
-    // started in the store but not yet opened.
-    if inputs.recording
-        || inputs.live_model.is_some()
-        || inputs
-            .sessions
-            .iter()
-            .any(|s| matches!(s.state, SessionState::Capturing))
-    {
-        Some(DeleteAllBlock::Recording)
-    } else if inputs.downloading {
-        Some(DeleteAllBlock::Download)
-    } else if inputs
-        .sessions
+/// The supporting models on disk that no kept bundle contains (KTD7). The
+/// kept bundles are the bundles of the transcription models on disk, of the
+/// selected model, and of the pending model. The caller also applies
+/// [`delete_refusal`] to each result, so that unfinished notes and the live
+/// model keep their files.
+pub fn unneeded_supporting_models(statuses: &[ModelStatus], settings: &Settings) -> Vec<String> {
+    let mut kept_models: Vec<&str> = statuses
         .iter()
-        .any(|s| matches!(s.state, SessionState::Processing { .. }))
-    {
-        Some(DeleteAllBlock::Transcription)
-    } else {
-        None
-    }
-}
-
-/// The downloaded models, with the `unused` flag of [`delete_refusal`].
-fn downloaded(statuses: &[ModelStatus], inputs: &DeleteInputs<'_>) -> Vec<DownloadedModel> {
+        .filter(|s| s.role == ModelRole::Recognition && s.state == ModelState::Present)
+        .map(|s| s.id.as_str())
+        .collect();
+    kept_models.push(&settings.asr_model);
+    kept_models.extend(settings.pending_asr_model.as_deref());
+    kept_models.extend(
+        settings
+            .pending_recognition
+            .as_ref()
+            .map(|c| c.asr_model.as_str()),
+    );
+    let kept: Vec<String> = kept_models
+        .into_iter()
+        .flat_map(models::recognition::bundle)
+        .map(|a| a.id)
+        .collect();
     statuses
         .iter()
-        .filter(|s| s.state == ModelState::Present)
-        .map(|s| DownloadedModel {
-            id: s.id.clone(),
-            name: s.name.clone(),
-            size_bytes: s.size_bytes,
-            unused: delete_refusal(&s.id, inputs.settings, inputs.live_model, inputs.sessions)
-                .is_none(),
-        })
+        .filter(|s| s.role != ModelRole::Recognition && s.state == ModelState::Present)
+        .filter(|s| !kept.contains(&s.id))
+        .map(|s| s.id.clone())
         .collect()
-}
-
-/// The data of the delete dialog (KTD4).
-pub fn deletion_summary(
-    statuses: &[ModelStatus],
-    inputs: &DeleteInputs<'_>,
-) -> ModelDeletionSummary {
-    ModelDeletionSummary {
-        models: downloaded(statuses, inputs),
-        unfinished_notes: inputs
-            .sessions
-            .iter()
-            .filter(|s| is_unfinished(s))
-            .count()
-            .try_into()
-            .unwrap_or(u32::MAX),
-        delete_all_block: delete_all_block(inputs),
-    }
-}
-
-/// Delete the downloaded models of `scope` with `delete` (KTD5). The
-/// `unused` scope applies [`delete_refusal`] again with `inputs`, so a
-/// model that became needed after the summary stays. The `all` scope
-/// refuses while [`delete_all_block`] gives a reason, and otherwise deletes
-/// every downloaded model. A failure does not stop the other deletes; the
-/// result lists the models that `delete` could not delete.
-pub fn delete_by_scope(
-    scope: DeleteScope,
-    statuses: &[ModelStatus],
-    inputs: &DeleteInputs<'_>,
-    mut delete: impl FnMut(&str) -> Result<(), String>,
-) -> Result<Vec<ModelDeleteFailure>, String> {
-    if scope == DeleteScope::All
-        && let Some(block) = delete_all_block(inputs)
-    {
-        return Err(block.message().into());
-    }
-    let failures = downloaded(statuses, inputs)
-        .into_iter()
-        .filter(|m| scope == DeleteScope::All || m.unused)
-        .filter_map(|m| {
-            delete(&m.id).err().map(|message| {
-                log::warn!("could not delete model '{}': {message}", m.id);
-                ModelDeleteFailure {
-                    id: m.id,
-                    name: m.name,
-                    message,
-                }
-            })
-        })
-        .collect();
-    Ok(failures)
 }
 
 /// One status for the speaker-detection weights (R7).
@@ -448,11 +319,6 @@ impl ModelsManager {
             .clone()
     }
 
-    /// Whether a model download is in progress.
-    pub fn is_downloading(&self) -> bool {
-        !self.active().is_empty()
-    }
-
     pub fn statuses(&self, asr_model: &str) -> Vec<ModelStatus> {
         let required: Vec<&str> = models::required_for(asr_model)
             .iter()
@@ -467,31 +333,58 @@ impl ModelsManager {
                     .iter()
                     .map(|m| (m, ModelRole::RecognitionArtifact)),
             )
-            .map(|(m, role)| ModelStatus {
-                speaker_preferences: m.speaker_preferences.clone(),
-                id: m.id.clone(),
-                assessment: m.assessment.clone(),
-                role,
-                name: m.name.clone(),
-                description: m.description.clone(),
-                size_bytes: m.size_bytes,
-                streaming: m.streaming,
-                languages: m.languages.clone(),
-                recommended: m.recommended,
-                required: required.contains(&m.id.as_str()),
-                state: self.state_of(
+            .map(|(m, role)| {
+                let state = self.state_of(
                     m,
                     active.contains_key(&m.id)
                         || active.contains_key(&format!("{}@{}", m.id, m.sha256)),
-                ),
-                repository: m.repository.clone(),
-                revision: m.revision.clone(),
-                licence: LicenceInfo {
-                    name: m.licence.name.clone(),
-                    url: m.licence.url.clone(),
-                    attribution: m.licence.attribution.clone(),
-                },
+                );
+                let bundle = if role == ModelRole::Recognition {
+                    models::recognition::bundle(&m.id)
+                } else {
+                    Vec::new()
+                };
+                let (bundle, bundle_size_bytes, bundle_complete) = if bundle.is_empty() {
+                    (
+                        vec![m.id.clone()],
+                        m.size_bytes,
+                        state == ModelState::Present,
+                    )
+                } else {
+                    (
+                        bundle.iter().map(|a| a.id.clone()).collect(),
+                        bundle.iter().map(|a| a.size_bytes).sum(),
+                        bundle.iter().all(|a| self.artifact_path(a).is_some()),
+                    )
+                };
+                (m, role, state, bundle, bundle_size_bytes, bundle_complete)
             })
+            .map(
+                |(m, role, state, bundle, bundle_size_bytes, bundle_complete)| ModelStatus {
+                    bundle,
+                    bundle_size_bytes,
+                    bundle_complete,
+                    speaker_preferences: m.speaker_preferences.clone(),
+                    id: m.id.clone(),
+                    assessment: m.assessment.clone(),
+                    role,
+                    name: m.name.clone(),
+                    description: m.description.clone(),
+                    size_bytes: m.size_bytes,
+                    streaming: m.streaming,
+                    languages: m.languages.clone(),
+                    recommended: m.recommended,
+                    required: required.contains(&m.id.as_str()),
+                    state,
+                    repository: m.repository.clone(),
+                    revision: m.revision.clone(),
+                    licence: LicenceInfo {
+                        name: m.licence.name.clone(),
+                        url: m.licence.url.clone(),
+                        attribution: m.licence.attribution.clone(),
+                    },
+                },
+            )
             .collect()
     }
 
@@ -568,13 +461,19 @@ impl ModelsManager {
             .collect()
     }
 
-    /// Download immutable snapshot artifacts without replacing catalog files.
-    pub fn start_spec_downloads(
+    /// Download the missing files of the bundle of `asr_model` (KTD5,
+    /// KTD9), except the ids in `skip`, which another download fetches.
+    pub fn start_bundle_downloads(
         self: &Arc<Self>,
         app: &AppHandle,
-        spec: &models::recognition::ExecutionSpec,
+        asr_model: &str,
+        skip: &[String],
     ) -> Result<(), String> {
-        self.start_artifact_downloads(app, &spec.artifacts)
+        let artifacts: Vec<_> = models::recognition::bundle(asr_model)
+            .into_iter()
+            .filter(|a| !skip.contains(&a.id))
+            .collect();
+        self.start_artifact_downloads(app, &artifacts)
     }
 
     fn start_artifact_downloads(
@@ -1155,275 +1054,93 @@ mod tests {
         statuses
     }
 
-    /// The ids of the models that the current choices need.
-    fn required_ids(settings: &Settings) -> Vec<String> {
-        statuses_with(settings, &[])
-            .into_iter()
-            .filter(|s| s.required)
-            .map(|s| s.id)
-            .collect()
-    }
-
-    fn inputs<'a>(settings: &'a Settings, sessions: &'a [SessionRecord]) -> DeleteInputs<'a> {
-        DeleteInputs {
-            settings,
-            live_model: None,
-            sessions,
-            recording: false,
-            downloading: false,
-        }
-    }
+    const SORTFORMER: &str = "sortformer-v2-q80";
+    const NEMOTRON_STREAMING: &str = "nemotron-speech-streaming-en-0.6b-q80";
+    const NEMO_COPY: &str = "nemo-nemotron-speech-streaming-en-0.6b-q80";
 
     #[test]
-    fn the_summary_marks_only_an_unselected_transcription_model_as_unused() {
-        // AE5.
-        let settings = whisper_selected();
-        let required = required_ids(&settings);
-        assert!(required.len() > 1, "the choice has supporting models");
-        let mut present: Vec<&str> = required.iter().map(String::as_str).collect();
-        present.push(TDT_1_1B);
-        let statuses = statuses_with(&settings, &present);
-        let summary = deletion_summary(&statuses, &inputs(&settings, &[]));
-
-        assert_eq!(summary.models.len(), present.len());
-        let unused: Vec<_> = summary.models.iter().filter(|m| m.unused).collect();
-        assert_eq!(unused.len(), 1);
-        assert_eq!(unused[0].id, TDT_1_1B);
-        let tdt_size = models::model(TDT_1_1B).unwrap().size_bytes;
-        assert_eq!(unused[0].size_bytes, tdt_size);
-        assert_eq!(summary.unfinished_notes, 0);
-        assert_eq!(summary.delete_all_block, None);
-    }
-
-    #[test]
-    fn the_summary_has_no_unused_model_when_only_the_current_choices_are_downloaded() {
-        // AE6.
-        let settings = whisper_selected();
-        let required = required_ids(&settings);
-        let present: Vec<&str> = required.iter().map(String::as_str).collect();
-        let summary =
-            deletion_summary(&statuses_with(&settings, &present), &inputs(&settings, &[]));
-        assert_eq!(summary.models.len(), present.len());
-        assert!(summary.models.iter().all(|m| !m.unused));
-    }
-
-    #[test]
-    fn a_model_that_a_queued_note_needs_is_not_unused_and_the_note_counts() {
-        let settings = whisper_selected();
-        let stopped_at = stopped();
-        let sessions = [
-            note(TDT_1_1B, SessionState::Queued { stopped_at }),
-            note(TDT_V2, SessionState::Saved),
-            note(TDT_V2, SessionState::Discarded),
-        ];
-        let statuses = statuses_with(&settings, &[TDT_1_1B, TDT_V2]);
-        let summary = deletion_summary(&statuses, &inputs(&settings, &sessions));
-        let unused = |id: &str| summary.models.iter().find(|m| m.id == id).unwrap().unused;
-        assert!(!unused(TDT_1_1B));
-        // Saved and Discarded notes need no model and do not count.
-        assert!(unused(TDT_V2));
-        assert_eq!(summary.unfinished_notes, 1);
-        assert_eq!(summary.delete_all_block, None);
-    }
-
-    #[test]
-    fn delete_all_is_off_while_a_note_transcribes_a_recording_runs_or_a_download_runs() {
-        // AE9.
-        let settings = whisper_selected();
-        let statuses = statuses_with(&settings, &[TDT_1_1B]);
-        let stopped_at = stopped();
-        let processing = [note(PARAKEET, SessionState::Processing { stopped_at })];
-        let summary = deletion_summary(&statuses, &inputs(&settings, &processing));
-        assert_eq!(
-            summary.delete_all_block,
-            Some(DeleteAllBlock::Transcription)
-        );
-        assert!(summary.models.iter().any(|m| m.unused));
-
-        let recording = DeleteInputs {
-            recording: true,
-            ..inputs(&settings, &[])
+    fn a_supporting_model_that_another_bundle_needs_stays() {
+        // AE7: the bundle of Parakeet Unified keeps the speaker models.
+        let settings = Settings {
+            asr_model: PARAKEET.into(),
+            ..Settings::default()
         };
-        assert_eq!(
-            deletion_summary(&statuses, &recording).delete_all_block,
-            Some(DeleteAllBlock::Recording)
+        let statuses = statuses_with(
+            &settings,
+            &[PARAKEET, SORTFORMER, "pyannote-segmentation-3.0"],
         );
-        let downloading = DeleteInputs {
-            downloading: true,
-            ..inputs(&settings, &[])
+        assert!(unneeded_supporting_models(&statuses, &settings).is_empty());
+    }
+
+    #[test]
+    fn a_supporting_model_that_only_a_deleted_bundle_needs_goes() {
+        // AE8: Nemotron Speech Streaming is deleted, so its NeMo copy goes,
+        // and the speaker models stay for Parakeet Unified.
+        let settings = Settings {
+            asr_model: PARAKEET.into(),
+            ..Settings::default()
         };
+        let statuses = statuses_with(&settings, &[PARAKEET, SORTFORMER, NEMO_COPY]);
         assert_eq!(
-            deletion_summary(&statuses, &downloading).delete_all_block,
-            Some(DeleteAllBlock::Download)
+            unneeded_supporting_models(&statuses, &settings),
+            [NEMO_COPY]
+        );
+        let kept = statuses_with(
+            &settings,
+            &[PARAKEET, NEMOTRON_STREAMING, SORTFORMER, NEMO_COPY],
+        );
+        assert!(unneeded_supporting_models(&kept, &settings).is_empty());
+    }
+
+    #[test]
+    fn the_selected_and_pending_bundles_keep_their_files_without_the_model() {
+        // The selected model is not on disk (a failed download), and a
+        // pending model downloads: both bundles stay.
+        let settings = Settings {
+            asr_model: NEMOTRON_STREAMING.into(),
+            pending_asr_model: Some(PARAKEET.into()),
+            ..Settings::default()
+        };
+        let statuses = statuses_with(&settings, &[SORTFORMER, NEMO_COPY]);
+        assert!(unneeded_supporting_models(&statuses, &settings).is_empty());
+    }
+
+    #[test]
+    fn a_supporting_model_outside_every_kept_bundle_goes() {
+        // AE9: Whisper does not use the NeMo copy.
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[WHISPER, NEMO_COPY]);
+        assert_eq!(
+            unneeded_supporting_models(&statuses, &settings),
+            [NEMO_COPY]
         );
     }
 
     #[test]
-    fn delete_all_refuses_while_recording_downloading_or_transcribing() {
-        let settings = whisper_selected();
-        let statuses = statuses_with(&settings, &[TDT_1_1B]);
-        let stopped_at = stopped();
-        let processing = [note(PARAKEET, SessionState::Processing { stopped_at })];
-        let capturing = [note(PARAKEET, SessionState::Capturing)];
-        // The live worker saves its last part after Stop: no recording runs,
-        // but the live model is set.
-        let live_after_stop = DeleteInputs {
-            live_model: Some(PARAKEET),
-            ..inputs(&settings, &[])
+    fn a_transcription_model_reports_its_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().to_path_buf());
+        let status = |id: &str| {
+            manager
+                .statuses(WHISPER)
+                .into_iter()
+                .find(|s| s.id == id)
+                .unwrap()
         };
-        let cases = [
-            (
-                DeleteInputs {
-                    recording: true,
-                    ..inputs(&settings, &[])
-                },
-                DeleteAllBlock::Recording,
-            ),
-            (live_after_stop, DeleteAllBlock::Recording),
-            // The store has the new recording before the capture opens.
-            (inputs(&settings, &capturing), DeleteAllBlock::Recording),
-            (
-                DeleteInputs {
-                    downloading: true,
-                    ..inputs(&settings, &[])
-                },
-                DeleteAllBlock::Download,
-            ),
-            (
-                inputs(&settings, &processing),
-                DeleteAllBlock::Transcription,
-            ),
-        ];
-        for (inputs, block) in cases {
-            assert_eq!(
-                deletion_summary(&statuses, &inputs).delete_all_block,
-                Some(block)
-            );
-            let mut deleted = Vec::new();
-            let result = delete_by_scope(DeleteScope::All, &statuses, &inputs, |id| {
-                deleted.push(id.to_string());
-                Ok(())
-            });
-            assert_eq!(result, Err(block.message().to_string()));
-            assert!(deleted.is_empty(), "{block:?}");
-        }
-    }
-
-    #[test]
-    fn delete_all_deletes_the_models_in_use() {
-        // AE7: two notes wait; every model goes, the selected one too.
-        let settings = whisper_selected();
-        let stopped_at = stopped();
-        let sessions = [
-            note(WHISPER, SessionState::Queued { stopped_at }),
-            note(WHISPER, SessionState::Blocked { stopped_at }),
-        ];
-        let required = required_ids(&settings);
-        let mut present: Vec<&str> = required.iter().map(String::as_str).collect();
-        present.push(TDT_1_1B);
-        let statuses = statuses_with(&settings, &present);
-        let summary = deletion_summary(&statuses, &inputs(&settings, &sessions));
-        assert_eq!(summary.unfinished_notes, 2);
-        let mut deleted = Vec::new();
-        let failures = delete_by_scope(
-            DeleteScope::All,
-            &statuses,
-            &inputs(&settings, &sessions),
-            |id| {
-                deleted.push(id.to_string());
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert!(failures.is_empty());
-        deleted.sort();
-        let mut expected: Vec<String> = present.iter().map(|s| s.to_string()).collect();
-        expected.sort();
-        assert_eq!(deleted, expected);
-    }
-
-    #[test]
-    fn delete_unused_checks_the_rules_again_at_the_time_of_the_call() {
-        let settings = whisper_selected();
-        let statuses = statuses_with(&settings, &[TDT_1_1B, TDT_V2]);
-        let summary = deletion_summary(&statuses, &inputs(&settings, &[]));
-        assert!(summary.models.iter().all(|m| m.unused));
-
-        // A note that needs TDT 1.1B is queued after the summary.
-        let sessions = [note(
-            TDT_1_1B,
-            SessionState::Queued {
-                stopped_at: stopped(),
-            },
-        )];
-        let mut deleted = Vec::new();
-        let failures = delete_by_scope(
-            DeleteScope::Unused,
-            &statuses,
-            &inputs(&settings, &sessions),
-            |id| {
-                deleted.push(id.to_string());
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert!(failures.is_empty());
-        assert_eq!(deleted, [TDT_V2]);
-    }
-
-    #[test]
-    fn delete_unused_works_while_a_note_transcribes() {
-        // AE9: only "Delete all" is off.
-        let settings = whisper_selected();
-        let statuses = statuses_with(&settings, &[TDT_1_1B]);
-        let sessions = [note(
-            PARAKEET,
-            SessionState::Processing {
-                stopped_at: stopped(),
-            },
-        )];
-        let mut deleted = Vec::new();
-        delete_by_scope(
-            DeleteScope::Unused,
-            &statuses,
-            &inputs(&settings, &sessions),
-            |id| {
-                deleted.push(id.to_string());
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(deleted, [TDT_1_1B]);
-    }
-
-    #[test]
-    fn a_failed_delete_does_not_stop_the_others_and_the_result_names_it() {
-        let settings = whisper_selected();
-        let statuses = statuses_with(&settings, &[TDT_1_1B, TDT_V2, PARAKEET]);
-        for scope in [DeleteScope::Unused, DeleteScope::All] {
-            let mut deleted = Vec::new();
-            let failures = delete_by_scope(scope, &statuses, &inputs(&settings, &[]), |id| {
-                if id == TDT_1_1B {
-                    return Err("disk error".into());
-                }
-                deleted.push(id.to_string());
-                Ok(())
-            })
-            .unwrap();
-            assert_eq!(
-                failures,
-                [ModelDeleteFailure {
-                    id: TDT_1_1B.into(),
-                    name: models::model(TDT_1_1B).unwrap().name.clone(),
-                    message: "disk error".into(),
-                }],
-                "{scope:?}"
-            );
-            deleted.sort();
-            let mut expected = vec![TDT_V2.to_string(), PARAKEET.to_string()];
-            expected.sort();
-            assert_eq!(deleted, expected, "{scope:?}");
-        }
+        let parakeet = status(PARAKEET);
+        let bundle = models::recognition::bundle(PARAKEET);
+        assert_eq!(
+            parakeet.bundle,
+            bundle.iter().map(|a| a.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            parakeet.bundle_size_bytes,
+            bundle.iter().map(|a| a.size_bytes).sum::<u64>()
+        );
+        assert!(!parakeet.bundle_complete);
+        let sortformer = status(SORTFORMER);
+        assert_eq!(sortformer.bundle, [SORTFORMER]);
+        assert!(!sortformer.bundle_complete);
     }
 
     #[test]

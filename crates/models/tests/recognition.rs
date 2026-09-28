@@ -1,6 +1,46 @@
 use models::recognition::{
-    ProcessingMode, RecognitionConfig, ResolveError, SpeakerCount, SpeakerSource, resolve,
+    ProcessingMode, RecognitionConfig, ResolveError, SpeakerCount, SpeakerSource, bundle, resolve,
 };
+
+fn bundle_ids(asr_model: &str) -> Vec<String> {
+    bundle(asr_model).into_iter().map(|a| a.id).collect()
+}
+
+#[test]
+fn a_bundle_holds_every_speaker_model_that_a_choice_can_use() {
+    assert_eq!(
+        bundle_ids("parakeet-unified-en-0.6b-q80"),
+        [
+            "parakeet-unified-en-0.6b-q80",
+            "pyannote-segmentation-3.0",
+            "wespeaker-voxceleb-resnet34-lm",
+            "sortformer-v2-q80",
+            "nemotron-3-diarization-q80",
+        ]
+    );
+}
+
+#[test]
+fn a_nemotron_streaming_bundle_holds_its_nemo_copy() {
+    let ids = bundle_ids("nemotron-speech-streaming-en-0.6b-q80");
+    assert_eq!(ids[0], "nemotron-speech-streaming-en-0.6b-q80");
+    assert!(ids.contains(&"nemo-nemotron-speech-streaming-en-0.6b-q80".to_string()));
+    assert!(
+        !bundle_ids("parakeet-tdt-0.6b-v3-q80")
+            .contains(&"nemo-parakeet-tdt-0.6b-v3-q80".to_string())
+    );
+}
+
+#[test]
+fn a_bundle_has_no_duplicates_and_an_unknown_model_has_none() {
+    let ids = bundle_ids("moss-transcribe-diarize-q80");
+    let mut unique = ids.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(ids.len(), unique.len());
+    assert!(bundle_ids("pyannote-segmentation-3.0").is_empty());
+    assert!(bundle_ids("no-such-model").is_empty());
+}
 
 #[test]
 fn off_needs_no_speaker_artifacts_and_is_deterministic() {

@@ -779,8 +779,11 @@ pub fn set_recognition_defaults(
         }
         Ok(())
     })?;
+    // The files of the selected choice download first, so that the pending
+    // pick settles on them. The rest of the bundle follows (KTD5).
     if !missing.is_empty() {
-        manager.start_downloads(&app, missing)?;
+        manager.start_downloads(&app, missing.clone())?;
     }
+    manager.start_bundle_downloads(&app, &config.asr_model, &missing)?;
     Ok(result)
 }
