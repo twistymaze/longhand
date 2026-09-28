@@ -1,6 +1,6 @@
 // The live transcript on the Transcript tab (R8, R10, U8). Saved parts show
-// as paragraphs, and the open part's tentative text shows in a lighter
-// style. The text has no speaker labels: processing after Stop adds them.
+// as paragraphs. Native timed words are grouped into readable paragraphs,
+// with speaker labels when available and one notice for provisional results.
 // The view follows new text while it is at the bottom. A scroll up stops
 // the follow and shows "Scroll to bottom".
 //
@@ -10,7 +10,7 @@
 
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLiveTranscript } from "./useLiveTranscript";
-import { recognitionRows } from "./liveRecognition";
+import { recognitionParagraphs, recognitionRows } from "./liveRecognition";
 
 /// Where the note is:
 /// - recording: the live worker can add text;
@@ -90,7 +90,15 @@ export function LiveTranscript({
 
   const parts = live.parts.filter((p) => p.text.trim() !== "");
   const current = live.current && (live.current.committed + live.current.tentative).trim() !== "" ? live.current : null;
-  const nativeRows = recognitionRows(live.recognition);
+  // The original live stream remains complete while post-Stop recognition
+  // publishes partial replacements. The saved transcript replaces that stream
+  // after processing; showing both sources here would repeat the same speech.
+  const nativeRows = parts.length > 0 || current !== null
+    ? []
+    : recognitionRows(live.recognition);
+  const paragraphs = recognitionParagraphs(nativeRows);
+  const provisionalText = nativeRows.some((row) => !row.text_final);
+  const provisionalSpeakers = nativeRows.some((row) => row.speaker && !row.speaker_final);
   const speakerRows = Object.values(live.recognition.blocks).filter((b) => b.kind === "speakers").flatMap((b) => b.event.rows).sort((a, b) => a.start_sample - b.start_sample);
   const hasText = parts.length > 0 || current !== null || nativeRows.length > 0 || speakerRows.length > 0;
   const status = textAfterStop && mode === "recording" ? READY_AFTER_STOP : line(mode, live.state, hasText);
@@ -121,12 +129,12 @@ export function LiveTranscript({
         if (row.speaker && !labels.current.has(row.speaker)) labels.current.set(row.speaker, labels.current.size + 1);
         return <p key={index}>Speaker {row.speaker ? labels.current.get(row.speaker) : "unknown"} · {Math.floor(row.start_sample / 16000)}–{Math.ceil(row.end_sample / 16000)} seconds{!row.speaker_final && " · Provisional label"}</p>;
       })}</details>}
-      {nativeRows.map((row, index) => {
+      {(provisionalText || provisionalSpeakers) && <p className="mb-3 text-[0.85rem] text-label-secondary">{[provisionalText && "Provisional text", provisionalSpeakers && "Speaker labels may change"].filter(Boolean).join(" · ")}</p>}
+      {paragraphs.map((row, index) => {
         if (row.speaker && !labels.current.has(row.speaker)) labels.current.set(row.speaker, labels.current.size + 1);
         return <div key={`${row.start_sample}-${row.end_sample}-${index}`} data-testid="live-part" className="py-1.5 leading-[1.55]">
-          {row.speaker && <span className="mr-3 text-[0.85rem] text-label-secondary">Speaker {labels.current.get(row.speaker)}{!row.speaker_final && " · Provisional label"}</span>}
+          {row.speaker && <span className="mr-3 text-[0.85rem] text-label-secondary">Speaker {labels.current.get(row.speaker)}</span>}
           <span>{row.text}</span>
-          {!row.text_final && <span className="ml-2 text-[0.85rem] text-label-secondary">Provisional text</span>}
         </div>;
       })}
       {header && statusLine}

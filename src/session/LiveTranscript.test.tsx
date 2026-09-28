@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useRef } from "react";
 import type { LiveTranscript as Catchup } from "../bindings";
 import { mockTauri } from "../test/tauri";
+import { recognitionParagraphs } from "./liveRecognition";
 import { LiveTranscript, type LiveMode } from "./LiveTranscript";
 
 const empty: Catchup = { recognition: [], parts: [], current: null, state: "running" };
@@ -307,4 +308,57 @@ describe("LiveTranscript", () => {
     await act(() => tauri.emit("live-transcript-event", text("rec", "More text again", "", 1)));
     expect(scroller.scrollTop).toBe(2800);
   });
+});
+
+
+test("word-level live updates read as one paragraph with one provisional notice", async () => {
+  const tauri = mockLive();
+  render(<Harness />);
+  await screen.findByText("The transcript shows here as people speak.");
+  const event = { session_id: "rec", generation: "g", epoch: 0, key: "interim", revision: 1 };
+  await act(() => tauri.emit("live-recognition-event", { ...event, phase: "interim_begin", rows: [] }));
+  await act(() => tauri.emit("live-recognition-event", { ...event, phase: "interim_batch", rows: ["New", "test", "with", "the", "live", "transcript."].map((text, index) => ({
+    start_sample: index * 4000, end_sample: (index + 1) * 4000,
+    text, speaker: null, text_final: false, speaker_final: false,
+  })) }));
+  await act(() => tauri.emit("live-recognition-event", { ...event, phase: "interim_end", rows: [] }));
+  expect(screen.getAllByTestId("live-part")).toHaveLength(1);
+  expect(screen.getByTestId("live-part").textContent).toBe("New test with the live transcript.");
+  expect(screen.getAllByText(/Provisional text/)).toHaveLength(1);
+});
+
+
+test("live paragraphs preserve speaker changes, pauses, epochs, and source rows", () => {
+  const row = (text: string, start: number, speaker: string | null, scope = "g:0") => ({
+    text, start_sample: start, end_sample: start + 4000, speaker, scope,
+    text_final: true, speaker_final: true,
+  });
+  const rows = [row("Hello", 0, "a"), row("there.", 4000, "a"), row("Yes.", 8000, "b"), row("Later.", 80000, "b"), row("New", 84000, null), row("epoch.", 88000, null, "g:1")];
+  const before = JSON.stringify(rows);
+  expect(recognitionParagraphs(rows).map(p => p.text)).toEqual(["Hello there.", "Yes.", "Later.", "New", "epoch."]);
+  expect(JSON.stringify(rows)).toBe(before);
+});
+
+test("live word grouping keeps punctuation and unspaced scripts readable", () => {
+  const rows = ["Hello", ",", "world", "!", "你好", "世界", "。"].map((text, i) => ({
+    text, start_sample: i * 4000, end_sample: (i + 1) * 4000, speaker: null, scope: "g:0",
+    text_final: false, speaker_final: false,
+  }));
+  expect(recognitionParagraphs(rows)[0].text).toBe("Hello, world!你好世界。");
+});
+
+
+test("partial post-recording results do not duplicate the complete live transcript", async () => {
+  mockLive({
+    parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 10000, text: "The first passage." }],
+    current: { segment: 1, part: 0, committed: "The resumed passage.", tentative: "" },
+    state: "ended",
+    recognition: [{ session_id: "rec", generation: "g", epoch: 0, key: "native-window/0/0", phase: "patch", revision: 1,
+      rows: [{ start_sample: 0, end_sample: 160000, text: "The first passage.", speaker: "g:0:0:1", text_final: true, speaker_final: true }],
+    }],
+  });
+  render(<Harness mode="processing" />);
+  await screen.findByText("The resumed passage.");
+  expect(screen.getAllByText("The first passage.")).toHaveLength(1);
+  expect(screen.getAllByTestId("live-part")).toHaveLength(2);
 });

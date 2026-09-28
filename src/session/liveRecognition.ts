@@ -140,7 +140,9 @@ export function applyRecognition(
   };
 }
 
-export function recognitionRows(view: RecognitionView): LiveRecognitionRow[] {
+type ScopedRow = LiveRecognitionRow & { scope: string };
+
+export function recognitionRows(view: RecognitionView): ScopedRow[] {
   const blocks = Object.values(view.blocks);
   const speakers = blocks.filter((b) => b.kind === "speakers");
   return blocks
@@ -181,9 +183,44 @@ export function recognitionRows(view: RecognitionView): LiveRecognitionRow[] {
               speaker_final: candidates.every((r) => r.speaker_final),
             };
           return { ...row, speaker: first[0], speaker_final: first[1].final };
-        }),
+        })
+        .map((row) => ({ ...row, scope: scope(event) })),
     )
     .sort(
       (a, b) => a.start_sample - b.start_sample || a.end_sample - b.end_sample,
     );
+}
+
+
+// Match the unspaced scripts in asr::stream::join_words.
+const unspaced = /[\u3000-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2ffff}]/u;
+function joinText(left: string, right: string): string {
+  const characters = Array.from(left);
+  const end = characters[characters.length - 1] ?? "";
+  const start = Array.from(right)[0] ?? "";
+  const space = left && right && !unspaced.test(end) && !unspaced.test(start)
+    && !/^[,.;:!?%)\]}]/u.test(right) && !/[([{]$/u.test(left);
+  return left + (space ? " " : "") + right;
+}
+
+/** Group timed words for display without changing the stored recognition rows. */
+export function recognitionParagraphs(rows: ScopedRow[]): ScopedRow[] {
+  const paragraphs: ScopedRow[] = [];
+  for (const row of rows) {
+    const text = row.text?.trim();
+    if (!text) continue;
+    const last = paragraphs[paragraphs.length - 1];
+    if (last && last.scope === row.scope && last.speaker === row.speaker
+      && row.start_sample - last.end_sample <= 2 * 16000
+      && row.end_sample - last.start_sample <= 30 * 16000
+      && (last.text?.length ?? 0) + text.length <= 600) {
+      last.text = joinText(last.text ?? "", text);
+      last.end_sample = Math.max(last.end_sample, row.end_sample);
+      last.text_final &&= row.text_final;
+      last.speaker_final &&= row.speaker_final;
+    } else {
+      paragraphs.push({ ...row, text });
+    }
+  }
+  return paragraphs;
 }
