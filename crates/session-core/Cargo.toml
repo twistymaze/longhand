@@ -17,7 +17,7 @@ serde_json.workspace = true
 serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror.workspace = true
+tempfile = "3"
 
 [dev-dependencies]
 proptest = "1"
-tempfile = "3"

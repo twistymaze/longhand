@@ -71,6 +71,33 @@ pub fn run(
             continue;
         }
         control.proceed()?;
+        let live_analysis =
+            match crate::live::features::restore(store, session_id, session_dir, segment.index)? {
+                Some(analysis) => Some(analysis),
+                None => crate::live::features::complete(
+                    store,
+                    session_id,
+                    session_dir,
+                    segment,
+                    analyzer,
+                    control,
+                )?,
+            };
+        if let Some(analysis) = live_analysis {
+            write_analysis(&file, &analysis)?;
+            checkpoint::put(
+                store,
+                session_id,
+                Stage::Diarize,
+                &key,
+                &AnalyzedSegment {
+                    segment: segment.index,
+                    windows: analysis.activities.len(),
+                    embeddings: analysis.embeddings.len(),
+                },
+            )?;
+            continue;
+        }
         let mut source = WavAudioSource::open(&session_dir.join(proc_file(&segment.audio_file)))
             .map_err(|e| StageError::Failed(e.to_string()))?;
         // The stack polls once per 2 s window; that poll is where a resume

@@ -22,13 +22,14 @@ async fn blocking<T: Send + 'static>(
 #[specta::specta]
 pub async fn start_recording(
     app: AppHandle,
+    config: Option<models::recognition::RecognitionConfig>,
     manager: State<'_, Arc<CaptureManager>>,
 ) -> Result<String, String> {
     let manager = Arc::clone(&manager);
     let count = shortcut::speaker_count(settings::get_settings(&app).default_speaker_count);
     blocking(move || {
         manager
-            .start_session(&app, count)
+            .start_session_with_config(&app, count, config)
             .map_err(|e| e.to_string())
     })
     .await

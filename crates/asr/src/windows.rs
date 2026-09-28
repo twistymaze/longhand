@@ -96,6 +96,11 @@ impl Voicing {
         spans_from_frames(&self.voiced, self.duration_ms())
     }
 
+    /// Speech runs that meet the onset length, without request padding.
+    pub fn speech_spans(&self) -> Vec<Span> {
+        speech_spans_from_frames(&self.voiced, self.duration_ms())
+    }
+
     /// Windows for this segment; see [`plan_windows`].
     pub fn windows(&self, turn_cuts_ms: &[u64]) -> Vec<Span> {
         plan_windows(&self.spans(), &self.energy, turn_cuts_ms)
@@ -109,6 +114,22 @@ impl Default for Voicing {
 }
 
 pub fn spans_from_frames(voiced: &[bool], total_ms: u64) -> Vec<Span> {
+    let mut spans: Vec<Span> = Vec::new();
+    for speech in speech_spans_from_frames(voiced, total_ms) {
+        let span = Span {
+            start_ms: speech.start_ms.saturating_sub(VAD_PREFILL_MS),
+            end_ms: (speech.end_ms + VAD_OFFLINE_HANGOVER_MS).min(total_ms),
+        };
+        match spans.last_mut() {
+            Some(last) if span.start_ms <= last.end_ms => last.end_ms = span.end_ms,
+            _ => spans.push(span),
+        }
+    }
+    spans
+}
+
+/// Speech runs that meet the onset length, clamped to the audio.
+fn speech_spans_from_frames(voiced: &[bool], total_ms: u64) -> Vec<Span> {
     let onset = VAD_ONSET_MS.div_ceil(FRAME_MS) as usize;
     let mut spans: Vec<Span> = Vec::new();
     let mut i = 0;
@@ -124,19 +145,16 @@ pub fn spans_from_frames(voiced: &[bool], total_ms: u64) -> Vec<Span> {
         if i - start < onset {
             continue;
         }
-        let span = Span {
-            start_ms: (start as u64 * FRAME_MS).saturating_sub(VAD_PREFILL_MS),
-            end_ms: (i as u64 * FRAME_MS + VAD_OFFLINE_HANGOVER_MS).min(total_ms),
-        };
-        match spans.last_mut() {
-            Some(last) if span.start_ms <= last.end_ms => last.end_ms = span.end_ms,
-            _ => spans.push(span),
+        let start_ms = start as u64 * FRAME_MS;
+        let end_ms = (i as u64 * FRAME_MS).min(total_ms);
+        if start_ms < end_ms {
+            spans.push(Span { start_ms, end_ms });
         }
     }
     spans
 }
 
-/// Total voiced duration, the basis R17a verifies coverage against.
+/// Total duration of the supplied spans.
 pub fn voiced_ms(spans: &[Span]) -> u64 {
     spans.iter().map(Span::duration_ms).sum()
 }
@@ -234,6 +252,97 @@ mod tests {
     fn a_blip_shorter_than_the_onset_is_not_speech() {
         let v = frames(&[(false, 1_600), (true, 32), (false, 1_600)]);
         assert!(spans_from_frames(&v, 3_232).is_empty());
+    }
+
+    #[test]
+    fn speech_spans_keep_onset_runs_without_changing_padded_windows() {
+        let mut voicing = Voicing::new();
+        voicing.voiced = frames(&[
+            (false, 736),
+            (true, 4208),
+            (false, 1120),
+            (true, 2544),
+            (false, 9184),
+            (true, 96),
+            (false, 128),
+            (true, 80),
+            (false, 304),
+            (true, 48),
+            (false, 1552),
+        ]);
+        voicing.samples = 20_000 * SAMPLES_PER_MS;
+        assert_eq!(
+            voicing.speech_spans(),
+            vec![
+                Span {
+                    start_ms: 736,
+                    end_ms: 4944
+                },
+                Span {
+                    start_ms: 6064,
+                    end_ms: 8608
+                },
+                Span {
+                    start_ms: 17792,
+                    end_ms: 17888
+                },
+                Span {
+                    start_ms: 18016,
+                    end_ms: 18096
+                },
+            ]
+        );
+        assert_eq!(
+            voicing.spans(),
+            vec![
+                Span {
+                    start_ms: 286,
+                    end_ms: 5394
+                },
+                Span {
+                    start_ms: 5614,
+                    end_ms: 9058
+                },
+                Span {
+                    start_ms: 17342,
+                    end_ms: 18546
+                },
+            ]
+        );
+        assert_eq!(
+            voicing.windows(&[]),
+            vec![
+                Span {
+                    start_ms: 286,
+                    end_ms: 9058
+                },
+                Span {
+                    start_ms: 17342,
+                    end_ms: 18546
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn speech_spans_require_the_full_onset_and_clamp_to_audio() {
+        assert!(speech_spans_from_frames(&[true; 3], 48).is_empty());
+        assert_eq!(
+            speech_spans_from_frames(&[true; 4], 64),
+            vec![Span {
+                start_ms: 0,
+                end_ms: 64
+            },]
+        );
+        assert_eq!(
+            speech_spans_from_frames(&[true; 4], 60),
+            vec![Span {
+                start_ms: 0,
+                end_ms: 60
+            },]
+        );
+        assert!(speech_spans_from_frames(&[true; 4], 0).is_empty());
+        assert!(speech_spans_from_frames(&[], 1000).is_empty());
     }
 
     #[test]

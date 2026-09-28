@@ -67,16 +67,27 @@ function Marker({ label }: { label: string }) {
   );
 }
 
+function speakerRecognitionWasOff(markdown: string): boolean {
+  for (const raw of markdown.split("\n")) {
+    const line = raw.trimEnd();
+    if (line.startsWith("- [")) break;
+    if (line === "> Speaker recognition was off for this transcript.") return true;
+  }
+  return false;
+}
+
 export function TranscriptTab({
   lines,
   hasSpeakers,
   foundSpeakers,
   durationMs,
+  transcriptMarkdown,
 }: {
   lines: DocLine[];
   hasSpeakers: boolean;
   foundSpeakers: number | null;
   durationMs: number;
+  transcriptMarkdown: string;
 }) {
   const end = useRef<HTMLDivElement>(null);
   // Once, when the tab opens: a later change must not move the reader.
@@ -89,7 +100,9 @@ export function TranscriptTab({
       <p className="text-[0.85rem] text-label-secondary">{header}</p>
       {!hasSpeakers && (
         <p className="mt-2 text-[0.85rem] text-label-secondary">
-          Speaker separation failed for this note, so the transcript has no speaker marks.
+          {speakerRecognitionWasOff(transcriptMarkdown)
+            ? "Speaker recognition was off for this note."
+            : "Speaker separation failed for this note, so the transcript has no speaker marks."}
         </p>
       )}
       {lines.length === 0 && <p className="mt-4 text-label-tertiary">Nothing was transcribed.</p>}

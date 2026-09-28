@@ -314,3 +314,20 @@ fn a_fingerprint_is_the_sha256_of_the_bytes() {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
 }
+
+#[test]
+fn speaker_recognition_off_is_not_reported_as_failure() {
+    let transcript = Transcript {
+        has_speakers: false,
+        lines: vec![TranscriptLine::Turn {
+            position_ms: 0,
+            speaker: None,
+            text: "A selected mode is not an error.".into(),
+        }],
+    };
+    let rendered = transcript.render_speaker_off();
+    assert!(rendered.contains("Speaker recognition was off"));
+    assert!(!rendered.contains("failed"));
+    assert_eq!(Transcript::parse(&rendered).unwrap(), transcript);
+    assert!(transcript.render().contains("failed"));
+}

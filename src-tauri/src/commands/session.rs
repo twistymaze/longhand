@@ -501,18 +501,26 @@ pub fn session_document(
             .ok_or_else(|| "this note has not finished processing yet".to_string())?
     };
     let folder = Path::new(&home);
-    let read = |name: &str| {
-        std::fs::read_to_string(folder.join(name))
-            .map_err(|e| format!("could not read {name} in {home}: {e}"))
+    let previous: Option<SessionDoc> = {
+        let store = capture.shared_store();
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .result_state(&session_id, "verified-manifest")
+            .map_err(|e| e.to_string())?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
     };
-    let doc = SessionDoc::parse(&read(pipeline::save::SESSION_FILE)?).map_err(|e| e.to_string())?;
-    let transcript_markdown = read(pipeline::join::TRANSCRIPT_FILE)?;
+    let result =
+        session_core::generation::resolve(folder, previous.as_ref()).map_err(|e| e.to_string())?;
+    let doc = result.doc;
+    let transcript_markdown = String::from_utf8(result.transcript).map_err(|e| e.to_string())?;
     let transcript = Transcript::parse(&transcript_markdown).map_err(|e| e.to_string())?;
     Ok(SessionDocument {
         has_speakers: transcript.has_speakers,
         lines: doc_lines(&doc, transcript),
         transcript_markdown,
-        summary: read(pipeline::summarize::SUMMARY_FILE)
+        summary: String::from_utf8(result.summary)
             .ok()
             .and_then(|text| Summary::parse(&text).ok())
             .map(summary_view),
@@ -861,6 +869,7 @@ mod entry_tests {
             queue_seq: None,
             speaker_count: None,
             asr_model: None,
+            recognition_snapshot: None,
             home_path: None,
             title: Some(Title {
                 text: "Budget review".into(),

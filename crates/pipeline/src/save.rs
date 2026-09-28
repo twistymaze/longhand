@@ -34,9 +34,8 @@ pub const STATE: &str = session_core::jobs::SAVE_STATE;
 pub const FOLDER_NAME: &str = "folder_name";
 /// Under the summarize stage: why it failed, for the saved stub (KD13).
 pub const SUMMARY_FAILED: &str = "failed";
-/// Recorded before a save replaces the first document in a home folder:
-/// from then on the folder holds the new documents, and a failure does not
-/// return a Transcribe Again run to its previous checkpoints.
+/// A replacement reached publication. Preserve its local files on failure.
+/// Only the manifest proves that the replacement committed.
 pub const HOME_CHANGED: &str = "home_changed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +61,50 @@ pub fn home_changed(store: &Store, session_id: &str) -> Result<bool, StageError>
         .checkpoints(session_id, Stage::Save)?
         .iter()
         .any(|(key, _)| key == HOME_CHANGED))
+}
+
+/// Only owner-local records can cause recovery writes. Receivers have none.
+pub fn recover_summary_publications(store: &SharedStore) -> Result<(), StageError> {
+    let guard = lock(store);
+    for record in guard.sessions()? {
+        let recovered = (|| -> Result<(), StageError> {
+            let Some(value) = guard.result_state(&record.id, "summary-publication")? else {
+                return Ok(());
+            };
+            let local: PathBuf = serde_json::from_value(value)?;
+            if !local.join(session_save::result::JOURNAL).exists() {
+                return Ok(());
+            }
+            let publication = session_save::result::load(&local)?;
+            if record.home_path.as_deref().map(Path::new) != Some(publication.home.as_path()) {
+                return Err(StageError::Failed(
+                    "summary publication folder changed".into(),
+                ));
+            }
+            if publication.committed() {
+                let doc = session_core::generation::manifest(&publication.home)?;
+                guard.set_result_state(
+                    &record.id,
+                    "verified-manifest",
+                    &serde_json::to_value(doc)?,
+                )?;
+                guard.clear_summary_not_updated(&record.id)?;
+                publication.acknowledge(&local)?;
+            } else {
+                publication.abort(&local)?;
+            }
+            guard.clear_result_state(&record.id, "summary-publication")?;
+            std::fs::remove_dir_all(local)?;
+            Ok(())
+        })();
+        if let Err(error) = recovered {
+            log::warn!(
+                "summary publication recovery failed for {}: {error}",
+                record.id
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Whether a completed session's folder still holds every segment's audio,
@@ -298,6 +341,25 @@ fn update_home(
     fs: &dyn Fs,
     control: &dyn Control,
 ) -> Result<Saved, StageError> {
+    if working.join(session_save::result::JOURNAL).exists() {
+        let publication = session_save::result::load(working)?;
+        if publication.home != home {
+            return Err(StageError::Failed(
+                "the note folder moved during publication".into(),
+            ));
+        }
+        if publication.committed() {
+            checkpoint::put(
+                store,
+                session_id,
+                Stage::Save,
+                STATE,
+                &SaveState::Done {
+                    path: home.to_path_buf(),
+                },
+            )?;
+        }
+    }
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
             "the note's folder {} is missing; put it back to finish",
@@ -330,6 +392,7 @@ fn update_home(
     };
     let mut home = home.to_path_buf();
     if !finished {
+        checkpoint::put(store, session_id, Stage::Save, HOME_CHANGED, &true)?;
         if !working.exists() {
             return Err(StageError::Failed(format!(
                 "the working copy at {} is gone before {} was updated",
@@ -357,32 +420,81 @@ fn update_home(
             drop(guard);
             home = now;
         };
-        guard.put_checkpoint(session_id, Stage::Save, HOME_CHANGED, "true")?;
         // Under the store lock: the documents go into the folder where the
         // note is now, and the notes written are the ones that the folder
         // and this computer hold now.
         follow_run(&mut guard, session_id)?;
-        for name in [TRANSCRIPT_FILE, SUMMARY_FILE] {
-            if name == SUMMARY_FILE && summary_error.is_some() {
-                continue;
+        let summary_notes: Option<String> = guard
+            .checkpoints(session_id, Stage::Summarize)?
+            .into_iter()
+            .find(|(key, _)| key == "source-notes")
+            .map(|(_, value)| serde_json::from_str(&value))
+            .transpose()?;
+        let current_notes = folder::fingerprint(guard.notes(session_id)?.as_bytes());
+        if summary_notes
+            .as_ref()
+            .is_some_and(|hash| *hash != current_notes)
+        {
+            if working.join(session_save::result::JOURNAL).exists() {
+                session_save::result::load(working)?.abort(working)?;
             }
-            let contents = std::fs::read(working.join(name))?;
-            home_write::write_atomic(&home, name, &contents)?;
+            // Retry must produce a summary from the current notes. Keep the
+            // recognition checkpoints and the prior published generation.
+            guard.clear_checkpoints(session_id, Stage::Summarize)?;
+            guard.delete_checkpoint(session_id, Stage::Save, STATE)?;
+            return Err(StageError::Failed(
+                "notes changed after the summary started; the previous result was kept".into(),
+            ));
         }
-        write_notes(&guard, session_id, &home)?;
-        // `session.md` is made again from the home folder, because a kept
-        // previous `summary.md` has another fingerprint than the stub in
-        // the working copy.
-        let record = guard
+        let mut record = guard
             .session(session_id)?
             .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
-        folder_rename::write_document(&record, segments, &home)?;
+        if let Some(pending) = guard.result_state(session_id, "pending-snapshot")? {
+            record.speaker_count =
+                crate::reprocess::speaker_count(&serde_json::from_value(pending.clone())?);
+            record.recognition_snapshot = Some(pending);
+        }
+        let expected: Option<(PathBuf, String)> = guard
+            .result_state(session_id, "replacement-base")?
+            .map(serde_json::from_value)
+            .transpose()?;
+        let expected = match expected {
+            Some((path, hash)) if path == home => hash,
+            Some(_) => {
+                return Err(StageError::Failed(
+                    "the note folder moved during processing; the staged result was kept".into(),
+                ));
+            }
+            None => folder::fingerprint(&std::fs::read(home.join(SESSION_FILE))?),
+        };
+        let doc = session_doc(&record, segments, working)?;
+        let publication = session_save::result::prepare(&home, working, working, doc, &expected)?;
+        // This marker prevents generic failure cleanup from discarding the
+        // owner-local journal. It does not prove that commit occurred.
+        guard.put_checkpoint(session_id, Stage::Save, HOME_CHANGED, "true")?;
         drop(guard);
+        loop {
+            if publication.committed() {
+                break;
+            }
+            let step = control
+                .proceed()
+                .and_then(|()| publication.step().map_err(StageError::from));
+            match step {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(_) if publication.committed() => break,
+                Err(error) => {
+                    publication.abort(working)?;
+                    let guard = lock(store);
+                    guard.clear_checkpoints(session_id, Stage::Summarize)?;
+                    guard.delete_checkpoint(session_id, Stage::Save, STATE)?;
+                    return Err(error);
+                }
+            }
+        }
         let done = SaveState::Done { path: home.clone() };
         checkpoint::put(store, session_id, Stage::Save, STATE, &done)?;
-    }
-    if working.exists() {
-        std::fs::remove_dir_all(working)?;
     }
 
     let mut guard = lock(store);
@@ -400,7 +512,21 @@ fn update_home(
     )?;
     // After `Done`: a crash before this line runs the bookkeeping again.
     guard.finish_transcribe_again(session_id, summary_error.as_deref())?;
+    let published = session_core::generation::manifest(&home)?;
+    guard.promote_result_snapshot(session_id, published.recognition_snapshot.as_ref())?;
+    guard.set_speaker_count(session_id, published.speaker_count)?;
+    guard.set_result_state(
+        session_id,
+        "verified-manifest",
+        &serde_json::to_value(&published)?,
+    )?;
     guard.apply(session_id, &Event::Saved)?;
+    if working.join(session_save::result::JOURNAL).exists() {
+        session_save::result::load(working)?.acknowledge(working)?;
+    }
+    if working.exists() {
+        std::fs::remove_dir_all(working)?;
+    }
     let path = reconcile_after_done(&guard, session_id, home.to_path_buf(), fs);
     Ok(Saved {
         path,
@@ -523,9 +649,14 @@ fn render(
 ) -> Result<(), StageError> {
     let (record, notes) = {
         let guard = lock(store);
-        let record = guard
+        let mut record = guard
             .session(session_id)?
             .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+        if let Some(pending) = guard.result_state(session_id, "pending-snapshot")? {
+            record.speaker_count =
+                crate::reprocess::speaker_count(&serde_json::from_value(pending.clone())?);
+            record.recognition_snapshot = Some(pending);
+        }
         let notes = render_notes(&guard, session_id)?;
         (record, notes)
     };
@@ -536,7 +667,8 @@ fn render(
         write_working(working, SUMMARY_FILE, &stub(&why).render())?;
     }
     // `session.md` last, with the fingerprints of the files written above.
-    let doc = session_doc(&record, segments, working)?;
+    let mut doc = session_doc(&record, segments, working)?;
+    doc.result_generation = Some(session_save::result::stage(working, working)?);
     write_working(working, SESSION_FILE, &doc.render())?;
     Ok(())
 }
@@ -560,8 +692,56 @@ pub fn session_doc(
         .clone()
         .or_else(|| record.asr_model.clone());
     doc.found_speakers = record.found_speakers;
+    doc.recognition_snapshot = record.recognition_snapshot.clone();
     doc.transcript_fingerprint = fingerprint_of(folder, TRANSCRIPT_FILE)?;
     doc.summary_fingerprint = fingerprint_of(folder, SUMMARY_FILE)?;
+    if let Ok(previous) = session_core::generation::manifest(folder)
+        && previous.transcript_fingerprint == doc.transcript_fingerprint
+        && previous.summary_fingerprint == doc.summary_fingerprint
+    {
+        doc.result_generation = previous.result_generation;
+    }
+    let artifact = folder.join(session_core::recognition::ARTIFACT_FILE);
+    if artifact.exists()
+        && session_core::generation::manifest(folder)
+            .map_or(true, |doc| doc.recognition_artifact.is_some())
+    {
+        let reference = session_core::recognition::ArtifactReference {
+            version: session_core::recognition::ARTIFACT_VERSION,
+            filename: session_core::recognition::ARTIFACT_FILE.into(),
+            sha256: session_core::recognition::file_digest(&artifact)?,
+        };
+        let header = session_core::recognition::read_artifact(&artifact, &reference, |_| Ok(()))
+            .map_err(|e| StageError::Failed(e.to_string()))?;
+        if doc.transcript_fingerprint.as_ref() != Some(&header.transcript) {
+            return Err(StageError::Failed(
+                "recognition artifact does not match the transcript".into(),
+            ));
+        }
+        doc.recognition_artifact = Some(reference);
+        let mut audio = std::collections::BTreeMap::new();
+        for segment in segments {
+            let source = if folder.join(&segment.audio_file).is_file() {
+                folder.join(&segment.audio_file)
+            } else {
+                record
+                    .home_path
+                    .as_deref()
+                    .map(Path::new)
+                    .unwrap_or(folder)
+                    .join(&segment.audio_file)
+            };
+            if source.is_file() {
+                audio.insert(
+                    segment.audio_file.clone(),
+                    session_core::recognition::file_digest(&source)?,
+                );
+            }
+        }
+        if audio.len() == segments.len() {
+            doc.recognition_audio = Some(audio);
+        }
+    }
     Ok(doc)
 }
 
@@ -575,6 +755,9 @@ fn record_transcript_fingerprint(
 ) -> Result<(), StageError> {
     let written = fingerprint_of(folder, TRANSCRIPT_FILE)?;
     store.set_transcript_fingerprint(session_id, written.as_deref())?;
+    if let Ok(doc) = session_core::generation::manifest(folder) {
+        store.set_result_state(session_id, "verified-manifest", &serde_json::to_value(doc)?)?;
+    }
     Ok(())
 }
 
@@ -779,18 +962,38 @@ fn write_draft(dir: &Path, document: &str) -> Result<PathBuf, StageError> {
 /// redone. A rename that waited for the regeneration then moves the
 /// folder, whether the regeneration succeeded or not (KTD8). The returned
 /// path is in the folder under its name after that rename.
+#[allow(clippy::too_many_arguments)]
 pub fn regenerate_summary(
     store: &SharedStore,
     session_id: &str,
+    working_root: &Path,
     endpoint: SummaryEndpoint,
     active: Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
+    if let Some(home) = home_path(&lock(store), session_id)? {
+        refuse_pending_transcript(&home)?;
+    }
     let regenerated = summarize_again(
-        store, session_id, endpoint, active, learn, control, progress,
+        store,
+        session_id,
+        working_root,
+        endpoint,
+        active,
+        learn,
+        control,
+        progress,
     );
+    if regenerated.is_err()
+        && let Some(home) = home_path(&lock(store), session_id)?
+        && refuse_pending_transcript(&home).is_err()
+    {
+        // Do not let rename reconciliation adopt an incoming result after
+        // regeneration refused that same transition.
+        return regenerated;
+    }
     // The regeneration has ended, and the caller holds the one processing
     // permit, so no other regeneration runs.
     let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
@@ -798,9 +1001,48 @@ pub fn regenerate_summary(
     Ok(moved_to(session_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
 }
 
+fn refuse_pending_transcript(home: &Path) -> Result<(), StageError> {
+    let doc = session_core::generation::manifest(home)?;
+    let path = home.join(TRANSCRIPT_FILE);
+    let bytes = std::fs::read(&path).map_err(|error| unreadable(&path, &error.to_string()))?;
+    let hash = folder::fingerprint(&bytes);
+    if doc.transcript_fingerprint.as_ref() != Some(&hash)
+        || doc
+            .result_generation
+            .as_ref()
+            .is_some_and(|g| g.files.get(TRANSCRIPT_FILE) != Some(&hash))
+    {
+        refuse_transcript_transition(home, &hash)?;
+    }
+    Ok(())
+}
+
+fn refuse_transcript_transition(home: &Path, hash: &str) -> Result<(), StageError> {
+    let transition = std::fs::read(home.join(session_core::generation::TRANSITION))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<session_core::generation::Transition>(&bytes).ok()
+        });
+    let manifest_hash = folder::fingerprint(&std::fs::read(home.join(SESSION_FILE))?);
+    if transition.is_some_and(|transition| {
+        (transition.before == manifest_hash || transition.after == manifest_hash)
+            && transition
+                .files
+                .get(TRANSCRIPT_FILE)
+                .is_some_and(|(old, new)| old.as_deref() == Some(hash) || new == hash)
+    }) {
+        return Err(StageError::Failed(
+            "waiting for result files to sync".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn summarize_again(
     store: &SharedStore,
     session_id: &str,
+    working_root: &Path,
     endpoint: SummaryEndpoint,
     active: Prompt,
     learn: &dyn Fn(u32),
@@ -822,6 +1064,26 @@ fn summarize_again(
         let home = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
         (home, guard.segments(session_id)?)
     };
+    // Regenerate Summary explicitly accepts the current transcript text.
+    // An external edit removes the reusable recognition reference.
+    let mut current = session_core::generation::manifest(&home)?;
+    let canonical = std::fs::read(home.join(TRANSCRIPT_FILE))
+        .map_err(|e| unreadable(&home.join(TRANSCRIPT_FILE), &e.to_string()))?;
+    let current_hash = folder::fingerprint(&canonical);
+    if current.transcript_fingerprint.as_ref() != Some(&current_hash)
+        || current
+            .result_generation
+            .as_ref()
+            .is_some_and(|g| g.files.get(TRANSCRIPT_FILE) != Some(&current_hash))
+    {
+        refuse_transcript_transition(&home, &current_hash)?;
+        current.transcript_fingerprint = Some(current_hash);
+        current.summary_fingerprint = fingerprint_of(&home, SUMMARY_FILE)?;
+        current.recognition_artifact = None;
+        current.recognition_audio = None;
+        current.result_generation = Some(session_save::result::stage(&home, &home)?);
+        home_write::write_atomic(&home, SESSION_FILE, current.render().as_bytes())?;
+    }
     // A stub resumes from the calls made before the failure, but only when
     // they were made with the active prompt's text (KTD5), and from the
     // transcript and the notes that the folder holds now
@@ -848,6 +1110,8 @@ fn summarize_again(
     }
     // The transcript comes from `transcript.md`, so a computer with no
     // recognition results for the note summarizes the same text (KTD4).
+    let expected = folder::fingerprint(&std::fs::read(home.join(SESSION_FILE))?);
+    let source_notes = folder::fingerprint(lock(store).notes(session_id)?.as_bytes());
     let summary = summarize::produce(
         store, session_id, &home, endpoint, active, learn, control, progress,
     )?;
@@ -859,19 +1123,63 @@ fn summarize_again(
         // The model calls can take long. A user title that another
         // computer wrote in the meantime goes into the row first, so the
         // `session.md` below keeps it.
-        keep_folder_user_title(&guard, session_id, &path)?;
-        home_write::write_atomic(&path, SUMMARY_FILE, summary.render().as_bytes())?;
-        // `session.md` follows with the new fingerprint (KTD2). The summary
-        // is saved, so a failure here does not fail the regeneration: the
-        // reconcile after it writes `session.md` again.
-        if let Some(record) = guard.session(session_id)?
-            && let Err(e) = folder_rename::write_document(&record, &segments, &path)
+        if path != home || source_notes != folder::fingerprint(guard.notes(session_id)?.as_bytes())
         {
-            log::warn!(
-                "could not rewrite {SESSION_FILE} in {}: {e}",
-                path.display()
-            );
+            return Err(StageError::Failed(
+                "the note changed while its summary was being made; the previous result was kept"
+                    .into(),
+            ));
         }
+        keep_folder_user_title(&guard, session_id, &path)?;
+        let local = tempfile::Builder::new()
+            .prefix(".longhand-summary-")
+            .tempdir_in(working_root)?
+            .keep();
+        guard.set_result_state(
+            session_id,
+            "summary-publication",
+            &serde_json::to_value(&local)?,
+        )?;
+        let previous = session_core::generation::manifest(&path)?;
+        for name in [TRANSCRIPT_FILE, session_core::recognition::ARTIFACT_FILE] {
+            if name == session_core::recognition::ARTIFACT_FILE
+                && previous.recognition_artifact.is_none()
+            {
+                continue;
+            }
+            let bytes = session_core::generation::read(&path, &previous, name)?;
+            home_write::write_atomic(&local, name, &bytes)?;
+        }
+        home_write::write_atomic(&local, SUMMARY_FILE, summary.render().as_bytes())?;
+        let record = guard.session(session_id)?.ok_or_else(not_saved)?;
+        let mut doc = session_doc(&record, &segments, &local)?;
+        doc.recognition_snapshot = previous.recognition_snapshot;
+        let publication = session_save::result::prepare(&path, &local, &local, doc, &expected)?;
+        drop(guard);
+        while !publication.committed() {
+            let step = control
+                .proceed()
+                .and_then(|()| publication.step().map_err(StageError::from));
+            if let Err(error) = step {
+                if publication.committed() {
+                    break;
+                }
+                publication.abort(&local)?;
+                lock(store).clear_result_state(session_id, "summary-publication")?;
+                std::fs::remove_dir_all(&local)?;
+                return Err(error);
+            }
+        }
+        let guard = lock(store);
+        let published = session_core::generation::manifest(&path)?;
+        guard.set_result_state(
+            session_id,
+            "verified-manifest",
+            &serde_json::to_value(&published)?,
+        )?;
+        publication.acknowledge(&local)?;
+        guard.clear_result_state(session_id, "summary-publication")?;
+        std::fs::remove_dir_all(local)?;
         path
     };
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())?;

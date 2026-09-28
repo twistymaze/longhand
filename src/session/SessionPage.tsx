@@ -33,7 +33,7 @@ import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
 import { useTranscribeAgain } from "./TranscribeAgain";
-import { LiveTranscript, type LiveMode, READY_AFTER_STOP } from "./LiveTranscript";
+import { LiveTranscript, type LiveMode } from "./LiveTranscript";
 import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
@@ -418,7 +418,7 @@ export function SessionPage({
   // The note's own live mode decides, not the model selected now (R9). A
   // Transcribe Again run has no live text.
   const liveMode = (detail?.live_transcript ?? false) && !detail?.transcribe_again;
-  const liveView = (mode: LiveMode) => <LiveTranscript sessionId={id} mode={mode} scroller={scroller} />;
+  const liveView = (mode: LiveMode) => <LiveTranscript sessionId={id} mode={mode} scroller={scroller} textAfterStop={!detail?.live_transcript} />;
   const processing =
     detail && phase === "processing" ? (
       <ProcessingStatus
@@ -436,10 +436,8 @@ export function SessionPage({
     if (phase === "recording") {
       return which === "summary" ? (
         <AfterStop>The summary is written after you stop recording.</AfterStop>
-      ) : !detail ? null : liveMode ? (
+      ) : !detail ? null : (
         liveView(capture.status?.recording ? "recording" : "interrupted")
-      ) : (
-        <AfterStop>{READY_AFTER_STOP}</AfterStop>
       );
     }
     if (phase === "processing") {
@@ -471,6 +469,7 @@ export function SessionPage({
         hasSpeakers={doc.has_speakers}
         foundSpeakers={entry?.found_speakers ?? null}
         durationMs={entry?.duration_ms ?? 0}
+        transcriptMarkdown={doc.transcript_markdown}
       />
     );
   };

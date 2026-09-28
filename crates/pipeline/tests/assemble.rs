@@ -760,7 +760,32 @@ mod stereo {
         .unwrap();
         let rows = checkpoint::all(&a.store, "s", Stage::Assemble).unwrap();
         let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, ["done", "seg-0000", "seg-0000-echo"]);
+        assert_eq!(
+            keys,
+            [
+                "audio-provenance-00000000",
+                "done",
+                "seg-0000",
+                "seg-0000-echo"
+            ]
+        );
+        assert!(
+            assemble::provenance_valid(&a.store, "s", &a.dir, std::slice::from_ref(&a.segment))
+                .unwrap()
+        );
+        let provenance: serde_json::Value =
+            checkpoint::get(&a.store, "s", Stage::Assemble, "audio-provenance-00000000")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            provenance["archive"],
+            session_core::recognition::file_digest(&a.dir.join(&a.segment.audio_file)).unwrap()
+        );
+        assert_eq!(
+            provenance["processing"],
+            session_core::recognition::file_digest(&a.dir.join(proc_file(&a.segment.audio_file)))
+                .unwrap()
+        );
         assert_eq!(echo::saved(&a.store, "s", 0).unwrap().unwrap(), a.echo);
     }
 
@@ -820,7 +845,27 @@ mod stereo {
             .into_iter()
             .map(|(k, _)| k)
             .collect();
-        assert_eq!(keys, ["done", "seg-0000"]);
+        assert_eq!(keys, ["audio-provenance-00000000", "done", "seg-0000"]);
+        assert!(
+            assemble::provenance_valid(&store, "m", &dir, std::slice::from_ref(&segment)).unwrap()
+        );
+        let provenance: serde_json::Value =
+            checkpoint::get(&store, "m", Stage::Assemble, "audio-provenance-00000000")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            provenance["archive"],
+            session_core::recognition::file_digest(&dir.join(&segment.audio_file)).unwrap()
+        );
+        assert_eq!(
+            provenance["processing"],
+            session_core::recognition::file_digest(&dir.join(proc_file(&segment.audio_file)))
+                .unwrap()
+        );
+        assert_eq!(
+            provenance["echo"],
+            session_core::recognition::digest(b"null")
+        );
     }
 
     /// Move a completed session's archives to its folder, remove the working
@@ -854,6 +899,11 @@ mod stereo {
         let (mic, system, _, _) = speaker_call(None);
         let a = assemble_stereo(RATE as u32, &mic, &system);
         let home = complete(&a.store, &a.dir, std::slice::from_ref(&a.segment));
+        a.store
+            .lock()
+            .unwrap()
+            .set_home_path("s", home.to_str().unwrap())
+            .unwrap();
         let archive = std::fs::read(home.join(&a.segment.audio_file)).unwrap();
 
         let done = assemble::run(
@@ -865,6 +915,20 @@ mod stereo {
             &Unattended,
         )
         .unwrap();
+        assert!(
+            assemble::provenance_valid(&a.store, "s", &a.dir, std::slice::from_ref(&a.segment))
+                .unwrap()
+        );
+        assert!(
+            !assemble::recognition_audio_identity(
+                &a.store,
+                "s",
+                &a.dir,
+                std::slice::from_ref(&a.segment)
+            )
+            .unwrap()
+            .is_empty()
+        );
         let again = echo::saved(&a.store, "s", 0)
             .unwrap()
             .expect("an echo spans row");

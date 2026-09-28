@@ -1,81 +1,148 @@
-// Transcribe Again on a saved note (R15, R16, R17). The question names the
-// model selected now, says when that model is the one the note already
-// used, and says what is replaced. Cancel changes nothing.
-
-import { useState } from "react";
-import { commands } from "../bindings";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  commands,
+  type ExecutionSpec,
+  type ModelStatus,
+  type ReprocessPreview,
+  type Settings,
+} from "../bindings";
 import { sentence } from "../processing/describe";
-import { ConfirmDialog } from "../lib/ConfirmDialog";
+import {
+  RecognitionOptions,
+  recognitionDefaults,
+} from "../settings/RecognitionOptions";
+import { Button, ErrorText } from "../settings/ui";
+import { RecognitionDialog } from "./RecognitionDialog";
 
-/// The model that Transcribe Again uses: the model selected now.
-type Choice = {
-  name: string;
-  /// The note was transcribed with this model.
-  current: boolean;
-  /// The model is not downloaded yet: the note waits for it (R17).
-  waits: boolean;
-};
-
-/// The Transcribe Again question for the note page. `ask` reads the
-/// selected model and shows the question; `dialog` is the question to
-/// render, or null.
 export function useTranscribeAgain({
   sessionId,
-  noteModel,
   onQueued,
   onFailed,
 }: {
   sessionId: string;
-  /// The model the note was transcribed with, if it recorded one.
   noteModel: string | null;
   onQueued: () => void;
-  /// The note was not queued, with a sentence that says why.
   onFailed: (text: string) => void;
 }) {
-  const [choice, setChoice] = useState<Choice | null>(null);
+  const [choice, setChoice] = useState<{
+    settings: Settings;
+    models: ModelStatus[];
+  } | null>(null);
+  const [spec, setSpec] = useState<ExecutionSpec | null>(null);
+  const [preview, setPreview] = useState<ReprocessPreview | null>(null);
   const [busy, setBusy] = useState(false);
-
+  const [error, setError] = useState<string | null>(null);
+  const [consent, setConsent] = useState(false);
+  const revision = useRef(0);
+  const operation = useRef(0);
+  const resolve = useCallback((next: ExecutionSpec | null) => {
+    revision.current += 1;
+    setSpec(next);
+    setPreview(null);
+    setConsent(false);
+    setError(null);
+  }, []);
+  useEffect(
+    () => () => {
+      revision.current += 1;
+      operation.current += 1;
+    },
+    [sessionId],
+  );
   const ask = async () => {
-    const [settings, models] = await Promise.all([commands.getSettings(), commands.modelStatuses()]);
-    const selected = models.find((m) => m.id === settings.asr_model);
-    setChoice({
-      name: selected?.name ?? settings.asr_model,
-      current: settings.asr_model === noteModel,
-      waits: selected !== undefined && selected.state.state !== "present",
-    });
+    try {
+      const [settings, models] = await Promise.all([
+        commands.getSettings(),
+        commands.modelStatuses(),
+      ]);
+      setChoice({ settings, models });
+      setSpec(null);
+      setPreview(null);
+      setError(null);
+      setConsent(false);
+    } catch {
+      onFailed("Could not read the recognition choices.");
+    }
   };
-
   const confirm = async () => {
+    if (!spec || busy) return;
+    const requestedRevision = revision.current;
+    const requestedOperation = ++operation.current;
     setBusy(true);
-    const result = await commands.transcribeAgain(sessionId);
-    setBusy(false);
-    setChoice(null);
-    if (result.status === "ok") onQueued();
-    else onFailed(sentence(result.error));
-  };
-
-  const dialog =
-    choice === null ? null : (
-      <ConfirmDialog
-        title="Transcribe this note again?"
-        message={
-          <>
-            <p>
-              Longhand makes a new transcript with <span className="font-medium text-label">{choice.name}</span>
-              {choice.current ? ", the model this note already used" : ""}, and then a new summary. They
-              replace the current transcript and summary.
-            </p>
-            <p>My Notes and the title stay the same.</p>
-            {choice.waits && <p>{choice.name} isn’t downloaded yet. The note waits until it is.</p>}
-          </>
+    setError(null);
+    try {
+      if (!preview) {
+        const result = await commands.previewReprocess(sessionId, spec.config);
+        if (revision.current !== requestedRevision) return;
+        if (result.status === "error") setError(sentence(result.error));
+        else {
+          setPreview(result.data);
+          setConsent(false);
         }
-        action="Transcribe Again"
-        destructive={false}
-        busy={busy}
-        onConfirm={() => void confirm()}
-        onCancel={() => setChoice(null)}
-      />
-    );
-
+      } else {
+        const result = await commands.reprocessSession(
+          sessionId,
+          preview,
+          consent,
+        );
+        if (result.status === "ok") {
+          setChoice(null);
+          onQueued();
+        } else setError(sentence(result.error));
+      }
+    } catch {
+      if (revision.current !== requestedRevision) return;
+      setError(
+        "Could not prepare the replacement. The previous result stays unchanged.",
+      );
+    } finally {
+      if (operation.current === requestedOperation) setBusy(false);
+    }
+  };
+  const dialog = choice && (
+    <RecognitionDialog
+      title="Reprocess this note?"
+      action={preview ? "Reprocess note" : "Preview changes"}
+      busy={busy}
+      disabled={!spec || Boolean(preview?.requires_transcription && !consent)}
+      onConfirm={() => void confirm()}
+      onCancel={() => setChoice(null)}
+    >
+      <p className="mt-2 text-label-secondary">
+        The previous result stays until the replacement transcript and summary
+        are ready. My Notes and the title stay the same.
+      </p>
+      {!preview ? (
+        <RecognitionOptions
+          models={choice.models}
+          initial={spec?.config ?? recognitionDefaults(choice.settings)}
+          onResolved={resolve}
+        />
+      ) : (
+        <div className="mt-4 grid gap-3">
+          <p>{preview.explanation}</p>
+          <p>
+            {choice.models.find(
+              (m) => m.id === preview.execution.config.asr_model,
+            )?.name ?? preview.execution.config.asr_model}
+          </p>
+          {preview.requires_transcription && (
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+              />
+              Transcribe the audio again and replace the transcript and summary.
+            </label>
+          )}
+          <Button disabled={busy} onClick={() => setPreview(null)}>
+            Change choices
+          </Button>
+        </div>
+      )}
+      {error && <ErrorText>{error}</ErrorText>}
+    </RecognitionDialog>
+  );
   return { ask: () => void ask(), dialog };
 }

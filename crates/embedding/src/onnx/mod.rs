@@ -26,7 +26,8 @@ impl Default for EmbeddingConfig {
 }
 
 pub struct EmbeddingExtractor {
-    session: Session,
+    session: anlg_onnx::BackendSession<Session>,
+    model_bytes: Vec<u8>,
     config: EmbeddingConfig,
 }
 
@@ -34,15 +35,33 @@ impl EmbeddingExtractor {
     /// Load the weights from `path`, the models directory's copy (R28).
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let bytes = std::fs::read(path).map_err(anlg_onnx::Error::from)?;
-        Self::from_model_bytes(&bytes)
+        Self::from_owned_model_bytes(bytes)
     }
 
     pub fn from_model_bytes(model_bytes: &[u8]) -> Result<Self> {
-        let session = anlg_onnx::load_model_from_bytes_accelerated(model_bytes)?;
+        Self::from_owned_model_bytes(model_bytes.to_vec())
+    }
+
+    fn from_owned_model_bytes(model_bytes: Vec<u8>) -> Result<Self> {
+        let session = anlg_onnx::load_model_with_backend(&model_bytes)?;
+        let model_bytes = if session.backend() == anlg_onnx::Backend::CoreMl {
+            model_bytes
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             session,
+            model_bytes,
             config: EmbeddingConfig::default(),
         })
+    }
+
+    pub fn backend(&self) -> anlg_onnx::Backend {
+        self.session.backend()
+    }
+
+    pub fn fallback_reason(&self) -> Option<&str> {
+        self.session.fallback_reason()
     }
 
     pub fn with_config(mut self, config: EmbeddingConfig) -> Self {
@@ -109,21 +128,35 @@ impl EmbeddingExtractor {
     fn run_features(&mut self, features: Array2<f32>) -> Result<Option<Vec<f32>>> {
         let feats: Array3<f32> = features.insert_axis(Axis(0));
 
-        let inputs = ort::inputs![model::INPUT_NAME => TensorRef::from_array_view(feats.view())?];
-        let outputs = self.session.run(inputs)?;
-
-        let out = outputs
-            .get(model::OUTPUT_NAME)
-            .ok_or_else(|| Error::MissingOutput(model::OUTPUT_NAME.to_string()))?
-            .try_extract_array::<f32>()?;
-
-        let embs = out.iter().copied().collect::<Vec<_>>();
-        if embs.iter().all(|v| v.is_finite()) {
-            Ok(Some(embs))
-        } else {
-            Ok(None)
+        let bytes = &self.model_bytes;
+        let result = self.session.run_with_cpu_fallback(
+            |session| {
+                let inputs =
+                    ort::inputs![model::INPUT_NAME => TensorRef::from_array_view(feats.view())?];
+                let outputs = session.run(inputs)?;
+                let out = outputs
+                    .get(model::OUTPUT_NAME)
+                    .ok_or_else(|| Error::MissingOutput(model::OUTPUT_NAME.to_string()))?
+                    .try_extract_array::<f32>()?;
+                validate_embedding(out.iter().copied().collect()).map(Some)
+            },
+            || anlg_onnx::load_model_from_bytes(bytes).map_err(Error::from),
+        );
+        if result.is_ok() && self.backend() == anlg_onnx::Backend::Cpu {
+            self.model_bytes = Vec::new();
         }
+        result
     }
+}
+
+fn validate_embedding(embedding: Vec<f32>) -> Result<Vec<f32>> {
+    if embedding.len() != EMBEDDING_DIM {
+        return Err(Error::Internal("embedding dimension does not match model"));
+    }
+    if embedding.iter().any(|value| !value.is_finite()) {
+        return Err(Error::NonFiniteEmbedding);
+    }
+    Ok(embedding)
 }
 
 fn compute_fbank_optional(
@@ -261,5 +294,32 @@ mod tests {
     #[test]
     fn a_missing_weights_file_is_an_error_not_a_panic() {
         assert!(EmbeddingExtractor::from_path("/nonexistent/embedding.onnx").is_err());
+    }
+}
+
+#[cfg(test)]
+mod output_validation_tests {
+    use super::*;
+
+    #[test]
+    fn nonfinite_output_is_an_error_not_missing_speech() {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut output = vec![1.0; EMBEDDING_DIM];
+            output[17] = invalid;
+            assert!(matches!(
+                validate_embedding(output),
+                Err(Error::NonFiniteEmbedding)
+            ));
+        }
+    }
+
+    #[test]
+    fn incomplete_output_is_rejected_before_clustering() {
+        assert!(validate_embedding(vec![]).is_err());
+        assert!(validate_embedding(vec![1.0; EMBEDDING_DIM - 1]).is_err());
+        assert_eq!(
+            validate_embedding(vec![1.0; EMBEDDING_DIM]).unwrap(),
+            vec![1.0; EMBEDDING_DIM]
+        );
     }
 }

@@ -12,7 +12,9 @@ use crate::managers::settings;
 #[tauri::command]
 #[specta::specta]
 pub fn model_statuses(app: AppHandle, manager: State<'_, Arc<ModelsManager>>) -> Vec<ModelStatus> {
-    manager.statuses(&settings::get_settings(&app).asr_model)
+    manager
+        .statuses_for(&settings::get_settings(&app).recognition_config())
+        .unwrap_or_default()
 }
 
 /// The speaker-detection weights as one item (R7).
@@ -22,7 +24,11 @@ pub fn speaker_models_status(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
 ) -> SpeakerModelsStatus {
-    models::speaker_models(&manager.statuses(&settings::get_settings(&app).asr_model))
+    models::speaker_models(
+        &manager
+            .statuses_for(&settings::get_settings(&app).recognition_config())
+            .unwrap_or_default(),
+    )
 }
 
 /// Start fetching `ids`; progress and the outcome arrive as
@@ -69,4 +75,23 @@ pub fn delete_model(
         processing.unload_engine(&model_id);
     }
     manager.delete_files(&model_id)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn resolve_recognition(
+    config: ::models::recognition::RecognitionConfig,
+) -> Result<::models::recognition::ExecutionSpec, String> {
+    ::models::recognition::resolve(&config).map_err(|e| e.to_string())
+}
+
+/// Fetch the exact artifacts of a saved configuration.
+#[tauri::command]
+#[specta::specta]
+pub fn download_recognition_artifacts(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+    spec: ::models::recognition::ExecutionSpec,
+) -> Result<(), String> {
+    manager.start_spec_downloads(&app, &spec)
 }

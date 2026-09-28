@@ -9,6 +9,7 @@ publish.workspace = true
 futures-util = "0.3"
 log.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls"] }
+specta = { workspace = true, features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

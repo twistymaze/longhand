@@ -39,7 +39,7 @@ use audio::CaptureStream;
 use audio_cpal::{CpalAudio, Input, Inputs, MicChoice};
 use audio_system::{Permission, SilenceRun, SilentCheck, SystemAudioCapture, SystemAudioStatus};
 use chrono::{DateTime, FixedOffset, Local};
-use pipeline::live::{LiveEnd, LiveWorker};
+use pipeline::live::LiveEnd;
 use pipeline::recover::segment_audio_file;
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{
@@ -59,7 +59,7 @@ use tokio_util::sync::CancellationToken;
 use crate::audio::AppAudio;
 use crate::commands::readiness::SystemAudioPermission;
 use crate::managers::alerts::{self, AlertsManager};
-use crate::managers::live::LiveManager;
+use crate::managers::live::{DeferredLive, LiveManager};
 use crate::managers::models::ModelsManager;
 use crate::managers::settings::{self, MicrophoneChoice, Settings};
 
@@ -199,7 +199,7 @@ struct ActiveSegment {
     outcome: std_mpsc::Receiver<SegmentOutcome>,
     thread: JoinHandle<()>,
     /// The segment's live worker, when the note is in live mode (U6).
-    live: Option<LiveWorker>,
+    live: Option<DeferredLive>,
     /// The name of the input that the segment records from.
     input: String,
     /// The note's chosen microphone is missing, and the system default
@@ -356,6 +356,8 @@ struct Opening<'a> {
     offset_ms: u64,
     /// The model of a note in live mode (U6).
     live: Option<&'a str>,
+    /// The resolved snapshot before the new session row exists.
+    recognition: Option<&'a models::recognition::ExecutionSpec>,
     /// The note's microphone. `None` is "System default".
     choice: Option<&'a MicChoice>,
     /// An input change opens the segment (KTD3).
@@ -369,6 +371,18 @@ struct Opening<'a> {
     /// system audio (KTD18). With system audio on and no stream here,
     /// the speaker stream opens on a thread of its own after the segment.
     speaker: Option<EarlySpeaker>,
+}
+
+fn opening_recognition(
+    store: &pipeline::SharedStore,
+    session_id: &str,
+    initial: Option<&models::recognition::ExecutionSpec>,
+) -> Result<Option<models::recognition::ExecutionSpec>, CaptureError> {
+    if let Some(spec) = initial {
+        return Ok(Some(spec.clone()));
+    }
+    pipeline::recognition::snapshot(store, session_id)
+        .map_err(|error| CaptureError::Other(error.to_string()))
 }
 
 /// A speaker stream that opened before its segment, at the first turn-on of
@@ -867,6 +881,13 @@ pub fn resume_offset(
 /// The model and the live mode that a session records when it starts
 /// (KTD2). The live mode is true only when the selected model streams and
 /// the Live transcript switch is on (R18).
+fn recognition_count(count: Option<SpeakerCount>) -> Option<models::recognition::SpeakerCount> {
+    count.map(|c| match c {
+        SpeakerCount::Exact(count) => models::recognition::SpeakerCount::Exact { count },
+        SpeakerCount::Range { min, max } => models::recognition::SpeakerCount::Range { min, max },
+    })
+}
+
 pub fn recording_model(settings: &Settings) -> RecordingModel {
     let streams = models::model(&settings.asr_model).is_some_and(|m| m.streaming);
     RecordingModel {
@@ -980,7 +1001,40 @@ impl CaptureManager {
         app: &AppHandle,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<String, CaptureError> {
+        self.start_session_with_config(app, speaker_count, None)
+    }
+
+    /// Apply the choices to this start request only. Other starts use defaults.
+    pub fn start_session_with_config(
+        &self,
+        app: &AppHandle,
+        speaker_count: Option<SpeakerCount>,
+        config: Option<models::recognition::RecognitionConfig>,
+    ) -> Result<String, CaptureError> {
         let mut inner = self.inner();
+        let settings = settings::get_settings(app);
+        let config = config.unwrap_or_else(|| {
+            let mut config = settings.recognition_config();
+            config.speaker_count = recognition_count(speaker_count);
+            config
+        });
+        let spec = models::recognition::resolve(&config)
+            .map_err(|e| CaptureError::Other(e.to_string()))?;
+        let missing = app.state::<Arc<ModelsManager>>().missing_spec(&spec);
+        if !missing.is_empty() {
+            return Err(CaptureError::Other(format!(
+                "Download the selected models before recording: {}",
+                missing.join(", ")
+            )));
+        }
+        let snapshot =
+            serde_json::to_value(&spec).map_err(|e| CaptureError::Other(e.to_string()))?;
+        let speaker_count = config.speaker_count.map(|c| match c {
+            models::recognition::SpeakerCount::Exact { count } => SpeakerCount::Exact(count),
+            models::recognition::SpeakerCount::Range { min, max } => {
+                SpeakerCount::Range { min, max }
+            }
+        });
         let mut ended = inner.supersede();
         if let Some(active) = inner.active.take() {
             ended = Some(active.session_id.clone());
@@ -990,8 +1044,12 @@ impl CaptureManager {
         let started = now();
         let mut timeline = Timeline::new();
         let index = timeline.open(0, started)?;
-        let settings = settings::get_settings(app);
-        let model = recording_model(&settings);
+        let model = RecordingModel {
+            asr_model: config.asr_model.clone(),
+            live_transcript: config.processing_mode
+                == models::recognition::ProcessingMode::DuringRecording
+                && spec.capabilities.live_transcription,
+        };
         let capture = available(capture_choice_at_start(
             inner.held_microphone.clone(),
             inner.held_system_audio,
@@ -1004,13 +1062,14 @@ impl CaptureManager {
             segment: index,
             offset_ms: 0,
             live,
+            recognition: Some(&spec),
             choice: choice.as_ref(),
             at_switch: false,
             system_audio: capture.system_audio,
             stereo_mark: false,
             speaker: None,
         };
-        let active = match self.open_segment(app, &mut inner, opening) {
+        let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
             Err(e) => {
                 // The session this press ended is already closed: stop and
@@ -1028,18 +1087,24 @@ impl CaptureManager {
                 return Err(e);
             }
         };
-        let stopped =
-            match self
-                .store()
-                .start_session(&id, started, speaker_count, &model, &capture)
-            {
-                Ok(stopped) => stopped,
-                Err(e) => {
-                    abandon(active);
-                    let _ = std::fs::remove_dir_all(self.session_dir(&id));
-                    return Err(e.into());
-                }
-            };
+        let stopped = match self.store().start_session_with_recognition(
+            &id,
+            started,
+            speaker_count,
+            &model,
+            &capture,
+            Some(&snapshot),
+        ) {
+            Ok(stopped) => stopped,
+            Err(e) => {
+                abandon(active);
+                let _ = std::fs::remove_dir_all(self.session_dir(&id));
+                return Err(e.into());
+            }
+        };
+        if let Some(live) = &mut active.live {
+            live.activate();
+        }
         for other in stopped {
             self.record_model_at_stop(app, &other);
             log::info!("session {other} stopped by a new session");
@@ -1125,6 +1190,15 @@ impl CaptureManager {
     /// Otherwise the session records the selected model and live mode
     /// (KTD2).
     fn record_model_at_resume(&self, app: &AppHandle, id: &str) {
+        if self
+            .store()
+            .recognition_snapshot(id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return;
+        }
         let recorded = match self.store().session(id) {
             Ok(record) => record.and_then(|r| r.asr_model),
             Err(e) => {
@@ -1177,6 +1251,17 @@ impl CaptureManager {
             // transcript from another computer clears this computer's
             // recognition results (KTD12).
             pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
+            if let Some(value) = store.recognition_snapshot(id)? {
+                let spec: models::recognition::ExecutionSpec = serde_json::from_value(value)
+                    .map_err(|e| CaptureError::Other(e.to_string()))?;
+                let missing = app.state::<Arc<ModelsManager>>().missing_spec(&spec);
+                if !missing.is_empty() {
+                    return Err(CaptureError::Other(format!(
+                        "Download the note's models before Resume: {}",
+                        missing.join(", ")
+                    )));
+                }
+            }
             let record = store.session(id)?;
             let completed = record
                 .as_ref()
@@ -1242,13 +1327,14 @@ impl CaptureManager {
             segment: index,
             offset_ms: offset,
             live: live.as_deref(),
+            recognition: None,
             choice: choice.as_ref(),
             at_switch: false,
             system_audio: capture.system_audio,
             stereo_mark: self.note_stereo(id),
             speaker: None,
         };
-        let active = match self.open_segment(app, &mut inner, opening) {
+        let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
             Err(e) => {
                 // The store already says Capturing: put the session back to
@@ -1266,6 +1352,9 @@ impl CaptureManager {
                 return Err(e);
             }
         };
+        if let Some(live) = &mut active.live {
+            live.activate();
+        }
         inner.active = Some(active);
         inner.clock = Some(Clock::new(id, timeline, epoch));
         log::info!("session {id} resumed as segment {index} at {offset} ms");
@@ -1854,7 +1943,14 @@ impl CaptureManager {
     /// Bound the open session's diarization (R36).
     pub fn set_speaker_count(&self, count: Option<SpeakerCount>) -> Result<(), CaptureError> {
         let (id, _) = self.open_session()?.ok_or(CaptureError::NotCapturing)?;
-        Ok(self.store().set_speaker_count(&id, count)?)
+        let store = self.store();
+        if let Some(value) = store.recognition_snapshot(&id)? {
+            let spec: models::recognition::ExecutionSpec =
+                serde_json::from_value(value).map_err(|e| CaptureError::Other(e.to_string()))?;
+            spec.validate_count(recognition_count(count))
+                .map_err(|e| CaptureError::Other(e.to_string()))?;
+        }
+        Ok(store.set_speaker_count(&id, count)?)
     }
 
     /// A segment ended on its own (U14). Close it; then, when a restart can
@@ -2192,6 +2288,7 @@ impl CaptureManager {
             segment: index,
             offset_ms: offset,
             live: live.as_deref(),
+            recognition: None,
             choice: choice.as_ref(),
             at_switch,
             system_audio: capture.system_audio,
@@ -2199,7 +2296,10 @@ impl CaptureManager {
             speaker,
         };
         match self.open_segment(app, inner, opening) {
-            Ok(active) => {
+            Ok(mut active) => {
+                if let Some(live) = &mut active.live {
+                    live.activate();
+                }
                 inner.active = Some(active);
                 log::info!("session {id} reopened as segment {index} at {offset} ms");
                 self.watch_capture(app, inner, id);
@@ -2280,6 +2380,7 @@ impl CaptureManager {
             segment,
             offset_ms,
             live,
+            recognition,
             choice,
             at_switch,
             system_audio,
@@ -2336,12 +2437,31 @@ impl CaptureManager {
                 None => open_later = true,
             }
         }
-        let (tap, live) = live
-            .and_then(|model| {
-                app.state::<Arc<LiveManager>>()
-                    .start(app, session_id, segment, model, rate)
+        let snapshot = opening_recognition(&self.store, session_id, recognition)?;
+        let selected = snapshot
+            .as_ref()
+            .filter(|spec| spec.enabled_live_transcription || spec.enabled_live_speaker_analysis)
+            .map(|spec| spec.config.asr_model.as_str())
+            .or(live)
+            .map(str::to_string);
+        let live = selected.map(|model| {
+            let app = app.clone();
+            let archive = self.session_dir(session_id).join(RECOVERY_DIR);
+            let session_id = session_id.to_string();
+            DeferredLive::new(move || {
+                app.state::<Arc<LiveManager>>().start(
+                    &app,
+                    &session_id,
+                    segment,
+                    &model,
+                    rate,
+                    archive,
+                    offset_ms,
+                    snapshot,
+                )
             })
-            .unzip();
+        });
+        let tap = live.as_ref().map(DeferredLive::tap);
 
         let stop = CancellationToken::new();
         let (tx, outcome) = std_mpsc::channel();
@@ -2356,8 +2476,6 @@ impl CaptureManager {
             .map(|l| audio::mic_copy::MicCopyCheck::new(rate, l.shared.mic_copy.clone()));
         // The loss report reads the generation of the stream that ended.
         let lost_shared = link.as_ref().map(|l| Arc::clone(&l.shared));
-        // The live mix of a stereo segment, only when a live worker reads it.
-        let mut mix = (channels == 2 && tap.is_some()).then(|| audio::live_mix::LiveMix::new(rate));
         let spawned = std::thread::Builder::new()
             .name(format!("longhand-segment-{segment}"))
             .spawn(move || {
@@ -2396,20 +2514,12 @@ impl CaptureManager {
                         }
                         .emit(&tick_app);
                     },
-                    // Never waits: a full channel drops the frame (KTD3).
-                    // A stereo segment offers the live mix (KTD11); a mono
-                    // segment offers the microphone.
+                    // This hint never waits and carries no audio. Workers read
+                    // the recorder's flushed bytes and mix on their own threads.
+                    // Before activation, audio stays in that same archive.
                     move |frame: Frame<'_>| {
-                        if let Some(tap) = &tap {
-                            match (&mut mix, frame.speaker) {
-                                (Some(mix), Some(speaker)) => {
-                                    let mono: Arc<[f32]> = mix.mix(frame.mic, speaker).into();
-                                    tap.offer(frame.index, &mono);
-                                }
-                                _ => {
-                                    tap.offer(frame.index, frame.mic);
-                                }
-                            }
+                        if let Some(tap) = tap.as_ref().and_then(|tap| tap.get()) {
+                            tap.notify(frame.index);
                         }
                         if let (Some(silence), Some(right)) = (&silence, frame.speaker) {
                             silence.push(right, rate);
@@ -2706,6 +2816,40 @@ mod tests {
             .unwrap()
             .timestamp_opt(secs, 0)
             .unwrap()
+    }
+
+    #[test]
+    fn opening_recognition_uses_initial_snapshot_before_the_row_exists() {
+        let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+        let spec = models::recognition::resolve(&Settings::default().recognition_config()).unwrap();
+        let actual = opening_recognition(&store, "new", Some(&spec))
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, spec);
+        assert!(store.lock().unwrap().session("new").unwrap().is_none());
+    }
+
+    #[test]
+    fn opening_recognition_reopens_with_the_persisted_snapshot() {
+        let mut store = Store::open_in_memory().unwrap();
+        let settings = Settings::default();
+        let spec = models::recognition::resolve(&settings.recognition_config()).unwrap();
+        store
+            .start_session_with_recognition(
+                "saved",
+                at(0),
+                None,
+                &recording_model(&settings),
+                &CaptureChoice::default(),
+                Some(&serde_json::to_value(&spec).unwrap()),
+            )
+            .unwrap();
+        let store = Arc::new(Mutex::new(store));
+        assert_eq!(
+            opening_recognition(&store, "saved", None).unwrap(),
+            Some(spec)
+        );
+        assert!(opening_recognition(&store, "absent", None).is_err());
     }
 
     #[test]

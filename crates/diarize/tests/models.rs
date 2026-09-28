@@ -142,3 +142,41 @@ fn real_meeting_speech_yields_turns_inside_the_audio() {
     let speakers: std::collections::BTreeSet<usize> = out[0].iter().map(|s| s.speaker).collect();
     eprintln!("{} turns, {} speakers", out[0].len(), speakers.len());
 }
+
+#[test]
+#[ignore = "needs the diarization weights on disk"]
+fn extracted_chunks_cover_the_source_and_contain_finite_embeddings() {
+    let audio = speech();
+    let mut analyzer = analyzer();
+    let mut covered = 0;
+    let mut windows = 0;
+    let mut embeddings = 0;
+    let layout = analyzer
+        .analyze_chunks(
+            &mut audio.as_slice(),
+            &DiarizeRequest::default(),
+            &mut |chunk| {
+                assert_eq!(chunk.index, windows);
+                assert!(chunk.start_sample <= covered);
+                covered = covered.max(chunk.start_sample + chunk.valid_samples);
+                for embedding in &chunk.embeddings {
+                    assert_eq!(embedding.window, chunk.index);
+                    assert_eq!(embedding.embedding.len(), 256);
+                    assert!(embedding.embedding.iter().all(|value| value.is_finite()));
+                }
+                embeddings += chunk.embeddings.len();
+                windows += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(covered, audio.len());
+    assert_eq!(layout.total, audio.len());
+    assert_eq!(layout.windows, windows);
+    assert!(embeddings > 0);
+    eprintln!(
+        "embedding provider {:?}; fallback {:?}",
+        analyzer.embedding_backend(),
+        analyzer.embedding_fallback_reason()
+    );
+}

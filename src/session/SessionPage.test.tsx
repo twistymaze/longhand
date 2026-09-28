@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   LiveTranscript,
@@ -878,13 +878,16 @@ describe("SessionPage", () => {
 
   describe("Transcribe Again", () => {
     const models = [
-      { id: "tdt", name: "Parakeet TDT 1.1B", state: { state: "present" } },
-      { id: "whisper", name: "Whisper large-v3-turbo", state: { state: "absent", partial_bytes: 0 } },
+      { id: "tdt", name: "Parakeet TDT 1.1B", role: "recognition", languages: ["en"], size_bytes: 1, state: { state: "present" } },
+      { id: "whisper", name: "Whisper large-v3-turbo", role: "recognition", languages: ["en"], size_bytes: 1, state: { state: "absent", partial_bytes: 0 } },
     ];
+    const execution = (config: unknown) => ({ config, capabilities: { live_transcription: false, live_speaker_analysis: false, live_attributed_text: false, maximum_speakers: null }, artifacts: [], runtimes: [] });
     const withModel = (asr_model: string) => ({
-      get_settings: () => ({ asr_model }),
+      get_settings: () => ({ asr_model, speaker_source: "off", live_transcript: false, speaker_processing_mode: "after_stop", default_speaker_count: null, recognition_language: null }),
       model_statuses: () => models,
-      transcribe_again: () => null,
+      resolve_recognition: ({ config }: Record<string, unknown>) => execution(config),
+      preview_reprocess: ({ config }: Record<string, unknown>) => ({ execution: execution(config), requires_transcription: true, explanation: "Transcription must run again.", manifest: "old" }),
+      reprocess_session: () => null,
     });
 
     async function openQuestion(noteModel: string, selected: string) {
@@ -896,56 +899,50 @@ describe("SessionPage", () => {
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Actions" }));
       await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
-      const dialog = await screen.findByRole("alertdialog", { name: "Transcribe this note again?" });
+      const dialog = await screen.findByRole("alertdialog", { name: "Reprocess this note?" });
       return { tauri, sessions, user, dialog };
     }
 
-    test("the question names the selected model and says what is replaced, and Cancel changes nothing", async () => {
-      const { tauri, user, dialog } = await openQuestion("parakeet-unified-en-0.6b", "tdt");
-      expect(dialog.textContent).toContain("Parakeet TDT 1.1B");
-      expect(dialog.textContent).toContain("replace the current transcript and summary");
+    test("replacement requires a preview before a run can start", async () => {
+      const { tauri, dialog, user } = await openQuestion("tdt", "tdt");
+      expect(within(dialog).getByRole("button", { name: "Preview changes" })).toBeTruthy();
+      expect(dialog.textContent).toContain("previous result stays");
       expect(dialog.textContent).toContain("My Notes and the title stay the same");
-      expect(dialog.textContent).not.toContain("already used");
-      expect(dialog.textContent).not.toContain("download");
-      // Cancel has the focus: Return must not start the run by accident.
-      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
       await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
       expect(screen.queryByRole("alertdialog")).toBeNull();
-      expect(tauri.calls.some((c) => c.cmd === "transcribe_again")).toBe(false);
+      expect(tauri.calls.some((c) => c.cmd === "reprocess_session")).toBe(false);
     });
 
-    test("the question says when the model is the note's own, and confirming queues the note", async () => {
+    test("preview and explicit retranscription consent queue the note", async () => {
       const { tauri, sessions, user, dialog } = await openQuestion("tdt", "tdt");
-      expect(dialog.textContent).toContain("Parakeet TDT 1.1B, the model this note already used");
-      await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
-      expect(tauri.calls.filter((c) => c.cmd === "transcribe_again").map((c) => c.args)).toEqual([
-        { sessionId: "s" },
-      ]);
+      const preview = within(dialog).getByRole("button", { name: "Preview changes" });
+      await waitFor(() => expect((preview as HTMLButtonElement).disabled).toBe(false));
+      await user.click(preview);
+      expect(await screen.findByText("Transcription must run again.")).toBeTruthy();
+      const run = screen.getByRole("button", { name: "Reprocess note" });
+      expect((run as HTMLButtonElement).disabled).toBe(true);
+      await user.click(screen.getByRole("checkbox"));
+      await user.click(run);
+      expect(tauri.calls.filter((c) => c.cmd === "reprocess_session")).toHaveLength(1);
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(sessions.refresh).toHaveBeenCalled();
     });
 
-    test("the question says that the note waits for a model that isn't downloaded", async () => {
-      const { dialog } = await openQuestion("tdt", "whisper");
-      expect(dialog.textContent).toContain("Whisper large-v3-turbo isn’t downloaded yet. The note waits until it is.");
-    });
-
-    test("a refused run says why on the page", async () => {
+    test("a refused replacement stays in the dialog with its reason", async () => {
       const e = entry("s");
-      mockPage(e, {}, {
-        ...withModel("tdt"),
-        transcribe_again: () => {
-          throw "A recording is in progress. Try again after it stops.";
-        },
-      });
+      mockPage(e, {}, { ...withModel("tdt"), reprocess_session: () => { throw "A recording is in progress. Try again after it stops."; } });
       renderPage({ id: "s", sessions: sessionsOf([e]) });
       await act(async () => {});
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Actions" }));
       await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
-      const dialog = await screen.findByRole("alertdialog");
-      await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
+      const preview = await screen.findByRole("button", { name: "Preview changes" });
+      await waitFor(() => expect((preview as HTMLButtonElement).disabled).toBe(false));
+      await user.click(preview);
+      await user.click(await screen.findByRole("checkbox"));
+      await user.click(screen.getByRole("button", { name: "Reprocess note" }));
       expect(await screen.findByText("A recording is in progress. Try again after it stops.")).toBeTruthy();
+      expect(screen.getByRole("alertdialog")).toBeTruthy();
     });
 
     test("after a failed run, the page says the previous transcript is unchanged", async () => {
@@ -1020,6 +1017,7 @@ describe("SessionPage", () => {
 
   describe("live transcript", () => {
     const saidSoFar: LiveTranscript = {
+      recognition: [],
       parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "What we said so far." }],
       current: null,
       state: "running",
@@ -1058,9 +1056,14 @@ describe("SessionPage", () => {
       expect(screen.getByText("And then we")).toBeTruthy();
     });
 
-    test("with live mode off, Transcript says the transcript is ready after Stop and reads no live text", async () => {
+    test("offline text still shows independent live speaker analysis", async () => {
       const e = entry("rec", { state: "capturing" });
-      const tauri = mockPage(e, { live_transcript: false }, { live_transcript: () => saidSoFar });
+      const marker = { session_id: "rec", generation: "g", epoch: 0, key: "speakers", revision: 1, rows: [] };
+      const tauri = mockPage(e, { live_transcript: false }, { live_transcript: () => ({ parts: [], current: null, state: "running", recognition: [
+        { ...marker, phase: "snapshot_begin" },
+        { ...marker, phase: "snapshot_batch", rows: [{ start_sample: 0, end_sample: 16000, text: null, speaker: "g:0:0:1", text_final: false, speaker_final: false }] },
+        { ...marker, phase: "snapshot_end" },
+      ] }) });
       renderPage({
         id: "rec",
         capture: recordingCapture("rec"),
@@ -1068,8 +1071,9 @@ describe("SessionPage", () => {
       });
       await act(async () => {});
       await userEvent.setup().click(tab("Transcript"));
+      expect(await screen.findByText("Speaker analysis so far")).toBeTruthy();
       expect(screen.getByText("The transcript is ready after you stop recording.")).toBeTruthy();
-      expect(tauri.calls.some((c) => c.cmd === "live_transcript")).toBe(false);
+      expect(tauri.calls.some((c) => c.cmd === "live_transcript")).toBe(true);
     });
 
     test("a note whose model changed during the recording still shows its live text", async () => {
@@ -1155,6 +1159,30 @@ function Synced({ id }: { id: string }) {
 }
 
 describe("SessionPage and the synced library", () => {
+  test("a loaded note uses its saved speaker mode and updates the notice when its transcript changes", async () => {
+    const e = entry("s", { found_speakers: null });
+    let transcriptMarkdown = "# Transcript\n\n> Speaker recognition was off for this transcript.\n\n- [00:00:00] Hello.\n";
+    const tauri = mockPage(e, {}, {
+      list_sessions: () => [e],
+      session_document: () => ({
+        ...doc,
+        has_speakers: false,
+        lines: [{ kind: "turn", position_ms: 0, speaker: null, text: "Hello." }],
+        transcript_markdown: transcriptMarkdown,
+      }),
+    });
+    render(<Synced id="s" />);
+    await screen.findByText("We agreed the budget.");
+    await userEvent.setup().click(tab("Transcript"));
+    expect(await screen.findByText("Speaker recognition was off for this note.")).toBeTruthy();
+    expect(screen.queryByText(/Speaker separation failed/)).toBeNull();
+
+    transcriptMarkdown = "# Transcript\n\n> This transcript carries no speaker marks: speaker separation failed for this session.\n\n- [00:00:00] Hello.\n";
+    await act(() => tauri.emit("library-changed", { changed: ["s"], removed: [] }));
+    expect(await screen.findByText("Speaker separation failed for this note, so the transcript has no speaker marks.")).toBeTruthy();
+    expect(screen.queryByText("Speaker recognition was off for this note.")).toBeNull();
+  });
+
   test("a library change for the open note reloads its detail and document", async () => {
     const e = entry("s");
     let body = "We agreed the budget.";

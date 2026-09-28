@@ -152,6 +152,41 @@ pub struct Analysis {
     pub embeddings: Vec<WindowEmbedding>,
 }
 
+/// One completed extraction window. Adjacent windows overlap by
+/// `WINDOW_SAMPLES - layout.step` samples. No speaker labels are assigned here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnalysisChunk {
+    pub index: usize,
+    pub start_sample: usize,
+    /// Source samples in this window, excluding zero padding.
+    pub valid_samples: usize,
+    pub activity: WindowActivity,
+    pub embeddings: Vec<WindowEmbedding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnalysisLayout {
+    pub total: usize,
+    pub step: usize,
+    pub windows: usize,
+}
+
+fn analysis_layout(config: &DiarizationConfig, total: usize) -> AnalysisLayout {
+    let step = step_samples(config, total);
+    let windows = if total == 0 {
+        0
+    } else if total <= WINDOW_SAMPLES {
+        1
+    } else {
+        (total - WINDOW_SAMPLES).div_ceil(step) + 1
+    };
+    AnalysisLayout {
+        total,
+        step,
+        windows,
+    }
+}
+
 pub struct Diarizer {
     segmenter: Segmenter,
     embedder: anlg_embedding::EmbeddingExtractor,
@@ -182,24 +217,49 @@ impl Diarizer {
         audio: &mut dyn AudioSource,
         request: &DiarizeRequest<'_>,
     ) -> Result<Analysis, crate::Error> {
-        let total = audio.sample_count()?;
-        if total == 0 {
-            return Ok(Analysis::default());
-        }
+        let mut analysis = Analysis::default();
+        let layout = self.analyze_chunks(audio, request, &mut |chunk| {
+            analysis.activities.push(chunk.activity);
+            analysis.embeddings.extend(chunk.embeddings);
+            Ok(())
+        })?;
+        analysis.total = layout.total;
+        analysis.step = if layout.windows == 0 { 0 } else { layout.step };
+        Ok(analysis)
+    }
 
-        let step = step_samples(&self.config, total);
-        let window_count = if total <= WINDOW_SAMPLES {
-            1
-        } else {
-            (total - WINDOW_SAMPLES).div_ceil(step) + 1
-        };
+    pub fn embedding_backend(&self) -> anlg_onnx::Backend {
+        self.embedder.backend()
+    }
+
+    pub fn embedding_fallback_reason(&self) -> Option<&str> {
+        self.embedder.fallback_reason()
+    }
+
+    /// Extract and deliver each complete window without retaining earlier outputs.
+    /// The callback can persist a chunk or stop extraction with an error.
+    /// Clustering is a separate operation. Input and output window indices are
+    /// local to this source; a caller must retain its canonical source offset.
+    pub fn analyze_chunks(
+        &mut self,
+        audio: &mut dyn AudioSource,
+        request: &DiarizeRequest<'_>,
+        on_chunk: &mut dyn FnMut(AnalysisChunk) -> Result<(), crate::Error>,
+    ) -> Result<AnalysisLayout, crate::Error> {
+        let layout = analysis_layout(&self.config, audio.sample_count()?);
+        if layout.windows == 0 {
+            return Ok(layout);
+        }
+        let AnalysisLayout {
+            total,
+            step,
+            windows: window_count,
+        } = layout;
         let min_anchor_frames = seconds_to_frames(self.config.min_embedding_seconds).max(1);
         let min_activity_frames = seconds_to_frames(self.config.min_activity_seconds).max(1);
 
         let mut window = vec![0.0f32; WINDOW_SAMPLES];
         let mut mask = vec![0.0f32; WINDOW_SAMPLES];
-        let mut activities: Vec<WindowActivity> = Vec::with_capacity(window_count);
-        let mut embeddings: Vec<WindowEmbedding> = Vec::new();
 
         for index in 0..window_count {
             if request.is_cancelled.is_some_and(|cancelled| cancelled()) {
@@ -213,6 +273,7 @@ impl Diarizer {
                 .frames
                 .truncate(frames_for_samples(valid).min(activity.frames.len()));
 
+            let mut embeddings = Vec::with_capacity(LOCAL_SPEAKERS);
             for local_speaker in 0..LOCAL_SPEAKERS {
                 let active = activity.active_frames(local_speaker);
                 if active < min_activity_frames {
@@ -231,18 +292,19 @@ impl Diarizer {
                     None => continue,
                 }
             }
-            activities.push(activity);
+            on_chunk(AnalysisChunk {
+                index,
+                start_sample: start,
+                valid_samples: valid,
+                activity,
+                embeddings,
+            })?;
             if let Some(on_progress) = request.on_progress {
                 on_progress((index + 1) as f32 / window_count as f32);
             }
         }
 
-        Ok(Analysis {
-            total,
-            step,
-            activities,
-            embeddings,
-        })
+        Ok(layout)
     }
 
     /// Diarize one source end to end, as upstream does.
@@ -281,7 +343,7 @@ fn step_samples(config: &DiarizationConfig, total: usize) -> usize {
     let requested = seconds_to_frames(config.step_seconds).max(1);
     let max_windows = config.max_windows.max(2);
     let needed = if total > WINDOW_SAMPLES {
-        (total - WINDOW_SAMPLES).div_ceil((max_windows - 1) * FRAME_SIZE)
+        (total - WINDOW_SAMPLES).div_ceil((max_windows - 1).saturating_mul(FRAME_SIZE))
     } else {
         0
     };
@@ -647,5 +709,40 @@ mod tests {
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].speaker, 0);
         assert!(segments[0].end > 11.5);
+    }
+}
+
+#[cfg(test)]
+mod chunk_layout_tests {
+    use super::*;
+
+    #[test]
+    fn native_chunk_layout_covers_long_input_and_tail() {
+        let config = DiarizationConfig {
+            max_windows: usize::MAX,
+            ..DiarizationConfig::default()
+        };
+        let total = 181 * 60 * SAMPLE_RATE as usize + 137;
+        let layout = analysis_layout(&config, total);
+        assert!(layout.windows > 3612);
+        // The native hop rounds 32,000 samples to 119 frames of 270 samples.
+        assert_eq!(layout.step, 32_130);
+        let mut covered = 0;
+        for index in 0..layout.windows {
+            let start = index * layout.step;
+            assert!(start <= covered);
+            let valid = WINDOW_SAMPLES.min(total - start);
+            covered = covered.max(start + valid);
+        }
+        assert_eq!(covered, total);
+    }
+
+    #[test]
+    fn empty_and_short_input_do_not_add_extra_windows() {
+        let config = DiarizationConfig::default();
+        assert_eq!(analysis_layout(&config, 0).windows, 0);
+        assert_eq!(analysis_layout(&config, 1).windows, 1);
+        assert_eq!(analysis_layout(&config, WINDOW_SAMPLES).windows, 1);
+        assert_eq!(analysis_layout(&config, WINDOW_SAMPLES + 1).windows, 2);
     }
 }

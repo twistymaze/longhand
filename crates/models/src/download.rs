@@ -130,6 +130,74 @@ pub async fn ensure_model(
     Ok(outcome)
 }
 
+/// A snapshot artifact has a separate directory for its exact hash.
+/// This does not replace the current catalog file with the same name.
+pub fn pinned_artifact_path(
+    dir: &Path,
+    artifact: &crate::recognition::ArtifactSpec,
+) -> Result<PathBuf, DownloadError> {
+    let hex = |value: &str, length| {
+        value.len() == length
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    let name = &artifact.filename;
+    if !hex(&artifact.sha256, 64)
+        || !hex(&artifact.revision, 40)
+        || artifact.size_bytes == 0
+        || name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':'])
+        || !artifact.url.starts_with("https://")
+        || !artifact.url.contains(&artifact.revision)
+    {
+        return Err(DownloadError::Protocol(
+            "invalid pinned artifact identity".into(),
+        ));
+    }
+    Ok(dir.join("pinned").join(&artifact.sha256).join(name))
+}
+
+pub fn pinned_artifact_present(dir: &Path, artifact: &crate::recognition::ArtifactSpec) -> bool {
+    pinned_artifact_path(dir, artifact).is_ok_and(|path| {
+        path.metadata()
+            .is_ok_and(|m| m.is_file() && m.len() == artifact.size_bytes)
+    })
+}
+
+/// Download the snapshot's URL and hash, independently of the current catalog.
+pub async fn ensure_artifact(
+    dir: &Path,
+    artifact: &crate::recognition::ArtifactSpec,
+    limits: Limits,
+    cancel: &CancellationToken,
+    emit: &(dyn Fn(Event<'_>) + Send + Sync),
+) -> Result<Outcome, DownloadError> {
+    let path = pinned_artifact_path(dir, artifact)?;
+    if pinned_artifact_present(dir, artifact) {
+        return Ok(Outcome::Completed);
+    }
+    fs::create_dir_all(path.parent().expect("pinned artifact has a parent"))?;
+    let partial = partial_path(&path);
+    let outcome = download_resumable(
+        &artifact.id,
+        &artifact.url,
+        &partial,
+        Some(artifact.size_bytes),
+        Some(&artifact.sha256),
+        limits,
+        cancel,
+        emit,
+    )
+    .await?;
+    if outcome == Outcome::Completed {
+        fs::rename(&partial, &path)?;
+    }
+    Ok(outcome)
+}
+
 fn content_range_start(value: &str) -> Option<u64> {
     let range = value.trim().strip_prefix("bytes")?.trim_start();
     range.split('-').next()?.trim().parse().ok()

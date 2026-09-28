@@ -11,12 +11,13 @@ use std::sync::Once;
 
 use serde::{Deserialize, Serialize};
 use transcribe_cpp::{
-    Model, ModelOptions, RunExtension, RunOptions, Session, StreamOptions, TimestampKind,
+    Diarize, Model, ModelOptions, RunExtension, RunOptions, Session, StreamOptions, TimestampKind,
     WhisperRunOptions,
 };
 
 use crate::SAMPLES_PER_MS;
 use crate::stream::{LiveStream, LiveText, TimedToken};
+use crate::{Attribution, RecognitionOutput, RecognitionRequest, normalize_transcript};
 
 /// Whisper returns zero segments, and no error, for input under a second
 /// (KTD6); shorter windows are zero-padded to this length.
@@ -49,8 +50,52 @@ pub struct WindowText {
 pub trait Recognizer: Send {
     /// The catalog id of the loaded model.
     fn model_id(&self) -> &str;
+    /// True when the loaded model supplies native word or token timestamps.
+    /// The default token adapter estimates times from segments.
+    fn native_token_timestamps(&self) -> bool {
+        false
+    }
     /// Transcribe one window of mono 16 kHz audio.
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError>;
+    /// Transcribe one independent input window on the canonical sample timeline.
+    /// Native attribution requires an implementation that preserves model labels.
+    fn transcribe_normalized(
+        &mut self,
+        pcm: &[f32],
+        request: &RecognitionRequest,
+    ) -> Result<RecognitionOutput, AsrError> {
+        validate_input(pcm, request)?;
+        if request.attribution == Attribution::Native {
+            return Err(AsrError::Run("native speaker output is unavailable".into()));
+        }
+        if pcm.is_empty() {
+            return normalize_transcript(Default::default(), 0, request);
+        }
+        let result = self.transcribe(pcm)?;
+        let segments = result
+            .segments
+            .into_iter()
+            .map(|row| {
+                Ok(transcribe_cpp::Segment {
+                    t0_ms: i64::try_from(row.start_ms)
+                        .map_err(|_| AsrError::Run("segment time overflow".into()))?,
+                    t1_ms: i64::try_from(row.end_ms)
+                        .map_err(|_| AsrError::Run("segment time overflow".into()))?,
+                    text: row.text,
+                    ..Default::default()
+                })
+            })
+            .collect::<Result<Vec<_>, AsrError>>()?;
+        normalize_transcript(
+            transcribe_cpp::Transcript {
+                text: result.text,
+                segments,
+                ..Default::default()
+            },
+            pcm.len(),
+            request,
+        )
+    }
     /// Transcribe one window with token times, in milliseconds from the
     /// start of the window, for a gap fill after Stop (KTD6). Build words
     /// with [`words_from_tokens`](crate::words_from_tokens). The default
@@ -133,10 +178,20 @@ pub struct Engine {
     model_id: String,
     session: Session,
     is_whisper: bool,
+    is_moss: bool,
+    is_multitalker: bool,
     streaming: bool,
+    native_timing: Option<TimestampKind>,
+    max_audio_ms: i64,
+    language: Option<String>,
 }
 
 impl Engine {
+    /// Set the source language hint from the note configuration.
+    pub fn set_language(&mut self, language: Option<String>) {
+        self.language = language;
+    }
+
     /// Load a model for batch recognition only.
     pub fn load(model_id: &str, path: &Path) -> Result<Self, AsrError> {
         Self::load_with(model_id, path, false)
@@ -156,11 +211,16 @@ impl Engine {
         };
         let model = Model::load_with(path, &ModelOptions::default()).map_err(load_error)?;
         let is_whisper = model.arch().to_ascii_lowercase().contains("whisper");
+        let is_moss = model.arch().eq_ignore_ascii_case("moss");
+        let is_multitalker = model.arch().eq_ignore_ascii_case("parakeet")
+            && model.variant() == "multitalker-parakeet-streaming-0.6b-v1";
         let streaming = streams(
             model_id,
             catalog_streaming,
             model.capabilities().supports_streaming,
         );
+        let native_timing = native_timing_kind(model.capabilities().max_timestamp_kind);
+        let max_audio_ms = model.capabilities().max_audio_ms;
         log::info!(
             "loaded {model_id} ({} on {})",
             model.arch(),
@@ -171,7 +231,12 @@ impl Engine {
             model_id: model_id.to_string(),
             session,
             is_whisper,
+            is_moss,
+            is_multitalker,
             streaming,
+            native_timing,
+            max_audio_ms,
+            language: None,
         })
     }
 
@@ -179,15 +244,26 @@ impl Engine {
     /// start of the window. Build words with
     /// [`words_from_tokens`](crate::words_from_tokens).
     pub fn transcribe_timed(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
-        let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
-        let audio = pad_to_minimum(pcm);
         let options = RunOptions {
-            timestamps: TimestampKind::Token,
+            language: self.language.clone(),
+            timestamps: self.native_timing.unwrap_or(TimestampKind::Token),
+            diarize: Diarize::Off,
             family: self.family(),
             ..Default::default()
         };
-        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
-        Ok(timed_tokens(&transcript.tokens, original_ms))
+        let parts = self.decode_parts(pcm, &options)?;
+        Ok(tokens_from_parts(parts, options.timestamps))
+    }
+
+    fn decode_parts(
+        &mut self,
+        pcm: &[f32],
+        options: &RunOptions,
+    ) -> Result<Vec<crate::recovery::DecodedPart>, AsrError> {
+        crate::recovery::decode(pcm, &mut |audio| {
+            self.session.run(&pad_to_minimum(audio), options)
+        })
+        .map_err(run_error)
     }
 
     /// Each window is decoded on its own; nothing decoded before a silence
@@ -202,8 +278,87 @@ impl Engine {
     }
 }
 
+fn native_timing_kind(maximum: TimestampKind) -> Option<TimestampKind> {
+    match maximum {
+        TimestampKind::Word | TimestampKind::Token => Some(maximum),
+        _ => None,
+    }
+}
+
+fn tokens_from_parts(
+    parts: Vec<crate::recovery::DecodedPart>,
+    timing: TimestampKind,
+) -> Vec<TimedToken> {
+    let mut tokens = Vec::new();
+    for part in parts {
+        let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
+        let limit_ms = part.samples as u64 / SAMPLES_PER_MS;
+        let local = if timing == TimestampKind::Word {
+            part.transcript
+                .words
+                .iter()
+                .filter_map(|word| {
+                    let text = word.text.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let start_ms = (word.t0_ms.max(0) as u64).min(limit_ms);
+                    Some(TimedToken {
+                        // The adapter exposes complete words through the token
+                        // interface. Keep a word boundary for words_from_tokens.
+                        text: format!(" {text}"),
+                        start_ms,
+                        end_ms: (word.t1_ms.max(0) as u64).clamp(start_ms, limit_ms),
+                    })
+                })
+                .collect()
+        } else {
+            timed_tokens(&part.transcript.tokens, limit_ms)
+        };
+        for mut token in local {
+            token.start_ms += offset_ms;
+            token.end_ms += offset_ms;
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+fn text_from_parts(parts: Vec<crate::recovery::DecodedPart>) -> WindowText {
+    let mut result = WindowText::default();
+    for part in parts {
+        let limit_ms = part.samples as u64 / SAMPLES_PER_MS;
+        let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
+        crate::recovery::append_text(&mut result.text, &part.transcript.text);
+        for segment in part.transcript.segments {
+            let text = segment.text.trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let start = (segment.t0_ms.max(0) as u64).min(limit_ms);
+            let end = (segment.t1_ms.max(0) as u64).clamp(start, limit_ms);
+            result.segments.push(AsrSegment {
+                start_ms: offset_ms + start,
+                end_ms: offset_ms + end,
+                text,
+            });
+        }
+    }
+    result
+}
+
 fn run_error(e: transcribe_cpp::Error) -> AsrError {
     AsrError::Run(e.to_string())
+}
+
+fn validate_input(pcm: &[f32], request: &RecognitionRequest) -> Result<(), AsrError> {
+    request.coverage(pcm.len())?;
+    if pcm.iter().any(|sample| !sample.is_finite()) {
+        return Err(AsrError::Run(
+            "recognition audio contains a non-finite sample".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Tokens with text, with times clamped into `[0, limit_ms]`. Special
@@ -260,46 +415,63 @@ impl LiveStream for EngineStream<'_> {
 }
 
 impl Recognizer for Engine {
+    fn native_token_timestamps(&self) -> bool {
+        self.native_timing.is_some()
+    }
+
     fn model_id(&self) -> &str {
         &self.model_id
     }
 
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError> {
-        let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
-        let audio = pad_to_minimum(pcm);
         let options = RunOptions {
+            language: self.language.clone(),
             timestamps: TimestampKind::Segment,
+            diarize: Diarize::Off,
             family: self.family(),
             ..Default::default()
         };
-        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
-        let segments = transcript
-            .segments
-            .into_iter()
-            .filter_map(|s| {
-                let text = s.text.trim().to_string();
-                if text.is_empty() {
-                    return None;
-                }
-                // Padding is silence the speaker never said; keep times
-                // inside the audio that was recorded.
-                let start = (s.t0_ms.max(0) as u64).min(original_ms);
-                let end = (s.t1_ms.max(0) as u64).clamp(start, original_ms);
-                Some(AsrSegment {
-                    start_ms: start,
-                    end_ms: end,
-                    text,
-                })
-            })
-            .collect();
-        Ok(WindowText {
-            text: transcript.text.trim().to_string(),
-            segments,
-        })
+        Ok(text_from_parts(self.decode_parts(pcm, &options)?))
     }
 
     fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
         self.transcribe_timed(pcm)
+    }
+
+    fn transcribe_normalized(
+        &mut self,
+        pcm: &[f32],
+        request: &RecognitionRequest,
+    ) -> Result<RecognitionOutput, AsrError> {
+        validate_input(pcm, request)?;
+        if pcm.is_empty() {
+            return normalize_transcript(Default::default(), 0, request);
+        }
+        if self.max_audio_ms > 0
+            && pcm.len() as u64 > (self.max_audio_ms as u64).saturating_mul(SAMPLES_PER_MS)
+        {
+            return Err(AsrError::Run(
+                "recognition input exceeds the model's audio limit; use independent windows".into(),
+            ));
+        }
+        // Granite Plus cannot combine explicit word times with attribution.
+        // Auto retains the model's supported timing and attribution contract.
+        let options = RunOptions {
+            language: self.language.clone(),
+            timestamps: TimestampKind::Auto,
+            diarize: request.attribution.diarize(),
+            family: self.family(),
+            ..Default::default()
+        };
+        let parts = self.decode_parts(pcm, &options)?;
+        let normalize = if self.is_moss {
+            crate::result::normalize_moss_transcript
+        } else if self.is_multitalker {
+            crate::result::normalize_multitalker_transcript
+        } else {
+            normalize_transcript
+        };
+        crate::recovery::normalize_parts(parts, request, pcm.len(), normalize)
     }
 
     fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
@@ -307,7 +479,9 @@ impl Recognizer for Engine {
             return Ok(None);
         }
         let options = RunOptions {
+            language: self.language.clone(),
             timestamps: TimestampKind::Token,
+            diarize: Diarize::Off,
             ..Default::default()
         };
         let stream = self
@@ -321,6 +495,103 @@ impl Recognizer for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_word_timing_keeps_models_on_the_uncut_audio_path() {
+        assert_eq!(
+            native_timing_kind(TimestampKind::Word),
+            Some(TimestampKind::Word)
+        );
+        assert_eq!(
+            native_timing_kind(TimestampKind::Token),
+            Some(TimestampKind::Token)
+        );
+        assert_eq!(native_timing_kind(TimestampKind::Segment), None);
+    }
+
+    fn recovered_parts() -> Vec<crate::recovery::DecodedPart> {
+        [" first", " second"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| crate::recovery::DecodedPart {
+                offset: index * 16_000,
+                samples: if index == 0 { 16_000 } else { 16_003 },
+                transcript: transcribe_cpp::Transcript {
+                    text: text.into(),
+                    segments: vec![transcribe_cpp::Segment {
+                        t0_ms: 100,
+                        t1_ms: 1_100,
+                        text: text.into(),
+                        ..Default::default()
+                    }],
+                    words: vec![transcribe_cpp::Word {
+                        t0_ms: 100,
+                        t1_ms: 1_100,
+                        text: text.trim().into(),
+                        ..Default::default()
+                    }],
+                    tokens: vec![transcribe_cpp::Token {
+                        t0_ms: 100,
+                        t1_ms: 1_100,
+                        text: text.into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn native_word_rows_keep_boundaries_times_and_recovered_offsets() {
+        let mut parts = recovered_parts();
+        for part in &mut parts {
+            part.transcript.tokens.clear();
+        }
+        let tokens = tokens_from_parts(parts, TimestampKind::Word);
+        let words = crate::words_from_tokens(&tokens, 80_000);
+        assert_eq!(crate::join_words(&words), "first second");
+        assert_eq!(
+            words
+                .iter()
+                .map(|w| (w.start_ms, w.end_ms))
+                .collect::<Vec<_>>(),
+            vec![(80_100, 81_000), (81_100, 82_000)]
+        );
+    }
+
+    #[test]
+    fn recovered_plain_and_token_output_keep_order_offsets_and_clipped_tails() {
+        let text = text_from_parts(recovered_parts());
+        assert_eq!(text.text, "first second");
+        assert_eq!(
+            text.segments,
+            vec![
+                AsrSegment {
+                    start_ms: 100,
+                    end_ms: 1_000,
+                    text: "first".into()
+                },
+                AsrSegment {
+                    start_ms: 1_100,
+                    end_ms: 2_000,
+                    text: "second".into()
+                },
+            ]
+        );
+        let tokens = tokens_from_parts(recovered_parts(), TimestampKind::Token);
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|t| (t.text.as_str(), t.start_ms, t.end_ms))
+                .collect::<Vec<_>>(),
+            vec![(" first", 100, 1_000), (" second", 1_100, 2_000)]
+        );
+        assert_eq!(
+            crate::join_words(&crate::words_from_tokens(&tokens, 0)),
+            "first second"
+        );
+    }
 
     #[test]
     fn a_short_window_is_padded_to_one_second_and_a_long_one_is_left_alone() {

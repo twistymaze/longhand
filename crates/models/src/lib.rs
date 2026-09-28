@@ -9,3 +9,5 @@ pub use catalog::{
 };
 pub use download::{DownloadError, Limits, Outcome, ensure_model, is_present};
 pub use tokio_util::sync::CancellationToken;
+
+pub mod recognition;

@@ -43,6 +43,38 @@ const SUSPENDED_POLL: Duration = Duration::from_millis(250);
 
 /// Where recognition engines come from.
 pub trait EngineProvider: Send + Sync {
+    /// Resolve the exact artifact selected in the note's immutable snapshot.
+    fn artifact_path(
+        &self,
+        artifact: &models::recognition::ArtifactSpec,
+    ) -> Result<PathBuf, String> {
+        Err(format!("exact artifact is unavailable: {}", artifact.id))
+    }
+    fn load_exact(
+        &self,
+        _spec: &models::recognition::ExecutionSpec,
+    ) -> Result<Box<dyn Recognizer>, String> {
+        Err("exact transcription runtime is unavailable".into())
+    }
+    fn analyzer_exact(
+        &self,
+        _spec: &models::recognition::ExecutionSpec,
+    ) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+        Err(DiarizeError::MissingWeights(
+            "exact speaker artifacts are unavailable".into(),
+        ))
+    }
+    fn nemo_helper(&self) -> Result<PathBuf, String> {
+        Err("packaged NeMo helper is unavailable".into())
+    }
+    fn nemo_gpu(&self) -> i32 {
+        -1
+    }
+
+    /// A cheap readiness check. Exact loaders still validate artifact bytes.
+    fn ready_exact(&self, spec: &models::recognition::ExecutionSpec) -> bool {
+        spec.artifacts.iter().all(|a| self.artifact_path(a).is_ok())
+    }
     /// Whether everything processing needs for `model_id` is on disk.
     fn ready(&self, model_id: &str) -> bool;
     fn load(&self, model_id: &str) -> Result<Box<dyn Recognizer>, String>;
@@ -176,6 +208,7 @@ pub struct Runner {
     /// Summary regenerations and deletes that run on a session. They
     /// exclude each other, and a folder rename waits for both (R8, KTD8).
     claims: Claims,
+    power: power::ProcessingPower,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -186,6 +219,7 @@ struct StageControl {
     cancel: CancellationToken,
     env: Arc<Environment>,
     session_id: String,
+    power: ActivePower,
 }
 
 impl StageControl {
@@ -206,8 +240,10 @@ impl Control for StageControl {
                 return Err(StageError::Cancelled);
             }
             if !(self.env.suspended)() {
+                self.power.resume();
                 return Ok(());
             }
+            self.power.suspend();
             std::thread::sleep(SUSPENDED_POLL);
         }
     }
@@ -219,6 +255,11 @@ impl Control for StageControl {
 
 impl Runner {
     pub fn new(env: Environment) -> Arc<Self> {
+        Self::with_power(env, power::ProcessingPower::default())
+    }
+
+    /// Use the supplied owner for processing assertions.
+    pub fn with_power(env: Environment, power: power::ProcessingPower) -> Arc<Self> {
         let owner = format!(
             "{}-{}",
             std::process::id(),
@@ -233,6 +274,7 @@ impl Runner {
             engine: Arc::new(Mutex::new(None)),
             permit: Arc::new(Semaphore::new(1)),
             claims: Claims::default(),
+            power,
         })
     }
 
@@ -246,6 +288,13 @@ impl Runner {
         &self,
         liveness: session_core::jobs::Liveness,
     ) -> Result<Vec<String>, StageError> {
+        // Summary regeneration has no job heartbeat. An uncertain instance
+        // lock cannot prove that its publication owner has stopped.
+        if matches!(liveness, session_core::jobs::Liveness::OnlyInstance)
+            && let Err(error) = save::recover_summary_publications(&self.env.store)
+        {
+            log::warn!("could not recover summary publications: {error}");
+        }
         Ok(lock(&self.env.store).reclaim_at_launch(&self.owner, liveness)?)
     }
 
@@ -277,7 +326,11 @@ impl Runner {
         if let Some(SessionState::ProcessingFailed { stage, .. }) = failed
             && stage == Stage::Verify
         {
-            verify::prepare_retry(&self.env.store, session_id)?;
+            if crate::recognition::snapshot(&self.env.store, session_id)?.is_some() {
+                crate::recognition::prepare_retry(&self.env.store, session_id)?;
+            } else {
+                verify::prepare_retry(&self.env.store, session_id)?;
+            }
         }
         {
             let mut store = lock(&self.env.store);
@@ -330,16 +383,20 @@ impl Runner {
         let env = Arc::clone(&self.env);
         let cancel = self.shutdown.child_token();
         let id = session_id.to_string();
+        let power = self.power.clone();
         tokio::task::spawn_blocking(move || {
-            let endpoint = endpoint(&env)?;
-            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             let control = Unattended {
                 cancel,
                 env: Arc::clone(&env),
+                power: ActivePower::new(power),
             };
+            control.proceed()?;
+            let endpoint = endpoint(&env)?;
+            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             save::regenerate_summary(
                 &env.store,
                 &id,
+                &env.working_root,
                 endpoint,
                 env.engines.summary_prompt(),
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
@@ -400,8 +457,74 @@ impl Runner {
                     regenerating,
                 },
             )?;
+            if let Some(home) = store.session(session_id)?.and_then(|r| r.home_path) {
+                let hash = session_core::folder::fingerprint(&std::fs::read(
+                    std::path::Path::new(&home).join("session.md"),
+                )?);
+                store.set_result_state(
+                    session_id,
+                    "replacement-base",
+                    &serde_json::to_value((home, hash))?,
+                )?;
+            }
         }
         log::info!("{session_id} is queued to be transcribed again with '{model}'");
+        self.wake();
+        Ok(())
+    }
+
+    pub fn preview_reprocess(
+        &self,
+        session_id: &str,
+        config: &models::recognition::RecognitionConfig,
+    ) -> Result<crate::reprocess::Preview, StageError> {
+        let store = lock(&self.env.store);
+        let home = store
+            .session(session_id)?
+            .and_then(|r| r.home_path)
+            .ok_or_else(|| StageError::Failed("the note has no saved folder".into()))?;
+        crate::reprocess::preview(std::path::Path::new(&home), config)
+    }
+
+    pub fn reprocess(
+        &self,
+        session_id: &str,
+        preview: &crate::reprocess::Preview,
+        allow_transcription: bool,
+    ) -> Result<(), StageError> {
+        let mut store = lock(&self.env.store);
+        let record = store
+            .session(session_id)?
+            .ok_or_else(|| StageError::Failed("the note is absent".into()))?;
+        let home = record
+            .home_path
+            .ok_or_else(|| StageError::Failed("the note has no saved folder".into()))?;
+        let fresh =
+            crate::reprocess::preview(std::path::Path::new(&home), &preview.execution.config)?;
+        if fresh.manifest != preview.manifest || fresh.execution != preview.execution {
+            return Err(StageError::Failed(
+                "the note or model configuration changed; review the replacement again".into(),
+            ));
+        }
+        if fresh.requires_transcription && !allow_transcription {
+            return Err(StageError::Failed(fresh.explanation));
+        }
+        let capture_active = (self.env.suspended)();
+        let regenerating = self.claims.busy(session_id);
+        let audio_intact = save::home_intact(&store, session_id)?;
+        store.begin_reprocess(
+            session_id,
+            &fresh.execution.config.asr_model,
+            &Event::UserTranscribeAgain {
+                at: now(),
+                audio_intact,
+                capture_active,
+                regenerating,
+            },
+            Some(&serde_json::to_value(&fresh.execution)?),
+            Some(&serde_json::to_value((home, fresh.manifest))?),
+        )?;
+        drop(store);
         self.wake();
         Ok(())
     }
@@ -485,13 +608,32 @@ impl Runner {
 
     /// The live worker's way to the engine slot (KTD9). After
     /// [`Runner::shutdown`], it loads nothing.
+    pub fn live_workers(self: &Arc<Self>) -> crate::live::Workers {
+        let runner = Arc::downgrade(self);
+        crate::live::Workers::new(self.env.store.clone(), self.engine_access()).with_recognition(
+            Arc::new(move |store, config, cancel, end, sink| {
+                let runner = runner.upgrade().ok_or(StageError::Cancelled)?;
+                crate::live::recognize(
+                    store,
+                    config,
+                    runner.env.engines.as_ref(),
+                    cancel,
+                    end,
+                    sink,
+                )
+            }),
+        )
+    }
+
     pub fn engine_access(&self) -> EngineAccess {
         let env = Arc::clone(&self.env);
+        let exact = Arc::clone(&self.env);
         EngineAccess::new(
             Arc::clone(&self.engine),
             Arc::new(move |model| env.engines.load(model)),
             self.shutdown.clone(),
         )
+        .with_exact_loader(Arc::new(move |spec| exact.engines.load_exact(spec)))
     }
 
     /// Free the loaded engine when it holds `model`, so that the model file
@@ -538,7 +680,20 @@ impl Runner {
                 let model = again
                     .or(record.asr_model)
                     .unwrap_or_else(|| self.env.engines.default_model());
-                self.env.engines.ready(&model).then_some((id, model))
+                let ready = if let Some(value) = store
+                    .result_state(&id, "pending-snapshot")
+                    .ok()?
+                    .or(record.recognition_snapshot)
+                {
+                    match serde_json::from_value::<models::recognition::ExecutionSpec>(value) {
+                        Ok(spec) => self.env.engines.ready_exact(&spec),
+                        // Claim invalid snapshots so their precise failure is visible.
+                        Err(_) => true,
+                    }
+                } else {
+                    self.env.engines.ready(&model)
+                };
+                ready.then_some((id, model))
             })?;
             let id = match store.dequeue_session(&next, &self.owner, now()) {
                 Ok(Some(id)) => id,
@@ -566,16 +721,41 @@ impl Runner {
         let again = lock(&self.env.store)
             .transcribe_again_marks(id)
             .is_ok_and(|marks| marks.model.is_some());
-        for &stage in STAGES {
+        let snapshot = crate::recognition::snapshot(&self.env.store, id);
+        let exact = matches!(&snapshot, Ok(Some(_)));
+        let stages = match snapshot {
+            Ok(Some(spec)) => match crate::recognition::TaskGraph::resolve(&spec) {
+                Ok(graph) => graph.stages,
+                Err(error) => {
+                    return Outcome::Failed {
+                        stage: Stage::Transcribe,
+                        message: error.to_string(),
+                    };
+                }
+            },
+            Ok(None) => STAGES.to_vec(),
+            Err(error) => {
+                let message = error.to_string();
+                let _ = lock(&self.env.store).apply(id, &Event::StageFailed(Stage::Transcribe));
+                return Outcome::Failed {
+                    stage: Stage::Transcribe,
+                    message,
+                };
+            }
+        };
+        let mut attempt = crate::recognition::durable::Attempt::default();
+        for stage in stages {
             if saving && stage != Stage::Save {
                 continue;
             }
-            let result = self.run_stage(id, model, stage, cancel.clone()).await;
+            let result = self
+                .run_stage(id, model, stage, cancel.clone(), &mut attempt)
+                .await;
             match result {
                 Ok(()) => {}
                 // A failed summary costs the summary, not the session: it
                 // is saved with a stub naming the failure (KD13, R22).
-                Err(StageError::Failed(message)) if stage == Stage::Summarize => {
+                Err(StageError::Failed(message)) if stage == Stage::Summarize && !again => {
                     log::warn!("summarization failed for {id}; saving without it: {message}");
                     if let Err(e) = save::record_summary_failure(&self.env.store, id, &message) {
                         log::error!("could not record the summary failure of {id}: {e}");
@@ -592,9 +772,16 @@ impl Runner {
                 // writes the folder again and then finishes the run.
                 Err(StageError::Failed(message) | StageError::NoDestination(message))
                     if again
-                        && stage != Stage::Diarize
+                        && (stage != Stage::Diarize || exact)
                         && !(stage == Stage::Save
-                            && save::home_changed(&lock(&self.env.store), id).unwrap_or(true)) =>
+                            && (save::home_changed(&lock(&self.env.store), id)
+                                .unwrap_or(true)
+                                || self
+                                    .env
+                                    .working_root
+                                    .join(id)
+                                    .join(session_save::result::JOURNAL)
+                                    .exists())) =>
                 {
                     return self.fail_transcribe_again(id, stage, message);
                 }
@@ -613,7 +800,7 @@ impl Runner {
                 }
                 // Speaker separation failing costs the speaker marks, not the
                 // transcript (R20a).
-                Err(StageError::Failed(message)) if stage == Stage::Diarize => {
+                Err(StageError::Failed(message)) if stage == Stage::Diarize && !exact => {
                     log::warn!(
                         "diarization failed for {id}; continuing without speakers: {message}"
                     );
@@ -723,17 +910,70 @@ impl Runner {
         model: &str,
         stage: Stage,
         cancel: CancellationToken,
+        attempt: &mut crate::recognition::durable::Attempt,
     ) -> Result<(), StageError> {
-        let segments = lock(&self.env.store).segments(id)?;
-        if checkpoint::is_complete(&self.env.store, id, stage, segments.len())? {
-            return Ok(());
-        }
         let _permit = self
             .permit
             .clone()
             .acquire_owned()
             .await
             .map_err(|e| StageError::Failed(e.to_string()))?;
+        let control = StageControl {
+            cancel,
+            env: Arc::clone(&self.env),
+            session_id: id.to_string(),
+            power: ActivePower::new(self.power.clone()),
+        };
+        // Preparation reads and hashes audio before the stage starts.
+        control.power.resume();
+        let segments = lock(&self.env.store).segments(id)?;
+        let mut prepared = None;
+        if matches!(
+            stage,
+            Stage::Diarize
+                | Stage::Transcribe
+                | Stage::Join
+                | Stage::Verify
+                | Stage::Summarize
+                | Stage::Save
+        ) && let Some(spec) = crate::recognition::snapshot(&self.env.store, id)?
+            && (stage != Stage::Save || self.env.working_root.join(id).exists())
+        {
+            attempt.prepare(
+                &self.env.store,
+                id,
+                &self.env.working_root.join(id),
+                &segments,
+                &spec,
+                stage == Stage::Save,
+            )?;
+            prepared = Some(spec);
+        }
+        if checkpoint::is_complete(&self.env.store, id, stage, segments.len())? {
+            let exact = crate::recognition::snapshot(&self.env.store, id)?.is_some();
+            let route_complete = match stage {
+                Stage::Assemble if exact => crate::assemble::provenance_valid(
+                    &self.env.store,
+                    id,
+                    &self.env.working_root.join(id),
+                    &segments,
+                )?,
+                Stage::Transcribe if exact => {
+                    crate::recognition::saved_result(&self.env.store, id)?.is_some()
+                }
+                Stage::Diarize if exact => checkpoint::get::<serde_json::Value>(
+                    &self.env.store,
+                    id,
+                    stage,
+                    crate::recognition::SPEAKERS_KEY,
+                )?
+                .is_some(),
+                _ => true,
+            };
+            if route_complete {
+                return Ok(());
+            }
+        }
         lock(&self.env.store).set_stage(id, stage)?;
         (self.env.events)(RunnerEvent::StageStarted {
             session_id: id.to_string(),
@@ -757,12 +997,17 @@ impl Runner {
         let engine = Arc::clone(&self.engine);
         let (id_owned, model) = (id.to_string(), model.to_string());
         let result = tokio::task::spawn_blocking(move || {
-            let control = StageControl {
-                cancel,
-                env: Arc::clone(&env),
-                session_id: id_owned.clone(),
-            };
-            execute(&env, &engine, &id_owned, &model, stage, &segments, &control)
+            control.proceed()?;
+            execute(
+                &env,
+                &engine,
+                &id_owned,
+                &model,
+                stage,
+                &segments,
+                prepared.as_ref(),
+                &control,
+            )
         })
         .await;
         heartbeat.abort();
@@ -775,6 +1020,7 @@ impl Runner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     env: &Environment,
     engine: &Mutex<Option<Box<dyn Recognizer>>>,
@@ -782,9 +1028,35 @@ fn execute(
     model: &str,
     stage: Stage,
     segments: &[session_core::Segment],
+    prepared: Option<&models::recognition::ExecutionSpec>,
     control: &dyn Control,
 ) -> Result<(), StageError> {
     let dir = env.working_root.join(id);
+    if matches!(
+        stage,
+        Stage::Diarize | Stage::Transcribe | Stage::Join | Stage::Verify
+    ) && let Some(spec) = prepared
+    {
+        return crate::recognition::execute_prepared(
+            &env.store,
+            id,
+            &dir,
+            segments,
+            spec,
+            env.engines.as_ref(),
+            stage,
+            control,
+            &mut |p| {
+                (env.events)(RunnerEvent::Progress {
+                    session_id: id.into(),
+                    stage,
+                    segment: p.segment,
+                    done: p.windows_done,
+                    total: p.windows_total,
+                });
+            },
+        );
+    }
     match stage {
         Stage::Assemble => {
             let home = lock(&env.store)
@@ -948,6 +1220,7 @@ fn unload_if<E: ?Sized>(
 struct Unattended {
     cancel: CancellationToken,
     env: Arc<Environment>,
+    power: ActivePower,
 }
 
 impl Control for Unattended {
@@ -957,8 +1230,10 @@ impl Control for Unattended {
                 return Err(StageError::Cancelled);
             }
             if !(self.env.suspended)() {
+                self.power.resume();
                 return Ok(());
             }
+            self.power.suspend();
             std::thread::sleep(SUSPENDED_POLL);
         }
     }
@@ -968,9 +1243,112 @@ impl Control for Unattended {
     }
 }
 
+/// A blocking job releases its lease at a suspension boundary. Dropping
+/// the control also releases it on failure, cancellation, or unwind.
+struct ActivePower {
+    owner: power::ProcessingPower,
+    lease: Mutex<Option<power::ProcessingLease>>,
+}
+
+impl ActivePower {
+    fn new(owner: power::ProcessingPower) -> Self {
+        Self {
+            owner,
+            lease: Mutex::new(None),
+        }
+    }
+
+    fn resume(&self) {
+        let mut lease = self.lease.lock().unwrap_or_else(|error| error.into_inner());
+        if lease.is_none() {
+            *lease = Some(self.owner.acquire());
+        }
+    }
+
+    fn suspend(&self) {
+        self.lease
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnusedEngines;
+
+    impl EngineProvider for UnusedEngines {
+        fn ready(&self, _: &str) -> bool {
+            unreachable!()
+        }
+        fn load(&self, _: &str) -> Result<Box<dyn Recognizer>, String> {
+            unreachable!()
+        }
+        fn default_model(&self) -> String {
+            unreachable!()
+        }
+        fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+            unreachable!()
+        }
+        fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
+            unreachable!()
+        }
+        fn summary_prompt(&self) -> summarize::Prompt {
+            unreachable!()
+        }
+        fn learn_limit(&self, _: &str, _: &str, _: u32) {
+            unreachable!()
+        }
+        fn destination(&self) -> Option<PathBuf> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stage_waiting_for_the_shared_permit_acquires_no_power() {
+        use std::future::Future;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll, Waker};
+
+        let acquired = Arc::new(AtomicUsize::new(0));
+        let starts = Arc::clone(&acquired);
+        let power = power::ProcessingPower::with_factory(move || {
+            starts.fetch_add(1, Ordering::SeqCst);
+            Some(())
+        })
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let runner = Runner::with_power(
+            Environment {
+                store: Arc::new(Mutex::new(session_core::Store::open_in_memory().unwrap())),
+                working_root: root.path().into(),
+                engines: Box::new(UnusedEngines),
+                suspended: Box::new(|| false),
+                events: Box::new(|_| panic!("a waiting stage must not start")),
+            },
+            power,
+        );
+        // Another job owns the permit, including while it is suspended.
+        let _other_job = runner.permit.clone().acquire_owned().await.unwrap();
+        let mut attempt = crate::recognition::durable::Attempt::default();
+        let stage = runner.run_stage(
+            "waiting",
+            "model",
+            Stage::Assemble,
+            CancellationToken::new(),
+            &mut attempt,
+        );
+        let mut stage = std::pin::pin!(stage);
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(stage.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(
+            acquired.load(Ordering::SeqCst),
+            0,
+            "waiting for another job must not acquire processing power"
+        );
+    }
 
     fn id(model: &str) -> &str {
         model

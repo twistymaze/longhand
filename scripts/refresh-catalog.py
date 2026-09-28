@@ -7,7 +7,7 @@
     uv run scripts/refresh-catalog.py [path/to/handy/catalog.json]
     uv run scripts/refresh-catalog.py --languages whisper-large-v3-turbo
 
-The first form prints, as JSON, the eight `transcribe-cpp` entries that
+The first form prints, as JSON, the nine `transcribe-cpp` entries that
 `crates/models/catalog.json` takes from Handy, in Longhand's schema. Copy
 them into that file. The script does not write the Whisper entry: that entry
 keeps its Q5_K_M file, so existing installs do not download it again. The
@@ -17,13 +17,19 @@ Each entry uses Handy's default quant, pinned revision, file name, size and
 SHA-256. The download URL is the Hugging Face URL at the pinned revision;
 Handy's mirror is not used. The script reads a local file only. It does not
 use the network.
+
+Longhand's checked-in catalog supplies recommended and speaker_preferences
+for each exact artifact ID. A new artifact ID requires an explicit policy
+in that catalog before refresh can print its entry.
 """
 import argparse
 import json
 import sys
+import subprocess
 from pathlib import Path
 
 DEFAULT_SOURCE = "reference-source/Handy/src-tauri/src/catalog/catalog.json"
+POLICY_CATALOG = Path(__file__).resolve().parents[1] / "crates/models/catalog.json"
 ORG = "handy-computer"
 
 # Handy slug -> the name the picker shows (R1). The order is the order in
@@ -36,11 +42,9 @@ MODELS = {
     "parakeet-tdt-0.6b-v2": "Parakeet TDT 0.6B v2",
     "parakeet-tdt-0.6b-v3": "Parakeet TDT 0.6B v3",
     "parakeet-tdt-1.1b": "Parakeet TDT 1.1B",
+    "granite-speech-4.1-2b-plus": "Granite Speech 4.1 2B Plus",
     "moss-transcribe-diarize": "MOSS Transcribe Diarize",
 }
-
-# The model a new install selects (KD8). Only this entry is recommended.
-RECOMMENDED = "parakeet-unified-en-0.6b"
 
 # Handy licence id -> (name, url). Handy writes "other" for the NVIDIA
 # models. Their cards name the NVIDIA Open Model License, except the slugs
@@ -61,7 +65,7 @@ LICENCE_OVERRIDES = {
 }
 
 # Hugging Face organization of the base model -> the publisher name.
-PUBLISHERS = {"nvidia": "NVIDIA", "OpenMOSS-Team": "OpenMOSS Team"}
+PUBLISHERS = {"nvidia": "NVIDIA", "OpenMOSS-Team": "OpenMOSS Team", "ibm-granite": "IBM"}
 
 TIMESTAMP_LEVELS = {"token", "word", "segment"}
 
@@ -81,14 +85,26 @@ def describe(languages, timestamps, streaming):
     return f"{count}, {timestamps}-level timestamps, {stream}."
 
 
-def entry(handy, name):
+def entry(handy, name, source_revision, policy_entries):
     slug = handy["slug"]
     caps = handy["capabilities"]
     quant = handy["default_quant"]
-    # Files under `bundle/` include a second model (the Multitalker
-    # diarizer). Longhand takes the plain file only.
+    artifact_id = f"{slug}-{quant_suffix(quant)}"
+    policies = [policy for policy in policy_entries if policy["id"] == artifact_id]
+    if len(policies) != 1:
+        fail(f"{artifact_id}: expected one exact artifact policy, found {len(policies)}")
+    policy = policies[0]
+    if not isinstance(policy.get("recommended"), bool):
+        fail(f"{artifact_id}: missing recommended policy")
+    preferences = policy.get("speaker_preferences")
+    if not isinstance(preferences, dict) or any(
+        not isinstance(preferences.get(mode), list) or not preferences[mode]
+        for mode in ("after_stop", "during_recording")
+    ):
+        fail(f"{artifact_id}: missing speaker_preferences policy")
+    # Select the speaker-capable Multitalker bundle.
     files = [
-        f for f in handy["files"] if f["quant"] == quant and "/" not in f["filename"]
+        f for f in handy["files"] if f["quant"] == quant and (f["filename"].startswith("bundle/") if slug.startswith("multitalker-") else "/" not in f["filename"])
     ]
     if len(files) != 1:
         fail(f"{slug}: expected one plain {quant} file, found {len(files)}")
@@ -116,20 +132,29 @@ def entry(handy, name):
         fail(f"{slug}: repository {handy['id']} is not {ORG}/{slug}-gguf")
 
     return {
-        "id": f"{slug}-{quant_suffix(quant)}",
+        "id": artifact_id,
         "kind": "asr",
         "name": name,
         "description": describe(languages, timestamps, caps["streaming"]),
         "streaming": caps["streaming"],
         "timestamps": timestamps,
         "languages": languages,
-        "recommended": slug == RECOMMENDED,
+        "recommended": policy["recommended"],
+        "speaker_preferences": preferences,
         "repository": repository,
         "revision": revision,
-        "filename": file["filename"],
+        "filename": file["filename"].replace("bundle/", "bundle-"),
         "url": f"{repository}/resolve/{revision}/{file['filename']}",
         "size_bytes": file["size_bytes"],
         "sha256": file["sha256"],
+        "assessment": {
+            "source": f"https://github.com/cjpais/Handy/blob/{source_revision}/src-tauri/src/catalog/catalog.json",
+            "source_revision": source_revision,
+            "speed_score": handy.get("speed_score"),
+            "asr_accuracy_score": handy.get("accuracy_score"),
+            "speaker_accuracy_score": None,
+            "benchmark_context": None,
+        },
         "licence": {
             "name": licence_name,
             "url": licence_url,
@@ -138,10 +163,30 @@ def entry(handy, name):
     }
 
 
+def assessment_revision(source, supplied):
+    if supplied:
+        if len(supplied) != 40 or any(c not in "0123456789abcdef" for c in supplied):
+            fail("--source-revision must be a lowercase 40-character commit")
+        return supplied
+    source = source.resolve()
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(source.parent), *args], stderr=subprocess.DEVNULL)
+    try:
+        root = Path(git("rev-parse", "--show-toplevel").decode().strip())
+        revision = git("rev-parse", "HEAD").decode().strip()
+        relative = source.relative_to(root).as_posix()
+        if git("show", f"{revision}:{relative}") != source.read_bytes():
+            fail("the source has local changes; use a committed Handy catalog")
+        return revision
+    except (subprocess.CalledProcessError, ValueError):
+        fail("cannot read source revision; pass --source-revision for a catalog outside Git")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("source", nargs="?", default=DEFAULT_SOURCE, type=Path)
     parser.add_argument("--languages", metavar="SLUG")
+    parser.add_argument("--source-revision", help="Handy commit for a catalog outside Git")
     args = parser.parse_args()
 
     catalog = json.loads(args.source.read_text())
@@ -156,7 +201,12 @@ def main():
     missing = [s for s in MODELS if s not in by_slug]
     if missing:
         fail(f"not in {args.source}: {', '.join(missing)}")
-    entries = [entry(by_slug[slug], name) for slug, name in MODELS.items()]
+    revision = assessment_revision(args.source, args.source_revision)
+    policy_entries = json.loads(POLICY_CATALOG.read_text())["models"]
+    entries = [
+        entry(by_slug[slug], name, revision, policy_entries)
+        for slug, name in MODELS.items()
+    ]
     print(json.dumps(entries, indent=2, ensure_ascii=False))
 
 

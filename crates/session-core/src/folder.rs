@@ -116,6 +116,14 @@ pub struct SessionDoc {
     /// The recognition model that made the transcript (R3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asr_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition_snapshot: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition_artifact: Option<crate::recognition::ArtifactReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_generation: Option<crate::generation::Generation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition_audio: Option<std::collections::BTreeMap<String, String>>,
     /// The number of speakers that processing found (R3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found_speakers: Option<u32>,
@@ -188,6 +196,10 @@ impl SessionDoc {
             title_source: None,
             speaker_count,
             asr_model: None,
+            recognition_snapshot: None,
+            recognition_artifact: None,
+            result_generation: None,
+            recognition_audio: None,
             found_speakers: None,
             transcript_fingerprint: None,
             summary_fingerprint: None,
@@ -292,14 +304,25 @@ pub struct Transcript {
     pub lines: Vec<TranscriptLine>,
 }
 
+const SPEAKERS_OFF_NOTE: &str = "> Speaker recognition was off for this transcript.";
+
 const NO_SPEAKERS_NOTE: &str =
     "> This transcript carries no speaker marks: speaker separation failed for this session.";
 
 impl Transcript {
     pub fn render(&self) -> String {
+        self.render_with_note(NO_SPEAKERS_NOTE)
+    }
+
+    /// Render a transcript whose selected speaker recognition mode was off.
+    pub fn render_speaker_off(&self) -> String {
+        self.render_with_note(SPEAKERS_OFF_NOTE)
+    }
+
+    fn render_with_note(&self, note: &str) -> String {
         let mut out = String::from("# Transcript\n\n");
         if !self.has_speakers {
-            out.push_str(NO_SPEAKERS_NOTE);
+            out.push_str(note);
             out.push_str("\n\n");
         }
         for line in &self.lines {
@@ -347,7 +370,7 @@ impl Transcript {
             if line.is_empty() || line.starts_with("# ") {
                 continue;
             }
-            if line == NO_SPEAKERS_NOTE {
+            if line == NO_SPEAKERS_NOTE || line == SPEAKERS_OFF_NOTE {
                 has_speakers = false;
                 continue;
             }

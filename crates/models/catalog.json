@@ -22,6 +22,23 @@
         "name": "CC-BY-4.0",
         "url": "https://creativecommons.org/licenses/by/4.0/",
         "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-unified-en-0.6b (NVIDIA, CC-BY-4.0)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 79,
+        "asr_accuracy_score": 90,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -34,7 +51,7 @@
       "languages": [
         "en"
       ],
-      "recommended": false,
+      "recommended": true,
       "repository": "https://huggingface.co/handy-computer/nemotron-speech-streaming-en-0.6b-gguf",
       "revision": "7d9b719206789e4068d87c6398262ab4dfd4e45d",
       "filename": "nemotron-speech-streaming-en-0.6b-Q8_0.gguf",
@@ -45,6 +62,23 @@
         "name": "NVIDIA Open Model License",
         "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
         "attribution": "GGUF conversion by handy-computer of nvidia/nemotron-speech-streaming-en-0.6b (NVIDIA, NVIDIA Open Model License)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 80,
+        "asr_accuracy_score": 86,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -95,6 +129,23 @@
         "name": "OpenMDW-1.1",
         "url": "https://openmdw.ai/license/1-1/",
         "attribution": "GGUF conversion by handy-computer of nvidia/nemotron-3.5-asr-streaming-0.6b (NVIDIA, OpenMDW-1.1)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 84,
+        "asr_accuracy_score": 82,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -110,14 +161,32 @@
       "recommended": false,
       "repository": "https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf",
       "revision": "31042fb4b5018be38240018492bdbde1923789dc",
-      "filename": "multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
-      "url": "https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/31042fb4b5018be38240018492bdbde1923789dc/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
-      "size_bytes": 734123712,
-      "sha256": "4748deea0222eb9057ebdac1679eebb970bbe882ee10a96ae34596ffe83615c7",
+      "filename": "bundle-multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
+      "url": "https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/31042fb4b5018be38240018492bdbde1923789dc/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
+      "size_bytes": 873443328,
+      "sha256": "847df2b5b7576ee69801d74d60f5863df1503d09a790a57f0609323c15f26d64",
       "licence": {
         "name": "NVIDIA Open Model License",
         "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
         "attribution": "GGUF conversion by handy-computer of nvidia/multitalker-parakeet-streaming-0.6b-v1 (NVIDIA, NVIDIA Open Model License)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 96,
+        "asr_accuracy_score": 86,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote",
+          "integrated"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -141,6 +210,23 @@
         "name": "CC-BY-4.0",
         "url": "https://creativecommons.org/licenses/by/4.0/",
         "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-tdt-0.6b-v2 (NVIDIA, CC-BY-4.0)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 85,
+        "asr_accuracy_score": 89,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -188,6 +274,23 @@
         "name": "CC-BY-4.0",
         "url": "https://creativecommons.org/licenses/by/4.0/",
         "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-tdt-0.6b-v3 (NVIDIA, CC-BY-4.0)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 79,
+        "asr_accuracy_score": 88,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -211,6 +314,23 @@
         "name": "CC-BY-4.0",
         "url": "https://creativecommons.org/licenses/by/4.0/",
         "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-tdt-1.1b (NVIDIA, CC-BY-4.0)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 76,
+        "asr_accuracy_score": 91,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -333,6 +453,23 @@
         "name": "Apache-2.0",
         "url": "https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf",
         "attribution": "GGUF conversion by handy-computer of openai/whisper-large-v3-turbo (OpenAI, MIT)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 35,
+        "asr_accuracy_score": 88,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -357,6 +494,24 @@
         "name": "Apache-2.0",
         "url": "https://www.apache.org/licenses/LICENSE-2.0",
         "attribution": "GGUF conversion by handy-computer of OpenMOSS-Team/MOSS-Transcribe-Diarize (OpenMOSS Team, Apache-2.0)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 31,
+        "asr_accuracy_score": 88,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote",
+          "integrated"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -373,7 +528,7 @@
       "licence": {
         "name": "MIT",
         "url": "https://huggingface.co/pyannote/segmentation-3.0",
-        "attribution": "pyannote/segmentation-3.0 by Hervé Bredin and pyannote contributors; ONNX export by onnx-community."
+        "attribution": "pyannote/segmentation-3.0 by Herv\u00e9 Bredin and pyannote contributors; ONNX export by onnx-community."
       }
     },
     {
@@ -392,6 +547,210 @@
         "url": "https://creativecommons.org/licenses/by/4.0/",
         "attribution": "WeSpeaker ResNet34-LM r-vector, trained on VoxCeleb2 by the WeNet community (wenet-e2e/wespeaker)."
       }
+    },
+    {
+      "id": "granite-speech-4.1-2b-plus-q5km",
+      "kind": "asr",
+      "name": "Granite Speech 4.1 2B Plus",
+      "description": "5 languages, word-level timestamps, not streaming.",
+      "streaming": false,
+      "timestamps": "word",
+      "languages": [
+        "en",
+        "fr",
+        "de",
+        "es",
+        "pt"
+      ],
+      "recommended": true,
+      "repository": "https://huggingface.co/handy-computer/granite-speech-4.1-2b-plus-gguf",
+      "revision": "f73a59df77fef89ac0a34bc539d09d756793b065",
+      "filename": "granite-speech-4.1-2b-plus-Q5_K_M.gguf",
+      "url": "https://huggingface.co/handy-computer/granite-speech-4.1-2b-plus-gguf/resolve/f73a59df77fef89ac0a34bc539d09d756793b065/granite-speech-4.1-2b-plus-Q5_K_M.gguf",
+      "size_bytes": 1691297088,
+      "sha256": "3415f2c2d5979ded038dc012e5a875d77602fa5a0699cc75ee7fa47991f42530",
+      "licence": {
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "attribution": "GGUF conversion by handy-computer of ibm-granite/granite-speech-4.1-2b-plus (IBM, Apache-2.0)."
+      },
+      "assessment": {
+        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
+        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
+        "speed_score": 29,
+        "asr_accuracy_score": 90,
+        "speaker_accuracy_score": null,
+        "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote",
+          "integrated"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
+      }
+    },
+    {
+      "id": "sortformer-v2-q80",
+      "kind": "segmentation",
+      "name": "diar_streaming_sortformer_4spk-v2",
+      "description": "Separate speaker recognition through NeMo-Speech.cpp.",
+      "repository": "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2",
+      "revision": "84edd514b8ef68004c10086918cd62f2148cbd59",
+      "filename": "diar_streaming_sortformer_4spk-v2.q8_0.gguf",
+      "url": "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2/resolve/84edd514b8ef68004c10086918cd62f2148cbd59/diar_streaming_sortformer_4spk-v2.q8_0.gguf",
+      "size_bytes": 147075776,
+      "sha256": "0679cfeb1ce356d0dea9470b31274f4bfc7eb927497d82005483770666da998a",
+      "licence": {
+        "name": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "NVIDIA nvidia/diar_streaming_sortformer_4spk-v2; CC-BY-4.0."
+      }
+    },
+    {
+      "id": "nemotron-3-diarization-q80",
+      "kind": "segmentation",
+      "name": "Nemotron-3-Diarization",
+      "description": "Separate speaker recognition through NeMo-Speech.cpp.",
+      "repository": "https://huggingface.co/nvidia/Nemotron-3-Diarization",
+      "revision": "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+      "filename": "Nemotron-3-Diarization.q8_0.gguf",
+      "url": "https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/f667ed73aee57d40cc39428eb768b4fd87a0a29e/Nemotron-3-Diarization.q8_0.gguf",
+      "size_bytes": 107012128,
+      "sha256": "08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1",
+      "licence": {
+        "name": "OpenMDW-1.1",
+        "url": "https://openmdw.ai/license/1-1/",
+        "attribution": "NVIDIA nvidia/Nemotron-3-Diarization; OpenMDW-1.1."
+      }
+    }
+  ],
+  "runtime_artifacts": [
+    {
+      "id": "nemo-nemotron-speech-streaming-en-0.6b-q80",
+      "kind": "asr",
+      "name": "Nemotron Speech Streaming EN 0.6B (NeMo artifact)",
+      "description": "English, token-level timestamps, streaming.",
+      "streaming": true,
+      "timestamps": "token",
+      "languages": [
+        "en"
+      ],
+      "recommended": false,
+      "repository": "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b",
+      "revision": "ebe59e5a817142986528bbbee5dba8db7b38ed50",
+      "filename": "nemo-nemotron-speech-streaming-en-0.6b.q8_0.gguf",
+      "url": "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/ebe59e5a817142986528bbbee5dba8db7b38ed50/nemotron-speech-streaming-en-0.6b.q8_0.gguf",
+      "size_bytes": 699872960,
+      "sha256": "d9a01898d2a611c8764e23a1c2f45e70bbd5a425dc4de93692ac951dd603812d",
+      "licence": {
+        "name": "NVIDIA Open Model License",
+        "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+        "attribution": "NVIDIA nemotron-speech-streaming-en-0.6b; portable NeMo GGUF."
+      },
+      "assessment": null
+    },
+    {
+      "id": "nemo-nemotron-3.5-asr-streaming-0.6b-q80",
+      "kind": "asr",
+      "name": "Nemotron 3.5 ASR Streaming 0.6B (NeMo artifact)",
+      "description": "28 languages, token-level timestamps, streaming.",
+      "streaming": true,
+      "timestamps": "token",
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "it",
+        "pt",
+        "nl",
+        "de",
+        "tr",
+        "ru",
+        "ar",
+        "hi",
+        "ja",
+        "ko",
+        "vi",
+        "uk",
+        "pl",
+        "sv",
+        "cs",
+        "nb",
+        "da",
+        "bg",
+        "fi",
+        "hr",
+        "sk",
+        "zh",
+        "hu",
+        "ro",
+        "et"
+      ],
+      "recommended": false,
+      "repository": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
+      "revision": "ea30d66debe3740a08b573244286791d423d6b3e",
+      "filename": "nemo-nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
+      "url": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/ea30d66debe3740a08b573244286791d423d6b3e/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf",
+      "size_bytes": 742090464,
+      "sha256": "3fc991d3badad7277c11030a7519832cddaf2057aafed6d4b25147e953a070b1",
+      "licence": {
+        "name": "OpenMDW-1.1",
+        "url": "https://openmdw.ai/license/1-1/",
+        "attribution": "NVIDIA nemotron-3.5-asr-streaming-0.6b; portable NeMo GGUF."
+      },
+      "assessment": null
+    },
+    {
+      "id": "nemo-parakeet-tdt-0.6b-v3-q80",
+      "kind": "asr",
+      "name": "Parakeet TDT 0.6B v3 (NeMo artifact)",
+      "description": "25 languages, token-level timestamps, not streaming.",
+      "streaming": false,
+      "timestamps": "token",
+      "languages": [
+        "bg",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "en",
+        "et",
+        "fi",
+        "fr",
+        "de",
+        "el",
+        "hu",
+        "it",
+        "lv",
+        "lt",
+        "mt",
+        "pl",
+        "pt",
+        "ro",
+        "ru",
+        "sk",
+        "sl",
+        "es",
+        "sv",
+        "uk"
+      ],
+      "recommended": false,
+      "repository": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      "revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+      "filename": "nemo-parakeet-tdt-0.6b-v3.q8_0.gguf",
+      "url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf",
+      "size_bytes": 713975456,
+      "sha256": "e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e",
+      "licence": {
+        "name": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "NVIDIA parakeet-tdt-0.6b-v3; portable NeMo GGUF."
+      },
+      "assessment": null
     }
   ]
 }

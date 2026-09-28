@@ -233,7 +233,7 @@ fn renumber(lines: &mut [TranscriptLine]) {
 /// True when a paragraph is past the length limit and ends a sentence, so
 /// the next piece starts a new paragraph. A split occurs only between
 /// pieces, never inside one, so each paragraph starts at a piece's time.
-fn paragraph_full(text: &str) -> bool {
+pub(crate) fn paragraph_full(text: &str) -> bool {
     if text.chars().count() <= PARAGRAPH_CHARS {
         return false;
     }

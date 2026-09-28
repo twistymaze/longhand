@@ -13,7 +13,9 @@ import {
   type LiveTranscript,
   type LiveTranscriptEvent,
   type LiveTranscriptStatus,
+  type LiveRecognitionEvent,
 } from "../bindings";
+import { applyRecognition, applyRecognitionEvents, emptyRecognition, type RecognitionView } from "./liveRecognition";
 
 export type LiveView = {
   /// The saved parts, in order of segment and part.
@@ -24,11 +26,13 @@ export type LiveView = {
   state: LiveState | null;
   /// The catch-up returned.
   loaded: boolean;
+  recognition: RecognitionView;
 };
 
-const none: LiveView = { parts: [], current: null, state: null, loaded: false };
+const none: LiveView = { parts: [], current: null, state: null, loaded: false, recognition: emptyRecognition };
 
 type Change =
+  | { kind: "recognition"; data: LiveRecognitionEvent }
   | { kind: "catchup"; data: LiveTranscript }
   | { kind: "text"; data: LiveTranscriptEvent }
   | { kind: "saved"; data: LivePartSaved }
@@ -46,6 +50,7 @@ function withPart(parts: LivePartText[], part: LivePartText): LivePartText[] {
 
 export function apply(live: LiveView, change: Change): LiveView {
   switch (change.kind) {
+    case "recognition": return { ...live, recognition: applyRecognition(live.recognition, change.data) };
     case "catchup": {
       // One merge and one sort: a long note has many saved parts.
       const byKey = new Map(live.parts.map((p) => [`${p.segment}-${p.part}`, p]));
@@ -53,6 +58,7 @@ export function apply(live: LiveView, change: Change): LiveView {
       const parts = [...byKey.values()].sort(order);
       const current = change.data.current;
       return {
+        recognition: change.data.recognition ? applyRecognitionEvents(emptyRecognition, change.data.recognition) : live.recognition,
         parts,
         current: current && !parts.some((p) => same(p, current)) ? current : null,
         state: change.data.state,
@@ -79,20 +85,61 @@ export function apply(live: LiveView, change: Change): LiveView {
   }
 }
 
+function applyChanges(live: LiveView, changes: Change[]): LiveView {
+  let next = live;
+  for (let i = 0; i < changes.length;) {
+    const recognition: LiveRecognitionEvent[] = [];
+    while (i < changes.length && changes[i].kind === "recognition") {
+      recognition.push((changes[i] as Extract<Change, { kind: "recognition" }>).data);
+      i++;
+    }
+    if (recognition.length) {
+      const updated = applyRecognitionEvents(next.recognition, recognition);
+      if (updated !== next.recognition) next = { ...next, recognition: updated };
+    }
+    if (i < changes.length) next = apply(next, changes[i++]);
+  }
+  return next;
+}
+
 export function useLiveTranscript(sessionId: string): LiveView {
   const [live, setLive] = useState<LiveView>(none);
 
   useEffect(() => {
     setLive(none);
     let open = true;
-    // Null after the catch-up: events then apply at once.
+    // Null after the catch-up: recognition events then apply once per frame.
     let waiting: Change[] | null = [];
+    let pending: Change[] = [];
+    let frame: number | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      if (timer !== null) clearTimeout(timer);
+      frame = null;
+      timer = null;
+      if (!open || !pending.length) return;
+      const queued = pending;
+      pending = [];
+      setLive((l) => applyChanges(l, queued));
+    };
     const take = (change: Change) => {
       if (!open) return;
       if (waiting) waiting.push(change);
-      else setLive((l) => apply(l, change));
+      else {
+        pending.push(change);
+        if (change.kind !== "recognition") flush();
+        else if (frame === null) {
+          frame = requestAnimationFrame(flush);
+          // A hidden window can stop animation frames. Keep its queue bounded in time.
+          timer = setTimeout(flush, 100);
+        }
+      }
     };
     const unlisteners = [
+      events.liveRecognitionEvent.listen(({ payload }) => {
+        if (payload.session_id === sessionId) take({ kind: "recognition", data: payload });
+      }),
       events.liveTranscriptEvent.listen(({ payload }) => {
         if (payload.session_id === sessionId) take({ kind: "text", data: payload });
       }),
@@ -111,9 +158,8 @@ export function useLiveTranscript(sessionId: string): LiveView {
         const queued = waiting ?? [];
         waiting = null;
         setLive((l) => {
-          let next = result.status === "ok" ? apply(l, { kind: "catchup", data: result.data }) : { ...l, loaded: true };
-          for (const change of queued) next = apply(next, change);
-          return next;
+          const next = result.status === "ok" ? apply(l, { kind: "catchup", data: result.data }) : { ...l, loaded: true };
+          return applyChanges(next, queued);
         });
       } catch {
         // The IPC call itself rejected (not a Result error). Leave the
@@ -122,14 +168,15 @@ export function useLiveTranscript(sessionId: string): LiveView {
         const queued = waiting ?? [];
         waiting = null;
         setLive((l) => {
-          let next = { ...l, loaded: true };
-          for (const change of queued) next = apply(next, change);
-          return next;
+          return applyChanges({ ...l, loaded: true }, queued);
         });
       }
     });
     return () => {
       open = false;
+      if (frame !== null) cancelAnimationFrame(frame);
+      if (timer !== null) clearTimeout(timer);
+      pending = [];
       for (const u of unlisteners) void u.then((f) => f());
     };
   }, [sessionId]);

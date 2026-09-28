@@ -83,6 +83,34 @@ fn a_complete_folder_lists_with_nothing_waiting() {
     );
 }
 
+#[test]
+fn a_generation_waits_for_immutable_files_even_when_canonical_files_arrived() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    let manifest = doc("A1").render().replacen(
+        "---\n",
+        &format!("---\nresult_generation:\n  id: committed-1\n  files:\n    transcript.md: {}\n    summary.md: {}\n",
+            fingerprint(TRANSCRIPT.as_bytes()), fingerprint(SUMMARY.as_bytes())),
+        1,
+    );
+    fs::write(dir.join("session.md"), manifest).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].waiting.contains(&Waiting::Transcript));
+    fs::create_dir_all(dir.join(".longhand-results/committed-1")).unwrap();
+    fs::write(
+        dir.join(".longhand-results/committed-1/transcript.md"),
+        TRANSCRIPT,
+    )
+    .unwrap();
+    fs::write(
+        dir.join(".longhand-results/committed-1/summary.md"),
+        SUMMARY,
+    )
+    .unwrap();
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].waiting.is_empty());
+}
+
 // Covers AE7.
 #[test]
 fn a_folder_without_notes_md_lists_with_notes_waiting() {

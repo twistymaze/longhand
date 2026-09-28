@@ -10,7 +10,7 @@
 set -euo pipefail
 
 TARGET=x86_64-pc-windows-msvc
-EXCLUDE=(longhand asr recorder session-core library diarize pyannote-local embedding pipeline)
+EXCLUDE=(longhand asr recorder session-core session-save library diarize pyannote-local embedding pipeline)
 
 if ! rustup target list --installed | grep -qx "$TARGET"; then
     rustup target add "$TARGET"

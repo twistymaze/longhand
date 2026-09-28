@@ -6,6 +6,50 @@ use tauri::State;
 
 use crate::managers::processing::ProcessingManager;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ReprocessPreview {
+    pub execution: models::recognition::ExecutionSpec,
+    pub requires_transcription: bool,
+    pub explanation: String,
+    pub manifest: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn preview_reprocess(
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+    config: models::recognition::RecognitionConfig,
+) -> Result<ReprocessPreview, String> {
+    let preview = processing.preview_reprocess(&session_id, &config)?;
+    Ok(ReprocessPreview {
+        execution: preview.execution,
+        requires_transcription: preview.requires_transcription,
+        explanation: preview.explanation,
+        manifest: preview.manifest,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn reprocess_session(
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+    preview: ReprocessPreview,
+    allow_transcription: bool,
+) -> Result<(), String> {
+    processing.reprocess(
+        &session_id,
+        &pipeline::reprocess::Preview {
+            execution: preview.execution,
+            requires_transcription: preview.requires_transcription,
+            explanation: preview.explanation,
+            manifest: preview.manifest,
+        },
+        allow_transcription,
+    )
+}
+
 /// Summarize a saved session again, replacing its `summary.md` (R19,
 /// AE17). Returns the summary's path.
 #[tauri::command]

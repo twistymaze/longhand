@@ -26,6 +26,10 @@ pub enum StoreError {
     Illegal(#[from] IllegalTransition),
     #[error("no session {0}")]
     NoSuchSession(String),
+    #[error("recognition snapshot is already set for {0}")]
+    SnapshotExists(String),
+    #[error("invalid recognition output: {0}")]
+    Recognition(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -40,6 +44,7 @@ pub struct SessionRecord {
     /// The recognition model that the session records when it starts, or at
     /// Stop for a session that started before the update (KTD2).
     pub asr_model: Option<String>,
+    pub recognition_snapshot: Option<serde_json::Value>,
     pub home_path: Option<String>,
     pub title: Option<Title>,
     /// The number of speakers that processing found (KTD11).
@@ -111,6 +116,7 @@ pub struct Adoption {
     pub notes: String,
     pub title: Option<Title>,
     pub asr_model: Option<String>,
+    pub recognition_snapshot: Option<serde_json::Value>,
     pub found_speakers: Option<u32>,
     /// The absolute path of the note folder.
     pub home_path: String,
@@ -138,6 +144,7 @@ impl Adoption {
             notes,
             title: doc.title_and_source(),
             asr_model: doc.asr_model.clone(),
+            recognition_snapshot: doc.recognition_snapshot.clone(),
             found_speakers: doc.found_speakers,
             home_path,
             transcript_fingerprint,
@@ -215,7 +222,7 @@ pub enum Liveness {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 fn stage_key(stage: Stage) -> String {
@@ -227,7 +234,7 @@ fn stage_key(stage: Stage) -> String {
 
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
-     home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model";
+     home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -275,6 +282,7 @@ impl Store {
             speaker_count,
             None,
             &CaptureChoice::default(),
+            None,
         )
     }
 
@@ -285,11 +293,12 @@ impl Store {
         speaker_count: Option<SpeakerCount>,
         model: Option<&RecordingModel>,
         capture: &CaptureChoice,
+        snapshot: Option<&serde_json::Value>,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
-               mic_id, mic_label, system_audio)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+               mic_id, mic_label, system_audio, recognition_snapshot)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -302,6 +311,7 @@ impl Store {
                 capture.microphone.as_ref().map(|m| m.id.as_str()),
                 capture.microphone.as_ref().map(|m| m.label.as_str()),
                 capture.system_audio,
+                snapshot.map(serde_json::to_string).transpose()?,
             ],
         )?;
         Ok(())
@@ -318,6 +328,19 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
     ) -> Result<Vec<String>> {
+        self.start_session_with_recognition(id, now, speaker_count, model, capture, None)
+    }
+
+    /// Store the configuration with the new session in the same INSERT.
+    pub fn start_session_with_recognition(
+        &mut self,
+        id: &str,
+        now: DateTime<FixedOffset>,
+        speaker_count: Option<SpeakerCount>,
+        model: &RecordingModel,
+        capture: &CaptureChoice,
+        snapshot: Option<&serde_json::Value>,
+    ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
             for record in self.sessions_in(name)? {
@@ -332,8 +355,82 @@ impl Store {
                 stopped.push(record.id);
             }
         }
-        self.insert_session(id, now, speaker_count, Some(model), capture)?;
+        self.insert_session(id, now, speaker_count, Some(model), capture, snapshot)?;
         Ok(stopped)
+    }
+
+    pub fn recognition_snapshot(&self, id: &str) -> Result<Option<serde_json::Value>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT recognition_snapshot FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.into()))?;
+        Ok(value.map(|v| serde_json::from_str(&v)).transpose()?)
+    }
+
+    pub fn result_state(&self, id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM result_state WHERE session_id = ?1 AND key = ?2",
+                params![id, key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.map(|v| serde_json::from_str(&v)).transpose()?)
+    }
+
+    pub fn set_result_state(&self, id: &str, key: &str, value: &serde_json::Value) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO result_state(session_id, key, value) VALUES (?1, ?2, ?3)
+            ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value",
+            params![id, key, serde_json::to_string(value)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_result_state(&self, id: &str, key: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM result_state WHERE session_id = ?1 AND key = ?2",
+            params![id, key],
+        )?;
+        Ok(())
+    }
+
+    pub fn promote_result_snapshot(
+        &self,
+        id: &str,
+        snapshot: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        if let Some(snapshot) = snapshot {
+            self.conn.execute(
+                "UPDATE sessions SET recognition_snapshot = ?2 WHERE id = ?1",
+                params![id, serde_json::to_string(snapshot)?],
+            )?;
+        }
+        for key in ["replacement-base", "pending-snapshot"] {
+            self.clear_result_state(id, key)?;
+        }
+        Ok(())
+    }
+
+    /// Fill a legacy snapshot once. An existing snapshot is immutable.
+    pub fn set_recognition_snapshot(&self, id: &str, value: &serde_json::Value) -> Result<()> {
+        let written = self.conn.execute(
+            "UPDATE sessions SET recognition_snapshot = ?2 WHERE id = ?1 AND recognition_snapshot IS NULL",
+            params![id, serde_json::to_string(value)?],
+        )?;
+        if written == 0 {
+            if self.session(id)?.is_none() {
+                return Err(StoreError::NoSuchSession(id.into()));
+            }
+            return Err(StoreError::SnapshotExists(id.into()));
+        }
+        Ok(())
     }
 
     /// The capture choice of the session (KTD2). A session with no stored
@@ -482,8 +579,8 @@ impl Store {
         let tx = self.conn.transaction()?;
         let inserted = tx.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, home_path,
-               title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+               title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint, recognition_snapshot)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT (id) DO NOTHING",
             params![
                 note.id,
@@ -500,6 +597,7 @@ impl Store {
                 note.found_speakers,
                 stereo_from,
                 note.transcript_fingerprint,
+                note.recognition_snapshot.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         if inserted == 0 {
@@ -568,6 +666,8 @@ impl Store {
                 )?;
             }
         }
+        tx.execute("DELETE FROM recognition_output WHERE session_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_epochs WHERE session_id=?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -604,6 +704,17 @@ impl Store {
         model: &str,
         event: &Event,
     ) -> Result<SessionState> {
+        self.begin_reprocess(id, model, event, None, None)
+    }
+
+    pub fn begin_reprocess(
+        &mut self,
+        id: &str,
+        model: &str,
+        event: &Event,
+        snapshot: Option<&serde_json::Value>,
+        baseline: Option<&serde_json::Value>,
+    ) -> Result<SessionState> {
         if !matches!(event, Event::UserTranscribeAgain { .. }) {
             return Err(StoreError::Illegal(IllegalTransition {
                 state: "saved".into(),
@@ -623,6 +734,21 @@ impl Store {
              transcribe_again_summary_error = NULL WHERE id = ?1",
             params![id, model],
         )?;
+        for (key, value) in [
+            ("pending-snapshot", snapshot),
+            ("replacement-base", baseline),
+        ] {
+            tx.execute(
+                "DELETE FROM result_state WHERE session_id = ?1 AND key = ?2",
+                params![id, key],
+            )?;
+            if let Some(value) = value {
+                tx.execute(
+                    "INSERT INTO result_state(session_id, key, value) VALUES (?1, ?2, ?3)",
+                    params![id, key, serde_json::to_string(value)?],
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(next)
     }
@@ -652,6 +778,7 @@ impl Store {
              WHERE id = ?1",
             params![id, error],
         )?;
+        tx.execute("DELETE FROM result_state WHERE session_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
         tx.commit()?;
         Ok(next)
     }
@@ -1123,6 +1250,21 @@ impl Store {
         Ok(())
     }
 
+    pub fn checkpoint_value(
+        &self,
+        session_id: &str,
+        stage: Stage,
+        key: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT payload FROM checkpoints WHERE session_id=?1 AND stage=?2 AND key=?3",
+                params![session_id, stage_key(stage), key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
     pub fn checkpoints(&self, session_id: &str, stage: Stage) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT key, payload FROM checkpoints WHERE session_id = ?1 AND stage = ?2 ORDER BY key",
@@ -1210,6 +1352,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let found_speakers: Option<u32> = r.get(9)?;
     let live_transcript: Option<bool> = r.get(10)?;
     let transcribe_again_model: Option<String> = r.get(11)?;
+    let recognition_snapshot: Option<String> = r.get(12)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -1234,6 +1377,9 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
             found_speakers,
             live_transcript,
             transcribe_again_model,
+            recognition_snapshot: recognition_snapshot
+                .map(|v| serde_json::from_str(&v))
+                .transpose()?,
         })
     })())
 }
@@ -1302,6 +1448,7 @@ fn cancel_transcribe_again(tx: &Transaction, id: &str) -> Result<()> {
         "UPDATE sessions SET transcribe_again_model = NULL WHERE id = ?1",
         [id],
     )?;
+    tx.execute("DELETE FROM result_state WHERE session_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
     Ok(())
 }
 

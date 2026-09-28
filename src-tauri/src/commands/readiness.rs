@@ -158,7 +158,10 @@ pub async fn readiness(
         ),
         shortcut,
         destination,
-        missing_models: models.missing(&settings.asr_model),
+        missing_models: models.missing_spec(
+            &models::recognition::resolve(&settings.recognition_config())
+                .map_err(|e| e.to_string())?,
+        ),
         endpoint_configured,
     })
 }

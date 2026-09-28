@@ -58,10 +58,9 @@ pub fn get<T: for<'de> Deserialize<'de>>(
     stage: Stage,
     key: &str,
 ) -> Result<Option<T>, StageError> {
-    let rows = lock(store).checkpoints(session_id, stage)?;
-    rows.into_iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, payload)| serde_json::from_str(&payload).map_err(StageError::from))
+    lock(store)
+        .checkpoint_value(session_id, stage, key)?
+        .map(|payload| serde_json::from_str(&payload).map_err(StageError::from))
         .transpose()
 }
 

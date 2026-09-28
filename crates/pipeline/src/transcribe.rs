@@ -37,12 +37,15 @@ pub const MERGE_MS: u64 = 150;
 pub struct WindowPlan {
     pub segment: u32,
     pub duration_ms: u64,
-    /// Voiced duration by VAD.
+    /// Duration of the padded VAD spans.
     pub voiced_ms: u64,
-    /// The voiced spans themselves, which verification measures coverage
-    /// against (U20). Empty in a plan checkpointed before they were kept.
+    /// Padded VAD spans for request windows and live gap filling.
+    /// Empty in a plan checkpointed before they were kept.
     #[serde(default)]
     pub voiced: Vec<Span>,
+    /// Onset-qualified speech without request padding. None in old plans.
+    #[serde(default)]
+    pub speech: Option<Vec<Span>>,
     pub windows: Vec<Span>,
 }
 
@@ -144,6 +147,33 @@ pub fn run(
     control: &dyn Control,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<(), StageError> {
+    run_with_timing(
+        store,
+        session_id,
+        session_dir,
+        segments,
+        turn_cuts,
+        engine,
+        false,
+        control,
+        progress,
+    )
+}
+
+/// Prefer model-provided token timestamps for new batch windows. This keeps
+/// wider ASR context while a separate timeline supplies speaker changes.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_timing(
+    store: &SharedStore,
+    session_id: &str,
+    session_dir: &Path,
+    segments: &[Segment],
+    turn_cuts: &TurnCuts,
+    engine: &Slot<'_>,
+    native_tokens: bool,
+    control: &dyn Control,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<(), StageError> {
     // The live worker saved its last part before processing started (KTD9),
     // so the live rows do not change during this stage.
     let live_rows = live::rows(store, session_id)?;
@@ -154,6 +184,25 @@ pub fn run(
             continue;
         }
         control.proceed()?;
+        if native_tokens {
+            let mode_key = format!("seg-{:04}-native-tokens", segment.index);
+            if checkpoint::get::<bool>(store, session_id, Stage::Transcribe, &mode_key)?
+                != Some(true)
+            {
+                // An interrupted older segment-only plan can contain short
+                // speaker cuts. Replan only this unfinished batch segment.
+                let guard = lock(store);
+                for (key, _) in guard.checkpoints(session_id, Stage::Transcribe)? {
+                    if key.starts_with(&checkpoint::window_prefix(segment.index))
+                        || key == checkpoint::plan_key(segment.index)
+                    {
+                        guard.delete_checkpoint(session_id, Stage::Transcribe, &key)?;
+                    }
+                }
+                drop(guard);
+                checkpoint::put(store, session_id, Stage::Transcribe, &mode_key, &true)?;
+            }
+        }
         let plan = match checkpoint::get::<WindowPlan>(
             store,
             session_id,
@@ -260,7 +309,15 @@ pub fn run(
             let result = {
                 let mut slot = engine.hold(control)?;
                 let recognizer = slot.as_deref_mut().expect("hold loads the model");
-                recognize(recognizer, &pcm, segment.index, i, window, fill.as_ref())
+                recognize(
+                    recognizer,
+                    &pcm,
+                    segment.index,
+                    i,
+                    window,
+                    fill.as_ref(),
+                    native_tokens,
+                )
             };
             let result = result.map_err(|e| {
                 StageError::Failed(format!(
@@ -313,6 +370,7 @@ fn put_for_run<T: Serialize>(
 
 /// Transcribe one window: in a full pass, by segments; in a gap fill, by
 /// tokens, keeping only the words that the merge keeps.
+#[allow(clippy::too_many_arguments)]
 fn recognize(
     recognizer: &mut dyn Recognizer,
     pcm: &[f32],
@@ -320,6 +378,7 @@ fn recognize(
     window: usize,
     span: Span,
     fill: Option<&GapFill>,
+    native_tokens: bool,
 ) -> Result<WindowResult, asr::AsrError> {
     let mut result = WindowResult {
         segment,
@@ -332,6 +391,17 @@ fn recognize(
         live: false,
     };
     match fill {
+        None if native_tokens => {
+            if !recognizer.native_token_timestamps() {
+                return Err(asr::AsrError::Run(
+                    "native token timing was requested from an incompatible engine".into(),
+                ));
+            }
+            let tokens = recognizer.transcribe_tokens(pcm)?;
+            let words = asr::words_from_tokens(&tokens, span.start_ms);
+            result.text = asr::join_words(&words);
+            result.words = Some(words);
+        }
         None => {
             let text = recognizer.transcribe(pcm)?;
             result.text = text.text;
@@ -508,6 +578,7 @@ pub fn plan_segment(
         voiced_ms: asr::voiced_ms(&spans),
         windows: voicing.windows(turn_cuts_ms),
         voiced: spans,
+        speech: Some(voicing.speech_spans()),
     })
 }
 
@@ -607,6 +678,7 @@ pub fn seed_from_transcript(
             duration_ms: segment.duration_ms,
             voiced_ms: 0,
             voiced: Vec::new(),
+            speech: Some(Vec::new()),
             windows: vec![whole],
         };
         let result = WindowResult {

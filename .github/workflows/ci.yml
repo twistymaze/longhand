@@ -132,11 +132,53 @@ jobs:
           cache-on-failure: true
           workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
 
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
       - uses: oven-sh/setup-bun@v2
 
       - name: Install frontend dependencies
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun install --frozen-lockfile
+
+      # msvc-dev-cmd documents that Git Bash can select GNU link.exe before MSVC.
+      # Use the native Windows shell for Rust, as upstream transcribe.cpp does:
+      # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
+      - name: Rust helper tests before SDK build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path $expected)) { throw "MSVC linker is absent: $expected" }
+          $expected = (Get-Item -LiteralPath $expected).FullName
+          $actual = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Wrong linker selected: $actual; expected $expected"
+          }
+          Write-Output "Rust linker: $actual"
+          cargo test -p nemo-runtime --features test-helper
+          if ($LASTEXITCODE -ne 0) { throw 'Rust helper tests failed' }
+
+      - name: Rust helper tests before SDK build (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test -p nemo-runtime --features test-helper
+
+      - name: Build and stage NeMo helper
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          # rust-cache removes non-Cargo files from target during cache save.
+          LONGHAND_NEMO_CACHE: ${{ runner.temp }}/longhand-nemo
+        run: |
+          echo "LONGHAND_NEMO_CACHE=$LONGHAND_NEMO_CACHE" >> "$GITHUB_ENV"
+          bun test scripts/windows-redist.test.ts
+          bun scripts/prepare-nemo.ts
+
+      - name: Native helper protocol smoke test
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: bun scripts/test-nemo.ts --helper "src-tauri/nemo-runtime/bin/longhand-nemo-helper${{ runner.os == 'Windows' && '.exe' || '' }}"
 
       # The two jobs run side by side, so the run lasts as long as the slower
       # Windows job. Checks that come out the same on every platform
@@ -186,9 +228,15 @@ jobs:
       # dependencies compile once and ggml's C++ build runs once. The app's
       # test binaries start on Windows because build.rs embeds the app
       # manifest in every binary the app crate links.
-      - name: tests
+      - name: Workspace Rust tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --workspace --features nemo-runtime/test-helper
+
+      - name: Workspace Rust tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
-        run: cargo test --workspace
+        run: cargo test --workspace --features nemo-runtime/test-helper
 
       # The tests just regenerated src/bindings.ts (`export_bindings`).
       - name: Bindings are current
@@ -211,6 +259,13 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: "-"
         run: bun tauri build --debug --bundles app
+
+      - name: Installed NeMo helper CPU inference (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          helper="target/debug/bundle/macos/Longhand.app/Contents/Frameworks/LonghandNeMo/longhand-nemo-helper"
+          codesign --verify --strict "$helper"
+          bun scripts/validate-recognition/installed-smoke.ts "$helper"
 
       # The installer carries the VC++ runtime app-local, so Longhand starts
       # on a machine without a current redistributable. build.rs stages the
@@ -237,6 +292,7 @@ jobs:
 
       - name: Tauri build (Windows installer)
         if: runner.os == 'Windows'
+        shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun tauri build --debug --bundles nsis
 
@@ -251,6 +307,19 @@ jobs:
           for dll in msvcp140.dll vcruntime140.dll; do
             grep -qi "$dll" <<<"$listing" || { echo "$installer lacks $dll"; exit 1; }
           done
+
+      - name: Installed NeMo helper CPU inference (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target/debug/bundle/nsis/*.exe | Select-Object -First 1
+          & 7z x $installer.FullName "-otarget/recognition-installer" -y
+          if ($LASTEXITCODE -ne 0) { throw "Installer extraction failed" }
+          $helper = Get-ChildItem target/recognition-installer -Recurse -Filter longhand-nemo-helper.exe | Select-Object -First 1
+          if (-not $helper) { throw "Installer lacks the NeMo helper" }
+          bun scripts/validate-recognition/installed-smoke.ts $helper.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Installed helper inference failed" }
 
       # Shows how much of the Dev Drive and the runner's disks the job used,
       # to check the drive size.

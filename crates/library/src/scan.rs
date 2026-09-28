@@ -424,8 +424,13 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
     };
 
     let mut waiting = Vec::new();
+    let result_dir = doc
+        .result_generation
+        .as_ref()
+        .and_then(|g| g.directory(dir).ok());
+    let result_dir = result_dir.as_deref().unwrap_or(dir);
     let transcript = document_state(
-        dir,
+        result_dir,
         "transcript.md",
         doc.transcript_fingerprint.as_deref(),
         options,
@@ -434,13 +439,21 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         waiting.push(Waiting::Transcript);
     }
     let summary = document_state(
-        dir,
+        result_dir,
         "summary.md",
         doc.summary_fingerprint.as_deref(),
         options,
     );
     if !summary.current {
         waiting.push(Waiting::Summary);
+    }
+    if doc
+        .result_generation
+        .as_ref()
+        .is_some_and(|g| g.verify(dir).is_err())
+        && waiting.is_empty()
+    {
+        waiting.push(Waiting::Transcript);
     }
     let notes = read_notes(dir, options.read_timeout);
     if notes.is_none() {

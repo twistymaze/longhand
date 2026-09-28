@@ -23,6 +23,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::settings::get_settings,
+            commands::settings::set_recognition_defaults,
+            commands::models::resolve_recognition,
+            commands::models::download_recognition_artifacts,
             commands::settings::login_item_status,
             commands::settings::set_login_item,
             commands::settings::open_login_item_settings,
@@ -71,6 +74,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::suspend_shortcuts,
             commands::capture::resume_shortcuts,
             commands::alerts::play_alert_sound,
+            commands::processing::preview_reprocess,
+            commands::processing::reprocess_session,
             commands::processing::regenerate_summary,
             commands::processing::transcribe_again,
             commands::processing::retry_session,
@@ -99,6 +104,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::processing::ProcessingUpdate,
             managers::library::LibraryChanged,
             managers::live::LiveTranscriptEvent,
+            managers::live::LiveRecognitionEvent,
             managers::live::LivePartSaved,
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,

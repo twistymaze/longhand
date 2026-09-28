@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+coreml = ["pyannote-local/coreml"]
+
 [dependencies]
 hound = "3.5.1"
 log.workspace = true

@@ -738,3 +738,28 @@ pub async fn change_interface_zoom(
         .await
         .map_err(|e| e.to_string())?
 }
+
+/// Keep the complete default until every new artifact is downloaded.
+#[tauri::command]
+#[specta::specta]
+pub fn set_recognition_defaults(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+    config: models::recognition::RecognitionConfig,
+) -> Result<Settings, String> {
+    let spec = models::recognition::resolve(&config).map_err(|e| e.to_string())?;
+    let missing = manager.missing_spec(&spec);
+    let result = settings::update_settings(&app, |s| {
+        s.pending_asr_model = None;
+        if missing.is_empty() {
+            s.apply_recognition(&config);
+        } else {
+            s.pending_recognition = Some(config.clone());
+        }
+        Ok(())
+    })?;
+    if !missing.is_empty() {
+        manager.start_downloads(&app, missing)?;
+    }
+    Ok(result)
+}

@@ -3,7 +3,10 @@
 //! PROVENANCE.md.
 
 mod assertion;
+mod processing;
 mod sleep;
 
 pub use assertion::{IdleGuard, REASON};
 pub use sleep::{PowerCallback, PowerEvent, SleepWatch};
+
+pub use processing::{ProcessingLease, ProcessingPower};
