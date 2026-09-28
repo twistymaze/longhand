@@ -528,6 +528,13 @@ mod tests {
             (refusal.message, refusal.in_settings)
         };
         assert_eq!(
+            text(Cause::NotSaved),
+            (
+                "This note can be transcribed again only after it is saved.".into(),
+                false
+            )
+        );
+        assert_eq!(
             text(Cause::NotDownloaded {
                 artifact: "granite-speech-4.1-2b-plus-q5km".into()
             }),

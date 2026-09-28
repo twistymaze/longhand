@@ -321,7 +321,7 @@ export function SessionPage({
 
   const again = useTranscribeAgain({
     sessionId: id,
-    available: phase === "saved" && !unavailable && !regenerating,
+    available: phase === "saved" && !heldForAudio && !regenerating,
     onQueued: () => {
       setNotice(null);
       changed();

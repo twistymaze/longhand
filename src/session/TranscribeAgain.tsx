@@ -14,8 +14,8 @@ export function useTranscribeAgain({
   onFailed,
 }: {
   sessionId: string;
-  /// The note is saved, its folder can be read, and no summary is being
-  /// made. When this becomes false, the dialog closes (KTD7).
+  /// The note is saved, its folder can be read, no part of it waits for
+  /// sync, and no summary is being made. When this becomes false, the dialog closes (KTD7).
   available: boolean;
   onQueued: () => void;
   onFailed: (refusal: TranscribeAgainRefusal) => void;
@@ -24,15 +24,22 @@ export function useTranscribeAgain({
   const [busy, setBusy] = useState(false);
   // A second click before `busy` renders sends no second command (KTD6).
   const sending = useRef(false);
+  // Each check gets a number. When the note becomes unavailable, the number
+  // changes, so a check that returns later does not open the dialog.
+  const asked = useRef(0);
 
   useEffect(() => {
-    if (!available) setCheck(null);
+    if (available) return;
+    asked.current += 1;
+    setCheck(null);
   }, [available]);
   useEffect(() => () => setCheck(null), [sessionId]);
 
   const ask = async () => {
+    const id = (asked.current += 1);
     try {
       const result = await commands.checkTranscribeAgain(sessionId);
+      if (id !== asked.current) return;
       if (result.status === "ok") setCheck(result.data);
       else onFailed(result.error);
     } catch {

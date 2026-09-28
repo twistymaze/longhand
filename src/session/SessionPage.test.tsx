@@ -979,6 +979,17 @@ describe("SessionPage", () => {
       expect(screen.queryByRole("alertdialog")).toBeNull();
     });
 
+    test("a check that returns after the note was unavailable opens no dialog", async () => {
+      let finish = () => {};
+      const { e, view } = await openMenu({
+        check_transcribe_again: () => new Promise((resolve) => (finish = () => resolve(granite))),
+      });
+      await act(async () => view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing" }])));
+      await act(async () => view.rerenderWith(captureOf(), sessionsOf([e])));
+      await act(async () => finish());
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
 
     test("after a failed run, the page says the previous transcript is unchanged", async () => {
       const e = entry("s");

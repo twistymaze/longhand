@@ -42,6 +42,13 @@ describe("ConfirmDialog", () => {
     expect(document.activeElement).toBe(confirm);
   });
 
+  test("Tab keeps the focus on Cancel while the action is busy", () => {
+    renderDialog({ busy: true });
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    fireEvent.keyDown(cancel, { key: "Tab" });
+    expect(document.activeElement).toBe(cancel);
+  });
+
   test("an action that is not destructive uses the accent colour", () => {
     renderDialog({ destructive: false, action: "Transcribe Again" });
     const confirm = screen.getByRole("button", { name: "Transcribe Again" });
