@@ -11,6 +11,7 @@ import type {
 } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { Models } from "./Models";
+import { recognitionDefaults } from "./RecognitionOptions";
 import { SettingsWindow } from "./SettingsWindow";
 import { useRecognitionDefaultsSave } from "./useAppSettings";
 import { describeLanguages } from "./languages";
@@ -624,28 +625,53 @@ test("model download progress appears beside that model", async () => {
   expect(row.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("25");
 });
 
-test("a supporting file download shows on the row of its model with Cancel", async () => {
-  let cancels = 0;
-  const bundled = [{ ...models[0], bundle: [stream, "sortformer-v2-q80"], bundle_size_bytes: 300_000_000 }, models[1]];
-  mockTauri({
-    resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
-    set_recognition_defaults: () => settings,
+describe("a shared supporting file download", () => {
+  const shared = "sortformer-v2-q80";
+  const bundled = [
+    { ...models[0], bundle: [stream, shared], bundle_size_bytes: 300_000_000 },
+    { ...models[1], bundle: [offline, shared], bundle_complete: false },
+  ];
+  const progress = { [shared]: { kind: "progress", downloaded: 50_000_000, total: 150_000_000 } } as Record<
+    string,
+    DownloadUpdate
+  >;
+  const rowOf = (name: string) => screen.getByRole("radio", { name }).parentElement!;
+
+  test("shows only on the row of the pending model, with Cancel", async () => {
+    let cancels = 0;
+    mockTauri({
+      resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
+      set_recognition_defaults: () => settings,
+    });
+    const pending = { ...settings, pending_recognition: { ...recognitionDefaults(settings), asr_model: stream } } as Settings;
+    render(
+      <TestModels
+        models={bundled}
+        live={progress}
+        settings={pending}
+        actions={{ cancel: () => cancels++, refresh: async () => {} }}
+      />,
+    );
+    await ready();
+    expect(rowOf("Parakeet").textContent).toContain("300 MB");
+    expect(rowOf("Parakeet").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("MOSS").textContent).not.toContain("Downloading");
+    const cancel = Array.from(rowOf("Parakeet").querySelectorAll("button")).find((b) => b.textContent === "Cancel")!;
+    await userEvent.setup().click(cancel);
+    expect(cancels).toBe(1);
   });
-  render(
-    <TestModels
-      models={bundled}
-      live={{ "sortformer-v2-q80": { kind: "progress", downloaded: 50_000_000, total: 150_000_000 } }}
-      settings={settings}
-      actions={{ cancel: () => cancels++, refresh: async () => {} }}
-    />,
-  );
-  await ready();
-  const row = screen.getByRole("radio", { name: "Parakeet" }).parentElement!;
-  expect(row.textContent).toContain("300 MB");
-  expect(row.textContent).toContain("Downloading… 50 MB of 150 MB");
-  const cancel = Array.from(row.querySelectorAll("button")).find((b) => b.textContent === "Cancel")!;
-  await userEvent.setup().click(cancel);
-  expect(cancels).toBe(1);
+
+  test("shows only on the row whose Download button started it", async () => {
+    const { user, rerender } = open({ download_model_bundle: () => null }, settings, bundled);
+    await ready();
+    const download = Array.from(rowOf("MOSS").querySelectorAll("button")).find((b) => b.textContent === "Download")!;
+    await user.click(download);
+    rerender(
+      <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+    );
+    expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
+  });
 });
 
 test("choosing a model gives immediate feedback while its request is pending", async () => {

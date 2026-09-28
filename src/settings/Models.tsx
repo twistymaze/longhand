@@ -59,8 +59,13 @@ export function Models({
       setBusy(false);
     }
   };
+  // The model whose Download button started the current download. Many
+  // bundles share a supporting model, so only this row, and the row of the
+  // pending model, show the progress of a shared file.
+  const [downloadFor, setDownloadFor] = useState<string | null>(null);
   /// Download the missing files of the bundle of `id` (R10).
   const download = async (id: string) => {
+    setDownloadFor(id);
     setBusy(true);
     try {
       const result = await commands.downloadModelBundle(id);
@@ -74,10 +79,12 @@ export function Models({
   const active = Object.values(live).some(
     (v) => v.kind === "progress" || v.kind === "verifying",
   );
-  const updatesOf = (m: ModelStatus) =>
-    m.bundle.map((id) => live[id]).filter((u): u is DownloadUpdate => Boolean(u));
   const pending = (m: ModelStatus) =>
     settings.pending_recognition?.asr_model === m.id || settings.pending_asr_model === m.id;
+  const updatesOf = (m: ModelStatus) =>
+    (m.id === downloadFor || pending(m) ? m.bundle : [m.id])
+      .map((id) => live[id])
+      .filter((u): u is DownloadUpdate => Boolean(u));
   const downloading = (m: ModelStatus) =>
     m.state.state === "downloading" ||
     updatesOf(m).some((u) => u.kind === "progress" || u.kind === "verifying");
