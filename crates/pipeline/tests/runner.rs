@@ -13,7 +13,9 @@ use asr::{
 };
 use common::{queue_session, speech, store};
 use diarize::{Analysis, AudioSource, DiarizeError, DiarizeRequest, SpeakerAnalyzer};
+use models::recognition::{ExecutionSpec, ProcessingMode, RecognitionConfig, SpeakerSource};
 use pipeline::join::TRANSCRIPT_FILE;
+use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::runner::Outcome;
 use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{
@@ -310,13 +312,17 @@ impl LiveStream for FakeStream {
 struct Provider(Arc<Script>);
 
 struct ExactFake(Box<dyn Recognizer>);
-struct ExactAnalyzer;
+/// One speaker over the whole audio. Fails when `Script::diarize_fails` is set.
+struct ExactAnalyzer(Arc<Script>);
 impl SpeakerAnalyzer for ExactAnalyzer {
     fn analyze(
         &mut self,
         audio: &mut dyn AudioSource,
         _: &DiarizeRequest<'_>,
     ) -> Result<Analysis, DiarizeError> {
+        if self.0.diarize_fails.load(Ordering::SeqCst) {
+            return Err(DiarizeError::Format("segmentation exploded".into()));
+        }
         use pyannote_local::segmentation::{
             FRAME_SIZE, WINDOW_SAMPLES, WindowActivity, frames_for_samples,
         };
@@ -373,7 +379,7 @@ impl EngineProvider for Provider {
         &self,
         _: &models::recognition::ExecutionSpec,
     ) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
-        Ok(Box::new(ExactAnalyzer))
+        Ok(Box::new(ExactAnalyzer(Arc::clone(&self.0))))
     }
     fn ready_exact(&self, spec: &models::recognition::ExecutionSpec) -> bool {
         self.ready(&spec.config.asr_model)
@@ -3833,6 +3839,78 @@ fn asr_model(r: &Rig) -> Option<String> {
         .asr_model
 }
 
+/// The transcription model that the test settings select.
+const MODEL: &str = models::DEFAULT_ASR_MODEL;
+
+/// The recognition settings of the tests: the default model and no
+/// speaker source.
+fn settings() -> RecognitionConfig {
+    RecognitionConfig {
+        speaker_source: SpeakerSource::Off,
+        ..Default::default()
+    }
+}
+
+/// The readiness that the provider of `r` reports: a model in
+/// `Script::missing` is not downloaded.
+fn readiness(r: &Rig) -> impl Fn(&ExecutionSpec) -> Readiness + '_ {
+    |spec| {
+        let missing = r.script.missing.lock().unwrap();
+        match spec.artifacts.iter().find(|a| missing.contains(&a.id)) {
+            Some(a) => Readiness::Missing {
+                artifact: a.id.clone(),
+            },
+            None => Readiness::Ready,
+        }
+    }
+}
+
+/// The user confirms Transcribe Again on "s" with `config` in Settings.
+fn again_with(r: &Rig, config: &RecognitionConfig) -> Result<(), Refusal> {
+    r.runner
+        .transcribe_again("s", config, &config.asr_model, &readiness(r))
+}
+
+/// The user confirms Transcribe Again on "s" with the test settings.
+fn confirm_again(r: &Rig) -> Result<(), Refusal> {
+    again_with(r, &settings())
+}
+
+/// The check before the dialog opens, with `config` in Settings.
+fn check_with(r: &Rig, config: &RecognitionConfig) -> Result<ExecutionSpec, Refusal> {
+    r.runner.check_transcribe_again("s", config, &readiness(r))
+}
+
+/// The snapshot that the queued run of "s" uses.
+fn pending_snapshot(r: &Rig) -> ExecutionSpec {
+    let value = r
+        .store
+        .lock()
+        .unwrap()
+        .result_state("s", "pending-snapshot")
+        .unwrap()
+        .expect("a pending snapshot");
+    serde_json::from_value(value).unwrap()
+}
+
+fn set_count(r: &Rig, count: Option<session_core::SpeakerCount>) {
+    r.store
+        .lock()
+        .unwrap()
+        .set_speaker_count("s", count)
+        .unwrap();
+}
+
+fn record_count(r: &Rig) -> Option<session_core::SpeakerCount> {
+    r.store
+        .lock()
+        .unwrap()
+        .session("s")
+        .unwrap()
+        .unwrap()
+        .speaker_count
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_notes_and_title() {
     // Covers AE7.
@@ -3846,7 +3924,7 @@ async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_
     );
     let calls = r.script.calls.load(Ordering::SeqCst);
 
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
     assert_eq!(asr_model(&r).as_deref(), Some("m"), "not before the save");
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
@@ -3859,30 +3937,27 @@ async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_
     assert!(summary_is_complete(&folder));
     assert_eq!(read(&folder, "notes.md"), notes);
     assert_eq!(title_of(&r).unwrap().text, "Budget review");
-    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
     assert_eq!(marks(&r), Default::default());
     // A full pass, with the new model only.
     let called = r.script.models_called.lock().unwrap()[calls..].to_vec();
     assert_eq!(called.len(), plan(&r.store, "s").windows.len());
-    assert!(called.iter().all(|m| m == "tdt"), "{called:?}");
+    assert!(called.iter().all(|m| m == MODEL), "{called:?}");
     assert!(!r.root.join("s").exists(), "the working copy is gone");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn reprocessing_a_legacy_note_requires_explicit_transcription_and_promotes_only_after_save() {
+async fn a_legacy_note_is_transcribed_again_in_full_with_no_consent_and_promotes_only_after_save() {
+    // R9: the confirmation is the permission to transcribe again.
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let home = saved_note(&r, Some("Kept title")).await;
     let old = read(&home, TRANSCRIPT_FILE);
-    let config = models::recognition::RecognitionConfig {
-        speaker_source: models::recognition::SpeakerSource::Off,
-        ..Default::default()
-    };
-    let preview = r.runner.preview_reprocess("s", &config).unwrap();
-    assert!(preview.requires_transcription);
-    assert!(r.runner.reprocess("s", &preview, false).is_err());
-    assert_eq!(state(&r.store, "s"), SessionState::Saved);
-    r.runner.reprocess("s", &preview, true).unwrap();
+    assert!(session_md(&home).recognition_artifact.is_none());
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    confirm_again(&r).unwrap();
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    let snapshot = pending_snapshot(&r);
     assert!(
         r.store
             .lock()
@@ -3894,10 +3969,14 @@ async fn reprocessing_a_legacy_note_requires_explicit_transcription_and_promotes
     assert_eq!(read(&home, TRANSCRIPT_FILE), old);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "a full transcription"
+    );
     let doc = session_md(&home);
     assert_eq!(
         doc.recognition_snapshot,
-        Some(serde_json::to_value(preview.execution).unwrap())
+        Some(serde_json::to_value(snapshot).unwrap())
     );
     assert!(doc.recognition_artifact.is_some());
     assert!(doc.result_generation.is_some());
@@ -3905,14 +3984,22 @@ async fn reprocessing_a_legacy_note_requires_explicit_transcription_and_promotes
     let calls = r.script.calls.load(Ordering::SeqCst);
     let loads = r.script.loads.lock().unwrap().len();
     let summary = read(&home, "summary.md");
-    let config = models::recognition::RecognitionConfig {
-        speaker_source: models::recognition::SpeakerSource::Pyannote,
-        speaker_count: Some(models::recognition::SpeakerCount::Exact { count: 1 }),
-        ..config
+    // Covers AE4. Only the speaker source changed, and Settings has
+    // "During recording" timing.
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        processing_mode: ProcessingMode::DuringRecording,
+        ..settings()
     };
-    let reusable = r.runner.preview_reprocess("s", &config).unwrap();
-    assert!(!reusable.requires_transcription, "{}", reusable.explanation);
-    r.runner.reprocess("s", &reusable, false).unwrap();
+    again_with(&r, &config).unwrap();
+    let snapshot = pending_snapshot(&r);
+    assert_eq!(snapshot.config.processing_mode, ProcessingMode::AfterStop);
+    assert_eq!(
+        snapshot.config.speaker_processing_mode,
+        ProcessingMode::AfterStop
+    );
+    assert!(!snapshot.enabled_live_transcription);
+    assert!(!snapshot.enabled_live_speaker_analysis);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
         r.script.calls.load(Ordering::SeqCst),
@@ -3936,6 +4023,263 @@ async fn reprocessing_a_legacy_note_requires_explicit_transcription_and_promotes
     assert!(doc.recognition_artifact.is_some());
     assert_ne!(doc.result_generation, before);
     assert_eq!(doc.title.as_deref(), Some("Kept title"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_model_that_cannot_use_the_saved_text_runs_a_full_transcription() {
+    // Covers AE1.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(session_md(&home).recognition_artifact.is_some());
+    let transcript = read(&home, TRANSCRIPT_FILE);
+    let calls = r.script.calls.load(Ordering::SeqCst);
+
+    let other = RecognitionConfig {
+        asr_model: "parakeet-tdt-0.6b-v2-q80".into(),
+        ..settings()
+    };
+    again_with(&r, &other).unwrap();
+    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let called = r.script.models_called.lock().unwrap()[calls..].to_vec();
+    assert!(!called.is_empty(), "a full transcription");
+    assert!(called.iter().all(|m| *m == other.asr_model), "{called:?}");
+    assert_ne!(read(&home, TRANSCRIPT_FILE), transcript);
+    assert_eq!(asr_model(&r), Some(other.asr_model));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_run_uses_the_speaker_count_of_the_note_and_not_the_settings_default() {
+    // Covers AE2.
+    use session_core::SpeakerCount;
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    edit_session_md(&home, |doc| {
+        doc.speaker_count = Some(SpeakerCount::Exact(3))
+    });
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        speaker_count: Some(models::recognition::SpeakerCount::Exact { count: 2 }),
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
+    assert_eq!(
+        pending_snapshot(&r).config.speaker_count,
+        Some(models::recognition::SpeakerCount::Exact { count: 3 })
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(record_count(&r), Some(SpeakerCount::Exact(3)));
+    assert_eq!(
+        session_md(&home).speaker_count,
+        Some(SpeakerCount::Exact(3))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_an_automatic_speaker_count_keeps_it_after_the_save() {
+    // Covers AE2.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    assert_eq!(record_count(&r), None);
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        speaker_count: Some(models::recognition::SpeakerCount::Exact { count: 2 }),
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
+    assert_eq!(pending_snapshot(&r).config.speaker_count, None);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(record_count(&r), None);
+    assert_eq!(session_md(&home).speaker_count, None);
+}
+
+/// "s" stays saved, and no run is queued for it.
+fn assert_not_queued(r: &Rig) {
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_eq!(marks(r).model, None);
+    assert!(r.store.lock().unwrap().queue().unwrap().is_empty());
+}
+
+fn refusal(message: &str, in_settings: bool) -> Refusal {
+    Refusal {
+        message: message.into(),
+        in_settings,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_check_gives_the_model_of_the_run_and_queues_nothing() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    let spec = check_with(&r, &settings()).unwrap();
+    assert_eq!(spec.config.asr_model, MODEL);
+    assert_eq!(
+        pipeline::reprocess::model_name(MODEL),
+        "Parakeet Unified EN 0.6B"
+    );
+    assert_not_queued(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_that_is_not_downloaded_is_refused_with_a_way_to_settings() {
+    // Covers AE3. The second refusal is the confirmation after the model
+    // is deleted.
+    let r = rig().await;
+    saved_note(&r, None).await;
+    r.script.missing.lock().unwrap().push(MODEL.into());
+    let expected = refusal(
+        "Parakeet Unified EN 0.6B is not downloaded. Download it in Settings.",
+        true,
+    );
+    assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);
+    assert_not_queued(&r);
+    assert_eq!(confirm_again(&r).unwrap_err(), expected);
+    assert_not_queued(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_that_is_downloading_is_refused_with_no_way_to_settings() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    let downloading = |spec: &ExecutionSpec| Readiness::Downloading {
+        artifact: spec.config.asr_model.clone(),
+    };
+    let expected = refusal(
+        "Parakeet Unified EN 0.6B is still downloading. Try again when it is ready.",
+        false,
+    );
+    assert_eq!(
+        r.runner
+            .check_transcribe_again("s", &settings(), &downloading)
+            .unwrap_err(),
+        expected
+    );
+    assert_eq!(
+        r.runner
+            .transcribe_again("s", &settings(), MODEL, &downloading)
+            .unwrap_err(),
+        expected
+    );
+    assert_not_queued(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_language_that_the_model_does_not_support_is_refused_with_a_way_to_settings() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    let config = RecognitionConfig {
+        language: Some("fr".into()),
+        ..settings()
+    };
+    let expected = refusal(
+        "Parakeet Unified EN 0.6B does not support French. Choose another model or language \
+         in Settings.",
+        true,
+    );
+    assert_eq!(check_with(&r, &config).unwrap_err(), expected);
+    assert_eq!(again_with(&r, &config).unwrap_err(), expected);
+    assert_not_queued(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_count_above_the_speaker_limit_is_refused_with_the_count_and_the_limit() {
+    use session_core::SpeakerCount;
+    let r = rig().await;
+    let home = saved_note(&r, None).await;
+    edit_session_md(&home, |doc| {
+        doc.speaker_count = Some(SpeakerCount::Exact(5))
+    });
+    set_count(&r, Some(SpeakerCount::Exact(5)));
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Sortformer,
+        ..settings()
+    };
+    let expected = refusal(
+        "This note has 5 speakers. Sortformer supports up to 4. Choose another speaker \
+         source or model in Settings.",
+        true,
+    );
+    assert_eq!(check_with(&r, &config).unwrap_err(), expected);
+    assert_eq!(again_with(&r, &config).unwrap_err(), expected);
+    assert_not_queued(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confirmation_after_the_settings_changed_is_refused() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    let shown = check_with(&r, &settings()).unwrap().config.asr_model;
+    // The user selects another model in Settings while the dialog is open.
+    let now = RecognitionConfig {
+        asr_model: "parakeet-tdt-0.6b-v2-q80".into(),
+        ..settings()
+    };
+    assert_eq!(
+        r.runner
+            .transcribe_again("s", &now, &shown, &readiness(&r))
+            .unwrap_err(),
+        refusal(
+            "The transcription settings changed. Choose Transcribe Again to use the new \
+             settings.",
+            false
+        )
+    );
+    assert_not_queued(&r);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_confirmation_queues_nothing_and_says_the_run_is_queued() {
+    let r = rig().await;
+    saved_note(&r, None).await;
+    confirm_again(&r).unwrap();
+    let expected = refusal("This note is already being transcribed again.", false);
+    assert_eq!(confirm_again(&r).unwrap_err(), expected);
+    assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);
+    assert_eq!(r.store.lock().unwrap().queue().unwrap(), ["s"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_refused_because_another_computer_changed_session_md_keeps_the_previous_result() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let (transcript, summary) = (read(&home, TRANSCRIPT_FILE), read(&home, "summary.md"));
+    confirm_again(&r).unwrap();
+    // Another computer writes `session.md` while the run waits in line.
+    edit_session_md(&home, |doc| doc.title = Some("Desktop title".into()));
+
+    // The save compares `session.md` with the value that the confirmation
+    // read after the row followed its folder.
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    match outcome {
+        Outcome::Failed {
+            stage: Stage::Save,
+            message,
+        } => assert!(
+            message.contains("the note changed during processing"),
+            "{message}"
+        ),
+        outcome => panic!("{outcome:?}"),
+    }
+    assert_eq!(read(&home, TRANSCRIPT_FILE), transcript);
+    assert_eq!(read(&home, "summary.md"), summary);
+    assert_eq!(
+        session_md(&home).title.as_deref(),
+        Some("Desktop title"),
+        "the other computer's change stays"
+    );
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+    // The save had started, so the run keeps its staged result for a retry.
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    assert!(r.root.join("s").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4047,7 +4391,7 @@ async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
     assert_eq!(title_of(&r), proposed("First"));
 
     *title.lock().unwrap() = (200, http::completion("Second"));
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(title_calls(&mock).len(), 1, "no title call for the run");
     assert_eq!(title_of(&r), proposed("First"));
@@ -4068,7 +4412,7 @@ fn rebuilt_transcript(r: &Rig) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcript() {
-    // Covers AE12.
+    // Covers AE12, and AE5 of the Transcribe Again from Settings plan.
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let folder = saved_note(&r, None).await;
@@ -4078,7 +4422,7 @@ async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcr
         .collect();
     let turns = rebuilt_transcript(&r);
 
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(
@@ -4127,7 +4471,7 @@ async fn an_offline_summary_endpoint_preserves_the_complete_previous_result() {
     let (transcript, summary) = (read(&folder, TRANSCRIPT_FILE), read(&folder, "summary.md"));
 
     let _offline = summaries_from(&r, http::Reply::Json(500, "{}".into()), None).await;
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(
         r.runner.run_next().await.unwrap().1,
         Outcome::Failed {
@@ -4156,31 +4500,42 @@ async fn transcribe_again_is_refused_while_a_regeneration_runs_a_capture_is_acti
  {
     let r = rig().await;
     let folder = saved_note(&r, None).await;
-    let refused = |r: &Rig| {
-        assert!(r.runner.transcribe_again("s", "tdt").is_err());
-        assert_eq!(state(&r.store, "s"), SessionState::Saved);
-        assert_eq!(marks(r).model, None);
+    // The check and the confirmation give the same plain text, never the
+    // text of the state machine.
+    let refused = |r: &Rig, message: &str| {
+        let expected = refusal(message, false);
+        assert_eq!(check_with(r, &settings()).unwrap_err(), expected);
+        let error = confirm_again(r).unwrap_err();
+        assert!(!error.message.contains("is not legal from"), "{error}");
+        assert_eq!(error, expected);
+        assert_not_queued(r);
     };
 
     let claim = r.runner.claims().regenerate("s").unwrap();
-    refused(&r);
+    refused(
+        &r,
+        "The summary of this note is being made again. Try again when it is done.",
+    );
     drop(claim);
 
     r.script.capturing.store(true, Ordering::SeqCst);
-    refused(&r);
+    refused(&r, "A recording is in progress. Try again after it stops.");
     r.script.capturing.store(false, Ordering::SeqCst);
 
     std::fs::remove_file(folder.join("audio/segment-01.opus")).unwrap();
-    refused(&r);
+    refused(
+        &r,
+        "The note's folder does not have all of its audio, so it can't be transcribed again.",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transcribe_again_that_waits_for_its_model_lets_other_notes_go_first() {
-    // R17, KTD13.
+    // R17, KTD13. The model goes away after the confirmation.
     let r = rig().await;
     saved_note(&r, None).await;
-    r.script.missing.lock().unwrap().push("downloading".into());
-    r.runner.transcribe_again("s", "downloading").unwrap();
+    confirm_again(&r).unwrap();
+    r.script.missing.lock().unwrap().push(MODEL.into());
     queue_session(
         &r.store,
         &r.root,
@@ -4198,7 +4553,7 @@ async fn a_transcribe_again_that_waits_for_its_model_lets_other_notes_go_first()
     r.script.missing.lock().unwrap().clear();
     let (id, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!((id.as_str(), outcome), ("s", Outcome::Finished));
-    assert_eq!(asr_model(&r).as_deref(), Some("downloading"));
+    assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4208,7 +4563,7 @@ async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
     let folder = saved_note(&r, None).await;
     let transcript = read(&folder, TRANSCRIPT_FILE);
     let calls = r.script.calls.load(Ordering::SeqCst);
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     *r.script.cancel_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.runner), "s".into()));
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
     let windows = plan(&r.store, "s").windows.len();
@@ -4234,7 +4589,7 @@ async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
         "no window ran twice"
     );
     assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
-    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
     assert_eq!(marks(&r), Default::default());
 }
 
@@ -4242,7 +4597,7 @@ async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
 async fn a_resumed_transcribe_again_that_then_fails_is_a_normal_failure_that_keeps_the_new_audio() {
     let r = rig().await;
     saved_note(&r, None).await;
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     resume_completed(&r, "s", &speech());
     assert_eq!(marks(&r).model, None);
     *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
@@ -4265,7 +4620,7 @@ async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_
     let folder = saved_note(&r, None).await;
     let transcript = read(&folder, TRANSCRIPT_FILE);
     let summary = read(&folder, "summary.md");
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     // A directory at summary.md must not permit a partial result write.
     std::fs::remove_file(folder.join("summary.md")).unwrap();
     std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
@@ -4294,7 +4649,7 @@ async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_
         SessionState::ProcessingFailed { .. }
     ));
     // The run keeps its marker and its checkpoints until the save finishes.
-    assert_eq!(marks(&r).model.as_deref(), Some("tdt"));
+    assert_eq!(marks(&r).model.as_deref(), Some(MODEL));
     assert_eq!(marks(&r).error, None);
     assert_eq!(asr_model(&r).as_deref(), Some("m"));
     assert!(
@@ -4315,7 +4670,7 @@ async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
     assert_ne!(read(&folder, TRANSCRIPT_FILE), replaced);
     assert!(summary_is_complete(&folder));
-    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
+    assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
     assert_eq!(marks(&r), Default::default());
     assert!(!r.root.join("s").exists(), "the working copy is gone");
 }
@@ -4327,7 +4682,7 @@ async fn a_resume_while_transcribe_again_recognizes_a_window_keeps_the_restored_
     saved_note(&r, None).await;
     let before = transcribe::results(&r.store, "s").unwrap();
     let calls = r.script.calls.load(Ordering::SeqCst);
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     // The resume comes while the run's first window is recognized.
     *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
@@ -4342,32 +4697,38 @@ async fn a_resume_while_transcribe_again_recognizes_a_window_keeps_the_restored_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_diarization_failure_during_transcribe_again_saves_the_new_transcript_without_speakers() {
+async fn a_speaker_analysis_failure_during_transcribe_again_keeps_the_previous_result() {
+    // The run has an exact snapshot: its speaker source is part of the
+    // result, so a failure of it fails the run (R19).
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let folder = saved_note(&r, None).await;
     let transcript = read(&folder, TRANSCRIPT_FILE);
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
     r.script.diarize_fails.store(true, Ordering::SeqCst);
-    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Diarize,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
 
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
-    assert_ne!(read(&folder, TRANSCRIPT_FILE), transcript);
-    assert_eq!(asr_model(&r).as_deref(), Some("tdt"));
-    assert_eq!(marks(&r), Default::default());
-    assert_eq!(
-        pipeline::diarize::speakers(&r.store, "s").unwrap(),
-        pipeline::diarize::Speakers::Unavailable
-    );
-    let events = r.events.lock().unwrap();
-    assert!(events.iter().any(
-        |e| matches!(e, RunnerEvent::SpeakersUnavailable { session_id, .. } if session_id == "s")
+    assert_eq!(read(&folder, TRANSCRIPT_FILE), transcript);
+    assert_eq!(asr_model(&r).as_deref(), Some("m"));
+    assert!(marks(&r).error.is_some(), "{:?}", marks(&r));
+    assert!(r.events.lock().unwrap().iter().any(
+        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
     ));
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, RunnerEvent::TranscribeAgainFailed { .. }))
-    );
 }
 
 // ------------------------------------------- stereo notes and echo removal (U9)
@@ -4434,6 +4795,21 @@ fn times_heard(r: &Rig) -> Vec<(String, usize)> {
         .into_iter()
         .map(|(name, _)| {
             let n = text.matches(&format!(" {name}")).count();
+            (name, n)
+        })
+        .collect()
+}
+
+/// [`times_heard`] in the saved `transcript.md` of "s". A Transcribe Again
+/// run keeps its text in the recognition result, not in the window results.
+fn times_heard_in_transcript(r: &Rig) -> Vec<(String, usize)> {
+    // The test tokens have no space before them, so the rows join them to
+    // the call number.
+    let text = read(&saved_folder(r, "s"), TRANSCRIPT_FILE);
+    remote_sentences()
+        .into_iter()
+        .map(|(name, _)| {
+            let n = text.matches(name.as_str()).count();
             (name, n)
         })
         .collect()
@@ -4568,7 +4944,7 @@ async fn transcribe_again_on_a_stereo_note_finds_the_same_echo_spans_within_100_
     saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
     let first = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
 
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     let again = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
     assert_eq!(again.spans.len(), first.spans.len(), "{:?}", again.spans);
@@ -4578,7 +4954,11 @@ async fn transcribe_again_on_a_stereo_note_finds_the_same_echo_spans_within_100_
             "{a:?} against {b:?}"
         );
     }
-    assert_eq!(times_heard(&r), once_each(), "from the cleaned mix");
+    assert_eq!(
+        times_heard_in_transcript(&r),
+        once_each(),
+        "from the cleaned mix"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4602,7 +4982,7 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
         doc.stereo_from(),
         r.store.lock().unwrap().stereo_from("s").unwrap()
     );
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
     assert_eq!(
@@ -4613,7 +4993,7 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
             .len(),
         3
     );
-    assert_eq!(times_heard(&r), once_each());
+    assert_eq!(times_heard_in_transcript(&r), once_each());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4625,7 +5005,7 @@ async fn a_cancelled_transcribe_again_restores_the_previous_echo_spans() {
     assert!(before.iter().any(|(k, _)| k == &checkpoint::echo_key(0)));
 
     let calls = r.script.calls.load(Ordering::SeqCst);
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     // Assemble runs again and saves a new echo spans row; then a resume
     // takes the run back during its first window.
     *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
@@ -4850,7 +5230,7 @@ async fn transcribe_again_on_another_computer_decodes_the_folder_audio_and_keeps
     let b = other_computer(&a).await;
     sync(&b, &a.dest);
 
-    b.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&b).unwrap();
     assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
 
     assert!(calls(&b) > 0);
@@ -4860,46 +5240,48 @@ async fn transcribe_again_on_another_computer_decodes_the_folder_audio_and_keeps
             .lock()
             .unwrap()
             .iter()
-            .all(|m| m == "tdt")
+            .all(|m| m == MODEL)
     );
     assert_eq!(saved_folder(&b, "s"), folder);
     assert_eq!(read(&folder, "notes.md"), notes);
     let doc = session_md(&folder);
     assert_eq!(doc.title.as_deref(), Some("Budget review"));
-    assert_eq!(doc.asr_model.as_deref(), Some("tdt"));
+    assert_eq!(doc.asr_model.as_deref(), Some(MODEL));
     assert_fingerprints_match(&folder);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_resume_after_another_computer_transcribed_again_keeps_its_text_for_the_earlier_segments()
-{
-    // Covers AE9.
+async fn a_resume_after_another_computer_transcribed_again_uses_the_snapshot_of_that_run() {
+    // A Transcribe Again run saves an exact snapshot. This computer has no
+    // recognition generation of that run, so a resume transcribes every
+    // segment again with the snapshot of the run.
     let a = rig().await;
     let folder = saved_note(&a, None).await;
     let b = other_computer(&a).await;
     sync(&b, &a.dest);
     *b.script.says.lock().unwrap() = Some((0, "Heard on the desktop.".into()));
-    b.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&b).unwrap();
     assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
     let desktop = first_recording_text(&folder);
     assert!(desktop.contains("Heard on the desktop."), "{desktop}");
+    let snapshot = session_md(&folder).recognition_snapshot;
+    assert!(snapshot.is_some());
 
-    let before = calls(&a);
+    let before = a.script.models_called.lock().unwrap().len();
     resume_from_folder(&a, "s", &speech());
     assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert_eq!(first_recording_text(&folder), desktop);
-    assert_eq!(
-        calls(&a) - before,
-        windows_of(&a, 1),
-        "only the new segment"
-    );
+    let called = a.script.models_called.lock().unwrap()[before..].to_vec();
+    assert!(!called.is_empty());
+    assert!(called.iter().all(|m| m == MODEL), "{called:?}");
+    assert_eq!(session_md(&folder).recognition_snapshot, snapshot);
+    assert_eq!(session_md(&folder).timeline_segments().len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_notes_edit_from_another_computer_during_transcribe_again_is_kept() {
     let a = rig().await;
     let folder = saved_note(&a, None).await;
-    a.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&a).unwrap();
     // The other computer edits the notes while the run waits in line.
     std::fs::write(folder.join("notes.md"), "- the desktop notes\n").unwrap();
 
@@ -4915,7 +5297,7 @@ async fn a_notes_edit_from_another_computer_during_transcribe_again_is_kept() {
 async fn a_notes_edit_on_this_computer_during_transcribe_again_is_kept() {
     let a = rig().await;
     let folder = saved_note(&a, None).await;
-    a.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&a).unwrap();
     // The folder takes the edit at once, so the run's refresh keeps it.
     assert!(pipeline::save::set_notes(&mut a.store.lock().unwrap(), "s", "- my notes\n").unwrap());
     assert_eq!(read(&folder, "notes.md"), "- my notes\n");
@@ -4928,7 +5310,7 @@ async fn a_notes_edit_on_this_computer_during_transcribe_again_is_kept() {
 async fn a_rename_from_another_computer_during_reprocessing_preserves_the_previous_result() {
     let a = rig().await;
     let folder = saved_note(&a, None).await;
-    a.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&a).unwrap();
     let renamed = rename_on_other_computer(&folder, "Budget review");
     // The scan follows the folder of a row in a run (KTD6).
     sync(&a, &a.dest);
@@ -5469,7 +5851,7 @@ async fn publication_notes_change_keeps_previous_result_and_retry_summarizes_cur
         None,
     )
     .await;
-    r.runner.transcribe_again("s", "tdt").unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(
         r.runner.run_next().await.unwrap().1,
         Outcome::Failed {

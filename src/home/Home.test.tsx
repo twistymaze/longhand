@@ -164,6 +164,8 @@ describe("Home", () => {
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
       config: null,
     });
+    // The saved default configuration applies; no override is set.
+    expect(tauri.calls.some((c) => c.cmd === "set_recognition_override")).toBe(false);
   });
 
   test("a session with no title shows its start time, and a titled session shows its title", () => {

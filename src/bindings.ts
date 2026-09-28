@@ -519,22 +519,6 @@ async playAlertSound() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async previewReprocess(sessionId: string, config: RecognitionConfig) : Promise<Result<ReprocessPreview, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("preview_reprocess", { sessionId, config }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async reprocessSession(sessionId: string, preview: ReprocessPreview, allowTranscription: boolean) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("reprocess_session", { sessionId, preview, allowTranscription }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 /**
  * Summarize a saved session again, replacing its `summary.md` (R19,
  * AE17). Returns the summary's path.
@@ -548,12 +532,28 @@ async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
 }
 },
 /**
- * Transcribe a saved session again with the model selected now (R15). The
- * session is queued; its transcript and summary change when it saves.
+ * Check if a saved note can be transcribed again with the recognition
+ * settings now (R7, KTD2). This is read-only. The dialog opens only when
+ * this gives the model of the run.
  */
-async transcribeAgain(sessionId: string) : Promise<Result<null, string>> {
+async checkTranscribeAgain(sessionId: string) : Promise<Result<TranscribeAgainCheck, TranscribeAgainRefusal>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("transcribe_again", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("check_transcribe_again", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transcribe a saved note again with the recognition settings (R15). Every
+ * check runs again, and the command refuses when the settings no longer
+ * select `model_id`, the model that the dialog showed. The note is queued;
+ * its transcript and summary change when it saves. The row follows a
+ * folder that can be synced, so this runs off the main thread.
+ */
+async transcribeAgain(sessionId: string, modelId: string) : Promise<Result<null, TranscribeAgainRefusal>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("transcribe_again", { sessionId, modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1185,7 +1185,6 @@ system_audio_other_output: boolean;
  * the note hears the user twice.
  */
 system_audio_mic_copy: boolean }
-export type ReprocessPreview = { execution: ExecutionSpec; requires_transcription: boolean; explanation: string; manifest: string }
 export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**
@@ -1454,6 +1453,15 @@ export type SystemAudioPermission = "allowed" | "denied" |
  * The private check is missing on this macOS.
  */
 "unknown"
+/**
+ * The transcription model of a Transcribe Again run, for the dialog.
+ */
+export type TranscribeAgainCheck = { model_id: string; model_name: string }
+/**
+ * Why Transcribe Again cannot start. `in_settings` is true when the user
+ * can fix the cause in Settings (KTD4).
+ */
+export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
 /**
  * A part of a note that the sync has not delivered yet (R6).
  */

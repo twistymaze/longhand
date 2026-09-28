@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   LiveTranscript,
@@ -877,73 +877,119 @@ describe("SessionPage", () => {
   });
 
   describe("Transcribe Again", () => {
-    const models = [
-      { id: "tdt", name: "Parakeet TDT 1.1B", role: "recognition", languages: ["en"], size_bytes: 1, state: { state: "present" } },
-      { id: "whisper", name: "Whisper large-v3-turbo", role: "recognition", languages: ["en"], size_bytes: 1, state: { state: "absent", partial_bytes: 0 } },
-    ];
-    const execution = (config: unknown) => ({ config, capabilities: { live_transcription: false, live_speaker_analysis: false, live_attributed_text: false, maximum_speakers: null }, artifacts: [], runtimes: [] });
-    const withModel = (asr_model: string) => ({
-      get_settings: () => ({ asr_model, speaker_source: "off", live_transcript: false, speaker_processing_mode: "after_stop", default_speaker_count: null, recognition_language: null }),
-      model_statuses: () => models,
-      resolve_recognition: ({ config }: Record<string, unknown>) => execution(config),
-      preview_reprocess: ({ config }: Record<string, unknown>) => ({ execution: execution(config), requires_transcription: true, explanation: "Transcription must run again.", manifest: "old" }),
-      reprocess_session: () => null,
-    });
+    const granite = { model_id: "granite-speech-4.1-2b-plus-q5km", model_name: "Granite Speech 4.1 2B Plus" };
 
-    async function openQuestion(noteModel: string, selected: string) {
+    async function openMenu(extra: Record<string, CommandHandler>) {
       const e = entry("s", { title: "Budget review" });
-      const tauri = mockPage(e, { asr_model: noteModel }, withModel(selected));
+      const tauri = mockPage(e, {}, extra);
       const sessions = sessionsOf([e]);
-      renderPage({ id: "s", sessions });
+      const view = renderPage({ id: "s", sessions });
       await act(async () => {});
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Actions" }));
       await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
-      const dialog = await screen.findByRole("alertdialog", { name: "Reprocess this note?" });
-      return { tauri, sessions, user, dialog };
+      return { e, tauri, sessions, user, view };
     }
 
-    test("replacement requires a preview before a run can start", async () => {
-      const { tauri, dialog, user } = await openQuestion("tdt", "tdt");
-      expect(within(dialog).getByRole("button", { name: "Preview changes" })).toBeTruthy();
-      expect(dialog.textContent).toContain("previous result stays");
-      expect(dialog.textContent).toContain("My Notes and the title stay the same");
-      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-      expect(screen.queryByRole("alertdialog")).toBeNull();
-      expect(tauri.calls.some((c) => c.cmd === "reprocess_session")).toBe(false);
-    });
-
-    test("preview and explicit retranscription consent queue the note", async () => {
-      const { tauri, sessions, user, dialog } = await openQuestion("tdt", "tdt");
-      const preview = within(dialog).getByRole("button", { name: "Preview changes" });
-      await waitFor(() => expect((preview as HTMLButtonElement).disabled).toBe(false));
-      await user.click(preview);
-      expect(await screen.findByText("Transcription must run again.")).toBeTruthy();
-      const run = screen.getByRole("button", { name: "Reprocess note" });
-      expect((run as HTMLButtonElement).disabled).toBe(true);
-      await user.click(screen.getByRole("checkbox"));
-      await user.click(run);
-      expect(tauri.calls.filter((c) => c.cmd === "reprocess_session")).toHaveLength(1);
+    // Covers AE1.
+    test("one plain confirmation queues the note with the model of the check", async () => {
+      const { tauri, sessions, user } = await openMenu({
+        check_transcribe_again: () => granite,
+        transcribe_again: () => null,
+      });
+      const dialog = await screen.findByRole("alertdialog", { name: "Transcribe this note again?" });
+      expect(dialog.textContent).toContain("The transcript and summary are not available until the new ones are ready.");
+      expect(dialog.textContent).toContain("If it fails, the current ones come back.");
+      expect(dialog.textContent).toContain("This uses Granite Speech 4.1 2B Plus.");
+      expect(within(dialog).queryByRole("checkbox")).toBeNull();
+      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+      await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
+      expect(tauri.calls.filter((c) => c.cmd === "transcribe_again").map((c) => c.args)).toEqual([
+        { sessionId: "s", modelId: granite.model_id },
+      ]);
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(sessions.refresh).toHaveBeenCalled();
     });
 
-    test("a refused replacement stays in the dialog with its reason", async () => {
-      const e = entry("s");
-      mockPage(e, {}, { ...withModel("tdt"), reprocess_session: () => { throw "A recording is in progress. Try again after it stops."; } });
-      renderPage({ id: "s", sessions: sessionsOf([e]) });
-      await act(async () => {});
-      const user = userEvent.setup();
+    test("Cancel and Escape close the dialog and send nothing", async () => {
+      const { tauri, user } = await openMenu({ check_transcribe_again: () => granite });
+      await user.click(await screen.findByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
       await user.click(screen.getByRole("button", { name: "Actions" }));
       await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
-      const preview = await screen.findByRole("button", { name: "Preview changes" });
-      await waitFor(() => expect((preview as HTMLButtonElement).disabled).toBe(false));
-      await user.click(preview);
-      await user.click(await screen.findByRole("checkbox"));
-      await user.click(screen.getByRole("button", { name: "Reprocess note" }));
-      expect(await screen.findByText("A recording is in progress. Try again after it stops.")).toBeTruthy();
-      expect(screen.getByRole("alertdialog")).toBeTruthy();
+      await screen.findByRole("alertdialog");
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(tauri.calls.some((c) => c.cmd === "transcribe_again")).toBe(false);
     });
+
+    test("two clicks on Transcribe Again send one command", async () => {
+      let finish = () => {};
+      const { tauri, user } = await openMenu({
+        check_transcribe_again: () => granite,
+        transcribe_again: () => new Promise<null>((resolve) => (finish = () => resolve(null))),
+      });
+      const run = await screen.findByRole("button", { name: "Transcribe Again" });
+      await user.dblClick(run);
+      await act(async () => finish());
+      expect(tauri.calls.filter((c) => c.cmd === "transcribe_again")).toHaveLength(1);
+    });
+
+    // Covers AE3.
+    test("a setting that cannot run shows the reason and Open Settings, and no dialog", async () => {
+      const { tauri, user } = await openMenu({
+        check_transcribe_again: () => {
+          throw { message: "Granite Speech 4.1 2B Plus is not downloaded. Download it in Settings.", in_settings: true };
+        },
+        open_settings: () => null,
+      });
+      expect(await screen.findByText("Granite Speech 4.1 2B Plus is not downloaded. Download it in Settings.")).toBeTruthy();
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Open Settings…" }));
+      expect(tauri.calls.some((c) => c.cmd === "open_settings")).toBe(true);
+      expect(tauri.calls.some((c) => c.cmd === "transcribe_again")).toBe(false);
+    });
+
+    test("a reason that Settings cannot fix has no Open Settings button", async () => {
+      await openMenu({
+        check_transcribe_again: () => {
+          throw { message: "Granite Speech 4.1 2B Plus is still downloading. Try again when it is ready.", in_settings: false };
+        },
+      });
+      expect(await screen.findByText("Granite Speech 4.1 2B Plus is still downloading. Try again when it is ready.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Open Settings…" })).toBeNull();
+    });
+
+    test("a refused confirmation closes the dialog and shows the reason", async () => {
+      const { user } = await openMenu({
+        check_transcribe_again: () => granite,
+        transcribe_again: () => {
+          throw { message: "The transcription settings changed. Choose Transcribe Again to use the new settings.", in_settings: false };
+        },
+      });
+      await user.click(await screen.findByRole("button", { name: "Transcribe Again" }));
+      expect(await screen.findByText("The transcription settings changed. Choose Transcribe Again to use the new settings.")).toBeTruthy();
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    test("the dialog closes when the note starts to process", async () => {
+      const { e, view } = await openMenu({ check_transcribe_again: () => granite });
+      await screen.findByRole("alertdialog");
+      await act(async () => view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing" }])));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    test("a check that returns after the note was unavailable opens no dialog", async () => {
+      let finish = () => {};
+      const { e, view } = await openMenu({
+        check_transcribe_again: () => new Promise((resolve) => (finish = () => resolve(granite))),
+      });
+      await act(async () => view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing" }])));
+      await act(async () => view.rerenderWith(captureOf(), sessionsOf([e])));
+      await act(async () => finish());
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
 
     test("after a failed run, the page says the previous transcript is unchanged", async () => {
       const e = entry("s");
