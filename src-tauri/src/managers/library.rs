@@ -84,8 +84,8 @@ pub type EmitFn = Box<dyn Fn(LibraryChanged) + Send + 'static>;
 /// Whether the watcher ignores a change at `path`, whose path in its
 /// Destination is `relative`. As anarlog's `should_skip_path` (`path.rs`):
 /// `.DS_Store`, tempfile's `.tmp` names and the `.tmp` extension. Also
-/// every name in `relative` that starts with a dot: Longhand's staging,
-/// rename and temporary folders, and the library marker. Audio files are
+/// names in `relative` that start with a dot, except immutable result
+/// generations. Their delivery must refresh open notes. Audio files are
 /// not skipped: a note waits for its audio (R6).
 pub fn should_skip_path(relative: &Path, path: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|n| n.to_str())
@@ -97,7 +97,9 @@ pub fn should_skip_path(relative: &Path, path: &Path) -> bool {
         return true;
     }
     relative.components().any(|c| match c {
-        Component::Normal(name) => name.to_string_lossy().starts_with('.'),
+        Component::Normal(name) => {
+            name.to_string_lossy().starts_with('.') && name != ".longhand-results"
+        }
         _ => false,
     })
 }
@@ -471,6 +473,14 @@ impl Drop for LibraryWatcher {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn immutable_result_delivery_triggers_a_refresh() {
+        let relative = std::path::Path::new("note/.longhand-results/generation-1/summary.md");
+        assert!(!super::should_skip_path(
+            relative,
+            &std::path::Path::new("/library").join(relative)
+        ));
+    }
     use super::*;
     use notify::event::{CreateKind, DataChange, Flag, MetadataKind};
     use notify_debouncer_full::DebouncedEvent;

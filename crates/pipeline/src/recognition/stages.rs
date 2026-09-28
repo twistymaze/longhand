@@ -14,15 +14,21 @@ pub fn snapshot(store: &SharedStore, id: &str) -> Result<Option<ExecutionSpec>, 
     let record = lock(store)
         .session(id)?
         .ok_or_else(|| failed("session is absent"))?;
-    let Some(value) = record.recognition_snapshot else {
+    let pending = lock(store).result_state(id, "pending-snapshot")?;
+    let is_pending = pending.is_some();
+    let Some(value) = pending.or(record.recognition_snapshot) else {
         return Ok(None);
     };
     let spec: ExecutionSpec = serde_json::from_value(value)?;
     TaskGraph::resolve(&spec)?;
-    let count = record.speaker_count.map(|c| match c {
-        session_core::SpeakerCount::Exact(count) => SpeakerCount::Exact { count },
-        session_core::SpeakerCount::Range { min, max } => SpeakerCount::Range { min, max },
-    });
+    let count = if is_pending {
+        spec.config.speaker_count
+    } else {
+        record.speaker_count.map(|c| match c {
+            session_core::SpeakerCount::Exact(count) => SpeakerCount::Exact { count },
+            session_core::SpeakerCount::Range { min, max } => SpeakerCount::Range { min, max },
+        })
+    };
     spec.validate_count(count)
         .map_err(|e| failed(e.to_string()))?;
     Ok(Some(spec))
@@ -126,7 +132,11 @@ fn analyze(
                 diarize::DiarizeError::MissingWeights(path) => StageError::Waiting(path),
                 e => failed(e.to_string()),
             })?;
-            let count = lock(store).session(id)?.and_then(|r| r.speaker_count);
+            let count = if lock(store).result_state(id, "pending-snapshot")?.is_some() {
+                crate::reprocess::speaker_count(spec)
+            } else {
+                lock(store).session(id)?.and_then(|r| r.speaker_count)
+            };
             crate::diarize::run(
                 store,
                 id,
@@ -224,6 +234,49 @@ fn transcribe_route(
         speakers,
         coverage_limitations: limitations,
     };
+    let pending = lock(store).result_state(id, "pending-snapshot")?.is_some();
+    if pending && !matches!(route, Route::Integrated | Route::CombinedNemo) {
+        let home = lock(store)
+            .session(id)?
+            .and_then(|r| r.home_path)
+            .map(std::path::PathBuf::from);
+        if let Some(home) = home {
+            let doc = session_core::generation::manifest(&home)?;
+            if crate::reprocess::reusable(&home, &doc, spec)? {
+                let reference = doc
+                    .recognition_artifact
+                    .as_ref()
+                    .ok_or_else(|| failed("recognition artifact is absent"))?;
+                let source = doc
+                    .result_generation
+                    .as_ref()
+                    .map(|g| g.directory(&home))
+                    .transpose()?
+                    .unwrap_or(home);
+                let header = session_core::recognition::read_artifact(
+                    &source.join(&reference.filename),
+                    reference,
+                    |block| {
+                        for mut row in block.rows {
+                            row.id.scope.generation = generation.clone();
+                            row.speaker = None;
+                            row.speaker_finality = Finality::Final;
+                            result.rows.push(row);
+                        }
+                        Ok(())
+                    },
+                )
+                .map_err(|e| failed(e.to_string()))?;
+                result.coverage = header.coverage;
+                if route != Route::Off {
+                    join_separate(&mut result.rows, &result.speakers);
+                }
+                validate_result(&result, &expected)?;
+                super::durable::persist_result(store, id, &result)?;
+                return checkpoint::mark_complete(store, id, Stage::Transcribe, segments.len());
+            }
+        }
+    }
     if matches!(
         route,
         Route::Off | Route::SeparateNemo | Route::SeparatePyannote

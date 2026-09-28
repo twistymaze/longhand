@@ -26,6 +26,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(include_str!("../migrations/0008_owed_renames.sql")),
         M::up(include_str!("../migrations/0009_recognition_snapshot.sql")),
         M::up(include_str!("../migrations/0010_recognition_output.sql")),
+        M::up(include_str!("../migrations/0011_result_generations.sql")),
     ])
 }
 

@@ -18,6 +18,7 @@ mod opus_ms;
 pub mod progress;
 pub mod recognition;
 pub mod recover;
+pub mod reprocess;
 pub mod resample;
 pub mod runner;
 pub mod save;

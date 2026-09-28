@@ -128,6 +128,16 @@ pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
 
 /// The text of the `transcript.md` in `folder`.
 fn read_transcript(folder: &Path) -> Result<String, StageError> {
+    if let Ok(doc) = session_core::generation::manifest(folder)
+        && doc.result_generation.is_some()
+    {
+        return String::from_utf8(session_core::generation::read(
+            folder,
+            &doc,
+            TRANSCRIPT_FILE,
+        )?)
+        .map_err(|e| StageError::Failed(e.to_string()));
+    }
     let path = folder.join(TRANSCRIPT_FILE);
     // The read has a timeout: a synced folder can hold a file that does
     // not download.
@@ -293,9 +303,18 @@ pub fn produce(
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
+    crate::follow::follow_folder(&mut lock(store), session_id, false)?;
     let transcript = read_transcript(folder)?;
     let turns = turns_of(folder, &transcript)?;
     let notes = session_notes(store, session_id)?;
+    let raw_notes = lock(store).notes(session_id)?;
+    checkpoint::put(
+        store,
+        session_id,
+        Stage::Summarize,
+        "source-notes",
+        &session_core::folder::fingerprint(raw_notes.as_bytes()),
+    )?;
     // Cached calls stand only for the transcript and the notes that they
     // were made from. Another computer can replace `transcript.md`, and
     // the notes can change, between a failed run and a regeneration.

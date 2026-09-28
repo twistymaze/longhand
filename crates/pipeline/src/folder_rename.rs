@@ -349,7 +349,15 @@ pub(crate) fn write_document(
     segments: &[Segment],
     folder: &Path,
 ) -> Result<(), StageError> {
-    let doc = session_doc(record, segments, folder)?;
+    let mut doc = session_doc(record, segments, folder)?;
+    if let Some(previous) = read_document(folder) {
+        doc.result_generation = previous.result_generation;
+        doc.recognition_artifact = previous.recognition_artifact;
+        doc.recognition_snapshot = previous.recognition_snapshot;
+        doc.recognition_audio = previous.recognition_audio;
+        doc.transcript_fingerprint = previous.transcript_fingerprint;
+        doc.summary_fingerprint = previous.summary_fingerprint;
+    }
     home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())?;
     Ok(())
 }

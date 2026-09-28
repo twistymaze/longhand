@@ -120,6 +120,10 @@ pub struct SessionDoc {
     pub recognition_snapshot: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recognition_artifact: Option<crate::recognition::ArtifactReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_generation: Option<crate::generation::Generation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recognition_audio: Option<std::collections::BTreeMap<String, String>>,
     /// The number of speakers that processing found (R3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found_speakers: Option<u32>,
@@ -194,6 +198,8 @@ impl SessionDoc {
             asr_model: None,
             recognition_snapshot: None,
             recognition_artifact: None,
+            result_generation: None,
+            recognition_audio: None,
             found_speakers: None,
             transcript_fingerprint: None,
             summary_fingerprint: None,

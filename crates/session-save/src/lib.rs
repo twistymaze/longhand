@@ -14,6 +14,7 @@ pub mod home_write;
 pub mod naming;
 pub mod rename;
 pub mod rename_home;
+pub mod result;
 pub mod stage;
 
 use std::io;

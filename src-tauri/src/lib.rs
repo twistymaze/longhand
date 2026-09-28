@@ -75,6 +75,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::suspend_shortcuts,
             commands::capture::resume_shortcuts,
             commands::alerts::play_alert_sound,
+            commands::processing::preview_reprocess,
+            commands::processing::reprocess_session,
             commands::processing::regenerate_summary,
             commands::processing::transcribe_again,
             commands::processing::retry_session,

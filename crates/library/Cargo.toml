@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 log.workspace = true
+serde_json.workspace = true
 session-core = { path = "../session-core" }
 session-save = { path = "../session-save" }
 thiserror.workspace = true

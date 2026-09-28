@@ -56,7 +56,21 @@ impl FolderContents {
                     reason,
                 })?,
         };
-        let transcript_fingerprint = match read_timed(folder.join("transcript.md"), timeout) {
+        let transcript_path = doc
+            .result_generation
+            .as_ref()
+            .and_then(|g| g.directory(folder).ok())
+            .unwrap_or_else(|| folder.to_path_buf())
+            .join("transcript.md");
+        if let Some(generation) = &doc.result_generation {
+            generation
+                .verify(folder)
+                .map_err(|e| RefreshError::Unreadable {
+                    folder: folder.to_path_buf(),
+                    reason: e.to_string(),
+                })?;
+        }
+        let transcript_fingerprint = match read_timed(transcript_path, timeout) {
             Read::Bytes(bytes) => Some(fingerprint(&bytes)),
             Read::Missing | Read::Failed(_) => None,
         };
@@ -160,6 +174,14 @@ pub fn apply_scoped(
             expected: id.to_string(),
             found: contents.doc.session_id.clone(),
         });
+    }
+    if scope == Scope::All && contents.doc.result_generation.is_some() {
+        store.set_result_state(
+            id,
+            "verified-manifest",
+            &serde_json::to_value(&contents.doc).map_err(StoreError::from)?,
+        )?;
+        store.promote_result_snapshot(id, contents.doc.recognition_snapshot.as_ref())?;
     }
     let updates = match (scope, updates(store, id, contents)?) {
         (Scope::All, updates) => updates,

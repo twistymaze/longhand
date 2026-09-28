@@ -11,7 +11,10 @@ pub const LIVE_IDENTITY_KEY: &str = "recognition-liveidentity-v1";
 fn hash(value: &impl serde::Serialize) -> Result<String, StageError> {
     Ok(digest(&serde_json::to_vec(value)?))
 }
-fn spec_fingerprints(audio: String, spec: &ExecutionSpec) -> Result<Fingerprints, StageError> {
+pub(crate) fn spec_fingerprints(
+    audio: String,
+    spec: &ExecutionSpec,
+) -> Result<Fingerprints, StageError> {
     if spec.artifacts.is_empty() {
         return Err(failed("recognition snapshot has no ASR artifact"));
     }

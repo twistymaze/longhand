@@ -372,6 +372,52 @@ impl Store {
         Ok(value.map(|v| serde_json::from_str(&v)).transpose()?)
     }
 
+    pub fn result_state(&self, id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM result_state WHERE session_id = ?1 AND key = ?2",
+                params![id, key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.map(|v| serde_json::from_str(&v)).transpose()?)
+    }
+
+    pub fn set_result_state(&self, id: &str, key: &str, value: &serde_json::Value) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO result_state(session_id, key, value) VALUES (?1, ?2, ?3)
+            ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value",
+            params![id, key, serde_json::to_string(value)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_result_state(&self, id: &str, key: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM result_state WHERE session_id = ?1 AND key = ?2",
+            params![id, key],
+        )?;
+        Ok(())
+    }
+
+    pub fn promote_result_snapshot(
+        &self,
+        id: &str,
+        snapshot: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        if let Some(snapshot) = snapshot {
+            self.conn.execute(
+                "UPDATE sessions SET recognition_snapshot = ?2 WHERE id = ?1",
+                params![id, serde_json::to_string(snapshot)?],
+            )?;
+        }
+        for key in ["replacement-base", "pending-snapshot"] {
+            self.clear_result_state(id, key)?;
+        }
+        Ok(())
+    }
+
     /// Fill a legacy snapshot once. An existing snapshot is immutable.
     pub fn set_recognition_snapshot(&self, id: &str, value: &serde_json::Value) -> Result<()> {
         let written = self.conn.execute(
@@ -658,6 +704,17 @@ impl Store {
         model: &str,
         event: &Event,
     ) -> Result<SessionState> {
+        self.begin_reprocess(id, model, event, None, None)
+    }
+
+    pub fn begin_reprocess(
+        &mut self,
+        id: &str,
+        model: &str,
+        event: &Event,
+        snapshot: Option<&serde_json::Value>,
+        baseline: Option<&serde_json::Value>,
+    ) -> Result<SessionState> {
         if !matches!(event, Event::UserTranscribeAgain { .. }) {
             return Err(StoreError::Illegal(IllegalTransition {
                 state: "saved".into(),
@@ -677,6 +734,21 @@ impl Store {
              transcribe_again_summary_error = NULL WHERE id = ?1",
             params![id, model],
         )?;
+        for (key, value) in [
+            ("pending-snapshot", snapshot),
+            ("replacement-base", baseline),
+        ] {
+            tx.execute(
+                "DELETE FROM result_state WHERE session_id = ?1 AND key = ?2",
+                params![id, key],
+            )?;
+            if let Some(value) = value {
+                tx.execute(
+                    "INSERT INTO result_state(session_id, key, value) VALUES (?1, ?2, ?3)",
+                    params![id, key, serde_json::to_string(value)?],
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(next)
     }
@@ -706,6 +778,7 @@ impl Store {
              WHERE id = ?1",
             params![id, error],
         )?;
+        tx.execute("DELETE FROM result_state WHERE session_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
         tx.commit()?;
         Ok(next)
     }
@@ -1375,6 +1448,7 @@ fn cancel_transcribe_again(tx: &Transaction, id: &str) -> Result<()> {
         "UPDATE sessions SET transcribe_again_model = NULL WHERE id = ?1",
         [id],
     )?;
+    tx.execute("DELETE FROM result_state WHERE session_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
     Ok(())
 }
 

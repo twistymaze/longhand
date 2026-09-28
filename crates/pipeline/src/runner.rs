@@ -288,6 +288,7 @@ impl Runner {
         &self,
         liveness: session_core::jobs::Liveness,
     ) -> Result<Vec<String>, StageError> {
+        save::recover_summary_publications(&self.env.store)?;
         Ok(lock(&self.env.store).reclaim_at_launch(&self.owner, liveness)?)
     }
 
@@ -319,10 +320,7 @@ impl Runner {
         if let Some(SessionState::ProcessingFailed { stage, .. }) = failed
             && stage == Stage::Verify
         {
-            if lock(&self.env.store)
-                .recognition_snapshot(session_id)?
-                .is_some()
-            {
+            if crate::recognition::snapshot(&self.env.store, session_id)?.is_some() {
                 crate::recognition::prepare_retry(&self.env.store, session_id)?;
             } else {
                 verify::prepare_retry(&self.env.store, session_id)?;
@@ -392,6 +390,7 @@ impl Runner {
             save::regenerate_summary(
                 &env.store,
                 &id,
+                &env.working_root,
                 endpoint,
                 env.engines.summary_prompt(),
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
@@ -452,8 +451,74 @@ impl Runner {
                     regenerating,
                 },
             )?;
+            if let Some(home) = store.session(session_id)?.and_then(|r| r.home_path) {
+                let hash = session_core::folder::fingerprint(&std::fs::read(
+                    std::path::Path::new(&home).join("session.md"),
+                )?);
+                store.set_result_state(
+                    session_id,
+                    "replacement-base",
+                    &serde_json::to_value((home, hash))?,
+                )?;
+            }
         }
         log::info!("{session_id} is queued to be transcribed again with '{model}'");
+        self.wake();
+        Ok(())
+    }
+
+    pub fn preview_reprocess(
+        &self,
+        session_id: &str,
+        config: &models::recognition::RecognitionConfig,
+    ) -> Result<crate::reprocess::Preview, StageError> {
+        let store = lock(&self.env.store);
+        let home = store
+            .session(session_id)?
+            .and_then(|r| r.home_path)
+            .ok_or_else(|| StageError::Failed("the note has no saved folder".into()))?;
+        crate::reprocess::preview(std::path::Path::new(&home), config)
+    }
+
+    pub fn reprocess(
+        &self,
+        session_id: &str,
+        preview: &crate::reprocess::Preview,
+        allow_transcription: bool,
+    ) -> Result<(), StageError> {
+        let mut store = lock(&self.env.store);
+        let record = store
+            .session(session_id)?
+            .ok_or_else(|| StageError::Failed("the note is absent".into()))?;
+        let home = record
+            .home_path
+            .ok_or_else(|| StageError::Failed("the note has no saved folder".into()))?;
+        let fresh =
+            crate::reprocess::preview(std::path::Path::new(&home), &preview.execution.config)?;
+        if fresh.manifest != preview.manifest || fresh.execution != preview.execution {
+            return Err(StageError::Failed(
+                "the note or model configuration changed; review the replacement again".into(),
+            ));
+        }
+        if fresh.requires_transcription && !allow_transcription {
+            return Err(StageError::Failed(fresh.explanation));
+        }
+        let capture_active = (self.env.suspended)();
+        let regenerating = self.claims.busy(session_id);
+        let audio_intact = save::home_intact(&store, session_id)?;
+        store.begin_reprocess(
+            session_id,
+            &fresh.execution.config.asr_model,
+            &Event::UserTranscribeAgain {
+                at: now(),
+                audio_intact,
+                capture_active,
+                regenerating,
+            },
+            Some(&serde_json::to_value(&fresh.execution)?),
+            Some(&serde_json::to_value((home, fresh.manifest))?),
+        )?;
+        drop(store);
         self.wake();
         Ok(())
     }
@@ -609,7 +674,11 @@ impl Runner {
                 let model = again
                     .or(record.asr_model)
                     .unwrap_or_else(|| self.env.engines.default_model());
-                let ready = if let Some(value) = record.recognition_snapshot {
+                let ready = if let Some(value) = store
+                    .result_state(&id, "pending-snapshot")
+                    .ok()?
+                    .or(record.recognition_snapshot)
+                {
                     match serde_json::from_value::<models::recognition::ExecutionSpec>(value) {
                         Ok(spec) => self.env.engines.ready_exact(&spec),
                         // Claim invalid snapshots so their precise failure is visible.
@@ -677,7 +746,7 @@ impl Runner {
                 Ok(()) => {}
                 // A failed summary costs the summary, not the session: it
                 // is saved with a stub naming the failure (KD13, R22).
-                Err(StageError::Failed(message)) if stage == Stage::Summarize => {
+                Err(StageError::Failed(message)) if stage == Stage::Summarize && !again => {
                     log::warn!("summarization failed for {id}; saving without it: {message}");
                     if let Err(e) = save::record_summary_failure(&self.env.store, id, &message) {
                         log::error!("could not record the summary failure of {id}: {e}");
@@ -696,7 +765,14 @@ impl Runner {
                     if again
                         && (stage != Stage::Diarize || exact)
                         && !(stage == Stage::Save
-                            && save::home_changed(&lock(&self.env.store), id).unwrap_or(true)) =>
+                            && (save::home_changed(&lock(&self.env.store), id)
+                                .unwrap_or(true)
+                                || self
+                                    .env
+                                    .working_root
+                                    .join(id)
+                                    .join(session_save::result::JOURNAL)
+                                    .exists())) =>
                 {
                     return self.fail_transcribe_again(id, stage, message);
                 }
@@ -850,7 +926,7 @@ impl Runner {
             )?;
         }
         if checkpoint::is_complete(&self.env.store, id, stage, segments.len())? {
-            let exact = lock(&self.env.store).recognition_snapshot(id)?.is_some();
+            let exact = crate::recognition::snapshot(&self.env.store, id)?.is_some();
             let route_complete = match stage {
                 Stage::Assemble if exact => crate::assemble::provenance_valid(
                     &self.env.store,

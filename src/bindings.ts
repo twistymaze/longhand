@@ -515,6 +515,22 @@ async playAlertSound() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async previewReprocess(sessionId: string, config: RecognitionConfig) : Promise<Result<ReprocessPreview, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("preview_reprocess", { sessionId, config }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async reprocessSession(sessionId: string, preview: ReprocessPreview, allowTranscription: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reprocess_session", { sessionId, preview, allowTranscription }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Summarize a saved session again, replacing its `summary.md` (R19,
  * AE17). Returns the summary's path.
@@ -1148,6 +1164,7 @@ system_audio_other_output: boolean;
  * the note hears the user twice.
  */
 system_audio_mic_copy: boolean }
+export type ReprocessPreview = { execution: ExecutionSpec; requires_transcription: boolean; explanation: string; manifest: string }
 export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**

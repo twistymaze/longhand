@@ -746,6 +746,27 @@ impl ProcessingManager {
             .map_err(|e| e.to_string())
     }
 
+    pub fn preview_reprocess(
+        &self,
+        id: &str,
+        config: &models::recognition::RecognitionConfig,
+    ) -> Result<pipeline::reprocess::Preview, String> {
+        self.runner
+            .preview_reprocess(id, config)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn reprocess(
+        &self,
+        id: &str,
+        preview: &pipeline::reprocess::Preview,
+        allow_transcription: bool,
+    ) -> Result<(), String> {
+        self.runner
+            .reprocess(id, preview, allow_transcription)
+            .map_err(|e| e.to_string())
+    }
+
     /// Summarize a saved session again, replacing its `summary.md` (AE17).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
         self.runner
