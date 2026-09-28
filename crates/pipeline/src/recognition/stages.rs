@@ -89,22 +89,17 @@ pub(crate) fn execute_prepared(
     progress: &mut dyn FnMut(transcribe::Progress),
 ) -> Result<(), StageError> {
     let graph = TaskGraph::resolve(spec)?;
+    let prefix = super::saved_prefix::read(store, id, dir, segments, spec)?;
+    let active = prefix
+        .as_ref()
+        .map_or(segments, |prefix| &segments[prefix.count..]);
     match stage {
-        Stage::Diarize => analyze(
-            store,
-            id,
-            dir,
-            segments,
-            spec,
-            provider,
-            graph.route,
-            control,
-        ),
+        Stage::Diarize => analyze(store, id, dir, active, spec, provider, graph.route, control),
         Stage::Transcribe => transcribe_route(
             store,
             id,
             dir,
-            segments,
+            active,
             spec,
             provider,
             graph.route,
@@ -114,9 +109,52 @@ pub(crate) fn execute_prepared(
         Stage::Join => write_transcript(store, id, dir, segments),
         Stage::Verify => verify(store, id, dir, segments),
         _ => Err(failed("stage is not part of the recognition route")),
+    }?;
+    if let Some(mut prefix) = prefix {
+        match stage {
+            Stage::Diarize => {
+                prefix
+                    .result
+                    .speakers
+                    .extend(super::durable::load_speakers(store, id)?.unwrap_or_default());
+                super::durable::persist_speakers(store, id, &prefix.result.speakers)?;
+                checkpoint::mark_complete(store, id, stage, segments.len())?;
+            }
+            Stage::Transcribe => {
+                let tail = saved_result(store, id)?
+                    .ok_or_else(|| failed("appended recognition result is absent"))?;
+                prefix.result.rows.extend(tail.rows);
+                // Separate analysis already contains the saved prefix turns.
+                if graph.separate_analysis {
+                    prefix.result.speakers = tail.speakers;
+                } else {
+                    prefix.result.speakers.extend(tail.speakers);
+                }
+                prefix.result.coverage.extend(tail.coverage);
+                prefix
+                    .result
+                    .coverage_limitations
+                    .extend(tail.coverage_limitations);
+                if prefix.result.rows.iter().any(|row| row.speaker.is_some())
+                    && super::found_speakers(&prefix.result).is_none()
+                {
+                    prefix
+                        .result
+                        .coverage_limitations
+                        .push(super::SCOPED_LABELS_NOTE.into());
+                }
+                prefix.result.coverage_limitations.sort();
+                prefix.result.coverage_limitations.dedup();
+                validate_result(&prefix.result, &ranges(dir, segments)?)?;
+                super::durable::persist_result(store, id, &prefix.result)?;
+                checkpoint::mark_complete(store, id, stage, segments.len())?;
+            }
+            _ => {}
+        }
     }
+    Ok(())
 }
-fn ranges(dir: &Path, segments: &[Segment]) -> Result<Vec<SampleRange>, StageError> {
+pub(super) fn ranges(dir: &Path, segments: &[Segment]) -> Result<Vec<SampleRange>, StageError> {
     segments
         .iter()
         .map(|s| {
@@ -362,7 +400,15 @@ fn transcribe_route(
             control,
             progress,
         )?;
-        for (ordinal, window) in transcribe::results(store, id)?.into_iter().enumerate() {
+        for (ordinal, window) in transcribe::results(store, id)?
+            .into_iter()
+            .filter(|window| {
+                segments
+                    .iter()
+                    .any(|segment| segment.index == window.segment)
+            })
+            .enumerate()
+        {
             let segment = segments
                 .iter()
                 .find(|s| s.index == window.segment)

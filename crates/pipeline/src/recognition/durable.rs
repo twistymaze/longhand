@@ -135,10 +135,21 @@ pub fn fingerprints(
 ) -> Result<Fingerprints, StageError> {
     #[cfg(test)]
     AUDIO_SCANS.with(|count| count.set(count.get() + 1));
-    let mut value = spec_fingerprints(
+    configured_fingerprints(
+        store,
+        id,
         crate::assemble::recognition_audio_identity(store, id, dir, segments)?,
         spec,
-    )?;
+    )
+}
+
+pub(super) fn configured_fingerprints(
+    store: &SharedStore,
+    id: &str,
+    audio: String,
+    spec: &ExecutionSpec,
+) -> Result<Fingerprints, StageError> {
+    let mut value = spec_fingerprints(audio, spec)?;
     let count = lock(store)
         .session(id)?
         .ok_or_else(|| failed("session is absent"))?
@@ -360,7 +371,11 @@ fn prepare_fingerprints(
     spec: &ExecutionSpec,
     next: Fingerprints,
 ) -> Result<Fingerprints, StageError> {
-    bind_live(store, id, dir, segments, spec, &next)?;
+    let prefix = super::saved_prefix::read(store, id, dir, segments, spec)?;
+    let active = prefix
+        .as_ref()
+        .map_or(segments, |prefix| &segments[prefix.count..]);
+    bind_live(store, id, dir, active, spec, &next)?;
     let old: Option<Fingerprints> = checkpoint::get(store, id, Stage::Transcribe, IDENTITY_KEY)?;
     if checkpoint::is_complete(store, id, Stage::Join, segments.len())? {
         let reference: Option<ArtifactReference> =
@@ -375,7 +390,10 @@ fn prepare_fingerprints(
             }
         }
     }
-    let live = crate::live::rows(store, id)?;
+    let live: Vec<_> = crate::live::rows(store, id)?
+        .into_iter()
+        .filter(|row| active.iter().any(|segment| segment.index == row.segment))
+        .collect();
     let live_identity: Option<Fingerprints> =
         checkpoint::get(store, id, Stage::Transcribe, LIVE_IDENTITY_KEY)?;
     let live_matches = live_identity.as_ref().is_some_and(|f| {
@@ -388,6 +406,9 @@ fn prepare_fingerprints(
         ));
     }
     if old.as_ref() == Some(&next) {
+        if let Some(prefix) = &prefix {
+            super::saved_prefix::retain(store, id, prefix)?;
+        }
         return Ok(next);
     }
     let asr_matches = old.as_ref().is_some_and(|f| {
@@ -400,6 +421,14 @@ fn prepare_fingerprints(
                 .iter()
                 .all(|row| row.timing != TimingPrecision::SourceWindow)
         });
+    let keep_live_epoch = |key: &str| {
+        prefix.is_some()
+            && live_matches
+            && key
+                .strip_prefix("recognition-epoch-")
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|start| start >= active[0].offset_ms * 16)
+    };
     let guard = lock(store);
     for stage in [
         Stage::Diarize,
@@ -412,7 +441,7 @@ fn prepare_fingerprints(
             // Individual feature windows carry snapshot and PCM hashes. Keep
             // them for verification; discard the unverified completed index.
             for (key, _) in guard.checkpoints(id, stage)? {
-                if !key.starts_with("live-feature-") {
+                if !key.starts_with("live-feature-") && !keep_live_epoch(&key) {
                     guard.delete_checkpoint(id, stage, &key)?;
                 }
             }
@@ -423,12 +452,19 @@ fn prepare_fingerprints(
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
         let keep_live = live_matches && (key.contains("-live-") || key == LIVE_IDENTITY_KEY);
         let keep_asr = timed && (key.starts_with("seg-") || key == "recognition-generation-v1");
-        if !keep_live && !keep_asr && key != "live-invalidation-reasons" {
+        let keep_prefix = prefix.is_some()
+            && (key == "recognition-generation-v1"
+                || key == super::saved_prefix::KEY
+                || keep_live_epoch(&key));
+        if !keep_live && !keep_asr && !keep_prefix && key != "live-invalidation-reasons" {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
         }
     }
     drop(guard);
     checkpoint::put(store, id, Stage::Transcribe, IDENTITY_KEY, &next)?;
+    if let Some(prefix) = &prefix {
+        super::saved_prefix::retain(store, id, prefix)?;
+    }
     Ok(next)
 }
 

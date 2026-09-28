@@ -13,6 +13,10 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+thread_local! {
+    static NORMALIZED_INPUTS: std::cell::RefCell<Vec<SampleRange>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 struct Fake {
     calls: Arc<AtomicUsize>,
     native_tokens: bool,
@@ -70,6 +74,7 @@ impl Recognizer for Fake {
             start: r.start_sample,
             end: r.start_sample + pcm.len() as u64,
         };
+        NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().push(coverage));
         Ok(RecognitionOutput {
             scope: r.scope.clone(),
             revision: 0,
@@ -104,6 +109,12 @@ struct Provider {
     native_tokens: bool,
 }
 impl EngineProvider for Provider {
+    fn nemo_helper(&self) -> Result<PathBuf, String> {
+        Ok("/synthetic/no-helper-must-run".into())
+    }
+    fn artifact_path(&self, _: &models::recognition::ArtifactSpec) -> Result<PathBuf, String> {
+        Ok("/synthetic/model".into())
+    }
     fn load_exact(&self, _: &ExecutionSpec) -> Result<Box<dyn Recognizer>, String> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(Fake {
@@ -165,6 +176,17 @@ fn setup(
     ExecutionSpec,
     Vec<session_core::Segment>,
 ) {
+    setup_audio(source, common::speech())
+}
+fn setup_audio(
+    source: SpeakerSource,
+    audio: Vec<f32>,
+) -> (
+    tempfile::TempDir,
+    pipeline::SharedStore,
+    ExecutionSpec,
+    Vec<session_core::Segment>,
+) {
     let temp = tempfile::tempdir().unwrap();
     let store = common::store();
     let spec = spec(source);
@@ -174,7 +196,7 @@ fn setup(
         "route",
         100,
         Some(&spec.config.asr_model),
-        &[(16000, common::speech())],
+        &[(16000, audio)],
     );
     store
         .lock()
@@ -1103,5 +1125,575 @@ fn live_identity_accepts_resampler_rounded_final_sample() {
             &store, "route", &dir, &segments, &spec
         )
         .is_err()
+    );
+}
+
+struct SavedResume {
+    _temp: tempfile::TempDir,
+    store: pipeline::SharedStore,
+    spec: ExecutionSpec,
+    segments: Vec<session_core::Segment>,
+    dir: PathBuf,
+    home: PathBuf,
+    provider: Provider,
+    original: pipeline::recognition::RouteResult,
+}
+fn saved_resume_case(tail: &[f32]) -> SavedResume {
+    saved_resume_audio(&common::speech(), tail)
+}
+fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
+    let (temp, store, spec, mut segments) = setup_audio(SpeakerSource::Integrated, old.to_vec());
+    let dir = temp.path().join("route");
+    let home = temp.path().join("saved");
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            &spec,
+            &provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    let original = pipeline::recognition::saved_result(&store, "route")
+        .unwrap()
+        .unwrap();
+    assert!(!original.rows.is_empty());
+    assert!(original.rows.iter().all(|row| row.speaker.is_some()));
+    let record = store.lock().unwrap().session("route").unwrap().unwrap();
+    let doc = pipeline::save::session_doc(&record, &segments, &dir).unwrap();
+    assert!(doc.recognition_artifact.is_some());
+    assert_eq!(doc.recognition_audio.as_ref().unwrap().len(), 1);
+    // Save retains the archive and neutral artifact, but removes processing PCM.
+    std::fs::create_dir_all(home.join("audio")).unwrap();
+    for filename in [
+        "transcript.md",
+        "recognition.jsonl",
+        &segments[0].audio_file,
+    ] {
+        std::fs::copy(dir.join(filename), home.join(filename)).unwrap();
+    }
+    std::fs::write(home.join("session.md"), doc.render()).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    {
+        let mut guard = store.lock().unwrap();
+        guard
+            .set_home_path("route", home.to_str().unwrap())
+            .unwrap();
+        guard
+            .apply("route", &session_core::Event::Dequeued)
+            .unwrap();
+        guard.apply("route", &session_core::Event::Saved).unwrap();
+        guard
+            .apply(
+                "route",
+                &session_core::Event::UserResume {
+                    space_ok: true,
+                    audio_intact: true,
+                },
+            )
+            .unwrap();
+    }
+    let appended = common::write_segment(&dir, 1, segments[0].end_ms() + 5_000, 16000, tail, false);
+    store
+        .lock()
+        .unwrap()
+        .put_segment("route", &appended)
+        .unwrap();
+    segments.push(appended.clone());
+    common::stop_session(&store, "route", 200);
+    pipeline::assemble::run(&store, "route", &dir, &segments, Some(&home), &Unattended).unwrap();
+    SavedResume {
+        _temp: temp,
+        store,
+        spec,
+        segments,
+        dir,
+        home,
+        provider,
+        original,
+    }
+}
+
+#[test]
+fn resume_reuses_verified_saved_prefix_and_recognizes_only_appended_audio() {
+    let case = saved_resume_case(&common::speech());
+    let SavedResume {
+        store,
+        spec,
+        segments,
+        dir,
+        provider,
+        original,
+        ..
+    } = &case;
+    let appended = &segments[1];
+    NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+    pipeline::recognition::execute(
+        store,
+        "route",
+        dir,
+        segments,
+        spec,
+        provider,
+        Stage::Transcribe,
+        &Unattended,
+        &mut |_| {},
+    )
+    .unwrap();
+    let inputs = NORMALIZED_INPUTS.with(|inputs| inputs.borrow().clone());
+    assert!(!inputs.is_empty(), "the new recording must be recognized");
+    assert!(
+        inputs
+            .iter()
+            .all(|range| range.start >= appended.offset_ms * 16),
+        "completed saved audio was recognized again: {inputs:?}",
+    );
+    let combined = pipeline::recognition::saved_result(store, "route")
+        .unwrap()
+        .unwrap();
+    assert!(
+        combined
+            .rows
+            .iter()
+            .any(|row| row.range.start >= appended.offset_ms * 16 && row.text == "Hello there"),
+        "spoken appended audio needs new text"
+    );
+    for stage in [Stage::Join, Stage::Verify] {
+        pipeline::recognition::execute(
+            store,
+            "route",
+            dir,
+            segments,
+            spec,
+            provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    let record = store.lock().unwrap().session("route").unwrap().unwrap();
+    let doc = pipeline::save::session_doc(&record, segments, dir).unwrap();
+    let mut appended_rows = 0;
+    session_core::recognition::read_artifact(
+        &dir.join("recognition.jsonl"),
+        doc.recognition_artifact.as_ref().unwrap(),
+        |block| {
+            appended_rows += block
+                .rows
+                .iter()
+                .filter(|row| {
+                    row.range.start >= appended.offset_ms * 16 && row.text == "Hello there"
+                })
+                .count();
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(appended_rows > 0);
+    let old_text = std::fs::read_to_string(case.home.join("transcript.md")).unwrap();
+    let new_text = std::fs::read_to_string(dir.join("transcript.md")).unwrap();
+    assert!(new_text.matches("Hello there").count() > old_text.matches("Hello there").count());
+    assert!(
+        combined
+            .coverage_limitations
+            .iter()
+            .any(|note| note == pipeline::recognition::SCOPED_LABELS_NOTE),
+        "merging independent speaker scopes must retain their limitation"
+    );
+    let retained: Vec<_> = combined
+        .rows
+        .iter()
+        .filter(|row| row.range.start < appended.offset_ms * 16)
+        .cloned()
+        .collect();
+    assert_eq!(
+        retained, original.rows,
+        "saved text, timing, and speaker scopes must stay unchanged"
+    );
+    assert_eq!(
+        combined
+            .speakers
+            .iter()
+            .filter(|turn| turn.range.start < appended.offset_ms * 16)
+            .cloned()
+            .collect::<Vec<_>>(),
+        original.speakers
+    );
+    let mut expected = original.coverage.clone();
+    let samples = hound::WavReader::open(dir.join(pipeline::proc_file(&appended.audio_file)))
+        .unwrap()
+        .duration() as u64;
+    expected.push(SampleRange {
+        start: appended.offset_ms * 16,
+        end: appended.offset_ms * 16 + samples,
+    });
+    assert_eq!(
+        combined.coverage, expected,
+        "combined coverage must include old and new recordings"
+    );
+}
+
+#[test]
+fn resumed_silent_tail_preserves_saved_words_without_model_inference() {
+    let silence = vec![0.0; 16000 * 5];
+    let case = saved_resume_case(&silence);
+    NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+    for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
+        pipeline::recognition::execute(
+            &case.store,
+            "route",
+            &case.dir,
+            &case.segments,
+            &case.spec,
+            &case.provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    assert!(NORMALIZED_INPUTS.with(|inputs| inputs.borrow().is_empty()));
+    let result = pipeline::recognition::saved_result(&case.store, "route")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.rows, case.original.rows);
+    assert_eq!(result.coverage.len(), 2);
+}
+
+#[test]
+fn combined_nemo_resume_preserves_saved_prefix_and_completed_new_live_epoch() {
+    completed_nemo_resume(false);
+}
+
+#[test]
+fn separate_nemo_resume_repeated_diarize_keeps_one_copy_of_saved_turns() {
+    completed_nemo_resume(true);
+}
+
+fn completed_nemo_resume(separate: bool) {
+    use session_core::recognition::{
+        Coverage, OutputBlock, SpeakerTurn, read_artifact, write_artifact,
+    };
+    let mut case = saved_resume_case(&common::speech());
+    case.spec = resolve(&RecognitionConfig {
+        asr_model: if separate {
+            "granite-speech-4.1-2b-plus-q5km"
+        } else {
+            "nemotron-speech-streaming-en-0.6b-q80"
+        }
+        .into(),
+        speaker_source: SpeakerSource::Nemotron,
+        processing_mode: if separate {
+            models::recognition::ProcessingMode::AfterStop
+        } else {
+            models::recognition::ProcessingMode::DuringRecording
+        },
+        speaker_processing_mode: models::recognition::ProcessingMode::DuringRecording,
+        ..Default::default()
+    })
+    .unwrap();
+    case.store
+        .lock()
+        .unwrap()
+        .promote_result_snapshot("route", Some(&serde_json::to_value(&case.spec).unwrap()))
+        .unwrap();
+    // This synthetic native result uses the same neutral saved-artifact contract.
+    let mut doc = session_core::generation::manifest(&case.home).unwrap();
+    let mut blocks = vec![];
+    let mut header = read_artifact(
+        &case.home.join("recognition.jsonl"),
+        doc.recognition_artifact.as_ref().unwrap(),
+        |mut block| {
+            if separate {
+                block.speakers = block
+                    .rows
+                    .iter()
+                    .map(|row| SpeakerTurn {
+                        range: row.range,
+                        timing: row.timing,
+                        speaker: row.speaker.clone().unwrap(),
+                        finality: Finality::Final,
+                    })
+                    .collect();
+                case.original
+                    .speakers
+                    .extend(block.speakers.iter().cloned());
+            }
+            blocks.push(block);
+            Ok(())
+        },
+    )
+    .unwrap();
+    header.snapshot = serde_json::to_value(&case.spec).unwrap();
+    header.fingerprints = pipeline::recognition::durable::fingerprints(
+        &case.store,
+        "route",
+        &case.dir,
+        &case.segments[..1],
+        &case.spec,
+    )
+    .unwrap();
+    doc.recognition_artifact =
+        Some(write_artifact(&case.home.join("recognition.jsonl"), &header, blocks).unwrap());
+    doc.recognition_snapshot = Some(header.snapshot.clone());
+    std::fs::write(case.home.join("session.md"), doc.render()).unwrap();
+    let appended = &case.segments[1];
+    let range = SampleRange {
+        start: appended.offset_ms * 16,
+        end: appended.offset_ms * 16
+            + hound::WavReader::open(case.dir.join(pipeline::proc_file(&appended.audio_file)))
+                .unwrap()
+                .duration() as u64,
+    };
+    let scope = case
+        .store
+        .lock()
+        .unwrap()
+        .restart_recognition_epoch("route", &header.generation, range.start, range.end)
+        .unwrap()
+        .scope;
+    let mut row = case.original.rows[0].clone();
+    row.id.scope = scope.clone();
+    row.id.input_start_sample = range.start;
+    row.range = range;
+    row.speaker = Some(SpeakerKey {
+        scope: scope.clone(),
+        input_start_sample: range.start,
+        local_id: 1,
+    });
+    let new_turn = SpeakerTurn {
+        range,
+        timing: TimingPrecision::NativeSegment,
+        speaker: row.speaker.clone().unwrap(),
+        finality: Finality::Final,
+    };
+    case.store
+        .lock()
+        .unwrap()
+        .commit_recognition(
+            "route",
+            &OutputBlock {
+                key: format!("native-final/{:020}/row/00000000000000000000", scope.epoch),
+                scope: scope.clone(),
+                revision: row.revision,
+                coverage: Coverage {
+                    received: Some(range),
+                    computed: Some(range),
+                    provisional: None,
+                    committed: Some(range),
+                },
+                rows: if separate { vec![] } else { vec![row.clone()] },
+                speakers: if separate {
+                    vec![new_turn.clone()]
+                } else {
+                    vec![]
+                },
+            },
+        )
+        .unwrap();
+    let key = format!("recognition-epoch-{:020}", range.start);
+    let epoch_stage = if separate {
+        Stage::Diarize
+    } else {
+        Stage::Transcribe
+    };
+    checkpoint::put(&case.store, "route", epoch_stage, &key,
+        &serde_json::json!({ "scope": scope, "range": range, "rows": usize::from(!separate), "speakers": usize::from(separate), "limitations": [], "output": { "text": !separate, "speakers": true } })).unwrap();
+    let mut archive =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: case.dir.join(pipeline::RECOVERY_DIR),
+            segment: appended.index,
+            offset_ms: appended.offset_ms,
+            rate: 16000,
+        });
+    while archive.next_frame().unwrap().is_some() {}
+    let mut config = pipeline::live::LiveConfig::new(
+        "route",
+        appended.index,
+        &case.spec.config.asr_model,
+        16000,
+    );
+    config.snapshot = Some(case.spec.clone());
+    pipeline::live::archive::save_proof(&case.store, &config, &archive).unwrap();
+    // The provider has no real helper. Recomputing old or completed new audio fails.
+    for _ in 0..2 {
+        if separate {
+            pipeline::recognition::execute(
+                &case.store,
+                "route",
+                &case.dir,
+                &case.segments,
+                &case.spec,
+                &case.provider,
+                Stage::Diarize,
+                &Unattended,
+                &mut |_| {},
+            )
+            .unwrap();
+        }
+        pipeline::recognition::execute(
+            &case.store,
+            "route",
+            &case.dir,
+            &case.segments,
+            &case.spec,
+            &case.provider,
+            Stage::Transcribe,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+        let result = pipeline::recognition::saved_result(&case.store, "route")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.rows[..case.original.rows.len()], case.original.rows);
+        if separate {
+            assert!(
+                result
+                    .rows
+                    .iter()
+                    .any(|row| row.range.start >= range.start && row.text == "Hello there"),
+                "each separate speaker pass must keep the appended ASR text"
+            );
+            let mut expected = case.original.speakers.clone();
+            expected.push(new_turn.clone());
+            assert_eq!(
+                result.speakers, expected,
+                "Diarize retry duplicated or changed saved turns"
+            );
+        } else {
+            assert_eq!(result.rows.last(), Some(&row));
+            assert_eq!(result.rows.len(), case.original.rows.len() + 1);
+        }
+        assert_eq!(result.coverage.len(), 2);
+    }
+    let saved: serde_json::Value = checkpoint::get(&case.store, "route", epoch_stage, &key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved["scope"], serde_json::to_value(&scope).unwrap());
+}
+
+#[test]
+fn resumed_recognition_retry_retains_prefix_after_cancellation() {
+    struct Cancel;
+    impl pipeline::Control for Cancel {
+        fn proceed(&self) -> Result<(), pipeline::StageError> {
+            Err(pipeline::StageError::Cancelled)
+        }
+    }
+    let case = saved_resume_case(&common::speech());
+    let error = pipeline::recognition::execute(
+        &case.store,
+        "route",
+        &case.dir,
+        &case.segments,
+        &case.spec,
+        &case.provider,
+        Stage::Transcribe,
+        &Cancel,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(matches!(error, pipeline::StageError::Cancelled));
+    NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+    pipeline::recognition::execute(
+        &case.store,
+        "route",
+        &case.dir,
+        &case.segments,
+        &case.spec,
+        &case.provider,
+        Stage::Transcribe,
+        &Unattended,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(
+        NORMALIZED_INPUTS.with(|inputs| !inputs.borrow().is_empty()),
+        "retry must infer new spoken audio"
+    );
+    for stage in [Stage::Join, Stage::Verify] {
+        pipeline::recognition::execute(
+            &case.store,
+            "route",
+            &case.dir,
+            &case.segments,
+            &case.spec,
+            &case.provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    assert!(NORMALIZED_INPUTS.with(|inputs| {
+        inputs
+            .borrow()
+            .iter()
+            .all(|range| range.start >= case.segments[1].offset_ms * 16)
+    }));
+    let result = pipeline::recognition::saved_result(&case.store, "route")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.rows[..case.original.rows.len()], case.original.rows);
+    assert!(
+        result
+            .rows
+            .iter()
+            .any(|row| row.range.start >= case.segments[1].offset_ms * 16
+                && row.text == "Hello there")
+    );
+}
+
+#[test]
+fn review_merged_independent_single_scope_results_explain_speaker_uncertainty() {
+    let speech = common::speech();
+    let clip = &speech[..16000 * 3];
+    let case = saved_resume_audio(clip, clip);
+    assert!(
+        pipeline::recognition::found_speakers(&case.original).is_some(),
+        "the original fixture must have one speaker namespace"
+    );
+    assert!(
+        !case
+            .original
+            .coverage_limitations
+            .iter()
+            .any(|note| note == pipeline::recognition::SCOPED_LABELS_NOTE)
+    );
+    pipeline::recognition::execute(
+        &case.store,
+        "route",
+        &case.dir,
+        &case.segments,
+        &case.spec,
+        &case.provider,
+        Stage::Transcribe,
+        &Unattended,
+        &mut |_| {},
+    )
+    .unwrap();
+    let result = pipeline::recognition::saved_result(&case.store, "route")
+        .unwrap()
+        .unwrap();
+    assert!(pipeline::recognition::found_speakers(&result).is_none());
+    assert!(
+        result
+            .coverage_limitations
+            .iter()
+            .any(|note| note == pipeline::recognition::SCOPED_LABELS_NOTE),
+        "merging distinct single-scope outputs needs the speaker uncertainty note"
     );
 }
