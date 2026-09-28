@@ -81,6 +81,9 @@ Audio of a session that has no live transcript: a span that the live transcript 
 ### Transcribe Again
 The menu action that opens reprocessing choices for a saved note. Reprocessing can use a different transcription model, speaker source, or processing configuration. The preview states whether the selected route can reuse verified timed text or requires transcription again. The summary is refreshed from the resulting transcript. The recording, notes, and title stay. The previous complete result remains available until the replacement is published successfully.
 
+### Unused model
+A downloaded model that the app can delete without an override. It is not selected, not part of a pending configuration, not in use by a recording, and not needed by a note that is not finished. "Delete unused" in Settings deletes these models. "Delete all" also deletes models that are in use, after a warning, but never during a recording or a download.
+
 ## Summaries
 
 ### Summary prompt
