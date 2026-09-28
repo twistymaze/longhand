@@ -546,7 +546,7 @@ fn format_count(n: usize) -> String {
 pub fn settings_from_value(stored: &Value) -> (Settings, bool) {
     let mut stored = stored.clone();
     let rewritten = rewrite_stale_recognition(&mut stored);
-    let (mut settings, mut updated) = match serde_json::from_value::<Settings>(stored.clone()) {
+    let (mut settings, mut updated) = match Settings::deserialize(&stored) {
         Ok(settings) => (settings, rewritten),
         Err(e) => {
             log::warn!("failed to parse stored settings ({e}); salvaging valid fields");
