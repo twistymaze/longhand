@@ -2,6 +2,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, chmodSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { windowsRedistRoots } from "./windows-redist";
 
 const manifestPath = process.argv[2];
 if (!manifestPath) throw new Error("Use bun scripts/package-nemo.ts BUILD-OUTPUT.json [OUTPUT-DIR]");
@@ -39,11 +40,7 @@ function macRpaths(path: string) {
 }
 function windowsDependencies(path: string) { return run(["dumpbin", "/DEPENDENTS", path]).split("\n").map(line => line.trim()).filter(line => /^[A-Za-z0-9_.-]+\.dll$/i.test(line)); }
 const windowsRoots = [sdkBin];
-if (process.env.VCToolsRedistDir) {
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
-  const archRoot = join(process.env.VCToolsRedistDir, arch);
-  if (existsSync(archRoot)) for (const name of readdirSync(archRoot)) if (/^Microsoft\.VC\d+\.CRT$/.test(name)) windowsRoots.push(join(archRoot, name));
-}
+windowsRoots.push(...windowsRedistRoots(process.env.VCToolsRedistDir, process.arch));
 if (process.env.VULKAN_SDK) windowsRoots.push(join(process.env.VULKAN_SDK, "Bin"));
 function windowsFind(name: string): string | undefined {
   for (const root of windowsRoots) {
