@@ -213,3 +213,32 @@ A separate five-minute replay, paced at recording speed, completed with combined
 A signed-app check then played 30 seconds of recorded conversation through system audio into the selected virtual microphone. Parakeet Unified produced live text, speaker recognition completed afterwards, and the app saved the transcript and summary. Recording and processing each held a sleep assertion, which was released at completion. This short test establishes the audio route and complete app flow; it is not a performance benchmark or a substitute for the longer UI tests.
 
 These checks preceded the live paragraph-rendering fix and the correction that excludes ASR request padding from the speech-coverage denominator. Those changes require their own current-build checks.
+
+## Signed-app recording checks, 2026-09-28
+
+All ten transcription models completed a new recording through the configured virtual microphone. The input was conversation audio played through system output at normal speed. Each case saved both a transcript and a summary. Only the local manual-test folder received new notes.
+
+These checks used the Developer ID signed release bundle from `e14d651`. Its executable SHA-256 was `5fe0c0cdf2d75a0eae5c4d21427cd022bf92672a353f99098090b3b4a1b79680`. The host was the M3 Ultra described above. Other local validation ran at the same time. These are single observations, not isolated benchmarks or intended-laptop acceptance results.
+
+Unlike the earlier harness timings, the following waits include summary generation and saving. The configured summary endpoint used `gpt-6-luna`. Recording durations include a short setup or silence interval in addition to the listed playback duration. Times are rounded from the Stop action and the saved-result log.
+
+| Transcription model | Transcription timing | Speaker recognition | Speaker model used | Conversation playback | Stop to saved transcript and summary |
+|---|---|---|---|---:|---:|
+| Nemotron Speech Streaming EN 0.6B | During recording | During recording | Nemotron 3 | 5 min | About 14 s |
+| Parakeet Unified EN 0.6B | During recording | After Stop | Nemotron 3 | 5 min | About 25 s |
+| Granite Speech 4.1 2B Plus | After Stop | After Stop | Transcription model labels | 5 min | About 28 s |
+| Multitalker Parakeet Streaming 0.6B | During recording | After Stop | Transcription model labels | 5 min, split by Stop and Resume | About 34 s after the final Stop |
+| Nemotron 3.5 ASR Streaming 0.6B | During recording | During recording | Sortformer | 2 min | About 12 s |
+| Whisper large-v3-turbo | After Stop | After Stop | pyannote / WeSpeaker | 2 min | About 20 s |
+| Parakeet TDT 0.6B v2 | After Stop | During recording | Nemotron 3 | 2 min | About 12 s |
+| Parakeet TDT 0.6B v3 | After Stop | During recording | Nemotron 3 | 2 min | About 14 s |
+| Parakeet TDT 1.1B | After Stop | Off | None | 2 min | About 13 s |
+| MOSS Transcribe Diarize | After Stop | After Stop | Transcription model labels | 2 min | About 14 s |
+
+The integrated-label tests completed, but labels restarted across processing sections. The five-minute Granite and Multitalker tests produced 30 and 38 distinct section-scoped labels. The two-minute MOSS test reached 14. These are not estimates of the number of participants. Separate speaker analysis needs comparison before these integrated routes can be treated as preferred defaults for stable speaker labels.
+
+The tests also found two display defects: a completed model download could retain a stale downloading notice, and a transcript with speaker recognition Off could show a false failure notice. Both have regression fixes after this bundle. The saved Off transcript already had the correct metadata. A new signed build and native checks must verify the display fixes.
+
+### Current coverage check
+
+A third five-minute backend matrix passed all 49 combinations with the corrected speech-coverage denominator. Source: `041e146`. Frozen executable SHA-256: `6095c9ff2651362aab468b3547deb929c5a452d3a409c403f7ef7ce1ab29c646`. Local evidence: `vad-fixed-route-matrix-300/summary.json`. The sum of case times was 1,816.954 seconds with concurrent native tests, downloads, and other checks. This confirms execution and coverage; it does not replace the earlier timing estimates or prove speaker accuracy.
