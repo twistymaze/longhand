@@ -149,7 +149,7 @@ export function RecognitionOptions({
                 draft.speaker_processing_mode,
           );
           setNotice(
-            `The processing choices changed to match this model and speaker count. ${rejected?.error ?? ""}`,
+            `The processing choices changed to match this model and speaker count. ${(rejected?.error ?? "").replace(draft.asr_model, selected?.name ?? "This model")}`,
           );
         }
         setDraft(best.config);
