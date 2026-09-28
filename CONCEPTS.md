@@ -79,7 +79,7 @@ A span of a live transcript that the app saves as one checkpoint. A part ends at
 Audio of a session that has no live transcript: a span that the live transcript missed because it fell behind, failed or stopped, or a part that did not save before a crash. After Stop, recognition transcribes only the gaps in batch ("gap fill").
 
 ### Transcribe Again
-The menu action that makes the transcript and summary of a saved note again. It asks for one confirmation and offers no choices. The run uses the recognition configuration in Settings and the speaker count of the note, or the Settings default when the note has none. When the saved timed text is compatible, the run uses it again. The recording, notes, and title stay. During the run, the note shows progress in place of the transcript and summary. A failed run keeps the previous result.
+The menu action that makes the transcript and summary of a saved note again. It asks for one confirmation and offers no choices. The run uses the models, speaker source, and language in Settings, always with After Stop timing, and the speaker count of the note, including "auto". When the saved timed text is compatible, the run uses it again. The recording, notes, and title stay. During the run, the note shows progress in place of the transcript and summary. A failed run keeps the previous result.
 
 ### Unused model
 A downloaded model that the app can delete without an override. It is not selected, not part of a pending configuration, not in use by a recording, and not needed by a note that is not finished. "Delete unused" in Settings deletes these models. "Delete all" also deletes models that are in use, after a warning, but never during a recording or a download.
