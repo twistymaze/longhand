@@ -40,8 +40,8 @@ export function Models({
   const [error, setError] = useState<string | null>(null);
   const saveQueue = useRef(Promise.resolve());
   const saveVersion = useRef(0);
-  const [saving, setSaving] = useState(false);
   const [savingModel, setSavingModel] = useState<string | null>(null);
+  const saving = savingModel !== null;
   const [message, setMessage] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const remove = async (id: string) => {
@@ -62,7 +62,6 @@ export function Models({
   };
   const apply = (next: ExecutionSpec) => {
     const version = ++saveVersion.current;
-    setSaving(true);
     setSavingModel(next.config.asr_model);
     setError(null);
     saveQueue.current = saveQueue.current.then(async () => {
@@ -85,7 +84,7 @@ export function Models({
             "Could not save the transcription defaults. Change the choice to try again.",
           );
       } finally {
-        if (version === saveVersion.current) setSaving(false);
+        if (version === saveVersion.current) setSavingModel(null);
       }
     });
   };

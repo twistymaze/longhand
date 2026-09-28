@@ -147,15 +147,16 @@ export function recognitionRows(view: RecognitionView): ScopedRow[] {
   const speakers = blocks.filter((b) => b.kind === "speakers");
   return blocks
     .filter((b) => b.kind !== "speakers")
-    .flatMap(({ event }) =>
-      event.rows
+    .flatMap(({ event }) => {
+      const eventScope = scope(event);
+      return event.rows
         .filter((r) => r.text)
         .map((row) => {
           const candidates = speakers
-            .filter((b) => scope(b.event) === scope(event))
+            .filter((b) => scope(b.event) === eventScope)
             .flatMap((b) => b.event.rows)
             .filter((r) => overlaps(row, r));
-          if (!candidates.length) return row;
+          if (!candidates.length) return { ...row, scope: eventScope };
           const bySpeaker = new Map<
             string,
             { samples: number; final: boolean }
@@ -179,13 +180,13 @@ export function recognitionRows(view: RecognitionView): ScopedRow[] {
           if (!first || first[1].samples === ranked[1]?.[1].samples)
             return {
               ...row,
+              scope: eventScope,
               speaker: null,
               speaker_final: candidates.every((r) => r.speaker_final),
             };
-          return { ...row, speaker: first[0], speaker_final: first[1].final };
-        })
-        .map((row) => ({ ...row, scope: scope(event) })),
-    )
+          return { ...row, scope: eventScope, speaker: first[0], speaker_final: first[1].final };
+        });
+    })
     .sort(
       (a, b) => a.start_sample - b.start_sample || a.end_sample - b.end_sample,
     );
