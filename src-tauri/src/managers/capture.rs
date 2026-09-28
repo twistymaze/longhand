@@ -356,6 +356,8 @@ struct Opening<'a> {
     offset_ms: u64,
     /// The model of a note in live mode (U6).
     live: Option<&'a str>,
+    /// The resolved snapshot before the new session row exists.
+    recognition: Option<&'a models::recognition::ExecutionSpec>,
     /// The note's microphone. `None` is "System default".
     choice: Option<&'a MicChoice>,
     /// An input change opens the segment (KTD3).
@@ -369,6 +371,18 @@ struct Opening<'a> {
     /// system audio (KTD18). With system audio on and no stream here,
     /// the speaker stream opens on a thread of its own after the segment.
     speaker: Option<EarlySpeaker>,
+}
+
+fn opening_recognition(
+    store: &pipeline::SharedStore,
+    session_id: &str,
+    initial: Option<&models::recognition::ExecutionSpec>,
+) -> Result<Option<models::recognition::ExecutionSpec>, CaptureError> {
+    if let Some(spec) = initial {
+        return Ok(Some(spec.clone()));
+    }
+    pipeline::recognition::snapshot(store, session_id)
+        .map_err(|error| CaptureError::Other(error.to_string()))
 }
 
 /// A speaker stream that opened before its segment, at the first turn-on of
@@ -495,7 +509,6 @@ struct Inner {
     /// exists (KTD2). The next start writes it with the row. The inner
     /// `None` is "System default".
     held_microphone: Option<Option<MicrophoneChoice>>,
-    held_recognition: Option<models::recognition::RecognitionConfig>,
     /// A Computer audio switch set on the recording page before the note's
     /// row exists (KTD2). The next start writes it with the row.
     held_system_audio: Option<bool>,
@@ -988,15 +1001,23 @@ impl CaptureManager {
         app: &AppHandle,
         speaker_count: Option<SpeakerCount>,
     ) -> Result<String, CaptureError> {
+        self.start_session_with_config(app, speaker_count, None)
+    }
+
+    /// Apply the choices to this start request only. Other starts use defaults.
+    pub fn start_session_with_config(
+        &self,
+        app: &AppHandle,
+        speaker_count: Option<SpeakerCount>,
+        config: Option<models::recognition::RecognitionConfig>,
+    ) -> Result<String, CaptureError> {
         let mut inner = self.inner();
         let settings = settings::get_settings(app);
-        let mut config = inner
-            .held_recognition
-            .clone()
-            .unwrap_or_else(|| settings.recognition_config());
-        if inner.held_recognition.is_none() {
+        let config = config.unwrap_or_else(|| {
+            let mut config = settings.recognition_config();
             config.speaker_count = recognition_count(speaker_count);
-        }
+            config
+        });
         let spec = models::recognition::resolve(&config)
             .map_err(|e| CaptureError::Other(e.to_string()))?;
         let missing = app.state::<Arc<ModelsManager>>().missing_spec(&spec);
@@ -1041,6 +1062,7 @@ impl CaptureManager {
             segment: index,
             offset_ms: 0,
             live,
+            recognition: Some(&spec),
             choice: choice.as_ref(),
             at_switch: false,
             system_audio: capture.system_audio,
@@ -1085,7 +1107,6 @@ impl CaptureManager {
             log::info!("session {other} stopped by a new session");
         }
         inner.held_microphone = None;
-        inner.held_recognition = None;
         inner.held_system_audio = None;
         inner.active = Some(active);
         inner.clock = Some(Clock::new(&id, timeline, Instant::now()));
@@ -1303,6 +1324,7 @@ impl CaptureManager {
             segment: index,
             offset_ms: offset,
             live: live.as_deref(),
+            recognition: None,
             choice: choice.as_ref(),
             at_switch: false,
             system_audio: capture.system_audio,
@@ -1912,17 +1934,6 @@ impl CaptureManager {
             .map_err(|e| CaptureError::Other(e.to_string()))
     }
 
-    pub fn set_recognition_override(
-        &self,
-        config: Option<models::recognition::RecognitionConfig>,
-    ) -> Result<(), CaptureError> {
-        if let Some(config) = &config {
-            models::recognition::resolve(config).map_err(|e| CaptureError::Other(e.to_string()))?;
-        }
-        self.inner().held_recognition = config;
-        Ok(())
-    }
-
     /// Bound the open session's diarization (R36).
     pub fn set_speaker_count(&self, count: Option<SpeakerCount>) -> Result<(), CaptureError> {
         let (id, _) = self.open_session()?.ok_or(CaptureError::NotCapturing)?;
@@ -2271,6 +2282,7 @@ impl CaptureManager {
             segment: index,
             offset_ms: offset,
             live: live.as_deref(),
+            recognition: None,
             choice: choice.as_ref(),
             at_switch,
             system_audio: capture.system_audio,
@@ -2359,6 +2371,7 @@ impl CaptureManager {
             segment,
             offset_ms,
             live,
+            recognition,
             choice,
             at_switch,
             system_audio,
@@ -2415,8 +2428,7 @@ impl CaptureManager {
                 None => open_later = true,
             }
         }
-        let snapshot = pipeline::recognition::snapshot(&self.store, session_id)
-            .map_err(|error| CaptureError::Other(error.to_string()))?;
+        let snapshot = opening_recognition(&self.store, session_id, recognition)?;
         let selected = snapshot
             .as_ref()
             .filter(|spec| spec.enabled_live_transcription || spec.enabled_live_speaker_analysis)
@@ -2789,6 +2801,40 @@ mod tests {
             .unwrap()
             .timestamp_opt(secs, 0)
             .unwrap()
+    }
+
+    #[test]
+    fn opening_recognition_uses_initial_snapshot_before_the_row_exists() {
+        let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+        let spec = models::recognition::resolve(&Settings::default().recognition_config()).unwrap();
+        let actual = opening_recognition(&store, "new", Some(&spec))
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, spec);
+        assert!(store.lock().unwrap().session("new").unwrap().is_none());
+    }
+
+    #[test]
+    fn opening_recognition_reopens_with_the_persisted_snapshot() {
+        let mut store = Store::open_in_memory().unwrap();
+        let settings = Settings::default();
+        let spec = models::recognition::resolve(&settings.recognition_config()).unwrap();
+        store
+            .start_session_with_recognition(
+                "saved",
+                at(0),
+                None,
+                &recording_model(&settings),
+                &CaptureChoice::default(),
+                Some(&serde_json::to_value(&spec).unwrap()),
+            )
+            .unwrap();
+        let store = Arc::new(Mutex::new(store));
+        assert_eq!(
+            opening_recognition(&store, "saved", None).unwrap(),
+            Some(spec)
+        );
+        assert!(opening_recognition(&store, "absent", None).is_err());
     }
 
     #[test]

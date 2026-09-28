@@ -1,5 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SessionDetail, SessionDocument, SessionEntry } from "../bindings";
 import { sessionTitle } from "../processing/describe";
@@ -72,13 +79,34 @@ function renderHome({
   );
 }
 
-const row = (name: string) => screen.getByRole("option", { name: new RegExp(name) });
+const row = (name: string) =>
+  screen.getByRole("option", { name: new RegExp(name) });
 
 describe("Home", () => {
   test("a new note offers recognition choices before recording", () => {
     mockTauri();
-    render(<Home entries={[]} stages={{}} recording={null} readiness={{ armed: true, microphone_authorized: true, destination: { kind: "ready", path: "/notes", free_bytes: null }, shortcut: { chord: null, registered: false, error: null }, system_audio: "allowed", missing_models: [], endpoint_configured: true }} chord={null} onOpen={() => {}} onChanged={() => {}} />);
-    expect(screen.getByRole("button", { name: "Choices for next note…" })).toBeTruthy();
+    render(
+      <Home
+        entries={[]}
+        stages={{}}
+        recording={null}
+        readiness={{
+          armed: true,
+          microphone_authorized: true,
+          destination: { kind: "ready", path: "/notes", free_bytes: null },
+          shortcut: { chord: null, registered: false, error: null },
+          system_audio: "allowed",
+          missing_models: [],
+          endpoint_configured: true,
+        }}
+        chord={null}
+        onOpen={() => {}}
+        onChanged={() => {}}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Choices for next note…" }),
+    ).toBeTruthy();
   });
   test("with no sessions, shows the line that names the shortcut and says it starts a new note", () => {
     mockTauri();
@@ -86,7 +114,11 @@ describe("Home", () => {
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
     expect(screen.getByText("No notes yet")).toBeTruthy();
     expect(
-      screen.getByText((_, el) => el?.tagName === "P" && /Press ⌥⇧L .*to start a new note/.test(el.textContent ?? "")),
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "P" &&
+          /Press ⌥⇧L .*to start a new note/.test(el.textContent ?? ""),
+      ),
     ).toBeTruthy();
     expect(screen.queryByRole("option")).toBeNull();
   });
@@ -95,7 +127,9 @@ describe("Home", () => {
     mockTauri();
     const { container } = renderHome({ chord: null });
     expect(
-      screen.getByText((_, el) => el?.tagName === "P" && /New Note/.test(el.textContent ?? "")),
+      screen.getByText(
+        (_, el) => el?.tagName === "P" && /New Note/.test(el.textContent ?? ""),
+      ),
     ).toBeTruthy();
     expect(container.querySelector("kbd")).toBeNull();
   });
@@ -123,13 +157,19 @@ describe("Home", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
-    await userEvent.setup().click(screen.getByRole("button", { name: "New Note" }));
-    expect(tauri.calls.map((c) => c.cmd)).toContain("start_recording");
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "New Note" }));
+    expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
+      config: null,
+    });
   });
 
   test("a session with no title shows its start time, and a titled session shows its title", () => {
     mockTauri();
-    renderHome({ entries: [entry("a"), entry("b", { title: "Budget review" })] });
+    renderHome({
+      entries: [entry("a"), entry("b", { title: "Budget review" })],
+    });
     expect(row(sessionTitle(entry("a").started, now))).toBeTruthy();
     expect(row("Budget review")).toBeTruthy();
   });
@@ -143,8 +183,12 @@ describe("Home", () => {
   test("the selected overview remains after the pointer leaves the list", async () => {
     const e = entry("a", { title: "Budget review" });
     mockTauri({
-      session_document: () => document("## Overview\n\nWe agreed the **budget** for next year.\n\n## Decisions\n\n- More"),
-      session_detail: () => detail(e, "/Users/me/Longhand/2026-09-24 1405 Budget review"),
+      session_document: () =>
+        document(
+          "## Overview\n\nWe agreed the **budget** for next year.\n\n## Decisions\n\n- More",
+        ),
+      session_detail: () =>
+        detail(e, "/Users/me/Longhand/2026-09-24 1405 Budget review"),
     });
     const onOpen = mock((_id: string) => {});
     renderHome({ entries: [e], onOpen });
@@ -152,8 +196,12 @@ describe("Home", () => {
     const user = userEvent.setup();
     await user.hover(row("Budget review"));
     const preview = await screen.findByRole("region", { name: "Preview" });
-    expect(await within(preview).findByText("We agreed the budget for next year.")).toBeTruthy();
-    expect(within(preview).getByText("2026-09-24 1405 Budget review")).toBeTruthy();
+    expect(
+      await within(preview).findByText("We agreed the budget for next year."),
+    ).toBeTruthy();
+    expect(
+      within(preview).getByText("2026-09-24 1405 Budget review"),
+    ).toBeTruthy();
     expect(within(preview).getByText("3")).toBeTruthy();
     expect(onOpen).not.toHaveBeenCalled();
     await user.unhover(row("Budget review"));
@@ -167,12 +215,19 @@ describe("Home", () => {
       session_document: () => document("An overview."),
       session_detail: () => detail(entry("a"), null),
     });
-    renderHome({ entries: [entry("a", { title: "Budget review" }), entry("b", { title: "Standup" })] });
+    renderHome({
+      entries: [
+        entry("a", { title: "Budget review" }),
+        entry("b", { title: "Standup" }),
+      ],
+    });
     row("Budget review").focus();
     await userEvent.setup().keyboard("{ArrowDown}");
     expect(row("Standup").getAttribute("aria-selected")).toBe("true");
     const preview = await screen.findByRole("region", { name: "Preview" });
-    expect(within(preview).getByRole("heading", { name: "Standup" })).toBeTruthy();
+    expect(
+      within(preview).getByRole("heading", { name: "Standup" }),
+    ).toBeTruthy();
   });
 
   test("a click selects and focuses; double-click and Return open the note", async () => {
@@ -202,7 +257,11 @@ describe("Home", () => {
     });
     const onOpen = mock((_id: string) => {});
     renderHome({ entries: [entry("a", { title: "Budget review" })], onOpen });
-    await userEvent.setup().click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await userEvent
+      .setup()
+      .click(
+        within(row("Budget review")).getByRole("button", { name: "Actions" }),
+      );
     expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
     expect(onOpen).not.toHaveBeenCalled();
   });
@@ -213,7 +272,11 @@ describe("Home", () => {
     const onOpen = mock((_id: string) => {});
     renderHome({
       entries: [entry("rec", { state: "capturing" })],
-      recording: { sessionId: "rec", elapsedMs: 5 * 60_000 + 7_000, interrupted: false },
+      recording: {
+        sessionId: "rec",
+        elapsedMs: 5 * 60_000 + 7_000,
+        interrupted: false,
+      },
       onOpen,
     });
     const recording = screen.getByRole("option", { name: /Recording/ });
@@ -231,12 +294,18 @@ describe("Home", () => {
       session_document: () => document("Text."),
       session_detail: () => detail(entry("p"), null),
     });
-    renderHome({ entries: [entry("p", { state: "processing", title: "Budget review" })] });
+    renderHome({
+      entries: [entry("p", { state: "processing", title: "Budget review" })],
+    });
     const user = userEvent.setup();
-    await user.click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Budget review")).getByRole("button", { name: "Actions" }),
+    );
     const del = screen.getByRole("menuitem", { name: "Delete…" });
     expect(del.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("menuitem", { name: "Rename" }).hasAttribute("disabled")).toBe(false);
+    expect(
+      screen.getByRole("menuitem", { name: "Rename" }).hasAttribute("disabled"),
+    ).toBe(false);
   });
 
   // Covers AE10.
@@ -245,23 +314,38 @@ describe("Home", () => {
       session_document: () => document("Text."),
       session_detail: () => detail(entry("s"), "/x/Budget review"),
       delete_session: () => {
-        throw { kind: "cannot_move_to_trash", path: "/x/Budget review", reason: "the volume has no Trash" };
+        throw {
+          kind: "cannot_move_to_trash",
+          path: "/x/Budget review",
+          reason: "the volume has no Trash",
+        };
       },
       delete_session_permanently: () => null,
     });
     const onChanged = mock(() => {});
-    renderHome({ entries: [entry("s", { title: "Budget review" })], onChanged });
+    renderHome({
+      entries: [entry("s", { title: "Budget review" })],
+      onChanged,
+    });
     const user = userEvent.setup();
-    await user.click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Budget review")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
     const confirm = screen.getByRole("alertdialog");
     await user.click(within(confirm).getByRole("button", { name: "Delete" }));
-    const permanent = await screen.findByRole("alertdialog", { name: /can’t be moved to the Trash/ });
-    expect(within(permanent).getByRole("button", { name: "Delete Permanently" })).toBeTruthy();
+    const permanent = await screen.findByRole("alertdialog", {
+      name: /can’t be moved to the Trash/,
+    });
+    expect(
+      within(permanent).getByRole("button", { name: "Delete Permanently" }),
+    ).toBeTruthy();
     await user.click(within(permanent).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(row("Budget review")).toBeTruthy();
-    expect(tauri.calls.some((c) => c.cmd === "delete_session_permanently")).toBe(false);
+    expect(
+      tauri.calls.some((c) => c.cmd === "delete_session_permanently"),
+    ).toBe(false);
     expect(onChanged).not.toHaveBeenCalled();
   });
 
@@ -272,7 +356,11 @@ describe("Home", () => {
       session_document: () => document("Text."),
       session_detail: () => detail(entry("s"), "/x/Budget review"),
       delete_session: () => {
-        throw { kind: "cannot_move_to_trash", path: "/x/Budget review", reason: "the volume has no Trash" };
+        throw {
+          kind: "cannot_move_to_trash",
+          path: "/x/Budget review",
+          reason: "the volume has no Trash",
+        };
       },
       delete_session_permanently: () => {
         entries = [];
@@ -292,17 +380,32 @@ describe("Home", () => {
       />
     );
     // The list reads the sessions again when Home says they changed.
-    const view = renderHome({ entries, onChanged: () => view.rerender(homeWith(entries)) });
+    const view = renderHome({
+      entries,
+      onChanged: () => view.rerender(homeWith(entries)),
+    });
     const user = userEvent.setup();
-    await user.click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Budget review")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
-    const permanent = await screen.findByRole("alertdialog", { name: /can’t be moved to the Trash/ });
-    await user.click(within(permanent).getByRole("button", { name: "Delete Permanently" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Delete",
+      }),
+    );
+    const permanent = await screen.findByRole("alertdialog", {
+      name: /can’t be moved to the Trash/,
+    });
+    await user.click(
+      within(permanent).getByRole("button", { name: "Delete Permanently" }),
+    );
     await act(async () => {});
-    expect(tauri.calls.filter((c) => c.cmd === "delete_session_permanently").map((c) => c.args)).toEqual([
-      { sessionId: "s" },
-    ]);
+    expect(
+      tauri.calls
+        .filter((c) => c.cmd === "delete_session_permanently")
+        .map((c) => c.args),
+    ).toEqual([{ sessionId: "s" }]);
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.queryByRole("option", { name: /Budget review/ })).toBeNull();
   });
@@ -316,16 +419,29 @@ describe("Home", () => {
       },
     });
     const onChanged = mock(() => {});
-    renderHome({ entries: [entry("s", { title: "Budget review" })], onChanged });
+    renderHome({
+      entries: [entry("s", { title: "Budget review" })],
+      onChanged,
+    });
     const user = userEvent.setup();
-    await user.click(within(row("Budget review")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Budget review")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Delete",
+      }),
+    );
     expect(await screen.findByText("The store is locked.")).toBeTruthy();
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(row("Budget review").getAttribute("aria-selected")).toBe("true");
-    await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Budget review")));
-    expect(tauri.calls.some((c) => c.cmd === "delete_session_permanently")).toBe(false);
+    await waitFor(() =>
+      expect(globalThis.document.activeElement).toBe(row("Budget review")),
+    );
+    expect(
+      tauri.calls.some((c) => c.cmd === "delete_session_permanently"),
+    ).toBe(false);
     expect(onChanged).toHaveBeenCalled();
   });
 
@@ -339,21 +455,25 @@ describe("Home", () => {
     renderHome({ entries: [entry("s", { title: "Old title" })], onChanged });
     const user = userEvent.setup();
 
-    await user.click(within(row("Old title")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Old title")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByRole("textbox", { name: "Title" }));
     await user.keyboard("Discarded{Escape}");
     expect(screen.queryByRole("textbox", { name: "Title" })).toBeNull();
     expect(tauri.calls.some((c) => c.cmd === "rename_session")).toBe(false);
 
-    await user.click(within(row("Old title")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Old title")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByRole("textbox", { name: "Title" }));
     await user.keyboard("Budget review{Enter}");
     await act(async () => {});
-    expect(tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args)).toEqual([
-      { sessionId: "s", title: "Budget review" },
-    ]);
+    expect(
+      tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args),
+    ).toEqual([{ sessionId: "s", title: "Budget review" }]);
     expect(onChanged).toHaveBeenCalled();
   });
 
@@ -366,29 +486,38 @@ describe("Home", () => {
     });
     renderHome({ entries: [entry("s", { title: "Old title" })] });
     const user = userEvent.setup();
-    await user.click(within(row("Old title")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Old title")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByRole("textbox", { name: "Title" }));
     await user.keyboard("{Enter}");
     await act(async () => {});
-    expect(tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args)).toEqual([
-      { sessionId: "s", title: "" },
-    ]);
+    expect(
+      tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args),
+    ).toEqual([{ sessionId: "s", title: "" }]);
   });
 
   test("a folder that keeps its old name shows the message", async () => {
     mockTauri({
       session_document: () => document("Text."),
       session_detail: () => detail(entry("s"), null),
-      rename_session: () => ({ kind: "kept", message: "the folder is open in another app" }),
+      rename_session: () => ({
+        kind: "kept",
+        message: "the folder is open in another app",
+      }),
     });
     renderHome({ entries: [entry("s", { title: "Old title" })] });
     const user = userEvent.setup();
-    await user.click(within(row("Old title")).getByRole("button", { name: "Actions" }));
+    await user.click(
+      within(row("Old title")).getByRole("button", { name: "Actions" }),
+    );
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByRole("textbox", { name: "Title" }));
     await user.keyboard("New{Enter}");
-    expect(await screen.findByText(/The folder is open in another app/)).toBeTruthy();
+    expect(
+      await screen.findByText(/The folder is open in another app/),
+    ).toBeTruthy();
   });
 
   // Covers AE6, R16.
@@ -402,21 +531,50 @@ describe("Home", () => {
     });
     const away = row("Planning");
     expect(within(away).getByText("Storage folder unavailable")).toBeTruthy();
-    expect(within(row("Budget")).queryByText("Storage folder unavailable")).toBeNull();
+    expect(
+      within(row("Budget")).queryByText("Storage folder unavailable"),
+    ).toBeNull();
 
-    await userEvent.setup().click(within(away).getByRole("button", { name: "Actions" }));
-    expect(screen.getByRole("menuitem", { name: "Delete…" }).hasAttribute("disabled")).toBe(true);
+    await userEvent
+      .setup()
+      .click(within(away).getByRole("button", { name: "Actions" }));
+    expect(
+      screen
+        .getByRole("menuitem", { name: "Delete…" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
   });
 });
 
 const ready = {
-  microphone_authorized: true, system_audio: "allowed" as const,
-  destination: { kind: "ready" as const, path: "/x", free_bytes: null }, armed: true,
-  shortcut: { chord: "Alt+Shift+L", registered: true, error: null }, missing_models: [], endpoint_configured: true,
+  microphone_authorized: true,
+  system_audio: "allowed" as const,
+  destination: { kind: "ready" as const, path: "/x", free_bytes: null },
+  armed: true,
+  shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
+  missing_models: [],
+  endpoint_configured: true,
 };
-const home = (entries: SessionEntry[], extra: Partial<React.ComponentProps<typeof Home>> = {}) =>
-  <Home entries={entries} stages={{}} recording={null} readiness={null} chord={null} onOpen={() => {}} onChanged={() => {}} {...extra} />;
-const previewMocks = () => mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null) });
+const home = (
+  entries: SessionEntry[],
+  extra: Partial<React.ComponentProps<typeof Home>> = {},
+) => (
+  <Home
+    entries={entries}
+    stages={{}}
+    recording={null}
+    readiness={null}
+    chord={null}
+    onOpen={() => {}}
+    onChanged={() => {}}
+    {...extra}
+  />
+);
+const previewMocks = () =>
+  mockTauri({
+    session_document: () => document("Summary."),
+    session_detail: () => detail(entry("a"), null),
+  });
 
 test("selection survives refresh, new notes, and pointer movement without taking focus", async () => {
   previewMocks();
@@ -429,10 +587,21 @@ test("selection survives refresh, new notes, and pointer movement without taking
   expect(globalThis.document.activeElement).toBe(row("Older"));
   await user.hover(row("Recent"));
   await user.unhover(row("Recent"));
-  view.rerender(home([old, recent, entry("new", { title: "Newest", started: "2026-09-26T12:00:00Z" })]));
+  view.rerender(
+    home([
+      old,
+      recent,
+      entry("new", { title: "Newest", started: "2026-09-26T12:00:00Z" }),
+    ]),
+  );
   expect(row("Older").getAttribute("aria-selected")).toBe("true");
   expect(globalThis.document.activeElement).toBe(row("Older"));
-  expect(within(screen.getByRole("region", { name: "Preview" })).getByRole("heading", { name: "Older" })).toBeTruthy();
+  expect(
+    within(screen.getByRole("region", { name: "Preview" })).getByRole(
+      "heading",
+      { name: "Older" },
+    ),
+  ).toBeTruthy();
 });
 
 test("tied starts choose by ID regardless of input order", async () => {
@@ -447,10 +616,16 @@ test("loading, initial error and pending capture do not show an empty library", 
   const view = render(home([], { loaded: false }));
   expect(screen.getByText("Loading notes…")).toBeTruthy();
   expect(screen.queryByText("No notes yet")).toBeNull();
-  view.rerender(home([], { loaded: false, loadError: "Could not load notes." }));
+  view.rerender(
+    home([], { loaded: false, loadError: "Could not load notes." }),
+  );
   expect(screen.getByText("Could not load notes.")).toBeTruthy();
   expect(screen.queryByText("No notes yet")).toBeNull();
-  view.rerender(home([], { recording: { sessionId: "a", elapsedMs: 0, interrupted: false } }));
+  view.rerender(
+    home([], {
+      recording: { sessionId: "a", elapsedMs: 0, interrupted: false },
+    }),
+  );
   expect(screen.queryByText("No notes yet")).toBeNull();
   view.rerender(home([entry("a", { state: "capturing" })]));
   await act(async () => {});
@@ -460,13 +635,30 @@ test("loading, initial error and pending capture do not show an empty library", 
 test("arrow keys include interrupted and recording notes after a pointer selection", async () => {
   previewMocks();
   const onOpen = mock(() => {});
-  render(home([entry("a", { title: "Alpha" }), entry("b", { state: "interrupted" }), entry("c", { state: "capturing" })], { onOpen }));
+  render(
+    home(
+      [
+        entry("a", { title: "Alpha" }),
+        entry("b", { state: "interrupted" }),
+        entry("c", { state: "capturing" }),
+      ],
+      { onOpen },
+    ),
+  );
   const user = userEvent.setup();
   await user.click(row("Alpha"));
   await user.keyboard("{ArrowDown}");
-  await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Recording interrupted")));
+  await waitFor(() =>
+    expect(globalThis.document.activeElement).toBe(
+      row("Recording interrupted"),
+    ),
+  );
   await user.keyboard("{ArrowDown}");
-  await waitFor(() => expect(globalThis.document.activeElement?.getAttribute("data-session")).toBe("c"));
+  await waitFor(() =>
+    expect(
+      globalThis.document.activeElement?.getAttribute("data-session"),
+    ).toBe("c"),
+  );
   await user.keyboard("{Enter}");
   expect(onOpen).toHaveBeenCalledWith("c");
 });
@@ -478,7 +670,8 @@ test("double-clicks on actions and rename stay inside those controls", async () 
   const user = userEvent.setup();
   const actions = within(row("Alpha")).getByRole("button", { name: "Actions" });
   await user.dblClick(actions);
-  if (!screen.queryByRole("menuitem", { name: "Rename" })) await user.click(actions);
+  if (!screen.queryByRole("menuitem", { name: "Rename" }))
+    await user.click(actions);
   fireEvent.doubleClick(screen.getByRole("menuitem", { name: "Rename" }));
   await user.click(screen.getByRole("menuitem", { name: "Rename" }));
   await user.dblClick(screen.getByRole("textbox", { name: "Title" }));
@@ -486,38 +679,79 @@ test("double-clicks on actions and rename stay inside those controls", async () 
 });
 
 test("successful deletion excludes stale data and restores keyboard focus to the newest remaining row", async () => {
-  mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null), delete_session: () => null });
+  mockTauri({
+    session_document: () => document("Summary."),
+    session_detail: () => detail(entry("a"), null),
+    delete_session: () => null,
+  });
   const onOpen = mock(() => {});
-  render(home([entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })], { onOpen }));
+  render(
+    home([entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })], {
+      onOpen,
+    }),
+  );
   const user = userEvent.setup();
   await user.click(row("Alpha"));
-  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(
+    within(row("Alpha")).getByRole("button", { name: "Actions" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Delete",
+    }),
+  );
   expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
-  await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Beta")));
+  await waitFor(() =>
+    expect(globalThis.document.activeElement).toBe(row("Beta")),
+  );
   await user.keyboard("{ArrowDown}{Enter}");
   expect(onOpen).toHaveBeenCalledWith("b");
 });
 
 test("final deletion removes the sidebar and focuses New Note", async () => {
-  mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null), delete_session: () => null });
+  mockTauri({
+    session_document: () => document("Summary."),
+    session_detail: () => detail(entry("a"), null),
+    delete_session: () => null,
+  });
   render(home([entry("a", { title: "Alpha" })], { readiness: ready }));
   const user = userEvent.setup();
   await user.click(row("Alpha"));
-  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(
+    within(row("Alpha")).getByRole("button", { name: "Actions" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Delete",
+    }),
+  );
   expect(screen.getByText("No notes yet")).toBeTruthy();
   expect(screen.queryByRole("region", { name: "Preview" })).toBeNull();
-  await waitFor(() => expect(globalThis.document.activeElement).toBe(screen.getByRole("button", { name: "New Note" })));
+  await waitFor(() =>
+    expect(globalThis.document.activeElement).toBe(
+      screen.getByRole("button", { name: "New Note" }),
+    ),
+  );
 });
 
 test("preview revisions refresh saved summaries and late results cannot replace another note", async () => {
   let finishA!: (value: SessionDocument) => void;
   let text = "Beta summary.";
-  mockTauri({ session_document: ({ sessionId }) => sessionId === "a" ? new Promise<SessionDocument>((resolve) => { finishA = resolve; }) : document(text), session_detail: () => detail(entry("a"), null) });
-  const entries = [entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })];
+  mockTauri({
+    session_document: ({ sessionId }) =>
+      sessionId === "a"
+        ? new Promise<SessionDocument>((resolve) => {
+            finishA = resolve;
+          })
+        : document(text),
+    session_detail: () => detail(entry("a"), null),
+  });
+  const entries = [
+    entry("a", { title: "Alpha" }),
+    entry("b", { title: "Beta" }),
+  ];
   const view = render(home(entries));
   await userEvent.setup().click(row("Beta"));
   expect(await screen.findByText("Beta summary.")).toBeTruthy();
@@ -530,7 +764,13 @@ test("preview revisions refresh saved summaries and late results cannot replace 
 
 test("missing summaries and read errors have distinct preview messages", async () => {
   let fail = false;
-  mockTauri({ session_document: () => { if (fail) throw "unavailable"; return { ...document(""), summary: null }; }, session_detail: () => detail(entry("a"), null) });
+  mockTauri({
+    session_document: () => {
+      if (fail) throw "unavailable";
+      return { ...document(""), summary: null };
+    },
+    session_detail: () => detail(entry("a"), null),
+  });
   const entries = [entry("a")];
   const view = render(home(entries));
   expect(await screen.findByText("No summary yet.")).toBeTruthy();
@@ -540,15 +780,24 @@ test("missing summaries and read errors have distinct preview messages", async (
   expect(screen.queryByText("No summary yet.")).toBeNull();
 });
 
-
 test("a restored note returns after a successful deletion refresh", async () => {
-  mockTauri({ session_document: () => document("Summary."), session_detail: () => detail(entry("a"), null), delete_session: () => null });
+  mockTauri({
+    session_document: () => document("Summary."),
+    session_detail: () => detail(entry("a"), null),
+    delete_session: () => null,
+  });
   const entries = [entry("a", { title: "Alpha" })];
   const view = render(home(entries));
   const user = userEvent.setup();
-  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(
+    within(row("Alpha")).getByRole("button", { name: "Actions" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Delete",
+    }),
+  );
   view.rerender(home([]));
   view.rerender(home(entries));
   expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
@@ -558,11 +807,12 @@ test("a restored note returns after a successful deletion refresh", async () => 
 test("a list read error offers Retry", async () => {
   previewMocks();
   const onChanged = mock(() => {});
-  render(home([], { loaded: false, loadError: "Could not load notes.", onChanged }));
+  render(
+    home([], { loaded: false, loadError: "Could not load notes.", onChanged }),
+  );
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
   expect(onChanged).toHaveBeenCalledTimes(1);
 });
-
 
 test("a background refresh does not move focus from New Note", async () => {
   previewMocks();
@@ -570,7 +820,9 @@ test("a background refresh does not move focus from New Note", async () => {
   const view = render(home(entries, { readiness: ready }));
   const button = screen.getByRole("button", { name: "New Note" });
   button.focus();
-  view.rerender(home([...entries, entry("b", { title: "Beta" })], { readiness: ready }));
+  view.rerender(
+    home([...entries, entry("b", { title: "Beta" })], { readiness: ready }),
+  );
   await act(async () => {});
   expect(globalThis.document.activeElement).toBe(button);
 });
@@ -582,17 +834,21 @@ test("arrow navigation starts from the selected note when the page has focus", a
   expect(globalThis.document.activeElement).toBe(globalThis.document.body);
   await user.keyboard("{ArrowDown}");
   expect(row("Beta").getAttribute("aria-selected")).toBe("true");
-  await waitFor(() => expect(globalThis.document.activeElement).toBe(row("Beta")));
+  await waitFor(() =>
+    expect(globalThis.document.activeElement).toBe(row("Beta")),
+  );
   await user.click(screen.getByRole("heading", { name: "Notes" }));
   expect(globalThis.document.activeElement).toBe(globalThis.document.body);
   await user.keyboard("{ArrowUp}");
   expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
 });
 
-
 test("page arrow navigation leaves controls, modified keys, and hidden Home alone", async () => {
   previewMocks();
-  const entries = [entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })];
+  const entries = [
+    entry("a", { title: "Alpha" }),
+    entry("b", { title: "Beta" }),
+  ];
   const view = render(home(entries, { readiness: ready }));
   const user = userEvent.setup();
   screen.getByRole("button", { name: "New Note" }).focus();
@@ -615,7 +871,10 @@ test("a restored note returns after a failed deletion refresh without accepting 
     list_sessions: () => {
       reads++;
       if (reads === 1 || restored) return [{ ...note }];
-      if (reads === 2) return new Promise<SessionEntry[]>(resolve => { finishOld = resolve; });
+      if (reads === 2)
+        return new Promise<SessionEntry[]>((resolve) => {
+          finishOld = resolve;
+        });
       throw "Read failed";
     },
     session_document: () => document("Summary."),
@@ -637,15 +896,23 @@ test("a restored note returns after a failed deletion refresh without accepting 
   await screen.findByRole("option", { name: /Alpha/ });
   fireEvent(window, new Event("focus"));
   const user = userEvent.setup();
-  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(
+    within(row("Alpha")).getByRole("button", { name: "Actions" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Delete",
+    }),
+  );
   await screen.findByText("Could not load notes.");
   await act(async () => finishOld([note]));
   expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
   expect(screen.getByText("Could not load notes.")).toBeTruthy();
   restored = true;
-  await act(async () => ipc.emit("library-changed", { changed: [note.id], removed: [] }));
+  await act(async () =>
+    ipc.emit("library-changed", { changed: [note.id], removed: [] }),
+  );
   expect(await screen.findByRole("option", { name: /Alpha/ })).toBeTruthy();
   expect(screen.queryByText("Could not load notes.")).toBeNull();
 });
@@ -655,7 +922,12 @@ test("a preview stays visible during a same-note refresh and reports a later err
   let hold = false;
   let fail!: (reason: string) => void;
   mockTauri({
-    session_document: () => hold ? new Promise<SessionDocument>((_, reject) => { fail = reject; }) : document("Current summary."),
+    session_document: () =>
+      hold
+        ? new Promise<SessionDocument>((_, reject) => {
+            fail = reject;
+          })
+        : document("Current summary."),
     session_detail: () => detail(note, "/notes/Alpha"),
   });
   const view = render(home([note], { revisions: { a: 0 } }));
@@ -679,12 +951,18 @@ test("a read accepted during a pending delete cannot end deletion suppression", 
     list_sessions: () => {
       reads++;
       if (reads === 1 || reads > 3) return [{ ...note }];
-      if (reads === 2) return new Promise<SessionEntry[]>(resolve => { finishRead = resolve; });
+      if (reads === 2)
+        return new Promise<SessionEntry[]>((resolve) => {
+          finishRead = resolve;
+        });
       throw "Read failed";
     },
     session_document: () => document("Summary."),
     session_detail: () => detail(note, null),
-    delete_session: () => new Promise<null>(resolve => { finishDelete = resolve; }),
+    delete_session: () =>
+      new Promise<null>((resolve) => {
+        finishDelete = resolve;
+      }),
   });
   function Library() {
     const sessions = useSessions();
@@ -700,9 +978,15 @@ test("a read accepted during a pending delete cannot end deletion suppression", 
   render(<Library />);
   await screen.findByRole("option", { name: /Alpha/ });
   const user = userEvent.setup();
-  await user.click(within(row("Alpha")).getByRole("button", { name: "Actions" }));
+  await user.click(
+    within(row("Alpha")).getByRole("button", { name: "Actions" }),
+  );
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
-  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Delete",
+    }),
+  );
   fireEvent(window, new Event("focus"));
   await act(async () => {
     finishRead([note]);
@@ -713,7 +997,9 @@ test("a read accepted during a pending delete cannot end deletion suppression", 
   });
   await screen.findByText("Could not load notes.");
   expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
-  await act(async () => ipc.emit("library-changed", { changed: [note.id], removed: [] }));
+  await act(async () =>
+    ipc.emit("library-changed", { changed: [note.id], removed: [] }),
+  );
   expect(await screen.findByRole("option", { name: /Alpha/ })).toBeTruthy();
 });
 
@@ -721,8 +1007,12 @@ test("a changed note or state never retains the previous summary", async () => {
   const note = entry("a", { title: "Alpha" });
   let hold = false;
   mockTauri({
-    session_document: () => hold ? new Promise<SessionDocument>(() => {}) : document("Alpha summary."),
-    session_detail: () => hold ? new Promise<SessionDetail>(() => {}) : detail(note, null),
+    session_document: () =>
+      hold
+        ? new Promise<SessionDocument>(() => {})
+        : document("Alpha summary."),
+    session_detail: () =>
+      hold ? new Promise<SessionDetail>(() => {}) : detail(note, null),
   });
   const view = render(home([note]));
   await screen.findByText("Alpha summary.");

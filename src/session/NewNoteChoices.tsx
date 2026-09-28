@@ -4,6 +4,7 @@ import {
   events,
   type ExecutionSpec,
   type ModelStatus,
+  type RecognitionConfig,
   type Settings,
 } from "../bindings";
 import {
@@ -18,7 +19,7 @@ export function NewNoteChoices({
   onStart,
 }: {
   disabled: boolean;
-  onStart: () => Promise<boolean>;
+  onStart: (config: RecognitionConfig) => Promise<boolean>;
 }) {
   const [choice, setChoice] = useState<{
     settings: Settings;
@@ -125,18 +126,12 @@ export function NewNoteChoices({
     setBusy(true);
     setError(null);
     try {
-      const result = await commands.setRecognitionOverride(spec.config);
-      if (result.status === "error") {
-        setError(result.error);
-        return;
-      }
-      if (await onStart()) setChoice(null);
+      if (await onStart(spec.config)) setChoice(null);
       else
         setError("Could not start recording. Your app defaults are unchanged.");
     } catch {
       setError("Could not start recording.");
     } finally {
-      await commands.setRecognitionOverride(null).catch(() => {});
       setBusy(false);
     }
   };

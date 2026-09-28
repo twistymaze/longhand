@@ -26,7 +26,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_recognition_defaults,
             commands::models::resolve_recognition,
             commands::models::download_recognition_artifacts,
-            commands::capture::set_recognition_override,
             commands::settings::login_item_status,
             commands::settings::set_login_item,
             commands::settings::open_login_item_settings,

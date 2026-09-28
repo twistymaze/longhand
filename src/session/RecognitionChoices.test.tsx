@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ExecutionSpec, RecognitionConfig } from "../bindings";
 import { mockTauri } from "../test/tauri";
+import { Home } from "../home/Home";
 import { NewNoteChoices } from "./NewNoteChoices";
 import { useTranscribeAgain } from "./TranscribeAgain";
 
@@ -68,7 +69,7 @@ function Replacement() {
   );
 }
 
-test("one-note choices set only the override before capture and clear it afterwards", async () => {
+test("one-note choices pass their config directly to capture without global state", async () => {
   const tauri = mockTauri({
     ...handlers,
     set_recognition_override: () => null,
@@ -77,11 +78,9 @@ test("one-note choices set only the override before capture and clear it afterwa
   render(
     <NewNoteChoices
       disabled={false}
-      onStart={async () => {
+      onStart={async (selected) => {
         started = true;
-        expect(tauri.calls[tauri.calls.length - 1]?.cmd).toBe(
-          "set_recognition_override",
-        );
+        expect(selected).toEqual(config);
         return true;
       }}
     />,
@@ -103,7 +102,7 @@ test("one-note choices set only the override before capture and clear it afterwa
     tauri.calls
       .filter((c) => c.cmd === "set_recognition_override")
       .map((c) => c.args),
-  ).toEqual([{ config }, { config: null }]);
+  ).toEqual([]);
   expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(
     false,
   );
@@ -281,4 +280,149 @@ test("failed speaker-only replacement keeps the previous result and reports the 
   ).toBeTruthy();
   expect(dialog.textContent).toContain("previous result stays");
   expect(screen.queryByRole("checkbox")).toBeNull();
+});
+
+for (const reject of [false, true]) {
+  test(`changed choices discard a pending preview ${reject ? "error" : "result"}`, async () => {
+    let finish!: (value: unknown) => void;
+    let fail!: (reason: unknown) => void;
+    const tauri = mockTauri({
+      ...handlers,
+      preview_reprocess: () =>
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+    });
+    render(<Replacement />);
+    const user = userEvent.setup();
+    await user.click(screen.getByText("Ask"));
+    const button = await screen.findByRole("button", {
+      name: "Preview changes",
+    });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    await user.click(button);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Speaker recognition" }),
+      "pyannote",
+    );
+    await act(async () => {
+      if (reject) fail("Old preview failed");
+      else
+        finish({
+          execution: execution(config),
+          requires_transcription: false,
+          explanation: "Stale preview",
+          manifest: "old",
+        });
+    });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(screen.queryByText("Stale preview")).toBeNull();
+    expect(screen.queryByText(/Old preview failed/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reprocess note" })).toBeNull();
+    expect(tauri.calls.some((call) => call.cmd === "reprocess_session")).toBe(
+      false,
+    );
+  });
+}
+
+test("speaker-only preview uses a reprocessing dialog title", async () => {
+  mockTauri({
+    ...handlers,
+    preview_reprocess: () => ({
+      execution: execution(config),
+      requires_transcription: false,
+      explanation: "Reuse timed transcription and update speakers.",
+      manifest: "original",
+    }),
+  });
+  render(<Replacement />);
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Ask"));
+  const button = await screen.findByRole("button", { name: "Preview changes" });
+  await waitFor(() =>
+    expect((button as HTMLButtonElement).disabled).toBe(false),
+  );
+  await user.click(button);
+  expect(
+    await screen.findByRole("alertdialog", { name: "Reprocess this note?" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+});
+
+test("failed atomic start retains choices and cannot affect a later default start", async () => {
+  const tauri = mockTauri(handlers);
+  let attempts = 0;
+  render(
+    <NewNoteChoices
+      disabled={false}
+      onStart={async (selected) => {
+        expect(selected).toEqual(config);
+        attempts += 1;
+        return false;
+      }}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "Choices for next note…" }),
+  );
+  const button = await screen.findByRole("button", {
+    name: "Record this note",
+  });
+  await waitFor(() =>
+    expect((button as HTMLButtonElement).disabled).toBe(false),
+  );
+  await user.click(button);
+  expect(
+    await screen.findByText(
+      "Could not start recording. Your app defaults are unchanged.",
+    ),
+  ).toBeTruthy();
+  expect(attempts).toBe(1);
+  expect(tauri.calls.some((call) => call.cmd.startsWith("set_"))).toBe(false);
+});
+
+test("Home sends the selected configuration in the recording command", async () => {
+  const tauri = mockTauri({ ...handlers, start_recording: () => "new-note" });
+  render(
+    <Home
+      entries={[]}
+      stages={{}}
+      recording={null}
+      readiness={{
+        armed: true,
+        microphone_authorized: true,
+        destination: { kind: "ready", path: "/notes", free_bytes: null },
+        shortcut: { chord: null, registered: false, error: null },
+        system_audio: "allowed",
+        missing_models: [],
+        endpoint_configured: true,
+      }}
+      chord={null}
+      onOpen={() => {}}
+      onChanged={() => {}}
+    />,
+  );
+  const user = userEvent.setup();
+  await user.click(
+    screen.getByRole("button", { name: "Choices for next note…" }),
+  );
+  const button = await screen.findByRole("button", {
+    name: "Record this note",
+  });
+  await waitFor(() =>
+    expect((button as HTMLButtonElement).disabled).toBe(false),
+  );
+  await user.click(button);
+  expect(
+    tauri.calls.find((call) => call.cmd === "start_recording")?.args,
+  ).toEqual({ config });
+  expect(
+    tauri.calls.some((call) => call.cmd === "set_recognition_override"),
+  ).toBe(false);
 });

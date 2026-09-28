@@ -38,17 +38,6 @@ async downloadRecognitionArtifacts(spec: ExecutionSpec) : Promise<Result<null, s
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Hold one validated configuration for the next note.
- */
-async setRecognitionOverride(config: RecognitionConfig | null) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_recognition_override", { config }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 async loginItemStatus() : Promise<Result<LoginItemStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("login_item_status") };
@@ -401,9 +390,9 @@ async openSystemAudioSettings() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async startRecording() : Promise<Result<string, string>> {
+async startRecording(config: RecognitionConfig | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_recording") };
+    return { status: "ok", data: await TAURI_INVOKE("start_recording", { config }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

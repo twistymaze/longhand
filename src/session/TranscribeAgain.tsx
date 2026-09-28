@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   commands,
   type ExecutionSpec,
@@ -33,6 +33,22 @@ export function useTranscribeAgain({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [consent, setConsent] = useState(false);
+  const revision = useRef(0);
+  const operation = useRef(0);
+  const resolve = useCallback((next: ExecutionSpec | null) => {
+    revision.current += 1;
+    setSpec(next);
+    setPreview(null);
+    setConsent(false);
+    setError(null);
+  }, []);
+  useEffect(
+    () => () => {
+      revision.current += 1;
+      operation.current += 1;
+    },
+    [sessionId],
+  );
   const ask = async () => {
     try {
       const [settings, models] = await Promise.all([
@@ -49,12 +65,15 @@ export function useTranscribeAgain({
     }
   };
   const confirm = async () => {
-    if (!spec) return;
+    if (!spec || busy) return;
+    const requestedRevision = revision.current;
+    const requestedOperation = ++operation.current;
     setBusy(true);
     setError(null);
     try {
       if (!preview) {
         const result = await commands.previewReprocess(sessionId, spec.config);
+        if (revision.current !== requestedRevision) return;
         if (result.status === "error") setError(sentence(result.error));
         else {
           setPreview(result.data);
@@ -72,16 +91,17 @@ export function useTranscribeAgain({
         } else setError(sentence(result.error));
       }
     } catch {
+      if (revision.current !== requestedRevision) return;
       setError(
         "Could not prepare the replacement. The previous result stays unchanged.",
       );
     } finally {
-      setBusy(false);
+      if (operation.current === requestedOperation) setBusy(false);
     }
   };
   const dialog = choice && (
     <RecognitionDialog
-      title="Transcribe this note again?"
+      title="Reprocess this note?"
       action={preview ? "Reprocess note" : "Preview changes"}
       busy={busy}
       disabled={!spec || Boolean(preview?.requires_transcription && !consent)}
@@ -96,7 +116,7 @@ export function useTranscribeAgain({
         <RecognitionOptions
           models={choice.models}
           initial={spec?.config ?? recognitionDefaults(choice.settings)}
-          onResolved={setSpec}
+          onResolved={resolve}
         />
       ) : (
         <div className="mt-4 grid gap-3">

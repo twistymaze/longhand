@@ -899,7 +899,7 @@ describe("SessionPage", () => {
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Actions" }));
       await user.click(screen.getByRole("menuitem", { name: "Transcribe Again…" }));
-      const dialog = await screen.findByRole("alertdialog", { name: "Transcribe this note again?" });
+      const dialog = await screen.findByRole("alertdialog", { name: "Reprocess this note?" });
       return { tauri, sessions, user, dialog };
     }
 
