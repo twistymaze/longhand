@@ -175,6 +175,20 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 }
 },
 /**
+ * Choose whether the app has no Dock icon while no window is visible
+ * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
+ * the next close of the last visible window, which reads the new value
+ * (KTD3). The Dock is macOS only, so other platforms refuse.
+ */
+async setHideFromDock(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_hide_from_dock", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * The built-in summary prompts first, then the custom prompts (R1, R2).
  */
 async summaryPrompts() : Promise<SummaryPromptList> {
@@ -1313,6 +1327,11 @@ microphone: MicrophoneChoice | null;
  * Whether a new note starts with system audio on (R6, KD13).
  */
 system_audio_default: boolean; 
+/**
+ * macOS only: the app has no Dock icon while no window is visible
+ * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
+ */
+hide_from_dock: boolean; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).

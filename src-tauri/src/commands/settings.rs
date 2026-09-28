@@ -244,6 +244,27 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
     })
 }
 
+/// Choose whether the app has no Dock icon while no window is visible
+/// (R2, R4). Off applies at once: the Dock icon comes back. On applies at
+/// the next close of the last visible window, which reads the new value
+/// (KTD3). The Dock is macOS only, so other platforms refuse.
+#[tauri::command]
+#[specta::specta]
+pub fn set_hide_from_dock(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Hide from Dock is available only on macOS.".to_string());
+    }
+    let updated = settings::update_settings(&app, |s| {
+        s.hide_from_dock = enabled;
+        Ok(())
+    })?;
+    #[cfg(target_os = "macos")]
+    if !enabled {
+        crate::window::set_dock_policy(&app, crate::window::DockPolicy::Regular);
+    }
+    Ok(updated)
+}
+
 /// The built-in summary prompts first, then the custom prompts (R1, R2).
 #[tauri::command]
 #[specta::specta]

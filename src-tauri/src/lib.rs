@@ -39,6 +39,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::list_microphones,
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
+            commands::settings::set_hide_from_dock,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
             commands::settings::duplicate_summary_prompt,
@@ -311,10 +312,17 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // Before the event loop, as Handy does. An ordinary show promotes the
-    // app to Regular; a login launch never acquires a Dock icon first.
+    // Before the event loop, as Handy does (KTD2). With "Hide from Dock" on,
+    // the app starts as Accessory: an ordinary show promotes it to Regular,
+    // and a login launch never acquires a Dock icon first. With the switch
+    // off, it starts as Regular, so a login launch also shows the Dock icon.
+    // The store plugin is ready here: `build` initializes the plugins, and
+    // `setup` runs later, in `run`.
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    {
+        let hide_from_dock = managers::settings::get_settings(app.handle()).hide_from_dock;
+        app.set_activation_policy(window::startup_dock_policy(hide_from_dock).into());
+    }
 
     app.run(|app, event| match event {
         // Stop the live workers and free the recognition engine before
