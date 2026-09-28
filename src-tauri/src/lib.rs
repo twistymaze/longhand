@@ -103,6 +103,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::processing::ProcessingUpdate,
             managers::library::LibraryChanged,
             managers::live::LiveTranscriptEvent,
+            managers::live::LiveRecognitionEvent,
             managers::live::LivePartSaved,
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,

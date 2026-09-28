@@ -1042,3 +1042,426 @@ fn windows_in_finds_the_windows_that_overlap_a_gap() {
     );
     assert!(transcribe::windows_in(&windows, &[]).is_empty());
 }
+
+#[test]
+fn durable_input_recovers_dropped_notifications_and_flushes_stop_tail_once() {
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+        dir: dir.path().to_path_buf(),
+        segment: 0,
+        capture_started_at: 1,
+        offset_ms: 7_000,
+        sample_rate: 16_000,
+        channels: 1,
+        floor_bytes: 0,
+    })
+    .unwrap();
+    let pcm = clicks(16_000, 61_200, &[1_000, 59_800, 60_800]);
+    writer.write(&pcm).unwrap();
+    writer.finish().unwrap();
+    let config =
+        LiveConfig::new(ID, 0, "clicker", 16_000).with_archive(dir.path().to_path_buf(), 7_000);
+    // No audio notifications survive. The saved audio is authoritative.
+    r.run(
+        config,
+        always_voiced(PartPolicy::default()),
+        vec![],
+        LiveEnd::Keep,
+    );
+    let rows = live::rows(&r.store, ID).unwrap();
+    let words: Vec<_> = rows.iter().flat_map(|row| &row.words).collect();
+    assert_eq!(words.len(), 3);
+    assert_eq!(rows.first().unwrap().start_ms, 0);
+    assert_eq!(rows.last().unwrap().end_ms, 61_200);
+    assert_eq!(
+        words.iter().map(|w| w.start_ms).collect::<Vec<_>>(),
+        vec![1_000, 59_800, 60_800]
+    );
+}
+
+#[test]
+fn durable_input_emits_live_text_before_the_first_chunk_closes() {
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+        dir: dir.path().to_path_buf(),
+        segment: 0,
+        capture_started_at: 1,
+        offset_ms: 0,
+        sample_rate: 16_000,
+        channels: 1,
+        floor_bytes: 0,
+    })
+    .unwrap();
+    let engine = access(&slot(None, &r.script), &r.script, CancellationToken::new());
+    let workers = Workers::new(r.store.clone(), engine);
+    let (tap, worker) = workers
+        .start(
+            LiveConfig::new(ID, 0, "clicker", 16_000).with_archive(dir.path().to_path_buf(), 0),
+            always_voiced(PartPolicy::default()),
+            Box::new(r.seen.clone()),
+        )
+        .unwrap();
+    writer.write(&clicks(16_000, 1_000, &[100])).unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while r.seen.texts.load(Ordering::SeqCst) == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let early_text = r.seen.texts.load(Ordering::SeqCst);
+    assert!(recorder::list_chunks(dir.path()).unwrap().is_empty());
+    writer.finish().unwrap();
+    drop(tap);
+    worker.end(LiveEnd::Keep);
+    let until = Instant::now() + Duration::from_secs(5);
+    while workers.busy() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    workers.shutdown();
+    assert!(
+        early_text > 0,
+        "the worker must read flushed .part audio while capture continues"
+    );
+}
+
+#[test]
+fn offline_asr_starts_speaker_work_without_loading_the_text_model() {
+    let r = Run::new();
+    let engine = access(&slot(None, &r.script), &r.script, CancellationToken::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let workers =
+        Workers::new(r.store.clone(), engine).with_recognition(Arc::new(move |_, _, _, _, _| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+    let mut config = LiveConfig::new(ID, 0, "offline", 16_000);
+    config.text_enabled = false;
+    config.speakers_enabled = true;
+    let (tap, worker) = workers
+        .start(
+            config,
+            always_voiced(PartPolicy::default()),
+            Box::new(r.seen.clone()),
+        )
+        .unwrap();
+    drop(tap);
+    worker.end(LiveEnd::Keep);
+    let until = Instant::now() + Duration::from_secs(5);
+    while workers.busy() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    workers.shutdown();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(r.script.loads.lock().unwrap().is_empty());
+}
+
+#[test]
+fn live_pyannote_extracts_bounded_windows_and_keeps_the_tail_for_clustering() {
+    struct Analyzer(Arc<Mutex<Vec<usize>>>);
+    impl diarize::SpeakerAnalyzer for Analyzer {
+        fn analyze(
+            &mut self,
+            audio: &mut dyn diarize::AudioSource,
+            _: &diarize::DiarizeRequest<'_>,
+        ) -> Result<diarize::Analysis, diarize::DiarizeError> {
+            let total = audio.sample_count()?;
+            self.0.lock().unwrap().push(total);
+            Ok(diarize::Analysis {
+                total,
+                step: 31_860,
+                ..Default::default()
+            })
+        }
+    }
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let recovery = dir.path().join(pipeline::RECOVERY_DIR);
+    let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+        dir: recovery.clone(),
+        segment: 0,
+        capture_started_at: 1,
+        offset_ms: 0,
+        sample_rate: 16000,
+        channels: 1,
+        floor_bytes: 0,
+    })
+    .unwrap();
+    writer.write(&vec![0.0; 31 * 16000]).unwrap();
+    writer.finish().unwrap();
+    let config = LiveConfig::new(ID, 0, "offline", 16000).with_archive(recovery, 0);
+    let end = Arc::new(Mutex::new(Some(LiveEnd::Keep)));
+    let calls = Arc::new(Mutex::new(vec![]));
+    pipeline::live::features::extract(
+        &r.store,
+        &config,
+        &mut Analyzer(calls.clone()),
+        &CancellationToken::new(),
+        &end,
+    )
+    .unwrap();
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 12);
+    assert!(calls.iter().all(|n| *n <= 160_000));
+    assert!(calls.last().unwrap() < &160_000);
+    let cached = pipeline::live::features::restore(&r.store, ID, dir.path(), 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cached.total, 31 * 16000);
+    assert_eq!(cached.step, 31_860);
+}
+
+#[test]
+fn live_text_loads_the_snapshot_artifact_not_a_catalog_alias() {
+    let r = Run::new();
+    let script = r.script.clone();
+    let exact_calls = Arc::new(AtomicUsize::new(0));
+    let calls = exact_calls.clone();
+    let engine = access(&slot(None, &r.script), &r.script, CancellationToken::new())
+        .with_exact_loader(Arc::new(move |spec| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(Clicker {
+                model: spec.config.asr_model.clone(),
+                script: script.clone(),
+            }))
+        }));
+    let workers = Workers::new(r.store.clone(), engine);
+    let mut config = LiveConfig::new(ID, 0, "streams", 16000);
+    config.snapshot = Some(
+        models::recognition::resolve(&models::recognition::RecognitionConfig::default()).unwrap(),
+    );
+    let (tap, worker) = workers
+        .start(
+            config,
+            always_voiced(PartPolicy::default()),
+            Box::new(r.seen.clone()),
+        )
+        .unwrap();
+    drop(tap);
+    worker.end(LiveEnd::Keep);
+    let until = Instant::now() + Duration::from_secs(5);
+    while workers.busy() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    workers.shutdown();
+    assert_eq!(exact_calls.load(Ordering::SeqCst), 1);
+    assert!(r.script.loads.lock().unwrap().is_empty());
+}
+
+#[test]
+fn durable_reader_never_feeds_a_later_chunk_across_a_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    for offset_ms in [0, 20_000] {
+        let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+            dir: dir.path().to_path_buf(),
+            segment: 0,
+            capture_started_at: 1,
+            offset_ms,
+            sample_rate: 16000,
+            channels: 1,
+            floor_bytes: 0,
+        })
+        .unwrap();
+        writer.write(&vec![0.1; 16000]).unwrap();
+        writer.finish().unwrap();
+    }
+    let mut reader = live::archive::ArchiveReader::new(live::archive::Archive {
+        dir: dir.path().to_path_buf(),
+        segment: 0,
+        offset_ms: 0,
+        rate: 16000,
+    });
+    while reader.next_frame().unwrap().is_some() {}
+    assert_eq!(reader.position(), 16000);
+    assert!(reader.next_frame().unwrap().is_none());
+}
+
+#[test]
+fn cancelling_durable_catchup_keeps_saved_parts_and_recorded_audio() {
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+        dir: dir.path().to_path_buf(),
+        segment: 0,
+        capture_started_at: 1,
+        offset_ms: 0,
+        sample_rate: 16000,
+        channels: 1,
+        floor_bytes: 0,
+    })
+    .unwrap();
+    writer
+        .write(&clicks(16000, 10_000, &[500, 2500, 4500, 6500, 8500]))
+        .unwrap();
+    writer.finish().unwrap();
+    let path = recorder::list_chunks(dir.path()).unwrap()[0].path.clone();
+    let before = session_core::recognition::file_digest(&path).unwrap();
+    *r.seen.cancel_after.lock().unwrap() = Some((2, CancellationToken::new()));
+    r.run(
+        LiveConfig::new(ID, 0, "clicker", 16000).with_archive(dir.path().to_path_buf(), 0),
+        always_voiced(PartPolicy {
+            min_ms: 1000,
+            max_ms: 2000,
+            pause_ms: 600,
+            replay_ms: 500,
+        }),
+        vec![],
+        LiveEnd::Keep,
+    );
+    assert_eq!(r.rows().len(), 2);
+    assert!(r.rows().last().unwrap().end_ms < 10_000);
+    assert_eq!(
+        session_core::recognition::file_digest(&path).unwrap(),
+        before
+    );
+    let proof: live::archive::SourceProof =
+        checkpoint::get(&r.store, ID, Stage::Transcribe, &live::archive::key(0))
+            .unwrap()
+            .unwrap();
+    assert!(proof.samples < 160_000);
+}
+
+#[test]
+fn durable_segments_keep_local_word_times_across_pause_and_device_rate_changes() {
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut before = vec![];
+    for (segment, offset, rate) in [(0, 0, 48000), (1, 30_000, 16000)] {
+        let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+            dir: dir.path().to_path_buf(),
+            segment,
+            capture_started_at: 1 + u64::from(segment),
+            offset_ms: offset,
+            sample_rate: rate,
+            channels: 1,
+            floor_bytes: 0,
+        })
+        .unwrap();
+        writer.write(&clicks(rate, 2000, &[500, 1500])).unwrap();
+        writer.finish().unwrap();
+        let config = LiveConfig::new(ID, segment, "clicker", rate)
+            .with_archive(dir.path().to_path_buf(), offset);
+        r.run(
+            config,
+            always_voiced(PartPolicy::default()),
+            vec![],
+            LiveEnd::Keep,
+        );
+        let rows = live::segment_rows(&r.store, ID, segment).unwrap();
+        let starts: Vec<_> = rows
+            .iter()
+            .flat_map(|r| &r.words)
+            .map(|w| w.start_ms)
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert!(near(starts[0], 500, 10));
+        assert!(near(starts[1], 1500, 10));
+        if segment == 0 {
+            before = rows;
+        }
+    }
+    assert_eq!(live::segment_rows(&r.store, ID, 0).unwrap(), before);
+}
+
+#[test]
+fn after_stop_reuses_verified_pyannote_windows_after_live_interruption() {
+    struct Analyzer {
+        calls: Arc<Mutex<Vec<usize>>>,
+        cancel: Option<CancellationToken>,
+    }
+    impl diarize::SpeakerAnalyzer for Analyzer {
+        fn analyze(
+            &mut self,
+            audio: &mut dyn diarize::AudioSource,
+            _: &diarize::DiarizeRequest<'_>,
+        ) -> Result<diarize::Analysis, diarize::DiarizeError> {
+            let total = audio.sample_count()?;
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(total);
+            if calls.len() == 2
+                && let Some(cancel) = &self.cancel
+            {
+                cancel.cancel();
+            }
+            Ok(diarize::Analysis {
+                total,
+                step: 31_860,
+                ..Default::default()
+            })
+        }
+    }
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let audio: Vec<f32> = (0..31 * 16000)
+        .map(|n| ((n % 401) as f32 - 200.0) / 1024.0)
+        .collect();
+    let segment = write_segment(dir.path(), 0, 0, 16000, &audio, false);
+    let config =
+        LiveConfig::new(ID, 0, "offline", 16000).with_archive(dir.path().join(RECOVERY_DIR), 0);
+    let calls = Arc::new(Mutex::new(vec![]));
+    let cancel = CancellationToken::new();
+    let outcome = pipeline::live::features::extract(
+        &r.store,
+        &config,
+        &mut Analyzer {
+            calls: calls.clone(),
+            cancel: Some(cancel.clone()),
+        },
+        &cancel,
+        &Arc::new(Mutex::new(Some(LiveEnd::Keep))),
+    );
+    assert!(matches!(outcome, Err(pipeline::StageError::Cancelled)));
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert!(
+        pipeline::live::features::restore(&r.store, ID, dir.path(), 0)
+            .unwrap()
+            .is_none()
+    );
+    assemble::assemble_segment(
+        &dir.path().join(RECOVERY_DIR),
+        dir.path(),
+        &segment,
+        &Unattended,
+    )
+    .unwrap();
+    let processed: Vec<f32> = assemble::open_proc(dir.path(), &segment)
+        .unwrap()
+        .into_samples::<f32>()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        processed, audio,
+        "initial Assemble keeps raw-derived mono PCM beside the Opus archive"
+    );
+    pipeline::diarize::run(
+        &r.store,
+        ID,
+        dir.path(),
+        &[segment],
+        None,
+        &mut Analyzer {
+            calls: calls.clone(),
+            cancel: None,
+        },
+        &Unattended,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls.len(),
+        12,
+        "reuse two verified windows and compute only the ten missing windows"
+    );
+    assert!(calls.iter().all(|count| *count <= 160_000));
+    assert!(
+        checkpoint::get::<Vec<diarize::Turn>>(
+            &r.store,
+            ID,
+            Stage::Diarize,
+            pipeline::diarize::TURNS
+        )
+        .unwrap()
+        .is_some()
+    );
+}

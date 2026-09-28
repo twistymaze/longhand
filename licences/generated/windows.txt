@@ -1897,6 +1897,8 @@ tauri-utils 2.9.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-winrt-notification 0.7.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
+tempfile 3.27.0
+    Copyright (c) 2015 Steven Allen
 tendril 0.5.1
     Copyright (c) 2015 Keegan McAllister
 thiserror 1.0.69

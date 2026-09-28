@@ -537,13 +537,32 @@ impl Runner {
 
     /// The live worker's way to the engine slot (KTD9). After
     /// [`Runner::shutdown`], it loads nothing.
+    pub fn live_workers(self: &Arc<Self>) -> crate::live::Workers {
+        let runner = Arc::downgrade(self);
+        crate::live::Workers::new(self.env.store.clone(), self.engine_access()).with_recognition(
+            Arc::new(move |store, config, cancel, end, sink| {
+                let runner = runner.upgrade().ok_or(StageError::Cancelled)?;
+                crate::live::recognize(
+                    store,
+                    config,
+                    runner.env.engines.as_ref(),
+                    cancel,
+                    end,
+                    sink,
+                )
+            }),
+        )
+    }
+
     pub fn engine_access(&self) -> EngineAccess {
         let env = Arc::clone(&self.env);
+        let exact = Arc::clone(&self.env);
         EngineAccess::new(
             Arc::clone(&self.engine),
             Arc::new(move |model| env.engines.load(model)),
             self.shutdown.clone(),
         )
+        .with_exact_loader(Arc::new(move |spec| exact.engines.load_exact(spec)))
     }
 
     /// Free the loaded engine when it holds `model`, so that the model file

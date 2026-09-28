@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 const args = process.argv.slice(2);
 function option(name: string, fallback = ""): string { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]!; }
 const helper = option("--helper");
-if (!helper) throw new Error("Use --helper PATH [--speaker PATH --asr PATH --route separate|combined_stream|combined_offline --wav PATH --gpu -1]");
+if (!helper) throw new Error("Use --helper PATH [--speaker PATH --asr PATH --route separate|combined_stream|combined_offline|asr_only --streaming true|false --wav PATH --gpu -1]");
 if (args.includes("--parent-death")) {
   const workerCode = 'const {spawn}=require("node:child_process");const child=spawn(process.argv[1],["--parent",String(process.pid)],{stdio:["pipe","ignore","ignore"]});console.log(child.pid);setInterval(()=>{},1000);';
   const worker = spawn(process.execPath, ["-e", workerCode, helper], { stdio: ["ignore", "pipe", "pipe"] });
@@ -23,6 +23,7 @@ if (args.includes("--parent-death")) {
 }
 const speaker = option("--speaker");
 const route = option("--route", "separate");
+const inference = Boolean(speaker || option("--asr"));
 const cancelStage = option("--cancel-stage");
 if (cancelStage) {
   assert(["load", "push", "finish"].includes(cancelStage));
@@ -116,11 +117,11 @@ const ready = new Promise<void>((resolve, reject) => {
         assert(length > 0 && length <= 1048576); assert.equal(pcmLength, 0);
         if (bytes.length < 8 + length) return;
         const message = JSON.parse(bytes.subarray(8, 8 + length).toString()); bytes = bytes.subarray(8 + length);
-        if (speaker) { assert.equal(message.generation, 19); assert.equal(message.epoch, 2); }
+        if (inference) { assert.equal(message.generation, 19); assert.equal(message.epoch, 2); }
         assert.equal(message.version, 1);
         if (message.event === "hello") assert.equal(message.runtime_revision, "97a15afa5caa9bce5baaa86c1184103877af4101");
         if (message.event === "ready") { backend = message.backend; readyAt = performance.now(); resolve(); }
-        if (message.event === "error") { if (speaker) fail(new Error(message.message)); else { completed = true; resolve(); } }
+        if (message.event === "error") { if (inference) fail(new Error(message.message)); else { completed = true; resolve(); } }
         if (message.event === "ack") { receivedEnd = message.accepted_end; pending.get(message.seq)?.(); pending.delete(message.seq); }
         if (message.event === "text") texts.set(message.result_id, message.text);
         if (message.event === "punctuation") texts.set(message.result_id, (texts.get(message.result_id) ?? "") + message.text);
@@ -156,7 +157,7 @@ const ready = new Promise<void>((resolve, reject) => {
   child.once("exit", () => { if (!completed && !backend) reject(new Error("Helper exited before ready")); });
 });
 try {
-  if (!speaker) {
+  if (!inference) {
     send({ version: 99, command: "start" });
     await wait(ready); assert.notEqual(await wait(exit), 0); assert(completed);
     console.log("Native protocol rejection passed");
@@ -182,7 +183,7 @@ try {
     assert(Number.isSafeInteger(sampleCount) && sampleCount > 0 && sampleStart + sampleCount <= samples.length);
     samples = samples.subarray(sampleStart, sampleStart + sampleCount);
     acceptedEnd = epochStart;
-    send({ command: "start", route, speaker_model: speaker, asr_model: option("--asr"), gpu: Number(option("--gpu", "-1")), epoch_start: epochStart, max_epoch_samples: Math.max(samples.length, 1) });
+    send({ command: "start", route, ...(speaker ? { speaker_model: speaker } : {}), asr_model: option("--asr"), streaming: option("--streaming", "true") === "true", gpu: Number(option("--gpu", "-1")), epoch_start: epochStart, max_epoch_samples: Math.max(samples.length, 1) });
     await wait(ready);
     for (let at = 0; at < samples.length; at += 2560) {
       const chunk = samples.subarray(at, at + 2560); const offset = acceptedEnd; acceptedEnd += chunk.length;
@@ -196,7 +197,13 @@ try {
     const uniqueSpeakers = [...new Set([...finalWords.values(), ...currentSegments].map(item => item.speaker).filter(speaker => speaker > 0))].sort();
     const finalSegments = currentSegments.filter(segment => segment.end > segment.start && segment.speaker > 0);
     if (wav) {
-      assert(finalSegments.length > 0 || (route === "combined_stream" && attributedWords > 0), "Real audio produced no speaker assignments");
+      if (route === "asr_only") {
+        assert.equal(attributedWords, 0, "ASR-only invented speaker labels");
+        assert.equal(currentSegments.length, 0, "ASR-only performed speaker analysis");
+        assert([...finalWords.values()].every(word => word.speaker === 0 && word.speaker_final), "ASR-only labels must be explicitly absent and final");
+      } else {
+        assert(finalSegments.length > 0 || (route === "combined_stream" && attributedWords > 0), "Real audio produced no speaker assignments");
+      }
       if (route !== "separate") { assert(finalWords.size > 0); assert([...texts.values()].some(text => text.trim().length > 0)); }
       if (route === "combined_stream") assert(attributedWords > 0, "Combined streaming produced no attributed words");
     }

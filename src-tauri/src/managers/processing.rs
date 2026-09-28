@@ -7,7 +7,6 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
-use pipeline::live::Workers;
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SummaryEndpoint,
 };
@@ -603,15 +602,12 @@ impl ProcessingManager {
             }
         }
         let woken = Arc::downgrade(&self.runner);
-        self.live.attach(
-            Workers::new(Arc::clone(&self.store), self.runner.engine_access()).with_idle(
-                move || {
-                    if let Some(runner) = woken.upgrade() {
-                        runner.wake();
-                    }
-                },
-            ),
-        );
+        self.live
+            .attach(self.runner.live_workers().with_idle(move || {
+                if let Some(runner) = woken.upgrade() {
+                    runner.wake();
+                }
+            }));
         // The volume may be back, or the folder restored (U18).
         self.retry_awaiting();
         tauri::async_runtime::spawn(Arc::clone(&self.runner).run());

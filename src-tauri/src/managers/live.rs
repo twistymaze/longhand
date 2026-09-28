@@ -18,6 +18,39 @@ use tauri_specta::Event as _;
 
 use crate::managers::models::ModelsManager;
 
+/// Durable text or speaker revisions on the canonical 16 kHz timeline.
+#[derive(Serialize, Clone, Type, tauri_specta::Event)]
+pub struct LiveRecognitionEvent {
+    pub session_id: String,
+    pub phase: LiveRecognitionPhase,
+    pub key: String,
+    pub generation: String,
+    pub epoch: u64,
+    pub revision: u64,
+    pub rows: Vec<LiveRecognitionRow>,
+}
+#[derive(Serialize, Clone, Copy, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveRecognitionPhase {
+    Patch,
+    InterimBegin,
+    InterimBatch,
+    InterimEnd,
+    SnapshotBegin,
+    SnapshotBatch,
+    SnapshotEnd,
+    Failed,
+}
+#[derive(Serialize, Clone, Type)]
+pub struct LiveRecognitionRow {
+    pub start_sample: u64,
+    pub end_sample: u64,
+    pub text: Option<String>,
+    pub speaker: Option<String>,
+    pub text_final: bool,
+    pub speaker_final: bool,
+}
+
 /// The text of the open part changed (KTD10). `committed` does not change
 /// again; `tentative` can change with the next event.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
@@ -163,6 +196,10 @@ impl LiveManager {
     /// Start the live worker for a segment that records with `model` at
     /// `sample_rate`. `None` when no worker can start: the segment then
     /// gets a full pass after Stop.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Capture supplies the segment, durable audio, and immutable settings together"
+    )]
     pub fn start(
         &self,
         app: &AppHandle,
@@ -170,6 +207,9 @@ impl LiveManager {
         segment: u32,
         model: &str,
         sample_rate: u32,
+        archive: std::path::PathBuf,
+        offset_ms: u64,
+        snapshot: Option<models::recognition::ExecutionSpec>,
     ) -> Option<(LiveTap, LiveWorker)> {
         let sink = || AppSink {
             app: app.clone(),
@@ -184,7 +224,20 @@ impl LiveManager {
             sink().status(LiveStatus::Unavailable);
             return None;
         };
-        let config = LiveConfig::new(session_id, segment, model, sample_rate);
+        let mut config = LiveConfig::new(session_id, segment, model, sample_rate)
+            .with_archive(archive, offset_ms);
+        if let Some(spec) = snapshot {
+            config.text_enabled = spec.enabled_live_transcription;
+            config.speakers_enabled = spec.enabled_live_speaker_analysis;
+            if pipeline::recognition::TaskGraph::resolve(&spec)
+                .is_ok_and(|graph| graph.route == pipeline::recognition::Route::CombinedNemo)
+            {
+                config.text_enabled = false;
+                config.speakers_enabled =
+                    spec.enabled_live_transcription || spec.enabled_live_speaker_analysis;
+            }
+            config.snapshot = Some(spec);
+        }
         match workers.start(
             config,
             Parts::new(0, PartPolicy::default()),
@@ -265,6 +318,105 @@ impl AppSink {
 }
 
 impl LiveSink for AppSink {
+    fn interim_snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
+        let _ = LiveRecognitionEvent {
+            session_id: self.session_id.clone(),
+            phase: if begin {
+                LiveRecognitionPhase::InterimBegin
+            } else {
+                LiveRecognitionPhase::InterimEnd
+            },
+            key: "interim".into(),
+            generation: scope.generation.clone(),
+            epoch: scope.epoch,
+            revision,
+            rows: vec![],
+        }
+        .emit(&self.app);
+    }
+
+    fn failed(&mut self, message: &str) {
+        let _ = LiveRecognitionEvent {
+            session_id: self.session_id.clone(),
+            phase: LiveRecognitionPhase::Failed,
+            key: "failure".into(),
+            generation: String::new(),
+            epoch: 0,
+            revision: 0,
+            rows: vec![LiveRecognitionRow {
+                start_sample: 0,
+                end_sample: 0,
+                text: Some(message.into()),
+                speaker: None,
+                text_final: false,
+                speaker_final: false,
+            }],
+        }
+        .emit(&self.app);
+    }
+
+    fn snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
+        let _ = LiveRecognitionEvent {
+            session_id: self.session_id.clone(),
+            phase: if begin {
+                LiveRecognitionPhase::SnapshotBegin
+            } else {
+                LiveRecognitionPhase::SnapshotEnd
+            },
+            key: format!("speakers/{}", scope.epoch),
+            generation: scope.generation.clone(),
+            epoch: scope.epoch,
+            revision,
+            rows: vec![],
+        }
+        .emit(&self.app);
+    }
+
+    fn recognition(&mut self, block: &session_core::recognition::OutputBlock) {
+        let speaker = |key: &asr::SpeakerKey| {
+            format!(
+                "{}:{}:{}:{}",
+                key.scope.generation, key.scope.epoch, key.input_start_sample, key.local_id
+            )
+        };
+        let mut rows: Vec<_> = block
+            .rows
+            .iter()
+            .map(|row| LiveRecognitionRow {
+                start_sample: row.range.start,
+                end_sample: row.range.end,
+                text: Some(row.text.clone()),
+                speaker: row.speaker.as_ref().map(&speaker),
+                text_final: row.text_finality == asr::Finality::Final,
+                speaker_final: row.speaker_finality == asr::Finality::Final,
+            })
+            .collect();
+        rows.extend(block.speakers.iter().map(|turn| LiveRecognitionRow {
+            start_sample: turn.range.start,
+            end_sample: turn.range.end,
+            text: None,
+            speaker: Some(speaker(&turn.speaker)),
+            text_final: false,
+            speaker_final: turn.finality == asr::Finality::Final,
+        }));
+        let _ = LiveRecognitionEvent {
+            session_id: self.session_id.clone(),
+            phase: if !block.speakers.is_empty() {
+                LiveRecognitionPhase::SnapshotBatch
+            } else if block.key.contains("/interim/") {
+                LiveRecognitionPhase::InterimBatch
+            } else {
+                LiveRecognitionPhase::Patch
+            },
+            key: block.key.clone(),
+            generation: block.scope.generation.clone(),
+            epoch: block.scope.epoch,
+            revision: block.revision,
+            rows,
+        }
+        .emit(&self.app);
+    }
+
     fn model(&mut self, held: Option<&str>) {
         // Delete refuses the model of the live worker (KTD12).
         self.models.set_live_model(held.map(str::to_string));

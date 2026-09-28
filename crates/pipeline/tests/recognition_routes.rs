@@ -282,3 +282,24 @@ fn scoped_labels_do_not_claim_a_count_of_unique_people() {
     result.rows[1].speaker.as_mut().unwrap().input_start_sample = 16000;
     assert_eq!(pipeline::recognition::found_speakers(&result), None);
 }
+
+#[test]
+fn nemo_mixed_timing_schedules_independent_analysis() {
+    use models::recognition::ProcessingMode::{AfterStop, DuringRecording};
+    for (text, speakers) in [(AfterStop, DuringRecording), (DuringRecording, AfterStop)] {
+        let spec = resolve_for_runtime(
+            &RecognitionConfig {
+                asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+                speaker_source: SpeakerSource::Nemotron,
+                processing_mode: text,
+                speaker_processing_mode: speakers,
+                ..Default::default()
+            },
+            AsrRuntime::Nemo,
+        )
+        .unwrap();
+        let graph = TaskGraph::resolve(&spec).unwrap();
+        assert!(graph.separate_analysis);
+        assert!(graph.stages.contains(&session_core::Stage::Diarize));
+    }
+}

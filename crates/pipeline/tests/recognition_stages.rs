@@ -4,7 +4,7 @@ use asr::{
     RecognitionSegment, Recognizer, SampleRange, SpeakerKey, TimingPrecision, WindowText,
 };
 use models::recognition::{ExecutionSpec, RecognitionConfig, SpeakerSource, resolve};
-use pipeline::{EndpointProblem, EngineProvider, SummaryEndpoint, Unattended};
+use pipeline::{EndpointProblem, EngineProvider, SummaryEndpoint, Unattended, checkpoint};
 use session_core::Stage;
 use std::{
     path::PathBuf,
@@ -251,6 +251,17 @@ fn off_and_integrated_execute_without_separate_weights() {
 #[test]
 fn off_reuses_successful_live_text_without_asr() {
     let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    let mut reader =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: temp.path().join("route").join(pipeline::RECOVERY_DIR),
+            segment: 0,
+            offset_ms: segments[0].offset_ms,
+            rate: 16000,
+        });
+    while reader.next_frame().unwrap().is_some() {}
+    let mut config = pipeline::live::LiveConfig::new("route", 0, &spec.config.asr_model, 16000);
+    config.snapshot = Some(spec.clone());
+    pipeline::live::archive::save_proof(&store, &config, &reader).unwrap();
     pipeline::recognition::durable::stamp_live_identity(
         &store,
         "route",
@@ -823,5 +834,193 @@ fn portable_reuse_requires_unchanged_transcript_and_suitable_timing() {
         ))
         .unwrap(),
         Reuse::TranscribeAgain
+    );
+}
+
+#[test]
+fn live_identity_requires_recorded_source_proof_not_only_final_audio_hashes() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    assert!(
+        pipeline::recognition::durable::stamp_live_identity(
+            &store,
+            "route",
+            &temp.path().join("route"),
+            &segments,
+            &spec,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn completed_live_prefix_survives_failure_in_the_next_epoch() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    let dir = temp.path().join("route");
+    let mut reader =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: dir.join(pipeline::RECOVERY_DIR),
+            segment: 0,
+            offset_ms: segments[0].offset_ms,
+            rate: 16000,
+        });
+    while reader.position() < 16000 {
+        assert!(reader.next_frame().unwrap().is_some());
+    }
+    let mut config = pipeline::live::LiveConfig::new("route", 0, &spec.config.asr_model, 16000);
+    config.snapshot = Some(spec.clone());
+    pipeline::live::archive::save_proof(&store, &config, &reader).unwrap();
+    let key = format!("recognition-epoch-{:020}", segments[0].offset_ms * 16);
+    pipeline::checkpoint::put(&store, "route", Stage::Diarize, &key, &serde_json::json!({"range":{"start":segments[0].offset_ms*16,"end":segments[0].offset_ms*16+16000}})).unwrap();
+    pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec).unwrap();
+    assert!(
+        pipeline::checkpoint::get::<serde_json::Value>(&store, "route", Stage::Diarize, &key)
+            .unwrap()
+            .is_some(),
+        "a verified completed epoch must survive a later stream failure"
+    );
+}
+
+#[test]
+fn changed_stereo_preprocessing_invalidates_live_text_and_labels_with_a_reason() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("stereo", common::at(0), None)
+        .unwrap();
+    let spec = spec(SpeakerSource::Off);
+    store
+        .lock()
+        .unwrap()
+        .set_recognition_snapshot("stereo", &serde_json::to_value(&spec).unwrap())
+        .unwrap();
+    let audio = common::speech();
+    let segment = common::write_stereo_segment(temp.path(), 0, 0, 16000, &audio, &audio, false);
+    store
+        .lock()
+        .unwrap()
+        .put_segment("stereo", &segment)
+        .unwrap();
+    let mut reader =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: temp.path().join(pipeline::RECOVERY_DIR),
+            segment: 0,
+            offset_ms: 0,
+            rate: 16000,
+        });
+    while reader.next_frame().unwrap().is_some() {}
+    let mut config = pipeline::live::LiveConfig::new("stereo", 0, &spec.config.asr_model, 16000);
+    config.snapshot = Some(spec.clone());
+    pipeline::live::archive::save_proof(&store, &config, &reader).unwrap();
+    pipeline::live::save_part(
+        &store,
+        "stereo",
+        0,
+        0,
+        &asr::LivePart {
+            start_ms: 0,
+            end_ms: 1000,
+            words: vec![],
+        },
+    )
+    .unwrap();
+    let key = "recognition-epoch-00000000000000000000";
+    pipeline::checkpoint::put(
+        &store,
+        "stereo",
+        Stage::Diarize,
+        key,
+        &serde_json::json!({"range":{"start":0,"end":16000}}),
+    )
+    .unwrap();
+    pipeline::assemble::run(
+        &store,
+        "stereo",
+        temp.path(),
+        std::slice::from_ref(&segment),
+        None,
+        &Unattended,
+    )
+    .unwrap();
+    pipeline::recognition::durable::prepare(
+        &store,
+        "stereo",
+        temp.path(),
+        std::slice::from_ref(&segment),
+        &spec,
+    )
+    .unwrap();
+    assert!(pipeline::live::rows(&store, "stereo").unwrap().is_empty());
+    assert!(
+        pipeline::checkpoint::get::<serde_json::Value>(&store, "stereo", Stage::Diarize, key)
+            .unwrap()
+            .is_none()
+    );
+    let reasons: Vec<String> = pipeline::checkpoint::get(
+        &store,
+        "stereo",
+        Stage::Transcribe,
+        "live-invalidation-reasons",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("preprocessing"))
+    );
+    checkpoint::put(
+        &store,
+        "stereo",
+        Stage::Diarize,
+        key,
+        &serde_json::json!({"range":{"start":0,"end":16000}, "recomputed":true}),
+    )
+    .unwrap();
+    pipeline::recognition::durable::prepare(&store, "stereo", temp.path(), &[segment], &spec)
+        .unwrap();
+    assert!(
+        checkpoint::get::<serde_json::Value>(&store, "stereo", Stage::Diarize, key)
+            .unwrap()
+            .is_some(),
+        "later prepare must retain recognition recomputed from cleaned audio"
+    );
+}
+
+#[test]
+fn prepare_preserves_partial_feature_windows_for_pcm_verification() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    store
+        .lock()
+        .unwrap()
+        .delete_checkpoint(
+            "route",
+            Stage::Transcribe,
+            pipeline::recognition::durable::IDENTITY_KEY,
+        )
+        .unwrap();
+    let key = "live-feature-00000000-000000000000";
+    checkpoint::put(
+        &store,
+        "route",
+        Stage::Diarize,
+        key,
+        &serde_json::json!({"digest":"must-be-verified", "file":"window.diar", "step":31860}),
+    )
+    .unwrap();
+    pipeline::recognition::durable::prepare(
+        &store,
+        "route",
+        &temp.path().join("route"),
+        &segments,
+        &spec,
+    )
+    .unwrap();
+    assert!(
+        checkpoint::get::<serde_json::Value>(&store, "route", Stage::Diarize, key)
+            .unwrap()
+            .is_some(),
+        "preserve individually hashed features for bounded verification at normal entry"
     );
 }

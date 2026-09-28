@@ -2415,10 +2415,25 @@ impl CaptureManager {
                 None => open_later = true,
             }
         }
-        let (tap, live) = live
+        let snapshot = pipeline::recognition::snapshot(&self.store, session_id)
+            .map_err(|error| CaptureError::Other(error.to_string()))?;
+        let selected = snapshot
+            .as_ref()
+            .filter(|spec| spec.enabled_live_transcription || spec.enabled_live_speaker_analysis)
+            .map(|spec| spec.config.asr_model.as_str())
+            .or(live);
+        let (tap, live) = selected
             .and_then(|model| {
-                app.state::<Arc<LiveManager>>()
-                    .start(app, session_id, segment, model, rate)
+                app.state::<Arc<LiveManager>>().start(
+                    app,
+                    session_id,
+                    segment,
+                    model,
+                    rate,
+                    self.session_dir(session_id).join(RECOVERY_DIR),
+                    offset_ms,
+                    snapshot.clone(),
+                )
             })
             .unzip();
 
@@ -2435,8 +2450,6 @@ impl CaptureManager {
             .map(|l| audio::mic_copy::MicCopyCheck::new(rate, l.shared.mic_copy.clone()));
         // The loss report reads the generation of the stream that ended.
         let lost_shared = link.as_ref().map(|l| Arc::clone(&l.shared));
-        // The live mix of a stereo segment, only when a live worker reads it.
-        let mut mix = (channels == 2 && tap.is_some()).then(|| audio::live_mix::LiveMix::new(rate));
         let spawned = std::thread::Builder::new()
             .name(format!("longhand-segment-{segment}"))
             .spawn(move || {
@@ -2475,20 +2488,11 @@ impl CaptureManager {
                         }
                         .emit(&tick_app);
                     },
-                    // Never waits: a full channel drops the frame (KTD3).
-                    // A stereo segment offers the live mix (KTD11); a mono
-                    // segment offers the microphone.
+                    // This hint never waits and carries no audio. Workers read
+                    // the recorder's flushed bytes and mix on their own threads.
                     move |frame: Frame<'_>| {
                         if let Some(tap) = &tap {
-                            match (&mut mix, frame.speaker) {
-                                (Some(mix), Some(speaker)) => {
-                                    let mono: Arc<[f32]> = mix.mix(frame.mic, speaker).into();
-                                    tap.offer(frame.index, &mono);
-                                }
-                                _ => {
-                                    tap.offer(frame.index, frame.mic);
-                                }
-                            }
+                            tap.notify(frame.index);
                         }
                         if let (Some(silence), Some(right)) = (&silence, frame.speaker) {
                             silence.push(right, rate);

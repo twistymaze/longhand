@@ -725,6 +725,7 @@ captureEnded: CaptureEnded,
 captureTick: CaptureTick,
 libraryChanged: LibraryChanged,
 livePartSaved: LivePartSaved,
+liveRecognitionEvent: LiveRecognitionEvent,
 liveTranscriptEvent: LiveTranscriptEvent,
 liveTranscriptStatus: LiveTranscriptStatus,
 modelDownloadEvent: ModelDownloadEvent,
@@ -737,6 +738,7 @@ captureEnded: "capture-ended",
 captureTick: "capture-tick",
 libraryChanged: "library-changed",
 livePartSaved: "live-part-saved",
+liveRecognitionEvent: "live-recognition-event",
 liveTranscriptEvent: "live-transcript-event",
 liveTranscriptStatus: "live-transcript-status",
 modelDownloadEvent: "model-download-event",
@@ -889,6 +891,12 @@ export type LivePartSaved = { session_id: string; segment: number; part: number;
  * One saved part of the live transcript.
  */
 export type LivePartText = { segment: number; part: number; start_ms: number; end_ms: number; text: string }
+/**
+ * Durable text or speaker revisions on the canonical 16 kHz timeline.
+ */
+export type LiveRecognitionEvent = { session_id: string; phase: LiveRecognitionPhase; key: string; generation: string; epoch: number; revision: number; rows: LiveRecognitionRow[] }
+export type LiveRecognitionPhase = "patch" | "interim_begin" | "interim_batch" | "interim_end" | "snapshot_begin" | "snapshot_batch" | "snapshot_end" | "failed"
+export type LiveRecognitionRow = { start_sample: number; end_sample: number; text: string | null; speaker: string | null; text_final: boolean; speaker_final: boolean }
 export type LiveState = 
 /**
  * The model loads, or the worker waits for the engine.

@@ -112,22 +112,25 @@ class Session {
         start = m.at("epoch_start").get<uint64_t>(); budget = m.at("max_epoch_samples").get<uint64_t>();
         if (!budget || budget > sample_rate * 60 * 60 || start > UINT64_MAX - budget) throw std::runtime_error("epoch budget must be at most one hour");
         int gpu = m.at("gpu").get<int>(); if (gpu < -1) throw std::runtime_error("invalid GPU index");
-        std::string speaker_path = m.at("speaker_model").get<std::string>();
+        const bool asr_only = route == "asr_only";
+        std::string speaker_path = asr_only ? "" : m.at("speaker_model").get<std::string>();
         std::string preset = m.value("diar_preset", "");
-        emit({{"event", "hello"}, {"runtime_revision", revision}, {"routes", {"separate", "combined_stream", "combined_offline"}}, {"sample_rate", sample_rate}});
-        if (route == "combined_stream") {
+        emit({{"event", "hello"}, {"runtime_revision", revision}, {"routes", {"separate", "combined_stream", "combined_offline", "asr_only"}}, {"sample_rate", sample_rate}});
+        if (route == "combined_stream" || (asr_only && m.at("streaming").get<bool>())) {
             asr::RecognizerConfig cfg;
             cfg.model.path = m.at("asr_model").get<std::string>(); cfg.backend.gpu = gpu;
             cfg.diar.model_path = speaker_path; cfg.diar.preset = preset; cfg.log_status = false;
             recognizer = std::make_unique<asr::Recognizer>(cfg);
             asr::AsrRequestOptions options;
-            options.enable_word_time_offsets = true; options.enable_speaker_diarization = true; options.verbatim_transcripts = true;
+            options.enable_word_time_offsets = true; options.enable_speaker_diarization = !asr_only; options.verbatim_transcripts = true;
             stream = recognizer->streaming_recognize(options, language); stream->set_interim_words(true);
-        } else if (route == "separate" || route == "combined_offline") {
-            nemo_speech_diar_model_config cfg{}; cfg.size = sizeof(cfg); cfg.model_path = speaker_path.c_str(); cfg.gpu = gpu; cfg.preset = preset.c_str(); cfg.left_context_frames = -1;
-            nemo_speech_diar_model* model = nullptr; check(nemo_speech_diar_create(&cfg, &model)); diar_model.reset(model);
-            nemo_speech_diar_stream* handle = nullptr; check(nemo_speech_diar_stream_open(model, &handle)); diar.reset(handle);
-            if (route == "combined_offline") {
+        } else if (route == "separate" || route == "combined_offline" || asr_only) {
+            if (!asr_only) {
+                nemo_speech_diar_model_config cfg{}; cfg.size = sizeof(cfg); cfg.model_path = speaker_path.c_str(); cfg.gpu = gpu; cfg.preset = preset.c_str(); cfg.left_context_frames = -1;
+                nemo_speech_diar_model* model = nullptr; check(nemo_speech_diar_create(&cfg, &model)); diar_model.reset(model);
+                nemo_speech_diar_stream* handle = nullptr; check(nemo_speech_diar_stream_open(model, &handle)); diar.reset(handle);
+            }
+            if (route == "combined_offline" || asr_only) {
                 auto path = m.at("asr_model").get<std::string>();
                 nemo_speech_asr_backend_config b{sizeof(b), gpu};
                 nemo_speech_asr_model_config model_cfg{sizeof(model_cfg), path.c_str(), nullptr};
@@ -139,8 +142,8 @@ class Session {
         emit({{"event", "ready"}, {"backend", backend(gpu)}, {"epoch_start", start}, {"max_epoch_samples", budget}});
     }
     void emit_words(Pending& item, bool final) {
-        stream->refresh_speaker_tags(item.result);
-        const double stable = final ? std::numeric_limits<double>::infinity() : stream->stable_speaker_time();
+        if (route != "asr_only") stream->refresh_speaker_tags(item.result);
+        const double stable = (final || route == "asr_only") ? std::numeric_limits<double>::infinity() : stream->stable_speaker_time();
         if (item.result.alternatives.empty()) return;
         auto& words = item.result.alternatives.front().words;
         Json batch = Json::array();
@@ -149,7 +152,7 @@ class Session {
             const auto& word = words[i];
             const bool stable_word = final || word.end_time / 1000.0 < stable;
             if (stable_word && i == stable_count) ++stable_count;
-            batch.push_back({{"index", item.first_word + i}, {"text", word.word}, {"start", sample(word.start_time / 1000.0)}, {"end", sample(word.end_time / 1000.0)}, {"speaker", word.speaker_tag}, {"speaker_final", stable_word}});
+            batch.push_back({{"index", item.first_word + i}, {"text", word.word}, {"start", sample(word.start_time / 1000.0)}, {"end", sample(word.end_time / 1000.0)}, {"speaker", route == "asr_only" ? 0 : word.speaker_tag}, {"speaker_final", stable_word}});
             if (batch.size() == 256 || i + 1 == words.size()) {
                 emit({{"event", "words"}, {"result_id", item.id}, {"revision", ++update}, {"text_final", true}, {"words", batch}}); batch.clear();
             }
@@ -165,8 +168,8 @@ class Session {
         if (value.alternatives.empty() || skip_empty_final(value)) return;
         if (!value.is_final) {
             Json words = Json::array();
-            for (const auto& word : value.alternatives.front().words) words.push_back({{"text", word.word}, {"start", sample(word.start_time / 1000.0)}, {"end", sample(word.end_time / 1000.0)}, {"speaker", word.speaker_tag}});
-            emit({{"event", "interim"}, {"result_id", result_id + 1}, {"revision", ++update}, {"text", value.alternatives.front().transcript}, {"text_final", false}, {"speaker_final", false}, {"words", words}});
+            for (const auto& word : value.alternatives.front().words) words.push_back({{"text", word.word}, {"start", sample(word.start_time / 1000.0)}, {"end", sample(word.end_time / 1000.0)}, {"speaker", route == "asr_only" ? 0 : word.speaker_tag}});
+            emit({{"event", "interim"}, {"result_id", result_id + 1}, {"revision", ++update}, {"text", value.alternatives.front().transcript}, {"text_final", false}, {"speaker_final", route == "asr_only"}, {"words", words}});
         } else {
             ++result_id;
             emit({{"event", "text"}, {"result_id", result_id}, {"revision", ++update}, {"text", value.alternatives.front().transcript}, {"text_final", true}});
@@ -205,8 +208,8 @@ class Session {
         size_t count = nemo_speech_asr_result_word_count(handle, 0);
         auto offset = [&](int32_t ms) { return start + offline_start + std::min<uint64_t>(offline_audio.size(), static_cast<uint64_t>(std::max(0, ms)) * 16); };
         for (size_t i = 0; i < count; ++i) {
-            words.push_back({{"index", i}, {"text", nemo_speech_asr_result_word_text(handle, 0, i)}, {"start", offset(nemo_speech_asr_result_word_start_time(handle, 0, i))}, {"end", offset(nemo_speech_asr_result_word_end_time(handle, 0, i))}, {"speaker", 0}, {"speaker_final", false}});
-            if (words.size() == 256 || i + 1 == count) { emit({{"event", "words"}, {"result_id", result_id}, {"revision", ++update}, {"text_final", true}, {"speaker_source", "timeline"}, {"words", words}}); words.clear(); }
+            words.push_back({{"index", i}, {"text", nemo_speech_asr_result_word_text(handle, 0, i)}, {"start", offset(nemo_speech_asr_result_word_start_time(handle, 0, i))}, {"end", offset(nemo_speech_asr_result_word_end_time(handle, 0, i))}, {"speaker", 0}, {"speaker_final", route == "asr_only"}});
+            if (words.size() == 256 || i + 1 == count) { emit({{"event", "words"}, {"result_id", result_id}, {"revision", ++update}, {"text_final", true}, {"speaker_source", route == "asr_only" ? "none" : "timeline"}, {"words", words}}); words.clear(); }
         }
         offline_start += offline_audio.size(); offline_audio.clear();
     }
@@ -231,14 +234,14 @@ public:
                     while (auto value = stream->next()) { bool final = value->is_final; result(std::move(*value)); if (!final) break; }
                     refresh();
                 } else {
-                    check(nemo_speech_diar_stream_push_f32(diar.get(), frame.pcm.data(), frame.pcm.size(), sample_rate));
+                    if (diar) check(nemo_speech_diar_stream_push_f32(diar.get(), frame.pcm.data(), frame.pcm.size(), sample_rate));
                     if (offline) { offline_audio.insert(offline_audio.end(), frame.pcm.begin(), frame.pcm.end()); if (offline_audio.size() >= sample_rate * 30) offline_chunk(); }
-                    segments(false);
+                    if (diar) segments(false);
                 }
                 emit({{"event", "ack"}, {"accepted_end", start + accepted}});
             } else if (command == "finish" && frame.pcm.empty()) {
                 if (stream) { refresh(); result(stream->finish()); refresh(true); }
-                else { if (offline) offline_chunk(); check(nemo_speech_diar_stream_finish(diar.get())); segments(true); }
+                else { if (offline) offline_chunk(); if (diar) { check(nemo_speech_diar_stream_finish(diar.get())); segments(true); } }
                 finished = true;
                 emit({{"event", "finished"}, {"coverage_start", start}, {"coverage_end", start + accepted}, {"text_final", true}, {"speaker_final", true}});
                 return;

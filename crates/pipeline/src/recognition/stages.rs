@@ -161,7 +161,7 @@ fn analyze(
                 });
             }
         }
-        Route::SeparateNemo => {
+        Route::SeparateNemo | Route::CombinedNemo => {
             for (segment, range) in segments.iter().zip(ranges(dir, segments)?) {
                 let result = super::nemo::run_file(
                     store,
@@ -204,13 +204,12 @@ fn transcribe_route(
 ) -> Result<(), StageError> {
     let expected = ranges(dir, segments)?;
     let generation = generation(store, id)?;
-    let speakers: Vec<SpeakerTurn> =
-        if matches!(route, Route::SeparateNemo | Route::SeparatePyannote) {
-            super::durable::load_speakers(store, id)?
-                .ok_or_else(|| failed("speaker task has not completed"))?
-        } else {
-            vec![]
-        };
+    let speakers: Vec<SpeakerTurn> = if TaskGraph::resolve(spec)?.separate_analysis {
+        super::durable::load_speakers(store, id)?
+            .ok_or_else(|| failed("speaker task has not completed"))?
+    } else {
+        vec![]
+    };
     let limitations = checkpoint::get(
         store,
         id,
@@ -535,8 +534,15 @@ fn transcribe_route(
             .coverage_limitations
             .push(super::SCOPED_LABELS_NOTE.into());
     }
+    let invalidations: Vec<String> =
+        checkpoint::get(store, id, Stage::Transcribe, "live-invalidation-reasons")?
+            .unwrap_or_default();
+    result.coverage_limitations.extend(invalidations);
     result.coverage_limitations.sort();
     result.coverage_limitations.dedup();
+    if route == Route::CombinedNemo && TaskGraph::resolve(spec)?.separate_analysis {
+        join_separate(&mut result.rows, &result.speakers);
+    }
     validate_result(&result, &expected)?;
     super::durable::persist_result(store, id, &result)?;
     checkpoint::mark_complete(store, id, Stage::Transcribe, segments.len())

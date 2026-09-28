@@ -271,3 +271,293 @@ fn production_route_recording_excerpt() {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
 }
+
+#[test]
+#[ignore = "requires explicit local artifacts, recording, and paced live input"]
+fn paced_durable_capture_runs_native_recognition_before_stop() {
+    use pipeline::live::{EngineAccess, LiveConfig, LiveEnd, LiveSink, Workers};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
+    struct Sink(Arc<AtomicUsize>);
+    impl LiveSink for Sink {
+        fn recognition(&mut self, block: &session_core::recognition::OutputBlock) {
+            if !block.rows.is_empty() || !block.speakers.is_empty() {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+    let speaker = match std::env::var("LONGHAND_ROUTE_SPEAKER")
+        .as_deref()
+        .unwrap_or("nemotron")
+    {
+        "sortformer" => SpeakerSource::Sortformer,
+        "nemotron" => SpeakerSource::Nemotron,
+        _ => panic!("live test requires separate NeMo speakers"),
+    };
+    let runtime = if std::env::var("LONGHAND_ROUTE_RUNTIME").as_deref() == Ok("nemo") {
+        AsrRuntime::Nemo
+    } else {
+        AsrRuntime::Transcribe
+    };
+    let live_text = runtime == AsrRuntime::Nemo
+        && std::env::var("LONGHAND_LIVE_TEXT").as_deref() != Ok("false");
+    let live_speakers = std::env::var("LONGHAND_LIVE_SPEAKERS").as_deref() != Ok("false");
+    let timing = |enabled| {
+        if enabled {
+            models::recognition::ProcessingMode::DuringRecording
+        } else {
+            models::recognition::ProcessingMode::AfterStop
+        }
+    };
+    let spec = resolve_for_runtime(
+        &RecognitionConfig {
+            asr_model: std::env::var("LONGHAND_ROUTE_MODEL").unwrap(),
+            speaker_source: speaker,
+            processing_mode: timing(live_text),
+            speaker_processing_mode: timing(live_speakers),
+            ..Default::default()
+        },
+        runtime,
+    )
+    .unwrap();
+    let mapping: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("LONGHAND_ROUTE_PATHS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let provider = Arc::new(Provider {
+        paths: mapping
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["id"].as_str().unwrap().to_string(),
+                    PathBuf::from(a["path"].as_str().unwrap()),
+                )
+            })
+            .collect(),
+        helper: std::env::var("LONGHAND_NEMO_HELPER").unwrap().into(),
+        gpu: std::env::var("LONGHAND_ROUTE_GPU")
+            .unwrap_or("-1".into())
+            .parse()
+            .unwrap(),
+    });
+    let mut input = hound::WavReader::open(std::env::var("LONGHAND_ROUTE_WAV").unwrap()).unwrap();
+    assert_eq!(input.spec().sample_rate, 16000);
+    assert_eq!(input.spec().channels, 1);
+    let seconds: usize = std::env::var("LONGHAND_ROUTE_SECONDS")
+        .unwrap_or("300".into())
+        .parse()
+        .unwrap();
+    let cancel_at = std::env::var("LONGHAND_LIVE_CANCEL_AT_SECONDS")
+        .ok()
+        .map(|s| s.parse::<usize>().unwrap());
+    let pace: u64 = std::env::var("LONGHAND_LIVE_PACE_MS")
+        .unwrap_or("1000".into())
+        .parse()
+        .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("live", common::at(0), None)
+        .unwrap();
+    store
+        .lock()
+        .unwrap()
+        .set_recognition_snapshot("live", &serde_json::to_value(&spec).unwrap())
+        .unwrap();
+    let recovery = temp.path().join(pipeline::RECOVERY_DIR);
+    let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+        dir: recovery.clone(),
+        segment: 0,
+        capture_started_at: 1,
+        offset_ms: 0,
+        sample_rate: 16000,
+        channels: 1,
+        floor_bytes: 0,
+    })
+    .unwrap();
+    let provider_live = provider.clone();
+    let workers = Workers::new(
+        store.clone(),
+        EngineAccess::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(|_| panic!("native live must not load transcribe.cpp")),
+            CancellationToken::new(),
+        ),
+    )
+    .with_recognition(Arc::new(move |store, config, cancel, end, sink| {
+        pipeline::live::recognize(store, config, provider_live.as_ref(), cancel, end, sink)
+    }));
+    let mut config =
+        LiveConfig::new("live", 0, &spec.config.asr_model, 16000).with_archive(recovery, 0);
+    config.text_enabled = false;
+    config.speakers_enabled = true;
+    config.snapshot = Some(spec.clone());
+    let output = Arc::new(AtomicUsize::new(0));
+    let (tap, worker) = workers
+        .start(
+            config,
+            asr::Parts::new(0, asr::PartPolicy::default()),
+            Box::new(Sink(output.clone())),
+        )
+        .unwrap();
+    let began = Instant::now();
+    for second in 0..seconds {
+        let pcm: Vec<f32> = if input.spec().sample_format == hound::SampleFormat::Float {
+            input
+                .samples::<f32>()
+                .take(16000)
+                .collect::<Result<_, _>>()
+                .unwrap()
+        } else {
+            input
+                .samples::<i16>()
+                .take(16000)
+                .map(|s| s.unwrap() as f32 / 32768.0)
+                .collect()
+        };
+        assert_eq!(pcm.len(), 16000);
+        writer.write(&pcm).unwrap();
+        if cancel_at == Some(second + 1) {
+            workers.shutdown();
+        }
+        // Drop all notifications. Disk is the only native input source.
+        let due = Duration::from_millis((second as u64 + 1) * pace);
+        if let Some(wait) = due.checked_sub(began.elapsed()) {
+            std::thread::sleep(wait);
+        }
+    }
+    let before_stop = output.load(Ordering::SeqCst);
+    writer.finish().unwrap();
+    drop(tap);
+    let stopped = Instant::now();
+    worker.end(LiveEnd::Keep);
+    while workers.busy() && stopped.elapsed() < Duration::from_secs(600) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let completed = !workers.busy();
+    workers.shutdown();
+    assert!(completed, "live worker did not finalize");
+    let failure: Option<String> = pipeline::checkpoint::get(
+        &store,
+        "live",
+        session_core::Stage::Transcribe,
+        "live-failure-00000000",
+    )
+    .unwrap();
+    assert!(
+        failure.is_none()
+            || (cancel_at.is_some()
+                && failure
+                    .as_ref()
+                    .is_some_and(|s| s.to_lowercase().contains("cancel"))),
+        "native live failure: {failure:?}"
+    );
+    assert!(before_stop > 0, "no native output arrived before Stop");
+    let stage = if live_text {
+        session_core::Stage::Transcribe
+    } else {
+        session_core::Stage::Diarize
+    };
+    let epochs = store
+        .lock()
+        .unwrap()
+        .checkpoints("live", stage)
+        .unwrap()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("recognition-epoch-"))
+        .count();
+    if cancel_at.is_none() {
+        assert_eq!(epochs, seconds.div_ceil(1200));
+    }
+    let completed_live: Vec<_> = store
+        .lock()
+        .unwrap()
+        .checkpoints("live", stage)
+        .unwrap()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("recognition-epoch-"))
+        .collect();
+    let segment = session_core::Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: seconds as u64 * 1000,
+        wall_start: common::at(0),
+        wall_end: common::at(seconds as i64),
+        audio_file: "audio/segment-01.opus".into(),
+        channels: 1,
+    };
+    store.lock().unwrap().put_segment("live", &segment).unwrap();
+    pipeline::assemble::run(
+        &store,
+        "live",
+        temp.path(),
+        std::slice::from_ref(&segment),
+        None,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    for task in pipeline::recognition::TaskGraph::resolve(&spec)
+        .unwrap()
+        .stages
+        .into_iter()
+        .filter(|s| {
+            matches!(
+                s,
+                session_core::Stage::Diarize
+                    | session_core::Stage::Transcribe
+                    | session_core::Stage::Join
+                    | session_core::Stage::Verify
+            )
+        })
+    {
+        pipeline::recognition::execute(
+            &store,
+            "live",
+            temp.path(),
+            std::slice::from_ref(&segment),
+            &spec,
+            provider.as_ref(),
+            task,
+            &pipeline::Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    for (key, value) in completed_live {
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .checkpoint_value("live", stage, &key)
+                .unwrap()
+                .as_deref(),
+            Some(value.as_str()),
+            "successful live epoch was replayed after Stop"
+        );
+    }
+    let result = pipeline::recognition::saved_result(&store, "live")
+        .unwrap()
+        .unwrap();
+    assert!(!result.rows.is_empty());
+    assert!(result.rows.iter().any(|row| row.speaker.is_some()));
+    assert_eq!(
+        result.coverage,
+        vec![asr::SampleRange {
+            start: 0,
+            end: seconds as u64 * 16000
+        }]
+    );
+    eprintln!(
+        "live_seconds={seconds} pace_ms={pace} events_before_stop={before_stop} epochs={epochs} rows={} stop_through_verify_seconds={:.3}",
+        result.rows.len(),
+        stopped.elapsed().as_secs_f64()
+    );
+}

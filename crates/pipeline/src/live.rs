@@ -31,6 +31,9 @@
 //! the slot. Workers run one after another: a segment's worker waits for
 //! the worker of the segment before it.
 
+pub mod archive;
+pub mod features;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -50,6 +53,11 @@ pub type EngineSlot = Arc<Mutex<Option<Box<dyn Recognizer>>>>;
 
 /// Loads a recognition model by its catalog id.
 pub type Loader = Arc<dyn Fn(&str) -> Result<Box<dyn Recognizer>, String> + Send + Sync>;
+pub type ExactLoader = Arc<
+    dyn Fn(&models::recognition::ExecutionSpec) -> Result<Box<dyn Recognizer>, String>
+        + Send
+        + Sync,
+>;
 
 /// Frames of 20 ms that wait for the worker: 5 s of audio.
 pub const CHANNEL_FRAMES: usize = 250;
@@ -179,6 +187,16 @@ pub struct LiveTap {
 }
 
 impl LiveTap {
+    /// A wake-up hint contains no audio. The worker reads the flushed prefix.
+    pub fn notify(&self, index: u64) -> bool {
+        self.tx
+            .try_send(LiveFrame {
+                index,
+                pcm: Arc::from([]),
+            })
+            .is_ok()
+    }
+
     /// Offer a frame to the worker without waiting. False when the channel
     /// is full or the worker has stopped: the frame is dropped.
     pub fn offer(&self, index: u64, pcm: &Arc<[f32]>) -> bool {
@@ -202,6 +220,7 @@ pub fn channel(capacity: usize) -> (LiveTap, Receiver<LiveFrame>) {
 pub struct EngineAccess {
     slot: EngineSlot,
     load: Loader,
+    exact: Option<ExactLoader>,
     /// The runner's shutdown: after it, nothing loads a model again.
     shutdown: CancellationToken,
 }
@@ -213,8 +232,32 @@ impl EngineAccess {
         Self {
             slot,
             load,
+            exact: None,
             shutdown,
         }
+    }
+
+    pub fn with_exact_loader(mut self, loader: ExactLoader) -> Self {
+        self.exact = Some(loader);
+        self
+    }
+    fn hold_config(&self, config: &LiveConfig) -> Result<Option<SlotGuard<'_>>, String> {
+        let Some(spec) = &config.snapshot else {
+            return self.hold(&config.model);
+        };
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if self.shutdown.is_cancelled() {
+            return Ok(None);
+        }
+        let load = self
+            .exact
+            .as_ref()
+            .ok_or("exact live transcription loader is unavailable")?;
+        // The shared legacy slot records a model name, not artifact identity.
+        // Reload the snapshot after taking the slot; an alias is not proof.
+        *slot = None;
+        *slot = Some(load(spec)?);
+        Ok(Some(slot))
     }
 
     /// Lock the slot and make it hold `model`: the engine that the slot
@@ -270,10 +313,16 @@ pub trait LiveSink: Send {
     /// The worker holds `model` in the engine slot, or holds no model now.
     fn model(&mut self, _held: Option<&str>) {}
     fn status(&mut self, _status: LiveStatus) {}
+    fn failed(&mut self, _message: &str) {}
     /// The text of the open part changed.
     fn text(&mut self, _part: u32, _text: &LiveText) {}
     /// A part was saved.
     fn saved(&mut self, _row: &LiveRow) {}
+    fn recognition(&mut self, _block: &session_core::recognition::OutputBlock) {}
+    /// Speaker batches are staged between begin and end. Only end publishes
+    /// the complete replacement timeline for this scope and revision.
+    fn snapshot(&mut self, _scope: &asr::SpeakerScope, _revision: u64, _begin: bool) {}
+    fn interim_snapshot(&mut self, _scope: &asr::SpeakerScope, _revision: u64, _begin: bool) {}
 }
 
 /// A sink that reports nothing.
@@ -291,9 +340,23 @@ pub struct LiveConfig {
     /// The capture rate of the frames.
     pub sample_rate: u32,
     pub stall_ms: u64,
+    pub archive: Option<archive::Archive>,
+    pub text_enabled: bool,
+    pub speakers_enabled: bool,
+    pub snapshot: Option<models::recognition::ExecutionSpec>,
 }
 
 impl LiveConfig {
+    pub fn with_archive(mut self, dir: std::path::PathBuf, offset_ms: u64) -> Self {
+        self.archive = Some(archive::Archive {
+            dir,
+            offset_ms,
+            segment: self.segment,
+            rate: self.sample_rate,
+        });
+        self
+    }
+
     pub fn new(session_id: &str, segment: u32, model: &str, sample_rate: u32) -> Self {
         Self {
             session_id: session_id.to_string(),
@@ -301,6 +364,10 @@ impl LiveConfig {
             model: model.to_string(),
             sample_rate: sample_rate.max(1),
             stall_ms: STALL_MS,
+            archive: None,
+            text_enabled: true,
+            speakers_enabled: false,
+            snapshot: None,
         }
     }
 }
@@ -345,7 +412,7 @@ pub fn run(
 ) {
     let id = &config.session_id;
     sink.status(LiveStatus::Starting);
-    let mut guard = match engine.hold(&config.model) {
+    let mut guard = match engine.hold_config(config) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
             sink.status(LiveStatus::Ended);
@@ -445,14 +512,41 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
     let mut fresh = true;
     // Segment time before which a failed start is not tried again.
     let mut retry_at_ms = 0;
+    let mut archive = w.config.archive.clone().map(archive::ArchiveReader::new);
+    let mut closed = false;
+    let mut archive_end = None;
     loop {
         if inputs.cancel.is_cancelled() {
             return Ending::Cancelled;
         }
-        let frame = match inputs.frames.recv_timeout(POLL) {
-            Ok(frame) => frame,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+        let frame = if let Some(archive) = &mut archive {
+            match archive.next_frame() {
+                Ok(Some(frame)) => frame,
+                Ok(None) if closed => break,
+                Ok(None) => {
+                    match inputs.frames.recv_timeout(POLL) {
+                        Ok(_) | Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => {
+                            archive_end = wait_end(inputs);
+                            if archive_end.is_none() {
+                                return Ending::Cancelled;
+                            }
+                            closed = true;
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    log::warn!("live durable audio read failed: {error}");
+                    return Ending::Cancelled;
+                }
+            }
+        } else {
+            match inputs.frames.recv_timeout(POLL) {
+                Ok(frame) => frame,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
         };
         let len = frame.pcm.len() as u64;
         let start_ms = w.ms(frame.index);
@@ -501,6 +595,7 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
             fresh = false;
         }
         let pcm = w.resample(&frame.pcm);
+        let before_part = w.part;
         let next = match w.feed(s, &pcm, end_ms) {
             Ok(Some(_)) => {
                 w.finish(s);
@@ -528,6 +623,13 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
                 Next::Fresh
             }
         };
+        if w.part != before_part
+            && let Some(reader) = &archive
+            && let Err(error) = archive::save_proof(w.store, w.config, reader)
+        {
+            log::warn!("live source proof was not saved: {error}");
+            return Ending::Cancelled;
+        }
         match next {
             Next::Same => {}
             // The part ended with no gap: the next stream goes on from
@@ -557,7 +659,14 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
         }
     }
 
-    match wait_end(inputs) {
+    if let Some(reader) = &archive
+        && archive_end == Some(LiveEnd::Keep)
+        && let Err(error) = archive::save_proof(w.store, w.config, reader)
+    {
+        log::warn!("live source proof was not saved: {error}");
+        return Ending::Cancelled;
+    }
+    match archive_end.or_else(|| wait_end(inputs)) {
         None => Ending::Cancelled,
         Some(LiveEnd::Keep) => {
             if let Some(s) = stream.as_deref_mut() {
@@ -769,18 +878,79 @@ pub struct Workers {
     last: Mutex<Option<JoinHandle<()>>>,
     /// Called when the last running worker ends.
     idle: Option<Idle>,
+    recognition: Option<RecognitionWork>,
 }
 
 type Idle = Arc<dyn Fn() + Send + Sync>;
+pub type CaptureEnd = Arc<Mutex<Option<LiveEnd>>>;
+pub type RecognitionWork = Arc<
+    dyn Fn(
+            &SharedStore,
+            &LiveConfig,
+            &CancellationToken,
+            &CaptureEnd,
+            &mut dyn LiveSink,
+        ) -> Result<(), StageError>
+        + Send
+        + Sync,
+>;
+#[derive(Clone)]
+struct SharedSink(Arc<Mutex<Box<dyn LiveSink>>>);
+impl LiveSink for SharedSink {
+    fn interim_snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .interim_snapshot(scope, revision, begin);
+    }
+    fn failed(&mut self, message: &str) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .failed(message);
+    }
+    fn snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot(scope, revision, begin);
+    }
+    fn model(&mut self, held: Option<&str>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).model(held);
+    }
+    fn status(&mut self, status: LiveStatus) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status(status);
+    }
+    fn text(&mut self, part: u32, text: &LiveText) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .text(part, text);
+    }
+    fn saved(&mut self, row: &LiveRow) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).saved(row);
+    }
+    fn recognition(&mut self, block: &session_core::recognition::OutputBlock) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recognition(block);
+    }
+}
 
 /// Capture's end of a running worker.
 pub struct LiveWorker {
     end: mpsc::Sender<LiveEnd>,
+    capture_end: CaptureEnd,
 }
 
 impl LiveWorker {
     /// Tell the worker how its segment ended. Call it after the frames end.
     pub fn end(self, how: LiveEnd) {
+        *self.capture_end.lock().unwrap_or_else(|e| e.into_inner()) = Some(how);
         let _ = self.end.send(how);
     }
 }
@@ -803,7 +973,13 @@ impl Workers {
             cancel: CancellationToken::new(),
             last: Mutex::new(None),
             idle: None,
+            recognition: None,
         }
+    }
+
+    pub fn with_recognition(mut self, recognition: RecognitionWork) -> Self {
+        self.recognition = Some(recognition);
+        self
     }
 
     /// Call `idle` each time the last running worker ends: processing can
@@ -819,9 +995,13 @@ impl Workers {
         &self,
         config: LiveConfig,
         parts: Parts,
-        mut sink: Box<dyn LiveSink>,
+        sink: Box<dyn LiveSink>,
     ) -> std::io::Result<(LiveTap, LiveWorker)> {
         let (tap, frames) = channel(CHANNEL_FRAMES);
+        let capture_end: CaptureEnd = Arc::new(Mutex::new(None));
+        let work_end = capture_end.clone();
+        let recognition = self.recognition.clone();
+        let mut sink = SharedSink(Arc::new(Mutex::new(sink)));
         let (end, ends) = mpsc::channel();
         let inputs = Inputs {
             frames,
@@ -839,7 +1019,46 @@ impl Workers {
             if let Some(previous) = previous {
                 let _ = previous.join();
             }
-            run(&store, &engine, &config, parts, &inputs, sink.as_mut());
+            std::thread::scope(|scope| {
+                if config.speakers_enabled {
+                    let mut native_sink = sink.clone();
+                    let native_store = &store;
+                    let native_config = &config;
+                    let cancel = &inputs.cancel;
+                    scope.spawn(move || {
+                        let result = recognition
+                            .ok_or_else(|| {
+                                StageError::Failed("live speaker worker is unavailable".into())
+                            })
+                            .and_then(|work| {
+                                work(
+                                    native_store,
+                                    native_config,
+                                    cancel,
+                                    &work_end,
+                                    &mut native_sink,
+                                )
+                            });
+                        if let Err(error) = result {
+                            let message = error.to_string();
+                            let _ = checkpoint::put(
+                                native_store,
+                                &native_config.session_id,
+                                Stage::Transcribe,
+                                &format!("live-failure-{:08}", native_config.segment),
+                                &message,
+                            );
+                            native_sink.failed(&message);
+                            log::warn!("live speaker analysis stopped: {error}");
+                        }
+                    });
+                }
+                if config.text_enabled {
+                    run(&store, &engine, &config, parts, &inputs, &mut sink);
+                } else {
+                    finish_without_stream(&store, &config, &inputs);
+                }
+            });
             drop(running);
             if count.load(Ordering::SeqCst) == 0
                 && let Some(idle) = idle
@@ -848,7 +1067,7 @@ impl Workers {
             }
         })?;
         *last = Some(thread);
-        Ok((tap, LiveWorker { end }))
+        Ok((tap, LiveWorker { end, capture_end }))
     }
 
     /// True while a worker runs: it streams, or it saves its last part
@@ -866,5 +1085,27 @@ impl Workers {
         if let Some(last) = last {
             let _ = last.join();
         }
+    }
+}
+
+/// Execute the selected native live task. The runner and paced acceptance
+/// harness use the same entry point and exact artifact provider.
+pub fn recognize(
+    store: &SharedStore,
+    config: &LiveConfig,
+    provider: &dyn crate::EngineProvider,
+    cancel: &CancellationToken,
+    end: &CaptureEnd,
+    sink: &mut dyn LiveSink,
+) -> Result<(), StageError> {
+    if config.snapshot.as_ref().is_some_and(|spec| {
+        spec.config.speaker_source == models::recognition::SpeakerSource::Pyannote
+    }) {
+        let mut analyzer = provider
+            .analyzer_exact(config.snapshot.as_ref().unwrap())
+            .map_err(|e| StageError::Failed(e.to_string()))?;
+        features::extract(store, config, analyzer.as_mut(), cancel, end)
+    } else {
+        crate::recognition::nemo::run_live(store, config, provider, cancel, end, sink)
     }
 }

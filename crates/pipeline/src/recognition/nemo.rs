@@ -123,6 +123,8 @@ pub(super) fn run_file(
     control: &dyn Control,
 ) -> Result<RouteResult, StageError> {
     let helper = provider.nemo_helper().map_err(StageError::Waiting)?;
+    let text_only =
+        combined && spec.enabled_live_transcription != spec.enabled_live_speaker_analysis;
     let speaker_id = match spec.config.speaker_source {
         models::recognition::SpeakerSource::Sortformer => "sortformer-v2-q80",
         models::recognition::SpeakerSource::Nemotron => "nemotron-3-diarization-q80",
@@ -133,9 +135,15 @@ pub(super) fn run_file(
         .iter()
         .find(|a| a.id == speaker_id)
         .ok_or_else(|| failed("speaker artifact is absent from snapshot"))?;
-    let speaker = provider
-        .artifact_path(speaker)
-        .map_err(StageError::Waiting)?;
+    let speaker = if text_only {
+        None
+    } else {
+        Some(
+            provider
+                .artifact_path(speaker)
+                .map_err(StageError::Waiting)?,
+        )
+    };
     let asr = if combined {
         Some(
             provider
@@ -149,7 +157,9 @@ pub(super) fn run_file(
     } else {
         None
     };
-    let native_route = if !combined {
+    let native_route = if text_only {
+        "asr_only"
+    } else if !combined {
         "separate"
     } else if spec.config.asr_model == "parakeet-tdt-0.6b-v3-q80" {
         "combined_offline"
@@ -200,10 +210,11 @@ pub(super) fn run_file(
             store,
             session,
             helper: &helper,
-            speaker: &speaker,
+            speaker: speaker.as_deref(),
             asr: asr.as_deref(),
             path,
             native_route,
+            streaming: spec.config.asr_model != "parakeet-tdt-0.6b-v3-q80",
             language: spec.config.language.as_deref(),
             file_start: range.start,
             range: SampleRange { start, end },
@@ -254,10 +265,11 @@ struct EpochInput<'a> {
     store: &'a crate::SharedStore,
     session: &'a str,
     helper: &'a Path,
-    speaker: &'a Path,
+    speaker: Option<&'a Path>,
     asr: Option<&'a Path>,
     path: &'a Path,
     native_route: &'a str,
+    streaming: bool,
     language: Option<&'a str>,
     file_start: u64,
     range: SampleRange,
@@ -271,6 +283,7 @@ struct Output {
     pending: Option<(u64, u64)>,
     turns: Option<(u64, u64)>,
     coverage: Option<SampleRange>,
+    interim_result: Option<u64>,
 }
 impl Output {
     fn prefix(&self, kind: &str) -> String {
@@ -416,6 +429,14 @@ impl Output {
             "words" => {
                 let result = number(value, "result_id")?;
                 let revision = number(value, "revision")?;
+                if self.interim_result == Some(result) {
+                    crate::lock(&self.store).delete_recognition_prefix(
+                        &self.session,
+                        &self.scope.generation,
+                        &self.prefix("interim"),
+                    )?;
+                    self.interim_result = None;
+                }
                 if result > u32::MAX as u64 {
                     return Err(failed("result ID overflow"));
                 }
@@ -510,7 +531,58 @@ impl Output {
                 });
                 self.put(&progress)?;
             }
-            "hello" | "ready" | "interim" => {}
+            "interim" => {
+                let result = number(value, "result_id")?;
+                let revision = number(value, "revision")?;
+                let words = array(value, "words")?;
+                let mut rows = Vec::new();
+                for (index, word) in words.iter().enumerate() {
+                    let range = bounds(word)?;
+                    let speaker = word["speaker"].as_u64().unwrap_or(0) as u32;
+                    rows.push(RecognitionSegment {
+                        id: RecognitionId {
+                            scope: self.scope.clone(),
+                            input_start_sample: self.start,
+                            ordinal: (result << 32) | index as u64,
+                        },
+                        range,
+                        timing: if range.start == range.end {
+                            TimingPrecision::NativeTimePoint
+                        } else {
+                            TimingPrecision::NativeSegment
+                        },
+                        text: word["text"].as_str().unwrap_or("").into(),
+                        speaker: (speaker > 0).then(|| SpeakerKey {
+                            scope: self.scope.clone(),
+                            input_start_sample: self.start,
+                            local_id: speaker,
+                        }),
+                        revision,
+                        text_finality: Finality::Provisional,
+                        speaker_finality: Finality::Provisional,
+                    });
+                }
+                crate::lock(&self.store).delete_recognition_prefix(
+                    &self.session,
+                    &self.scope.generation,
+                    &self.prefix("interim"),
+                )?;
+                for (index, rows) in rows.chunks(256).enumerate() {
+                    let range = SampleRange {
+                        start: rows.iter().map(|r| r.range.start).min().unwrap(),
+                        end: rows.iter().map(|r| r.range.end).max().unwrap(),
+                    };
+                    self.put(&self.block(
+                        format!("{}{index:020}", self.prefix("interim")),
+                        revision,
+                        Some(range),
+                        rows.to_vec(),
+                        vec![],
+                    ))?;
+                }
+                self.interim_result = Some(result);
+            }
+            "hello" | "ready" => {}
             _ => return Err(failed("unknown NeMo output event")),
         }
         Ok(())
@@ -649,8 +721,9 @@ fn run_epoch(
         turns: None,
         pending: None,
         coverage: None,
+        interim_result: None,
     };
-    helper.send(json!({"command":"start", "route":input.native_route, "speaker_model":input.speaker, "asr_model":input.asr, "gpu":gpu, "language":input.language.unwrap_or(""), "epoch_start":input.range.start, "max_epoch_samples":MAX_EPOCH_SAMPLES}),vec![]).map_err(|e| failed(e.to_string()))?;
+    helper.send(json!({"command":"start", "route":input.native_route, "speaker_model":input.speaker, "asr_model":input.asr, "gpu":gpu, "language":input.language.unwrap_or(""), "epoch_start":input.range.start, "max_epoch_samples":MAX_EPOCH_SAMPLES,"streaming":input.streaming}),vec![]).map_err(|e| failed(e.to_string()))?;
     until(&mut helper, &mut output, "ready", control)?;
     let mut reader = hound::WavReader::open(input.path)?;
     let spec = reader.spec();
@@ -706,6 +779,325 @@ fn run_epoch(
     ))
 }
 
+/// A native stream keeps its state across capture notifications and disk flushes.
+struct LiveNative {
+    helper: Helper,
+    output: Output,
+    route: Route,
+    end: u64,
+    native_route: String,
+}
+impl LiveNative {
+    fn receive(
+        &mut self,
+        event: &str,
+        control: &dyn Control,
+        sink: &mut dyn crate::live::LiveSink,
+    ) -> Result<(), StageError> {
+        let deadline = Instant::now() + Duration::from_secs(600);
+        loop {
+            if control.is_cancelled() {
+                return Err(StageError::Cancelled);
+            }
+            match self.helper.receive(Duration::from_millis(100)) {
+                Ok(frame) => {
+                    let value = &frame.metadata;
+                    if value["event"] == "hello"
+                        && !value["routes"].as_array().is_some_and(|routes| {
+                            routes.iter().any(|route| route == &self.native_route)
+                        })
+                    {
+                        return Err(failed(
+                            "the native helper does not support the selected live route",
+                        ));
+                    }
+                    let cleared_interim = value["event"] == "words"
+                        && self.output.interim_result == value["result_id"].as_u64();
+                    self.output.process(value)?;
+                    if cleared_interim {
+                        sink.interim_snapshot(&self.output.scope, number(value, "revision")?, true);
+                        sink.interim_snapshot(
+                            &self.output.scope,
+                            number(value, "revision")?,
+                            false,
+                        );
+                    }
+                    if value["event"] == "segments_begin" || value["event"] == "segments_end" {
+                        sink.snapshot(
+                            &self.output.scope,
+                            number(value, "revision")?,
+                            value["event"] == "segments_begin",
+                        );
+                    } else if value["event"] == "interim" {
+                        let revision = number(value, "revision")?;
+                        sink.interim_snapshot(&self.output.scope, revision, true);
+                        self.output.visit(&self.output.prefix("interim"), |block| {
+                            sink.recognition(&block);
+                            Ok(())
+                        })?;
+                        sink.interim_snapshot(&self.output.scope, revision, false);
+                    } else if value["event"] == "words" {
+                        let result = number(value, "result_id")?;
+                        for word in array(value, "words")? {
+                            let index = number(word, "index")?;
+                            let key =
+                                format!("{}{result:020}/{index:020}", self.output.prefix("word"));
+                            if let Some(block) = crate::lock(&self.output.store).recognition_block(
+                                &self.output.session,
+                                &self.output.scope.generation,
+                                &key,
+                            )? {
+                                sink.recognition(&block);
+                            }
+                        }
+                    } else if value["event"] == "segments" {
+                        let revision = number(value, "revision")?;
+                        let count = self.output.pending.map_or(0, |(_, count)| count);
+                        let length = array(value, "segments")?
+                            .iter()
+                            .filter(|s| s["speaker"].as_u64().unwrap_or(0) > 0)
+                            .count() as u64;
+                        for index in count.saturating_sub(length)..count {
+                            let key = format!(
+                                "{}{:020}/{index:020}",
+                                self.output.prefix("turn"),
+                                revision
+                            );
+                            if let Some(block) = crate::lock(&self.output.store).recognition_block(
+                                &self.output.session,
+                                &self.output.scope.generation,
+                                &key,
+                            )? {
+                                sink.recognition(&block);
+                            }
+                        }
+                    }
+                    if value["event"] == event {
+                        if event == "ack" && number(value, "accepted_end")? != self.end {
+                            return Err(failed("live input acknowledgement mismatch"));
+                        }
+                        return Ok(());
+                    }
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::TimedOut
+                        && Instant::now() < deadline => {}
+                Err(error) => return Err(failed(format!("live NeMo helper: {error}"))),
+            }
+        }
+    }
+    fn push(
+        &mut self,
+        pcm: Vec<f32>,
+        control: &dyn Control,
+        sink: &mut dyn crate::live::LiveSink,
+    ) -> Result<(), StageError> {
+        let start = self.end;
+        self.end += pcm.len() as u64;
+        self.helper
+            .send(json!({"command":"push", "offset":start}), pcm)
+            .map_err(|e| failed(e.to_string()))?;
+        self.receive("ack", control, sink)
+    }
+    fn finish(
+        mut self,
+        control: &dyn Control,
+        sink: &mut dyn crate::live::LiveSink,
+    ) -> Result<(), StageError> {
+        self.helper
+            .send(json!({"command":"finish"}), vec![])
+            .map_err(|e| failed(e.to_string()))?;
+        self.receive("finished", control, sink)?;
+        let range = SampleRange {
+            start: self.output.start,
+            end: self.end,
+        };
+        if self.output.coverage != Some(range) {
+            return Err(failed("live terminal coverage is incomplete"));
+        }
+        let mut result = self.output.result(self.route)?;
+        if self.native_route == "combined_offline" {
+            join_separate(&mut result.rows, &result.speakers);
+        }
+        let record = persist_epoch(
+            &self.output.store,
+            &self.output.session,
+            &self.output.scope,
+            &result,
+        )?;
+        let stage = if self.route == Route::SeparateNemo {
+            session_core::Stage::Diarize
+        } else {
+            session_core::Stage::Transcribe
+        };
+        crate::checkpoint::put(
+            &self.output.store,
+            &self.output.session,
+            stage,
+            &format!("recognition-epoch-{:020}", range.start),
+            &record,
+        )?;
+        Ok(())
+    }
+}
+
+pub(crate) fn run_live(
+    store: &crate::SharedStore,
+    config: &crate::live::LiveConfig,
+    provider: &dyn EngineProvider,
+    cancel: &tokio_util::sync::CancellationToken,
+    end: &crate::live::CaptureEnd,
+    sink: &mut dyn crate::live::LiveSink,
+) -> Result<(), StageError> {
+    let spec = config
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| failed("live recognition snapshot is absent"))?;
+    let archive = config
+        .archive
+        .clone()
+        .ok_or_else(|| failed("live recording source is absent"))?;
+    let nemo_asr = super::TaskGraph::resolve(spec)?.route == Route::CombinedNemo;
+    let combined = nemo_asr && spec.enabled_live_transcription;
+    let text_only = combined && !spec.enabled_live_speaker_analysis;
+    let helper_path = provider.nemo_helper().map_err(StageError::Waiting)?;
+    let speaker_id = match spec.config.speaker_source {
+        models::recognition::SpeakerSource::Sortformer => "sortformer-v2-q80",
+        models::recognition::SpeakerSource::Nemotron => "nemotron-3-diarization-q80",
+        _ => return Err(failed("live NeMo speaker artifact is absent")),
+    };
+    let artifact = spec
+        .artifacts
+        .iter()
+        .find(|a| a.id == speaker_id)
+        .ok_or_else(|| failed("live speaker artifact is absent"))?;
+    let speaker = if text_only {
+        None
+    } else {
+        Some(
+            provider
+                .artifact_path(artifact)
+                .map_err(StageError::Waiting)?,
+        )
+    };
+    let asr = if combined {
+        Some(
+            provider
+                .artifact_path(&spec.artifacts[0])
+                .map_err(StageError::Waiting)?,
+        )
+    } else {
+        None
+    };
+    let generation = super::stages::generation(store, &config.session_id)?;
+    let control = LiveControl(cancel.clone());
+    let mut reader = crate::live::archive::ArchiveReader::new(archive.clone());
+    let mut resampler = crate::resample::StreamResampler::new(archive.rate, 16000);
+    let mut pending = Vec::new();
+    let mut active: Option<LiveNative> = None;
+    let mut at = archive.offset_ms * 16;
+    let mut flushed = false;
+    loop {
+        control.proceed()?;
+        if *end.lock().unwrap_or_else(|e| e.into_inner()) == Some(crate::live::LiveEnd::Discard) {
+            return Ok(());
+        }
+        if !flushed {
+            match reader.next_frame()? {
+                Some(frame) => resampler.push(&frame.pcm, &mut |s| pending.extend_from_slice(s)),
+                None if end.lock().unwrap_or_else(|e| e.into_inner()).is_some() => {
+                    resampler.finish(&mut |s| pending.extend_from_slice(s));
+                    flushed = true;
+                }
+                None => {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+            }
+        }
+        if pending.len() < 16000 && !flushed {
+            continue;
+        }
+        if !pending.is_empty() {
+            if active.is_none() {
+                let replay = crate::lock(store).restart_recognition_epoch(
+                    &config.session_id,
+                    &generation,
+                    at,
+                    at + MAX_EPOCH_SAMPLES,
+                )?;
+                let mut helper = Helper::spawn(&helper_path, 1, replay.scope.epoch)
+                    .map_err(|e| failed(e.to_string()))?;
+                let native_route = if text_only {
+                    "asr_only"
+                } else if !combined {
+                    "separate"
+                } else if spec.config.asr_model == "parakeet-tdt-0.6b-v3-q80" {
+                    "combined_offline"
+                } else {
+                    "combined_stream"
+                };
+                helper.send(json!({"command":"start", "route":native_route,"speaker_model":speaker,"asr_model":asr,"gpu":provider.nemo_gpu(),"language":spec.config.language.as_deref().unwrap_or(""),"epoch_start":at,"max_epoch_samples":MAX_EPOCH_SAMPLES,"streaming":spec.config.asr_model != "parakeet-tdt-0.6b-v3-q80"}),vec![]).map_err(|e| failed(e.to_string()))?;
+                let mut native = LiveNative {
+                    helper,
+                    output: Output {
+                        store: store.clone(),
+                        session: config.session_id.clone(),
+                        scope: replay.scope,
+                        start: at,
+                        turns: None,
+                        pending: None,
+                        coverage: None,
+                        interim_result: None,
+                    },
+                    route: if text_only {
+                        Route::Off
+                    } else if combined {
+                        Route::CombinedNemo
+                    } else {
+                        Route::SeparateNemo
+                    },
+                    end: at,
+                    native_route: native_route.into(),
+                };
+                native.receive("ready", &control, sink)?;
+                active = Some(native);
+            }
+            let native = active.as_mut().unwrap();
+            let count = pending
+                .len()
+                .min(16000)
+                .min((native.output.start + MAX_EPOCH_SAMPLES - at) as usize);
+            let pcm = pending.drain(..count).collect();
+            native.push(pcm, &control, sink)?;
+            at += count as u64;
+            if at == native.output.start + MAX_EPOCH_SAMPLES {
+                active.take().unwrap().finish(&control, sink)?;
+                crate::live::archive::save_proof(store, config, &reader)?;
+            }
+        } else if flushed {
+            if let Some(native) = active.take() {
+                native.finish(&control, sink)?;
+            }
+            crate::live::archive::save_proof(store, config, &reader)?;
+            return Ok(());
+        }
+    }
+}
+struct LiveControl(tokio_util::sync::CancellationToken);
+impl Control for LiveControl {
+    fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+    fn proceed(&self) -> Result<(), StageError> {
+        if self.is_cancelled() {
+            Err(StageError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,8 +1121,36 @@ mod tests {
             turns: None,
             pending: None,
             coverage: None,
+            interim_result: None,
         }
     }
+    #[test]
+    fn long_interim_is_bounded_and_does_not_enter_final_results() {
+        let mut out = output();
+        let words: Vec<_> = (0..600)
+            .map(|i| json!({"text":"word", "start":32000+i*100,"end":32100+i*100,"speaker":1}))
+            .collect();
+        out.process(&json!({"event":"interim","result_id":1,"revision":1,"words":words}))
+            .unwrap();
+        let mut count = 0;
+        out.visit(&out.prefix("interim"), |block| {
+            assert!(block.rows.len() <= 256);
+            count += block.rows.len();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 600);
+        out.process(&json!({"event":"words","result_id":1,"revision":2,"text_final":true,"words":[{"index":0,"text":"final", "start":32000,"end":32100,"speaker":1,"speaker_final":true}]})).unwrap();
+        let mut interim = 0;
+        out.visit(&out.prefix("interim"), |block| {
+            interim += block.rows.len();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(interim, 0);
+        assert_eq!(out.word(1, 0).text, "final");
+    }
+
     #[test]
     fn speaker_revision_does_not_make_provisional_labels_final() {
         let mut out = output();

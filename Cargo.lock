@@ -4055,6 +4055,7 @@ dependencies = [
  "serde_json",
  "session-core",
  "session-save",
+ "sha2 0.10.9",
  "summarize",
  "tempfile",
  "thiserror 2.0.20",

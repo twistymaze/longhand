@@ -27,6 +27,7 @@ opus = "0.4.0"
 # The multistream calls of the libopus that `opus` links (KTD7).
 opusic-sys = "0.7.5"
 rubato = "0.16"
+sha2 = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

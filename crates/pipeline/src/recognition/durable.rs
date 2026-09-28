@@ -76,6 +76,13 @@ pub fn stamp_live_identity(
     segments: &[Segment],
     spec: &ExecutionSpec,
 ) -> Result<(), StageError> {
+    for segment in segments {
+        if !live_source_matches(store, id, dir, segment, spec)? {
+            return Err(failed(
+                "live recognition has no matching durable source and preprocessing proof",
+            ));
+        }
+    }
     checkpoint::put(
         store,
         id,
@@ -83,6 +90,171 @@ pub fn stamp_live_identity(
         LIVE_IDENTITY_KEY,
         &fingerprints(store, id, dir, segments, spec)?,
     )
+}
+fn live_source_matches(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segment: &Segment,
+    spec: &ExecutionSpec,
+) -> Result<bool, StageError> {
+    let proof: Option<crate::live::archive::SourceProof> = checkpoint::get(
+        store,
+        id,
+        Stage::Transcribe,
+        &crate::live::archive::key(segment.index),
+    )?;
+    let recorded: Option<ExecutionSpec> = checkpoint::get(
+        store,
+        id,
+        Stage::Transcribe,
+        &format!("live-snapshot-{:08}", segment.index),
+    )?;
+    let (Some(proof), Some(recorded)) = (proof, recorded) else {
+        return Ok(false);
+    };
+    // Assemble uses final level estimates and echo removal on stereo input.
+    // All live stereo samples can differ, including samples outside echo spans.
+    if segment.channels != 1 || recorded != *spec {
+        return Ok(false);
+    }
+    let mut reader = crate::live::archive::ArchiveReader::new(crate::live::archive::Archive {
+        dir: dir.join(crate::RECOVERY_DIR),
+        segment: segment.index,
+        offset_ms: segment.offset_ms,
+        rate: proof.rate,
+    });
+    while reader.position() < proof.samples && reader.next_frame()?.is_some() {}
+    let covered_end = segment.offset_ms * 16 + proof.samples * 16000 / u64::from(proof.rate);
+    if reader.proof() != proof {
+        return Ok(false);
+    }
+    if crate::live::segment_rows(store, id, segment.index)?
+        .iter()
+        .any(|row| (segment.offset_ms + row.end_ms) * 16 > covered_end)
+    {
+        return Ok(false);
+    }
+    for stage in [Stage::Transcribe, Stage::Diarize] {
+        for (key, value) in checkpoint::all(store, id, stage)? {
+            let start = key
+                .strip_prefix("recognition-epoch-")
+                .and_then(|s| s.parse::<u64>().ok());
+            if start.is_some_and(|at| {
+                at >= segment.offset_ms * 16 && at < (segment.offset_ms + segment.duration_ms) * 16
+            }) {
+                let record: serde_json::Value = serde_json::from_str(&value)?;
+                if record["range"]["end"]
+                    .as_u64()
+                    .is_none_or(|end| end > covered_end)
+                {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Bind live output only after checking its exact capture samples. An altered
+/// preprocessing span invalidates text and labels together before final work.
+fn bind_live(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    next: &Fingerprints,
+) -> Result<(), StageError> {
+    if checkpoint::get::<Fingerprints>(store, id, Stage::Transcribe, LIVE_IDENTITY_KEY)?.as_ref()
+        == Some(next)
+    {
+        return Ok(());
+    }
+    let mut has_source = false;
+    let mut valid = true;
+    for segment in segments {
+        let source: Option<crate::live::archive::SourceProof> = checkpoint::get(
+            store,
+            id,
+            Stage::Transcribe,
+            &crate::live::archive::key(segment.index),
+        )?;
+        if source.is_none() {
+            valid = false;
+            continue;
+        }
+        has_source = true;
+        if !live_source_matches(store, id, dir, segment, spec)? {
+            valid = false;
+            let mut reasons: Vec<String> =
+                checkpoint::get(store, id, Stage::Transcribe, "live-invalidation-reasons")?
+                    .unwrap_or_default();
+            let reason = if segment.channels == 2 {
+                format!(
+                    "Live text and speaker output for segment {} were invalidated because final stereo level and echo preprocessing differs from the live mix. This segment required recognition of the cleaned audio.",
+                    segment.index + 1
+                )
+            } else {
+                format!(
+                    "Live text and speaker output for segment {} could not be verified against the saved audio and preprocessing identity. Recognition used the verified recorded audio.",
+                    segment.index + 1
+                )
+            };
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+            checkpoint::put(
+                store,
+                id,
+                Stage::Transcribe,
+                "live-invalidation-reasons",
+                &reasons,
+            )?;
+            crate::live::delete_segment(store, id, segment.index)?;
+            // Consume the rejected proof once. Later prepare calls must keep
+            // epochs computed from the final processing audio.
+            lock(store).delete_checkpoint(
+                id,
+                Stage::Transcribe,
+                &crate::live::archive::key(segment.index),
+            )?;
+            lock(store).delete_checkpoint(
+                id,
+                Stage::Transcribe,
+                &format!("live-snapshot-{:08}", segment.index),
+            )?;
+            lock(store).delete_checkpoint(
+                id,
+                Stage::Diarize,
+                &crate::live::features::key(segment.index),
+            )?;
+            let start = segment.offset_ms * 16;
+            let end = start + segment.duration_ms * 16;
+            for stage in [Stage::Transcribe, Stage::Diarize] {
+                for (key, _) in checkpoint::all(store, id, stage)? {
+                    if key
+                        .strip_prefix("recognition-epoch-")
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .is_some_and(|at| at >= start && at < end)
+                    {
+                        lock(store).delete_checkpoint(id, stage, &key)?;
+                    }
+                }
+            }
+        }
+    }
+    if has_source {
+        if valid {
+            checkpoint::put(store, id, Stage::Transcribe, LIVE_IDENTITY_KEY, next)?;
+        }
+        // Completed native epochs retain their verified durable input. Invalid
+        // epochs above are absent and must be computed from the cleaned input.
+        if checkpoint::get::<Fingerprints>(store, id, Stage::Transcribe, IDENTITY_KEY)?.is_none() {
+            checkpoint::put(store, id, Stage::Transcribe, IDENTITY_KEY, next)?;
+        }
+    }
+    Ok(())
 }
 /// Clear only incompatible dependent work. A missing fingerprint is not proof.
 pub fn prepare(
@@ -93,6 +265,7 @@ pub fn prepare(
     spec: &ExecutionSpec,
 ) -> Result<Fingerprints, StageError> {
     let next = fingerprints(store, id, dir, segments, spec)?;
+    bind_live(store, id, dir, segments, spec, &next)?;
     let old: Option<Fingerprints> = checkpoint::get(store, id, Stage::Transcribe, IDENTITY_KEY)?;
     if checkpoint::is_complete(store, id, Stage::Join, segments.len())? {
         let reference: Option<ArtifactReference> =
@@ -140,12 +313,22 @@ pub fn prepare(
         Stage::Summarize,
         Stage::Save,
     ] {
-        guard.clear_checkpoints(id, stage)?;
+        if stage == Stage::Diarize {
+            // Individual feature windows carry snapshot and PCM hashes. Keep
+            // them for verification; discard the unverified completed index.
+            for (key, _) in guard.checkpoints(id, stage)? {
+                if !key.starts_with("live-feature-") {
+                    guard.delete_checkpoint(id, stage, &key)?;
+                }
+            }
+        } else {
+            guard.clear_checkpoints(id, stage)?;
+        }
     }
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
         let keep_live = live_matches && (key.contains("-live-") || key == LIVE_IDENTITY_KEY);
         let keep_asr = timed && (key.starts_with("seg-") || key == "recognition-generation-v1");
-        if !keep_live && !keep_asr {
+        if !keep_live && !keep_asr && key != "live-invalidation-reasons" {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
         }
     }

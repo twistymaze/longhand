@@ -1,7 +1,7 @@
 //! Route-specific recognition on the canonical 16 kHz recording timeline.
 //! Processed-input coverage and timed-text coverage are different evidence.
 pub mod durable;
-mod nemo;
+pub(crate) mod nemo;
 mod stages;
 pub use stages::{execute, prepare_retry, saved_result, snapshot};
 
@@ -60,7 +60,9 @@ impl TaskGraph {
                 ));
             }
         };
-        let separate_analysis = matches!(route, Route::SeparatePyannote | Route::SeparateNemo);
+        let separate_analysis = matches!(route, Route::SeparatePyannote | Route::SeparateNemo)
+            || (route == Route::CombinedNemo
+                && spec.enabled_live_transcription != spec.enabled_live_speaker_analysis);
         let mut stages = vec![Stage::Assemble];
         if separate_analysis {
             stages.push(Stage::Diarize);
