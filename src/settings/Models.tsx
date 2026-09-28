@@ -59,13 +59,15 @@ export function Models({
       setBusy(false);
     }
   };
-  // The model whose Download button started the current download. Many
-  // bundles share a supporting model, so only this row, and the row of the
-  // pending model, show the progress of a shared file.
-  const [downloadFor, setDownloadFor] = useState<string | null>(null);
+  // The models that started a bundle download in this pane: by a click on
+  // Download, or by a selection, which also downloads the bundle. Many
+  // bundles share a supporting model, so only these rows, and the row of
+  // the pending model, show the progress of a shared file.
+  const [owners, setOwners] = useState<ReadonlySet<string>>(new Set());
+  const own = (id: string) => setOwners((current) => new Set(current).add(id));
   /// Download the missing files of the bundle of `id` (R10).
   const download = async (id: string) => {
-    setDownloadFor(id);
+    own(id);
     setBusy(true);
     try {
       const result = await commands.downloadModelBundle(id);
@@ -82,7 +84,7 @@ export function Models({
   const pending = (m: ModelStatus) =>
     settings.pending_recognition?.asr_model === m.id || settings.pending_asr_model === m.id;
   const updatesOf = (m: ModelStatus) =>
-    (m.id === downloadFor || pending(m) ? m.bundle : [m.id])
+    (owners.has(m.id) || pending(m) ? m.bundle : [m.id])
       .map((id) => live[id])
       .filter((u): u is DownloadUpdate => Boolean(u));
   const downloading = (m: ModelStatus) =>
@@ -168,6 +170,7 @@ export function Models({
         onResolved={() => {}}
         onChanged={(next) => {
           setError(null);
+          own(next.config.asr_model);
           defaults.save(next.config);
         }}
         modelAction={modelAction}

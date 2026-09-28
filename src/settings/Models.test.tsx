@@ -131,7 +131,7 @@ function open(
   const tauri = mockTauri({
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
     set_recognition_defaults: () => initial,
-    download_recognition_artifacts: () => null,
+    download_model_bundle: () => null,
     ...handlers,
   });
   const refreshes = { count: 0 };
@@ -670,6 +670,32 @@ describe("a shared supporting file download", () => {
       <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
     );
     expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
+  });
+
+  test("a second Download click keeps the progress on the first row", async () => {
+    const incomplete = bundled.map((m) => ({ ...m, bundle_complete: false }));
+    const { user, rerender } = open({ download_model_bundle: () => null }, settings, incomplete);
+    await ready();
+    for (const name of ["MOSS", "Parakeet"]) {
+      const download = Array.from(rowOf(name).querySelectorAll("button")).find((b) => b.textContent === "Download")!;
+      await user.click(download);
+    }
+    rerender(
+      <TestModels models={incomplete} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+    );
+    expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Parakeet").textContent).toContain("Downloading… 50 MB of 150 MB");
+  });
+
+  test("a selection owns the rest of its bundle download", async () => {
+    const { user, rerender } = open({}, settings, bundled);
+    await ready();
+    await user.click(screen.getByRole("radio", { name: "MOSS" }));
+    rerender(
+      <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+    );
+    await waitFor(() => expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB"));
     expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
   });
 });

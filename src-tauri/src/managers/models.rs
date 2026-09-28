@@ -357,10 +357,7 @@ impl ModelsManager {
                         bundle.iter().all(|a| self.artifact_path(a).is_some()),
                     )
                 };
-                (m, role, state, bundle, bundle_size_bytes, bundle_complete)
-            })
-            .map(
-                |(m, role, state, bundle, bundle_size_bytes, bundle_complete)| ModelStatus {
+                ModelStatus {
                     bundle,
                     bundle_size_bytes,
                     bundle_complete,
@@ -383,8 +380,8 @@ impl ModelsManager {
                         url: m.licence.url.clone(),
                         attribution: m.licence.attribution.clone(),
                     },
-                },
-            )
+                }
+            })
             .collect()
     }
 

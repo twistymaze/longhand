@@ -492,6 +492,10 @@ impl Runner {
         preview: &crate::reprocess::Preview,
         allow_transcription: bool,
     ) -> Result<(), StageError> {
+        // Read the capture state before the store lock, as
+        // `transcribe_again` does: the capture manager locks its state and
+        // then the store, and a model delete holds both in that order.
+        let capture_active = (self.env.suspended)();
         let mut store = lock(&self.env.store);
         let record = store
             .session(session_id)?
@@ -509,7 +513,6 @@ impl Runner {
         if fresh.requires_transcription && !allow_transcription {
             return Err(StageError::Failed(fresh.explanation));
         }
-        let capture_active = (self.env.suspended)();
         let regenerating = self.claims.busy(session_id);
         let audio_intact = save::home_intact(&store, session_id)?;
         store.begin_reprocess(
