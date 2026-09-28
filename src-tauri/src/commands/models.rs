@@ -125,28 +125,28 @@ pub fn delete_models(
     scope: DeleteScope,
 ) -> Result<Vec<ModelDeleteFailure>, String> {
     let settings = settings::get_settings(&app);
-    let recording = capture.is_capturing();
     let processing = app.try_state::<Arc<ProcessingManager>>();
     let statuses = statuses_on_disk(&manager, &settings);
-    // Keep the store lock from the session check to the last delete, so
-    // that the runner cannot claim a queued note between them. The unload
-    // and the delete do not lock the store.
-    let store = capture.shared_store();
-    let store = store.lock().unwrap_or_else(|e| e.into_inner());
-    let sessions = store.sessions().map_err(|e| e.to_string())?;
-    let live_model = manager.live_model();
-    let inputs = DeleteInputs {
-        settings: &settings,
-        live_model: live_model.as_deref(),
-        sessions: &sessions,
-        recording,
-        downloading: manager.is_downloading(),
-    };
-    models::delete_by_scope(scope, &statuses, &inputs, |id| {
-        if let Some(processing) = &processing {
-            processing.unload_engine(id);
-        }
-        manager.delete_files(id)
+    // Keep the capture state lock and the store lock from the checks to
+    // the last delete. Then no recording can start, and the runner cannot
+    // claim a queued note, between them. The unload and the delete do not
+    // lock the capture state or the store.
+    capture.with_recording_held(|recording, store| {
+        let sessions = store.sessions().map_err(|e| e.to_string())?;
+        let live_model = manager.live_model();
+        let inputs = DeleteInputs {
+            settings: &settings,
+            live_model: live_model.as_deref(),
+            sessions: &sessions,
+            recording,
+            downloading: manager.is_downloading(),
+        };
+        models::delete_by_scope(scope, &statuses, &inputs, |id| {
+            if let Some(processing) = &processing {
+                processing.unload_engine(id);
+            }
+            manager.delete_files(id)
+        })
     })
 }
 

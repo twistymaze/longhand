@@ -216,6 +216,25 @@ describe("the Hide from Dock switch on macOS", () => {
     expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 
+  test("the switch is off while a change is in progress", async () => {
+    let finish: () => void = () => {};
+    const { tauri, group } = renderWindowGroup({
+      set_hide_from_dock: (args) =>
+        new Promise<Settings>((resolve) => {
+          finish = () => resolve({ ...baseSettings, hide_from_dock: args.enabled as boolean });
+        }),
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Hide from Dock" }) as HTMLButtonElement;
+    const user = userEvent.setup();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+    await user.click(toggle);
+    expect(tauri.calls.filter((c) => c.cmd === "set_hide_from_dock")).toHaveLength(1);
+    finish();
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
   test("the footer follows the switch value", async () => {
     const { group } = renderWindowGroup({
       set_hide_from_dock: (args) => ({ ...baseSettings, hide_from_dock: args.enabled as boolean }),

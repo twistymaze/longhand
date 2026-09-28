@@ -322,7 +322,7 @@ pub fn run() {
     // `setup` runs later, in `run`.
     #[cfg(target_os = "macos")]
     {
-        let hide_from_dock = managers::settings::get_settings(app.handle()).hide_from_dock;
+        let hide_from_dock = managers::settings::read_settings(app.handle()).hide_from_dock;
         app.set_activation_policy(window::startup_dock_policy(hide_from_dock).into());
     }
 

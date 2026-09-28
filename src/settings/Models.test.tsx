@@ -821,6 +821,29 @@ describe("delete models", () => {
     expect(refreshes.count).toBe(1);
   });
 
+  test("Cancel does not close the dialog while a delete is in progress", async () => {
+    let finish: () => void = () => {};
+    const { user } = open(
+      {
+        model_deletion_summary: () => allUsed(),
+        delete_models: () =>
+          new Promise<[]>((resolve) => {
+            finish = () => resolve([]);
+          }),
+      },
+      settings,
+      catalogWithSupport,
+    );
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    await user.click(screen.getByRole("button", { name: /^Delete all/ }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    await act(async () => finish());
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   test("one unfinished note is singular", async () => {
     const { user } = open(
       { model_deletion_summary: () => allUsed({ unfinished_notes: 1 }) },

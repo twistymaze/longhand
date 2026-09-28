@@ -190,18 +190,31 @@ export function StatusPane({
 /// the previous value.
 function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
   const [error, setError] = useState<string | null>(null);
+  // The switch is off while a change is in progress, so a second click
+  // cannot send a second request.
+  const [pending, setPending] = useState(false);
   const change = async (enabled: boolean) => {
-    const result = await commands.setHideFromDock(enabled);
-    if (result.status === "error") setError(sentence(result.error));
-    else {
-      setError(null);
-      onSettings(result.data);
+    setPending(true);
+    try {
+      const result = await commands.setHideFromDock(enabled);
+      if (result.status === "error") setError(sentence(result.error));
+      else {
+        setError(null);
+        onSettings(result.data);
+      }
+    } finally {
+      setPending(false);
     }
   };
   return (
     <>
       <Row label="Hide from Dock" detail="Show Longhand in the Dock only while a window is open">
-        <Switch label="Hide from Dock" checked={settings.hide_from_dock} onChange={(v) => void change(v)} />
+        <Switch
+          label="Hide from Dock"
+          checked={settings.hide_from_dock}
+          disabled={pending}
+          onChange={(v) => void change(v)}
+        />
       </Row>
       {error && <ErrorText>{error}</ErrorText>}
     </>

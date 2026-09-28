@@ -700,6 +700,17 @@ pub fn get_settings(app: &AppHandle) -> Settings {
     settings
 }
 
+/// Read the settings and write nothing: a migrated value is not saved.
+/// Launch reads the Dock policy with this before the single-instance lock
+/// (U19), so a second copy that exits changes no file.
+pub fn read_settings(app: &AppHandle) -> Settings {
+    app.store(SETTINGS_STORE_PATH)
+        .ok()
+        .and_then(|store| store.get(SETTINGS_KEY))
+        .map(|stored| settings_from_value(&stored).0)
+        .unwrap_or_default()
+}
+
 /// Serializes read-modify-write so two commands changing different fields
 /// never lose one another's change.
 static UPDATE_LOCK: Mutex<()> = Mutex::new(());
