@@ -239,7 +239,7 @@ pub fn check(
     settings: &RecognitionConfig,
     ready: &dyn Fn(&ExecutionSpec) -> Readiness,
 ) -> Result<ExecutionSpec, Refusal> {
-    resolve_run(store, session_id, guards, settings, None, ready)
+    resolve_run(store, session_id, guards, settings, None, ready).map(|(spec, _)| spec)
 }
 
 /// Queue a saved note for a Transcribe Again run (R15, KTD14). The row
@@ -259,10 +259,10 @@ pub fn queue(
     if !guards.regenerating {
         crate::follow::follow_folder(store, session_id, false)?;
     }
-    let spec = resolve_run(store, session_id, guards, settings, Some(model_id), ready)?;
+    let (spec, home) = resolve_run(store, session_id, guards, settings, Some(model_id), ready)?;
     // The save compares `session.md` with this value. A change that another
     // computer makes during the run then keeps the previous result.
-    let baseline = match store.session(session_id)?.and_then(|r| r.home_path) {
+    let baseline = match home {
         Some(home) => {
             let hash = session_core::folder::fingerprint(&std::fs::read(
                 Path::new(&home).join(save::SESSION_FILE),
@@ -287,7 +287,8 @@ pub fn queue(
 }
 
 /// The refusals in order, then the execution of the run: `settings` with
-/// After Stop timing and the speaker count of the note.
+/// After Stop timing and the speaker count of the note. Also gives the home
+/// folder of the note.
 fn resolve_run(
     store: &Store,
     session_id: &str,
@@ -295,7 +296,7 @@ fn resolve_run(
     settings: &RecognitionConfig,
     model_id: Option<&str>,
     ready: &dyn Fn(&ExecutionSpec) -> Readiness,
-) -> Result<ExecutionSpec, Refusal> {
+) -> Result<(ExecutionSpec, Option<String>), Refusal> {
     let record = store
         .session(session_id)?
         .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
@@ -347,7 +348,7 @@ fn resolve_run(
     })?;
     crate::recognition::TaskGraph::resolve(&spec).map_err(|_| Cause::Configuration)?;
     match ready(&spec) {
-        Readiness::Ready => Ok(spec),
+        Readiness::Ready => Ok((spec, record.home_path)),
         Readiness::Missing { artifact } => Err(Cause::NotDownloaded { artifact }.into()),
         Readiness::Downloading { artifact } => Err(Cause::Downloading { artifact }.into()),
     }

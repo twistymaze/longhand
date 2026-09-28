@@ -3872,7 +3872,7 @@ fn again_with(r: &Rig, config: &RecognitionConfig) -> Result<(), Refusal> {
 }
 
 /// The user confirms Transcribe Again on "s" with the test settings.
-fn again(r: &Rig) -> Result<(), Refusal> {
+fn confirm_again(r: &Rig) -> Result<(), Refusal> {
     again_with(r, &settings())
 }
 
@@ -3924,7 +3924,7 @@ async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_
     );
     let calls = r.script.calls.load(Ordering::SeqCst);
 
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
     assert_eq!(asr_model(&r).as_deref(), Some("m"), "not before the save");
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
@@ -3955,7 +3955,7 @@ async fn a_legacy_note_is_transcribed_again_in_full_with_no_consent_and_promotes
     let old = read(&home, TRANSCRIPT_FILE);
     assert!(session_md(&home).recognition_artifact.is_none());
     let calls = r.script.calls.load(Ordering::SeqCst);
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
     let snapshot = pending_snapshot(&r);
     assert!(
@@ -4031,7 +4031,7 @@ async fn a_new_model_that_cannot_use_the_saved_text_runs_a_full_transcription() 
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let home = saved_note(&r, None).await;
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert!(session_md(&home).recognition_artifact.is_some());
     let transcript = read(&home, TRANSCRIPT_FILE);
@@ -4138,7 +4138,7 @@ async fn a_model_that_is_not_downloaded_is_refused_with_a_way_to_settings() {
     );
     assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);
     assert_not_queued(&r);
-    assert_eq!(again(&r).unwrap_err(), expected);
+    assert_eq!(confirm_again(&r).unwrap_err(), expected);
     assert_not_queued(&r);
 }
 
@@ -4236,9 +4236,9 @@ async fn a_confirmation_after_the_settings_changed_is_refused() {
 async fn a_second_confirmation_queues_nothing_and_says_the_run_is_queued() {
     let r = rig().await;
     saved_note(&r, None).await;
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     let expected = refusal("This note is already being transcribed again.", false);
-    assert_eq!(again(&r).unwrap_err(), expected);
+    assert_eq!(confirm_again(&r).unwrap_err(), expected);
     assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);
     assert_eq!(r.store.lock().unwrap().queue().unwrap(), ["s"]);
 }
@@ -4249,7 +4249,7 @@ async fn a_save_refused_because_another_computer_changed_session_md_keeps_the_pr
     let _mock = numbered_summaries(&r).await;
     let home = saved_note(&r, None).await;
     let (transcript, summary) = (read(&home, TRANSCRIPT_FILE), read(&home, "summary.md"));
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     // Another computer writes `session.md` while the run waits in line.
     edit_session_md(&home, |doc| doc.title = Some("Desktop title".into()));
 
@@ -4391,7 +4391,7 @@ async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
     assert_eq!(title_of(&r), proposed("First"));
 
     *title.lock().unwrap() = (200, http::completion("Second"));
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(title_calls(&mock).len(), 1, "no title call for the run");
     assert_eq!(title_of(&r), proposed("First"));
@@ -4422,7 +4422,7 @@ async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcr
         .collect();
     let turns = rebuilt_transcript(&r);
 
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(
@@ -4471,7 +4471,7 @@ async fn an_offline_summary_endpoint_preserves_the_complete_previous_result() {
     let (transcript, summary) = (read(&folder, TRANSCRIPT_FILE), read(&folder, "summary.md"));
 
     let _offline = summaries_from(&r, http::Reply::Json(500, "{}".into()), None).await;
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(
         r.runner.run_next().await.unwrap().1,
         Outcome::Failed {
@@ -4505,7 +4505,7 @@ async fn transcribe_again_is_refused_while_a_regeneration_runs_a_capture_is_acti
     let refused = |r: &Rig, message: &str| {
         let expected = refusal(message, false);
         assert_eq!(check_with(r, &settings()).unwrap_err(), expected);
-        let error = again(r).unwrap_err();
+        let error = confirm_again(r).unwrap_err();
         assert!(!error.message.contains("is not legal from"), "{error}");
         assert_eq!(error, expected);
         assert_not_queued(r);
@@ -4534,7 +4534,7 @@ async fn a_transcribe_again_that_waits_for_its_model_lets_other_notes_go_first()
     // R17, KTD13. The model goes away after the confirmation.
     let r = rig().await;
     saved_note(&r, None).await;
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     r.script.missing.lock().unwrap().push(MODEL.into());
     queue_session(
         &r.store,
@@ -4563,7 +4563,7 @@ async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
     let folder = saved_note(&r, None).await;
     let transcript = read(&folder, TRANSCRIPT_FILE);
     let calls = r.script.calls.load(Ordering::SeqCst);
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     *r.script.cancel_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.runner), "s".into()));
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
     let windows = plan(&r.store, "s").windows.len();
@@ -4597,7 +4597,7 @@ async fn a_transcribe_again_stopped_by_a_crash_resumes_from_its_checkpoints() {
 async fn a_resumed_transcribe_again_that_then_fails_is_a_normal_failure_that_keeps_the_new_audio() {
     let r = rig().await;
     saved_note(&r, None).await;
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     resume_completed(&r, "s", &speech());
     assert_eq!(marks(&r).model, None);
     *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
@@ -4620,7 +4620,7 @@ async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_
     let folder = saved_note(&r, None).await;
     let transcript = read(&folder, TRANSCRIPT_FILE);
     let summary = read(&folder, "summary.md");
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     // A directory at summary.md must not permit a partial result write.
     std::fs::remove_file(folder.join("summary.md")).unwrap();
     std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
@@ -4682,7 +4682,7 @@ async fn a_resume_while_transcribe_again_recognizes_a_window_keeps_the_restored_
     saved_note(&r, None).await;
     let before = transcribe::results(&r.store, "s").unwrap();
     let calls = r.script.calls.load(Ordering::SeqCst);
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     // The resume comes while the run's first window is recognized.
     *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Cancelled);
@@ -4944,7 +4944,7 @@ async fn transcribe_again_on_a_stereo_note_finds_the_same_echo_spans_within_100_
     saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
     let first = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
 
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     let again = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
     assert_eq!(again.spans.len(), first.spans.len(), "{:?}", again.spans);
@@ -4982,7 +4982,7 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
         doc.stereo_from(),
         r.store.lock().unwrap().stereo_from("s").unwrap()
     );
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
     assert_eq!(
@@ -5005,7 +5005,7 @@ async fn a_cancelled_transcribe_again_restores_the_previous_echo_spans() {
     assert!(before.iter().any(|(k, _)| k == &checkpoint::echo_key(0)));
 
     let calls = r.script.calls.load(Ordering::SeqCst);
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     // Assemble runs again and saves a new echo spans row; then a resume
     // takes the run back during its first window.
     *r.script.resume_after.lock().unwrap() = Some((calls + 1, Arc::clone(&r.store), "s".into()));
@@ -5230,7 +5230,7 @@ async fn transcribe_again_on_another_computer_decodes_the_folder_audio_and_keeps
     let b = other_computer(&a).await;
     sync(&b, &a.dest);
 
-    again(&b).unwrap();
+    confirm_again(&b).unwrap();
     assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
 
     assert!(calls(&b) > 0);
@@ -5260,7 +5260,7 @@ async fn a_resume_after_another_computer_transcribed_again_uses_the_snapshot_of_
     let b = other_computer(&a).await;
     sync(&b, &a.dest);
     *b.script.says.lock().unwrap() = Some((0, "Heard on the desktop.".into()));
-    again(&b).unwrap();
+    confirm_again(&b).unwrap();
     assert_eq!(b.runner.run_next().await.unwrap().1, Outcome::Finished);
     let desktop = first_recording_text(&folder);
     assert!(desktop.contains("Heard on the desktop."), "{desktop}");
@@ -5281,7 +5281,7 @@ async fn a_resume_after_another_computer_transcribed_again_uses_the_snapshot_of_
 async fn a_notes_edit_from_another_computer_during_transcribe_again_is_kept() {
     let a = rig().await;
     let folder = saved_note(&a, None).await;
-    again(&a).unwrap();
+    confirm_again(&a).unwrap();
     // The other computer edits the notes while the run waits in line.
     std::fs::write(folder.join("notes.md"), "- the desktop notes\n").unwrap();
 
@@ -5297,7 +5297,7 @@ async fn a_notes_edit_from_another_computer_during_transcribe_again_is_kept() {
 async fn a_notes_edit_on_this_computer_during_transcribe_again_is_kept() {
     let a = rig().await;
     let folder = saved_note(&a, None).await;
-    again(&a).unwrap();
+    confirm_again(&a).unwrap();
     // The folder takes the edit at once, so the run's refresh keeps it.
     assert!(pipeline::save::set_notes(&mut a.store.lock().unwrap(), "s", "- my notes\n").unwrap());
     assert_eq!(read(&folder, "notes.md"), "- my notes\n");
@@ -5310,7 +5310,7 @@ async fn a_notes_edit_on_this_computer_during_transcribe_again_is_kept() {
 async fn a_rename_from_another_computer_during_reprocessing_preserves_the_previous_result() {
     let a = rig().await;
     let folder = saved_note(&a, None).await;
-    again(&a).unwrap();
+    confirm_again(&a).unwrap();
     let renamed = rename_on_other_computer(&folder, "Budget review");
     // The scan follows the folder of a row in a run (KTD6).
     sync(&a, &a.dest);
@@ -5851,7 +5851,7 @@ async fn publication_notes_change_keeps_previous_result_and_retry_summarizes_cur
         None,
     )
     .await;
-    again(&r).unwrap();
+    confirm_again(&r).unwrap();
     assert!(matches!(
         r.runner.run_next().await.unwrap().1,
         Outcome::Failed {
