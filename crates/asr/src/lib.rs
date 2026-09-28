@@ -10,9 +10,8 @@ pub mod windows;
 
 pub use engine::{AsrError, AsrSegment, Engine, Recognizer, WindowText, pad_to_minimum};
 pub use result::{
-    Attribution, Finality, RecognitionId, RecognitionOutput, RecognitionRequest,
-    RecognitionSegment, SampleRange, SpeakerKey, SpeakerScope, SpeakerTurn, TimingPrecision,
-    normalize_transcript,
+    Finality, RecognitionId, RecognitionOutput, RecognitionSegment, SampleRange, SpeakerKey,
+    SpeakerScope, SpeakerTurn, TimingPrecision,
 };
 pub use stream::{
     Cut, Fed, LivePart, LiveStream, LiveText, LiveWord, PartPolicy, Parts, TimedToken, join_words,
