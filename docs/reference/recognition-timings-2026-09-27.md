@@ -34,13 +34,13 @@ Each cell is **extra minutes per 30 minutes recorded**, excluding the summary. T
 | Parakeet Unified EN 0.6B | 3–4 min | 3–4 min |
 | Nemotron Speech Streaming EN 0.6B | 2–3 min | 3–4 min |
 | Nemotron 3.5 ASR Streaming 0.6B | 2–3 min | 3–4 min |
-| Multitalker Parakeet Streaming 0.6B | 2–3 min | 4–5 min |
+| Multitalker Parakeet Streaming 0.6B | 2–3 min | 3–4 min |
 | Parakeet TDT 0.6B v2 | 2–3 min | 3–4 min |
 | Parakeet TDT 0.6B v3 | 2–3 min | 3–4 min |
 | Parakeet TDT 1.1B | 2–3 min | 3–4 min |
 | Whisper large-v3-turbo | 2–3 min | 4–5 min |
-| MOSS Transcribe Diarize | 3–4 min | 3–4 min |
-| Granite Speech 4.1 2B Plus | 3–4 min | 3–4 min |
+| MOSS Transcribe Diarize | 3–4 min | 5–6 min |
+| Granite Speech 4.1 2B Plus | 3–4 min | 4–5 min |
 
 For example, a 90-minute meeting with Whisper and automatic speaker recognition suggests **12–15 extra minutes**, plus summary generation. This extrapolates from the short test; it is not a measured 90-minute result.
 
@@ -235,7 +235,7 @@ Unlike the earlier harness timings, the following waits include summary generati
 | Parakeet TDT 1.1B | After Stop | Off | None | 2 min | About 13 s |
 | MOSS Transcribe Diarize | After Stop | After Stop | Transcription model labels | 2 min | About 14 s |
 
-The integrated-label tests completed, but labels restarted across processing sections. The five-minute Granite and Multitalker tests produced 30 and 38 distinct section-scoped labels. The two-minute MOSS test reached 14. These are not estimates of the number of participants. Separate speaker analysis needs comparison before these integrated routes can be treated as preferred defaults for stable speaker labels.
+The integrated-label tests completed, but labels restarted across processing sections. The five-minute Granite and Multitalker tests produced 30 and 38 distinct section-scoped labels. The two-minute MOSS test reached 14. These are not estimates of the number of participants. Later signed-app comparisons used separate Nemotron speaker analysis. Multitalker retained five labels and saved about 16 seconds after Stop with both tasks during recording. Granite retained five labels and saved about 42 seconds after Stop with both tasks afterwards. These comparisons support separate analysis for label continuity; they do not establish speaker accuracy. The automatic after-Stop order for these three families is now Nemotron, pyannote, then integrated labels. An expected count above eight selects pyannote. Explicit saved choices and Advanced integrated labels remain available. The normal-choice timing table above now uses these defaults; the advanced table retains both routes.
 
 The tests also found two display defects: a completed model download could retain a stale downloading notice, and a transcript with speaker recognition Off could show a false failure notice. Both have regression fixes after this bundle. The saved Off transcript already had the correct metadata. A new signed build and native checks must verify the display fixes.
 
