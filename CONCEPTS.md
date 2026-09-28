@@ -67,7 +67,7 @@ A part of a stereo segment where the microphone holds echo of the system audio. 
 The model that turns speech into text. The user selects a transcription model and compatible processing choices. A note records its effective configuration and exact model artifacts when recording starts. A later change to the defaults does not change that note. Longhand selects the runtime internally.
 
 ### Speaker recognition
-The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A transcription model can supply labels itself, or a separate speaker model can supply a timeline to join with the text. Speaker recognition can also be off. The selected artifacts determine valid processing times and speaker limits.
+The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A separate speaker model supplies a timeline, and Longhand joins it with the text. Transcription models do not supply the labels. Speaker recognition can also be off. The selected artifacts determine valid processing times and speaker limits.
 
 ### Live transcript
 The text that a streaming recognition model makes during recording. It shows in the Transcript tab when the selected model supports live transcription and the note uses that mode. Live text and speaker labels can be provisional. The runtime can revise them before finalization. Compatible durable results are reused after Stop; missing or invalid results require processing. Live speaker analysis is a separate choice and can run with an offline transcription model.
