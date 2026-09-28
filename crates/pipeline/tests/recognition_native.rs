@@ -439,7 +439,11 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
     drop(tap);
     let stopped = Instant::now();
     worker.end(LiveEnd::Keep);
-    while workers.busy() && stopped.elapsed() < Duration::from_secs(600) {
+    let finalize_timeout = std::env::var("LONGHAND_LIVE_FINALIZE_TIMEOUT_SECONDS")
+        .unwrap_or("600".into())
+        .parse::<u64>()
+        .unwrap();
+    while workers.busy() && stopped.elapsed() < Duration::from_secs(finalize_timeout) {
         std::thread::sleep(Duration::from_millis(100));
     }
     let completed = !workers.busy();
@@ -477,6 +481,10 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
     if cancel_at.is_none() {
         assert_eq!(epochs, seconds.div_ceil(1200));
     }
+    eprintln!(
+        "live_finalize_seconds={:.3}",
+        stopped.elapsed().as_secs_f64()
+    );
     let completed_live: Vec<_> = store
         .lock()
         .unwrap()
@@ -504,6 +512,10 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
         &pipeline::Unattended,
     )
     .unwrap();
+    eprintln!(
+        "stop_through_assemble_seconds={:.3}",
+        stopped.elapsed().as_secs_f64()
+    );
     for task in pipeline::recognition::TaskGraph::resolve(&spec)
         .unwrap()
         .stages
@@ -518,6 +530,7 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
             )
         })
     {
+        let task_started = Instant::now();
         pipeline::recognition::execute(
             &store,
             "live",
@@ -530,6 +543,10 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
             &mut |_| {},
         )
         .unwrap();
+        eprintln!(
+            "final_stage={task:?} seconds={:.3}",
+            task_started.elapsed().as_secs_f64()
+        );
     }
     for (key, value) in completed_live {
         assert_eq!(
@@ -548,16 +565,227 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
         .unwrap();
     assert!(!result.rows.is_empty());
     assert!(result.rows.iter().any(|row| row.speaker.is_some()));
-    assert_eq!(
-        result.coverage,
-        vec![asr::SampleRange {
-            start: 0,
-            end: seconds as u64 * 16000
-        }]
-    );
+    assert!(!result.coverage.is_empty());
+    let mut covered = 0;
+    for range in &result.coverage {
+        assert_eq!(
+            range.start, covered,
+            "live epochs must have no gaps or overlap"
+        );
+        assert!(
+            range.end > range.start,
+            "live epoch coverage must be nonempty"
+        );
+        covered = range.end;
+    }
+    assert_eq!(covered, seconds as u64 * 16000);
     eprintln!(
         "live_seconds={seconds} pace_ms={pace} events_before_stop={before_stop} epochs={epochs} rows={} stop_through_verify_seconds={:.3}",
         result.rows.len(),
+        stopped.elapsed().as_secs_f64()
+    );
+}
+
+#[test]
+#[ignore = "requires local pyannote artifacts and a real recording excerpt"]
+fn live_pyannote_features_are_reused_by_final_clustering() {
+    use diarize::SpeakerAnalyzer;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
+    struct Counted {
+        inner: diarize::OnnxAnalyzer,
+        calls: Arc<AtomicUsize>,
+    }
+    impl SpeakerAnalyzer for Counted {
+        fn analyze(
+            &mut self,
+            audio: &mut dyn diarize::AudioSource,
+            request: &diarize::DiarizeRequest<'_>,
+        ) -> Result<diarize::Analysis, diarize::DiarizeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.analyze(audio, request)
+        }
+    }
+    let spec = models::recognition::resolve(&RecognitionConfig {
+        asr_model: "whisper-large-v3-turbo-q5km".into(),
+        speaker_source: SpeakerSource::Pyannote,
+        ..Default::default()
+    })
+    .unwrap();
+    let mapping: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("LONGHAND_ROUTE_PATHS").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let path = |id: &str| {
+        PathBuf::from(
+            mapping
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == id)
+                .unwrap()["path"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    let analyzer = diarize::OnnxAnalyzer::load(
+        &path("pyannote-segmentation-3.0"),
+        &path("wespeaker-voxceleb-resnet34-lm"),
+    )
+    .unwrap();
+    eprintln!(
+        "feature_backend={:?} fallback={:?}",
+        analyzer.embedding_backend(),
+        analyzer.embedding_fallback_reason()
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut counted = Counted {
+        inner: analyzer,
+        calls: calls.clone(),
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("features", common::at(0), None)
+        .unwrap();
+    store
+        .lock()
+        .unwrap()
+        .set_recognition_snapshot("features", &serde_json::to_value(&spec).unwrap())
+        .unwrap();
+    let recovery = temp.path().join(pipeline::RECOVERY_DIR);
+    let mut writer = recorder::ChunkedWriter::create(recorder::SegmentArgs {
+        dir: recovery.clone(),
+        segment: 0,
+        capture_started_at: 1,
+        offset_ms: 0,
+        sample_rate: 16000,
+        channels: 1,
+        floor_bytes: 0,
+    })
+    .unwrap();
+    // Evaluate the production extraction path before advertising this capability.
+    let mut config = pipeline::live::LiveConfig::new("features", 0, &spec.config.asr_model, 16000)
+        .with_archive(recovery, 0);
+    config.snapshot = Some(spec.clone());
+    let end = Arc::new(Mutex::new(None));
+    let worker_store = store.clone();
+    let worker_end = end.clone();
+    let worker = std::thread::spawn(move || {
+        pipeline::live::features::extract(
+            &worker_store,
+            &config,
+            &mut counted,
+            &CancellationToken::new(),
+            &worker_end,
+        )
+        .unwrap();
+        counted
+    });
+    let mut input = hound::WavReader::open(std::env::var("LONGHAND_ROUTE_WAV").unwrap()).unwrap();
+    assert_eq!(input.spec().sample_rate, 16000);
+    assert_eq!(input.spec().channels, 1);
+    let seconds: usize = std::env::var("LONGHAND_ROUTE_SECONDS")
+        .unwrap_or("300".into())
+        .parse()
+        .unwrap();
+    let pace: u64 = std::env::var("LONGHAND_LIVE_PACE_MS")
+        .unwrap_or("1000".into())
+        .parse()
+        .unwrap();
+    let began = Instant::now();
+    for second in 0..seconds {
+        let pcm: Vec<f32> = if input.spec().sample_format == hound::SampleFormat::Float {
+            input
+                .samples::<f32>()
+                .take(16000)
+                .collect::<Result<_, _>>()
+                .unwrap()
+        } else {
+            input
+                .samples::<i16>()
+                .take(16000)
+                .map(|s| s.unwrap() as f32 / 32768.0)
+                .collect()
+        };
+        assert_eq!(pcm.len(), 16000);
+        writer.write(&pcm).unwrap();
+        if let Some(wait) =
+            Duration::from_millis((second as u64 + 1) * pace).checked_sub(began.elapsed())
+        {
+            std::thread::sleep(wait);
+        }
+    }
+    let before_stop = calls.load(Ordering::SeqCst);
+    assert!(before_stop > 0, "no features were extracted before Stop");
+    writer.finish().unwrap();
+    *end.lock().unwrap() = Some(pipeline::live::LiveEnd::Keep);
+    let stopped = Instant::now();
+    let mut counted = worker.join().unwrap();
+    let extracted = calls.load(Ordering::SeqCst);
+    let segment = session_core::Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: seconds as u64 * 1000,
+        wall_start: common::at(0),
+        wall_end: common::at(seconds as i64),
+        audio_file: "audio/segment-01.opus".into(),
+        channels: 1,
+    };
+    store
+        .lock()
+        .unwrap()
+        .put_segment("features", &segment)
+        .unwrap();
+    pipeline::assemble::run(
+        &store,
+        "features",
+        temp.path(),
+        std::slice::from_ref(&segment),
+        None,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    pipeline::recognition::durable::prepare(
+        &store,
+        "features",
+        temp.path(),
+        std::slice::from_ref(&segment),
+        &spec,
+    )
+    .unwrap();
+    pipeline::diarize::run(
+        &store,
+        "features",
+        temp.path(),
+        std::slice::from_ref(&segment),
+        None,
+        &mut counted,
+        &pipeline::Unattended,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        extracted,
+        "final clustering repeated live inference"
+    );
+    let pipeline::diarize::Speakers::Turns(turns) =
+        pipeline::diarize::speakers(&store, "features").unwrap()
+    else {
+        panic!("speaker clustering failed");
+    };
+    assert!(!turns.is_empty());
+    assert!(turns.iter().all(|t| t.end_ms <= seconds as u64 * 1000));
+    eprintln!(
+        "feature_seconds={seconds} pace_ms={pace} windows_before_stop={before_stop} windows={extracted} turns={} stop_through_clustering_seconds={:.3}",
+        turns.len(),
         stopped.elapsed().as_secs_f64()
     );
 }
