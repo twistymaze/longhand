@@ -86,10 +86,18 @@ pub(crate) fn normalize_multitalker_transcript(
 ) -> Result<RecognitionOutput, AsrError> {
     // The pinned bundle has subsampling=8, hop=160 and sample_rate=16000.
     // parakeet/model.cpp builds times on this 80 ms encoder frame grid.
-    // multitalker.cpp retains the terminal encoder frame beyond the input.
-    // Only an end on that grid can use the one-frame tail allowance.
+    // The frontend emits floor(samples / hop) + 1 mel frames. Each of the
+    // three causal stride-2 convolutions emits floor(frames / 2) + 1.
+    // Multitalker retains that padded encoder tail. Derive its exact bound;
+    // a fixed 80 ms allowance is insufficient for inputs between frame edges.
     const FRAME_MS: u64 = 80;
     let padded_samples = (samples as u64).max(crate::engine::MIN_WINDOW_MS * SAMPLES_PER_MS);
+    let mut encoder_frames = padded_samples / 160 + 1;
+    for _ in 0..3 {
+        encoder_frames = encoder_frames / 2 + 1;
+    }
+    let encoder_end_ms = encoder_frames * FRAME_MS;
+    let tolerance_ms = encoder_end_ms - padded_samples / SAMPLES_PER_MS;
     for end_ms in transcript
         .segments
         .iter()
@@ -112,7 +120,7 @@ pub(crate) fn normalize_multitalker_transcript(
             )));
         }
     }
-    normalize_with_end_tolerance(transcript, samples, request, FRAME_MS)
+    normalize_with_end_tolerance(transcript, samples, request, tolerance_ms)
 }
 
 fn normalize_with_end_tolerance(
@@ -325,6 +333,24 @@ mod tests {
         assert!(
             normalize_multitalker_transcript(transcript(30_000, 30_080), 480_000, &request)
                 .is_err()
+        );
+        // This 6340 ms VAD window failed in the five-minute production test.
+        // The pinned causal encoder produces 81 output frames (6480 ms).
+        let output =
+            normalize_multitalker_transcript(transcript(2720, 6480), 101_440, &request).unwrap();
+        assert_eq!(output.segments[0].range.end, request.start_sample + 101_440);
+        assert_eq!(
+            output.segments[0].timing,
+            TimingPrecision::NativeSegmentClipped
+        );
+        assert!(
+            normalize_multitalker_transcript(transcript(2720, 6560), 101_440, &request).is_err()
+        );
+        assert!(
+            normalize_multitalker_transcript(transcript(2720, 6479), 101_440, &request).is_err()
+        );
+        assert!(
+            normalize_multitalker_transcript(transcript(6400, 6480), 101_440, &request).is_err()
         );
         assert!(normalize_transcript(transcript(640, 30_080), 480_000, &request).is_err());
     }
