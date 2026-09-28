@@ -12,6 +12,8 @@ if(NOT revision STREQUAL "97a15afa5caa9bce5baaa86c1184103877af4101")
   message(FATAL_ERROR "Unexpected NeMo source revision: ${revision}")
 endif()
 add_executable(longhand-nemo-helper main.cpp)
+# Windows macros must not replace the C++ min/max functions.
+target_compile_definitions(longhand-nemo-helper PRIVATE $<$<PLATFORM_ID:Windows>:NOMINMAX>)
 target_include_directories(longhand-nemo-helper PRIVATE
   "${LONGHAND_NEMO_SOURCE}/include"
   "${LONGHAND_NEMO_SOURCE}/src/asr"
