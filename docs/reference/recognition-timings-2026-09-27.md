@@ -10,9 +10,9 @@ The estimates multiply a five-minute observation by six and round outward to who
 
 ### Choose when processing happens
 
-These rows use the labels in Settings. The example transcription model is **Nemotron Speech Streaming EN 0.6B**, with **Nemotron 3** selected under **Speaker recognition**.
+These rows use the labels in Settings. The example transcription model is **Nemotron Speech Streaming EN 0.6B**, with the catalog-selected **Nemotron 3** speaker model.
 
-| Transcription timing | Speaker timing | Extra processing per 30 minutes recorded | What happens after Stop |
+| Transcription timing | Speaker recognition | Extra processing per 30 minutes recorded | What happens after Stop |
 |---|---|---|---|
 | During recording | During recording | **About 1–2 minutes** | Finish the work already in progress and prepare the final transcript. |
 | During recording | After Stop | **About 2–3 minutes** | Keep the completed text, then finish speaker recognition and join the labels. |
@@ -23,9 +23,30 @@ The live rows come from paced five-minute tests: 16.612, 25.763, and 44.465 seco
 
 With both timings set to **During recording**, **Sortformer** gave the same rough **1–2 minute** estimate. **Nemotron 3.5 ASR Streaming 0.6B** also gave **1–2 minutes** with either **Sortformer** or **Nemotron 3**. Other live model/timing combinations do not yet have a comparable estimate. Unavailable choices remain disabled in the app.
 
-### Choose the models when processing After Stop
+### Choose a model with processing after recording
 
-Set **Transcription timing** and **Speaker timing** to **After Stop**. Pick your transcription model from the left column and your **Speaker recognition** option across the top. Each cell is **extra minutes per 30 minutes recorded**, excluding the summary. A dash means the transcription model does not provide that speaker-label option.
+Set **Transcription timing** to **After Stop**. Set **Speaker recognition** to **Off** or **After Stop**. The catalog selects the speaker model; this choice does not require an engine selection.
+
+Each cell is **extra minutes per 30 minutes recorded**, excluding the summary. These estimates use automatic speaker selection with no expected speaker count. A count above the selected model's limit can require a different speaker model and more time.
+
+| Transcription model | Speaker recognition Off | Speaker recognition After Stop |
+|---|---:|---:|
+| Parakeet Unified EN 0.6B | 3–4 min | 3–4 min |
+| Nemotron Speech Streaming EN 0.6B | 2–3 min | 3–4 min |
+| Nemotron 3.5 ASR Streaming 0.6B | 2–3 min | 3–4 min |
+| Multitalker Parakeet Streaming 0.6B | 2–3 min | 4–5 min |
+| Parakeet TDT 0.6B v2 | 2–3 min | 3–4 min |
+| Parakeet TDT 0.6B v3 | 2–3 min | 3–4 min |
+| Parakeet TDT 1.1B | 2–3 min | 3–4 min |
+| Whisper large-v3-turbo | 2–3 min | 4–5 min |
+| MOSS Transcribe Diarize | 3–4 min | 3–4 min |
+| Granite Speech 4.1 2B Plus | 3–4 min | 3–4 min |
+
+For example, a 90-minute meeting with Whisper and automatic speaker recognition suggests **12–15 extra minutes**, plus summary generation. This extrapolates from the short test; it is not a measured 90-minute result.
+
+### Advanced speaker-model overrides
+
+The following table applies only when the user changes **Speaker model override** under **Advanced options**. Both processing timings are after recording. Each cell is **extra minutes per 30 minutes recorded**, excluding the summary. A dash means the transcription model does not provide that speaker-label option.
 
 | Transcription model | Off | Transcription model labels | pyannote / WeSpeaker | Sortformer | Nemotron 3 |
 |---|---:|---:|---:|---:|---:|
@@ -40,7 +61,7 @@ Set **Transcription timing** and **Speaker timing** to **After Stop**. Pick your
 | MOSS Transcribe Diarize | 3–4 min | 3–4 min | 5–6 min | 5–6 min | 5–6 min |
 | Granite Speech 4.1 2B Plus | 3–4 min | 3–4 min | 5–6 min | 4–5 min | 4–5 min |
 
-These cells use the normal user-facing after-Stop selections. The alternative internal-runtime comparisons below are engineering evidence; users do not choose a runtime. Quantization and exact artifacts are recorded in the technical tables and hashes.
+These cells cover the advanced speaker-model overrides. The alternative internal-runtime comparisons below are engineering evidence; users do not choose a runtime. Quantization and exact artifacts are recorded in the technical tables and hashes.
 
 **Example:** For a 90-minute meeting using Whisper with **pyannote / WeSpeaker**, the table suggests roughly **15–18 extra minutes**, plus summary generation. This is a linear planning estimate from the short test, not a measured 90-minute result.
 

@@ -460,6 +460,8 @@ Unit IDs below belong to this plan. They do not refer to the walking-skeleton pl
 
 ### U10. Present capabilities, choices, and provisional labels
 
+**User-directed UI clarification (2026-09-27):** The normal flow selects a transcription model, transcription timing, and speaker recognition timing or Off. Catalog preferences select the compatible speaker model. Manual speaker-model selection belongs under Advanced options. Keep the existing checkmark and selection highlight, and let the window scroll without an inner model-list scroll area. Settings save as choices change. Show capabilities and ratings for each model before selection, with a distinct Recommended badge and aligned ratings. Use “Transcription accuracy” and “Transcription afterwards.” Keep Handy attribution in About; do not repeat it or a speaker-accuracy disclaimer in this picker.
+
 - **Goal:** Make F1-F4 understandable without runtime knowledge.
 - **Requirements:** R1-R7, R18-R21, R23; F1-F4; AE2, AE8; KTD1, KTD10, KTD11.
 - **Dependencies:** U3, U8, U9.
