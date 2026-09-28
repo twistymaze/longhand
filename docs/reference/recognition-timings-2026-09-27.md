@@ -4,6 +4,8 @@ Measured on 2026-09-27 during the flexible speaker-recognition implementation. T
 
 ## Choosing by the wait after a meeting
 
+**Status, 2026-09-28:** The extrapolations in this section are historical engineering estimates from a debug harness. Use the signed-app observations below when comparing measured waits. The first full-length native test exposed a live-view failure and required recovery; it did not establish the normal three-hour completion time. Do not publish the estimates as expected product performance. Granite's word-timing fix also changes its processing path, so the earlier Granite estimates need replacement measurements.
+
 **For each 30 minutes you record, budget the extra processing time below after you press Stop.** These are early ballpark estimates for the tested M3 Ultra. Summary generation adds a separate wait that is not measured here. Other computers can take substantially longer.
 
 The estimates multiply a five-minute observation by six and round outward to whole-minute ranges. They are extrapolations, not measured 30-minute results. Live finalization includes fixed work and any backlog, so its time may not grow in proportion to recording length. Use these estimates for planning and comparison; verify longer runs before publishing them as expected product performance.
@@ -242,3 +244,16 @@ The tests also found two display defects: a completed model download could retai
 ### Current coverage check
 
 A third five-minute backend matrix passed all 49 combinations with the corrected speech-coverage denominator. Source: `041e146`. Frozen executable SHA-256: `6095c9ff2651362aab468b3547deb929c5a452d3a409c403f7ef7ce1ab29c646`. Local evidence: `vad-fixed-route-matrix-300/summary.json`. The sum of case times was 1,816.954 seconds with concurrent native tests, downloads, and other checks. This confirms execution and coverage; it does not replace the earlier timing estimates or prove speaker accuracy.
+
+
+## Full-length validation and corrections, 2026-09-28
+
+The first 176.2-minute native playback used signed release source `3058b96` with Nemotron Speech Streaming EN and Nemotron 3, both during recording. Audio capture continued, but the live transcript view became unresponsive as output accumulated. The renderer reached about 4 GiB RSS. Earlier backend-plus-helper memory samples did not include that renderer and therefore did not establish total app memory use.
+
+Stop did not complete through the unresponsive view. After checking that durable audio covered the full playback, the app was closed through its native menu and restarted. The recovered note then entered processing. This run failed the normal live-view and Stop interaction checks. Recovery completion is a separate measurement and must not replace that result.
+
+Source `d031ca2` indexes row comparison and speaker projection and batches incoming updates. A synthetic state with 40,000 words, separate speaker snapshots, and 1,000 additional patches took about 25.5 ms after the fix, compared with about 27.7 seconds before it. This is reducer evidence, not a native rendering measurement. The native long-note Resume check remains pending.
+
+Recovery also exposed a five-second gap in idle-sleep protection during audio preparation between processing stages. Source `76c1326` starts protection before that work. The regression failed before the change and passed after it. All 133 scheduler tests and pipeline lint passed. Native verification of the new bundle remains pending.
+
+The full-length Granite plus Nemotron speaker-analysis harness passed after the word-timing fix. It produced 26,773 text rows, including 22,710 with a speaker assignment, and reached the source tail. Anonymous labels remain scoped to processing epochs; the 49 observed labels do not establish 49 people. The debug harness took 3,609.94 seconds in total, with concurrent native processing on the host. A process sample showed Verify executing the debug-build voice detector. This elapsed time is functional-test evidence, not a release-app estimate. Local evidence: `granite-word-timing/full.log` and `full.json`.
