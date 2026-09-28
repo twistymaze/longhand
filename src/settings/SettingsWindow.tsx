@@ -3,7 +3,7 @@
 // holds settings only; the notes are in the main window.
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
+import { commands, events, type DownloadUpdate, type Readiness } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
 import { EndpointForm } from "./EndpointForm";
 import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
@@ -12,7 +12,7 @@ import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
 import { type PaneId, StatusPane } from "./Status";
 import { ErrorText, type Tone } from "./ui";
-import { useAppSettings } from "./useAppSettings";
+import { useAppSettings, useRecognitionDefaultsSave } from "./useAppSettings";
 
 type PaneEntry = { id: PaneId; label: string; icon: ReactNode };
 
@@ -62,7 +62,8 @@ const badgeClass: Record<Tone, string> = {
 
 export function SettingsWindow() {
   const [pane, setPane] = useState<PaneId>("status");
-  const { settings, readiness, models, error, refresh, setSettings } = useAppSettings();
+  const { settings, readiness, models, error, refresh } = useAppSettings();
+  const defaults = useRecognitionDefaultsSave(refresh);
   const [live, setLive] = useState<Record<string, DownloadUpdate>>({});
   const nav = useRef<HTMLDivElement>(null);
   const main = useRef<HTMLElement>(null);
@@ -77,11 +78,11 @@ export function SettingsWindow() {
   }, []);
 
   const onSettings = useCallback(
-    (next: Settings) => {
-      setSettings(next);
+    () => {
+      // Another pane can save before this command returns. Read current settings.
       void refresh();
     },
-    [setSettings, refresh],
+    [refresh],
   );
 
   // A new pane starts at its top.
@@ -176,7 +177,7 @@ export function SettingsWindow() {
           )}
           {pane === "summarization" && <EndpointForm settings={settings} onSettings={onSettings} />}
           {pane === "recognition" && (
-            <Models models={models} live={live} actions={actions} settings={settings} onSettings={onSettings} />
+            <Models models={models} live={live} actions={actions} settings={settings} defaults={defaults} />
           )}
           {pane === "about" && <About models={models} />}
         </div>

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ComponentProps } from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
@@ -8,8 +9,10 @@ import type {
   RecognitionConfig,
   Settings,
 } from "../bindings";
-import { mockTauri } from "../test/tauri";
+import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { Models } from "./Models";
+import { SettingsWindow } from "./SettingsWindow";
+import { useRecognitionDefaultsSave } from "./useAppSettings";
 import { describeLanguages } from "./languages";
 import catalog from "../../crates/models/catalog.json";
 
@@ -52,6 +55,11 @@ const settings = {
   default_speaker_count: null,
   recognition_language: null,
 } as Settings;
+
+function TestModels(props: Omit<ComponentProps<typeof Models>, "defaults">) {
+  const defaults = useRecognitionDefaultsSave(async () => {});
+  return <Models {...props} defaults={defaults} />;
+}
 function resolve(config: RecognitionConfig): ExecutionSpec {
   if (
     (config.asr_model === offline || config.asr_model === integratedModels[1]) &&
@@ -123,11 +131,10 @@ function open(
     ...handlers,
   });
   const view = render(
-    <Models
+    <TestModels
       models={catalog}
       live={live}
       settings={initial}
-      onSettings={() => {}}
       actions={{
         cancel: () => {},
         refresh: async () => {},
@@ -465,11 +472,10 @@ test("completed model downloads clear the pending defaults notice", async () => 
   await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
 
   const update = (next: Settings, catalog: ModelStatus[]) => rerender(
-    <Models
+    <TestModels
       models={catalog}
       live={{}}
       settings={next}
-      onSettings={() => {}}
       actions={{ cancel: () => {}, refresh: async () => {} }}
     />,
   );
@@ -626,4 +632,118 @@ test("choosing a model gives immediate feedback while its request is pending", a
   expect(screen.getByRole("radio", { name: "MOSS" }).parentElement!.textContent).toContain("Preparing model…");
   await act(async () => release({...settings, asr_model: offline}));
   await waitFor(() => expect(screen.queryByText("Preparing model…")).toBeNull());
+});
+
+test("transcription saves remain ordered after switching panes", async () => {
+  let release!: (value: Settings) => void;
+  let saved = settings;
+  let saves = 0;
+  const tauri = mockTauri({
+    get_settings: () => saved,
+    readiness: () => ({
+      microphone_authorized: true,
+      system_audio: "allowed",
+      destination: { kind: "unset" },
+      armed: false,
+      shortcut: shortcutStatuses.recording,
+      missing_models: [],
+      endpoint_configured: false,
+    }),
+    shortcut_status: () => shortcutStatuses,
+    login_item_status: () => "disabled",
+    model_statuses: () => models,
+    resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
+    set_recognition_defaults: ({ config }) => {
+      const choice = config as RecognitionConfig;
+      saved = {
+        ...saved,
+        asr_model: choice.asr_model,
+        speaker_source: choice.speaker_source,
+        live_transcript: choice.processing_mode === "during_recording",
+        speaker_processing_mode: choice.speaker_processing_mode ?? "after_stop",
+        default_speaker_count: choice.speaker_count,
+        recognition_language: choice.language,
+      };
+      return ++saves === 1
+        ? new Promise<Settings>((done) => { release = done; })
+        : saved;
+    },
+  });
+  const user = userEvent.setup();
+  render(<SettingsWindow />);
+  await user.click(await screen.findByRole("tab", { name: "Transcription" }));
+  await ready();
+  await user.selectOptions(screen.getByLabelText("Speaker recognition"), "off");
+  await waitFor(() => expect(saves).toBe(1));
+  const first = saved;
+  await user.click(screen.getByRole("tab", { name: /General/ }));
+  await user.click(screen.getByRole("tab", { name: "Transcription" }));
+  await ready();
+  await user.selectOptions(screen.getByLabelText("Speaker recognition"), "during_recording");
+  // A new pane must use the existing queue while its first command is pending.
+  expect(saves).toBe(1);
+  await act(async () => release(first));
+  await waitFor(() => expect(saves).toBe(2));
+  const calls = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
+  expect((calls[1].args.config as RecognitionConfig).speaker_processing_mode).toBe("during_recording");
+  await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+  expect(saved.speaker_source).toBe("nemotron");
+  expect(saved.speaker_processing_mode).toBe("during_recording");
+  await user.click(screen.getByRole("tab", { name: /General/ }));
+  await user.click(screen.getByRole("tab", { name: "Transcription" }));
+  await ready();
+  expect((screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value).toBe("during_recording");
+  expect(screen.getByRole("radio", { name: "Parakeet" }).getAttribute("aria-checked")).toBe("true");
+});
+
+for (const failure of ["result", "rejected"] as const) {
+  test(`a ${failure} save failure is visible and the next choice saves`, async () => {
+    let saves = 0;
+    const { user, tauri } = open({
+      set_recognition_defaults: () => {
+        if (++saves === 1) {
+          if (failure === "result") throw "The defaults could not be saved";
+          throw new Error("IPC unavailable");
+        }
+        return settings;
+      },
+    });
+    await ready();
+    await user.selectOptions(screen.getByLabelText("Speaker recognition"), "off");
+    const message = failure === "result"
+      ? "The defaults could not be saved"
+      : "Could not save the transcription defaults";
+    expect(await screen.findByText(new RegExp(message))).toBeTruthy();
+    expect(screen.queryByText("Saving…")).toBeNull();
+    await user.selectOptions(screen.getByLabelText("Speaker recognition"), "during_recording");
+    await waitFor(() => expect(saves).toBe(2));
+    await waitFor(() => expect(screen.queryByText(new RegExp(message))).toBeNull());
+    const calls = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
+    expect((calls[1].args.config as RecognitionConfig).speaker_processing_mode).toBe("during_recording");
+  });
+}
+
+test("model keys move focus, wrap, and save the selected model", async () => {
+  const { user, tauri } = open({}, settings, [...models, model("zebra", "Zebra")]);
+  await ready();
+  screen.getByRole("radio", { name: "Parakeet" }).focus();
+  for (const [key, name, id] of [
+    ["ArrowDown", "Zebra", "zebra"],
+    ["ArrowDown", "MOSS", offline],
+    ["ArrowUp", "Zebra", "zebra"],
+    ["Home", "MOSS", offline],
+    ["End", "Zebra", "zebra"],
+  ]) {
+    const before = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults").length;
+    await user.keyboard(`{${key}}`);
+    const selected = screen.getByRole("radio", { name });
+    expect(document.activeElement).toBe(selected);
+    expect(selected.getAttribute("aria-checked")).toBe("true");
+    expect(selected.tabIndex).toBe(0);
+    await waitFor(() => {
+      const saves = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
+      expect(saves).toHaveLength(before + 1);
+      expect((saves[saves.length - 1].args.config as RecognitionConfig).asr_model).toBe(id);
+    });
+  }
 });

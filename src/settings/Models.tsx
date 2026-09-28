@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
   commands,
   type DownloadUpdate,
@@ -10,6 +10,7 @@ import {
 import { sentence } from "../processing/describe";
 import { RecognitionOptions, recognitionDefaults } from "./RecognitionOptions";
 import { Button, ErrorText, Group, Pane, Row, ProgressBar, formatBytes } from "./ui";
+import type { RecognitionDefaultsSave } from "./useAppSettings";
 
 export const roleLabel: Record<ModelRole, string> = {
   recognition: "Speech recognition",
@@ -27,20 +28,18 @@ export function Models({
   live,
   actions,
   settings,
-  onSettings,
+  defaults,
 }: {
   models: ModelStatus[];
   live: Record<string, DownloadUpdate>;
   actions: Actions;
   settings: Settings;
-  onSettings: (s: Settings) => void;
+  defaults: RecognitionDefaultsSave;
 }) {
   const [spec, setSpec] = useState<ExecutionSpec | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const saveQueue = useRef(Promise.resolve());
-  const saveVersion = useRef(0);
-  const [savingModel, setSavingModel] = useState<string | null>(null);
+  const { savingModel } = defaults;
   const saving = savingModel !== null;
   const [deleting, setDeleting] = useState<string | null>(null);
   const remove = async (id: string) => {
@@ -60,27 +59,8 @@ export function Models({
     }
   };
   const apply = (next: ExecutionSpec) => {
-    const version = ++saveVersion.current;
-    setSavingModel(next.config.asr_model);
     setError(null);
-    saveQueue.current = saveQueue.current.then(async () => {
-      if (version !== saveVersion.current) return;
-      try {
-        const result = await commands.setRecognitionDefaults(next.config);
-        if (version !== saveVersion.current) return;
-        if (result.status === "error") setError(sentence(result.error));
-        else {
-          onSettings(result.data);
-        }
-      } catch {
-        if (version === saveVersion.current)
-          setError(
-            "Could not save the transcription defaults. Change the choice to try again.",
-          );
-      } finally {
-        if (version === saveVersion.current) setSavingModel(null);
-      }
-    });
+    defaults.save(next.config);
   };
   const download = async () => {
     if (!spec) return;
@@ -182,7 +162,7 @@ export function Models({
             <ErrorText key={id}>{update.message}</ErrorText>
           ) : null,
         )}
-        {error && <ErrorText>{error}</ErrorText>}
+        {(error || defaults.error) && <ErrorText>{error || defaults.error}</ErrorText>}
       </Group>
       <Group
         header="Supporting models"
