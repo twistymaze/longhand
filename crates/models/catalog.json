@@ -30,6 +30,15 @@
         "asr_accuracy_score": 90,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -61,6 +70,15 @@
         "asr_accuracy_score": 86,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -119,6 +137,15 @@
         "asr_accuracy_score": 82,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -150,6 +177,16 @@
         "asr_accuracy_score": 86,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "integrated",
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -181,6 +218,15 @@
         "asr_accuracy_score": 89,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -236,6 +282,15 @@
         "asr_accuracy_score": 88,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -267,6 +322,15 @@
         "asr_accuracy_score": 91,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -397,6 +461,15 @@
         "asr_accuracy_score": 88,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -429,6 +502,16 @@
         "asr_accuracy_score": 88,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "integrated",
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {
@@ -498,6 +581,16 @@
         "asr_accuracy_score": 90,
         "speaker_accuracy_score": null,
         "benchmark_context": null
+      },
+      "speaker_preferences": {
+        "after_stop": [
+          "integrated",
+          "nemotron",
+          "pyannote"
+        ],
+        "during_recording": [
+          "nemotron"
+        ]
       }
     },
     {

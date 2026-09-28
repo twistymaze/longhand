@@ -35,8 +35,18 @@ pub struct Assessment {
     pub benchmark_context: Option<String>,
 }
 
+/// Ordered speaker choices for automatic mode selection. The resolver still
+/// checks runtime support, language, timing, and speaker count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct SpeakerPreferences {
+    pub after_stop: Vec<crate::recognition::SpeakerSource>,
+    pub during_recording: Vec<crate::recognition::SpeakerSource>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogModel {
+    #[serde(default)]
+    pub speaker_preferences: Option<SpeakerPreferences>,
     pub id: String,
     pub kind: ModelKind,
     pub name: String,
@@ -114,6 +124,52 @@ pub fn required_for(asr_model: &str) -> Vec<&'static CatalogModel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_speaker_choices_are_valid_and_keep_speakers_enabled() {
+        use crate::recognition::{
+            ProcessingMode, RecognitionConfig, SpeakerCount, SpeakerSource, resolve,
+        };
+        for model in CATALOG.iter().filter(|m| m.kind == ModelKind::Asr) {
+            let preferences = model
+                .speaker_preferences
+                .as_ref()
+                .expect("ASR speaker policy");
+            for (mode, sources) in [
+                (ProcessingMode::AfterStop, &preferences.after_stop),
+                (
+                    ProcessingMode::DuringRecording,
+                    &preferences.during_recording,
+                ),
+            ] {
+                assert!(!sources.is_empty(), "{}", model.id);
+                for source in sources {
+                    assert_ne!(*source, SpeakerSource::Off);
+                    resolve(&RecognitionConfig {
+                        asr_model: model.id.clone(),
+                        speaker_source: *source,
+                        speaker_processing_mode: mode,
+                        ..Default::default()
+                    })
+                    .unwrap_or_else(|e| panic!("{}: {e}", model.id));
+                }
+            }
+            assert!(
+                preferences
+                    .after_stop
+                    .iter()
+                    .any(|source| resolve(&RecognitionConfig {
+                        asr_model: model.id.clone(),
+                        speaker_source: *source,
+                        speaker_count: Some(SpeakerCount::Exact { count: 9 }),
+                        ..Default::default()
+                    })
+                    .is_ok()),
+                "{} must retain an after-Stop choice above the live limit",
+                model.id
+            );
+        }
+    }
 
     #[test]
     fn catalog_parses_with_one_model_of_each_kind() {

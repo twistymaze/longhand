@@ -8,6 +8,7 @@ import { components, personal, technical } from "./acknowledgements";
 
 const model = (id: string, name: string, role: ModelStatus["role"]): ModelStatus => ({
   id,
+  speaker_preferences: null,
   role,
   name,
   description: "",

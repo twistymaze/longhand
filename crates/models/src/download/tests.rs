@@ -651,6 +651,7 @@ async fn stalled_body_keeps_partial_and_a_retry_resumes_from_it() {
 
 fn model_for(url: String, body: &[u8], sha256: String) -> crate::catalog::CatalogModel {
     crate::catalog::CatalogModel {
+        speaker_preferences: None,
         assessment: None,
         id: "test".into(),
         kind: crate::catalog::ModelKind::Segmentation,

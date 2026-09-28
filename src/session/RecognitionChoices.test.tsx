@@ -49,6 +49,7 @@ const handlers = {
       languages: ["en"],
       size_bytes: 1,
       assessment: null,
+      speaker_preferences: { after_stop: ["pyannote"], during_recording: [] },
     },
   ],
   resolve_recognition: ({ config }: Record<string, unknown>) =>
@@ -306,7 +307,7 @@ for (const reject of [false, true]) {
     await user.click(button);
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Speaker recognition" }),
-      "pyannote",
+      "after_stop",
     );
     await act(async () => {
       if (reject) fail("Old preview failed");

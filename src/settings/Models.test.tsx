@@ -20,6 +20,13 @@ const model = (id: string, name: string): ModelStatus => ({
   languages: ["en"],
   description: "",
   assessment: null,
+  speaker_preferences: {
+    after_stop:
+      id === offline
+        ? ["integrated", "nemotron", "pyannote"]
+        : ["nemotron", "pyannote"],
+    during_recording: ["nemotron"],
+  },
   recommended: false,
   size_bytes: 100,
   required: false,
@@ -58,6 +65,12 @@ function resolve(config: RecognitionConfig): ExecutionSpec {
     config.speaker_count.count > 4
   )
     throw "Four speakers maximum";
+  if (
+    config.speaker_source === "nemotron" &&
+    config.speaker_count?.kind === "exact" &&
+    config.speaker_count.count > 8
+  )
+    throw "Eight speakers maximum";
   return {
     config,
     schema_version: 1,
@@ -119,11 +132,8 @@ function open(
 async function ready() {
   await waitFor(() =>
     expect(
-      (
-        screen.getByRole("button", {
-          name: "Apply defaults",
-        }) as HTMLButtonElement
-      ).disabled,
+      (screen.getByLabelText("Transcription timing") as HTMLSelectElement)
+        .disabled,
     ).toBe(false),
   );
 }
@@ -134,29 +144,22 @@ describe("recognition defaults", () => {
     await ready();
     expect(screen.getByLabelText("Speaker recognition")).toBeTruthy();
     expect(screen.getByLabelText("Transcription timing")).toBeTruthy();
-    expect(screen.getByLabelText("Speaker timing")).toBeTruthy();
-    expect(screen.getByText("Speaker accuracy: Unknown")).toBeTruthy();
+    expect(screen.queryByLabelText("Speaker timing")).toBeNull();
+    expect(screen.getAllByLabelText("Transcription accuracy: Not rated")).toHaveLength(2);
     expect(screen.queryByLabelText("Runtime")).toBeNull();
     expect(describeLanguages(["en", "zh"])).toBe("English and Chinese");
   });
   test("model changes reset incompatible timing visibly and apply the complete configuration", async () => {
     const { user, tauri } = open();
     await ready();
-    await user.selectOptions(
-      screen.getByLabelText("Transcription model"),
-      offline,
-    );
+    await user.click(screen.getByRole("radio", { name: "MOSS" }));
     await ready();
     expect(
       (screen.getByLabelText("Transcription timing") as HTMLSelectElement)
         .value,
     ).toBe("after_stop");
     expect(screen.getByText(/processing choices changed/)).toBeTruthy();
-    await user.selectOptions(
-      screen.getByLabelText("Speaker recognition"),
-      "integrated",
-    );
-    await user.click(screen.getByRole("button", { name: "Apply defaults" }));
+
     const calls = tauri.calls.filter(
       (c) => c.cmd === "set_recognition_defaults",
     );
@@ -178,17 +181,11 @@ describe("recognition defaults", () => {
   test("offline text can have independent live speaker analysis", async () => {
     const { user } = open();
     await ready();
-    await user.selectOptions(
-      screen.getByLabelText("Transcription model"),
-      offline,
-    );
+    await user.click(screen.getByRole("radio", { name: "MOSS" }));
     await ready();
+
     await user.selectOptions(
       screen.getByLabelText("Speaker recognition"),
-      "nemotron",
-    );
-    await user.selectOptions(
-      screen.getByLabelText("Speaker timing"),
       "during_recording",
     );
     expect(
@@ -196,21 +193,22 @@ describe("recognition defaults", () => {
         .value,
     ).toBe("after_stop");
     expect(
-      (screen.getByLabelText("Speaker timing") as HTMLSelectElement).value,
+      (screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value,
     ).toBe("during_recording");
   });
   test("five expected speakers cannot select Sortformer", async () => {
-    open(
+    const { user } = open(
       {},
       { ...settings, default_speaker_count: { kind: "exact", count: 5 } },
     );
     await ready();
+    await user.click(screen.getByText("Advanced options"));
     expect(
       (screen.getByRole("option", { name: "Sortformer" }) as HTMLOptionElement)
         .disabled,
     ).toBe(true);
   });
-  test("an unavailable resolver blocks Apply and explains recovery", async () => {
+  test("an unavailable resolver blocks changes and explains recovery", async () => {
     open({
       resolve_recognition: () => {
         throw "catalog unavailable";
@@ -220,10 +218,11 @@ describe("recognition defaults", () => {
     expect(
       (
         screen.getByRole("button", {
-          name: "Apply defaults",
+          name: "Download required models",
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
+    expect(screen.queryByRole("button", { name: "Apply defaults" })).toBeNull();
   });
   test("download passes the resolved artifact specification and failures are visible", async () => {
     const { user, tauri } = open({
@@ -253,14 +252,117 @@ describe("recognition defaults", () => {
         return resolve(c);
       },
     });
-    await user.selectOptions(
-      screen.getByLabelText("Transcription model"),
-      offline,
-    );
+    await user.click(screen.getByRole("radio", { name: "MOSS" }));
     await ready();
     await act(async () => release());
     expect(
-      (screen.getByLabelText("Transcription model") as HTMLSelectElement).value,
-    ).toBe(offline);
+      screen.getByRole("radio", { name: "MOSS" }).getAttribute("aria-checked"),
+    ).toBe("true");
   });
+});
+
+test("model comparison shows capabilities before selection and keeps engines advanced", async () => {
+  open();
+  await ready();
+  expect(screen.getByRole("radio", { name: /Parakeet/ })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: /MOSS/ })).toBeTruthy();
+  expect(screen.getByText("Live transcription")).toBeTruthy();
+  expect(screen.getByText("Transcription afterwards")).toBeTruthy();
+  expect(screen.getByLabelText("Speaker recognition").tagName).toBe("SELECT");
+  expect(screen.getByRole("option", { name: "Off" })).toBeTruthy();
+  expect(screen.queryByRole("option", { name: "Nemotron 3" })).toBeNull();
+});
+
+test("speaker mode uses catalog preferences and Off adds no speaker model", async () => {
+  const { user, tauri } = open();
+  await ready();
+  await user.selectOptions(
+    screen.getByLabelText("Transcription timing"),
+    "after_stop",
+  );
+  expect(
+    (
+      tauri.calls.find((c) => c.cmd === "set_recognition_defaults")?.args
+        .config as RecognitionConfig
+    ).speaker_source,
+  ).toBe("nemotron");
+  await user.selectOptions(screen.getByLabelText("Speaker recognition"), "off");
+  expect(
+    (
+      tauri.calls
+        .filter((c) => c.cmd === "set_recognition_defaults")
+        .slice(-1)[0]?.args.config as RecognitionConfig
+    ).speaker_source,
+  ).toBe("off");
+});
+
+test("nine speakers keeps recognition enabled with a compatible after-Stop choice", async () => {
+  const { user, tauri } = open(
+    {},
+    {
+      ...settings,
+      default_speaker_count: { kind: "exact", count: 9 },
+      speaker_processing_mode: "during_recording",
+    },
+  );
+  await ready();
+  const mode = screen.getByLabelText(
+    "Speaker recognition",
+  ) as HTMLSelectElement;
+  expect(mode.value).toBe("after_stop");
+  expect(
+    Array.from(mode.options).find((o) => o.value === "during_recording")
+      ?.disabled,
+  ).toBe(true);
+  await user.selectOptions(
+    screen.getByLabelText("Transcription timing"),
+    "after_stop",
+  );
+  expect(
+    (
+      tauri.calls.find((c) => c.cmd === "set_recognition_defaults")?.args
+        .config as RecognitionConfig
+    ).speaker_source,
+  ).toBe("pyannote");
+});
+
+test("opening settings does not save and changes save without an Apply step", async () => {
+  const { user, tauri } = open();
+  await ready();
+  expect(
+    tauri.calls.filter((c) => c.cmd === "set_recognition_defaults"),
+  ).toHaveLength(0);
+  expect(screen.queryByRole("button", { name: "Apply defaults" })).toBeNull();
+  await user.selectOptions(screen.getByLabelText("Speaker recognition"), "off");
+  await waitFor(() =>
+    expect(
+      tauri.calls.filter((c) => c.cmd === "set_recognition_defaults"),
+    ).toHaveLength(1),
+  );
+});
+
+test("rapid setting changes save in order and keep the latest choice", async () => {
+  let release!: (value: Settings) => void;
+  let calls = 0;
+  const { user, tauri } = open({
+    set_recognition_defaults: () =>
+      ++calls === 1
+        ? new Promise<Settings>((done) => {
+            release = done;
+          })
+        : settings,
+  });
+  await ready();
+  await user.selectOptions(screen.getByLabelText("Speaker recognition"), "off");
+  await user.selectOptions(
+    screen.getByLabelText("Speaker recognition"),
+    "during_recording",
+  );
+  expect(calls).toBe(1);
+  await act(async () => release(settings));
+  await waitFor(() => expect(calls).toBe(2));
+  const saved = tauri.calls.filter((c) => c.cmd === "set_recognition_defaults");
+  expect(
+    (saved[1].args.config as RecognitionConfig).speaker_processing_mode,
+  ).toBe("during_recording");
 });

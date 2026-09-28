@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   commands,
   type DownloadUpdate,
@@ -48,6 +48,9 @@ export function Models({
   const [spec, setSpec] = useState<ExecutionSpec | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const saveQueue = useRef(Promise.resolve());
+  const saveVersion = useRef(0);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const remove = async (id: string) => {
@@ -66,26 +69,33 @@ export function Models({
       setBusy(false);
     }
   };
-  const apply = async () => {
-    if (!spec) return;
-    setBusy(true);
-    try {
-      const result = await commands.setRecognitionDefaults(spec.config);
-      if (result.status === "error") setError(sentence(result.error));
-      else {
-        onSettings(result.data);
-        setError(null);
-        setMessage(
-          result.data.pending_recognition
-            ? "The required models are downloading. Your current defaults stay until they are ready."
-            : "Transcription defaults saved.",
-        );
+  const apply = (next: ExecutionSpec) => {
+    const version = ++saveVersion.current;
+    setSaving(true);
+    setError(null);
+    saveQueue.current = saveQueue.current.then(async () => {
+      if (version !== saveVersion.current) return;
+      try {
+        const result = await commands.setRecognitionDefaults(next.config);
+        if (version !== saveVersion.current) return;
+        if (result.status === "error") setError(sentence(result.error));
+        else {
+          onSettings(result.data);
+          setMessage(
+            result.data.pending_recognition
+              ? "The required models are downloading. Your current defaults stay until they are ready."
+              : null,
+          );
+        }
+      } catch {
+        if (version === saveVersion.current)
+          setError(
+            "Could not save the transcription defaults. Change the choice to try again.",
+          );
+      } finally {
+        if (version === saveVersion.current) setSaving(false);
       }
-    } catch {
-      setError("Could not save the transcription defaults.");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
   const download = async () => {
     if (!spec) return;
@@ -121,16 +131,13 @@ export function Models({
           models={models}
           initial={recognitionDefaults(settings)}
           onResolved={setSpec}
+          onChanged={apply}
         />
-        <Row label="Apply these defaults">
-          <Button
-            disabled={!spec || busy}
-            prominent
-            onClick={() => void apply()}
-          >
-            Apply defaults
-          </Button>
-        </Row>
+        {saving && (
+          <p role="status" className="px-4 pb-2 text-label-secondary">
+            Saving…
+          </p>
+        )}
         <Row label="Required models">
           <Button
             disabled={!spec || busy || active}

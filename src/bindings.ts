@@ -969,7 +969,7 @@ inputs: MicrophoneInput[] }
 export type ModelDownloadEvent = { model_id: string; update: DownloadUpdate }
 export type ModelRole = "recognition" | "recognition_artifact" | "segmentation" | "embedding"
 export type ModelState = { state: "present" } | { state: "absent"; partial_bytes: number } | { state: "downloading" }
-export type ModelStatus = { id: string; role: ModelRole; name: string; description: string; 
+export type ModelStatus = { speaker_preferences: SpeakerPreferences | null; id: string; role: ModelRole; name: string; description: string; 
 /**
  * Recognition models only: whether a live transcript is possible (R10).
  */
@@ -1367,6 +1367,11 @@ size_bytes: number;
  * Present only when every weight is present.
  */
 state: ModelState }
+/**
+ * Ordered speaker choices for automatic mode selection. The resolver still
+ * checks runtime support, language, timing, and speaker count.
+ */
+export type SpeakerPreferences = { after_stop: SpeakerSource[]; during_recording: SpeakerSource[] }
 export type SpeakerSource = "off" | "integrated" | "pyannote" | "sortformer" | "nemotron"
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are

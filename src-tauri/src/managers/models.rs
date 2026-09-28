@@ -51,6 +51,7 @@ pub struct LicenceInfo {
 
 #[derive(Serialize, Type, Debug, Clone)]
 pub struct ModelStatus {
+    pub speaker_preferences: Option<models::catalog::SpeakerPreferences>,
     pub id: String,
     pub role: ModelRole,
     pub name: String,
@@ -286,6 +287,7 @@ impl ModelsManager {
                     .map(|m| (m, ModelRole::RecognitionArtifact)),
             )
             .map(|(m, role)| ModelStatus {
+                speaker_preferences: m.speaker_preferences.clone(),
                 id: m.id.clone(),
                 assessment: m.assessment.clone(),
                 role,
