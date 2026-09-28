@@ -128,7 +128,7 @@ impl From<Cause> for Refusal {
             } => (
                 format!(
                     "This note has {requested} speakers. {source} supports up to {maximum}. \
-                     Choose another speaker source or model in Settings."
+                     Choose another speaker source in Settings."
                 ),
                 true,
             ),
@@ -550,8 +550,7 @@ mod tests {
                 artifact: "whisper-large-v3-turbo-q5km".into()
             }),
             (
-                "Whisper Large v3 Turbo is still downloading. Try again when it is ready."
-                    .into(),
+                "Whisper Large v3 Turbo is still downloading. Try again when it is ready.".into(),
                 false
             )
         );
@@ -608,7 +607,7 @@ mod tests {
             }),
             Refusal {
                 message: "This note has 5 speakers. Sortformer supports up to 4. Choose \
-                          another speaker source or model in Settings."
+                          another speaker source in Settings."
                     .into(),
                 in_settings: true
             }

@@ -4201,7 +4201,7 @@ async fn a_note_count_above_the_speaker_limit_is_refused_with_the_count_and_the_
     };
     let expected = refusal(
         "This note has 5 speakers. Sortformer supports up to 4. Choose another speaker \
-         source or model in Settings.",
+         source in Settings.",
         true,
     );
     assert_eq!(check_with(&r, &config).unwrap_err(), expected);
