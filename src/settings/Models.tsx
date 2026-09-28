@@ -42,7 +42,6 @@ export function Models({
   const saveVersion = useRef(0);
   const [savingModel, setSavingModel] = useState<string | null>(null);
   const saving = savingModel !== null;
-  const [message, setMessage] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const remove = async (id: string) => {
     setBusy(true);
@@ -72,11 +71,6 @@ export function Models({
         if (result.status === "error") setError(sentence(result.error));
         else {
           onSettings(result.data);
-          setMessage(
-            result.data.pending_recognition
-              ? "The required models are downloading. Your current defaults stay until they are ready."
-              : null,
-          );
         }
       } catch {
         if (version === saveVersion.current)
@@ -187,11 +181,6 @@ export function Models({
           ) : update.kind === "failed" ? (
             <ErrorText key={id}>{update.message}</ErrorText>
           ) : null,
-        )}
-        {message && (
-          <p role="status" className="px-4 pb-3">
-            {message}
-          </p>
         )}
         {error && <ErrorText>{error}</ErrorText>}
       </Group>

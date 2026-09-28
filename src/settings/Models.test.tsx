@@ -116,7 +116,7 @@ function open(
     download_recognition_artifacts: () => null,
     ...handlers,
   });
-  render(
+  const view = render(
     <Models
       models={catalog}
       live={live}
@@ -128,7 +128,7 @@ function open(
       }}
     />,
   );
-  return { tauri, user: userEvent.setup() };
+  return { tauri, user: userEvent.setup(), rerender: view.rerender };
 }
 async function ready() {
   await waitFor(() =>
@@ -380,6 +380,64 @@ test("installed artifacts show Models ready instead of a download size", async (
   await ready();
   expect(screen.getByText("Models ready")).toBeTruthy();
   expect(screen.queryByText(/Required download size/)).toBeNull();
+});
+
+test("completed model downloads clear the pending defaults notice", async () => {
+  const pending: RecognitionConfig = {
+    asr_model: offline,
+    speaker_source: "integrated",
+    processing_mode: "after_stop",
+    speaker_processing_mode: "after_stop",
+    speaker_count: null,
+    language: null,
+  };
+  const pendingSettings = { ...settings, pending_recognition: pending };
+  const downloading: ModelStatus[] = models.map((m) =>
+    m.id === offline ? { ...m, state: { state: "downloading" } } : m,
+  );
+  const { user, rerender } = open(
+    {
+      set_recognition_defaults: () => pendingSettings,
+      resolve_recognition: ({ config }) => {
+        const spec = resolve(config as RecognitionConfig);
+        return {
+          ...spec,
+          artifacts: [{ ...spec.artifacts[0], id: spec.config.asr_model }],
+        };
+      },
+    },
+    settings,
+    downloading,
+  );
+  await ready();
+  await user.click(screen.getByRole("radio", { name: "MOSS" }));
+  await ready();
+  await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+
+  const update = (next: Settings, catalog: ModelStatus[]) => rerender(
+    <Models
+      models={catalog}
+      live={{}}
+      settings={next}
+      onSettings={() => {}}
+      actions={{ cancel: () => {}, refresh: async () => {} }}
+    />,
+  );
+  update(pendingSettings, downloading);
+  expect(screen.getByText(/Models are downloading for MOSS/)).toBeTruthy();
+  expect(screen.getByText("Downloading required models…")).toBeTruthy();
+
+  update({
+    ...settings,
+    asr_model: offline,
+    speaker_source: "integrated",
+    live_transcript: false,
+    pending_recognition: null,
+  }, models);
+  expect(screen.getByText("Models ready")).toBeTruthy();
+  expect(screen.queryByText(/Models are downloading for/)).toBeNull();
+  expect(screen.queryByText("Downloading required models…")).toBeNull();
+  expect(screen.queryByText(/current defaults stay/i)).toBeNull();
 });
 
 test("download size excludes present files and retained partial bytes", async () => {
