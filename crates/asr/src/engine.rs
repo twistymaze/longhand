@@ -50,7 +50,7 @@ pub struct WindowText {
 pub trait Recognizer: Send {
     /// The catalog id of the loaded model.
     fn model_id(&self) -> &str;
-    /// True only when the loaded model supplies native token timestamps.
+    /// True when the loaded model supplies native word or token timestamps.
     /// The default token adapter estimates times from segments.
     fn native_token_timestamps(&self) -> bool {
         false
@@ -181,7 +181,7 @@ pub struct Engine {
     is_moss: bool,
     is_multitalker: bool,
     streaming: bool,
-    native_token_timestamps: bool,
+    native_timing: Option<TimestampKind>,
     max_audio_ms: i64,
     language: Option<String>,
 }
@@ -219,8 +219,7 @@ impl Engine {
             catalog_streaming,
             model.capabilities().supports_streaming,
         );
-        let native_token_timestamps =
-            model.capabilities().max_timestamp_kind == TimestampKind::Token;
+        let native_timing = native_timing_kind(model.capabilities().max_timestamp_kind);
         let max_audio_ms = model.capabilities().max_audio_ms;
         log::info!(
             "loaded {model_id} ({} on {})",
@@ -235,7 +234,7 @@ impl Engine {
             is_moss,
             is_multitalker,
             streaming,
-            native_token_timestamps,
+            native_timing,
             max_audio_ms,
             language: None,
         })
@@ -247,13 +246,13 @@ impl Engine {
     pub fn transcribe_timed(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
         let options = RunOptions {
             language: self.language.clone(),
-            timestamps: TimestampKind::Token,
+            timestamps: self.native_timing.unwrap_or(TimestampKind::Token),
             diarize: Diarize::Off,
             family: self.family(),
             ..Default::default()
         };
         let parts = self.decode_parts(pcm, &options)?;
-        Ok(tokens_from_parts(parts))
+        Ok(tokens_from_parts(parts, options.timestamps))
     }
 
     fn decode_parts(
@@ -279,14 +278,44 @@ impl Engine {
     }
 }
 
-fn tokens_from_parts(parts: Vec<crate::recovery::DecodedPart>) -> Vec<TimedToken> {
+fn native_timing_kind(maximum: TimestampKind) -> Option<TimestampKind> {
+    match maximum {
+        TimestampKind::Word | TimestampKind::Token => Some(maximum),
+        _ => None,
+    }
+}
+
+fn tokens_from_parts(
+    parts: Vec<crate::recovery::DecodedPart>,
+    timing: TimestampKind,
+) -> Vec<TimedToken> {
     let mut tokens = Vec::new();
     for part in parts {
         let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
-        for mut token in timed_tokens(
-            &part.transcript.tokens,
-            part.samples as u64 / SAMPLES_PER_MS,
-        ) {
+        let limit_ms = part.samples as u64 / SAMPLES_PER_MS;
+        let local = if timing == TimestampKind::Word {
+            part.transcript
+                .words
+                .iter()
+                .filter_map(|word| {
+                    let text = word.text.trim();
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let start_ms = (word.t0_ms.max(0) as u64).min(limit_ms);
+                    Some(TimedToken {
+                        // The adapter exposes complete words through the token
+                        // interface. Keep a word boundary for words_from_tokens.
+                        text: format!(" {text}"),
+                        start_ms,
+                        end_ms: (word.t1_ms.max(0) as u64).clamp(start_ms, limit_ms),
+                    })
+                })
+                .collect()
+        } else {
+            timed_tokens(&part.transcript.tokens, limit_ms)
+        };
+        for mut token in local {
             token.start_ms += offset_ms;
             token.end_ms += offset_ms;
             tokens.push(token);
@@ -387,7 +416,7 @@ impl LiveStream for EngineStream<'_> {
 
 impl Recognizer for Engine {
     fn native_token_timestamps(&self) -> bool {
-        self.native_token_timestamps
+        self.native_timing.is_some()
     }
 
     fn model_id(&self) -> &str {
@@ -467,19 +496,38 @@ impl Recognizer for Engine {
 mod tests {
     use super::*;
 
+    #[test]
+    fn native_word_timing_keeps_models_on_the_uncut_audio_path() {
+        assert_eq!(
+            native_timing_kind(TimestampKind::Word),
+            Some(TimestampKind::Word)
+        );
+        assert_eq!(
+            native_timing_kind(TimestampKind::Token),
+            Some(TimestampKind::Token)
+        );
+        assert_eq!(native_timing_kind(TimestampKind::Segment), None);
+    }
+
     fn recovered_parts() -> Vec<crate::recovery::DecodedPart> {
         [" first", " second"]
             .into_iter()
             .enumerate()
             .map(|(index, text)| crate::recovery::DecodedPart {
                 offset: index * 16_000,
-                samples: 16_003,
+                samples: if index == 0 { 16_000 } else { 16_003 },
                 transcript: transcribe_cpp::Transcript {
                     text: text.into(),
                     segments: vec![transcribe_cpp::Segment {
                         t0_ms: 100,
                         t1_ms: 1_100,
                         text: text.into(),
+                        ..Default::default()
+                    }],
+                    words: vec![transcribe_cpp::Word {
+                        t0_ms: 100,
+                        t1_ms: 1_100,
+                        text: text.trim().into(),
                         ..Default::default()
                     }],
                     tokens: vec![transcribe_cpp::Token {
@@ -492,6 +540,24 @@ mod tests {
                 },
             })
             .collect()
+    }
+
+    #[test]
+    fn native_word_rows_keep_boundaries_times_and_recovered_offsets() {
+        let mut parts = recovered_parts();
+        for part in &mut parts {
+            part.transcript.tokens.clear();
+        }
+        let tokens = tokens_from_parts(parts, TimestampKind::Word);
+        let words = crate::words_from_tokens(&tokens, 80_000);
+        assert_eq!(crate::join_words(&words), "first second");
+        assert_eq!(
+            words
+                .iter()
+                .map(|w| (w.start_ms, w.end_ms))
+                .collect::<Vec<_>>(),
+            vec![(80_100, 81_000), (81_100, 82_000)]
+        );
     }
 
     #[test]
@@ -513,7 +579,7 @@ mod tests {
                 },
             ]
         );
-        let tokens = tokens_from_parts(recovered_parts());
+        let tokens = tokens_from_parts(recovered_parts(), TimestampKind::Token);
         assert_eq!(
             tokens
                 .iter()
