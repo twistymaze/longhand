@@ -291,8 +291,9 @@ fn front(app: &AppHandle, window: &WebviewWindow) {
     // Showing promotes the app from Accessory to Regular, which is the
     // direction Apple supports at runtime.
     #[cfg(target_os = "macos")]
-    if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
-        log::error!("failed to set activation policy to Regular: {e}");
+    {
+        let hide_from_dock = crate::managers::settings::get_settings(app).hide_from_dock;
+        set_dock_policy(app, dock_policy(hide_from_dock, true));
     }
     #[cfg(not(target_os = "macos"))]
     let _ = app;
@@ -350,9 +351,9 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
     }
 }
 
-/// Make the app Accessory (no Dock icon) when no window other than `closing`
-/// is visible. The activation policy stays Regular while any window is
-/// visible.
+/// Make the app Accessory (no Dock icon) when "Hide from Dock" is on and no
+/// window other than `closing` is visible (R3). The activation policy stays
+/// Regular while any window is visible, and always when the switch is off.
 fn hide_dock_icon_if_no_window(closing: &Window) {
     #[cfg(target_os = "macos")]
     {
@@ -361,15 +362,58 @@ fn hide_dock_icon_if_no_window(closing: &Window) {
             .webview_windows()
             .values()
             .any(|w| w.label() != closing.label() && w.is_visible().unwrap_or(false));
-        if other_visible {
-            return;
-        }
-        if let Err(e) = app.set_activation_policy(tauri::ActivationPolicy::Accessory) {
-            log::error!("failed to set activation policy to Accessory: {e}");
-        }
+        let hide_from_dock = crate::managers::settings::get_settings(app).hide_from_dock;
+        set_dock_policy(app, dock_policy(hide_from_dock, other_visible));
     }
     #[cfg(not(target_os = "macos"))]
     let _ = closing;
+}
+
+/// The macOS activation policy: Regular has a Dock icon, and Accessory has
+/// none. The menu-bar icon shows in both (R3). Other platforms have no
+/// Dock, so they use this type only in tests.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockPolicy {
+    Regular,
+    Accessory,
+}
+
+/// The policy for the "Hide from Dock" value and whether a window is
+/// visible (KTD1). Every site that sets the activation policy calls this
+/// function.
+#[cfg(any(target_os = "macos", test))]
+pub fn dock_policy(hide_from_dock: bool, window_visible: bool) -> DockPolicy {
+    if hide_from_dock && !window_visible {
+        DockPolicy::Accessory
+    } else {
+        DockPolicy::Regular
+    }
+}
+
+/// The policy before the event loop starts. No window is visible yet
+/// (KTD2).
+#[cfg(any(target_os = "macos", test))]
+pub fn startup_dock_policy(hide_from_dock: bool) -> DockPolicy {
+    dock_policy(hide_from_dock, false)
+}
+
+/// Set the activation policy of the running app. A failure is logged.
+#[cfg(target_os = "macos")]
+pub fn set_dock_policy(app: &AppHandle, policy: DockPolicy) {
+    if let Err(e) = app.set_activation_policy(policy.into()) {
+        log::error!("failed to set activation policy to {policy:?}: {e}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl From<DockPolicy> for tauri::ActivationPolicy {
+    fn from(policy: DockPolicy) -> Self {
+        match policy {
+            DockPolicy::Regular => tauri::ActivationPolicy::Regular,
+            DockPolicy::Accessory => tauri::ActivationPolicy::Accessory,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -429,6 +473,34 @@ mod tests {
     fn a_hidden_window_is_shown_whatever_its_focus_reads() {
         assert_eq!(toggle_action(false, false), ToggleAction::Show);
         assert_eq!(toggle_action(false, true), ToggleAction::Show);
+    }
+
+    #[test]
+    fn with_the_switch_off_the_dock_icon_stays_when_no_window_is_visible() {
+        assert_eq!(dock_policy(false, false), DockPolicy::Regular);
+    }
+
+    #[test]
+    fn with_the_switch_on_the_dock_icon_goes_when_no_window_is_visible() {
+        assert_eq!(dock_policy(true, false), DockPolicy::Accessory);
+    }
+
+    #[test]
+    fn with_the_switch_on_a_visible_window_keeps_the_dock_icon() {
+        assert_eq!(dock_policy(true, true), DockPolicy::Regular);
+    }
+
+    #[test]
+    fn with_the_switch_off_a_visible_window_keeps_the_dock_icon() {
+        assert_eq!(dock_policy(false, true), DockPolicy::Regular);
+    }
+
+    /// Startup has no visible window: a login launch with the switch on has
+    /// no Dock icon, and with the switch off it has one (AE3).
+    #[test]
+    fn startup_policy_follows_the_switch() {
+        assert_eq!(startup_dock_policy(true), DockPolicy::Accessory);
+        assert_eq!(startup_dock_policy(false), DockPolicy::Regular);
     }
 
     #[test]

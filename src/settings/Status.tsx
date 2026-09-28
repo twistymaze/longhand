@@ -1,13 +1,26 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type Settings, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { sentence } from "../processing/describe";
 import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { LoginItem } from "./LoginItem";
-import { Button, Group, Pane, Row, Status as StatusText } from "./ui";
+import { Button, ErrorText, Group, Pane, Row, Status as StatusText, Switch } from "./ui";
 
-const isMac = navigator.userAgent.includes("Mac");
+// Read the platform on each render, so that tests can set the user agent.
+const isMac = () => navigator.userAgent.includes("Mac");
+
+const SHOW_SHORTCUT_TEXT = "This shortcut brings the window back from any app, and hides it again when it is in front.";
+
+/// The Window group footer: what a window close does on this platform
+/// with this Hide from Dock value (R5).
+function closeBehaviour(hideFromDock: boolean): string {
+  if (!isMac()) return "Closing the window keeps Longhand running in the system tray.";
+  return hideFromDock
+    ? "Closing the window keeps Longhand running only in the menu bar."
+    : "Closing the window keeps Longhand in the Dock and the menu bar.";
+}
 
 export type PaneId = "status" | "recording" | "destination" | "summarization" | "recognition" | "about";
 
@@ -17,10 +30,14 @@ function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: Pa
 
 export function StatusPane({
   readiness,
+  settings,
+  onSettings,
   onRefresh,
   onNavigate,
 }: {
   readiness: Readiness;
+  settings: Settings;
+  onSettings: (s: Settings) => void;
   onRefresh: () => Promise<void>;
   onNavigate: (p: PaneId) => void;
 }) {
@@ -55,6 +72,26 @@ export function StatusPane({
 
   return (
     <Pane title="General">
+      <Group header="Window" footer={`${closeBehaviour(settings.hide_from_dock)} ${SHOW_SHORTCUT_TEXT}`}>
+        <LoginItem />
+        {isMac() && <HideFromDock settings={settings} onSettings={onSettings} />}
+        <ShortcutField
+          kind="show_window"
+          label="Show Longhand"
+          status={showWindow}
+          detail={
+            !showWindow.chord ? (
+              <StatusText tone="neutral">Off</StatusText>
+            ) : showWindow.registered ? (
+              "Shows or hides the Longhand window from any app"
+            ) : (
+              <StatusText tone="negative">{showWindow.error ?? "Not registered"}</StatusText>
+            )
+          }
+          onChanged={onShortcutsChanged}
+        />
+      </Group>
+
       <Group
         header="Recording"
         footer={
@@ -96,7 +133,7 @@ export function StatusPane({
           {readiness.microphone_authorized ? (
             <StatusText tone="positive">Allowed</StatusText>
           ) : (
-            isMac && (
+            isMac() && (
               <Button prominent disabled={asking} onClick={askForMicrophone}>
                 {asking ? "Waiting…" : "Allow…"}
               </Button>
@@ -111,28 +148,6 @@ export function StatusPane({
             </GoTo>
           )}
         </Row>
-      </Group>
-
-      <Group
-        header="Window"
-        footer="Closing the window keeps Longhand running in the menu bar. This shortcut brings the window back from any app, and hides it again when it is in front."
-      >
-        <LoginItem />
-        <ShortcutField
-          kind="show_window"
-          label="Show Longhand"
-          status={showWindow}
-          detail={
-            !showWindow.chord ? (
-              <StatusText tone="neutral">Off</StatusText>
-            ) : showWindow.registered ? (
-              "Shows or hides the Longhand window from any app"
-            ) : (
-              <StatusText tone="negative">{showWindow.error ?? "Not registered"}</StatusText>
-            )
-          }
-          onChanged={onShortcutsChanged}
-        />
       </Group>
 
       <Group
@@ -167,6 +182,42 @@ export function StatusPane({
 
       <AlertSound />
     </Pane>
+  );
+}
+
+/// The Hide from Dock switch (R2, KTD3). It shows on macOS only, because
+/// the setter returns an error on other platforms. A failed change keeps
+/// the previous value.
+function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  // The switch is off while a change is in progress, so a second click
+  // cannot send a second request.
+  const [pending, setPending] = useState(false);
+  const change = async (enabled: boolean) => {
+    setPending(true);
+    try {
+      const result = await commands.setHideFromDock(enabled);
+      if (result.status === "error") setError(sentence(result.error));
+      else {
+        setError(null);
+        onSettings(result.data);
+      }
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <>
+      <Row label="Hide from Dock" detail="Show Longhand in the Dock only while a window is open">
+        <Switch
+          label="Hide from Dock"
+          checked={settings.hide_from_dock}
+          disabled={pending}
+          onChange={(v) => void change(v)}
+        />
+      </Row>
+      {error && <ErrorText>{error}</ErrorText>}
+    </>
   );
 }
 

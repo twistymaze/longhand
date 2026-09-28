@@ -36,6 +36,7 @@ const baseSettings: Settings = {
   pending_recognition: null,
   microphone: null,
   system_audio_default: false,
+  hide_from_dock: false,
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",

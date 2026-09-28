@@ -11,6 +11,7 @@ import type {
 } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { Models } from "./Models";
+import { recognitionDefaults } from "./RecognitionOptions";
 import { SettingsWindow } from "./SettingsWindow";
 import { useRecognitionDefaultsSave } from "./useAppSettings";
 import { describeLanguages } from "./languages";
@@ -40,6 +41,9 @@ const model = (id: string, name: string): ModelStatus => ({
   },
   recommended: false,
   size_bytes: 100,
+  bundle: [id],
+  bundle_size_bytes: 100,
+  bundle_complete: true,
   required: false,
   state: { state: "present" },
   repository: "example",
@@ -127,9 +131,10 @@ function open(
   const tauri = mockTauri({
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
     set_recognition_defaults: () => initial,
-    download_recognition_artifacts: () => null,
+    download_model_bundle: () => null,
     ...handlers,
   });
+  const refreshes = { count: 0 };
   const view = render(
     <TestModels
       models={catalog}
@@ -137,11 +142,13 @@ function open(
       settings={initial}
       actions={{
         cancel: () => {},
-        refresh: async () => {},
+        refresh: async () => {
+          refreshes.count++;
+        },
       }}
     />,
   );
-  return { tauri, user: userEvent.setup(), rerender: view.rerender };
+  return { tauri, user: userEvent.setup(), rerender: view.rerender, refreshes };
 }
 async function ready() {
   await waitFor(() =>
@@ -275,30 +282,32 @@ describe("recognition defaults", () => {
       },
     });
     expect(await screen.findByRole("alert")).toBeTruthy();
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "Download required models",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
     expect(screen.queryByRole("button", { name: "Apply defaults" })).toBeNull();
   });
-  test("download passes the resolved artifact specification and failures are visible", async () => {
-    const { user, tauri } = open({
-      download_recognition_artifacts: () => {
-        throw "Download unavailable";
+  test("a selected model with missing files downloads its bundle, and a failure shows (AE10)", async () => {
+    const incomplete = [{ ...models[0], bundle_complete: false }, models[1]];
+    const { user, tauri } = open(
+      {
+        download_model_bundle: () => {
+          throw "Download unavailable";
+        },
       },
-    });
-    await ready();
-    await user.click(
-      screen.getByRole("button", { name: "Download required models" }),
+      settings,
+      incomplete,
     );
+    await ready();
+    const row = screen.getByRole("radio", { name: "Parakeet" }).parentElement!;
+    expect(row.textContent).toContain("Some files missing");
+    const download = Array.from(row.querySelectorAll("button")).find((b) => b.textContent === "Download")!;
+    await user.click(download);
     expect(await screen.findByText(/Download unavailable/)).toBeTruthy();
-    const spec = tauri.calls.find(
-      (c) => c.cmd === "download_recognition_artifacts",
-    )?.args.spec as ExecutionSpec;
-    expect(spec.artifacts[0].filename).toBe("exact-model.gguf");
+    expect(tauri.calls.find((c) => c.cmd === "download_model_bundle")?.args.asrModel).toBe(stream);
+  });
+  test("a complete bundle has no Download button, and the tab lists no supporting models", async () => {
+    open();
+    await ready();
+    expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+    expect(screen.queryByText(/Supporting models|Delete models|Download required models/)).toBeNull();
   });
   test("late resolver responses cannot replace the current model choice", async () => {
     let release: () => void = () => {};
@@ -481,7 +490,7 @@ test("completed model downloads clear the pending defaults notice", async () => 
   );
   update(pendingSettings, downloading);
   expect(screen.getByText(/Models are downloading for MOSS/)).toBeTruthy();
-  expect(screen.getByText("Downloading required models…")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "MOSS" }).parentElement!.textContent).toContain("Downloading…");
 
   update({
     ...settings,
@@ -602,13 +611,6 @@ test("opening settings preserves a saved speaker model override", async () => {
     (screen.getByLabelText("Speaker model override") as HTMLSelectElement)
       .value,
   ).toBe("pyannote");
-  await user.click(
-    screen.getByRole("button", { name: "Download required models" }),
-  );
-  const spec = tauri.calls.find(
-    (c) => c.cmd === "download_recognition_artifacts",
-  )?.args.spec as ExecutionSpec;
-  expect(spec.config.speaker_source).toBe("pyannote");
   expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(
     false,
   );
@@ -621,6 +623,81 @@ test("model download progress appears beside that model", async () => {
   const row = screen.getByRole("radio", { name: "MOSS" }).parentElement!;
   expect(row.textContent).toContain("Downloading… 25 MB of 100 MB");
   expect(row.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("25");
+});
+
+describe("a shared supporting file download", () => {
+  const shared = "sortformer-v2-q80";
+  const bundled = [
+    { ...models[0], bundle: [stream, shared], bundle_size_bytes: 300_000_000 },
+    { ...models[1], bundle: [offline, shared], bundle_complete: false },
+  ];
+  const progress = { [shared]: { kind: "progress", downloaded: 50_000_000, total: 150_000_000 } } as Record<
+    string,
+    DownloadUpdate
+  >;
+  const rowOf = (name: string) => screen.getByRole("radio", { name }).parentElement!;
+
+  test("shows only on the row of the pending model, with Cancel", async () => {
+    let cancels = 0;
+    mockTauri({
+      resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
+      set_recognition_defaults: () => settings,
+    });
+    const pending = { ...settings, pending_recognition: { ...recognitionDefaults(settings), asr_model: stream } } as Settings;
+    render(
+      <TestModels
+        models={bundled}
+        live={progress}
+        settings={pending}
+        actions={{ cancel: () => cancels++, refresh: async () => {} }}
+      />,
+    );
+    await ready();
+    expect(rowOf("Parakeet").textContent).toContain("300 MB");
+    expect(rowOf("Parakeet").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("MOSS").textContent).not.toContain("Downloading");
+    const cancel = Array.from(rowOf("Parakeet").querySelectorAll("button")).find((b) => b.textContent === "Cancel")!;
+    await userEvent.setup().click(cancel);
+    expect(cancels).toBe(1);
+  });
+
+  test("shows only on the row whose Download button started it", async () => {
+    const { user, rerender } = open({ download_model_bundle: () => null }, settings, bundled);
+    await ready();
+    const download = Array.from(rowOf("MOSS").querySelectorAll("button")).find((b) => b.textContent === "Download")!;
+    await user.click(download);
+    rerender(
+      <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+    );
+    expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
+  });
+
+  test("a second Download click keeps the progress on the first row", async () => {
+    const incomplete = bundled.map((m) => ({ ...m, bundle_complete: false }));
+    const { user, rerender } = open({ download_model_bundle: () => null }, settings, incomplete);
+    await ready();
+    for (const name of ["MOSS", "Parakeet"]) {
+      const download = Array.from(rowOf(name).querySelectorAll("button")).find((b) => b.textContent === "Download")!;
+      await user.click(download);
+    }
+    rerender(
+      <TestModels models={incomplete} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+    );
+    expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Parakeet").textContent).toContain("Downloading… 50 MB of 150 MB");
+  });
+
+  test("a selection owns the rest of its bundle download", async () => {
+    const { user, rerender } = open({}, settings, bundled);
+    await ready();
+    await user.click(screen.getByRole("radio", { name: "MOSS" }));
+    rerender(
+      <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+    );
+    await waitFor(() => expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB"));
+    expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
+  });
 });
 
 test("choosing a model gives immediate feedback while its request is pending", async () => {

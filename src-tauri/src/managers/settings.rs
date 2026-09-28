@@ -137,6 +137,9 @@ pub struct Settings {
     pub microphone: Option<MicrophoneChoice>,
     /// Whether a new note starts with system audio on (R6, KD13).
     pub system_audio_default: bool,
+    /// macOS only: the app has no Dock icon while no window is visible
+    /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
+    pub hide_from_dock: bool,
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
@@ -260,6 +263,7 @@ impl Default for Settings {
             pending_recognition: None,
             microphone: None,
             system_audio_default: false,
+            hide_from_dock: false,
             learned_context_limits: Default::default(),
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
@@ -696,6 +700,17 @@ pub fn get_settings(app: &AppHandle) -> Settings {
     settings
 }
 
+/// Read the settings and write nothing: a migrated value is not saved.
+/// Launch reads the Dock policy with this before the single-instance lock
+/// (U19), so a second copy that exits changes no file.
+pub fn read_settings(app: &AppHandle) -> Settings {
+    app.store(SETTINGS_STORE_PATH)
+        .ok()
+        .and_then(|store| store.get(SETTINGS_KEY))
+        .map(|stored| settings_from_value(&stored).0)
+        .unwrap_or_default()
+}
+
 /// Serializes read-modify-write so two commands changing different fields
 /// never lose one another's change.
 static UPDATE_LOCK: Mutex<()> = Mutex::new(());
@@ -919,6 +934,30 @@ mod tests {
         assert_eq!(settings.endpoint_model, "kept");
         assert_eq!(Settings::default().microphone, None);
         assert!(!Settings::default().system_audio_default);
+    }
+
+    #[test]
+    fn a_store_without_hide_from_dock_reads_as_off_and_needs_no_migration() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert!(!settings.hide_from_dock);
+        assert_eq!(settings.endpoint_model, "kept");
+        assert!(!Settings::default().hide_from_dock);
+    }
+
+    #[test]
+    fn a_stored_hide_from_dock_value_is_kept() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "hide_from_dock": true,
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert!(settings.hide_from_dock);
     }
 
     #[test]

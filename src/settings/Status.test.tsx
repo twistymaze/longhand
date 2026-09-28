@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Readiness } from "../bindings";
+import { useState } from "react";
+import type { Readiness, Settings } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { StatusPane } from "./Status";
 import { features } from "../lib/features";
@@ -16,13 +17,46 @@ const readiness: Readiness = {
   endpoint_configured: true,
 };
 
+const baseSettings: Settings = {
+  settings_schema_version: 4,
+  interface_zoom_percent: 100,
+  shortcut: "Alt+Shift+L",
+  show_window_shortcut: null,
+  destination_roots: [],
+  current_destination: null,
+  endpoint_base_url: null,
+  endpoint_model: "",
+  context_limit_tokens: null,
+  default_speaker_count: null,
+  asr_model: "a",
+  pending_asr_model: null,
+  live_transcript: true,
+  speaker_source: "pyannote",
+  speaker_processing_mode: "after_stop",
+  recognition_language: null,
+  pending_recognition: null,
+  microphone: null,
+  system_audio_default: false,
+  hide_from_dock: false,
+  learned_context_limits: {},
+  summary_prompts: [],
+  active_summary_prompt: "topic-summary",
+};
+
+/// The pane with the settings state that the Settings window holds. A
+/// successful setter replaces the settings, as a refresh does.
+function Harness({ readiness: r, onRefresh = async () => {} }: { readiness: Readiness; onRefresh?: () => Promise<void> }) {
+  const [settings, setSettings] = useState(baseSettings);
+  return <StatusPane readiness={r} settings={settings} onSettings={setSettings} onRefresh={onRefresh} onNavigate={() => {}} />;
+}
+
 function renderPane(playResult: () => unknown = () => null) {
   const tauri = mockTauri({
     shortcut_status: () => shortcutStatuses,
     login_item_status: () => "disabled",
     play_alert_sound: playResult,
   });
-  render(<StatusPane readiness={readiness} onRefresh={async () => {}} onNavigate={() => {}} />);
+  render(<Harness readiness={readiness} />);
   const row = () => screen.getByText("Alert sound").closest(".settings-row") as HTMLElement;
   return { tauri, row };
 }
@@ -62,12 +96,11 @@ function renderSystemAudio(
     login_item_status: () => "disabled", ...handlers });
   let refreshed = 0;
   render(
-    <StatusPane
+    <Harness
       readiness={{ ...readiness, system_audio: state }}
       onRefresh={async () => {
         refreshed += 1;
       }}
-      onNavigate={() => {}}
     />,
   );
   const row = () => screen.getByText("Computer audio").closest(".settings-row") as HTMLElement;
@@ -76,7 +109,7 @@ function renderSystemAudio(
 
 test("while Computer audio is hidden, the General pane has no Computer audio row", () => {
   mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
-  render(<StatusPane readiness={{ ...readiness, system_audio: "not_asked" }} onRefresh={async () => {}} onNavigate={() => {}} />);
+  render(<Harness readiness={{ ...readiness, system_audio: "not_asked" }} />);
   expect(screen.queryByText("Computer audio")).toBeNull();
 });
 
@@ -129,5 +162,102 @@ describe("the Computer audio permission row", () => {
     await waitFor(() => expect(refreshed()).toBe(1), { timeout: 3000 });
     expect(tauri.calls.filter((c) => c.cmd === "request_system_audio_permission")).toHaveLength(1);
     expect(checks).toBe(2);
+  });
+});
+
+function setUserAgent(value: string) {
+  Object.defineProperty(navigator, "userAgent", { value, configurable: true });
+}
+
+function renderWindowGroup(handlers: Record<string, (args: Record<string, unknown>) => unknown> = {}) {
+  const tauri = mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled", ...handlers });
+  render(<Harness readiness={readiness} />);
+  const group = () => screen.getByRole("heading", { name: "Window" }).closest("section") as HTMLElement;
+  return { tauri, group };
+}
+
+test("the General pane shows its groups in the order Window, Recording, Processing, Alerts", () => {
+  mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+  render(<Harness readiness={readiness} />);
+  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
+    "Window",
+    "Recording",
+    "Processing",
+    "Alerts",
+  ]);
+});
+
+describe("the Hide from Dock switch on macOS", () => {
+  beforeEach(() => setUserAgent("Mozilla/5.0 (Macintosh; Mac OS X)"));
+  afterEach(() => {
+    delete (navigator as { userAgent?: string }).userAgent;
+  });
+
+  test("shows, is off by default, and a click turns it on", async () => {
+    const { tauri, group } = renderWindowGroup({
+      set_hide_from_dock: (args) => ({ ...baseSettings, hide_from_dock: args.enabled as boolean }),
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Hide from Dock" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await userEvent.setup().click(toggle);
+    expect(tauri.calls.filter((c) => c.cmd === "set_hide_from_dock").map((c) => c.args)).toEqual([{ enabled: true }]);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+  });
+
+  test("a failed change shows the error and keeps the previous value", async () => {
+    const { group } = renderWindowGroup({
+      set_hide_from_dock: () => {
+        throw "could not save settings";
+      },
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Hide from Dock" });
+    await userEvent.setup().click(toggle);
+    expect(await within(group()).findByText(/could not save settings/i)).toBeTruthy();
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+  });
+
+  test("the switch is off while a change is in progress", async () => {
+    let finish: () => void = () => {};
+    const { tauri, group } = renderWindowGroup({
+      set_hide_from_dock: (args) =>
+        new Promise<Settings>((resolve) => {
+          finish = () => resolve({ ...baseSettings, hide_from_dock: args.enabled as boolean });
+        }),
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Hide from Dock" }) as HTMLButtonElement;
+    const user = userEvent.setup();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+    await user.click(toggle);
+    expect(tauri.calls.filter((c) => c.cmd === "set_hide_from_dock")).toHaveLength(1);
+    finish();
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("the footer follows the switch value", async () => {
+    const { group } = renderWindowGroup({
+      set_hide_from_dock: (args) => ({ ...baseSettings, hide_from_dock: args.enabled as boolean }),
+    });
+    expect(group().textContent).toContain("Closing the window keeps Longhand in the Dock and the menu bar.");
+    await userEvent.setup().click(within(group()).getByRole("switch", { name: "Hide from Dock" }));
+    await waitFor(() =>
+      expect(group().textContent).toContain("Closing the window keeps Longhand running only in the menu bar."),
+    );
+    expect(group().textContent).not.toContain("Dock and the menu bar");
+  });
+});
+
+describe("the Window group on other platforms", () => {
+  beforeEach(() => setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+  afterEach(() => {
+    delete (navigator as { userAgent?: string }).userAgent;
+  });
+
+  test("has no Hide from Dock switch, and the footer says system tray", () => {
+    const { group } = renderWindowGroup();
+    expect(within(group()).queryByRole("switch", { name: "Hide from Dock" })).toBeNull();
+    expect(group().textContent).toContain("Closing the window keeps Longhand running in the system tray.");
+    expect(group().textContent).not.toContain("menu bar");
   });
 });
