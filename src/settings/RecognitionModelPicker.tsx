@@ -85,7 +85,7 @@ export function RecognitionModelPicker({
           return (
             <div
               key={m.id}
-              className={selected ? "rounded-lg bg-accent/10" : ""}
+              className={`rounded-lg ${selected ? "bg-accent/10" : "hover:bg-row-hover"}`}
             >
               <button
                 id={`${groupId}-${index}`}
@@ -115,7 +115,7 @@ export function RecognitionModelPicker({
                   onChange(choices[next].id);
                   document.getElementById(`${groupId}-${next}`)?.focus();
                 }}
-                className={`flex w-full min-w-0 cursor-default items-start gap-2.5 rounded-lg px-2.5 py-4 text-left outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-accent active:bg-fill-pressed ${selected ? "" : "hover:bg-row-hover"}`}
+                className="flex w-full min-w-0 cursor-default items-start gap-2.5 rounded-lg px-2.5 py-4 text-left outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-accent active:bg-fill-pressed"
               >
                 <span
                   aria-hidden
