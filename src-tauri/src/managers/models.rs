@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use models::download::{Event as DownloadProgress, partial_path};
 use models::{CancellationToken, CatalogModel, Limits, ModelKind, Outcome};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use session_core::{SessionRecord, SessionState};
 use specta::Type;
 use tauri::{AppHandle, Manager};
@@ -199,13 +199,186 @@ pub fn delete_refusal(
                 catalog_model.kind,
                 ModelKind::Segmentation | ModelKind::Embedding
             );
-        (model == Some(id) || snapshot_needs || legacy_speaker_needs)
-            && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
+        (model == Some(id) || snapshot_needs || legacy_speaker_needs) && is_unfinished(s)
     });
     if needed {
         return Some("A note that isn't finished needs this model.".into());
     }
     None
+}
+
+/// Whether a session is not finished: every state except Saved and
+/// Discarded. This is the same rule as [`delete_refusal`].
+fn is_unfinished(session: &SessionRecord) -> bool {
+    !matches!(session.state, SessionState::Saved | SessionState::Discarded)
+}
+
+/// The state that the delete rules read (KTD4, KTD5).
+#[derive(Debug, Clone, Copy)]
+pub struct DeleteInputs<'a> {
+    pub settings: &'a Settings,
+    /// The model of the live worker. It stays set while the live worker
+    /// saves its last part after Stop.
+    pub live_model: Option<&'a str>,
+    pub sessions: &'a [SessionRecord],
+    /// A recording is in progress.
+    pub recording: bool,
+    /// A model download is in progress.
+    pub downloading: bool,
+}
+
+/// Why "Delete all" is off (R6).
+#[derive(Serialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteAllBlock {
+    /// A recording is in progress, or the live worker still saves its
+    /// last part after Stop.
+    Recording,
+    Download,
+    /// A note is transcribing.
+    Transcription,
+}
+
+impl DeleteAllBlock {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Recording => "You can't delete all models while a recording is in progress.",
+            Self::Download => "You can't delete all models while a download is in progress.",
+            Self::Transcription => "You can't delete all models while a note is transcribing.",
+        }
+    }
+}
+
+/// A downloaded model, for the delete dialog (R7).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct DownloadedModel {
+    pub id: String,
+    pub name: String,
+    pub size_bytes: u64,
+    /// The app can delete the model now without an override:
+    /// [`delete_refusal`] gives no reason.
+    pub unused: bool,
+}
+
+/// The data of the delete dialog (KTD4).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct ModelDeletionSummary {
+    pub models: Vec<DownloadedModel>,
+    /// The notes that are not finished. They wait for the models after
+    /// "Delete all" (R8).
+    pub unfinished_notes: u32,
+    /// Why "Delete all" is off, or `None` when it is available.
+    pub delete_all_block: Option<DeleteAllBlock>,
+}
+
+/// Which downloaded models a bulk delete removes (KTD5).
+#[derive(Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteScope {
+    /// The models that [`delete_refusal`] allows at the time of the call.
+    Unused,
+    /// Every downloaded model, also the models in use.
+    All,
+}
+
+/// A model that a bulk delete could not delete (R10).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct ModelDeleteFailure {
+    pub id: String,
+    pub name: String,
+    pub message: String,
+}
+
+/// Why "Delete all" is off now, or `None` (R6, KTD5).
+pub fn delete_all_block(inputs: &DeleteInputs<'_>) -> Option<DeleteAllBlock> {
+    // A session in Capturing is a recording that the capture manager has
+    // started in the store but not yet opened.
+    if inputs.recording
+        || inputs.live_model.is_some()
+        || inputs
+            .sessions
+            .iter()
+            .any(|s| matches!(s.state, SessionState::Capturing))
+    {
+        Some(DeleteAllBlock::Recording)
+    } else if inputs.downloading {
+        Some(DeleteAllBlock::Download)
+    } else if inputs
+        .sessions
+        .iter()
+        .any(|s| matches!(s.state, SessionState::Processing { .. }))
+    {
+        Some(DeleteAllBlock::Transcription)
+    } else {
+        None
+    }
+}
+
+/// The downloaded models, with the `unused` flag of [`delete_refusal`].
+fn downloaded(statuses: &[ModelStatus], inputs: &DeleteInputs<'_>) -> Vec<DownloadedModel> {
+    statuses
+        .iter()
+        .filter(|s| s.state == ModelState::Present)
+        .map(|s| DownloadedModel {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            size_bytes: s.size_bytes,
+            unused: delete_refusal(&s.id, inputs.settings, inputs.live_model, inputs.sessions)
+                .is_none(),
+        })
+        .collect()
+}
+
+/// The data of the delete dialog (KTD4).
+pub fn deletion_summary(
+    statuses: &[ModelStatus],
+    inputs: &DeleteInputs<'_>,
+) -> ModelDeletionSummary {
+    ModelDeletionSummary {
+        models: downloaded(statuses, inputs),
+        unfinished_notes: inputs
+            .sessions
+            .iter()
+            .filter(|s| is_unfinished(s))
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX),
+        delete_all_block: delete_all_block(inputs),
+    }
+}
+
+/// Delete the downloaded models of `scope` with `delete` (KTD5). The
+/// `unused` scope applies [`delete_refusal`] again with `inputs`, so a
+/// model that became needed after the summary stays. The `all` scope
+/// refuses while [`delete_all_block`] gives a reason, and otherwise deletes
+/// every downloaded model. A failure does not stop the other deletes; the
+/// result lists the models that `delete` could not delete.
+pub fn delete_by_scope(
+    scope: DeleteScope,
+    statuses: &[ModelStatus],
+    inputs: &DeleteInputs<'_>,
+    mut delete: impl FnMut(&str) -> Result<(), String>,
+) -> Result<Vec<ModelDeleteFailure>, String> {
+    if scope == DeleteScope::All
+        && let Some(block) = delete_all_block(inputs)
+    {
+        return Err(block.message().into());
+    }
+    let failures = downloaded(statuses, inputs)
+        .into_iter()
+        .filter(|m| scope == DeleteScope::All || m.unused)
+        .filter_map(|m| {
+            delete(&m.id).err().map(|message| {
+                log::warn!("could not delete model '{}': {message}", m.id);
+                ModelDeleteFailure {
+                    id: m.id,
+                    name: m.name,
+                    message,
+                }
+            })
+        })
+        .collect();
+    Ok(failures)
 }
 
 /// One status for the speaker-detection weights (R7).
@@ -273,6 +446,11 @@ impl ModelsManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Whether a model download is in progress.
+    pub fn is_downloading(&self) -> bool {
+        !self.active().is_empty()
     }
 
     pub fn statuses(&self, asr_model: &str) -> Vec<ModelStatus> {
@@ -961,6 +1139,291 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// The statuses for `settings`, with the models in `present` on disk.
+    fn statuses_with(settings: &Settings, present: &[&str]) -> Vec<ModelStatus> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut statuses = ModelsManager::at(dir.path().to_path_buf())
+            .statuses_for(&settings.recognition_config())
+            .unwrap();
+        for status in &mut statuses {
+            if present.contains(&status.id.as_str()) {
+                status.state = ModelState::Present;
+            }
+        }
+        statuses
+    }
+
+    /// The ids of the models that the current choices need.
+    fn required_ids(settings: &Settings) -> Vec<String> {
+        statuses_with(settings, &[])
+            .into_iter()
+            .filter(|s| s.required)
+            .map(|s| s.id)
+            .collect()
+    }
+
+    fn inputs<'a>(settings: &'a Settings, sessions: &'a [SessionRecord]) -> DeleteInputs<'a> {
+        DeleteInputs {
+            settings,
+            live_model: None,
+            sessions,
+            recording: false,
+            downloading: false,
+        }
+    }
+
+    #[test]
+    fn the_summary_marks_only_an_unselected_transcription_model_as_unused() {
+        // AE5.
+        let settings = whisper_selected();
+        let required = required_ids(&settings);
+        assert!(required.len() > 1, "the choice has supporting models");
+        let mut present: Vec<&str> = required.iter().map(String::as_str).collect();
+        present.push(TDT_1_1B);
+        let statuses = statuses_with(&settings, &present);
+        let summary = deletion_summary(&statuses, &inputs(&settings, &[]));
+
+        assert_eq!(summary.models.len(), present.len());
+        let unused: Vec<_> = summary.models.iter().filter(|m| m.unused).collect();
+        assert_eq!(unused.len(), 1);
+        assert_eq!(unused[0].id, TDT_1_1B);
+        let tdt_size = models::model(TDT_1_1B).unwrap().size_bytes;
+        assert_eq!(unused[0].size_bytes, tdt_size);
+        assert_eq!(summary.unfinished_notes, 0);
+        assert_eq!(summary.delete_all_block, None);
+    }
+
+    #[test]
+    fn the_summary_has_no_unused_model_when_only_the_current_choices_are_downloaded() {
+        // AE6.
+        let settings = whisper_selected();
+        let required = required_ids(&settings);
+        let present: Vec<&str> = required.iter().map(String::as_str).collect();
+        let summary =
+            deletion_summary(&statuses_with(&settings, &present), &inputs(&settings, &[]));
+        assert_eq!(summary.models.len(), present.len());
+        assert!(summary.models.iter().all(|m| !m.unused));
+    }
+
+    #[test]
+    fn a_model_that_a_queued_note_needs_is_not_unused_and_the_note_counts() {
+        let settings = whisper_selected();
+        let stopped_at = stopped();
+        let sessions = [
+            note(TDT_1_1B, SessionState::Queued { stopped_at }),
+            note(TDT_V2, SessionState::Saved),
+            note(TDT_V2, SessionState::Discarded),
+        ];
+        let statuses = statuses_with(&settings, &[TDT_1_1B, TDT_V2]);
+        let summary = deletion_summary(&statuses, &inputs(&settings, &sessions));
+        let unused = |id: &str| summary.models.iter().find(|m| m.id == id).unwrap().unused;
+        assert!(!unused(TDT_1_1B));
+        // Saved and Discarded notes need no model and do not count.
+        assert!(unused(TDT_V2));
+        assert_eq!(summary.unfinished_notes, 1);
+        assert_eq!(summary.delete_all_block, None);
+    }
+
+    #[test]
+    fn delete_all_is_off_while_a_note_transcribes_a_recording_runs_or_a_download_runs() {
+        // AE9.
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[TDT_1_1B]);
+        let stopped_at = stopped();
+        let processing = [note(PARAKEET, SessionState::Processing { stopped_at })];
+        let summary = deletion_summary(&statuses, &inputs(&settings, &processing));
+        assert_eq!(
+            summary.delete_all_block,
+            Some(DeleteAllBlock::Transcription)
+        );
+        assert!(summary.models.iter().any(|m| m.unused));
+
+        let recording = DeleteInputs {
+            recording: true,
+            ..inputs(&settings, &[])
+        };
+        assert_eq!(
+            deletion_summary(&statuses, &recording).delete_all_block,
+            Some(DeleteAllBlock::Recording)
+        );
+        let downloading = DeleteInputs {
+            downloading: true,
+            ..inputs(&settings, &[])
+        };
+        assert_eq!(
+            deletion_summary(&statuses, &downloading).delete_all_block,
+            Some(DeleteAllBlock::Download)
+        );
+    }
+
+    #[test]
+    fn delete_all_refuses_while_recording_downloading_or_transcribing() {
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[TDT_1_1B]);
+        let stopped_at = stopped();
+        let processing = [note(PARAKEET, SessionState::Processing { stopped_at })];
+        let capturing = [note(PARAKEET, SessionState::Capturing)];
+        // The live worker saves its last part after Stop: no recording runs,
+        // but the live model is set.
+        let live_after_stop = DeleteInputs {
+            live_model: Some(PARAKEET),
+            ..inputs(&settings, &[])
+        };
+        let cases = [
+            (
+                DeleteInputs {
+                    recording: true,
+                    ..inputs(&settings, &[])
+                },
+                DeleteAllBlock::Recording,
+            ),
+            (live_after_stop, DeleteAllBlock::Recording),
+            // The store has the new recording before the capture opens.
+            (inputs(&settings, &capturing), DeleteAllBlock::Recording),
+            (
+                DeleteInputs {
+                    downloading: true,
+                    ..inputs(&settings, &[])
+                },
+                DeleteAllBlock::Download,
+            ),
+            (
+                inputs(&settings, &processing),
+                DeleteAllBlock::Transcription,
+            ),
+        ];
+        for (inputs, block) in cases {
+            assert_eq!(
+                deletion_summary(&statuses, &inputs).delete_all_block,
+                Some(block)
+            );
+            let mut deleted = Vec::new();
+            let result = delete_by_scope(DeleteScope::All, &statuses, &inputs, |id| {
+                deleted.push(id.to_string());
+                Ok(())
+            });
+            assert_eq!(result, Err(block.message().to_string()));
+            assert!(deleted.is_empty(), "{block:?}");
+        }
+    }
+
+    #[test]
+    fn delete_all_deletes_the_models_in_use() {
+        // AE7: two notes wait; every model goes, the selected one too.
+        let settings = whisper_selected();
+        let stopped_at = stopped();
+        let sessions = [
+            note(WHISPER, SessionState::Queued { stopped_at }),
+            note(WHISPER, SessionState::Blocked { stopped_at }),
+        ];
+        let required = required_ids(&settings);
+        let mut present: Vec<&str> = required.iter().map(String::as_str).collect();
+        present.push(TDT_1_1B);
+        let statuses = statuses_with(&settings, &present);
+        let summary = deletion_summary(&statuses, &inputs(&settings, &sessions));
+        assert_eq!(summary.unfinished_notes, 2);
+        let mut deleted = Vec::new();
+        let failures = delete_by_scope(
+            DeleteScope::All,
+            &statuses,
+            &inputs(&settings, &sessions),
+            |id| {
+                deleted.push(id.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(failures.is_empty());
+        deleted.sort();
+        let mut expected: Vec<String> = present.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(deleted, expected);
+    }
+
+    #[test]
+    fn delete_unused_checks_the_rules_again_at_the_time_of_the_call() {
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[TDT_1_1B, TDT_V2]);
+        let summary = deletion_summary(&statuses, &inputs(&settings, &[]));
+        assert!(summary.models.iter().all(|m| m.unused));
+
+        // A note that needs TDT 1.1B is queued after the summary.
+        let sessions = [note(
+            TDT_1_1B,
+            SessionState::Queued {
+                stopped_at: stopped(),
+            },
+        )];
+        let mut deleted = Vec::new();
+        let failures = delete_by_scope(
+            DeleteScope::Unused,
+            &statuses,
+            &inputs(&settings, &sessions),
+            |id| {
+                deleted.push(id.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(failures.is_empty());
+        assert_eq!(deleted, [TDT_V2]);
+    }
+
+    #[test]
+    fn delete_unused_works_while_a_note_transcribes() {
+        // AE9: only "Delete all" is off.
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[TDT_1_1B]);
+        let sessions = [note(
+            PARAKEET,
+            SessionState::Processing {
+                stopped_at: stopped(),
+            },
+        )];
+        let mut deleted = Vec::new();
+        delete_by_scope(
+            DeleteScope::Unused,
+            &statuses,
+            &inputs(&settings, &sessions),
+            |id| {
+                deleted.push(id.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(deleted, [TDT_1_1B]);
+    }
+
+    #[test]
+    fn a_failed_delete_does_not_stop_the_others_and_the_result_names_it() {
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[TDT_1_1B, TDT_V2, PARAKEET]);
+        for scope in [DeleteScope::Unused, DeleteScope::All] {
+            let mut deleted = Vec::new();
+            let failures = delete_by_scope(scope, &statuses, &inputs(&settings, &[]), |id| {
+                if id == TDT_1_1B {
+                    return Err("disk error".into());
+                }
+                deleted.push(id.to_string());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                failures,
+                [ModelDeleteFailure {
+                    id: TDT_1_1B.into(),
+                    name: models::model(TDT_1_1B).unwrap().name.clone(),
+                    message: "disk error".into(),
+                }],
+                "{scope:?}"
+            );
+            deleted.sort();
+            let mut expected = vec![TDT_V2.to_string(), PARAKEET.to_string()];
+            expected.sort();
+            assert_eq!(deleted, expected, "{scope:?}");
+        }
     }
 
     #[test]

@@ -59,6 +59,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::models::cancel_model_downloads,
             commands::models::speaker_models_status,
             commands::models::delete_model,
+            commands::models::model_deletion_summary,
+            commands::models::delete_models,
             commands::readiness::readiness,
             commands::readiness::system_audio_permission,
             commands::readiness::request_system_audio_permission,
