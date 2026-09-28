@@ -248,9 +248,9 @@ A third five-minute backend matrix passed all 49 combinations with the corrected
 
 ## Full-length validation and corrections, 2026-09-28
 
-The first 176.2-minute native playback used signed release source `3058b96` with Nemotron Speech Streaming EN and Nemotron 3, both during recording. Audio capture continued, but the live transcript view became unresponsive as output accumulated. The renderer reached about 4 GiB RSS. Earlier backend-plus-helper memory samples did not include that renderer and therefore did not establish total app memory use.
+The first 176.2-minute native playback used signed release source `3058b96` with Nemotron Speech Streaming EN and Nemotron 3, both during recording. Audio capture continued, but the live transcript view became unresponsive as output accumulated. The renderer reached about 5.0 GiB RSS in the final memory samples. Earlier backend-plus-helper memory samples did not include that renderer and therefore did not establish total app memory use.
 
-Stop did not complete through the unresponsive view. After checking that durable audio covered the full playback, the app was closed through its native menu and restarted. The recovered note then entered processing. This run failed the normal live-view and Stop interaction checks. Recovery completion is a separate measurement and must not replace that result.
+Stop did not complete through the unresponsive view. After checking that durable audio covered the full playback, the app was closed through its native menu and restarted. The recovered note saved its transcript and summary about 21 minutes 20 seconds after the recovered Stop. It reprocessed the verified recording because the interrupted live output could not pass provenance checks. Summary generation began about 24 seconds before Save. This run failed the normal live-view and Stop interaction checks. Recovery completion is a separate measurement and must not replace that result.
 
 Source `d031ca2` indexes row comparison and speaker projection and batches incoming updates. A synthetic state with 40,000 words, separate speaker snapshots, and 1,000 additional patches took about 25.5 ms after the fix, compared with about 27.7 seconds before it. This is reducer evidence, not a native rendering measurement. The native long-note Resume check remains pending.
 
