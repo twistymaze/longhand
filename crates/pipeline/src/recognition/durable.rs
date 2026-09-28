@@ -574,6 +574,235 @@ pub(super) fn commit_blocks(
     Ok(())
 }
 
+/// The native operation can produce one or both output modalities, even when
+/// a completed interval contains no words or speaker turns.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(super) struct EpochOutput {
+    pub text: bool,
+    pub speakers: bool,
+}
+
+#[derive(Default)]
+struct CatchupCoverage {
+    text: Vec<SampleRange>,
+    speakers: Vec<SampleRange>,
+}
+
+/// Visit one authoritative copy of completed history and the remaining live output.
+/// The caller holds the store lock through selection and publication.
+pub fn visit_catchup_blocks(
+    store: &session_core::Store,
+    id: &str,
+    generation: &str,
+    mut visitor: impl FnMut(OutputBlock) -> session_core::jobs::Result<()>,
+) -> session_core::jobs::Result<()> {
+    let index = store
+        .checkpoint_value(id, Stage::Transcribe, super::RESULT_KEY)?
+        .map(|value| serde_json::from_str::<serde_json::Value>(&value))
+        .transpose()?
+        .filter(|value| value.get("version").is_some())
+        .map(serde_json::from_value::<ResultIndex>)
+        .transpose()?
+        .filter(|index| index.version == 1 && index.generation == generation);
+    let result_coverage = index
+        .as_ref()
+        .map(|index| index.coverage.clone())
+        .unwrap_or_default();
+    #[derive(serde::Deserialize)]
+    struct CompletedEpoch {
+        scope: SpeakerScope,
+        range: SampleRange,
+        #[serde(default)]
+        output: Option<EpochOutput>,
+    }
+    let mut completed = std::collections::BTreeMap::new();
+    for stage in [Stage::Transcribe, Stage::Diarize] {
+        for (key, value) in store.checkpoints(id, stage)? {
+            if key.starts_with("recognition-epoch-") {
+                let record: CompletedEpoch = serde_json::from_str(&value)?;
+                if record.scope.generation == generation {
+                    let output = record.output.unwrap_or(EpochOutput {
+                        text: stage == Stage::Transcribe,
+                        speakers: stage == Stage::Diarize,
+                    });
+                    completed.insert(record.scope.epoch, (record.range, output));
+                }
+            }
+        }
+    }
+    let coverage_after = |after: Option<u64>| {
+        let mut coverage = CatchupCoverage {
+            text: result_coverage.clone(),
+            speakers: result_coverage.clone(),
+        };
+        for (&epoch, &(range, output)) in &completed {
+            if after.is_some_and(|after| epoch <= after) {
+                continue;
+            }
+            if output.text {
+                coverage.text.push(range);
+            }
+            if output.speakers {
+                coverage.speakers.push(range);
+            }
+        }
+        coverage.text = merged_ranges(coverage.text);
+        coverage.speakers = merged_ranges(coverage.speakers);
+        coverage
+    };
+    let covered = coverage_after(None);
+    let completed_coverage: std::collections::BTreeMap<_, _> = completed
+        .keys()
+        .map(|&epoch| (epoch, coverage_after(Some(epoch))))
+        .collect();
+    // A resumed native stream can retain its original blocks beside completed
+    // epoch copies. Failed replay attempts can also remain in this generation.
+    let mut live_ranges = std::collections::BTreeMap::<u64, Vec<SampleRange>>::new();
+    let mut live_inputs = std::collections::BTreeMap::<u64, SampleRange>::new();
+    store.visit_recognition(id, generation, |block| {
+        if block.key.starts_with("nemo/") && !completed.contains_key(&block.scope.epoch) {
+            if let Some(range) = block.coverage.received {
+                live_inputs
+                    .entry(block.scope.epoch)
+                    .and_modify(|input| {
+                        input.start = input.start.min(range.start);
+                        input.end = input.end.max(range.end);
+                    })
+                    .or_insert(range);
+            }
+            for row in &block.rows {
+                if row.text_finality == Finality::Final {
+                    live_ranges
+                        .entry(block.scope.epoch)
+                        .or_default()
+                        .push(row.range);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    for ranges in live_ranges.values_mut() {
+        *ranges = merged_ranges(std::mem::take(ranges));
+    }
+    store.visit_recognition(id, generation, |mut block| {
+        if block.key.starts_with("result/") {
+            return if index
+                .as_ref()
+                .is_some_and(|index| block.key.starts_with(&index.prefix))
+            {
+                visitor(block)
+            } else {
+                Ok(())
+            };
+        }
+        let native_final = block.key.starts_with("native-final/");
+        let native_live = block.key.starts_with("nemo/");
+        if native_final && !completed.contains_key(&block.scope.epoch) {
+            return Ok(());
+        }
+        if native_live && completed.contains_key(&block.scope.epoch) {
+            return Ok(());
+        }
+        let covered = if native_final {
+            &completed_coverage[&block.scope.epoch]
+        } else {
+            &covered
+        };
+        if native_live
+            && live_inputs.get(&block.scope.epoch).is_some_and(|range| {
+                range_is_covered(&covered.text, *range)
+                    && range_is_covered(&covered.speakers, *range)
+            })
+        {
+            return Ok(());
+        }
+        let had_output = !block.rows.is_empty() || !block.speakers.is_empty();
+        // A word that crosses a boundary remains whole, with its native timing.
+        // There is no reliable way to split its text at an arbitrary sample.
+        block.rows.retain(|row| {
+            !(range_is_covered(&covered.text, row.range)
+                || (native_live
+                    && live_ranges
+                        .range((
+                            std::ops::Bound::Excluded(block.scope.epoch),
+                            std::ops::Bound::Unbounded,
+                        ))
+                        .any(|(_, ranges)| range_is_covered(ranges, row.range)))
+                || (native_live
+                    && row.text_finality == Finality::Provisional
+                    && live_ranges
+                        .range(..block.scope.epoch)
+                        .any(|(_, ranges)| range_is_covered(ranges, row.range))))
+        });
+        block.speakers = block
+            .speakers
+            .into_iter()
+            .flat_map(|turn| {
+                uncovered_ranges(turn.range, &covered.speakers)
+                    .into_iter()
+                    .map(move |range| {
+                        let mut part = turn.clone();
+                        if part.range != range {
+                            part.timing = TimingPrecision::NativeSegmentClipped;
+                        }
+                        part.range = range;
+                        part
+                    })
+            })
+            .collect();
+        if had_output && block.rows.is_empty() && block.speakers.is_empty() {
+            return Ok(());
+        }
+        // Empty markers are part of the snapshot protocol. Keep them even when
+        // all rows were superseded; they can complete an empty speaker update.
+        visitor(block)
+    })
+}
+
+fn merged_ranges(mut ranges: Vec<SampleRange>) -> Vec<SampleRange> {
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<SampleRange> = vec![];
+    for range in ranges {
+        if let Some(last) = merged.last_mut().filter(|last| range.start <= last.end) {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+fn range_is_covered(ranges: &[SampleRange], range: SampleRange) -> bool {
+    let before = ranges.partition_point(|covered| covered.start <= range.start);
+    before > 0
+        && ranges[before - 1].end >= range.end
+        && (range.start < range.end || range.start < ranges[before - 1].end)
+}
+
+fn uncovered_ranges(range: SampleRange, covered: &[SampleRange]) -> Vec<SampleRange> {
+    let mut start = range.start;
+    let mut remaining = vec![];
+    for cut in covered {
+        if cut.end <= start || cut.start >= range.end {
+            continue;
+        }
+        if cut.start > start {
+            remaining.push(SampleRange {
+                start,
+                end: cut.start,
+            });
+        }
+        start = start.max(cut.end);
+    }
+    if start < range.end {
+        remaining.push(SampleRange {
+            start,
+            end: range.end,
+        });
+    }
+    remaining
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ResultIndex {
     version: u32,
@@ -815,6 +1044,365 @@ mod tests {
         })
         .unwrap();
         (temp, store, segment, spec)
+    }
+
+    #[test]
+    fn catchup_selects_saved_result_once_and_retains_resumed_words() {
+        let (_temp, store, _, _) = audio_fixture();
+        let generation = super::super::stages::generation(&store, "test").unwrap();
+        let make = |epoch, start, end, text: &str| {
+            let scope = SpeakerScope {
+                generation: generation.clone(),
+                epoch,
+            };
+            RecognitionSegment {
+                id: RecognitionId {
+                    scope,
+                    input_start_sample: start,
+                    ordinal: 0,
+                },
+                range: SampleRange { start, end },
+                timing: TimingPrecision::NativeSegment,
+                text: text.into(),
+                speaker: None,
+                revision: 1,
+                text_finality: Finality::Final,
+                speaker_finality: Finality::Final,
+            }
+        };
+        let put_native = |row: RecognitionSegment| {
+            let block = OutputBlock {
+                key: format!("nemo/{:020}/word/0", row.id.scope.epoch),
+                scope: row.id.scope.clone(),
+                revision: 1,
+                coverage: Coverage {
+                    received: Some(row.range),
+                    computed: Some(row.range),
+                    provisional: None,
+                    committed: Some(row.range),
+                },
+                rows: vec![row],
+                speakers: vec![],
+            };
+            lock(&store).commit_recognition("test", &block).unwrap();
+        };
+        put_native(make(1, 0, 16000, "obsolete"));
+        let mut result = RouteResult {
+            route: super::super::Route::Off,
+            rows: vec![make(2, 0, 16000, "old result")],
+            speakers: vec![],
+            coverage: vec![SampleRange {
+                start: 0,
+                end: 16000,
+            }],
+            coverage_limitations: vec![],
+        };
+        persist_result(&store, "test", &result).unwrap();
+        result.rows = vec![make(3, 0, 16000, "saved")];
+        put_native(result.rows[0].clone());
+        persist_result(&store, "test", &result).unwrap();
+        put_native(make(4, 16000, 32000, "resumed"));
+        let mut rows = vec![];
+        visit_catchup_blocks(&lock(&store), "test", &generation, |block| {
+            rows.extend(block.rows);
+            Ok(())
+        })
+        .unwrap();
+        rows.sort_by_key(|row| row.range.start);
+        assert_eq!(
+            rows.iter().map(|row| row.text.as_str()).collect::<Vec<_>>(),
+            vec!["saved", "resumed"]
+        );
+    }
+
+    #[test]
+    fn catchup_preserves_uncovered_words_and_completed_epoch_speakers() {
+        let (_temp, store, _, _) = audio_fixture();
+        let generation = super::super::stages::generation(&store, "test").unwrap();
+        let scope = |epoch| SpeakerScope {
+            generation: generation.clone(),
+            epoch,
+        };
+        let put = |key: &str, epoch, start, end, text: &str, speaker_only| {
+            let range = SampleRange { start, end };
+            let speaker = SpeakerKey {
+                scope: scope(epoch),
+                input_start_sample: 0,
+                local_id: 1,
+            };
+            lock(&store)
+                .commit_recognition(
+                    "test",
+                    &OutputBlock {
+                        key: key.into(),
+                        scope: scope(epoch),
+                        revision: 1,
+                        coverage: Coverage {
+                            received: Some(range),
+                            computed: Some(range),
+                            provisional: None,
+                            committed: Some(range),
+                        },
+                        rows: if speaker_only {
+                            vec![]
+                        } else {
+                            vec![RecognitionSegment {
+                                id: RecognitionId {
+                                    scope: scope(epoch),
+                                    input_start_sample: 0,
+                                    ordinal: start,
+                                },
+                                range,
+                                timing: TimingPrecision::NativeSegment,
+                                text: text.into(),
+                                speaker: None,
+                                revision: 1,
+                                text_finality: Finality::Final,
+                                speaker_finality: Finality::Final,
+                            }]
+                        },
+                        speakers: if speaker_only {
+                            vec![SpeakerTurn {
+                                range,
+                                timing: TimingPrecision::NativeSegment,
+                                speaker,
+                                finality: Finality::Final,
+                            }]
+                        } else {
+                            vec![]
+                        },
+                    },
+                )
+                .unwrap();
+        };
+        // Epoch 2 replaces only the first second of epoch 1. Its completed
+        // rows have both final copies and original live blocks.
+        put("nemo/1/word/0", 1, 0, 16000, "old", false);
+        put("nemo/1/word/1", 1, 16000, 32000, "tail", false);
+        put("nemo/1/word/2", 1, 15000, 17000, "boundary", false);
+        put("nemo/1/turn/0", 1, 0, 32000, "", true);
+        put("nemo/2/word/0", 2, 0, 16000, "replacement", false);
+        put("nemo/2/turn/0", 2, 0, 16000, "", true);
+        put("native-final/2/row/0", 2, 0, 16000, "replacement", false);
+        put("native-final/2/speaker/0", 2, 0, 16000, "", true);
+        checkpoint::put(
+            &store,
+            "test",
+            Stage::Transcribe,
+            "recognition-epoch-00000000000000000000",
+            &serde_json::json!({ "scope": scope(2), "range": { "start": 0, "end": 16000 },
+                "output": { "text": true, "speakers": true } }),
+        )
+        .unwrap();
+        let mut blocks = vec![];
+        visit_catchup_blocks(&lock(&store), "test", &generation, |block| {
+            blocks.push(block);
+            Ok(())
+        })
+        .unwrap();
+        let mut words: Vec<_> = blocks.iter().flat_map(|block| block.rows.iter()).collect();
+        words.sort_by_key(|row| row.range.start);
+        assert_eq!(
+            words
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["replacement", "boundary", "tail"]
+        );
+        assert_eq!(
+            words[1].range,
+            SampleRange {
+                start: 15000,
+                end: 17000
+            }
+        );
+        assert_eq!(words[1].timing, TimingPrecision::NativeSegment);
+        let turns: Vec<_> = blocks
+            .iter()
+            .flat_map(|block| block.speakers.iter())
+            .collect();
+        assert_eq!(turns.len(), 2);
+        assert!(turns.iter().any(|turn| turn.range
+            == SampleRange {
+                start: 16000,
+                end: 32000
+            }
+            && turn.timing == TimingPrecision::NativeSegmentClipped));
+        // Older combined epochs have no modality metadata. Their persisted
+        // speaker copy remains visible without its original live duplicate.
+        checkpoint::put(
+            &store,
+            "test",
+            Stage::Transcribe,
+            "recognition-epoch-00000000000000000000",
+            &serde_json::json!({
+                "scope": scope(2), "range": { "start": 0, "end": 16000 },
+                "rows": 1, "speakers": 1,
+            }),
+        )
+        .unwrap();
+        let mut restored = vec![];
+        visit_catchup_blocks(&lock(&store), "test", &generation, |block| {
+            restored.push(block);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            restored
+                .iter()
+                .filter(|block| block.scope.epoch == 2)
+                .flat_map(|block| block.speakers.iter())
+                .count(),
+            1
+        );
+        assert!(
+            restored
+                .iter()
+                .all(|block| !block.key.starts_with("nemo/2/"))
+        );
+    }
+
+    #[test]
+    fn catchup_replay_keeps_old_tail_until_new_words_commit() {
+        let (_temp, store, _, _) = audio_fixture();
+        let generation = super::super::stages::generation(&store, "test").unwrap();
+        for (epoch, start, end, finality, text) in [
+            (1, 0, 16000, Finality::Final, "old"),
+            (1, 16000, 32000, Finality::Final, "tail"),
+            (2, 0, 16000, Finality::Final, "replayed"),
+            (2, 16000, 32000, Finality::Provisional, "interim"),
+            (2, 32000, 48000, Finality::Provisional, "new interim"),
+        ] {
+            let scope = SpeakerScope {
+                generation: generation.clone(),
+                epoch,
+            };
+            let range = SampleRange { start, end };
+            lock(&store)
+                .commit_recognition(
+                    "test",
+                    &OutputBlock {
+                        key: format!(
+                            "nemo/{epoch}/{}/{start}",
+                            if finality == Finality::Provisional {
+                                "interim"
+                            } else {
+                                "word"
+                            }
+                        ),
+                        scope: scope.clone(),
+                        revision: 1,
+                        coverage: Coverage {
+                            received: Some(range),
+                            computed: Some(range),
+                            provisional: Some(range),
+                            committed: None,
+                        },
+                        speakers: vec![],
+                        rows: vec![RecognitionSegment {
+                            id: RecognitionId {
+                                scope,
+                                input_start_sample: 0,
+                                ordinal: start,
+                            },
+                            range,
+                            timing: TimingPrecision::NativeSegment,
+                            text: text.into(),
+                            speaker: None,
+                            revision: 1,
+                            text_finality: finality,
+                            speaker_finality: Finality::Provisional,
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+        let mut words = vec![];
+        visit_catchup_blocks(&lock(&store), "test", &generation, |block| {
+            words.extend(block.rows.into_iter().map(|row| row.text));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(words, vec!["tail", "new interim", "replayed"]);
+    }
+
+    #[test]
+    fn catchup_completed_empty_epoch_replaces_only_its_output_modality() {
+        for speaker_only in [false, true] {
+            let (_temp, store, _, _) = audio_fixture();
+            let generation = super::super::stages::generation(&store, "test").unwrap();
+            let scope = SpeakerScope {
+                generation: generation.clone(),
+                epoch: 1,
+            };
+            let range = SampleRange {
+                start: 0,
+                end: 16000,
+            };
+            lock(&store)
+                .commit_recognition(
+                    "test",
+                    &OutputBlock {
+                        key: "nemo/1/word/0".into(),
+                        scope: scope.clone(),
+                        revision: 1,
+                        coverage: Coverage {
+                            received: Some(range),
+                            computed: Some(range),
+                            provisional: Some(range),
+                            committed: None,
+                        },
+                        rows: vec![RecognitionSegment {
+                            id: RecognitionId {
+                                scope: scope.clone(),
+                                input_start_sample: 0,
+                                ordinal: 0,
+                            },
+                            range,
+                            timing: TimingPrecision::NativeSegment,
+                            text: "retained text".into(),
+                            speaker: None,
+                            revision: 1,
+                            text_finality: Finality::Final,
+                            speaker_finality: Finality::Provisional,
+                        }],
+                        speakers: vec![SpeakerTurn {
+                            range,
+                            timing: TimingPrecision::NativeSegment,
+                            speaker: SpeakerKey {
+                                scope,
+                                input_start_sample: 0,
+                                local_id: 1,
+                            },
+                            finality: Finality::Provisional,
+                        }],
+                    },
+                )
+                .unwrap();
+            checkpoint::put(&store, "test", if speaker_only { Stage::Diarize } else { Stage::Transcribe },
+                "recognition-epoch-00000000000000000000", &serde_json::json!({
+                    "scope": {"generation": generation, "epoch": 2}, "range": range,
+                    "rows": 0, "speakers": 0, "output": { "text": !speaker_only, "speakers": speaker_only },
+                })).unwrap();
+            let mut words = vec![];
+            let mut turns = vec![];
+            visit_catchup_blocks(&lock(&store), "test", &generation, |block| {
+                words.extend(block.rows);
+                turns.extend(block.speakers);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                words.len(),
+                usize::from(speaker_only),
+                "text; speaker-only={speaker_only}"
+            );
+            assert_eq!(
+                turns.len(),
+                usize::from(!speaker_only),
+                "speakers; speaker-only={speaker_only}"
+            );
+        }
     }
 
     #[test]

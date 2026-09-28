@@ -507,8 +507,11 @@ fn recognition_catchup(
     let mut events = Vec::new();
     let mut completed_speakers = std::collections::BTreeMap::new();
     let mut batches = std::collections::BTreeMap::<(u64, bool), Vec<LiveRecognitionEvent>>::new();
-    store
-        .visit_recognition(session_id, &generation, |block| {
+    pipeline::recognition::durable::visit_catchup_blocks(
+        &store,
+        session_id,
+        &generation,
+        |block| {
             if block.key == format!("nemo/{:020}/turn-commit", block.scope.epoch) {
                 completed_speakers.insert(block.scope.epoch, block.revision);
                 batches.entry((block.scope.epoch, true)).or_default();
@@ -526,8 +529,9 @@ fn recognition_catchup(
                 _ => {}
             }
             Ok(())
-        })
-        .map_err(|e| e.to_string())?;
+        },
+    )
+    .map_err(|e| e.to_string())?;
     for ((epoch, speakers), mut batch) in batches {
         let revision = if speakers {
             if let Some(revision) = completed_speakers.get(&epoch) {
@@ -613,16 +617,25 @@ fn recognition_event(
         text_final: false,
         speaker_final: turn.finality == asr::Finality::Final,
     }));
+    let phase = if !block.speakers.is_empty() {
+        LiveRecognitionPhase::SnapshotBatch
+    } else if block.key.contains("/interim/") {
+        LiveRecognitionPhase::InterimBatch
+    } else {
+        LiveRecognitionPhase::Patch
+    };
     LiveRecognitionEvent {
         session_id: session_id.into(),
-        phase: if !block.speakers.is_empty() {
-            LiveRecognitionPhase::SnapshotBatch
-        } else if block.key.contains("/interim/") {
-            LiveRecognitionPhase::InterimBatch
+        phase,
+        key: if matches!(phase, LiveRecognitionPhase::Patch) && block.rows.len() == 1 {
+            let id = &block.rows[0].id;
+            format!(
+                "row/{}/{}/{}/{}",
+                id.scope.generation, id.scope.epoch, id.input_start_sample, id.ordinal
+            )
         } else {
-            LiveRecognitionPhase::Patch
+            block.key.clone()
         },
-        key: block.key.clone(),
         generation: block.scope.generation.clone(),
         epoch: block.scope.epoch,
         revision: block.revision,
@@ -1004,6 +1017,128 @@ mod tests {
             reopened.recognition[0].rows[0].text.as_deref(),
             Some("Final")
         );
+    }
+
+    #[test]
+    fn replay_catchup_emits_only_retained_final_text_for_overlapping_interim() {
+        use session_core::recognition::*;
+        let store = store();
+        store
+            .lock()
+            .unwrap()
+            .create_session("s", chrono::Local::now().fixed_offset(), None)
+            .unwrap();
+        pipeline::checkpoint::put(
+            &store,
+            "s",
+            session_core::Stage::Transcribe,
+            "recognition-generation-v1",
+            &"g",
+        )
+        .unwrap();
+        for (epoch, finality, kind, text) in [
+            (1, Finality::Final, "word", "retained"),
+            (2, Finality::Provisional, "interim", "replay"),
+        ] {
+            let scope = SpeakerScope {
+                generation: "g".into(),
+                epoch,
+            };
+            let range = SampleRange {
+                start: 0,
+                end: 16000,
+            };
+            store
+                .lock()
+                .unwrap()
+                .commit_recognition(
+                    "s",
+                    &OutputBlock {
+                        key: format!("nemo/{epoch}/{kind}/0"),
+                        scope: scope.clone(),
+                        revision: 1,
+                        coverage: Coverage {
+                            received: Some(range),
+                            computed: Some(range),
+                            provisional: Some(range),
+                            committed: None,
+                        },
+                        speakers: vec![],
+                        rows: vec![RecognitionSegment {
+                            id: RecognitionId {
+                                scope,
+                                input_start_sample: 0,
+                                ordinal: 0,
+                            },
+                            range,
+                            timing: TimingPrecision::NativeSegment,
+                            text: text.into(),
+                            speaker: None,
+                            revision: 1,
+                            text_finality: finality,
+                            speaker_finality: Finality::Provisional,
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+        let events = recognition_catchup(&store, "s").unwrap();
+        let visible: Vec<_> = events
+            .iter()
+            .flat_map(|event| event.rows.iter())
+            .filter_map(|row| row.text.as_deref())
+            .collect();
+        assert_eq!(visible, vec!["retained"]);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.phase == LiveRecognitionPhase::Patch)
+        );
+    }
+
+    #[test]
+    fn recognition_patch_identity_survives_durable_copies_and_late_live_events() {
+        use session_core::recognition::*;
+        let scope = SpeakerScope {
+            generation: "g".into(),
+            epoch: 7,
+        };
+        let mut block = OutputBlock {
+            key: "nemo/00000000000000000007/word/0/0".into(),
+            scope: scope.clone(),
+            revision: 4,
+            coverage: Coverage::default(),
+            speakers: vec![],
+            rows: vec![RecognitionSegment {
+                id: RecognitionId {
+                    scope,
+                    input_start_sample: 16000,
+                    ordinal: 3,
+                },
+                range: SampleRange {
+                    start: 16000,
+                    end: 17000,
+                },
+                timing: TimingPrecision::NativeSegment,
+                text: "word".into(),
+                speaker: None,
+                revision: 4,
+                text_finality: Finality::Final,
+                speaker_finality: Finality::Provisional,
+            }],
+        };
+        let live = recognition_event("s", &block);
+        for key in ["native-final/7/row/0", "result/9/row/0"] {
+            block.key = key.into();
+            assert_eq!(recognition_event("s", &block).key, live.key);
+        }
+        block.key = "nemo/7/interim/0".into();
+        let interim = recognition_event("s", &block);
+        assert_eq!(interim.phase, LiveRecognitionPhase::InterimBatch);
+        assert_ne!(interim.key, live.key);
+        block.key = "result/9/row/0".into();
+        block.rows[0].id.ordinal += 1;
+        assert_ne!(recognition_event("s", &block).key, live.key);
     }
 
     #[test]

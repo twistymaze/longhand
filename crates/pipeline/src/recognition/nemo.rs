@@ -22,6 +22,8 @@ struct StoredEpoch {
     rows: usize,
     speakers: usize,
     limitations: Vec<String>,
+    #[serde(default)]
+    output: Option<super::durable::EpochOutput>,
 }
 fn epoch_prefix(scope: &SpeakerScope) -> String {
     format!("native-final/{:020}/", scope.epoch)
@@ -31,8 +33,24 @@ fn persist_epoch(
     id: &str,
     scope: &SpeakerScope,
     result: &RouteResult,
+    native_route: &str,
 ) -> Result<StoredEpoch, StageError> {
     use session_core::recognition::{Coverage, OutputBlock};
+    let output = match native_route {
+        "asr_only" => super::durable::EpochOutput {
+            text: true,
+            speakers: false,
+        },
+        "separate" => super::durable::EpochOutput {
+            text: false,
+            speakers: true,
+        },
+        "combined_offline" | "combined_stream" => super::durable::EpochOutput {
+            text: true,
+            speakers: true,
+        },
+        _ => return Err(failed("unknown native epoch output modality")),
+    };
     let prefix = epoch_prefix(scope);
     let rows = result.rows.iter().enumerate().map(|(i, row)| OutputBlock {
         key: format!("{prefix}row/{i:020}"),
@@ -71,6 +89,7 @@ fn persist_epoch(
         rows: result.rows.len(),
         speakers: result.speakers.len(),
         limitations: result.coverage_limitations.clone(),
+        output: Some(output),
     })
 }
 fn restore_epoch(
@@ -239,7 +258,7 @@ pub(super) fn run_file(
         if native_route == "combined_offline" {
             join_separate(&mut epoch.rows, &epoch.speakers);
         }
-        let record = persist_epoch(store, session, &scope, &epoch)?;
+        let record = persist_epoch(store, session, &scope, &epoch, native_route)?;
         crate::checkpoint::put(store, session, stage, &key, &record)?;
         crate::lock(store).delete_recognition_prefix(
             session,
@@ -932,6 +951,7 @@ impl LiveNative {
             &self.output.session,
             &self.output.scope,
             &result,
+            &self.native_route,
         )?;
         let stage = if self.route == Route::SeparateNemo {
             session_core::Stage::Diarize
@@ -1132,6 +1152,36 @@ mod tests {
             interim_result: None,
         }
     }
+    #[test]
+    fn persisted_epoch_modality_uses_native_operation_even_for_empty_combined_route() {
+        let out = output();
+        let result = RouteResult {
+            route: Route::CombinedNemo,
+            rows: vec![],
+            speakers: vec![],
+            coverage: vec![SampleRange {
+                start: 0,
+                end: 16000,
+            }],
+            coverage_limitations: vec![],
+        };
+        for (native_route, text, speakers) in [
+            ("asr_only", true, false),
+            ("separate", false, true),
+            ("combined_stream", true, true),
+        ] {
+            let record =
+                persist_epoch(&out.store, "test", &out.scope, &result, native_route).unwrap();
+            let saved = serde_json::to_value(record).unwrap();
+            assert_eq!(
+                saved["output"],
+                json!({ "text": text, "speakers": speakers })
+            );
+            assert_eq!(saved["rows"], 0);
+            assert_eq!(saved["speakers"], 0);
+        }
+    }
+
     #[test]
     fn speaker_snapshot_marker_excludes_incomplete_revisions_and_keeps_empty_completion() {
         let mut out = output();
