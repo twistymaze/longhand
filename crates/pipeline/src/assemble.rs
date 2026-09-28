@@ -101,6 +101,9 @@ pub fn run(
     home: Option<&Path>,
     control: &dyn Control,
 ) -> Result<Vec<AssembledSegment>, StageError> {
+    let exact = crate::lock(store)
+        .recognition_snapshot(session_id)?
+        .is_some();
     let recovery = session_dir.join(RECOVERY_DIR);
     // A crash while capturing leaves a `.part` open; close it from its length.
     recorder::recover_partial_chunks(&recovery)?;
@@ -119,17 +122,45 @@ pub fn run(
             && session_dir.join(&segment.audio_file).exists()
             && session_dir.join(proc_file(&segment.audio_file)).exists()
             && (segment.channels != 2 || echo::saved(store, session_id, segment.index)?.is_some())
+            && (!exact
+                || provenance_valid(
+                    store,
+                    session_id,
+                    session_dir,
+                    std::slice::from_ref(segment),
+                )?)
         {
             out.push(done);
             continue;
         }
-        if let Some(archive) = home
-            .map(|home| home.join(&segment.audio_file))
-            .filter(|archive| archive.exists())
+        let local_archive = if exact
+            && checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
+                .is_some()
         {
+            Some(session_dir.join(&segment.audio_file)).filter(|p| p.is_file())
+        } else {
+            None
+        };
+        if let Some(archive) = local_archive.or_else(|| {
+            home.map(|home| home.join(&segment.audio_file))
+                .filter(|archive| archive.exists())
+        }) {
             control.proceed()?;
+            let before = session_core::recognition::file_digest(&archive)?;
             let assembled = decode_segment(&archive, session_dir, segment, control)?;
-            record(store, session_id, &assembled)?;
+            if session_core::recognition::file_digest(&archive)? != before {
+                return Err(StageError::Failed(
+                    "recorded audio changed during decode".into(),
+                ));
+            }
+            record(
+                store,
+                session_id,
+                session_dir,
+                segment,
+                Some(&archive),
+                &assembled,
+            )?;
             log::info!(
                 "decoded segment {} of {session_id} from {}",
                 segment.index,
@@ -151,7 +182,7 @@ pub fn run(
         }
         control.proceed()?;
         let assembled = assemble_segment(&recovery, session_dir, segment, control)?;
-        record(store, session_id, &assembled)?;
+        record(store, session_id, session_dir, segment, None, &assembled)?;
         log::info!(
             "assembled segment {} of {session_id}: {} samples at {} Hz",
             segment.index,
@@ -167,7 +198,14 @@ pub fn run(
 /// Save the echo spans row, then record the segment as done (step, then
 /// record): a crash between the two assembles the segment again and replaces
 /// the row.
-fn record(store: &SharedStore, session_id: &str, assembled: &Assembled) -> Result<(), StageError> {
+fn record(
+    store: &SharedStore,
+    session_id: &str,
+    dir: &Path,
+    segment: &Segment,
+    archive: Option<&Path>,
+    assembled: &Assembled,
+) -> Result<(), StageError> {
     let index = assembled.segment.segment;
     if let Some(echo) = &assembled.echo {
         checkpoint::put(
@@ -184,6 +222,13 @@ fn record(store: &SharedStore, session_id: &str, assembled: &Assembled) -> Resul
             echo.system_gain
         );
     }
+    checkpoint::put(
+        store,
+        session_id,
+        Stage::Assemble,
+        &provenance_key(index),
+        &audio_provenance_at(store, session_id, dir, segment, archive)?,
+    )?;
     checkpoint::put(
         store,
         session_id,
@@ -942,4 +987,116 @@ pub fn open_proc(
         )));
     }
     Ok(reader)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AudioProvenance {
+    archive: String,
+    processing: String,
+    echo: String,
+}
+fn provenance_key(index: u32) -> String {
+    format!("audio-provenance-{index:08}")
+}
+fn archive_path(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segment: &Segment,
+) -> Result<PathBuf, StageError> {
+    let local = dir.join(&segment.audio_file);
+    if local.is_file() {
+        return Ok(local);
+    }
+    crate::lock(store)
+        .session(id)?
+        .and_then(|r| r.home_path)
+        .map(|home| Path::new(&home).join(&segment.audio_file))
+        .ok_or_else(|| StageError::Failed("recorded audio is absent".into()))
+}
+fn audio_provenance(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segment: &Segment,
+) -> Result<AudioProvenance, StageError> {
+    audio_provenance_at(store, id, dir, segment, None)
+}
+fn audio_provenance_at(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segment: &Segment,
+    source: Option<&Path>,
+) -> Result<AudioProvenance, StageError> {
+    use session_core::recognition::{digest, file_digest};
+    let archive = source
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(|| archive_path(store, id, dir, segment))?;
+    let echo: Option<serde_json::Value> = checkpoint::get(
+        store,
+        id,
+        Stage::Assemble,
+        &checkpoint::echo_key(segment.index),
+    )?;
+    Ok(AudioProvenance {
+        archive: file_digest(&archive)?,
+        processing: file_digest(&dir.join(proc_file(&segment.audio_file)))?,
+        echo: digest(&serde_json::to_vec(&echo)?),
+    })
+}
+/// A completed Assemble checkpoint alone does not bind an archive to its
+/// processing file. Missing provenance requires a decode before exact reuse.
+pub fn provenance_valid(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+) -> Result<bool, StageError> {
+    for segment in segments {
+        let saved: Option<AudioProvenance> =
+            checkpoint::get(store, id, Stage::Assemble, &provenance_key(segment.index))?;
+        let Some(saved) = saved else {
+            return Ok(false);
+        };
+        let Ok(archive) = archive_path(store, id, dir, segment) else {
+            return Ok(false);
+        };
+        if !archive.is_file() || !dir.join(proc_file(&segment.audio_file)).is_file() {
+            return Ok(false);
+        }
+        let current = audio_provenance(store, id, dir, segment)?;
+        if current != saved {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+/// Return the source identities after their processing relationship is checked.
+pub fn recognition_audio_identity(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+) -> Result<String, StageError> {
+    if !provenance_valid(store, id, dir, segments)? {
+        return Err(StageError::Failed("Recorded audio or processing audio changed, or its provenance is absent. Rebuild the processing audio before recognition.".into()));
+    }
+    let mut values = Vec::new();
+    for segment in segments {
+        let saved: AudioProvenance =
+            checkpoint::get(store, id, Stage::Assemble, &provenance_key(segment.index))?
+                .ok_or_else(|| StageError::Failed("audio provenance is absent".into()))?;
+        values.push((
+            segment.index,
+            segment.offset_ms,
+            segment.duration_ms,
+            segment.channels,
+            saved,
+        ));
+    }
+    Ok(session_core::recognition::digest(&serde_json::to_vec(
+        &values,
+    )?))
 }

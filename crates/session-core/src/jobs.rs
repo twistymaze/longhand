@@ -28,6 +28,8 @@ pub enum StoreError {
     NoSuchSession(String),
     #[error("recognition snapshot is already set for {0}")]
     SnapshotExists(String),
+    #[error("invalid recognition output: {0}")]
+    Recognition(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -220,7 +222,7 @@ pub enum Liveness {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 fn stage_key(stage: Stage) -> String {
@@ -618,6 +620,8 @@ impl Store {
                 )?;
             }
         }
+        tx.execute("DELETE FROM recognition_output WHERE session_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_epochs WHERE session_id=?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -1173,6 +1177,21 @@ impl Store {
         Ok(())
     }
 
+    pub fn checkpoint_value(
+        &self,
+        session_id: &str,
+        stage: Stage,
+        key: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT payload FROM checkpoints WHERE session_id=?1 AND stage=?2 AND key=?3",
+                params![session_id, stage_key(stage), key],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
     pub fn checkpoints(&self, session_id: &str, stage: Stage) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT key, payload FROM checkpoints WHERE session_id = ?1 AND stage = ?2 ORDER BY key",

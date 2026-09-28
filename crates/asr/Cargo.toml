@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+session-core = { path = "../session-core" }
 log.workspace = true
 serde.workspace = true
 thiserror.workspace = true

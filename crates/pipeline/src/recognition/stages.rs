@@ -1,6 +1,4 @@
-use super::{
-    RESULT_KEY, Route, RouteResult, SPEAKERS_KEY, TaskGraph, failed, join_separate, validate_result,
-};
+use super::{RESULT_KEY, Route, RouteResult, TaskGraph, failed, join_separate, validate_result};
 use crate::{
     Control, SharedStore, StageError, checkpoint, lock, runner::EngineProvider, transcribe,
 };
@@ -31,7 +29,7 @@ pub fn snapshot(store: &SharedStore, id: &str) -> Result<Option<ExecutionSpec>, 
 }
 /// A processing attempt keeps its generation across checkpoints. A replacement
 /// that clears recognition checkpoints must create a fresh generation.
-fn generation(store: &SharedStore, id: &str) -> Result<String, StageError> {
+pub(super) fn generation(store: &SharedStore, id: &str) -> Result<String, StageError> {
     const KEY: &str = "recognition-generation-v1";
     if let Some(saved) = checkpoint::get(store, id, Stage::Transcribe, KEY)? {
         return Ok(saved);
@@ -47,7 +45,7 @@ fn generation(store: &SharedStore, id: &str) -> Result<String, StageError> {
     Ok(value)
 }
 pub fn saved_result(store: &SharedStore, id: &str) -> Result<Option<RouteResult>, StageError> {
-    checkpoint::get(store, id, Stage::Transcribe, RESULT_KEY)
+    super::durable::load_result(store, id)
 }
 
 /// Execute one route-specific recognition stage. Other stages remain owned by
@@ -65,6 +63,7 @@ pub fn execute(
     progress: &mut dyn FnMut(transcribe::Progress),
 ) -> Result<(), StageError> {
     let graph = TaskGraph::resolve(spec)?;
+    super::durable::prepare(store, id, dir, segments, spec)?;
     match stage {
         Stage::Diarize => analyze(
             store,
@@ -120,6 +119,9 @@ fn analyze(
     let mut limitations = Vec::<String>::new();
     match route {
         Route::SeparatePyannote => {
+            let analysis_scope = lock(store)
+                .restart_recognition_epoch(id, &generation, 0, 0)?
+                .scope;
             let mut analyzer = provider.analyzer_exact(spec).map_err(|e| match e {
                 diarize::DiarizeError::MissingWeights(path) => StageError::Waiting(path),
                 e => failed(e.to_string()),
@@ -151,10 +153,7 @@ fn analyze(
                     },
                     timing: TimingPrecision::NativeSegment,
                     speaker: SpeakerKey {
-                        scope: SpeakerScope {
-                            generation: generation.clone(),
-                            epoch: 0,
-                        },
+                        scope: analysis_scope.clone(),
                         input_start_sample: 0,
                         local_id: turn.speaker,
                     },
@@ -164,24 +163,17 @@ fn analyze(
         }
         Route::SeparateNemo => {
             for (segment, range) in segments.iter().zip(ranges(dir, segments)?) {
-                let key = format!("recognition-speaker-segment-{}", segment.index);
-                let result = match checkpoint::get::<RouteResult>(store, id, Stage::Diarize, &key)?
-                {
-                    Some(saved) if super::covers(&saved.coverage, range) => saved,
-                    _ => {
-                        let value = super::nemo::run_file(
-                            spec,
-                            provider,
-                            &dir.join(crate::proc_file(&segment.audio_file)),
-                            range,
-                            &generation,
-                            false,
-                            control,
-                        )?;
-                        checkpoint::put(store, id, Stage::Diarize, &key, &value)?;
-                        value
-                    }
-                };
+                let result = super::nemo::run_file(
+                    store,
+                    id,
+                    spec,
+                    provider,
+                    &dir.join(crate::proc_file(&segment.audio_file)),
+                    range,
+                    &generation,
+                    false,
+                    control,
+                )?;
                 turns.extend(result.speakers);
                 limitations.extend(result.coverage_limitations);
             }
@@ -195,7 +187,7 @@ fn analyze(
         "recognition-speaker-limitations-v1",
         &limitations,
     )?;
-    checkpoint::put(store, id, Stage::Diarize, SPEAKERS_KEY, &turns)?;
+    super::durable::persist_speakers(store, id, &turns)?;
     checkpoint::mark_complete(store, id, Stage::Diarize, segments.len())
 }
 #[allow(clippy::too_many_arguments)]
@@ -214,7 +206,7 @@ fn transcribe_route(
     let generation = generation(store, id)?;
     let speakers: Vec<SpeakerTurn> =
         if matches!(route, Route::SeparateNemo | Route::SeparatePyannote) {
-            checkpoint::get(store, id, Stage::Diarize, SPEAKERS_KEY)?
+            super::durable::load_speakers(store, id)?
                 .ok_or_else(|| failed("speaker task has not completed"))?
         } else {
             vec![]
@@ -399,12 +391,7 @@ fn transcribe_route(
         let mut recognizer = None;
         for (segment, range) in segments.iter().zip(&expected) {
             control.proceed()?;
-            let key = format!("recognition-segment-{}", segment.index);
-            let output = if let Some(saved) =
-                checkpoint::get::<RouteResult>(store, id, Stage::Transcribe, &key)?
-            {
-                saved
-            } else {
+            let output = {
                 let mut own = RouteResult {
                     route,
                     coverage: vec![*range],
@@ -414,6 +401,8 @@ fn transcribe_route(
                 };
                 if route == Route::CombinedNemo {
                     own = super::nemo::run_file(
+                        store,
+                        id,
                         spec,
                         provider,
                         &dir.join(crate::proc_file(&segment.audio_file)),
@@ -446,20 +435,36 @@ fn transcribe_route(
                             .samples::<f32>()
                             .take((window.duration_ms() * 16) as usize)
                             .collect::<Result<Vec<_>, _>>()?;
-                        let output = engine
-                            .transcribe_normalized(
-                                &pcm,
-                                &RecognitionRequest {
-                                    scope: SpeakerScope {
-                                        generation: generation.clone(),
-                                        epoch: segment.index as u64,
+                        let key = format!("native-window/{:08}/{index:08}", segment.index);
+                        let saved = lock(store).recognition_block(id, &generation, &key)?;
+                        let output = if let Some(saved) = saved {
+                            asr::RecognitionOutput {
+                                scope: saved.scope,
+                                revision: saved.revision,
+                                coverage: saved
+                                    .coverage
+                                    .committed
+                                    .ok_or_else(|| failed("native window is provisional"))?,
+                                text: String::new(),
+                                segments: saved.rows,
+                                speaker_turns: saved.speakers,
+                            }
+                        } else {
+                            engine
+                                .transcribe_normalized(
+                                    &pcm,
+                                    &RecognitionRequest {
+                                        scope: SpeakerScope {
+                                            generation: generation.clone(),
+                                            epoch: segment.index as u64,
+                                        },
+                                        start_sample: range.start + window.start_ms * 16,
+                                        revision: 0,
+                                        attribution: Attribution::Native,
                                     },
-                                    start_sample: range.start + window.start_ms * 16,
-                                    revision: 0,
-                                    attribution: Attribution::Native,
-                                },
-                            )
-                            .map_err(|e| failed(e.to_string()))?;
+                                )
+                                .map_err(|e| failed(e.to_string()))?
+                        };
                         if output.coverage
                             != (SampleRange {
                                 start: range.start + window.start_ms * 16,
@@ -468,6 +473,22 @@ fn transcribe_route(
                         {
                             return Err(failed("native transcription coverage is incomplete"));
                         }
+                        lock(store).commit_recognition(
+                            id,
+                            &session_core::recognition::OutputBlock {
+                                key,
+                                scope: output.scope.clone(),
+                                revision: output.revision,
+                                coverage: session_core::recognition::Coverage {
+                                    received: Some(output.coverage),
+                                    computed: Some(output.coverage),
+                                    provisional: None,
+                                    committed: Some(output.coverage),
+                                },
+                                rows: output.segments.clone(),
+                                speakers: output.speaker_turns.clone(),
+                            },
+                        )?;
                         own.rows.extend(output.segments);
                         own.speakers.extend(output.speaker_turns);
                         progress(transcribe::Progress {
@@ -477,7 +498,6 @@ fn transcribe_route(
                         });
                     }
                 }
-                checkpoint::put(store, id, Stage::Transcribe, &key, &own)?;
                 own
             };
             result.coverage.extend(output.coverage);
@@ -515,7 +535,7 @@ fn transcribe_route(
     result.coverage_limitations.sort();
     result.coverage_limitations.dedup();
     validate_result(&result, &expected)?;
-    checkpoint::put(store, id, Stage::Transcribe, RESULT_KEY, &result)?;
+    super::durable::persist_result(store, id, &result)?;
     checkpoint::mark_complete(store, id, Stage::Transcribe, segments.len())
 }
 fn write_transcript(
@@ -533,9 +553,18 @@ fn write_transcript(
     } else {
         transcript.render()
     };
-    std::fs::write(&temporary, text)?;
+    std::fs::write(&temporary, &text)?;
     crate::sync_file(&temporary)?;
     std::fs::rename(temporary, dir.join("transcript.md"))?;
+    let spec = snapshot(store, id)?.ok_or_else(|| failed("recognition snapshot is absent"))?;
+    let reference = super::durable::write_result(store, id, dir, &spec, &result, &text)?;
+    checkpoint::put(
+        store,
+        id,
+        Stage::Join,
+        "recognition-artifact-reference-v1",
+        &reference,
+    )?;
     checkpoint::mark_complete(store, id, Stage::Join, segments.len())
 }
 fn verify(
@@ -630,7 +659,16 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
     let failure: Option<crate::verify::VerifyFailure> =
         checkpoint::get(store, id, Stage::Verify, crate::verify::FAILED)?;
     crate::verify::prepare_retry(store, id)?;
+    let generation = generation(store, id)?;
     let guard = lock(store);
+    // Native output is replayed after a failed verification. Its old completed
+    // output remains in other generations for replacement recovery.
+    guard.delete_recognition_prefix(id, &generation, "native-window/")?;
+    for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
+        if key.starts_with("recognition-epoch-") {
+            guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
+        }
+    }
     if let Some(failure) = failure {
         for segment in failure.segments {
             guard.delete_checkpoint(

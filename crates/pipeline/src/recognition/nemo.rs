@@ -8,7 +8,6 @@ use models::recognition::ExecutionSpec;
 use nemo_runtime::Helper;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     path::Path,
     time::{Duration, Instant},
 };
@@ -16,7 +15,105 @@ use std::{
 /// A defined native epoch. Checkpoints inside it do not reset native state.
 pub const MAX_EPOCH_SAMPLES: u64 = 20 * 60 * 16000;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredEpoch {
+    scope: SpeakerScope,
+    range: SampleRange,
+    rows: usize,
+    speakers: usize,
+    limitations: Vec<String>,
+}
+fn epoch_prefix(scope: &SpeakerScope) -> String {
+    format!("native-final/{:020}/", scope.epoch)
+}
+fn persist_epoch(
+    store: &crate::SharedStore,
+    id: &str,
+    scope: &SpeakerScope,
+    result: &RouteResult,
+) -> Result<StoredEpoch, StageError> {
+    use session_core::recognition::{Coverage, OutputBlock};
+    let prefix = epoch_prefix(scope);
+    for (i, row) in result.rows.iter().enumerate() {
+        let block = OutputBlock {
+            key: format!("{prefix}row/{i:020}"),
+            scope: scope.clone(),
+            revision: row.revision,
+            coverage: Coverage {
+                received: Some(row.range),
+                computed: Some(row.range),
+                provisional: None,
+                committed: Some(row.range),
+            },
+            rows: vec![row.clone()],
+            speakers: vec![],
+        };
+        crate::lock(store).commit_recognition(id, &block)?;
+    }
+    for (i, turn) in result.speakers.iter().enumerate() {
+        let block = OutputBlock {
+            key: format!("{prefix}speaker/{i:020}"),
+            scope: scope.clone(),
+            revision: 0,
+            coverage: Coverage {
+                received: Some(turn.range),
+                computed: Some(turn.range),
+                provisional: None,
+                committed: Some(turn.range),
+            },
+            rows: vec![],
+            speakers: vec![turn.clone()],
+        };
+        crate::lock(store).commit_recognition(id, &block)?;
+    }
+    Ok(StoredEpoch {
+        scope: scope.clone(),
+        range: result.coverage[0],
+        rows: result.rows.len(),
+        speakers: result.speakers.len(),
+        limitations: result.coverage_limitations.clone(),
+    })
+}
+fn restore_epoch(
+    store: &crate::SharedStore,
+    id: &str,
+    record: &StoredEpoch,
+    route: Route,
+) -> Result<RouteResult, StageError> {
+    let mut result = RouteResult {
+        route,
+        coverage: vec![record.range],
+        rows: vec![],
+        speakers: vec![],
+        coverage_limitations: record.limitations.clone(),
+    };
+    let prefix = epoch_prefix(&record.scope);
+    let mut after = String::new();
+    loop {
+        let page =
+            crate::lock(store).recognition_page(id, &record.scope.generation, &prefix, &after)?;
+        if page.is_empty() {
+            break;
+        }
+        for block in page {
+            after = block.key;
+            result.rows.extend(block.rows);
+            result.speakers.extend(block.speakers);
+        }
+    }
+    if result.rows.len() != record.rows || result.speakers.len() != record.speakers {
+        return Err(failed("durable epoch output is incomplete"));
+    }
+    Ok(result)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The route binds storage, execution identity, audio, and cancellation for one file"
+)]
 pub(super) fn run_file(
+    store: &crate::SharedStore,
+    session: &str,
     spec: &ExecutionSpec,
     provider: &dyn EngineProvider,
     path: &Path,
@@ -74,11 +171,34 @@ pub(super) fn run_file(
     while start < range.end {
         control.proceed()?;
         let end = range.end.min(start + MAX_EPOCH_SAMPLES);
+        let stage = if combined {
+            session_core::Stage::Transcribe
+        } else {
+            session_core::Stage::Diarize
+        };
+        let key = format!("recognition-epoch-{start:020}");
+        let saved: Option<StoredEpoch> = crate::checkpoint::get(store, session, stage, &key)?;
+        if let Some(saved) = saved
+            && saved.scope.generation == generation
+            && saved.range == (SampleRange { start, end })
+        {
+            let epoch = restore_epoch(store, session, &saved, result.route)?;
+            result.coverage.extend(epoch.coverage);
+            result.rows.extend(epoch.rows);
+            result.speakers.extend(epoch.speakers);
+            result
+                .coverage_limitations
+                .extend(epoch.coverage_limitations);
+            start = end;
+            continue;
+        }
         let scope = SpeakerScope {
             generation: generation.into(),
             epoch: start,
         };
         let input = EpochInput {
+            store,
+            session,
             helper: &helper,
             speaker: &speaker,
             asr: asr.as_deref(),
@@ -90,7 +210,7 @@ pub(super) fn run_file(
             scope,
         };
         let requested_gpu = provider.nemo_gpu();
-        let epoch = match run_epoch(&input, requested_gpu, control) {
+        let (mut epoch, scope) = match run_epoch(&input, requested_gpu, control) {
             Ok(epoch) => epoch,
             Err(StageError::Failed(message)) if requested_gpu >= 0 => {
                 // No output from a failed epoch is committed. Replay its complete
@@ -100,14 +220,28 @@ pub(super) fn run_file(
                     "Accelerated NeMo attempt failed; epoch {start} replayed on CPU: {message}"
                 );
                 log::warn!("{reason}");
-                result.coverage_limitations.push(reason);
-                run_epoch(&input, -1, control)?
+                let (mut output, scope) = run_epoch(&input, -1, control)?;
+                output.coverage_limitations.push(reason);
+                (output, scope)
             }
             Err(error) => return Err(error),
         };
+        if native_route == "combined_offline" {
+            join_separate(&mut epoch.rows, &epoch.speakers);
+        }
+        let record = persist_epoch(store, session, &scope, &epoch)?;
+        crate::checkpoint::put(store, session, stage, &key, &record)?;
+        crate::lock(store).delete_recognition_prefix(
+            session,
+            &scope.generation,
+            &format!("nemo/{:020}/", scope.epoch),
+        )?;
         result.coverage.extend(epoch.coverage);
         result.rows.extend(epoch.rows);
         result.speakers.extend(epoch.speakers);
+        result
+            .coverage_limitations
+            .extend(epoch.coverage_limitations);
         start = end;
     }
     if native_route == "combined_offline" {
@@ -117,6 +251,8 @@ pub(super) fn run_file(
 }
 
 struct EpochInput<'a> {
+    store: &'a crate::SharedStore,
+    session: &'a str,
     helper: &'a Path,
     speaker: &'a Path,
     asr: Option<&'a Path>,
@@ -128,18 +264,69 @@ struct EpochInput<'a> {
     scope: SpeakerScope,
 }
 struct Output {
+    store: crate::SharedStore,
+    session: String,
     scope: SpeakerScope,
     start: u64,
-    words: BTreeMap<(u64, u64), RecognitionSegment>,
-    texts: BTreeMap<u64, String>,
-    turns: Vec<SpeakerTurn>,
-    pending: Option<(u64, Vec<SpeakerTurn>)>,
+    pending: Option<(u64, u64)>,
+    turns: Option<(u64, u64)>,
     coverage: Option<SampleRange>,
 }
 impl Output {
+    fn prefix(&self, kind: &str) -> String {
+        format!("nemo/{:020}/{kind}/", self.scope.epoch)
+    }
+    fn block(
+        &self,
+        key: String,
+        revision: u64,
+        range: Option<SampleRange>,
+        rows: Vec<RecognitionSegment>,
+        speakers: Vec<SpeakerTurn>,
+    ) -> session_core::recognition::OutputBlock {
+        session_core::recognition::OutputBlock {
+            key,
+            scope: self.scope.clone(),
+            revision,
+            coverage: session_core::recognition::Coverage {
+                received: range,
+                computed: range,
+                provisional: range,
+                committed: None,
+            },
+            rows,
+            speakers,
+        }
+    }
+    fn put(&self, block: &session_core::recognition::OutputBlock) -> Result<(), StageError> {
+        crate::lock(&self.store).commit_recognition(&self.session, block)?;
+        Ok(())
+    }
+    fn visit(
+        &self,
+        prefix: &str,
+        mut visitor: impl FnMut(session_core::recognition::OutputBlock) -> Result<(), StageError>,
+    ) -> Result<(), StageError> {
+        let mut after = String::new();
+        loop {
+            let page = crate::lock(&self.store).recognition_page(
+                &self.session,
+                &self.scope.generation,
+                prefix,
+                &after,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            for block in page {
+                after = block.key.clone();
+                visitor(block)?;
+            }
+        }
+        Ok(())
+    }
     fn process(&mut self, value: &Value) -> Result<(), StageError> {
-        let event = value["event"].as_str().unwrap_or("");
-        match event {
+        match value["event"].as_str().unwrap_or("") {
             "error" => {
                 return Err(failed(
                     value["message"]
@@ -151,24 +338,25 @@ impl Output {
                 if self.pending.is_some() {
                     return Err(failed("overlapping speaker snapshots"));
                 }
-                self.pending = Some((number(value, "revision")?, vec![]));
+                self.pending = Some((number(value, "revision")?, 0));
             }
             "segments" => {
                 let revision = number(value, "revision")?;
-                let (pending, turns) = self
+                let (pending, mut count) = self
                     .pending
-                    .as_mut()
                     .ok_or_else(|| failed("speaker snapshot has no beginning"))?;
-                if *pending != revision {
+                if pending != revision {
                     return Err(failed("speaker snapshot revision mismatch"));
                 }
                 for item in array(value, "segments")? {
-                    let local_id = number(item, "speaker")? as u32;
+                    let local_id = u32::try_from(number(item, "speaker")?)
+                        .map_err(|_| failed("speaker ID overflow"))?;
                     if local_id == 0 {
                         continue;
                     }
-                    turns.push(SpeakerTurn {
-                        range: bounds(item)?,
+                    let range = bounds(item)?;
+                    let turn = SpeakerTurn {
+                        range,
                         timing: TimingPrecision::NativeSegment,
                         speaker: SpeakerKey {
                             scope: self.scope.clone(),
@@ -176,41 +364,74 @@ impl Output {
                             local_id,
                         },
                         finality: finality(item["speaker_final"].as_bool().unwrap_or(false)),
-                    });
+                    };
+                    self.put(&self.block(
+                        format!("{}{:020}/{count:020}", self.prefix("turn"), revision),
+                        revision,
+                        Some(range),
+                        vec![],
+                        vec![turn],
+                    ))?;
+                    count += 1;
                 }
+                self.pending = Some((revision, count));
             }
             "segments_end" => {
-                let (revision, turns) = self
+                let pending = self
                     .pending
                     .take()
                     .ok_or_else(|| failed("speaker snapshot has no beginning"))?;
-                if revision != number(value, "revision")? {
+                if pending.0 != number(value, "revision")? {
                     return Err(failed("speaker snapshot revision mismatch"));
                 }
-                self.turns = turns;
+                if self.turns.is_none_or(|old| old.0 < pending.0) {
+                    let old = self.turns.replace(pending);
+                    if let Some((revision, _)) = old {
+                        crate::lock(&self.store).delete_recognition_prefix(
+                            &self.session,
+                            &self.scope.generation,
+                            &format!("{}{:020}/", self.prefix("turn"), revision),
+                        )?;
+                    }
+                } else if self.turns.is_some_and(|old| old.0 != pending.0) {
+                    crate::lock(&self.store).delete_recognition_prefix(
+                        &self.session,
+                        &self.scope.generation,
+                        &format!("{}{:020}/", self.prefix("turn"), pending.0),
+                    )?;
+                }
             }
             "text" => {
-                self.texts.insert(
-                    number(value, "result_id")?,
-                    value["text"].as_str().unwrap_or("").into(),
-                );
+                if !value["text"].as_str().unwrap_or("").trim().is_empty() {
+                    let id = number(value, "result_id")?;
+                    self.put(&self.block(
+                        format!("{}{id:020}", self.prefix("text")),
+                        number(value, "revision")?,
+                        None,
+                        vec![],
+                        vec![],
+                    ))?;
+                }
             }
             "words" => {
-                let result_id = number(value, "result_id")?;
+                let result = number(value, "result_id")?;
                 let revision = number(value, "revision")?;
+                if result > u32::MAX as u64 {
+                    return Err(failed("result ID overflow"));
+                }
                 for word in array(value, "words")? {
                     let index = number(word, "index")?;
-                    let speaker = number(word, "speaker")? as u32;
-                    let text = word["text"]
-                        .as_str()
-                        .ok_or_else(|| failed("word text is absent"))?
-                        .to_string();
+                    if index > u32::MAX as u64 {
+                        return Err(failed("word ID overflow"));
+                    }
+                    let speaker = u32::try_from(number(word, "speaker")?)
+                        .map_err(|_| failed("speaker ID overflow"))?;
                     let range = bounds(word)?;
                     let row = RecognitionSegment {
                         id: RecognitionId {
                             scope: self.scope.clone(),
                             input_start_sample: self.start,
-                            ordinal: (result_id << 32) | index,
+                            ordinal: (result << 32) | index,
                         },
                         range,
                         timing: if range.start == range.end {
@@ -218,7 +439,10 @@ impl Output {
                         } else {
                             TimingPrecision::NativeSegment
                         },
-                        text,
+                        text: word["text"]
+                            .as_str()
+                            .ok_or_else(|| failed("word text is absent"))?
+                            .into(),
                         speaker: (speaker > 0).then(|| SpeakerKey {
                             scope: self.scope.clone(),
                             input_start_sample: self.start,
@@ -230,29 +454,33 @@ impl Output {
                             word["speaker_final"].as_bool().unwrap_or(false),
                         ),
                     };
-                    let key = (result_id, index);
-                    if self
-                        .words
-                        .get(&key)
-                        .is_none_or(|old| old.revision < revision)
-                    {
-                        self.words.insert(key, row);
-                    }
+                    self.put(&self.block(
+                        format!("{}{result:020}/{index:020}", self.prefix("word")),
+                        revision,
+                        Some(range),
+                        vec![row],
+                        vec![],
+                    ))?;
                 }
             }
             "punctuation" => {
-                let result_id = number(value, "result_id")?;
-                let punctuation = value["text"].as_str().unwrap_or("");
-                if let Some((_, word)) = self
-                    .words
-                    .range_mut((result_id, 0)..=(result_id, u64::MAX))
-                    .next_back()
+                let result = number(value, "result_id")?;
+                let revision = number(value, "revision")?;
+                let prefix = format!("{}{result:020}/", self.prefix("word"));
+                let block = crate::lock(&self.store).recognition_last(
+                    &self.session,
+                    &self.scope.generation,
+                    &prefix,
+                )?;
+                if let Some(mut block) = block
+                    && revision > block.revision
                 {
-                    word.text.push_str(punctuation);
-                    word.revision = number(value, "revision")?;
-                }
-                if let Some(text) = self.texts.get_mut(&result_id) {
-                    text.push_str(punctuation);
+                    for row in &mut block.rows {
+                        row.text.push_str(value["text"].as_str().unwrap_or(""));
+                        row.revision = revision;
+                    }
+                    block.revision = revision;
+                    self.put(&block)?;
                 }
             }
             "finished" => {
@@ -267,10 +495,81 @@ impl Output {
                     end: number(value, "coverage_end")?,
                 });
             }
-            "hello" | "ready" | "ack" | "interim" => {}
+            "ack" => {
+                let end = number(value, "accepted_end")?;
+                let mut progress = self.block(
+                    format!("{}progress", self.prefix("input")),
+                    end,
+                    None,
+                    vec![],
+                    vec![],
+                );
+                progress.coverage.received = Some(SampleRange {
+                    start: self.start,
+                    end,
+                });
+                self.put(&progress)?;
+            }
+            "hello" | "ready" | "interim" => {}
             _ => return Err(failed("unknown NeMo output event")),
         }
         Ok(())
+    }
+    fn result(&self, route: Route) -> Result<RouteResult, StageError> {
+        let mut result = RouteResult {
+            route,
+            coverage: vec![
+                self.coverage
+                    .ok_or_else(|| failed("native output is incomplete"))?,
+            ],
+            rows: vec![],
+            speakers: vec![],
+            coverage_limitations: vec![],
+        };
+        self.visit(&self.prefix("text"), |b| {
+            let id = b
+                .key
+                .rsplit('/')
+                .next()
+                .ok_or_else(|| failed("invalid text key"))?;
+            if crate::lock(&self.store)
+                .recognition_last(
+                    &self.session,
+                    &self.scope.generation,
+                    &format!("{}{id}/", self.prefix("word")),
+                )?
+                .is_none()
+            {
+                return Err(failed(
+                    "NeMo returned text without corresponding timed words",
+                ));
+            }
+            Ok(())
+        })?;
+        self.visit(&self.prefix("word"), |b| {
+            result.rows.extend(b.rows);
+            Ok(())
+        })?;
+        if let Some((revision, _)) = self.turns {
+            self.visit(&format!("{}{:020}/", self.prefix("turn"), revision), |b| {
+                result.speakers.extend(b.speakers);
+                Ok(())
+            })?;
+        }
+        Ok(result)
+    }
+    #[cfg(test)]
+    fn word(&self, result: u64, index: u64) -> RecognitionSegment {
+        crate::lock(&self.store)
+            .recognition_block(
+                &self.session,
+                &self.scope.generation,
+                &format!("{}{result:020}/{index:020}", self.prefix("word")),
+            )
+            .unwrap()
+            .unwrap()
+            .rows
+            .remove(0)
     }
 }
 fn finality(value: bool) -> Finality {
@@ -330,18 +629,24 @@ fn run_epoch(
     input: &EpochInput<'_>,
     gpu: i32,
     control: &dyn Control,
-) -> Result<RouteResult, StageError> {
+) -> Result<(RouteResult, SpeakerScope), StageError> {
     use std::hash::{Hash, Hasher};
     let mut hash = std::hash::DefaultHasher::new();
     input.scope.generation.hash(&mut hash);
-    let mut helper = Helper::spawn(input.helper, hash.finish(), input.scope.epoch)
+    let replay = crate::lock(input.store).restart_recognition_epoch(
+        input.session,
+        &input.scope.generation,
+        input.range.start,
+        input.range.end,
+    )?;
+    let mut helper = Helper::spawn(input.helper, hash.finish(), replay.scope.epoch)
         .map_err(|e| failed(e.to_string()))?;
     let mut output = Output {
-        scope: input.scope.clone(),
+        store: input.store.clone(),
+        session: input.session.into(),
+        scope: replay.scope,
         start: input.range.start,
-        words: BTreeMap::new(),
-        texts: BTreeMap::new(),
-        turns: vec![],
+        turns: None,
         pending: None,
         coverage: None,
     };
@@ -391,39 +696,37 @@ fn run_epoch(
     if output.coverage != Some(input.range) {
         return Err(failed("NeMo terminal coverage is incomplete"));
     }
-    for (id, text) in &output.texts {
-        if !text.trim().is_empty() && !output.words.keys().any(|(result, _)| result == id) {
-            return Err(failed(
-                "NeMo returned text without corresponding timed words",
-            ));
-        }
-    }
-    Ok(RouteResult {
-        route: if input.native_route == "separate" {
+    Ok((
+        output.result(if input.native_route == "separate" {
             Route::SeparateNemo
         } else {
             Route::CombinedNemo
-        },
-        coverage: vec![input.range],
-        rows: output.words.into_values().collect(),
-        speakers: output.turns,
-        coverage_limitations: vec![],
-    })
+        })?,
+        output.scope,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn output() -> Output {
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        store
+            .create_session(
+                "test",
+                chrono::DateTime::parse_from_rfc3339("2026-09-27T10:00:00-05:00").unwrap(),
+                None,
+            )
+            .unwrap();
         Output {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            session: "test".into(),
             scope: SpeakerScope {
                 generation: "test".into(),
                 epoch: 1,
             },
             start: 32000,
-            words: BTreeMap::new(),
-            texts: BTreeMap::new(),
-            turns: vec![],
+            turns: None,
             pending: None,
             coverage: None,
         }
@@ -433,15 +736,21 @@ mod tests {
         let mut out = output();
         let patch = |revision, speaker, stable| json!({"event":"words","result_id":1,"revision":revision,"text_final":true,"words":[{"index":0,"text":"Hello","start":32000,"end":48000,"speaker":speaker,"speaker_final":stable}]});
         out.process(&patch(1, 1, false)).unwrap();
-        assert_eq!(out.words[&(1, 0)].speaker_finality, Finality::Provisional);
+        assert_eq!(out.word(1, 0).speaker_finality, Finality::Provisional);
         out.process(&patch(2, 2, true)).unwrap();
         out.process(&patch(1, 1, false)).unwrap();
-        assert_eq!(out.words.len(), 1);
-        assert_eq!(out.words[&(1, 0)].speaker.as_ref().unwrap().local_id, 2);
-        assert_eq!(out.words[&(1, 0)].speaker_finality, Finality::Final);
+        assert_eq!(
+            crate::lock(&out.store)
+                .recognition_page("test", "test", &out.prefix("word"), "")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(out.word(1, 0).speaker.as_ref().unwrap().local_id, 2);
+        assert_eq!(out.word(1, 0).speaker_finality, Finality::Final);
         out.process(&json!({"event":"punctuation","result_id":1,"revision":3,"text":"."}))
             .unwrap();
-        assert_eq!(out.words[&(1, 0)].text, "Hello.");
+        assert_eq!(out.word(1, 0).text, "Hello.");
     }
     #[test]
     fn partial_speaker_snapshot_cannot_replace_completed_output() {
@@ -449,30 +758,30 @@ mod tests {
         out.process(&json!({"event":"segments_begin","revision":1}))
             .unwrap();
         out.process(&json!({"event":"segments","revision":1,"segments":[{"start":32000,"end":48000,"speaker":1,"speaker_final":true}]})).unwrap();
-        assert!(out.turns.is_empty());
+        assert!(out.turns.is_none_or(|(_, count)| count == 0));
         assert!(out.process(&json!({"event":"finished","coverage_start":32000,"coverage_end":48000,"text_final":true,"speaker_final":true})).is_err());
         out.process(&json!({"event":"segments_end","revision":1}))
             .unwrap();
-        assert_eq!(out.turns.len(), 1);
+        assert_eq!(out.turns.unwrap().1, 1);
         out.process(&json!({"event":"segments_begin","revision":2}))
             .unwrap();
-        assert_eq!(out.turns.len(), 1);
+        assert_eq!(out.turns.unwrap().1, 1);
         out.process(&json!({"event":"segments_end","revision":2}))
             .unwrap();
-        assert!(out.turns.is_empty());
+        assert!(out.turns.is_none_or(|(_, count)| count == 0));
     }
     #[test]
     fn terminal_time_point_retains_native_speaker_and_unknown_duration() {
         let mut out = output();
         out.process(&json!({"event":"words","result_id":1,"revision":1,"text_final":true,"words":[{"index":0,"text":"tail","start":48000,"end":48000,"speaker":1,"speaker_final":true}]})).unwrap();
-        assert_eq!(out.words[&(1, 0)].timing, TimingPrecision::NativeTimePoint);
+        assert_eq!(out.word(1, 0).timing, TimingPrecision::NativeTimePoint);
         assert_eq!(
-            out.words[&(1, 0)].range,
+            out.word(1, 0).range,
             SampleRange {
                 start: 48000,
                 end: 48000
             }
         );
-        assert!(out.words[&(1, 0)].speaker.is_some());
+        assert!(out.word(1, 0).speaker.is_some());
     }
 }

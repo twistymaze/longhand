@@ -191,6 +191,22 @@ fn setup(
         &Unattended,
     )
     .unwrap();
+    pipeline::recognition::durable::prepare(
+        &store,
+        "route",
+        &temp.path().join("route"),
+        &segments,
+        &spec,
+    )
+    .unwrap();
+    pipeline::checkpoint::put(
+        &store,
+        "route",
+        Stage::Transcribe,
+        "recognition-generation-v1",
+        &"speaker-analysis",
+    )
+    .unwrap();
     (temp, store, spec, segments)
 }
 #[test]
@@ -235,6 +251,14 @@ fn off_and_integrated_execute_without_separate_weights() {
 #[test]
 fn off_reuses_successful_live_text_without_asr() {
     let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    pipeline::recognition::durable::stamp_live_identity(
+        &store,
+        "route",
+        &temp.path().join("route"),
+        &segments,
+        &spec,
+    )
+    .unwrap();
     let end = segments[0].duration_ms;
     pipeline::live::save_part(
         &store,
@@ -380,14 +404,7 @@ fn separate_timeline_cuts_batch_asr_at_alternating_speakers() {
             finality: Finality::Final,
         })
         .collect::<Vec<_>>();
-    pipeline::checkpoint::put(
-        &store,
-        "route",
-        Stage::Diarize,
-        pipeline::recognition::SPEAKERS_KEY,
-        &turns,
-    )
-    .unwrap();
+    pipeline::recognition::durable::persist_speakers(&store, "route", &turns).unwrap();
     let provider = Provider {
         calls: Arc::new(AtomicUsize::new(0)),
         loads: Arc::new(AtomicUsize::new(0)),
@@ -445,14 +462,7 @@ fn native_token_route_keeps_context_and_joins_alternating_speakers() {
             finality: Finality::Final,
         })
         .collect::<Vec<_>>();
-    pipeline::checkpoint::put(
-        &store,
-        "route",
-        Stage::Diarize,
-        pipeline::recognition::SPEAKERS_KEY,
-        &turns,
-    )
-    .unwrap();
+    pipeline::recognition::durable::persist_speakers(&store, "route", &turns).unwrap();
     let provider = Provider {
         calls: Arc::new(AtomicUsize::new(0)),
         loads: Arc::new(AtomicUsize::new(0)),
@@ -491,4 +501,321 @@ fn native_token_route_keeps_context_and_joins_alternating_speakers() {
             .as_ref()
             .is_some_and(|speaker| speaker.local_id == 2)
     }));
+}
+
+#[test]
+fn changed_preprocessing_invalidates_completed_native_windows() {
+    let (temp, store, mut spec, segments) = setup(SpeakerSource::Integrated);
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let dir = temp.path().join("route");
+    let run = |spec: &ExecutionSpec| {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            spec,
+            &provider,
+            Stage::Transcribe,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap()
+    };
+    run(&spec);
+    let calls = provider.calls.load(Ordering::SeqCst);
+    run(&spec);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), calls);
+    spec.preprocessing_revision.push_str("-changed");
+    run(&spec);
+    assert!(provider.calls.load(Ordering::SeqCst) > calls);
+}
+
+#[test]
+fn join_writes_portable_output_referenced_by_the_manifest() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let dir = temp.path().join("route");
+    for stage in [Stage::Transcribe, Stage::Join] {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            &spec,
+            &provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    let record = store.lock().unwrap().session("route").unwrap().unwrap();
+    let doc = pipeline::save::session_doc(&record, &segments, &dir).unwrap();
+    let value = serde_json::to_value(doc).unwrap();
+    assert!(value["recognition_artifact"]["sha256"].as_str().is_some());
+    assert!(dir.join("recognition.jsonl").is_file());
+}
+
+#[test]
+fn unstamped_live_text_requires_an_explicit_retranscription_choice() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    pipeline::live::save_part(
+        &store,
+        "route",
+        0,
+        0,
+        &asr::LivePart {
+            start_ms: 0,
+            end_ms: segments[0].duration_ms,
+            words: vec![asr::LiveWord {
+                start_ms: 0,
+                end_ms: segments[0].duration_ms,
+                text: "Already transcribed".into(),
+            }],
+        },
+    )
+    .unwrap();
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let error = pipeline::recognition::execute(
+        &store,
+        "route",
+        &temp.path().join("route"),
+        &segments,
+        &spec,
+        &provider,
+        Stage::Transcribe,
+        &Unattended,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("Transcribe Again"));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn audio_changes_and_external_transcript_edits_block_stale_reuse() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let dir = temp.path().join("route");
+    let run = |stage| {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            &spec,
+            &provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+    };
+    run(Stage::Transcribe).unwrap();
+    let calls = provider.calls.load(Ordering::SeqCst);
+    let path = dir.join(pipeline::proc_file(&segments[0].audio_file));
+    let mut bytes = std::fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(&path, bytes).unwrap();
+    assert!(run(Stage::Transcribe).is_err());
+    pipeline::assemble::run(&store, "route", &dir, &segments, None, &Unattended).unwrap();
+    run(Stage::Transcribe).unwrap();
+    assert!(provider.calls.load(Ordering::SeqCst) > calls);
+    run(Stage::Join).unwrap();
+    std::fs::write(dir.join("transcript.md"), "External edit").unwrap();
+    assert!(
+        run(Stage::Verify)
+            .unwrap_err()
+            .to_string()
+            .contains("Transcript changed")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("transcript.md")).unwrap(),
+        "External edit"
+    );
+}
+
+#[test]
+fn current_count_edit_retains_timed_asr_but_invalidates_speakers() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Nemotron);
+    let dir = temp.path().join("route");
+    let turns = vec![asr::SpeakerTurn {
+        range: SampleRange {
+            start: 0,
+            end: segments[0].duration_ms * 16,
+        },
+        timing: TimingPrecision::NativeSegment,
+        speaker: SpeakerKey {
+            scope: asr::SpeakerScope {
+                generation: "speaker-analysis".into(),
+                epoch: 0,
+            },
+            input_start_sample: 0,
+            local_id: 1,
+        },
+        finality: Finality::Final,
+    }];
+    let seed =
+        || pipeline::recognition::durable::persist_speakers(&store, "route", &turns).unwrap();
+    seed();
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: true,
+    };
+    let run = || {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            &spec,
+            &provider,
+            Stage::Transcribe,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap()
+    };
+    run();
+    let calls = provider.calls.load(Ordering::SeqCst);
+    store
+        .lock()
+        .unwrap()
+        .set_speaker_count("route", Some(session_core::SpeakerCount::Exact(2)))
+        .unwrap();
+    pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec).unwrap();
+    assert!(
+        pipeline::checkpoint::get::<serde_json::Value>(
+            &store,
+            "route",
+            Stage::Diarize,
+            pipeline::recognition::SPEAKERS_KEY
+        )
+        .unwrap()
+        .is_none()
+    );
+    seed();
+    run();
+    assert_eq!(provider.calls.load(Ordering::SeqCst), calls);
+}
+
+#[test]
+fn changed_archive_cannot_reuse_a_stale_processing_file() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let dir = temp.path().join("route");
+    pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec).unwrap();
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join(&segments[0].audio_file))
+        .unwrap()
+        .write_all(b"external archive change")
+        .unwrap();
+    let error = pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec)
+        .unwrap_err();
+    assert!(error.to_string().contains("audio"));
+}
+
+#[test]
+fn portable_reuse_requires_unchanged_transcript_and_suitable_timing() {
+    use session_core::recognition::{ARTIFACT_FILE, Reuse, read_artifact, write_artifact};
+    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let dir = temp.path().join("route");
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    for stage in [Stage::Transcribe, Stage::Join] {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            &spec,
+            &provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    let record = store.lock().unwrap().session("route").unwrap().unwrap();
+    let reference = pipeline::save::session_doc(&record, &segments, &dir)
+        .unwrap()
+        .recognition_artifact
+        .unwrap();
+    let mut next =
+        pipeline::recognition::durable::fingerprints(&store, "route", &dir, &segments, &spec)
+            .unwrap();
+    next.speakers = "new-speaker-model".into();
+    next.execution = "new-execution".into();
+    let mut count = 0;
+    assert_eq!(
+        pipeline::recognition::durable::reusable_artifact(&dir, Some(&reference), &next, |b| {
+            count += b.rows.len();
+            assert!(b.rows.iter().all(|r| r.speaker.is_none()));
+            assert!(b.coverage.committed.is_none());
+            Ok(())
+        })
+        .unwrap(),
+        Reuse::TimedAsr
+    );
+    assert!(count > 0);
+    let mut blocks = vec![];
+    let header = read_artifact(&dir.join(ARTIFACT_FILE), &reference, |mut block| {
+        for row in &mut block.rows {
+            row.timing = TimingPrecision::SourceWindow;
+        }
+        blocks.push(block);
+        Ok(())
+    })
+    .unwrap();
+    let untimed = write_artifact(&dir.join(ARTIFACT_FILE), &header, blocks).unwrap();
+    assert_eq!(
+        pipeline::recognition::durable::reusable_artifact(&dir, Some(&untimed), &next, |_| panic!(
+            "source-window text cannot be reused for speaker assignment"
+        ))
+        .unwrap(),
+        Reuse::TranscribeAgain
+    );
+    std::fs::write(dir.join("transcript.md"), "Edited externally").unwrap();
+    assert_eq!(
+        pipeline::recognition::durable::reusable_artifact(&dir, Some(&untimed), &next, |_| panic!(
+            "external text cannot be reused"
+        ))
+        .unwrap(),
+        Reuse::TranscribeAgain
+    );
+    assert_eq!(
+        pipeline::recognition::durable::reusable_artifact(&dir, None, &next, |_| panic!(
+            "legacy note needs explicit retranscription"
+        ))
+        .unwrap(),
+        Reuse::TranscribeAgain
+    );
 }

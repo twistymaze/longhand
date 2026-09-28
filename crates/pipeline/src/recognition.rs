@@ -1,5 +1,6 @@
 //! Route-specific recognition on the canonical 16 kHz recording timeline.
 //! Processed-input coverage and timed-text coverage are different evidence.
+pub mod durable;
 mod nemo;
 mod stages;
 pub use stages::{execute, prepare_retry, saved_result, snapshot};

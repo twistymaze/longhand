@@ -5,6 +5,7 @@
 pub mod folder;
 pub mod jobs;
 pub mod lock;
+pub mod recognition;
 pub mod schema;
 pub mod state;
 pub mod timeline;

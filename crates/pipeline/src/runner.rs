@@ -808,9 +808,37 @@ impl Runner {
         cancel: CancellationToken,
     ) -> Result<(), StageError> {
         let segments = lock(&self.env.store).segments(id)?;
+        if (checkpoint::is_complete(&self.env.store, id, stage, segments.len())?
+            || matches!(stage, Stage::Summarize | Stage::Save))
+            && matches!(
+                stage,
+                Stage::Diarize
+                    | Stage::Transcribe
+                    | Stage::Join
+                    | Stage::Verify
+                    | Stage::Summarize
+                    | Stage::Save
+            )
+            && let Some(spec) = crate::recognition::snapshot(&self.env.store, id)?
+            && self.env.working_root.join(id).exists()
+        {
+            crate::recognition::durable::prepare(
+                &self.env.store,
+                id,
+                &self.env.working_root.join(id),
+                &segments,
+                &spec,
+            )?;
+        }
         if checkpoint::is_complete(&self.env.store, id, stage, segments.len())? {
             let exact = lock(&self.env.store).recognition_snapshot(id)?.is_some();
             let route_complete = match stage {
+                Stage::Assemble if exact => crate::assemble::provenance_valid(
+                    &self.env.store,
+                    id,
+                    &self.env.working_root.join(id),
+                    &segments,
+                )?,
                 Stage::Transcribe if exact => {
                     crate::recognition::saved_result(&self.env.store, id)?.is_some()
                 }

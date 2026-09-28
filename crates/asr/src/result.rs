@@ -20,55 +20,10 @@ impl Attribution {
     }
 }
 
-/// A half-open interval on the canonical recording timeline, in samples.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SampleRange {
-    pub start: u64,
-    pub end: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpeakerScope {
-    pub generation: String,
-    pub epoch: u64,
-}
-
-/// Batch calls do not establish speaker continuity between input windows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpeakerKey {
-    pub scope: SpeakerScope,
-    pub input_start_sample: u64,
-    pub local_id: u32,
-}
-
-/// A replay of one input with the same scope keeps each ordered row's identity.
-/// A revision replaces that input's complete row list, including removed rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecognitionId {
-    pub scope: SpeakerScope,
-    pub input_start_sample: u64,
-    pub ordinal: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Finality {
-    Provisional,
-    Final,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TimingPrecision {
-    /// Model-provided segment bounds. These are not word alignments.
-    NativeSegment,
-    /// A native segment whose end was clipped by an explicit adapter tolerance.
-    /// This does not improve or guarantee the model's timestamp accuracy.
-    NativeSegmentClipped,
-    /// A model timestamp with no known duration, including a clipped tail word.
-    /// Its range is a single point and contributes no timed speech coverage.
-    NativeTimePoint,
-    /// Only the complete source window is known. Row order remains meaningful.
-    SourceWindow,
-}
+pub use session_core::recognition::{
+    Finality, RecognitionId, RecognitionOutput, RecognitionSegment, SampleRange, SpeakerKey,
+    SpeakerScope, SpeakerTurn, TimingPrecision,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecognitionRequest {
@@ -77,39 +32,6 @@ pub struct RecognitionRequest {
     pub start_sample: u64,
     pub revision: u64,
     pub attribution: Attribution,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecognitionSegment {
-    pub id: RecognitionId,
-    pub range: SampleRange,
-    pub timing: TimingPrecision,
-    pub text: String,
-    pub speaker: Option<SpeakerKey>,
-    pub revision: u64,
-    pub text_finality: Finality,
-    pub speaker_finality: Finality,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpeakerTurn {
-    pub range: SampleRange,
-    pub timing: TimingPrecision,
-    pub speaker: SpeakerKey,
-    pub finality: Finality,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecognitionOutput {
-    /// Identifies the complete snapshot, including an empty replacement.
-    pub scope: SpeakerScope,
-    pub revision: u64,
-    /// Input accepted by the completed call, including silence. This does not
-    /// prove that the model decoded every spoken word or rule out truncation.
-    pub coverage: SampleRange,
-    pub text: String,
-    pub segments: Vec<RecognitionSegment>,
-    pub speaker_turns: Vec<SpeakerTurn>,
 }
 
 impl RecognitionRequest {

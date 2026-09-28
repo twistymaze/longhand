@@ -370,6 +370,16 @@ fn update_home(
             home_write::write_atomic(&home, name, &contents)?;
         }
         write_notes(&guard, session_id, &home)?;
+        if working
+            .join(session_core::recognition::ARTIFACT_FILE)
+            .is_file()
+        {
+            home_write::copy_atomic(
+                &home,
+                session_core::recognition::ARTIFACT_FILE,
+                &working.join(session_core::recognition::ARTIFACT_FILE),
+            )?;
+        }
         // `session.md` is made again from the home folder, because a kept
         // previous `summary.md` has another fingerprint than the stub in
         // the working copy.
@@ -563,6 +573,22 @@ pub fn session_doc(
     doc.recognition_snapshot = record.recognition_snapshot.clone();
     doc.transcript_fingerprint = fingerprint_of(folder, TRANSCRIPT_FILE)?;
     doc.summary_fingerprint = fingerprint_of(folder, SUMMARY_FILE)?;
+    let artifact = folder.join(session_core::recognition::ARTIFACT_FILE);
+    if artifact.exists() {
+        let reference = session_core::recognition::ArtifactReference {
+            version: session_core::recognition::ARTIFACT_VERSION,
+            filename: session_core::recognition::ARTIFACT_FILE.into(),
+            sha256: session_core::recognition::file_digest(&artifact)?,
+        };
+        let header = session_core::recognition::read_artifact(&artifact, &reference, |_| Ok(()))
+            .map_err(|e| StageError::Failed(e.to_string()))?;
+        if doc.transcript_fingerprint.as_ref() != Some(&header.transcript) {
+            return Err(StageError::Failed(
+                "recognition artifact does not match the transcript".into(),
+            ));
+        }
+        doc.recognition_artifact = Some(reference);
+    }
     Ok(doc)
 }
 
