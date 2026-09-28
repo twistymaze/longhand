@@ -10,13 +10,56 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use asr::{LiveText, PartPolicy, Parts};
-use pipeline::live::{LiveConfig, LiveRow, LiveSink, LiveStatus, LiveTap, LiveWorker, Workers};
+use pipeline::live::{
+    LiveConfig, LiveEnd, LiveRow, LiveSink, LiveStatus, LiveTap, LiveWorker, Workers,
+};
 use serde::Serialize;
 use specta::Type;
 use tauri::AppHandle;
 use tauri_specta::Event as _;
 
 use crate::managers::models::ModelsManager;
+
+type StartLive = Box<dyn FnOnce() -> Option<(LiveTap, LiveWorker)> + Send>;
+
+/// Capture writes audio before the session row exists. Start its live worker
+/// only after that row is saved. The worker reads early audio from the archive.
+pub(super) struct DeferredLive {
+    start: Option<StartLive>,
+    tap: Arc<OnceLock<LiveTap>>,
+    worker: Option<LiveWorker>,
+}
+
+impl DeferredLive {
+    pub(super) fn new(
+        start: impl FnOnce() -> Option<(LiveTap, LiveWorker)> + Send + 'static,
+    ) -> Self {
+        Self {
+            start: Some(Box::new(start)),
+            tap: Arc::new(OnceLock::new()),
+            worker: None,
+        }
+    }
+
+    pub(super) fn tap(&self) -> Arc<OnceLock<LiveTap>> {
+        Arc::clone(&self.tap)
+    }
+
+    pub(super) fn activate(&mut self) {
+        if let Some(start) = self.start.take()
+            && let Some((tap, worker)) = start()
+        {
+            let _ = self.tap.set(tap);
+            self.worker = Some(worker);
+        }
+    }
+
+    pub(super) fn end(self, how: LiveEnd) {
+        if let Some(worker) = self.worker {
+            worker.end(how);
+        }
+    }
+}
 
 /// Durable text or speaker revisions on the canonical 16 kHz timeline.
 #[derive(Serialize, Clone, Type, Debug, PartialEq, Eq, tauri_specta::Event)]
@@ -590,6 +633,112 @@ fn recognition_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_live_starts_once_after_the_session_row_is_saved() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let store = store();
+        let key = "recognition-generation-v1";
+        // This is the native worker's first durable write. SQLite rejects it
+        // before capture saves the session row, even when no audio is ready.
+        let early_error = pipeline::checkpoint::put(
+            &store,
+            "new",
+            session_core::Stage::Transcribe,
+            key,
+            &"generation",
+        )
+        .unwrap_err();
+        assert!(early_error.to_string().contains("FOREIGN KEY"));
+        let (sent, received) = mpsc::channel();
+        let engine = pipeline::live::EngineAccess::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(|_| Err("this test does not load a model".into())),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let workers = Arc::new(Workers::new(Arc::clone(&store), engine).with_recognition(
+            Arc::new(move |store, config, _, _, _| {
+                let result = pipeline::checkpoint::put(
+                    store,
+                    &config.session_id,
+                    session_core::Stage::Transcribe,
+                    key,
+                    &"generation",
+                );
+                sent.send(result.map_err(|error| error.to_string()))
+                    .unwrap();
+                Ok(())
+            }),
+        ));
+        let starts = Arc::new(AtomicUsize::new(0));
+        let start_count = Arc::clone(&starts);
+        let start_workers = Arc::clone(&workers);
+        let mut live = DeferredLive::new(move || {
+            start_count.fetch_add(1, Ordering::SeqCst);
+            let mut config = LiveConfig::new("new", 0, "test", 16_000);
+            config.text_enabled = false;
+            config.speakers_enabled = true;
+            Some(
+                start_workers
+                    .start(
+                        config,
+                        Parts::new(0, PartPolicy::default()),
+                        Box::new(pipeline::live::Silent),
+                    )
+                    .unwrap(),
+            )
+        });
+        let tap = live.tap();
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        assert!(!workers.busy());
+        assert!(tap.get().is_none());
+        assert_eq!(received.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        store
+            .lock()
+            .unwrap()
+            .create_session("new", chrono::Local::now().fixed_offset(), None)
+            .unwrap();
+        live.activate();
+        live.activate();
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert!(tap.get().is_some());
+        received
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pipeline::checkpoint::get::<String>(
+                &store,
+                "new",
+                session_core::Stage::Transcribe,
+                key,
+            )
+            .unwrap(),
+            Some("generation".into()),
+        );
+        drop(tap);
+        live.end(LiveEnd::Keep);
+        workers.shutdown();
+    }
+
+    #[test]
+    fn deferred_live_abandoned_before_persistence_never_starts() {
+        for discard in [false, true] {
+            let live =
+                DeferredLive::new(|| panic!("an abandoned segment must not start live work"));
+            let tap = live.tap();
+            if discard {
+                live.end(LiveEnd::Discard);
+            } else {
+                drop(live);
+            }
+            assert!(tap.get().is_none());
+        }
+    }
 
     fn manager(dir: &std::path::Path) -> LiveManager {
         LiveManager::new(Arc::new(ModelsManager::at(dir.to_path_buf())))

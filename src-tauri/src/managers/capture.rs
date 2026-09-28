@@ -39,7 +39,7 @@ use audio::CaptureStream;
 use audio_cpal::{CpalAudio, Input, Inputs, MicChoice};
 use audio_system::{Permission, SilenceRun, SilentCheck, SystemAudioCapture, SystemAudioStatus};
 use chrono::{DateTime, FixedOffset, Local};
-use pipeline::live::{LiveEnd, LiveWorker};
+use pipeline::live::LiveEnd;
 use pipeline::recover::segment_audio_file;
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{
@@ -59,7 +59,7 @@ use tokio_util::sync::CancellationToken;
 use crate::audio::AppAudio;
 use crate::commands::readiness::SystemAudioPermission;
 use crate::managers::alerts::{self, AlertsManager};
-use crate::managers::live::LiveManager;
+use crate::managers::live::{DeferredLive, LiveManager};
 use crate::managers::models::ModelsManager;
 use crate::managers::settings::{self, MicrophoneChoice, Settings};
 
@@ -199,7 +199,7 @@ struct ActiveSegment {
     outcome: std_mpsc::Receiver<SegmentOutcome>,
     thread: JoinHandle<()>,
     /// The segment's live worker, when the note is in live mode (U6).
-    live: Option<LiveWorker>,
+    live: Option<DeferredLive>,
     /// The name of the input that the segment records from.
     input: String,
     /// The note's chosen microphone is missing, and the system default
@@ -1069,7 +1069,7 @@ impl CaptureManager {
             stereo_mark: false,
             speaker: None,
         };
-        let active = match self.open_segment(app, &mut inner, opening) {
+        let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
             Err(e) => {
                 // The session this press ended is already closed: stop and
@@ -1102,6 +1102,9 @@ impl CaptureManager {
                 return Err(e.into());
             }
         };
+        if let Some(live) = &mut active.live {
+            live.activate();
+        }
         for other in stopped {
             self.record_model_at_stop(app, &other);
             log::info!("session {other} stopped by a new session");
@@ -1331,7 +1334,7 @@ impl CaptureManager {
             stereo_mark: self.note_stereo(id),
             speaker: None,
         };
-        let active = match self.open_segment(app, &mut inner, opening) {
+        let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
             Err(e) => {
                 // The store already says Capturing: put the session back to
@@ -1349,6 +1352,9 @@ impl CaptureManager {
                 return Err(e);
             }
         };
+        if let Some(live) = &mut active.live {
+            live.activate();
+        }
         inner.active = Some(active);
         inner.clock = Some(Clock::new(id, timeline, epoch));
         log::info!("session {id} resumed as segment {index} at {offset} ms");
@@ -2290,7 +2296,10 @@ impl CaptureManager {
             speaker,
         };
         match self.open_segment(app, inner, opening) {
-            Ok(active) => {
+            Ok(mut active) => {
+                if let Some(live) = &mut active.live {
+                    live.activate();
+                }
                 inner.active = Some(active);
                 log::info!("session {id} reopened as segment {index} at {offset} ms");
                 self.watch_capture(app, inner, id);
@@ -2433,21 +2442,26 @@ impl CaptureManager {
             .as_ref()
             .filter(|spec| spec.enabled_live_transcription || spec.enabled_live_speaker_analysis)
             .map(|spec| spec.config.asr_model.as_str())
-            .or(live);
-        let (tap, live) = selected
-            .and_then(|model| {
+            .or(live)
+            .map(str::to_string);
+        let live = selected.map(|model| {
+            let app = app.clone();
+            let archive = self.session_dir(session_id).join(RECOVERY_DIR);
+            let session_id = session_id.to_string();
+            DeferredLive::new(move || {
                 app.state::<Arc<LiveManager>>().start(
-                    app,
-                    session_id,
+                    &app,
+                    &session_id,
                     segment,
-                    model,
+                    &model,
                     rate,
-                    self.session_dir(session_id).join(RECOVERY_DIR),
+                    archive,
                     offset_ms,
-                    snapshot.clone(),
+                    snapshot,
                 )
             })
-            .unzip();
+        });
+        let tap = live.as_ref().map(DeferredLive::tap);
 
         let stop = CancellationToken::new();
         let (tx, outcome) = std_mpsc::channel();
@@ -2502,8 +2516,9 @@ impl CaptureManager {
                     },
                     // This hint never waits and carries no audio. Workers read
                     // the recorder's flushed bytes and mix on their own threads.
+                    // Before activation, audio stays in that same archive.
                     move |frame: Frame<'_>| {
-                        if let Some(tap) = &tap {
+                        if let Some(tap) = tap.as_ref().and_then(|tap| tap.get()) {
                             tap.notify(frame.index);
                         }
                         if let (Some(silence), Some(right)) = (&silence, frame.speaker) {
