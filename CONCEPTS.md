@@ -81,8 +81,11 @@ Audio of a session that has no live transcript: a span that the live transcript 
 ### Transcribe Again
 The menu action that opens reprocessing choices for a saved note. Reprocessing can use a different transcription model, speaker source, or processing configuration. The preview states whether the selected route can reuse verified timed text or requires transcription again. The summary is refreshed from the resulting transcript. The recording, notes, and title stay. The previous complete result remains available until the replacement is published successfully.
 
-### Unused model
-A downloaded model that the app can delete without an override. It is not selected, not part of a pending configuration, not in use by a recording, and not needed by a note that is not finished. "Delete unused" in Settings deletes these models. "Delete all" also deletes models that are in use, after a warning, but never during a recording or a download.
+### Model bundle
+A transcription model and every supporting model that one of its valid choices can use: speaker models for each speaker source, and the NeMo copy of the model for live speaker labels. Longhand downloads the full bundle when the user selects the transcription model, and shows its total size. The user sees and deletes only transcription models. When a transcription model is deleted, Longhand deletes each supporting model that no other bundle needs.
+
+### Supporting model
+A model file that a transcription model needs for some choices, such as a speaker model or a NeMo copy. It is internal: Settings does not list it. It stays on disk while a bundle of a downloaded, selected, or pending transcription model contains it, or while a note that is not finished needs it.
 
 ## Summaries
 

@@ -12,12 +12,12 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** A user can keep Longhand in the macOS Dock after the window closes, or hide it there, can find the Window settings first on the General tab, and can recover model disk space with one button, without the need to understand supporting models.
-- **Product authority:** This Product Contract. The user confirmed the scope on 2026-09-28. The Requirements win on product behaviour; the KTDs win on mechanism.
+- **Objective:** A user can keep Longhand in the macOS Dock after the window closes, or hide it there, can find the Window settings first on the General tab, and manages only transcription models: Longhand downloads and deletes the supporting models without the user.
+- **Product authority:** This Product Contract. The user confirmed the scope on 2026-09-28 and changed the model part after a manual test on the same day. The Requirements win on product behaviour; the KTDs win on mechanism.
 - **Open blockers:** None.
-- **Execution profile:** One branch and one PR, in a worktree made from `origin/main`. Commit per unit. The Dock behaviour needs a manual test in a signed build (R3, R4).
-- **Stop conditions:** Stop and ask if the bulk delete needs to change the refusal rules of `delete_refusal` for the single-model delete, or if a Settings field change needs a schema migration.
-- **Product Contract preservation:** changed: R6 — "Delete all" is also off while a note is transcribing (confirmed with the user at plan scoping); AE9 added; the Outstanding Questions are resolved in R6 (button placement) and KTD4 (note count).
+- **Execution profile:** One branch and one PR, in a worktree made from `origin/main`. Commit per unit. The Dock behaviour and the model downloads need a manual test in a signed build.
+- **Stop conditions:** Stop and ask if the cascade delete needs to change the refusal rules of `delete_refusal`, or if a Settings field change needs a schema migration.
+- **Product Contract preservation:** changed on 2026-09-28 by the user after the first manual test: the "Delete models…" dialog, the Downloads group, and the Supporting models list are removed (old R6–R11, AE5–AE9). Model bundles replace them (R6–R11, AE5–AE10). The ConfirmDialog second action (old U4) is removed, because nothing uses it.
 
 ---
 
@@ -25,20 +25,20 @@ execution: code
 
 ### Summary
 
-The General tab shows Window first and adds a "Hide from Dock" switch on macOS. The switch is off by default, so Longhand stays in the Dock after the window closes. The Transcription tab replaces the Supporting models list with one "Delete models…" button and a list that stays collapsed until the user opens it. The hover highlight on a transcription model row also covers that model's Delete… button.
+The General tab shows Window first and adds a "Hide from Dock" switch on macOS. The switch is off by default, so Longhand stays in the Dock after the window closes. On the Transcription tab, the user sees only transcription models. Selecting a model downloads everything that any of its choices can use. Deleting a model also deletes the supporting models that no other model needs. The hover highlight on a transcription model row covers the full row.
 
 ### Problem Frame
 
-Today, on every platform, the close button hides the main window. On macOS, Longhand then removes its Dock icon and stays only in the menu bar. Users who expect the standard macOS behaviour must find the menu-bar icon to bring the window back. On Windows, the hidden window has no taskbar button, and Longhand stays in the system tray, but the Window footer says "menu bar" there. The Transcription tab shows a list of supporting models (speaker segmentation, speaker embedding, and transcription model files). A user who does not know these terms sees technical detail that they cannot act on. In the transcription model list, the hover highlight stops above the Delete… button of a downloaded model that is not selected, so the row looks broken.
+Today, on every platform, the close button hides the main window. On macOS, Longhand then removes its Dock icon and stays only in the menu bar. Users who expect the standard macOS behaviour must find the menu-bar icon to bring the window back. On Windows, the Window footer says "menu bar", but Longhand stays in the system tray. The Transcription tab shows supporting models (speaker models and "NeMo artifact" copies) with their own download and delete controls. A user cannot know what these files are or when they are needed. A change of a processing choice can also start a second download after the user already downloaded the model.
 
 ### Key Decisions
 
 - **The switch is "Hide from Dock", and its default is off.** Staying in the Dock is the standard macOS behaviour, so the switch names the change from that behaviour. Existing installs get the same default. Nobody uses Longhand yet, so the change needs no migration. Governs R2, R3. (session-settled: user-directed — chosen over a "Keep in Dock" switch with the default on: the switch must name the change from standard macOS behaviour)
-- **The switch is macOS only.** Windows keeps its current behaviour: the close button hides the window to the system tray, and the Minimize button keeps the taskbar button. That is the usual pattern for Windows tray apps. Governs R2. (session-settled: user-approved — chosen over a "Hide from taskbar" switch on Windows: Minimize already gives Windows users the other choice)
-- **When the switch is on, the Dock icon is absent every time no window is visible.** This applies after a close, after a launch at login, and after the Settings window closes. Governs R3.
-- **One "Delete models…" button opens a dialog that offers the correct choices.** It replaces a list of per-model rows as the primary control. Governs R6, R7, R8. (session-settled: user-approved — chosen over two separate buttons and over an unused-only button: the two reasons to delete are to recover space and to clean up before the user removes the app)
-- **"Unused" includes transcription models that are not selected.** The reason to delete unused models is to recover disk space, and a transcription model that is not selected is the largest unused item. Governs R7.
-- **"Delete all" can delete models that are in use, after a warning.** It never deletes a model while a recording, a download, or a transcription is in progress, because a running step holds its model and would fail instead of wait. Governs R6, R8, R9. (session-settled: user-approved — chosen over allowing "Delete all" while a note is transcribing: that note would fail instead of wait)
+- **The switch is macOS only.** Windows keeps its current behaviour: the close button hides the window to the system tray, and the Minimize button keeps the taskbar button. Governs R2. (session-settled: user-approved — chosen over a "Hide from taskbar" switch on Windows: Minimize already gives Windows users the other choice)
+- **When the switch is on, the Dock icon is absent every time no window is visible.** This applies after a close, after a launch at login, and after the Settings window closes. The Settings window is a window, so the icon shows while it is open. Governs R3.
+- **A transcription model and its supporting models are one item for the user.** Selecting a model downloads the full model bundle: the files for every valid choice of live or after-recording transcription and live or after-recording speaker labels. The user never downloads or deletes a supporting model directly. Governs R6–R10. (session-settled: user-directed — chosen over a Supporting models section with its own "Delete unused" button: the user must not need to understand supporting models)
+- **A supporting model stays while any bundle that the user keeps needs it.** A delete removes each supporting model of the deleted bundle that no other downloaded, selected, or pending transcription model needs. Governs R8, R9. (session-settled: user-directed)
+- **No bulk delete.** The user deletes transcription models one at a time from their rows. Governs R8.
 
 ### Requirements
 
@@ -50,14 +50,14 @@ Today, on every platform, the close button hides the main window. On macOS, Long
 - R4. A change to the switch takes effect as follows. Off: the Dock icon comes back at once. On: the Dock icon goes when the last visible window closes, not while a window is open.
 - R5. The Window group footer text describes the close behaviour correctly for the current platform and switch value. It says "menu bar" on macOS and "system tray" on Windows.
 
-**Transcription tab: model deletion**
+**Transcription tab: model bundles**
 
-- R6. The Transcription tab has one "Delete models…" button next to "Download required models" in the Downloads group. It is off while a recording is in progress, while a download is in progress, and when no model is downloaded. In the dialog, "Delete all" is off while a note is transcribing, and the dialog says why.
-- R7. The button opens a dialog. When one or more downloaded models are unused, the dialog offers "Delete unused" and "Delete all", each with the disk space that it recovers. When no downloaded model is unused, the dialog asks the user only to confirm "Delete all". An unused model is a downloaded model that the app can delete today without an override: it is not selected, not part of a pending configuration, not in use by a recording, and not needed by an unfinished note.
-- R8. The "Delete all" choice deletes every downloaded model. Before the deletion, it tells the user that Longhand cannot transcribe new notes until the user downloads the models again. It also shows how many unfinished notes will wait for the models.
-- R9. After "Delete all", the transcription model choice and the other options stay as they are. The General tab and the Transcription tab show that models are missing, and "Download required models" restores them.
-- R10. After a deletion, the tab shows the new model state. A failure to delete one model does not stop the deletion of the others, and the tab shows which models it could not delete.
-- R11. The list of individual supporting models is collapsed by default behind a "Show models" control. When it is open, the list shows each downloaded supporting model with its size and its Delete… button, as today.
+- R6. Selecting a transcription model downloads its full model bundle. A later change of a processing or speaker choice for that model needs no other download.
+- R7. Each transcription model row shows the total size of its bundle. A row shows "Downloaded" only when the full bundle is on disk.
+- R8. Each downloaded transcription model has a Delete… button, which is off for the selected model, as today. The delete removes the transcription model and each supporting model of its bundle that no other downloaded, selected, or pending transcription model needs, and that no unfinished note needs.
+- R9. At launch, Longhand deletes each supporting model that no bundle of a downloaded, selected, or pending transcription model needs, and that no unfinished note needs.
+- R10. When a downloaded or selected transcription model has missing files, its row shows a Download button that downloads the missing files of its bundle. While files of a bundle download, the row of that model shows the progress and a Cancel button.
+- R11. The Transcription tab has no Downloads group, no Supporting models list, and no bulk delete.
 
 **Transcription tab: hover highlight**
 
@@ -69,35 +69,34 @@ Today, on every platform, the close button hides the main window. On macOS, Long
 - AE2. **Covers R3, R4.** Given the main window is open and "Hide from Dock" is off, when the user turns the switch on, then the Dock icon stays until the user closes the last window, and then it goes.
 - AE3. **Covers R3.** Given "Hide from Dock" is on, when Longhand launches at login with its window hidden, then no Dock icon shows.
 - AE4. **Covers R4.** Given "Hide from Dock" is on and no window is visible, when the user opens Settings from the menu bar and turns the switch off, then the Dock icon shows at once and stays after Settings closes.
-- AE5. **Covers R7.** Given the selected model and its supporting models are downloaded, and one other transcription model is downloaded, when the user clicks "Delete models…", then the dialog offers "Delete unused" with the size of the other transcription model, and "Delete all" with the total size.
-- AE6. **Covers R7, R8.** Given only the models of the current choices are downloaded, when the user clicks "Delete models…", then the dialog asks the user only to confirm "Delete all" and shows the warning.
-- AE7. **Covers R8, R9.** Given two notes wait in the queue, when the user confirms "Delete all", then all models are deleted, the warning said that two notes will wait, the notes stay in the queue, and General shows that models are missing.
-- AE8. **Covers R6.** Given a recording is in progress, then "Delete models…" is off.
-- AE9. **Covers R6.** Given a note is transcribing and unused models exist, when the user opens the dialog, then "Delete unused" is available, and "Delete all" is off with a line that says a note is transcribing.
+- AE5. **Covers R6.** Given no model is downloaded, when the user selects Parakeet Unified, then Longhand downloads Parakeet Unified and the speaker models for pyannote, Sortformer, and Nemotron diarization. A later change of the speaker source starts no download.
+- AE6. **Covers R6, R7.** Given the user selects Nemotron Speech Streaming, then its bundle includes its NeMo copy, and the row size includes that copy.
+- AE7. **Covers R8.** Given Parakeet Unified and Parakeet TDT v3 are downloaded and Parakeet Unified is selected, when the user deletes Parakeet TDT v3, then its files go, and the speaker models stay because the bundle of Parakeet Unified needs them.
+- AE8. **Covers R8.** Given Parakeet Unified and Nemotron Speech Streaming are downloaded, Parakeet Unified is selected, and no unfinished note needs the NeMo copy, when the user deletes Nemotron Speech Streaming, then its NeMo copy goes too, and the speaker models stay.
+- AE9. **Covers R9.** Given a supporting model is on disk and no bundle needs it, when Longhand launches, then it deletes that file.
+- AE10. **Covers R10.** Given the selected model is downloaded but one speaker model of its bundle is missing, then its row shows Download, and a click downloads only the missing file with progress and Cancel on the row.
 
 ### Scope Boundaries
 
-- The per-model Delete… buttons in the transcription model list do not change.
 - No other General tab content changes, apart from the group order, the new switch, and the Window footer text.
 - The close behaviour on Windows and Linux does not change.
-- No "reset Longhand" or uninstall feature. "Delete all" removes models only.
+- The refusal rules of `delete_refusal` for the transcription model do not change.
+- Supporting models still show on the About page for their licences.
 
 ### Dependencies / Assumptions
 
-- The delete rules of KTD12 in `docs/plans/2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md` define "unused" (R7). "Delete all" overrides them, except for the recording in progress and downloads in progress.
-- The queue skips a note whose model is missing (KTD13 of the same plan), so the notes that wait after "Delete all" do not stop other work.
+- The delete rules of KTD12 in `docs/plans/2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md` protect the models that the selected, pending, and unfinished notes need.
+- The queue skips a note whose model is missing (KTD13 of the same plan).
 - A click on the Dock icon already shows the main window (`RunEvent::Reopen` in `src-tauri/src/lib.rs`).
 
 ### Sources / Research
 
-- `src/settings/Status.tsx` — General pane groups (Recording, Window, Processing, Alerts) and the Window footer text.
-- `src-tauri/src/window.rs` — `hide_main_window`, `hide_dock_icon_if_no_window`, and `front`, which set the activation policy. The close handler hides the window on every platform.
-- `src-tauri/src/lib.rs` — the Accessory policy before the event loop, and the `Reopen` handler.
-- `src-tauri/src/tray.rs` — the tray icon exists on every platform.
-- `src/settings/Models.tsx` — the Downloads and Supporting models groups.
-- `src/settings/RecognitionModelPicker.tsx` — the hover class is on the radio button only, and the model action renders in a sibling element.
-- `src-tauri/src/managers/models.rs` — `delete_refusal`.
-- `src/settings/LoginItem.tsx` and `Switch` in `src/settings/ui.tsx` — the pattern for a switch row in the Window group.
+- `src/settings/Status.tsx` — General pane groups and the Window footer text.
+- `src-tauri/src/window.rs` — `hide_main_window`, `hide_dock_icon_if_no_window`, and `front`.
+- `crates/models/src/recognition.rs` — `resolve` and `resolve_for_runtime`. The NeMo copy is used when a Nemotron streaming model runs live with live Sortformer or Nemotron speaker labels.
+- `src-tauri/src/commands/settings.rs` — `set_recognition_defaults` downloads only the artifacts of the selected configuration today.
+- `src-tauri/src/managers/models.rs` — `delete_refusal`, `statuses`, `missing_spec`, and `start_artifact_downloads`.
+- `src/settings/Models.tsx` and `src/settings/RecognitionModelPicker.tsx` — the model rows and their actions.
 
 ---
 
@@ -105,14 +104,16 @@ Today, on every platform, the close button hides the main window. On macOS, Long
 
 ### Key Technical Decisions
 
-- KTD1. **One pure function decides the Dock policy, and every policy site calls it.** The function takes the `hide_from_dock` value and whether a window is visible, and returns Regular or Accessory. It follows `toggle_action` in `src-tauri/src/window.rs`, so unit tests can cover it without a Tauri mock. The sites are the startup call in `src-tauri/src/lib.rs`, `hide_dock_icon_if_no_window`, and `front` in `src-tauri/src/window.rs`. Governs R3.
-- KTD2. **The startup policy reads the setting before the event loop.** With the switch off, the app starts as Regular, so a login launch also shows the Dock icon. With it on, startup stays Accessory, as today. Governs R3; covers AE3.
-- KTD3. **The setter applies the "off" change at once.** `set_hide_from_dock(false)` on macOS sets the policy to Regular. `set_hide_from_dock(true)` changes nothing until the next close, because `hide_dock_icon_if_no_window` then reads the new value. The setter returns an error on other platforms, as `set_system_audio_default` does. Governs R4.
-- KTD4. **The backend owns the delete rules, and the dialog reads them.** A new command returns each downloaded model with its size and an `unused` flag, which is `delete_refusal(...).is_none()`. It also returns the count of unfinished notes (every session state except Saved and Discarded, the same rule as `delete_refusal`) and the reason that "Delete all" is off (recording, download, or transcription), if any. A live model that `ModelsManager::live_model()` still holds after Stop gives the recording reason. The frontend does not copy the rules. Governs R6, R7, R8.
-- KTD5. **One bulk command deletes by scope: `unused` or `all`.** `unused` deletes only models whose `delete_refusal` is `None` at the time of the call. `all` checks for a recording, a live model (`ModelsManager::live_model()` is `Some`, which stays true while the live worker saves its last part after Stop), a download, and a session in Processing, and refuses when one exists. Then it deletes every downloaded model and does not call `delete_refusal`. Both scopes call `unload_engine` before `delete_files`, as `delete_model` does. Both continue after a failure and return the models that they could not delete. The single `delete_model` command does not change. Governs R6, R8, R10.
-- KTD6. **`ConfirmDialog` gets an optional second action.** The dialog keeps Cancel focused and Escape to cancel. The second action is a button between Cancel and the primary action. Both the second action and the primary action can be off with a reason line, and `busy` turns off both. `DeleteSession` and `useConfirm` do not change. Governs R7. (session-settled: user-approved — chosen over a new dialog component: one dialog pattern stays in the app)
-- KTD7. **"Show models" uses the `LicenceRow` disclosure pattern from `src/settings/About.tsx`.** It is a button with `aria-expanded` and a chevron that turns. The list shows only when it is open. Governs R11.
-- KTD8. **The hover class moves from the radio button to the row wrapper.** The wrapper in `RecognitionModelPicker` gets `hover:bg-row-hover` when it is not selected, and the button keeps only its focus and active styles. Governs R12.
+- KTD1. **One pure function decides the Dock policy, and every policy site calls it.** It takes the `hide_from_dock` value and whether a window is visible, and returns Regular or Accessory. The sites are the startup call in `src-tauri/src/lib.rs`, `hide_dock_icon_if_no_window`, and `front`. Governs R3.
+- KTD2. **The startup policy reads the setting before the event loop, with no settings write.** With the switch off, the app starts as Regular, so a login launch also shows the Dock icon. The read happens before the single-instance lock, so it must not save a migrated value. Governs R3; covers AE3.
+- KTD3. **The setter applies the "off" change at once.** `set_hide_from_dock(false)` on macOS sets the policy to Regular. `set_hide_from_dock(true)` changes nothing until the next close. The setter returns an error on other platforms. Governs R4.
+- KTD4. **`models::recognition::bundle(asr_model)` gives the bundle as artifacts.** It resolves every combination of speaker source and the two processing modes for the model, with no speaker count and no language, and keeps the union of the artifacts of each valid result, without duplicates, with the transcription model first. The resolve rules stay the only source of truth. Governs R6.
+- KTD5. **`set_recognition_defaults` downloads the bundle.** The artifacts of the selected configuration download first, as today, so the pending pick settles on them. The other bundle artifacts download after them. Governs R6.
+- KTD6. **`ModelStatus` carries the bundle.** Recognition rows get `bundle` (artifact ids), `bundle_size_bytes`, and `bundle_complete`. Other rows get their own id, size, and state. The frontend does not compute bundles. Governs R7, R10.
+- KTD7. **One pure function finds the supporting models to remove.** It takes the present supporting models, the settings, and the present recognition models, and returns each supporting model that is not in the bundle of a present, selected, or pending recognition model (the "kept bundles"). The cascade delete and the launch cleanup both call it. Each candidate then also passes `delete_refusal`, so unfinished notes and the live model keep their files. Governs R8, R9.
+- KTD8. **The cascade delete and the launch cleanup hold the capture state lock through the deletes.** `CaptureManager::with_recording_held` keeps a recording from starting between the checks and the last delete. A failed supporting delete is logged and does not fail the delete of the transcription model. Governs R8, R9.
+- KTD9. **`download_model_bundle(asr_model)` replaces `download_recognition_artifacts`.** It starts the downloads of the missing bundle artifacts. The row sums the progress of the bundle ids. Governs R10.
+- KTD10. **The hover class moves from the radio button to the row wrapper.** Governs R12.
 
 ### High-Level Technical Design
 
@@ -124,16 +125,21 @@ The Dock policy decision of KTD1:
 | on | yes | Regular |
 | on | no | Accessory |
 
-The startup call uses "no window visible". A setter call with "off" applies the first row at once (KTD3).
+Supporting model lifetime (KTD7):
 
-### Assumptions
-
-- `recordingStatus` and the `recordingChanged` event give the Settings window the recording state without `useCapture`. `src/recording/useCapture.ts` shows the pattern.
-- `bun run build` fails on every full `Settings` object literal in the tests until they get the new field (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`).
+```mermaid
+flowchart LR
+  select[Select model] --> download[Download full bundle]
+  delete[Delete model] --> cascade[Remove supporting models outside kept bundles]
+  launch[Launch] --> cascade
+  cascade --> refusal{delete_refusal}
+  refusal -- none --> remove[Unload engine, delete files]
+  refusal -- reason --> keep[Keep file]
+```
 
 ### Sequencing
 
-U1 comes before U2, because U2 needs the setter and the regenerated bindings. U3 and U4 come before U5. U6 has no dependency.
+U1 comes before U2. U3 comes before U4. U5 has no dependency.
 
 ---
 
@@ -145,32 +151,11 @@ U1 comes before U2, because U2 needs the setter and the regenerated bindings. U3
 
 **Requirements:** R2, R3, R4; KTD1, KTD2, KTD3.
 
-**Dependencies:** None.
+**Files:** `src-tauri/src/managers/settings.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/window.rs`, `src/bindings.ts` (generated), test fixtures.
 
-**Files:**
-- `src-tauri/src/managers/settings.rs`
-- `src-tauri/src/commands/settings.rs`
-- `src-tauri/src/lib.rs`
-- `src-tauri/src/window.rs`
-- `src/bindings.ts` (generated)
-- `src/settings/EndpointForm.test.tsx`, `src/settings/SummaryPrompts.test.tsx`, `src/settings/Recording.test.tsx` (fixture field)
+**Test scenarios:** the policy table of KTD1; startup with the setting on and off; a settings file without `hide_from_dock` reads as `false`.
 
-**Approach:**
-1. Add `hide_from_dock: bool` to `Settings`, with the default `false` in `impl Default`. No schema bump (`#[serde(default)]`).
-2. Add the pure policy function next to `toggle_action` and use it in `hide_dock_icon_if_no_window`, `front`, and the startup call.
-3. At startup, read the setting before `app.set_activation_policy`.
-4. Add `set_hide_from_dock` after the `set_system_audio_default` pattern, register it in `collect_commands!`, and regenerate the bindings.
-
-**Patterns to follow:** `toggle_action` and its tests in `src-tauri/src/window.rs`; `set_system_audio_default` in `src-tauri/src/commands/settings.rs`.
-
-**Test scenarios:**
-- Covers AE1. Setting off, no other window visible: the policy is Regular.
-- Covers AE2. Setting on, no other window visible: the policy is Accessory.
-- Setting on, another window visible: the policy is Regular.
-- Covers AE3. Startup with the setting on gives Accessory; with the setting off, it gives Regular.
-- A settings file without `hide_from_dock` reads as `false`.
-
-**Verification:** The Rust tests pass. `src/bindings.ts` contains `setHideFromDock` and has no diff after regeneration.
+**Verification:** The Rust tests pass. `src/bindings.ts` has no diff after regeneration.
 
 ### U2. General tab order, switch, and footer
 
@@ -178,143 +163,71 @@ U1 comes before U2, because U2 needs the setter and the regenerated bindings. U3
 
 **Requirements:** R1, R2, R5; KTD3.
 
-**Dependencies:** U1.
+**Files:** `src/settings/Status.tsx`, `src/settings/SettingsWindow.tsx`, `src/settings/Status.test.tsx`.
 
-**Files:**
-- `src/settings/Status.tsx`
-- `src/settings/SettingsWindow.tsx`
-- `src/settings/Status.test.tsx`
+**Test scenarios:** the group order; the switch on macOS, its error, and its off state while a change is in progress; no switch and "system tray" in the footer on other platforms; the footer follows the switch.
 
-**Approach:**
-1. Move the Window group above Recording.
-2. Pass `settings` and `onSettings` to `StatusPane`.
-3. Add a "Hide from Dock" `Switch` row in the Window group when `isMac`, after the `SystemAudio` pattern in `src/settings/Recording.tsx`, with `ErrorText` on failure.
-4. Write the footer from the platform and the switch value. On macOS with the switch off: the window closes and Longhand stays in the Dock and the menu bar. With it on: Longhand stays only in the menu bar. On Windows: Longhand stays in the system tray. The show-shortcut sentence stays.
+**Verification:** The component tests pass.
 
-**Patterns to follow:** `SystemAudio` in `src/settings/Recording.tsx`; `renderPane` in `src/settings/Status.test.tsx`.
+### U3. Model bundles in the backend
 
-**Test scenarios:**
-- The group headers show in the order Window, Recording, Processing, Alerts.
-- On macOS, the switch shows, is off by default, and a click calls `set_hide_from_dock` with `true`.
-- A failed setter shows the error text, and the switch keeps its previous value.
-- On a platform other than macOS, the switch does not show, and the footer says "system tray".
-- On macOS, the footer text changes when the switch value changes.
+**Goal:** Download, report, and delete a transcription model as one bundle.
 
-**Verification:** The component tests pass. The General tab matches R1 in the preview page.
+**Requirements:** R6, R7, R8, R9, R10; KTD4–KTD9.
 
-### U3. Model deletion summary and bulk delete commands
-
-**Goal:** Give the frontend the data for the dialog, and delete by scope with the rules in the backend.
-
-**Requirements:** R6, R7, R8, R10; KTD4, KTD5.
-
-**Dependencies:** None.
-
-**Files:**
-- `src-tauri/src/managers/models.rs`
-- `src-tauri/src/commands/models.rs`
-- `src-tauri/src/lib.rs`
-- `src/bindings.ts` (generated)
+**Files:** `crates/models/src/recognition.rs`, `src-tauri/src/managers/models.rs`, `src-tauri/src/managers/capture.rs`, `src-tauri/src/commands/models.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/lib.rs`, `src/bindings.ts` (generated).
 
 **Approach:**
-1. Add a pure function that takes the statuses, the settings, the live model, and the sessions, and returns the summary of KTD4. Keep it next to `delete_refusal` so that it uses the same inputs.
-2. Add the summary command, with the session read and `live_model` from `delete_model`.
-3. Add the bulk delete command with the refusals and the error collection of KTD5.
-4. Register both commands and regenerate the bindings.
-
-**Patterns to follow:** `delete_model` in `src-tauri/src/commands/models.rs`; the `delete_refuses_*` tests in `src-tauri/src/managers/models.rs`.
-
-**Test scenarios:**
-- Covers AE5. The selected model, its artifacts, and one other downloaded transcription model: only the other model is unused, and the unused size equals its size.
-- Covers AE6. Only the models of the current choices are downloaded: no model is unused.
-- A model that a Queued note needs is not unused, and the unfinished-note count includes that note.
-- Saved and Discarded notes do not count as unfinished.
-- Covers AE9. A session in Processing: the summary gives the transcription reason for "Delete all".
-- A recording in progress, or a download in progress: "Delete all" is refused with that reason.
-- The live model is set and no recording is in progress (the live worker saves its last part after Stop): "Delete all" is refused with the recording reason.
-- The `unused` scope does not delete a model that became needed after the summary was made.
-- A failure to delete one model does not stop the others, and the result names the failed model.
-
-**Verification:** The Rust tests pass, and the bindings include both commands.
-
-### U4. Second action in ConfirmDialog
-
-**Goal:** Let one dialog offer two destructive choices.
-
-**Requirements:** R7; KTD6.
-
-**Dependencies:** None.
-
-**Files:**
-- `src/lib/ConfirmDialog.tsx`
-- `src/lib/ConfirmDialog.test.tsx` (new)
-
-**Approach:** Add optional `secondary` props (label, `onClick`, `disabled`, reason line), and optional `disabled` and reason props for the primary action. With none of them, the dialog renders as today.
-
-**Patterns to follow:** the current `ConfirmDialog`. `docs/solutions/ui-bugs/wkwebview-click-does-not-focus-button-breaks-shortcut-capture.md` for focus in WKWebView.
+1. Add `bundle` (KTD4) with tests.
+2. Add the bundle fields to `ModelStatus` (KTD6).
+3. Download the bundle in `set_recognition_defaults` (KTD5), and add `download_model_bundle` (KTD9).
+4. Add the pure removal function (KTD7). Call it after the transcription model delete in `delete_model` and once at launch, under `with_recording_held` (KTD8).
+5. Remove the bulk delete commands and types of the first version.
 
 **Test scenarios:**
-- Without `secondary`, the dialog has Cancel and one action, and Cancel has focus.
-- With `secondary`, both actions show, and each calls its own handler.
-- A disabled secondary action cannot be clicked, and its reason line shows.
-- A disabled primary action cannot be clicked, and its reason line shows.
-- `busy` turns off both actions.
-- Escape calls `onCancel` in both forms.
+- Covers AE5. The bundle of Parakeet Unified contains the model, the pyannote models, Sortformer, and Nemotron diarization, and no NeMo copy.
+- Covers AE6. The bundle of Nemotron Speech Streaming contains its NeMo copy.
+- A model with integrated speakers includes no model that only another speaker source needs twice (no duplicates).
+- Covers AE7. A supporting model that another present bundle needs is not a removal candidate.
+- Covers AE8. A supporting model that only the deleted bundle needs is a candidate.
+- The bundles of the selected and the pending model keep their supporting models, even when the transcription model is not on disk.
+- Covers AE9. A supporting model outside every kept bundle is a candidate.
+- `ModelStatus` of a recognition model reports the bundle size and `bundle_complete` false when one bundle file is missing.
 
-**Verification:** The new tests and the existing `DeleteSession` tests pass.
+**Verification:** The Rust tests pass, and the bindings contain `downloadModelBundle` and no bulk delete commands.
 
-### U5. Transcription tab delete flow and collapsed list
+### U4. Transcription tab rows
 
-**Goal:** Replace the Supporting models list with the "Delete models…" flow and a collapsed list.
+**Goal:** Show only transcription models, with bundle size, status, repair download, progress, and delete.
 
-**Requirements:** R6, R7, R8, R9, R10, R11; KTD4, KTD6, KTD7.
+**Requirements:** R7, R8, R10, R11; KTD6, KTD9.
 
-**Dependencies:** U3, U4.
-
-**Files:**
-- `src/settings/Models.tsx`
-- `src/settings/Models.test.tsx`
+**Files:** `src/settings/Models.tsx`, `src/settings/RecognitionModelPicker.tsx`, `src/settings/Models.test.tsx`, `src/lib/ConfirmDialog.tsx` (revert of the second action), `src/lib/ConfirmDialog.test.tsx`.
 
 **Approach:**
-1. Put "Delete models…" next to "Download required models" in the Downloads group. Turn it off per R6, from `active`, the recording state, and whether any model is downloaded.
-2. On click, turn off the button, load the summary, and open `ConfirmDialog`. If the summary fails to load, show the error in `ErrorText` and do not open the dialog, as `remove()` and `download()` do. Show one choice or two per R7, with "Delete unused" as the second action. Put the R8 warning and the note count in the message.
-3. After the bulk delete, call `actions.refresh()` and show the models that failed in `ErrorText`.
-4. Move the Supporting models rows behind a "Show models" disclosure, closed by default, and keep the rows and the footer.
-
-**Patterns to follow:** `remove()` and `download()` in `src/settings/Models.tsx`; `LicenceRow` in `src/settings/About.tsx`; `open()` in `src/settings/Models.test.tsx`.
+1. Remove the Downloads group, the Supporting models group, and the bulk delete dialog.
+2. Show `bundle_size_bytes` on each row, and "Downloaded" only when `bundle_complete`.
+3. For a downloaded or selected row with missing files and no active download, show Download. While a bundle id downloads, show the summed progress and Cancel on that row.
+4. Remove the second action from `ConfirmDialog`.
 
 **Test scenarios:**
-- Covers AE5. The summary has unused models: the dialog shows both choices with their sizes.
-- Covers AE6. The summary has no unused models: the dialog shows only "Delete all", with the warning.
-- Covers AE7. "Delete all" with two unfinished notes: the warning says two notes will wait; after confirmation, the command runs with `all`, and the tab refreshes.
-- Covers AE8. A recording is in progress: the button is off.
-- A download is in progress, or no model is downloaded: the button is off.
-- Covers AE9. The summary gives the transcription reason: "Delete all" is off, the reason shows, and "Delete unused" still works.
-- A partial failure shows the name of each failed model.
-- The summary command fails: the error shows, and the dialog does not open.
-- The supporting models list is hidden at first, shows after a click on "Show models", and each row still has its Delete… button.
+- A row shows the bundle size.
+- Covers AE10. The selected row with a missing file shows Download, and a click calls `download_model_bundle` with its id.
+- Progress for a bundle file shows on the row of its model with Cancel.
+- No "Supporting models", "Downloads", or "Delete models…" text shows.
+- Delete… on a downloaded model that is not selected still asks, then calls `delete_model`.
 
-**Verification:** The component tests pass. The flow works in the preview page with mocked commands.
+**Verification:** The component tests pass.
 
-### U6. Full-row hover highlight
+### U5. Full-row hover highlight
 
 **Goal:** Make the hover highlight cover the whole row of a model that is not selected.
 
-**Requirements:** R12; KTD8.
+**Requirements:** R12; KTD10.
 
-**Dependencies:** None.
+**Files:** `src/settings/RecognitionModelPicker.tsx`, `src/settings/RecognitionModelPicker.test.tsx`.
 
-**Files:**
-- `src/settings/RecognitionModelPicker.tsx`
-- `src/settings/ModelPicker.test.tsx` or `src/settings/Models.test.tsx`
-
-**Approach:** Move `hover:bg-row-hover` to the wrapper element for rows that are not selected, and keep `rounded-lg` and the selected background.
-
-**Test scenarios:**
-- A row that is not selected has the hover class on its wrapper, and its radio button does not.
-- The selected row has no hover class.
-
-**Verification:** In the preview page, a hover over a downloaded row that is not selected highlights the Delete… area too.
+**Test scenarios:** a row that is not selected has the hover class on its wrapper; the selected row has none.
 
 ---
 
@@ -330,15 +243,15 @@ U1 comes before U2, because U2 needs the setter and the regenerated bindings. U3
 | Rust tests | `cargo test --workspace --features nemo-runtime/test-helper` | U1, U3 |
 | Bindings | `git diff --exit-code src/bindings.ts` after regeneration | U1, U3 |
 | Provenance | `scripts/check-provenance.sh` | Before push |
-| Manual Dock test | Signed build, per [Manual tests](../development-workflow.md#manual-tests) | After U2 |
+| Manual test | Signed build, per [Manual tests](../development-workflow.md#manual-tests) | After U2 and after U4 |
 
-The manual test checks AE1 to AE4 in a signed build, not in `tauri dev`. It includes a launch at login with the switch on and with it off.
+The manual test checks AE1 to AE4, and AE5, AE7, and AE10 in a signed build.
 
 ---
 
 ## Definition of Done
 
-- R1 to R12 are true, and AE1 to AE9 pass as tests or as manual checks.
+- R1 to R12 are true, and AE1 to AE10 pass as tests or as manual checks.
 - Every check in the Verification Contract passes locally, and CI is green on the PR.
-- The user did the manual Dock test in a signed build.
+- The user did the manual tests in a signed build.
 - The diff has no code left from approaches that did not work.
