@@ -315,3 +315,46 @@ pub fn resolve_for_runtime(
         spec.capabilities.live_transcription && spec.capabilities.live_speaker_analysis;
     Ok(spec)
 }
+
+/// The model bundle of `asr_model`: the artifacts of every valid choice of
+/// speaker source, processing mode, and speaker processing mode, without
+/// duplicates. The transcription model comes first. A model that is not a
+/// transcription model gives an empty bundle.
+pub fn bundle(asr_model: &str) -> Vec<ArtifactSpec> {
+    let sources = [
+        SpeakerSource::Off,
+        SpeakerSource::Integrated,
+        SpeakerSource::Pyannote,
+        SpeakerSource::Sortformer,
+        SpeakerSource::Nemotron,
+    ];
+    let modes = [ProcessingMode::AfterStop, ProcessingMode::DuringRecording];
+    let mut artifacts: Vec<ArtifactSpec> = Vec::new();
+    for speaker_source in sources {
+        for processing_mode in modes {
+            for speaker_processing_mode in modes {
+                let config = RecognitionConfig {
+                    asr_model: asr_model.into(),
+                    speaker_source,
+                    processing_mode,
+                    speaker_processing_mode,
+                    speaker_count: None,
+                    language: None,
+                };
+                let Ok(spec) = resolve(&config) else {
+                    continue;
+                };
+                for artifact in spec.artifacts {
+                    if !artifacts.iter().any(|a| a.id == artifact.id) {
+                        artifacts.push(artifact);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(index) = artifacts.iter().position(|a| a.id == asr_model) {
+        let asr = artifacts.remove(index);
+        artifacts.insert(0, asr);
+    }
+    artifacts
+}

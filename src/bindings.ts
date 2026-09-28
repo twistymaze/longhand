@@ -28,11 +28,11 @@ async resolveRecognition(config: RecognitionConfig) : Promise<Result<ExecutionSp
 }
 },
 /**
- * Fetch the exact artifacts of a saved configuration.
+ * Download the missing files of the bundle of `asr_model` (R10).
  */
-async downloadRecognitionArtifacts(spec: ExecutionSpec) : Promise<Result<null, string>> {
+async downloadModelBundle(asrModel: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("download_recognition_artifacts", { spec }) };
+    return { status: "ok", data: await TAURI_INVOKE("download_model_bundle", { asrModel }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -169,6 +169,20 @@ async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settin
 async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_system_audio_default", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Choose whether the app has no Dock icon while no window is visible
+ * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
+ * the next close of the last visible window, which reads the new value
+ * (KTD3). The Dock is macOS only, so other platforms refuse.
+ */
+async setHideFromDock(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_hide_from_dock", { enabled }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -334,8 +348,9 @@ async speakerModelsStatus() : Promise<SpeakerModelsStatus> {
     return await TAURI_INVOKE("speaker_models_status");
 },
 /**
- * Delete a downloaded recognition model to recover disk space (R6). The
- * app refuses a model that it still needs (KTD12).
+ * Delete a downloaded transcription model, and each supporting model that
+ * no kept bundle needs (R8). The app refuses a model that it still needs
+ * (KTD12).
  */
 async deleteModel(modelId: string) : Promise<Result<null, string>> {
     try {
@@ -986,7 +1001,20 @@ recommended: boolean; size_bytes: number;
  * Needed by the current settings: the selected recognition model and
  * both diarization weights.
  */
-required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo; assessment: Assessment | null }
+required: boolean; state: ModelState; repository: string; revision: string; licence: LicenceInfo; assessment: Assessment | null; 
+/**
+ * The artifact ids of the model bundle (KTD6). A model that is not a
+ * transcription model has only its own id.
+ */
+bundle: string[]; 
+/**
+ * The total size of the bundle.
+ */
+bundle_size_bytes: number; 
+/**
+ * Every file of the bundle is on disk.
+ */
+bundle_complete: boolean }
 /**
  * What a notes save did.
  */
@@ -1312,6 +1340,11 @@ microphone: MicrophoneChoice | null;
  * Whether a new note starts with system audio on (R6, KD13).
  */
 system_audio_default: boolean; 
+/**
+ * macOS only: the app has no Dock icon while no window is visible
+ * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
+ */
+hide_from_dock: boolean; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).

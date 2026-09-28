@@ -988,6 +988,17 @@ impl CaptureManager {
         Ok(rate)
     }
 
+    /// Run `f` with the recording state and the locked store. The inner
+    /// lock stays held until `f` returns, so no recording can start or
+    /// stop between the check and the work of `f`. The locks are taken in
+    /// the usual order: inner, then store.
+    pub fn with_recording_held<T>(&self, f: impl FnOnce(bool, &Store) -> T) -> T {
+        let inner = self.inner();
+        let recording = inner.active.is_some() || inner.recovering.is_some();
+        let store = self.store();
+        f(recording, &store)
+    }
+
     /// Recording, or reopening a lost microphone to go on recording.
     pub fn is_capturing(&self) -> bool {
         let inner = self.inner();

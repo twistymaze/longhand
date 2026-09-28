@@ -71,6 +71,13 @@ pub struct ModelStatus {
     pub revision: String,
     pub licence: LicenceInfo,
     pub assessment: Option<models::catalog::Assessment>,
+    /// The artifact ids of the model bundle (KTD6). A model that is not a
+    /// transcription model has only its own id.
+    pub bundle: Vec<String>,
+    /// The total size of the bundle.
+    pub bundle_size_bytes: u64,
+    /// Every file of the bundle is on disk.
+    pub bundle_complete: bool,
 }
 
 /// The speaker-detection weights as one item (R7).
@@ -199,13 +206,50 @@ pub fn delete_refusal(
                 catalog_model.kind,
                 ModelKind::Segmentation | ModelKind::Embedding
             );
-        (model == Some(id) || snapshot_needs || legacy_speaker_needs)
-            && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
+        (model == Some(id) || snapshot_needs || legacy_speaker_needs) && is_unfinished(s)
     });
     if needed {
         return Some("A note that isn't finished needs this model.".into());
     }
     None
+}
+
+/// Whether a session is not finished: every state except Saved and
+/// Discarded. This is the same rule as [`delete_refusal`].
+fn is_unfinished(session: &SessionRecord) -> bool {
+    !matches!(session.state, SessionState::Saved | SessionState::Discarded)
+}
+
+/// The supporting models on disk that no kept bundle contains (KTD7). The
+/// kept bundles are the bundles of the transcription models on disk, of the
+/// selected model, and of the pending model. The caller also applies
+/// [`delete_refusal`] to each result, so that unfinished notes and the live
+/// model keep their files.
+pub fn unneeded_supporting_models(statuses: &[ModelStatus], settings: &Settings) -> Vec<String> {
+    let mut kept_models: Vec<&str> = statuses
+        .iter()
+        .filter(|s| s.role == ModelRole::Recognition && s.state == ModelState::Present)
+        .map(|s| s.id.as_str())
+        .collect();
+    kept_models.push(&settings.asr_model);
+    kept_models.extend(settings.pending_asr_model.as_deref());
+    kept_models.extend(
+        settings
+            .pending_recognition
+            .as_ref()
+            .map(|c| c.asr_model.as_str()),
+    );
+    let kept: Vec<String> = kept_models
+        .into_iter()
+        .flat_map(models::recognition::bundle)
+        .map(|a| a.id)
+        .collect();
+    statuses
+        .iter()
+        .filter(|s| s.role != ModelRole::Recognition && s.state == ModelState::Present)
+        .filter(|s| !kept.contains(&s.id))
+        .map(|s| s.id.clone())
+        .collect()
 }
 
 /// One status for the speaker-detection weights (R7).
@@ -289,30 +333,54 @@ impl ModelsManager {
                     .iter()
                     .map(|m| (m, ModelRole::RecognitionArtifact)),
             )
-            .map(|(m, role)| ModelStatus {
-                speaker_preferences: m.speaker_preferences.clone(),
-                id: m.id.clone(),
-                assessment: m.assessment.clone(),
-                role,
-                name: m.name.clone(),
-                description: m.description.clone(),
-                size_bytes: m.size_bytes,
-                streaming: m.streaming,
-                languages: m.languages.clone(),
-                recommended: m.recommended,
-                required: required.contains(&m.id.as_str()),
-                state: self.state_of(
+            .map(|(m, role)| {
+                let state = self.state_of(
                     m,
                     active.contains_key(&m.id)
                         || active.contains_key(&format!("{}@{}", m.id, m.sha256)),
-                ),
-                repository: m.repository.clone(),
-                revision: m.revision.clone(),
-                licence: LicenceInfo {
-                    name: m.licence.name.clone(),
-                    url: m.licence.url.clone(),
-                    attribution: m.licence.attribution.clone(),
-                },
+                );
+                let bundle = if role == ModelRole::Recognition {
+                    models::recognition::bundle(&m.id)
+                } else {
+                    Vec::new()
+                };
+                let (bundle, bundle_size_bytes, bundle_complete) = if bundle.is_empty() {
+                    (
+                        vec![m.id.clone()],
+                        m.size_bytes,
+                        state == ModelState::Present,
+                    )
+                } else {
+                    (
+                        bundle.iter().map(|a| a.id.clone()).collect(),
+                        bundle.iter().map(|a| a.size_bytes).sum(),
+                        bundle.iter().all(|a| self.artifact_path(a).is_some()),
+                    )
+                };
+                ModelStatus {
+                    bundle,
+                    bundle_size_bytes,
+                    bundle_complete,
+                    speaker_preferences: m.speaker_preferences.clone(),
+                    id: m.id.clone(),
+                    assessment: m.assessment.clone(),
+                    role,
+                    name: m.name.clone(),
+                    description: m.description.clone(),
+                    size_bytes: m.size_bytes,
+                    streaming: m.streaming,
+                    languages: m.languages.clone(),
+                    recommended: m.recommended,
+                    required: required.contains(&m.id.as_str()),
+                    state,
+                    repository: m.repository.clone(),
+                    revision: m.revision.clone(),
+                    licence: LicenceInfo {
+                        name: m.licence.name.clone(),
+                        url: m.licence.url.clone(),
+                        attribution: m.licence.attribution.clone(),
+                    },
+                }
             })
             .collect()
     }
@@ -390,13 +458,19 @@ impl ModelsManager {
             .collect()
     }
 
-    /// Download immutable snapshot artifacts without replacing catalog files.
-    pub fn start_spec_downloads(
+    /// Download the missing files of the bundle of `asr_model` (KTD5,
+    /// KTD9), except the ids in `skip`, which another download fetches.
+    pub fn start_bundle_downloads(
         self: &Arc<Self>,
         app: &AppHandle,
-        spec: &models::recognition::ExecutionSpec,
+        asr_model: &str,
+        skip: &[String],
     ) -> Result<(), String> {
-        self.start_artifact_downloads(app, &spec.artifacts)
+        let artifacts: Vec<_> = models::recognition::bundle(asr_model)
+            .into_iter()
+            .filter(|a| !skip.contains(&a.id))
+            .collect();
+        self.start_artifact_downloads(app, &artifacts)
     }
 
     fn start_artifact_downloads(
@@ -961,6 +1035,109 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// The statuses for `settings`, with the models in `present` on disk.
+    fn statuses_with(settings: &Settings, present: &[&str]) -> Vec<ModelStatus> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut statuses = ModelsManager::at(dir.path().to_path_buf())
+            .statuses_for(&settings.recognition_config())
+            .unwrap();
+        for status in &mut statuses {
+            if present.contains(&status.id.as_str()) {
+                status.state = ModelState::Present;
+            }
+        }
+        statuses
+    }
+
+    const SORTFORMER: &str = "sortformer-v2-q80";
+    const NEMOTRON_STREAMING: &str = "nemotron-speech-streaming-en-0.6b-q80";
+    const NEMO_COPY: &str = "nemo-nemotron-speech-streaming-en-0.6b-q80";
+
+    #[test]
+    fn a_supporting_model_that_another_bundle_needs_stays() {
+        // AE7: the bundle of Parakeet Unified keeps the speaker models.
+        let settings = Settings {
+            asr_model: PARAKEET.into(),
+            ..Settings::default()
+        };
+        let statuses = statuses_with(
+            &settings,
+            &[PARAKEET, SORTFORMER, "pyannote-segmentation-3.0"],
+        );
+        assert!(unneeded_supporting_models(&statuses, &settings).is_empty());
+    }
+
+    #[test]
+    fn a_supporting_model_that_only_a_deleted_bundle_needs_goes() {
+        // AE8: Nemotron Speech Streaming is deleted, so its NeMo copy goes,
+        // and the speaker models stay for Parakeet Unified.
+        let settings = Settings {
+            asr_model: PARAKEET.into(),
+            ..Settings::default()
+        };
+        let statuses = statuses_with(&settings, &[PARAKEET, SORTFORMER, NEMO_COPY]);
+        assert_eq!(
+            unneeded_supporting_models(&statuses, &settings),
+            [NEMO_COPY]
+        );
+        let kept = statuses_with(
+            &settings,
+            &[PARAKEET, NEMOTRON_STREAMING, SORTFORMER, NEMO_COPY],
+        );
+        assert!(unneeded_supporting_models(&kept, &settings).is_empty());
+    }
+
+    #[test]
+    fn the_selected_and_pending_bundles_keep_their_files_without_the_model() {
+        // The selected model is not on disk (a failed download), and a
+        // pending model downloads: both bundles stay.
+        let settings = Settings {
+            asr_model: NEMOTRON_STREAMING.into(),
+            pending_asr_model: Some(PARAKEET.into()),
+            ..Settings::default()
+        };
+        let statuses = statuses_with(&settings, &[SORTFORMER, NEMO_COPY]);
+        assert!(unneeded_supporting_models(&statuses, &settings).is_empty());
+    }
+
+    #[test]
+    fn a_supporting_model_outside_every_kept_bundle_goes() {
+        // AE9: Whisper does not use the NeMo copy.
+        let settings = whisper_selected();
+        let statuses = statuses_with(&settings, &[WHISPER, NEMO_COPY]);
+        assert_eq!(
+            unneeded_supporting_models(&statuses, &settings),
+            [NEMO_COPY]
+        );
+    }
+
+    #[test]
+    fn a_transcription_model_reports_its_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().to_path_buf());
+        let status = |id: &str| {
+            manager
+                .statuses(WHISPER)
+                .into_iter()
+                .find(|s| s.id == id)
+                .unwrap()
+        };
+        let parakeet = status(PARAKEET);
+        let bundle = models::recognition::bundle(PARAKEET);
+        assert_eq!(
+            parakeet.bundle,
+            bundle.iter().map(|a| a.id.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            parakeet.bundle_size_bytes,
+            bundle.iter().map(|a| a.size_bytes).sum::<u64>()
+        );
+        assert!(!parakeet.bundle_complete);
+        let sortformer = status(SORTFORMER);
+        assert_eq!(sortformer.bundle, [SORTFORMER]);
+        assert!(!sortformer.bundle_complete);
     }
 
     #[test]

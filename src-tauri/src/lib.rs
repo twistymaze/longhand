@@ -25,7 +25,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::get_settings,
             commands::settings::set_recognition_defaults,
             commands::models::resolve_recognition,
-            commands::models::download_recognition_artifacts,
+            commands::models::download_model_bundle,
             commands::settings::login_item_status,
             commands::settings::set_login_item,
             commands::settings::open_login_item_settings,
@@ -39,6 +39,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::list_microphones,
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
+            commands::settings::set_hide_from_dock,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
             commands::settings::duplicate_summary_prompt,
@@ -243,6 +244,9 @@ pub fn run() {
             // only when no other instance can be recording.
             if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
                 capture.recover_at_launch();
+                // After the recovery, so that the notes it recovers keep
+                // their models (R9).
+                commands::models::remove_unneeded_supporting_models(&handle);
             }
             let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
             app.manage(std::sync::Arc::clone(&alerts));
@@ -310,10 +314,17 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // Before the event loop, as Handy does. An ordinary show promotes the
-    // app to Regular; a login launch never acquires a Dock icon first.
+    // Before the event loop, as Handy does (KTD2). With "Hide from Dock" on,
+    // the app starts as Accessory: an ordinary show promotes it to Regular,
+    // and a login launch never acquires a Dock icon first. With the switch
+    // off, it starts as Regular, so a login launch also shows the Dock icon.
+    // The store plugin is ready here: `build` initializes the plugins, and
+    // `setup` runs later, in `run`.
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    {
+        let hide_from_dock = managers::settings::read_settings(app.handle()).hide_from_dock;
+        app.set_activation_policy(window::startup_dock_policy(hide_from_dock).into());
+    }
 
     app.run(|app, event| match event {
         // Stop the live workers and free the recognition engine before

@@ -461,6 +461,8 @@ impl Runner {
     }
 
     /// The state outside the store that refuses a Transcribe Again run.
+    /// Call this before the store lock. `suspended` locks the capture state,
+    /// and the capture manager locks its state and then the store.
     fn guards(&self, session_id: &str) -> Guards {
         Guards {
             regenerating: self.claims.busy(session_id),
