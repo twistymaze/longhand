@@ -213,16 +213,12 @@ mod tests {
     }
 
     /// R1: id, whether it streams, and the language count of each model.
-    const R1: [(&str, bool, usize); 9] = [
+    const R1: [(&str, bool, usize); 5] = [
         ("parakeet-unified-en-0.6b-q80", true, 1),
         ("nemotron-speech-streaming-en-0.6b-q80", true, 1),
         ("nemotron-3.5-asr-streaming-0.6b-q80", true, 28),
-        ("multitalker-parakeet-streaming-0.6b-v1-q80", true, 1),
-        ("parakeet-tdt-0.6b-v2-q80", false, 1),
         ("parakeet-tdt-0.6b-v3-q80", false, 25),
-        ("parakeet-tdt-1.1b-q5km", false, 1),
         ("whisper-large-v3-turbo-q5km", false, 100),
-        ("moss-transcribe-diarize-q80", false, 2),
     ];
 
     fn asr_models() -> Vec<&'static CatalogModel> {
@@ -233,10 +229,9 @@ mod tests {
     }
 
     #[test]
-    fn asr_entries_preserve_the_nine_models_and_add_granite() {
+    fn asr_entries_are_exactly_the_five_models() {
         let mut ids: Vec<_> = asr_models().iter().map(|m| m.id.as_str()).collect();
         let mut expected: Vec<_> = R1.iter().map(|(id, ..)| *id).collect();
-        expected.push("granite-speech-4.1-2b-plus-q5km");
         ids.sort_unstable();
         expected.sort_unstable();
         assert_eq!(ids, expected);
@@ -278,18 +273,14 @@ mod tests {
     }
 
     #[test]
-    fn recommended_models_start_with_a_live_model() {
+    fn only_parakeet_unified_is_recommended() {
         let recommended: Vec<_> = CATALOG.iter().filter(|m| m.recommended).collect();
         assert_eq!(
             recommended
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "parakeet-unified-en-0.6b-q80",
-                "nemotron-speech-streaming-en-0.6b-q80",
-                "granite-speech-4.1-2b-plus-q5km"
-            ]
+            ["parakeet-unified-en-0.6b-q80"]
         );
         assert!(recommended[0].streaming);
     }

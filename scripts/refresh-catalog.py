@@ -7,7 +7,7 @@
     uv run scripts/refresh-catalog.py [path/to/handy/catalog.json]
     uv run scripts/refresh-catalog.py --languages whisper-large-v3-turbo
 
-The first form prints, as JSON, the nine `transcribe-cpp` entries that
+The first form prints, as JSON, the four `transcribe-cpp` entries that
 `crates/models/catalog.json` takes from Handy, in Longhand's schema. Copy
 them into that file. The script does not write the Whisper entry: that entry
 keeps its Q5_K_M file, so existing installs do not download it again. The
@@ -38,12 +38,7 @@ MODELS = {
     "parakeet-unified-en-0.6b": "Parakeet Unified EN 0.6B",
     "nemotron-speech-streaming-en-0.6b": "Nemotron Speech Streaming EN 0.6B",
     "nemotron-3.5-asr-streaming-0.6b": "Nemotron 3.5 ASR Streaming 0.6B",
-    "multitalker-parakeet-streaming-0.6b-v1": "Multitalker Parakeet Streaming 0.6B",
-    "parakeet-tdt-0.6b-v2": "Parakeet TDT 0.6B v2",
     "parakeet-tdt-0.6b-v3": "Parakeet TDT 0.6B v3",
-    "parakeet-tdt-1.1b": "Parakeet TDT 1.1B",
-    "granite-speech-4.1-2b-plus": "Granite Speech 4.1 2B Plus",
-    "moss-transcribe-diarize": "MOSS Transcribe Diarize",
 }
 
 # Handy licence id -> (name, url). Handy writes "other" for the NVIDIA
@@ -65,7 +60,7 @@ LICENCE_OVERRIDES = {
 }
 
 # Hugging Face organization of the base model -> the publisher name.
-PUBLISHERS = {"nvidia": "NVIDIA", "OpenMOSS-Team": "OpenMOSS Team", "ibm-granite": "IBM"}
+PUBLISHERS = {"nvidia": "NVIDIA"}
 
 TIMESTAMP_LEVELS = {"token", "word", "segment"}
 
@@ -102,9 +97,8 @@ def entry(handy, name, source_revision, policy_entries):
         for mode in ("after_stop", "during_recording")
     ):
         fail(f"{artifact_id}: missing speaker_preferences policy")
-    # Select the speaker-capable Multitalker bundle.
     files = [
-        f for f in handy["files"] if f["quant"] == quant and (f["filename"].startswith("bundle/") if slug.startswith("multitalker-") else "/" not in f["filename"])
+        f for f in handy["files"] if f["quant"] == quant and "/" not in f["filename"]
     ]
     if len(files) != 1:
         fail(f"{slug}: expected one plain {quant} file, found {len(files)}")
@@ -143,7 +137,7 @@ def entry(handy, name, source_revision, policy_entries):
         "speaker_preferences": preferences,
         "repository": repository,
         "revision": revision,
-        "filename": file["filename"].replace("bundle/", "bundle-"),
+        "filename": file["filename"],
         "url": f"{repository}/resolve/{revision}/{file['filename']}",
         "size_bytes": file["size_bytes"],
         "sha256": file["sha256"],

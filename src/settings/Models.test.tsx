@@ -18,11 +18,11 @@ import { describeLanguages } from "./languages";
 import catalog from "../../crates/models/catalog.json";
 
 const stream = "parakeet-unified-en-0.6b-q80";
-const offline = "moss-transcribe-diarize-q80";
+const offline = "whisper-large-v3-turbo-q5km";
 const catalogModels = [
   offline,
-  "granite-speech-4.1-2b-plus-q5km",
-  "multitalker-parakeet-streaming-0.6b-v1-q80",
+  "parakeet-tdt-0.6b-v3-q80",
+  "nemotron-3.5-asr-streaming-0.6b-q80",
 ];
 const model = (id: string, name: string): ModelStatus => ({
   id,
@@ -47,7 +47,7 @@ const model = (id: string, name: string): ModelStatus => ({
   revision: "rev",
   licence: { name: "MIT", url: "https://example.com", attribution: "Example" },
 });
-const models = [model(stream, "Parakeet"), model(offline, "MOSS")];
+const models = [model(stream, "Parakeet"), model(offline, "Whisper")];
 const settings = {
   asr_model: stream,
   speaker_source: "nemotron",
@@ -66,7 +66,7 @@ function resolve(config: RecognitionConfig): ExecutionSpec {
     (config.asr_model === offline || config.asr_model === catalogModels[1]) &&
     config.processing_mode === "during_recording"
   )
-    throw "MOSS requires After Stop";
+    throw "Whisper requires After Stop";
   if (
     (config.speaker_source === "pyannote" || config.speaker_source === "off") &&
     config.speaker_processing_mode === "during_recording"
@@ -213,7 +213,7 @@ describe("recognition defaults", () => {
   test("model changes reset incompatible timing visibly and apply the complete configuration", async () => {
     const { user, tauri } = open();
     await ready();
-    await user.click(screen.getByRole("radio", { name: "MOSS" }));
+    await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
     expect(
       (screen.getByLabelText("Transcription timing") as HTMLSelectElement)
@@ -242,7 +242,7 @@ describe("recognition defaults", () => {
   test("offline text can have independent live speaker analysis", async () => {
     const { user } = open();
     await ready();
-    await user.click(screen.getByRole("radio", { name: "MOSS" }));
+    await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
 
     await user.selectOptions(
@@ -315,11 +315,11 @@ describe("recognition defaults", () => {
         return resolve(c);
       },
     });
-    await user.click(screen.getByRole("radio", { name: "MOSS" }));
+    await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
     await act(async () => release());
     expect(
-      screen.getByRole("radio", { name: "MOSS" }).getAttribute("aria-checked"),
+      screen.getByRole("radio", { name: "Whisper" }).getAttribute("aria-checked"),
     ).toBe("true");
   });
 });
@@ -328,7 +328,7 @@ test("model comparison shows capabilities before selection and keeps engines adv
   open();
   await ready();
   expect(screen.getByRole("radio", { name: /Parakeet/ })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /MOSS/ })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: /Whisper/ })).toBeTruthy();
   expect(screen.getByText("Live transcription")).toBeTruthy();
   expect(screen.getByText("Transcription afterwards")).toBeTruthy();
   expect(screen.getByLabelText("Speaker recognition").tagName).toBe("SELECT");
@@ -470,7 +470,7 @@ test("completed model downloads clear the pending defaults notice", async () => 
     downloading,
   );
   await ready();
-  await user.click(screen.getByRole("radio", { name: "MOSS" }));
+  await user.click(screen.getByRole("radio", { name: "Whisper" }));
   await ready();
   await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
 
@@ -483,8 +483,8 @@ test("completed model downloads clear the pending defaults notice", async () => 
     />,
   );
   update(pendingSettings, downloading);
-  expect(screen.getByText(/Models are downloading for MOSS/)).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "MOSS" }).parentElement!.textContent).toContain("Downloading…");
+  expect(screen.getByText(/Models are downloading for Whisper/)).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Whisper" }).parentElement!.textContent).toContain("Downloading…");
 
   update({
     ...settings,
@@ -529,7 +529,7 @@ test("recommended models appear first with one plain recommendation badge", asyn
   open({}, settings, [models[0], { ...models[1], recommended: true }]);
   await ready();
   expect(screen.getAllByRole("radio")[0].getAttribute("aria-label")).toBe(
-    "MOSS",
+    "Whisper",
   );
   expect(screen.getByText("Recommended")).toBeTruthy();
   expect(
@@ -550,29 +550,6 @@ test("models sort alphabetically within the recommended and other groups", async
   ).toEqual(["Aster", "Beta", "Alpha", "Zebra"]);
 });
 
-test("chosen recommendations precede the alphabetical model list", async () => {
-  open({}, settings, [
-    model("z", "Zebra"),
-    {
-      ...model("granite-speech-4.1-2b-plus-q5km", "Granite"),
-      recommended: true,
-    },
-    {
-      ...model("parakeet-unified-en-0.6b-q80", "Parakeet Unified"),
-      recommended: true,
-    },
-    model("a", "Alpha"),
-    {
-      ...model("nemotron-speech-streaming-en-0.6b-q80", "Nemotron"),
-      recommended: true,
-    },
-  ]);
-  await waitFor(() => expect(screen.getAllByRole("radio")).toHaveLength(5));
-  expect(
-    screen.getAllByRole("radio").map((row) => row.getAttribute("aria-label")),
-  ).toEqual(["Nemotron", "Parakeet Unified", "Granite", "Alpha", "Zebra"]);
-});
-
 test("deletes a transcription model from its existing row without selecting it", async () => {
   let removed: unknown;
   let saves = 0;
@@ -586,7 +563,7 @@ test("deletes a transcription model from its existing row without selecting it",
     },
   });
   await ready();
-  const row = screen.getByRole("radio", { name: "MOSS" }).parentElement!;
+  const row = screen.getByRole("radio", { name: "Whisper" }).parentElement!;
   const button = Array.from(row.querySelectorAll("button")).find(
     (b) => b.textContent === "Delete…",
   )!;
@@ -614,7 +591,7 @@ test("opening settings preserves a saved speaker model override", async () => {
 test("model download progress appears beside that model", async () => {
   open({}, settings, models, { [offline]: { kind: "progress", downloaded: 25_000_000, total: 100_000_000 } });
   await ready();
-  const row = screen.getByRole("radio", { name: "MOSS" }).parentElement!;
+  const row = screen.getByRole("radio", { name: "Whisper" }).parentElement!;
   expect(row.textContent).toContain("Downloading… 25 MB of 100 MB");
   expect(row.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("25");
 });
@@ -649,7 +626,7 @@ describe("a shared supporting file download", () => {
     await ready();
     expect(rowOf("Parakeet").textContent).toContain("300 MB");
     expect(rowOf("Parakeet").textContent).toContain("Downloading… 50 MB of 150 MB");
-    expect(rowOf("MOSS").textContent).not.toContain("Downloading");
+    expect(rowOf("Whisper").textContent).not.toContain("Downloading");
     const cancel = Array.from(rowOf("Parakeet").querySelectorAll("button")).find((b) => b.textContent === "Cancel")!;
     await userEvent.setup().click(cancel);
     expect(cancels).toBe(1);
@@ -658,12 +635,12 @@ describe("a shared supporting file download", () => {
   test("shows only on the row whose Download button started it", async () => {
     const { user, rerender } = open({ download_model_bundle: () => null }, settings, bundled);
     await ready();
-    const download = Array.from(rowOf("MOSS").querySelectorAll("button")).find((b) => b.textContent === "Download")!;
+    const download = Array.from(rowOf("Whisper").querySelectorAll("button")).find((b) => b.textContent === "Download")!;
     await user.click(download);
     rerender(
       <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
     );
-    expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Whisper").textContent).toContain("Downloading… 50 MB of 150 MB");
     expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
   });
 
@@ -671,25 +648,25 @@ describe("a shared supporting file download", () => {
     const incomplete = bundled.map((m) => ({ ...m, bundle_complete: false }));
     const { user, rerender } = open({ download_model_bundle: () => null }, settings, incomplete);
     await ready();
-    for (const name of ["MOSS", "Parakeet"]) {
+    for (const name of ["Whisper", "Parakeet"]) {
       const download = Array.from(rowOf(name).querySelectorAll("button")).find((b) => b.textContent === "Download")!;
       await user.click(download);
     }
     rerender(
       <TestModels models={incomplete} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
     );
-    expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB");
+    expect(rowOf("Whisper").textContent).toContain("Downloading… 50 MB of 150 MB");
     expect(rowOf("Parakeet").textContent).toContain("Downloading… 50 MB of 150 MB");
   });
 
   test("a selection owns the rest of its bundle download", async () => {
     const { user, rerender } = open({}, settings, bundled);
     await ready();
-    await user.click(screen.getByRole("radio", { name: "MOSS" }));
+    await user.click(screen.getByRole("radio", { name: "Whisper" }));
     rerender(
       <TestModels models={bundled} live={progress} settings={settings} actions={{ cancel: () => {}, refresh: async () => {} }} />,
     );
-    await waitFor(() => expect(rowOf("MOSS").textContent).toContain("Downloading… 50 MB of 150 MB"));
+    await waitFor(() => expect(rowOf("Whisper").textContent).toContain("Downloading… 50 MB of 150 MB"));
     expect(rowOf("Parakeet").textContent).not.toContain("Downloading");
   });
 });
@@ -698,9 +675,9 @@ test("choosing a model gives immediate feedback while its request is pending", a
   let release: (s: Settings) => void = () => {};
   const { user } = open({set_recognition_defaults: () => new Promise<Settings>(resolve => { release = resolve; })});
   await ready();
-  await user.click(screen.getByRole("radio", { name: "MOSS" }));
+  await user.click(screen.getByRole("radio", { name: "Whisper" }));
   await screen.findByText("Preparing model…");
-  expect(screen.getByRole("radio", { name: "MOSS" }).parentElement!.textContent).toContain("Preparing model…");
+  expect(screen.getByRole("radio", { name: "Whisper" }).parentElement!.textContent).toContain("Preparing model…");
   await act(async () => release({...settings, asr_model: offline}));
   await waitFor(() => expect(screen.queryByText("Preparing model…")).toBeNull());
 });
@@ -799,10 +776,11 @@ test("model keys move focus, wrap, and save the selected model", async () => {
   await ready();
   screen.getByRole("radio", { name: "Parakeet" }).focus();
   for (const [key, name, id] of [
+    ["ArrowDown", "Whisper", offline],
     ["ArrowDown", "Zebra", "zebra"],
-    ["ArrowDown", "MOSS", offline],
+    ["ArrowDown", "Parakeet", stream],
     ["ArrowUp", "Zebra", "zebra"],
-    ["Home", "MOSS", offline],
+    ["Home", "Parakeet", stream],
     ["End", "Zebra", "zebra"],
   ]) {
     const before = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults").length;

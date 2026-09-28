@@ -33,7 +33,7 @@ fn a_nemotron_streaming_bundle_holds_its_nemo_copy() {
 
 #[test]
 fn a_bundle_has_no_duplicates_and_an_unknown_model_has_none() {
-    let ids = bundle_ids("moss-transcribe-diarize-q80");
+    let ids = bundle_ids("nemotron-3.5-asr-streaming-0.6b-q80");
     let mut unique = ids.clone();
     unique.sort();
     unique.dedup();

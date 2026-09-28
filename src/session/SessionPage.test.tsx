@@ -877,7 +877,7 @@ describe("SessionPage", () => {
   });
 
   describe("Transcribe Again", () => {
-    const granite = { model_id: "granite-speech-4.1-2b-plus-q5km", model_name: "Granite Speech 4.1 2B Plus" };
+    const whisper = { model_id: "whisper-large-v3-turbo-q5km", model_name: "Whisper Large v3 Turbo" };
 
     async function openMenu(extra: Record<string, CommandHandler>) {
       const e = entry("s", { title: "Budget review" });
@@ -894,25 +894,25 @@ describe("SessionPage", () => {
     // Covers AE1.
     test("one plain confirmation queues the note with the model of the check", async () => {
       const { tauri, sessions, user } = await openMenu({
-        check_transcribe_again: () => granite,
+        check_transcribe_again: () => whisper,
         transcribe_again: () => null,
       });
       const dialog = await screen.findByRole("alertdialog", { name: "Transcribe this note again?" });
       expect(dialog.textContent).toContain("The transcript and summary are not available until the new ones are ready.");
       expect(dialog.textContent).toContain("If it fails, the current ones come back.");
-      expect(dialog.textContent).toContain("This uses Granite Speech 4.1 2B Plus.");
+      expect(dialog.textContent).toContain("This uses Whisper Large v3 Turbo.");
       expect(within(dialog).queryByRole("checkbox")).toBeNull();
       expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
       await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
       expect(tauri.calls.filter((c) => c.cmd === "transcribe_again").map((c) => c.args)).toEqual([
-        { sessionId: "s", modelId: granite.model_id },
+        { sessionId: "s", modelId: whisper.model_id },
       ]);
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(sessions.refresh).toHaveBeenCalled();
     });
 
     test("Cancel and Escape close the dialog and send nothing", async () => {
-      const { tauri, user } = await openMenu({ check_transcribe_again: () => granite });
+      const { tauri, user } = await openMenu({ check_transcribe_again: () => whisper });
       await user.click(await screen.findByRole("button", { name: "Cancel" }));
       expect(screen.queryByRole("alertdialog")).toBeNull();
       await user.click(screen.getByRole("button", { name: "Actions" }));
@@ -926,7 +926,7 @@ describe("SessionPage", () => {
     test("two clicks on Transcribe Again send one command", async () => {
       let finish = () => {};
       const { tauri, user } = await openMenu({
-        check_transcribe_again: () => granite,
+        check_transcribe_again: () => whisper,
         transcribe_again: () => new Promise<null>((resolve) => (finish = () => resolve(null))),
       });
       const run = await screen.findByRole("button", { name: "Transcribe Again" });
@@ -939,11 +939,11 @@ describe("SessionPage", () => {
     test("a setting that cannot run shows the reason and Open Settings, and no dialog", async () => {
       const { tauri, user } = await openMenu({
         check_transcribe_again: () => {
-          throw { message: "Granite Speech 4.1 2B Plus is not downloaded. Download it in Settings.", in_settings: true };
+          throw { message: "Whisper Large v3 Turbo is not downloaded. Download it in Settings.", in_settings: true };
         },
         open_settings: () => null,
       });
-      expect(await screen.findByText("Granite Speech 4.1 2B Plus is not downloaded. Download it in Settings.")).toBeTruthy();
+      expect(await screen.findByText("Whisper Large v3 Turbo is not downloaded. Download it in Settings.")).toBeTruthy();
       expect(screen.queryByRole("alertdialog")).toBeNull();
       await user.click(screen.getByRole("button", { name: "Open Settings…" }));
       expect(tauri.calls.some((c) => c.cmd === "open_settings")).toBe(true);
@@ -953,16 +953,16 @@ describe("SessionPage", () => {
     test("a reason that Settings cannot fix has no Open Settings button", async () => {
       await openMenu({
         check_transcribe_again: () => {
-          throw { message: "Granite Speech 4.1 2B Plus is still downloading. Try again when it is ready.", in_settings: false };
+          throw { message: "Whisper Large v3 Turbo is still downloading. Try again when it is ready.", in_settings: false };
         },
       });
-      expect(await screen.findByText("Granite Speech 4.1 2B Plus is still downloading. Try again when it is ready.")).toBeTruthy();
+      expect(await screen.findByText("Whisper Large v3 Turbo is still downloading. Try again when it is ready.")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Open Settings…" })).toBeNull();
     });
 
     test("a refused confirmation closes the dialog and shows the reason", async () => {
       const { user } = await openMenu({
-        check_transcribe_again: () => granite,
+        check_transcribe_again: () => whisper,
         transcribe_again: () => {
           throw { message: "The transcription settings changed. Choose Transcribe Again to use the new settings.", in_settings: false };
         },
@@ -973,7 +973,7 @@ describe("SessionPage", () => {
     });
 
     test("the dialog closes when the note starts to process", async () => {
-      const { e, view } = await openMenu({ check_transcribe_again: () => granite });
+      const { e, view } = await openMenu({ check_transcribe_again: () => whisper });
       await screen.findByRole("alertdialog");
       await act(async () => view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing" }])));
       expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -982,7 +982,7 @@ describe("SessionPage", () => {
     test("a check that returns after the note was unavailable opens no dialog", async () => {
       let finish = () => {};
       const { e, view } = await openMenu({
-        check_transcribe_again: () => new Promise((resolve) => (finish = () => resolve(granite))),
+        check_transcribe_again: () => new Promise((resolve) => (finish = () => resolve(whisper))),
       });
       await act(async () => view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing" }])));
       await act(async () => view.rerenderWith(captureOf(), sessionsOf([e])));

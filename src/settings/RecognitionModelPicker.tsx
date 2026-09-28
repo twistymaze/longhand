@@ -5,11 +5,7 @@ import { CheckIcon } from "./icons";
 
 import { describeLanguages } from "./languages";
 
-const recommendationOrder = [
-  "nemotron-speech-streaming-en-0.6b-q80",
-  "parakeet-unified-en-0.6b-q80",
-  "granite-speech-4.1-2b-plus-q5km",
-];
+const recommendationOrder = ["parakeet-unified-en-0.6b-q80"];
 
 function recommendationRank(model: ModelStatus): number {
   if (!model.recommended) return recommendationOrder.length + 1;

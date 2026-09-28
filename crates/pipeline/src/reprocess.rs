@@ -538,30 +538,30 @@ mod tests {
         );
         assert_eq!(
             text(Cause::NotDownloaded {
-                artifact: "granite-speech-4.1-2b-plus-q5km".into()
+                artifact: "whisper-large-v3-turbo-q5km".into()
             }),
             (
-                "Granite Speech 4.1 2B Plus is not downloaded. Download it in Settings.".into(),
+                "Whisper Large v3 Turbo is not downloaded. Download it in Settings.".into(),
                 true
             )
         );
         assert_eq!(
             text(Cause::Downloading {
-                artifact: "granite-speech-4.1-2b-plus-q5km".into()
+                artifact: "whisper-large-v3-turbo-q5km".into()
             }),
             (
-                "Granite Speech 4.1 2B Plus is still downloading. Try again when it is ready."
+                "Whisper Large v3 Turbo is still downloading. Try again when it is ready."
                     .into(),
                 false
             )
         );
         assert_eq!(
             text(Cause::Language {
-                model: "parakeet-tdt-0.6b-v2-q80".into(),
+                model: "parakeet-unified-en-0.6b-q80".into(),
                 language: "fr".into()
             }),
             (
-                "Parakeet TDT 0.6B v2 does not support French. Choose another model or \
+                "Parakeet Unified EN 0.6B does not support French. Choose another model or \
                  language in Settings."
                     .into(),
                 true
