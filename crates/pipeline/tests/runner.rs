@@ -3939,6 +3939,106 @@ async fn reprocessing_a_legacy_note_requires_explicit_transcription_and_promotes
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn changed_processing_audio_during_summary_stops_save_and_retry_verifies_again() {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let spec = models::recognition::resolve(&models::recognition::RecognitionConfig {
+        speaker_source: models::recognition::SpeakerSource::Off,
+        ..Default::default()
+    })
+    .unwrap();
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some(&spec.config.asr_model),
+        &[(16_000, speech())],
+    );
+    r.store
+        .lock()
+        .unwrap()
+        .set_recognition_snapshot("s", &serde_json::to_value(spec).unwrap())
+        .unwrap();
+    let root = r.root.clone();
+    let sink = r.events.clone();
+    let changed = Arc::new(AtomicBool::new(false));
+    let change = changed.clone();
+    r.runner = Runner::new(Environment {
+        store: r.store.clone(),
+        working_root: r.root.clone(),
+        engines: Box::new(Provider(r.script.clone())),
+        suspended: Box::new(|| false),
+        events: Box::new(move |event| {
+            if matches!(
+                event,
+                RunnerEvent::StageStarted {
+                    stage: Stage::Summarize,
+                    ..
+                }
+            ) && !change.swap(true, Ordering::SeqCst)
+            {
+                let path = root
+                    .join("s")
+                    .join(pipeline::proc_file("audio/segment-01.opus"));
+                let before = std::fs::metadata(&path).unwrap();
+                let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+                file.seek(SeekFrom::End(-4)).unwrap();
+                file.write_all(&0.12345_f32.to_le_bytes()).unwrap();
+                file.set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                    .unwrap();
+                let after = file.metadata().unwrap();
+                assert_eq!(after.len(), before.len());
+                assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+            }
+            sink.lock().unwrap().push(event);
+        }),
+    });
+    assert!(matches!(
+        r.runner.run_next().await.unwrap().1,
+        Outcome::Failed {
+            stage: Stage::Save,
+            ..
+        }
+    ));
+    assert!(changed.load(Ordering::SeqCst));
+    assert!(
+        destination_entries(&r).is_empty(),
+        "changed input must not be published"
+    );
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.events.lock().unwrap().clear();
+    r.runner.retry("s").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_fingerprints_match(&saved_folder(&r, "s"));
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "retry recomputes recognition from verified audio"
+    );
+    assert!(
+        r.events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            RunnerEvent::StageStarted {
+                stage: Stage::Summarize,
+                ..
+            }
+        )),
+        "retry refreshes the summary"
+    );
+    assert!(
+        r.events.lock().unwrap().iter().any(|event| matches!(
+            event,
+            RunnerEvent::StageStarted {
+                stage: Stage::Assemble,
+                ..
+            }
+        )),
+        "retry rebuilds the changed processing audio"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
     let r = rig().await;
     let title = title_reply("First");

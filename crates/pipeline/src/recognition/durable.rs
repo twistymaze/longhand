@@ -8,6 +8,84 @@ use std::path::Path;
 pub const IDENTITY_KEY: &str = "recognition-identity-v1";
 pub const LIVE_IDENTITY_KEY: &str = "recognition-liveidentity-v1";
 
+/// An attempt never persists its cached identity. File metadata detects ordinary
+/// changes between stages; publication always checks the exact file contents.
+#[derive(Default)]
+pub(crate) struct Attempt {
+    verified: Option<(String, Fingerprints)>,
+}
+
+impl Attempt {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare(
+        &mut self,
+        store: &SharedStore,
+        id: &str,
+        dir: &Path,
+        segments: &[Segment],
+        spec: &ExecutionSpec,
+        publishing: bool,
+    ) -> Result<(), StageError> {
+        let result = self.check(store, id, dir, segments, spec, publishing);
+        if result.is_err() {
+            self.verified = None;
+            // Retry must reconsider dependent work even when Assemble restores
+            // the previous processing bytes from the unchanged archive.
+            lock(store).delete_checkpoint(id, Stage::Transcribe, IDENTITY_KEY)?;
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check(
+        &mut self,
+        store: &SharedStore,
+        id: &str,
+        dir: &Path,
+        segments: &[Segment],
+        spec: &ExecutionSpec,
+        publishing: bool,
+    ) -> Result<(), StageError> {
+        let stamp = || -> Result<String, StageError> {
+            let inputs = crate::assemble::recognition_input_stamp(store, id, dir, segments)?;
+            let count = lock(store)
+                .session(id)?
+                .ok_or_else(|| failed("session is absent"))?
+                .speaker_count;
+            hash(&(inputs, spec, count))
+        };
+        let before = stamp()?;
+        let previous = if let Some((_, value)) = &self.verified {
+            Some(value.clone())
+        } else {
+            checkpoint::get::<Fingerprints>(store, id, Stage::Transcribe, IDENTITY_KEY)?
+        };
+        let next = match &self.verified {
+            Some((key, value)) if !publishing && *key == before => value.clone(),
+            _ => fingerprints(store, id, dir, segments, spec)?,
+        };
+        if stamp()? != before {
+            return Err(failed(
+                "Recognition input changed during verification. Retry processing.",
+            ));
+        }
+        let changed = (self.verified.is_some() || publishing) && previous.as_ref() != Some(&next);
+        prepare_fingerprints(store, id, dir, segments, spec, next.clone())?;
+        if changed {
+            return Err(failed(
+                "Recognition input changed during processing. Retry before saving.",
+            ));
+        }
+        self.verified = Some((before, next));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static AUDIO_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn hash(value: &impl serde::Serialize) -> Result<String, StageError> {
     Ok(digest(&serde_json::to_vec(value)?))
 }
@@ -55,6 +133,8 @@ pub fn fingerprints(
     segments: &[Segment],
     spec: &ExecutionSpec,
 ) -> Result<Fingerprints, StageError> {
+    #[cfg(test)]
+    AUDIO_SCANS.with(|count| count.set(count.get() + 1));
     let mut value = spec_fingerprints(
         crate::assemble::recognition_audio_identity(store, id, dir, segments)?,
         spec,
@@ -269,6 +349,17 @@ pub fn prepare(
     spec: &ExecutionSpec,
 ) -> Result<Fingerprints, StageError> {
     let next = fingerprints(store, id, dir, segments, spec)?;
+    prepare_fingerprints(store, id, dir, segments, spec, next)
+}
+
+fn prepare_fingerprints(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    next: Fingerprints,
+) -> Result<Fingerprints, StageError> {
     bind_live(store, id, dir, segments, spec, &next)?;
     let old: Option<Fingerprints> = checkpoint::get(store, id, Stage::Transcribe, IDENTITY_KEY)?;
     if checkpoint::is_complete(store, id, Stage::Join, segments.len())? {
@@ -684,6 +775,179 @@ pub(super) fn load_speakers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn audio_fixture() -> (tempfile::TempDir, SharedStore, Segment, ExecutionSpec) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut database = session_core::Store::open_in_memory().unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-27T10:00:00-05:00").unwrap();
+        database.create_session("test", now, None).unwrap();
+        let store = std::sync::Arc::new(std::sync::Mutex::new(database));
+        let segment = Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 1000,
+            wall_start: now,
+            wall_end: now + chrono::Duration::seconds(1),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        };
+        let archive = temp.path().join(&segment.audio_file);
+        let processing = temp.path().join(crate::proc_file(&segment.audio_file));
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(processing.parent().unwrap()).unwrap();
+        std::fs::write(&archive, vec![7_u8; 128 * 1024]).unwrap();
+        std::fs::write(&processing, vec![9_u8; 128 * 1024]).unwrap();
+        checkpoint::put(
+            &store,
+            "test",
+            Stage::Assemble,
+            "audio-provenance-00000000",
+            &serde_json::json!({
+                "archive": file_digest(&archive).unwrap(),
+                "processing": file_digest(&processing).unwrap(),
+                "echo": digest(b"null"),
+            }),
+        )
+        .unwrap();
+        let spec = models::recognition::resolve(&models::recognition::RecognitionConfig {
+            speaker_source: SpeakerSource::Off,
+            ..Default::default()
+        })
+        .unwrap();
+        (temp, store, segment, spec)
+    }
+
+    #[test]
+    fn recognition_attempt_scans_once_and_again_before_save() {
+        let (temp, store, segment, spec) = audio_fixture();
+        let mut attempt = Attempt::default();
+        AUDIO_SCANS.with(|count| count.set(0));
+        for stage in [
+            Stage::Diarize,
+            Stage::Transcribe,
+            Stage::Join,
+            Stage::Verify,
+            Stage::Summarize,
+            Stage::Save,
+        ] {
+            attempt
+                .prepare(
+                    &store,
+                    "test",
+                    temp.path(),
+                    std::slice::from_ref(&segment),
+                    &spec,
+                    stage == Stage::Save,
+                )
+                .unwrap();
+        }
+        assert_eq!(AUDIO_SCANS.with(|count| count.get()), 2);
+        Attempt::default()
+            .prepare(&store, "test", temp.path(), &[segment], &spec, false)
+            .unwrap();
+        assert_eq!(
+            AUDIO_SCANS.with(|count| count.get()),
+            3,
+            "new attempts check exact content again"
+        );
+    }
+
+    #[test]
+    fn recognition_attempt_checks_restored_timestamps_before_save_and_on_restart() {
+        for publishing in [false, true] {
+            let (temp, store, segment, spec) = audio_fixture();
+            let mut attempt = Attempt::default();
+            let segments = [segment];
+            attempt
+                .prepare(&store, "test", temp.path(), &segments, &spec, false)
+                .unwrap();
+            let path = temp.path().join(&segments[0].audio_file);
+            let before = std::fs::metadata(&path).unwrap();
+            std::fs::write(&path, vec![8_u8; before.len() as usize]).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                .unwrap();
+            if !publishing {
+                attempt = Attempt::default();
+            }
+            assert!(
+                attempt
+                    .prepare(&store, "test", temp.path(), &segments, &spec, publishing)
+                    .is_err()
+            );
+            assert!(
+                checkpoint::get::<Fingerprints>(&store, "test", Stage::Transcribe, IDENTITY_KEY)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn recognition_attempt_rejects_changed_config_and_count_before_saving() {
+        for change_count in [false, true] {
+            let (temp, store, segment, mut spec) = audio_fixture();
+            let mut attempt = Attempt::default();
+            let segments = [segment];
+            attempt
+                .prepare(&store, "test", temp.path(), &segments, &spec, false)
+                .unwrap();
+            checkpoint::put(&store, "test", Stage::Summarize, "old-summary", &"old").unwrap();
+            if change_count {
+                lock(&store)
+                    .set_speaker_count("test", Some(session_core::SpeakerCount::Exact(2)))
+                    .unwrap();
+            } else {
+                spec.config.language = Some("fr".into());
+            }
+            assert!(
+                attempt
+                    .prepare(&store, "test", temp.path(), &segments, &spec, true)
+                    .is_err()
+            );
+            assert!(
+                checkpoint::get::<String>(&store, "test", Stage::Summarize, "old-summary")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn recognition_attempt_detects_processing_and_preprocessing_changes_between_stages() {
+        for echo_change in [false, true] {
+            let (temp, store, segment, spec) = audio_fixture();
+            let mut attempt = Attempt::default();
+            let segments = [segment];
+            attempt
+                .prepare(&store, "test", temp.path(), &segments, &spec, false)
+                .unwrap();
+            if echo_change {
+                checkpoint::put(
+                    &store,
+                    "test",
+                    Stage::Assemble,
+                    &checkpoint::echo_key(0),
+                    &serde_json::json!({"changed": true}),
+                )
+                .unwrap();
+            } else {
+                std::fs::write(
+                    temp.path().join(crate::proc_file(&segments[0].audio_file)),
+                    b"changed",
+                )
+                .unwrap();
+            }
+            assert!(
+                attempt
+                    .prepare(&store, "test", temp.path(), &segments, &spec, false)
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn partial_speaker_batches_preserve_previous_index_and_retry_completely() {

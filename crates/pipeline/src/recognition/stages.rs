@@ -68,8 +68,27 @@ pub fn execute(
     control: &dyn Control,
     progress: &mut dyn FnMut(transcribe::Progress),
 ) -> Result<(), StageError> {
-    let graph = TaskGraph::resolve(spec)?;
+    TaskGraph::resolve(spec)?;
     super::durable::prepare(store, id, dir, segments, spec)?;
+    execute_prepared(
+        store, id, dir, segments, spec, provider, stage, control, progress,
+    )
+}
+
+/// The runner has checked the attempt before taking a checkpoint shortcut.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_prepared(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    provider: &dyn EngineProvider,
+    stage: Stage,
+    control: &dyn Control,
+    progress: &mut dyn FnMut(transcribe::Progress),
+) -> Result<(), StageError> {
+    let graph = TaskGraph::resolve(spec)?;
     match stage {
         Stage::Diarize => analyze(
             store,

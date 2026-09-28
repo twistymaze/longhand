@@ -1014,6 +1014,44 @@ fn archive_path(
         .map(|home| Path::new(&home).join(&segment.audio_file))
         .ok_or_else(|| StageError::Failed("recorded audio is absent".into()))
 }
+
+/// In-process change detection only. Exact content checks remain necessary at
+/// the start of each attempt and before publication.
+pub(crate) fn recognition_input_stamp(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+) -> Result<String, StageError> {
+    let mut values = Vec::new();
+    for segment in segments {
+        let mut files = Vec::new();
+        for path in [
+            archive_path(store, id, dir, segment)?,
+            dir.join(proc_file(&segment.audio_file)),
+        ] {
+            let metadata = std::fs::metadata(&path)?;
+            files.push((
+                path,
+                metadata.len(),
+                metadata.modified()?,
+                metadata.created().ok(),
+            ));
+        }
+        let provenance: Option<AudioProvenance> =
+            checkpoint::get(store, id, Stage::Assemble, &provenance_key(segment.index))?;
+        let echo: Option<serde_json::Value> = checkpoint::get(
+            store,
+            id,
+            Stage::Assemble,
+            &checkpoint::echo_key(segment.index),
+        )?;
+        values.push((segment, files, provenance, echo));
+    }
+    Ok(session_core::recognition::digest(&serde_json::to_vec(
+        &values,
+    )?))
+}
 fn audio_provenance(
     store: &SharedStore,
     id: &str,

@@ -743,11 +743,14 @@ impl Runner {
                 };
             }
         };
+        let mut attempt = crate::recognition::durable::Attempt::default();
         for stage in stages {
             if saving && stage != Stage::Save {
                 continue;
             }
-            let result = self.run_stage(id, model, stage, cancel.clone()).await;
+            let result = self
+                .run_stage(id, model, stage, cancel.clone(), &mut attempt)
+                .await;
             match result {
                 Ok(()) => {}
                 // A failed summary costs the summary, not the session: it
@@ -907,29 +910,30 @@ impl Runner {
         model: &str,
         stage: Stage,
         cancel: CancellationToken,
+        attempt: &mut crate::recognition::durable::Attempt,
     ) -> Result<(), StageError> {
         let segments = lock(&self.env.store).segments(id)?;
-        if (checkpoint::is_complete(&self.env.store, id, stage, segments.len())?
-            || matches!(stage, Stage::Summarize | Stage::Save))
-            && matches!(
-                stage,
-                Stage::Diarize
-                    | Stage::Transcribe
-                    | Stage::Join
-                    | Stage::Verify
-                    | Stage::Summarize
-                    | Stage::Save
-            )
-            && let Some(spec) = crate::recognition::snapshot(&self.env.store, id)?
-            && self.env.working_root.join(id).exists()
+        let mut prepared = None;
+        if matches!(
+            stage,
+            Stage::Diarize
+                | Stage::Transcribe
+                | Stage::Join
+                | Stage::Verify
+                | Stage::Summarize
+                | Stage::Save
+        ) && let Some(spec) = crate::recognition::snapshot(&self.env.store, id)?
+            && (stage != Stage::Save || self.env.working_root.join(id).exists())
         {
-            crate::recognition::durable::prepare(
+            attempt.prepare(
                 &self.env.store,
                 id,
                 &self.env.working_root.join(id),
                 &segments,
                 &spec,
+                stage == Stage::Save,
             )?;
+            prepared = Some(spec);
         }
         if checkpoint::is_complete(&self.env.store, id, stage, segments.len())? {
             let exact = crate::recognition::snapshot(&self.env.store, id)?.is_some();
@@ -993,7 +997,16 @@ impl Runner {
                 power: ActivePower::new(power),
             };
             control.proceed()?;
-            execute(&env, &engine, &id_owned, &model, stage, &segments, &control)
+            execute(
+                &env,
+                &engine,
+                &id_owned,
+                &model,
+                stage,
+                &segments,
+                prepared.as_ref(),
+                &control,
+            )
         })
         .await;
         heartbeat.abort();
@@ -1006,6 +1019,7 @@ impl Runner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     env: &Environment,
     engine: &Mutex<Option<Box<dyn Recognizer>>>,
@@ -1013,20 +1027,21 @@ fn execute(
     model: &str,
     stage: Stage,
     segments: &[session_core::Segment],
+    prepared: Option<&models::recognition::ExecutionSpec>,
     control: &dyn Control,
 ) -> Result<(), StageError> {
     let dir = env.working_root.join(id);
     if matches!(
         stage,
         Stage::Diarize | Stage::Transcribe | Stage::Join | Stage::Verify
-    ) && let Some(spec) = crate::recognition::snapshot(&env.store, id)?
+    ) && let Some(spec) = prepared
     {
-        return crate::recognition::execute(
+        return crate::recognition::execute_prepared(
             &env.store,
             id,
             &dir,
             segments,
-            &spec,
+            spec,
             env.engines.as_ref(),
             stage,
             control,

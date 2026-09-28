@@ -3,6 +3,7 @@
 pub mod durable;
 pub(crate) mod nemo;
 mod stages;
+pub(crate) use stages::execute_prepared;
 pub use stages::{execute, prepare_retry, saved_result, snapshot};
 
 use crate::StageError;
