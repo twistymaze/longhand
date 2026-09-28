@@ -912,6 +912,12 @@ impl Runner {
         cancel: CancellationToken,
         attempt: &mut crate::recognition::durable::Attempt,
     ) -> Result<(), StageError> {
+        let _permit = self
+            .permit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| StageError::Failed(e.to_string()))?;
         let control = StageControl {
             cancel,
             env: Arc::clone(&self.env),
@@ -968,12 +974,6 @@ impl Runner {
                 return Ok(());
             }
         }
-        let _permit = self
-            .permit
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| StageError::Failed(e.to_string()))?;
         lock(&self.env.store).set_stage(id, stage)?;
         (self.env.events)(RunnerEvent::StageStarted {
             session_id: id.to_string(),
@@ -1276,6 +1276,79 @@ impl ActivePower {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnusedEngines;
+
+    impl EngineProvider for UnusedEngines {
+        fn ready(&self, _: &str) -> bool {
+            unreachable!()
+        }
+        fn load(&self, _: &str) -> Result<Box<dyn Recognizer>, String> {
+            unreachable!()
+        }
+        fn default_model(&self) -> String {
+            unreachable!()
+        }
+        fn analyzer(&self) -> Result<Box<dyn SpeakerAnalyzer>, DiarizeError> {
+            unreachable!()
+        }
+        fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
+            unreachable!()
+        }
+        fn summary_prompt(&self) -> summarize::Prompt {
+            unreachable!()
+        }
+        fn learn_limit(&self, _: &str, _: &str, _: u32) {
+            unreachable!()
+        }
+        fn destination(&self) -> Option<PathBuf> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stage_waiting_for_the_shared_permit_acquires_no_power() {
+        use std::future::Future;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll, Waker};
+
+        let acquired = Arc::new(AtomicUsize::new(0));
+        let starts = Arc::clone(&acquired);
+        let power = power::ProcessingPower::with_factory(move || {
+            starts.fetch_add(1, Ordering::SeqCst);
+            Some(())
+        })
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let runner = Runner::with_power(
+            Environment {
+                store: Arc::new(Mutex::new(session_core::Store::open_in_memory().unwrap())),
+                working_root: root.path().into(),
+                engines: Box::new(UnusedEngines),
+                suspended: Box::new(|| false),
+                events: Box::new(|_| panic!("a waiting stage must not start")),
+            },
+            power,
+        );
+        // Another job owns the permit, including while it is suspended.
+        let _other_job = runner.permit.clone().acquire_owned().await.unwrap();
+        let mut attempt = crate::recognition::durable::Attempt::default();
+        let stage = runner.run_stage(
+            "waiting",
+            "model",
+            Stage::Assemble,
+            CancellationToken::new(),
+            &mut attempt,
+        );
+        let mut stage = std::pin::pin!(stage);
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(stage.as_mut().poll(&mut context), Poll::Pending));
+        assert_eq!(
+            acquired.load(Ordering::SeqCst),
+            0,
+            "waiting for another job must not acquire processing power"
+        );
+    }
 
     fn id(model: &str) -> &str {
         model
