@@ -11,9 +11,15 @@ import type {
 import { mockTauri } from "../test/tauri";
 import { Models } from "./Models";
 import { describeLanguages } from "./languages";
+import catalog from "../../crates/models/catalog.json";
 
 const stream = "parakeet-unified-en-0.6b-q80";
 const offline = "moss-transcribe-diarize-q80";
+const integratedModels = [
+  offline,
+  "granite-speech-4.1-2b-plus-q5km",
+  "multitalker-parakeet-streaming-0.6b-v1-q80",
+];
 const model = (id: string, name: string): ModelStatus => ({
   id,
   name,
@@ -48,11 +54,11 @@ const settings = {
 } as Settings;
 function resolve(config: RecognitionConfig): ExecutionSpec {
   if (
-    config.asr_model === offline &&
+    (config.asr_model === offline || config.asr_model === integratedModels[1]) &&
     config.processing_mode === "during_recording"
   )
     throw "MOSS requires After Stop";
-  if (config.speaker_source === "integrated" && config.asr_model !== offline)
+  if (config.speaker_source === "integrated" && !integratedModels.includes(config.asr_model))
     throw "No integrated labels";
   if (
     (config.speaker_source === "pyannote" ||
@@ -138,6 +144,50 @@ async function ready() {
     ).toBe(false),
   );
 }
+
+describe("catalog speaker defaults", () => {
+  for (const id of integratedModels) {
+    const entry = catalog.models.find((item) => item.id === id)!;
+    const selected: ModelStatus = {
+      ...model(id, entry.name),
+      speaker_preferences: entry.speaker_preferences as ModelStatus["speaker_preferences"],
+    };
+    test(`${id} selects Nemotron and permits an integrated override`, async () => {
+      const { user, tauri } = open({}, settings, [models[0], selected]);
+      await ready();
+      await user.click(screen.getByRole("radio", { name: entry.name }));
+      await ready();
+      const saved = () => tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
+      expect((saved().slice(-1)[0]?.args.config as RecognitionConfig).speaker_source).toBe("nemotron");
+      await user.click(screen.getByText("Advanced options"));
+      await user.selectOptions(screen.getByLabelText("Speaker model override"), "integrated");
+      await ready();
+      expect((saved().slice(-1)[0]?.args.config as RecognitionConfig).speaker_source).toBe("integrated");
+    });
+    for (const source of ["integrated", "pyannote", "sortformer", "nemotron", "off"] as const) {
+      test(`${id} preserves saved ${source} choices`, async () => {
+        const { user, tauri } = open({}, {
+          ...settings,
+          asr_model: id,
+          speaker_source: source,
+          live_transcript: false,
+        }, [models[0], selected]);
+        await ready();
+        expect(tauri.calls.filter((call) => call.cmd === "set_recognition_defaults")).toHaveLength(0);
+        await user.click(screen.getByText("Advanced options"));
+        const override = screen.getByLabelText("Speaker model override") as HTMLSelectElement;
+        expect(override.value).toBe(source === "off" || source === entry.speaker_preferences?.after_stop[0] ? "automatic" : source);
+        if (source !== "off") {
+          await user.selectOptions(screen.getByLabelText("Transcription timing"), "after_stop");
+          const saved = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
+          expect((saved[saved.length - 1]?.args.config as RecognitionConfig).speaker_source).toBe(source);
+        } else {
+          expect((screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value).toBe("off");
+        }
+      });
+    }
+  }
+});
 
 describe("recognition defaults", () => {
   test("recognition choices expose separate timing and keep speaker accuracy unknown", async () => {

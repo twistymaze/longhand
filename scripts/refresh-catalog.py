@@ -17,6 +17,10 @@ Each entry uses Handy's default quant, pinned revision, file name, size and
 SHA-256. The download URL is the Hugging Face URL at the pinned revision;
 Handy's mirror is not used. The script reads a local file only. It does not
 use the network.
+
+Longhand's checked-in catalog supplies recommended and speaker_preferences
+for each exact artifact ID. A new artifact ID requires an explicit policy
+in that catalog before refresh can print its entry.
 """
 import argparse
 import json
@@ -25,6 +29,7 @@ import subprocess
 from pathlib import Path
 
 DEFAULT_SOURCE = "reference-source/Handy/src-tauri/src/catalog/catalog.json"
+POLICY_CATALOG = Path(__file__).resolve().parents[1] / "crates/models/catalog.json"
 ORG = "handy-computer"
 
 # Handy slug -> the name the picker shows (R1). The order is the order in
@@ -40,9 +45,6 @@ MODELS = {
     "granite-speech-4.1-2b-plus": "Granite Speech 4.1 2B Plus",
     "moss-transcribe-diarize": "MOSS Transcribe Diarize",
 }
-
-# The model a new install selects (KD8). Only this entry is recommended.
-RECOMMENDED = "parakeet-unified-en-0.6b"
 
 # Handy licence id -> (name, url). Handy writes "other" for the NVIDIA
 # models. Their cards name the NVIDIA Open Model License, except the slugs
@@ -83,10 +85,23 @@ def describe(languages, timestamps, streaming):
     return f"{count}, {timestamps}-level timestamps, {stream}."
 
 
-def entry(handy, name, source_revision):
+def entry(handy, name, source_revision, policy_entries):
     slug = handy["slug"]
     caps = handy["capabilities"]
     quant = handy["default_quant"]
+    artifact_id = f"{slug}-{quant_suffix(quant)}"
+    policies = [policy for policy in policy_entries if policy["id"] == artifact_id]
+    if len(policies) != 1:
+        fail(f"{artifact_id}: expected one exact artifact policy, found {len(policies)}")
+    policy = policies[0]
+    if not isinstance(policy.get("recommended"), bool):
+        fail(f"{artifact_id}: missing recommended policy")
+    preferences = policy.get("speaker_preferences")
+    if not isinstance(preferences, dict) or any(
+        not isinstance(preferences.get(mode), list) or not preferences[mode]
+        for mode in ("after_stop", "during_recording")
+    ):
+        fail(f"{artifact_id}: missing speaker_preferences policy")
     # Select the speaker-capable Multitalker bundle.
     files = [
         f for f in handy["files"] if f["quant"] == quant and (f["filename"].startswith("bundle/") if slug.startswith("multitalker-") else "/" not in f["filename"])
@@ -117,14 +132,15 @@ def entry(handy, name, source_revision):
         fail(f"{slug}: repository {handy['id']} is not {ORG}/{slug}-gguf")
 
     return {
-        "id": f"{slug}-{quant_suffix(quant)}",
+        "id": artifact_id,
         "kind": "asr",
         "name": name,
         "description": describe(languages, timestamps, caps["streaming"]),
         "streaming": caps["streaming"],
         "timestamps": timestamps,
         "languages": languages,
-        "recommended": slug == RECOMMENDED,
+        "recommended": policy["recommended"],
+        "speaker_preferences": preferences,
         "repository": repository,
         "revision": revision,
         "filename": file["filename"].replace("bundle/", "bundle-"),
@@ -186,7 +202,11 @@ def main():
     if missing:
         fail(f"not in {args.source}: {', '.join(missing)}")
     revision = assessment_revision(args.source, args.source_revision)
-    entries = [entry(by_slug[slug], name, revision) for slug, name in MODELS.items()]
+    policy_entries = json.loads(POLICY_CATALOG.read_text())["models"]
+    entries = [
+        entry(by_slug[slug], name, revision, policy_entries)
+        for slug, name in MODELS.items()
+    ]
     print(json.dumps(entries, indent=2, ensure_ascii=False))
 
 
