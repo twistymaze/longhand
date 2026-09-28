@@ -10,5 +10,11 @@ async function run(command:string[]){
  const child=Bun.spawn(command,{cwd:root,env,stdout:'inherit',stderr:'inherit'});
  const code=await child.exited;if(code!==0)throw new Error(`${command[0]} failed with code ${code}`);
 }
+if(process.platform==='win32' && !env.LONGHAND_VULKAN_RUNTIME_DIR){
+ const result=Bun.spawnSync(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',join(root,'scripts/prepare-vulkan-runtime.ps1'),'-OutputDirectory',join(helperBuild,'../vulkan-runtime')],{cwd:root,env,stdout:'pipe',stderr:'pipe'});
+ if(result.exitCode!==0)throw new Error(`Vulkan runtime preparation failed: ${result.stderr.toString()}`);
+ env.LONGHAND_VULKAN_RUNTIME_DIR=result.stdout.toString().trim();
+ if(!env.LONGHAND_VULKAN_RUNTIME_DIR)throw new Error('Vulkan runtime preparation returned no loader directory');
+}
 await run(['bash',join(root,'scripts/build-nemo.sh')]);
 await run(['bun',join(root,'scripts/package-nemo.ts'),join(helperBuild,'build-output.json')]);

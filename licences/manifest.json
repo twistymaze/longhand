@@ -38,6 +38,15 @@
       "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.22.0/ThirdPartyNotices.txt"
     },
     {
+      "name": "Vulkan Runtime loader",
+      "version": "1.4.309.0",
+      "part": "native",
+      "note": "app-local vulkan-1.dll in the private NeMo helper package",
+      "platforms": ["windows"],
+      "files": ["licences/sources/vulkan-runtime-LICENSE.txt"],
+      "source": "https://sdk.lunarg.com/sdk/download/1.4.309.0/windows/VulkanRT-1.4.309.0-Components.zip"
+    },
+    {
       "name": "Vulkan-Headers",
       "version": "1.4.309",
       "part": "native",

@@ -2,7 +2,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, chmodSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { windowsRedistRoots } from "./windows-redist";
+import { findWindowsDependency, windowsRedistRoots } from "./windows-redist";
 
 const manifestPath = process.argv[2];
 if (!manifestPath) throw new Error("Use bun scripts/package-nemo.ts BUILD-OUTPUT.json [OUTPUT-DIR]");
@@ -42,14 +42,6 @@ function windowsDependencies(path: string) { return run(["dumpbin", "/DEPENDENTS
 const windowsRoots = [sdkBin];
 windowsRoots.push(...windowsRedistRoots(process.env.VCToolsRedistDir, process.arch));
 if (process.env.VULKAN_SDK) windowsRoots.push(join(process.env.VULKAN_SDK, "Bin"));
-function windowsFind(name: string): string | undefined {
-  for (const root of windowsRoots) {
-    if (!existsSync(root)) continue;
-    const found = readdirSync(root).find(item => item.toLowerCase() === name.toLowerCase());
-    if (found) return join(root, found);
-  }
-  return undefined;
-}
 function windowsSystem(name: string) {
   if (/^(api-ms-win-|ext-ms-win-)/i.test(name)) return true;
   // Runtime and Vulkan DLLs must be app-local, even if this host has a copy.
@@ -92,7 +84,7 @@ try {
     for (let i = 0; i < queue.length; i++) {
       for (const dependency of windowsDependencies(join(binaries, queue[i]!))) {
         if (windowsSystem(dependency)) continue;
-        const candidate = windowsFind(dependency);
+        const candidate = findWindowsDependency(dependency, windowsRoots, process.env.LONGHAND_VULKAN_RUNTIME_DIR);
         if (!candidate) throw new Error(`Unresolved Windows dependency: ${dependency}`);
         copy(candidate, dependency);
       }
