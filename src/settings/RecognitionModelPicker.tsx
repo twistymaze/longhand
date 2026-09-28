@@ -153,11 +153,13 @@ export function RecognitionModelPicker({
                     <span className="text-[0.85rem] leading-relaxed text-label-secondary">
                       {describeLanguages(m.languages)}
                       <span aria-hidden> · </span>
-                      {formatBytes(m.size_bytes)}
+                      {formatBytes(m.bundle_size_bytes)}
                       <span aria-hidden> · </span>
-                      {m.state?.state === "present"
+                      {m.bundle_complete
                         ? "Downloaded"
-                        : "Download required"}
+                        : m.state?.state === "present"
+                          ? "Some files missing"
+                          : "Download required"}
                     </span>
                   </span>
                   <span className="grid w-44 grid-cols-[1.6fr_1fr] gap-4 @min-[32rem]:w-auto">
