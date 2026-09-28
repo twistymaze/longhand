@@ -462,9 +462,15 @@ fn recognition_catchup(
     };
     let store = store.lock().map_err(|e| e.to_string())?;
     let mut events = Vec::new();
+    let mut completed_speakers = std::collections::BTreeMap::new();
     let mut batches = std::collections::BTreeMap::<(u64, bool), Vec<LiveRecognitionEvent>>::new();
     store
         .visit_recognition(session_id, &generation, |block| {
+            if block.key == format!("nemo/{:020}/turn-commit", block.scope.epoch) {
+                completed_speakers.insert(block.scope.epoch, block.revision);
+                batches.entry((block.scope.epoch, true)).or_default();
+                return Ok(());
+            }
             let event = recognition_event(session_id, &block);
             match event.phase {
                 LiveRecognitionPhase::Patch => events.push(event),
@@ -480,7 +486,29 @@ fn recognition_catchup(
         })
         .map_err(|e| e.to_string())?;
     for ((epoch, speakers), mut batch) in batches {
-        let revision = batch.iter().map(|e| e.revision).max().unwrap_or_default();
+        let revision = if speakers {
+            if let Some(revision) = completed_speakers.get(&epoch) {
+                batch.retain(|event| event.revision == *revision);
+                *revision
+            } else {
+                // Native turns are provisional until their completion marker commits.
+                batch.retain(|event| !event.key.starts_with("nemo/"));
+                if batch.is_empty() {
+                    continue;
+                }
+                batch
+                    .iter()
+                    .map(|event| event.revision)
+                    .max()
+                    .unwrap_or_default()
+            }
+        } else {
+            batch
+                .iter()
+                .map(|event| event.revision)
+                .max()
+                .unwrap_or_default()
+        };
         let marker = LiveRecognitionEvent {
             session_id: session_id.into(),
             phase: if speakers {
@@ -627,6 +655,99 @@ mod tests {
         assert!(got.parts.is_empty());
         assert_eq!(got.current, None);
         assert_eq!(got.state, None);
+    }
+
+    #[test]
+    fn speaker_catchup_uses_only_the_completed_revision_including_empty() {
+        use session_core::recognition::*;
+        let store = store();
+        store
+            .lock()
+            .unwrap()
+            .create_session("s", chrono::Local::now().fixed_offset(), None)
+            .unwrap();
+        pipeline::checkpoint::put(
+            &store,
+            "s",
+            session_core::Stage::Transcribe,
+            "recognition-generation-v1",
+            &"g",
+        )
+        .unwrap();
+        let scope = SpeakerScope {
+            generation: "g".into(),
+            epoch: 0,
+        };
+        let range = SampleRange {
+            start: 0,
+            end: 16000,
+        };
+        for revision in [1, 2] {
+            store
+                .lock()
+                .unwrap()
+                .commit_recognition(
+                    "s",
+                    &OutputBlock {
+                        key: format!("nemo/{:020}/turn{revision}/0", 0),
+                        scope: scope.clone(),
+                        revision,
+                        coverage: Coverage {
+                            received: Some(range),
+                            computed: Some(range),
+                            provisional: Some(range),
+                            committed: None,
+                        },
+                        rows: vec![],
+                        speakers: vec![SpeakerTurn {
+                            range,
+                            timing: TimingPrecision::NativeSegment,
+                            speaker: SpeakerKey {
+                                scope: scope.clone(),
+                                input_start_sample: 0,
+                                local_id: revision as u32,
+                            },
+                            finality: Finality::Provisional,
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+        let marker = |revision| OutputBlock {
+            key: format!("nemo/{:020}/turn-commit", 0),
+            scope: scope.clone(),
+            revision,
+            coverage: Coverage::default(),
+            rows: vec![],
+            speakers: vec![],
+        };
+        store
+            .lock()
+            .unwrap()
+            .commit_recognition("s", &marker(1))
+            .unwrap();
+        let got = recognition_catchup(&store, "s").unwrap();
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|event| event.revision == 1));
+        assert_eq!(got[1].rows.len(), 1);
+        assert!(got[1].rows[0].speaker.as_ref().unwrap().ends_with(":1"));
+        store
+            .lock()
+            .unwrap()
+            .commit_recognition("s", &marker(3))
+            .unwrap();
+        let got = recognition_catchup(&store, "s").unwrap();
+        assert_eq!(
+            got.iter().map(|event| event.phase).collect::<Vec<_>>(),
+            vec![
+                LiveRecognitionPhase::SnapshotBegin,
+                LiveRecognitionPhase::SnapshotEnd
+            ]
+        );
+        assert!(
+            got.iter()
+                .all(|event| event.revision == 3 && event.rows.is_empty())
+        );
     }
 
     #[test]

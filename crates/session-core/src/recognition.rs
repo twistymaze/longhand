@@ -94,8 +94,11 @@ use std::{
 
 pub const ARTIFACT_VERSION: u32 = 1;
 pub const ARTIFACT_FILE: &str = "recognition.jsonl";
-/// An output transaction never retains more than this amount of encoded data.
+/// Maximum encoded size of one output block.
 pub const MAX_BLOCK_BYTES: usize = 1024 * 1024;
+/// Bound each transaction by record count and encoded payload size.
+pub const MAX_COMMIT_BLOCKS: usize = 128;
+pub const MAX_COMMIT_BYTES: usize = MAX_BLOCK_BYTES;
 pub type ArtifactResult<T> = Result<T, ArtifactError>;
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactError {
@@ -264,30 +267,62 @@ impl Store {
         id: &str,
         block: &OutputBlock,
     ) -> crate::jobs::Result<bool> {
-        block
-            .validate()
-            .map_err(|e| StoreError::Recognition(e.to_string()))?;
-        let tx = self.conn.transaction()?;
-        let old: Option<String> = tx.query_row("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key=?3", params![id,block.scope.generation,block.key], |r| r.get(0)).optional()?;
-        if let Some(old) = old {
-            let old: OutputBlock = serde_json::from_str(&old)?;
-            if block.revision < old.revision || block == &old {
-                return Ok(false);
-            }
-            if block.revision == old.revision
-                || block.scope != old.scope
-                || !contains(block.coverage.committed, old.coverage.committed)
-                || (old.coverage.committed.is_some()
-                    && (block.rows != old.rows || block.speakers != old.speakers))
-            {
+        Ok(self.commit_recognition_batch(id, std::slice::from_ref(block))? != 0)
+    }
+    /// Commit a bounded batch atomically. Conflicts roll back the whole batch.
+    pub fn commit_recognition_batch(
+        &mut self,
+        id: &str,
+        blocks: &[OutputBlock],
+    ) -> crate::jobs::Result<usize> {
+        if blocks.len() > MAX_COMMIT_BLOCKS {
+            return Err(StoreError::Recognition(
+                "output batch exceeds record limit".into(),
+            ));
+        }
+        let mut payloads = Vec::with_capacity(blocks.len());
+        let mut bytes = 0;
+        for block in blocks {
+            block
+                .validate()
+                .map_err(|e| StoreError::Recognition(e.to_string()))?;
+            let payload = serde_json::to_string(block)?;
+            bytes += payload.len();
+            if bytes > MAX_COMMIT_BYTES {
                 return Err(StoreError::Recognition(
-                    "revision conflicts with durable output".into(),
+                    "output batch exceeds size limit".into(),
                 ));
             }
+            payloads.push(payload);
         }
-        tx.execute("INSERT INTO recognition_output(session_id,generation,key,revision,payload) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_id,generation,key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",params![id,block.scope.generation,block.key,block.revision as i64,serde_json::to_string(block)?])?;
+        if blocks.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.transaction()?;
+        let mut changed = 0;
+        for (block, payload) in blocks.iter().zip(payloads) {
+            let old: Option<String> = tx.query_row("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key=?3", params![id,block.scope.generation,block.key], |r| r.get(0)).optional()?;
+            if let Some(old) = old {
+                let old: OutputBlock = serde_json::from_str(&old)?;
+                if block.revision < old.revision || block == &old {
+                    continue;
+                }
+                if block.revision == old.revision
+                    || block.scope != old.scope
+                    || !contains(block.coverage.committed, old.coverage.committed)
+                    || (old.coverage.committed.is_some()
+                        && (block.rows != old.rows || block.speakers != old.speakers))
+                {
+                    return Err(StoreError::Recognition(
+                        "revision conflicts with durable output".into(),
+                    ));
+                }
+            }
+            tx.execute("INSERT INTO recognition_output(session_id,generation,key,revision,payload) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_id,generation,key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",params![id,block.scope.generation,block.key,block.revision as i64,payload])?;
+            changed += 1;
+        }
         tx.commit()?;
-        Ok(true)
+        Ok(changed)
     }
     pub fn recognition_block(
         &self,

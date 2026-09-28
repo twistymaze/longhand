@@ -34,24 +34,24 @@ fn persist_epoch(
 ) -> Result<StoredEpoch, StageError> {
     use session_core::recognition::{Coverage, OutputBlock};
     let prefix = epoch_prefix(scope);
-    for (i, row) in result.rows.iter().enumerate() {
-        let block = OutputBlock {
-            key: format!("{prefix}row/{i:020}"),
-            scope: scope.clone(),
-            revision: row.revision,
-            coverage: Coverage {
-                received: Some(row.range),
-                computed: Some(row.range),
-                provisional: None,
-                committed: Some(row.range),
-            },
-            rows: vec![row.clone()],
-            speakers: vec![],
-        };
-        crate::lock(store).commit_recognition(id, &block)?;
-    }
-    for (i, turn) in result.speakers.iter().enumerate() {
-        let block = OutputBlock {
+    let rows = result.rows.iter().enumerate().map(|(i, row)| OutputBlock {
+        key: format!("{prefix}row/{i:020}"),
+        scope: scope.clone(),
+        revision: row.revision,
+        coverage: Coverage {
+            received: Some(row.range),
+            computed: Some(row.range),
+            provisional: None,
+            committed: Some(row.range),
+        },
+        rows: vec![row.clone()],
+        speakers: vec![],
+    });
+    let speakers = result
+        .speakers
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| OutputBlock {
             key: format!("{prefix}speaker/{i:020}"),
             scope: scope.clone(),
             revision: 0,
@@ -63,9 +63,8 @@ fn persist_epoch(
             },
             rows: vec![],
             speakers: vec![turn.clone()],
-        };
-        crate::lock(store).commit_recognition(id, &block)?;
-    }
+        });
+    super::durable::commit_blocks(store, id, rows.chain(speakers))?;
     Ok(StoredEpoch {
         scope: scope.clone(),
         range: result.coverage[0],
@@ -398,6 +397,15 @@ impl Output {
                     return Err(failed("speaker snapshot revision mismatch"));
                 }
                 if self.turns.is_none_or(|old| old.0 < pending.0) {
+                    // The marker selects only a complete snapshot. Commit it before
+                    // deleting old rows so a crash cannot expose a partial revision.
+                    self.put(&self.block(
+                        format!("nemo/{:020}/turn-commit", self.scope.epoch),
+                        pending.0,
+                        None,
+                        vec![],
+                        vec![],
+                    ))?;
                     let old = self.turns.replace(pending);
                     if let Some((revision, _)) = old {
                         crate::lock(&self.store).delete_recognition_prefix(
@@ -1124,6 +1132,45 @@ mod tests {
             interim_result: None,
         }
     }
+    #[test]
+    fn speaker_snapshot_marker_excludes_incomplete_revisions_and_keeps_empty_completion() {
+        let mut out = output();
+        let marker_key = format!("nemo/{:020}/turn-commit", out.scope.epoch);
+        let marker = |out: &Output| {
+            crate::lock(&out.store)
+                .recognition_block(&out.session, &out.scope.generation, &marker_key)
+                .unwrap()
+        };
+        out.process(&json!({"event":"segments_begin","revision":1}))
+            .unwrap();
+        out.process(&json!({"event":"segments","revision":1,"segments":[{"start":32000,"end":48000,"speaker":1,"speaker_final":true}]})).unwrap();
+        assert!(marker(&out).is_none());
+        out.process(&json!({"event":"segments_end","revision":1}))
+            .unwrap();
+        assert_eq!(marker(&out).unwrap().revision, 1);
+        out.process(&json!({"event":"segments_begin","revision":2}))
+            .unwrap();
+        out.process(&json!({"event":"segments","revision":2,"segments":[{"start":32000,"end":48000,"speaker":2,"speaker_final":true}]})).unwrap();
+        assert_eq!(marker(&out).unwrap().revision, 1);
+        assert!(
+            out.process(&json!({"event":"segments_end","revision":3}))
+                .is_err()
+        );
+        assert_eq!(marker(&out).unwrap().revision, 1);
+        out.process(&json!({"event":"segments_begin","revision":4}))
+            .unwrap();
+        out.process(&json!({"event":"segments_end","revision":4}))
+            .unwrap();
+        let complete = marker(&out).unwrap();
+        assert_eq!(complete.revision, 4);
+        assert!(complete.speakers.is_empty());
+        out.process(&json!({"event":"segments_begin","revision":3}))
+            .unwrap();
+        out.process(&json!({"event":"segments_end","revision":3}))
+            .unwrap();
+        assert_eq!(marker(&out).unwrap().revision, 4);
+    }
+
     #[test]
     fn long_interim_is_bounded_and_does_not_enter_final_results() {
         let mut out = output();

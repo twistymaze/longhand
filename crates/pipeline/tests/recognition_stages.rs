@@ -1024,3 +1024,58 @@ fn prepare_preserves_partial_feature_windows_for_pcm_verification() {
         "preserve individually hashed features for bounded verification at normal entry"
     );
 }
+
+#[test]
+fn live_identity_accepts_resampler_rounded_final_sample() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = common::store();
+    let spec = spec(SpeakerSource::Off);
+    common::queue_session(
+        &store,
+        temp.path(),
+        "route",
+        100,
+        Some(&spec.config.asr_model),
+        &[(48000, vec![0.1; 48002])],
+    );
+    let segments = store.lock().unwrap().segments("route").unwrap();
+    let dir = temp.path().join("route");
+    pipeline::assemble::run(&store, "route", &dir, &segments, None, &Unattended).unwrap();
+    let mut reader =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: dir.join(pipeline::RECOVERY_DIR),
+            segment: 0,
+            offset_ms: segments[0].offset_ms,
+            rate: 48000,
+        });
+    while reader.next_frame().unwrap().is_some() {}
+    assert_eq!(reader.proof().samples, 48002);
+    let mut config = pipeline::live::LiveConfig::new("route", 0, &spec.config.asr_model, 48000);
+    config.snapshot = Some(spec.clone());
+    pipeline::live::archive::save_proof(&store, &config, &reader).unwrap();
+    let start = segments[0].offset_ms * 16;
+    checkpoint::put(
+        &store,
+        "route",
+        Stage::Transcribe,
+        &format!("recognition-epoch-{start:020}"),
+        &serde_json::json!({"range":{"start":start,"end":start+16001}}),
+    )
+    .unwrap();
+    pipeline::recognition::durable::stamp_live_identity(&store, "route", &dir, &segments, &spec)
+        .unwrap();
+    checkpoint::put(
+        &store,
+        "route",
+        Stage::Transcribe,
+        &format!("recognition-epoch-{start:020}"),
+        &serde_json::json!({"range":{"start":start,"end":start+16002}}),
+    )
+    .unwrap();
+    assert!(
+        pipeline::recognition::durable::stamp_live_identity(
+            &store, "route", &dir, &segments, &spec
+        )
+        .is_err()
+    );
+}

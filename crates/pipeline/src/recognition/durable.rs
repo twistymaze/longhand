@@ -128,7 +128,8 @@ fn live_source_matches(
         rate: proof.rate,
     });
     while reader.position() < proof.samples && reader.next_frame()?.is_some() {}
-    let covered_end = segment.offset_ms * 16 + proof.samples * 16000 / u64::from(proof.rate);
+    let covered_end = segment.offset_ms * 16
+        + crate::resample::output_sample_count(proof.samples, u64::from(proof.rate), 16000);
     if reader.proof() != proof {
         return Ok(false);
     }
@@ -456,6 +457,32 @@ pub fn reusable_artifact(
     Ok(reuse)
 }
 
+/// Keep durable records bounded and publish indexes only after all batches commit.
+pub(super) fn commit_blocks(
+    store: &SharedStore,
+    id: &str,
+    blocks: impl IntoIterator<Item = OutputBlock>,
+) -> Result<(), StageError> {
+    let mut batch = Vec::with_capacity(MAX_COMMIT_BLOCKS);
+    let mut bytes = 0;
+    for block in blocks {
+        let size = serde_json::to_vec(&block)?.len();
+        if !batch.is_empty()
+            && (batch.len() == MAX_COMMIT_BLOCKS || bytes + size > MAX_COMMIT_BYTES)
+        {
+            lock(store).commit_recognition_batch(id, &batch)?;
+            batch.clear();
+            bytes = 0;
+        }
+        bytes += size;
+        batch.push(block);
+    }
+    if !batch.is_empty() {
+        lock(store).commit_recognition_batch(id, &batch)?;
+    }
+    Ok(())
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ResultIndex {
     version: u32,
@@ -478,24 +505,24 @@ pub(super) fn persist_result(
         .scope
         .epoch;
     let prefix = format!("result/{sequence:020}/");
-    for (i, row) in result.rows.iter().enumerate() {
-        let block = OutputBlock {
-            key: format!("{prefix}row/{i:020}"),
-            scope: row.id.scope.clone(),
-            revision: row.revision,
-            coverage: Coverage {
-                received: Some(row.range),
-                computed: Some(row.range),
-                provisional: None,
-                committed: Some(row.range),
-            },
-            rows: vec![row.clone()],
-            speakers: vec![],
-        };
-        lock(store).commit_recognition(id, &block)?;
-    }
-    for (i, turn) in result.speakers.iter().enumerate() {
-        let block = OutputBlock {
+    let rows = result.rows.iter().enumerate().map(|(i, row)| OutputBlock {
+        key: format!("{prefix}row/{i:020}"),
+        scope: row.id.scope.clone(),
+        revision: row.revision,
+        coverage: Coverage {
+            received: Some(row.range),
+            computed: Some(row.range),
+            provisional: None,
+            committed: Some(row.range),
+        },
+        rows: vec![row.clone()],
+        speakers: vec![],
+    });
+    let speakers = result
+        .speakers
+        .iter()
+        .enumerate()
+        .map(|(i, turn)| OutputBlock {
             key: format!("{prefix}speaker/{i:020}"),
             scope: turn.speaker.scope.clone(),
             revision: 0,
@@ -507,9 +534,8 @@ pub(super) fn persist_result(
             },
             rows: vec![],
             speakers: vec![turn.clone()],
-        };
-        lock(store).commit_recognition(id, &block)?;
-    }
+        });
+    commit_blocks(store, id, rows.chain(speakers))?;
     checkpoint::put(
         store,
         id,
@@ -588,25 +614,26 @@ pub fn persist_speakers(
         .scope
         .epoch;
     let prefix = format!("speakers/{sequence:020}/");
-    for (i, turn) in turns.iter().enumerate() {
-        if turn.speaker.scope.generation != generation {
-            return Err(failed("speaker analysis generation mismatch"));
-        }
-        let block = OutputBlock {
-            key: format!("{prefix}{i:020}"),
-            scope: turn.speaker.scope.clone(),
-            revision: 0,
-            coverage: Coverage {
-                received: Some(turn.range),
-                computed: Some(turn.range),
-                provisional: None,
-                committed: Some(turn.range),
-            },
-            rows: vec![],
-            speakers: vec![turn.clone()],
-        };
-        lock(store).commit_recognition(id, &block)?;
+    if turns
+        .iter()
+        .any(|turn| turn.speaker.scope.generation != generation)
+    {
+        return Err(failed("speaker analysis generation mismatch"));
     }
+    let blocks = turns.iter().enumerate().map(|(i, turn)| OutputBlock {
+        key: format!("{prefix}{i:020}"),
+        scope: turn.speaker.scope.clone(),
+        revision: 0,
+        coverage: Coverage {
+            received: Some(turn.range),
+            computed: Some(turn.range),
+            provisional: None,
+            committed: Some(turn.range),
+        },
+        rows: vec![],
+        speakers: vec![turn.clone()],
+    });
+    commit_blocks(store, id, blocks)?;
     checkpoint::put(
         store,
         id,
@@ -652,4 +679,47 @@ pub(super) fn load_speakers(
         return Err(failed("durable speaker output is incomplete"));
     }
     Ok(Some(turns))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_speaker_batches_preserve_previous_index_and_retry_completely() {
+        let mut database = session_core::Store::open_in_memory().unwrap();
+        database
+            .create_session(
+                "test",
+                chrono::DateTime::parse_from_rfc3339("2026-09-27T10:00:00-05:00").unwrap(),
+                None,
+            )
+            .unwrap();
+        let store = std::sync::Arc::new(std::sync::Mutex::new(database));
+        let generation = super::super::stages::generation(&store, "test").unwrap();
+        let turn = SpeakerTurn {
+            range: SampleRange {
+                start: 0,
+                end: 16000,
+            },
+            timing: TimingPrecision::NativeSegment,
+            speaker: SpeakerKey {
+                scope: SpeakerScope {
+                    generation,
+                    epoch: 1,
+                },
+                input_start_sample: 0,
+                local_id: 1,
+            },
+            finality: Finality::Final,
+        };
+        persist_speakers(&store, "test", std::slice::from_ref(&turn)).unwrap();
+        let mut replacement = vec![turn.clone(); MAX_COMMIT_BLOCKS * 2 + 1];
+        replacement.last_mut().unwrap().finality = Finality::Provisional;
+        assert!(persist_speakers(&store, "test", &replacement).is_err());
+        assert_eq!(load_speakers(&store, "test").unwrap().unwrap(), vec![turn]);
+        replacement.last_mut().unwrap().finality = Finality::Final;
+        persist_speakers(&store, "test", &replacement).unwrap();
+        assert_eq!(load_speakers(&store, "test").unwrap().unwrap(), replacement);
+    }
 }

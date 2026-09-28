@@ -229,3 +229,66 @@ fn committed_output_survives_reopen_and_interrupted_replay_uses_a_new_scope() {
     assert_ne!(new.scope, old.scope);
     assert!(!new.native_state_restored);
 }
+
+#[test]
+fn recognition_batch_is_atomic_and_idempotent() {
+    let mut store = store();
+    let first = block(2, true);
+    let mut second = first.clone();
+    second.key = "window-1".into();
+    assert_eq!(
+        store
+            .commit_recognition_batch("s", &[first.clone(), second.clone()])
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store
+            .commit_recognition_batch("s", &[first.clone(), second.clone()])
+            .unwrap(),
+        0
+    );
+    let mut third = first.clone();
+    third.key = "window-2".into();
+    let mut conflict = second.clone();
+    conflict.scope.epoch += 1;
+    assert!(
+        store
+            .commit_recognition_batch("s", &[third.clone(), conflict])
+            .is_err()
+    );
+    assert!(
+        store
+            .recognition_block("s", "g", &third.key)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store.recognition_block("s", "g", &second.key).unwrap(),
+        Some(second)
+    );
+    let oversized = vec![first; MAX_COMMIT_BLOCKS + 1];
+    assert!(store.commit_recognition_batch("s", &oversized).is_err());
+}
+
+#[test]
+fn recognition_batch_size_limit_writes_no_partial_output() {
+    let mut store = store();
+    let mut first = block(1, true);
+    first.key = "a".repeat(MAX_COMMIT_BYTES / 2);
+    let mut second = first.clone();
+    second.key.replace_range(0..1, "b");
+    first.validate().unwrap();
+    second.validate().unwrap();
+    assert!(
+        store
+            .commit_recognition_batch("s", &[first.clone(), second])
+            .is_err()
+    );
+    assert!(
+        store
+            .recognition_block("s", "g", &first.key)
+            .unwrap()
+            .is_none()
+    );
+}

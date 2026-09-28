@@ -10,6 +10,13 @@ use rubato::{FftFixedIn, Resampler};
 
 const CHUNK: usize = 1024;
 
+/// Round to the nearest output sample, including the final partial sample.
+pub(crate) fn output_sample_count(samples: u64, in_hz: u64, out_hz: u64) -> u64 {
+    let count =
+        (u128::from(samples) * u128::from(out_hz) + u128::from(in_hz / 2)) / u128::from(in_hz);
+    u64::try_from(count).expect("resampled duration fits the sample timeline")
+}
+
 pub struct StreamResampler {
     inner: Option<FftFixedIn<f32>>,
     in_hz: u64,
@@ -40,7 +47,7 @@ impl StreamResampler {
     }
 
     fn expected(&self) -> u64 {
-        (self.in_count * self.out_hz + self.in_hz / 2) / self.in_hz
+        output_sample_count(self.in_count, self.in_hz, self.out_hz)
     }
 
     pub fn push(&mut self, mut src: &[f32], emit: &mut impl FnMut(&[f32])) {
