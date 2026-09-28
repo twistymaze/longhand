@@ -245,8 +245,6 @@ impl Engine {
     /// start of the window. Build words with
     /// [`words_from_tokens`](crate::words_from_tokens).
     pub fn transcribe_timed(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
-        let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
-        let audio = pad_to_minimum(pcm);
         let options = RunOptions {
             language: self.language.clone(),
             timestamps: TimestampKind::Token,
@@ -254,8 +252,19 @@ impl Engine {
             family: self.family(),
             ..Default::default()
         };
-        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
-        Ok(timed_tokens(&transcript.tokens, original_ms))
+        let parts = self.decode_parts(pcm, &options)?;
+        Ok(tokens_from_parts(parts))
+    }
+
+    fn decode_parts(
+        &mut self,
+        pcm: &[f32],
+        options: &RunOptions,
+    ) -> Result<Vec<crate::recovery::DecodedPart>, AsrError> {
+        crate::recovery::decode(pcm, &mut |audio| {
+            self.session.run(&pad_to_minimum(audio), options)
+        })
+        .map_err(run_error)
     }
 
     /// Each window is decoded on its own; nothing decoded before a silence
@@ -268,6 +277,45 @@ impl Engine {
             })
         })
     }
+}
+
+fn tokens_from_parts(parts: Vec<crate::recovery::DecodedPart>) -> Vec<TimedToken> {
+    let mut tokens = Vec::new();
+    for part in parts {
+        let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
+        for mut token in timed_tokens(
+            &part.transcript.tokens,
+            part.samples as u64 / SAMPLES_PER_MS,
+        ) {
+            token.start_ms += offset_ms;
+            token.end_ms += offset_ms;
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+fn text_from_parts(parts: Vec<crate::recovery::DecodedPart>) -> WindowText {
+    let mut result = WindowText::default();
+    for part in parts {
+        let limit_ms = part.samples as u64 / SAMPLES_PER_MS;
+        let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
+        crate::recovery::append_text(&mut result.text, &part.transcript.text);
+        for segment in part.transcript.segments {
+            let text = segment.text.trim().to_string();
+            if text.is_empty() {
+                continue;
+            }
+            let start = (segment.t0_ms.max(0) as u64).min(limit_ms);
+            let end = (segment.t1_ms.max(0) as u64).clamp(start, limit_ms);
+            result.segments.push(AsrSegment {
+                start_ms: offset_ms + start,
+                end_ms: offset_ms + end,
+                text,
+            });
+        }
+    }
+    result
 }
 
 fn run_error(e: transcribe_cpp::Error) -> AsrError {
@@ -347,8 +395,6 @@ impl Recognizer for Engine {
     }
 
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError> {
-        let original_ms = pcm.len() as u64 / SAMPLES_PER_MS;
-        let audio = pad_to_minimum(pcm);
         let options = RunOptions {
             language: self.language.clone(),
             timestamps: TimestampKind::Segment,
@@ -356,30 +402,7 @@ impl Recognizer for Engine {
             family: self.family(),
             ..Default::default()
         };
-        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
-        let segments = transcript
-            .segments
-            .into_iter()
-            .filter_map(|s| {
-                let text = s.text.trim().to_string();
-                if text.is_empty() {
-                    return None;
-                }
-                // Padding is silence the speaker never said; keep times
-                // inside the audio that was recorded.
-                let start = (s.t0_ms.max(0) as u64).min(original_ms);
-                let end = (s.t1_ms.max(0) as u64).clamp(start, original_ms);
-                Some(AsrSegment {
-                    start_ms: start,
-                    end_ms: end,
-                    text,
-                })
-            })
-            .collect();
-        Ok(WindowText {
-            text: transcript.text.trim().to_string(),
-            segments,
-        })
+        Ok(text_from_parts(self.decode_parts(pcm, &options)?))
     }
 
     fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
@@ -402,7 +425,6 @@ impl Recognizer for Engine {
                 "recognition input exceeds the model's audio limit; use independent windows".into(),
             ));
         }
-        let audio = pad_to_minimum(pcm);
         // Granite Plus cannot combine explicit word times with attribution.
         // Auto retains the model's supported timing and attribution contract.
         let options = RunOptions {
@@ -412,14 +434,15 @@ impl Recognizer for Engine {
             family: self.family(),
             ..Default::default()
         };
-        let transcript = self.session.run(&audio, &options).map_err(run_error)?;
-        if self.is_moss {
-            crate::result::normalize_moss_transcript(transcript, pcm.len(), request)
+        let parts = self.decode_parts(pcm, &options)?;
+        let normalize = if self.is_moss {
+            crate::result::normalize_moss_transcript
         } else if self.is_multitalker {
-            crate::result::normalize_multitalker_transcript(transcript, pcm.len(), request)
+            crate::result::normalize_multitalker_transcript
         } else {
-            normalize_transcript(transcript, pcm.len(), request)
-        }
+            normalize_transcript
+        };
+        crate::recovery::normalize_parts(parts, request, pcm.len(), normalize)
     }
 
     fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {
@@ -443,6 +466,66 @@ impl Recognizer for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recovered_parts() -> Vec<crate::recovery::DecodedPart> {
+        [" first", " second"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| crate::recovery::DecodedPart {
+                offset: index * 16_000,
+                samples: 16_003,
+                transcript: transcribe_cpp::Transcript {
+                    text: text.into(),
+                    segments: vec![transcribe_cpp::Segment {
+                        t0_ms: 100,
+                        t1_ms: 1_100,
+                        text: text.into(),
+                        ..Default::default()
+                    }],
+                    tokens: vec![transcribe_cpp::Token {
+                        t0_ms: 100,
+                        t1_ms: 1_100,
+                        text: text.into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recovered_plain_and_token_output_keep_order_offsets_and_clipped_tails() {
+        let text = text_from_parts(recovered_parts());
+        assert_eq!(text.text, "first second");
+        assert_eq!(
+            text.segments,
+            vec![
+                AsrSegment {
+                    start_ms: 100,
+                    end_ms: 1_000,
+                    text: "first".into()
+                },
+                AsrSegment {
+                    start_ms: 1_100,
+                    end_ms: 2_000,
+                    text: "second".into()
+                },
+            ]
+        );
+        let tokens = tokens_from_parts(recovered_parts());
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|t| (t.text.as_str(), t.start_ms, t.end_ms))
+                .collect::<Vec<_>>(),
+            vec![(" first", 100, 1_000), (" second", 1_100, 2_000)]
+        );
+        assert_eq!(
+            crate::join_words(&crate::words_from_tokens(&tokens, 0)),
+            "first second"
+        );
+    }
 
     #[test]
     fn a_short_window_is_padded_to_one_second_and_a_long_one_is_left_alone() {

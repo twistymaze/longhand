@@ -3,6 +3,7 @@
 //! recognition streams audio in parts (KTD4, KTD5).
 
 pub mod engine;
+mod recovery;
 pub mod result;
 pub mod stream;
 pub mod windows;
