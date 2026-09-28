@@ -10,7 +10,6 @@ pub const NEMO_REVISION: &str = "97a15afa5caa9bce5baaa86c1184103877af4101";
 #[serde(rename_all = "snake_case")]
 pub enum SpeakerSource {
     Off,
-    Integrated,
     #[default]
     Pyannote,
     Sortformer,
@@ -91,8 +90,6 @@ pub struct ExecutionSpec {
 pub enum ResolveError {
     #[error("Unknown transcription model: {model}")]
     UnknownModel { model: String },
-    #[error("{model} does not provide speaker labels")]
-    NoIntegratedSpeakers { model: String },
     #[error("{model} cannot transcribe during recording")]
     NoLiveTranscription { model: String },
     #[error("Speaker count must be positive and ordered")]
@@ -165,17 +162,6 @@ fn resolve_transcribe(config: &RecognitionConfig) -> Result<ExecutionSpec, Resol
             language: language.clone(),
         });
     }
-    let integrated = matches!(
-        asr.id.as_str(),
-        "multitalker-parakeet-streaming-0.6b-v1-q80"
-            | "moss-transcribe-diarize-q80"
-            | "granite-speech-4.1-2b-plus-q5km"
-    );
-    if config.speaker_source == SpeakerSource::Integrated && !integrated {
-        return Err(ResolveError::NoIntegratedSpeakers {
-            model: asr.id.clone(),
-        });
-    }
     if config.processing_mode == ProcessingMode::DuringRecording && !asr.streaming {
         return Err(ResolveError::NoLiveTranscription {
             model: asr.id.clone(),
@@ -191,9 +177,6 @@ fn resolve_transcribe(config: &RecognitionConfig) -> Result<ExecutionSpec, Resol
     let maximum_speakers = match config.speaker_source {
         SpeakerSource::Sortformer => Some(4),
         SpeakerSource::Nemotron => Some(8),
-        SpeakerSource::Integrated if asr.id == "multitalker-parakeet-streaming-0.6b-v1-q80" => {
-            Some(4)
-        }
         _ => None,
     };
     validate_count(config.speaker_count, maximum_speakers)?;
@@ -223,7 +206,7 @@ fn resolve_transcribe(config: &RecognitionConfig) -> Result<ExecutionSpec, Resol
                 revision: NEMO_REVISION.into(),
             });
         }
-        SpeakerSource::Off | SpeakerSource::Integrated => {}
+        SpeakerSource::Off => {}
     }
     let artifacts = selected
         .into_iter()
@@ -323,7 +306,6 @@ pub fn resolve_for_runtime(
 pub fn bundle(asr_model: &str) -> Vec<ArtifactSpec> {
     let sources = [
         SpeakerSource::Off,
-        SpeakerSource::Integrated,
         SpeakerSource::Pyannote,
         SpeakerSource::Sortformer,
         SpeakerSource::Nemotron,

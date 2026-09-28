@@ -95,15 +95,39 @@ fn unknown_count_retains_visible_capacity_and_unverified_claim() {
 }
 
 #[test]
-fn integrated_requires_a_speaker_capable_model() {
-    let config = RecognitionConfig {
-        speaker_source: SpeakerSource::Integrated,
-        ..Default::default()
-    };
-    assert!(matches!(
-        resolve(&config),
-        Err(ResolveError::NoIntegratedSpeakers { .. })
-    ));
+fn every_model_takes_speaker_labels_from_a_separate_speaker_model() {
+    for model in models::CATALOG
+        .iter()
+        .filter(|m| m.kind == models::ModelKind::Asr)
+    {
+        for speaker_source in [
+            SpeakerSource::Pyannote,
+            SpeakerSource::Sortformer,
+            SpeakerSource::Nemotron,
+        ] {
+            let spec = resolve(&RecognitionConfig {
+                asr_model: model.id.clone(),
+                speaker_source,
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(spec.artifacts.len() > 1, "{}: {speaker_source:?}", model.id);
+        }
+        let off = resolve(&RecognitionConfig {
+            asr_model: model.id.clone(),
+            speaker_source: SpeakerSource::Off,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(off.artifacts.len(), 1, "{}", model.id);
+    }
+}
+
+#[test]
+fn stored_spec_with_model_speaker_labels_does_not_read() {
+    let mut value = serde_json::to_value(resolve(&RecognitionConfig::default()).unwrap()).unwrap();
+    value["config"]["speaker_source"] = "integrated".into();
+    assert!(serde_json::from_value::<models::recognition::ExecutionSpec>(value).is_err());
 }
 
 #[test]
@@ -117,26 +141,6 @@ fn offline_model_cannot_claim_live_text() {
         resolve(&config),
         Err(ResolveError::NoLiveTranscription { .. })
     ));
-}
-
-#[test]
-fn integrated_bundles_have_no_pyannote_dependency() {
-    for id in [
-        "multitalker-parakeet-streaming-0.6b-v1-q80",
-        "granite-speech-4.1-2b-plus-q5km",
-        "moss-transcribe-diarize-q80",
-    ] {
-        let config = RecognitionConfig {
-            asr_model: id.into(),
-            speaker_source: SpeakerSource::Integrated,
-            ..Default::default()
-        };
-        let spec = resolve(&config).unwrap();
-        assert_eq!(spec.artifacts.len(), 1);
-        if id.starts_with("multitalker") {
-            assert!(spec.artifacts[0].url.contains("/bundle/"));
-        }
-    }
 }
 
 #[test]
@@ -172,10 +176,10 @@ fn one_family_uses_distinct_artifacts_for_each_runtime() {
 }
 
 #[test]
-fn native_after_stop_accepts_live_preview_but_does_not_claim_live_labels() {
+fn after_stop_speakers_accept_live_preview_but_do_not_claim_live_labels() {
     let mut config = RecognitionConfig {
-        asr_model: "multitalker-parakeet-streaming-0.6b-v1-q80".into(),
-        speaker_source: SpeakerSource::Integrated,
+        asr_model: "parakeet-unified-en-0.6b-q80".into(),
+        speaker_source: SpeakerSource::Pyannote,
         processing_mode: ProcessingMode::DuringRecording,
         ..Default::default()
     };

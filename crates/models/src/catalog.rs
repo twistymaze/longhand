@@ -126,50 +126,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integrated_models_prefer_separate_speakers_and_keep_explicit_labels() {
-        use crate::recognition::{RecognitionConfig, SpeakerCount, SpeakerSource, resolve};
-        for id in [
-            "multitalker-parakeet-streaming-0.6b-v1-q80",
-            "moss-transcribe-diarize-q80",
-            "granite-speech-4.1-2b-plus-q5km",
-        ] {
-            let model = CATALOG.iter().find(|model| model.id == id).unwrap();
-            let preferences = model.speaker_preferences.as_ref().unwrap();
-            assert_eq!(preferences.during_recording, [SpeakerSource::Nemotron]);
-            for (count, expected) in [
-                (None, SpeakerSource::Nemotron),
-                (
-                    Some(SpeakerCount::Exact { count: 8 }),
-                    SpeakerSource::Nemotron,
-                ),
-                (
-                    Some(SpeakerCount::Exact { count: 9 }),
-                    SpeakerSource::Pyannote,
-                ),
-            ] {
-                let selected = preferences.after_stop.iter().copied().find(|source| {
-                    resolve(&RecognitionConfig {
-                        asr_model: id.into(),
-                        speaker_source: *source,
-                        speaker_count: count,
-                        ..Default::default()
-                    })
-                    .is_ok()
-                });
-                assert_eq!(selected, Some(expected), "{id}: {count:?}");
-            }
-            assert!(preferences.after_stop.contains(&SpeakerSource::Integrated));
-            resolve(&RecognitionConfig {
-                asr_model: id.into(),
-                speaker_source: SpeakerSource::Integrated,
-                speaker_count: Some(SpeakerCount::Exact { count: 4 }),
-                ..Default::default()
-            })
-            .unwrap();
-        }
-    }
-
-    #[test]
     fn automatic_speaker_choices_are_valid_and_keep_speakers_enabled() {
         use crate::recognition::{
             ProcessingMode, RecognitionConfig, SpeakerCount, SpeakerSource, resolve,
@@ -322,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn recommended_models_cover_live_and_integrated_afterwards() {
+    fn recommended_models_start_with_a_live_model() {
         let recommended: Vec<_> = CATALOG.iter().filter(|m| m.recommended).collect();
         assert_eq!(
             recommended
@@ -336,14 +292,6 @@ mod tests {
             ]
         );
         assert!(recommended[0].streaming);
-        assert!(
-            recommended[2]
-                .speaker_preferences
-                .as_ref()
-                .unwrap()
-                .after_stop
-                .contains(&crate::recognition::SpeakerSource::Integrated)
-        );
     }
 
     #[test]

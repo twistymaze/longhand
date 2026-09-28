@@ -78,8 +78,6 @@ export function RecognitionModelPicker({
         aria-label="Transcription model"
       >
         {choices.map((m, index) => {
-          const nativeSpeakers =
-            m.speaker_preferences?.after_stop.includes("integrated");
           const selected = m.id === value;
           const activity = modelActivity?.(m);
           return (
@@ -144,11 +142,6 @@ export function RecognitionModelPicker({
                           ? "Live transcription"
                           : "Transcription afterwards"}
                       </span>
-                      {nativeSpeakers && (
-                        <span className="rounded-md bg-fill px-2 py-0.5 text-[0.8rem] font-medium text-label">
-                          Built-in speaker recognition
-                        </span>
-                      )}
                     </span>
                     <span className="text-[0.85rem] leading-relaxed text-label-secondary">
                       {describeLanguages(m.languages)}

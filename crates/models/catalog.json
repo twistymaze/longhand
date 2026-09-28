@@ -181,8 +181,7 @@
       "speaker_preferences": {
         "after_stop": [
           "nemotron",
-          "pyannote",
-          "integrated"
+          "pyannote"
         ],
         "during_recording": [
           "nemotron"
@@ -506,8 +505,7 @@
       "speaker_preferences": {
         "after_stop": [
           "nemotron",
-          "pyannote",
-          "integrated"
+          "pyannote"
         ],
         "during_recording": [
           "nemotron"
@@ -585,8 +583,7 @@
       "speaker_preferences": {
         "after_stop": [
           "nemotron",
-          "pyannote",
-          "integrated"
+          "pyannote"
         ],
         "during_recording": [
           "nemotron"

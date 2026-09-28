@@ -19,7 +19,6 @@ pub const SPEAKERS_KEY: &str = "recognition-speakers-v1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Route {
     Off,
-    Integrated,
     SeparatePyannote,
     SeparateNemo,
     CombinedNemo,
@@ -52,7 +51,6 @@ impl TaskGraph {
             .is_some_and(|a| a.format == "nemo-gguf");
         let route = match (spec.config.speaker_source, native_nemo) {
             (SpeakerSource::Off, false) => Route::Off,
-            (SpeakerSource::Integrated, false) => Route::Integrated,
             (SpeakerSource::Pyannote, false) => Route::SeparatePyannote,
             (SpeakerSource::Sortformer | SpeakerSource::Nemotron, false) => Route::SeparateNemo,
             (SpeakerSource::Sortformer | SpeakerSource::Nemotron, true) => Route::CombinedNemo,

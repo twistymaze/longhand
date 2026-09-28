@@ -29,7 +29,7 @@ class RefreshPolicyTests(unittest.TestCase):
             "id": "granite-speech-4.1-2b-plus-q5km",
             "recommended": True,
             "speaker_preferences": {
-                "after_stop": ["nemotron", "pyannote", "integrated"],
+                "after_stop": ["nemotron", "pyannote"],
                 "during_recording": ["nemotron"],
             },
         }

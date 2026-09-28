@@ -1404,7 +1404,7 @@ state: ModelState }
  * checks runtime support, language, timing, and speaker count.
  */
 export type SpeakerPreferences = { after_stop: SpeakerSource[]; during_recording: SpeakerSource[] }
-export type SpeakerSource = "off" | "integrated" | "pyannote" | "sortformer" | "nemotron"
+export type SpeakerSource = "off" | "pyannote" | "sortformer" | "nemotron"
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.

@@ -24,9 +24,6 @@ for (const model of catalog.models.filter((item: { kind: string }) => item.kind 
     cases.push({ model: model.id, speaker, runtime: 'transcribe' });
   }
 }
-for (const model of ['moss-transcribe-diarize-q80', 'granite-speech-4.1-2b-plus-q5km', 'multitalker-parakeet-streaming-0.6b-v1-q80']) {
-  cases.push({ model, speaker: 'integrated', runtime: 'transcribe' });
-}
 for (const model of ['nemotron-speech-streaming-en-0.6b-q80', 'nemotron-3.5-asr-streaming-0.6b-q80', 'parakeet-tdt-0.6b-v3-q80']) {
   for (const speaker of ['sortformer', 'nemotron']) cases.push({ model, speaker, runtime: 'nemo' });
 }

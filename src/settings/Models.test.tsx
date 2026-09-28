@@ -19,7 +19,7 @@ import catalog from "../../crates/models/catalog.json";
 
 const stream = "parakeet-unified-en-0.6b-q80";
 const offline = "moss-transcribe-diarize-q80";
-const integratedModels = [
+const catalogModels = [
   offline,
   "granite-speech-4.1-2b-plus-q5km",
   "multitalker-parakeet-streaming-0.6b-v1-q80",
@@ -33,10 +33,7 @@ const model = (id: string, name: string): ModelStatus => ({
   description: "",
   assessment: null,
   speaker_preferences: {
-    after_stop:
-      id === offline
-        ? ["integrated", "nemotron", "pyannote"]
-        : ["nemotron", "pyannote"],
+    after_stop: ["nemotron", "pyannote"],
     during_recording: ["nemotron"],
   },
   recommended: false,
@@ -66,16 +63,12 @@ function TestModels(props: Omit<ComponentProps<typeof Models>, "defaults">) {
 }
 function resolve(config: RecognitionConfig): ExecutionSpec {
   if (
-    (config.asr_model === offline || config.asr_model === integratedModels[1]) &&
+    (config.asr_model === offline || config.asr_model === catalogModels[1]) &&
     config.processing_mode === "during_recording"
   )
     throw "MOSS requires After Stop";
-  if (config.speaker_source === "integrated" && !integratedModels.includes(config.asr_model))
-    throw "No integrated labels";
   if (
-    (config.speaker_source === "pyannote" ||
-      config.speaker_source === "off" ||
-      config.speaker_source === "integrated") &&
+    (config.speaker_source === "pyannote" || config.speaker_source === "off") &&
     config.speaker_processing_mode === "during_recording"
   )
     throw "No live speaker analysis";
@@ -160,13 +153,13 @@ async function ready() {
 }
 
 describe("catalog speaker defaults", () => {
-  for (const id of integratedModels) {
+  for (const id of catalogModels) {
     const entry = catalog.models.find((item) => item.id === id)!;
     const selected: ModelStatus = {
       ...model(id, entry.name),
       speaker_preferences: entry.speaker_preferences as ModelStatus["speaker_preferences"],
     };
-    test(`${id} selects Nemotron and permits an integrated override`, async () => {
+    test(`${id} selects Nemotron and offers no transcription model labels`, async () => {
       const { user, tauri } = open({}, settings, [models[0], selected]);
       await ready();
       await user.click(screen.getByRole("radio", { name: entry.name }));
@@ -174,11 +167,12 @@ describe("catalog speaker defaults", () => {
       const saved = () => tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
       expect((saved().slice(-1)[0]?.args.config as RecognitionConfig).speaker_source).toBe("nemotron");
       await user.click(screen.getByText("Advanced options"));
-      await user.selectOptions(screen.getByLabelText("Speaker model override"), "integrated");
-      await ready();
-      expect((saved().slice(-1)[0]?.args.config as RecognitionConfig).speaker_source).toBe("integrated");
+      const override = screen.getByLabelText("Speaker model override") as HTMLSelectElement;
+      expect([...override.options].map((option) => option.textContent)).not.toContain(
+        "Transcription model labels",
+      );
     });
-    for (const source of ["integrated", "pyannote", "sortformer", "nemotron", "off"] as const) {
+    for (const source of ["pyannote", "sortformer", "nemotron", "off"] as const) {
       test(`${id} preserves saved ${source} choices`, async () => {
         const { user, tauri } = open({}, {
           ...settings,
@@ -233,7 +227,7 @@ describe("recognition defaults", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].args.config).toEqual({
       asr_model: offline,
-      speaker_source: "integrated",
+      speaker_source: "nemotron",
       processing_mode: "after_stop",
       speaker_processing_mode: "after_stop",
       speaker_count: null,
@@ -451,7 +445,7 @@ test("installed artifacts show Models ready instead of a download size", async (
 test("completed model downloads clear the pending defaults notice", async () => {
   const pending: RecognitionConfig = {
     asr_model: offline,
-    speaker_source: "integrated",
+    speaker_source: "nemotron",
     processing_mode: "after_stop",
     speaker_processing_mode: "after_stop",
     speaker_count: null,
@@ -495,7 +489,7 @@ test("completed model downloads clear the pending defaults notice", async () => 
   update({
     ...settings,
     asr_model: offline,
-    speaker_source: "integrated",
+    speaker_source: "nemotron",
     live_transcript: false,
     pending_recognition: null,
   }, models);

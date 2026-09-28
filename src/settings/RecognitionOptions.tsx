@@ -13,7 +13,6 @@ import { RecognitionModelPicker } from "./RecognitionModelPicker";
 
 const sources: [SpeakerSource, string][] = [
   ["off", "Off"],
-  ["integrated", "Transcription model labels"],
   ["pyannote", "pyannote / WeSpeaker"],
   ["sortformer", "Sortformer"],
   ["nemotron", "Nemotron 3"],
@@ -346,11 +345,6 @@ export function RecognitionOptions({
                 ` · Up to ${current.capabilities.maximum_speakers} speakers`}
             </p>
           )}
-          {draft.speaker_source === "integrated" && (
-            <p className="text-[0.85rem] text-label-secondary">
-              Speaker labels can change between processing sections.
-            </p>
-          )}
           <details onToggle={(e) => setAdvanced(e.currentTarget.open)}>
             <summary className="cursor-pointer text-[0.85rem]">
               Advanced options
@@ -517,13 +511,6 @@ export function RecognitionOptions({
                       Speaker limit:{" "}
                       {current.capabilities.maximum_speakers ?? "Not specified"}
                     </p>
-                    {draft.speaker_source === "integrated" && (
-                      <p>
-                        Speaker labels can change between processing sections.
-                        Labels from different sections do not identify the same
-                        voice.
-                      </p>
-                    )}
                     <details>
                       <summary>Downloaded artifact details</summary>
                       {current.artifacts.map((a) => (

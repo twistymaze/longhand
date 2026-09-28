@@ -1,7 +1,7 @@
 mod common;
 use asr::{
-    AsrError, AsrSegment, Finality, RecognitionId, RecognitionOutput, RecognitionRequest,
-    RecognitionSegment, Recognizer, SampleRange, SpeakerKey, TimingPrecision, WindowText,
+    AsrError, AsrSegment, Finality, Recognizer, SampleRange, SpeakerKey, TimingPrecision,
+    WindowText,
 };
 use models::recognition::{ExecutionSpec, RecognitionConfig, SpeakerSource, resolve};
 use pipeline::{EndpointProblem, EngineProvider, SummaryEndpoint, Unattended, checkpoint};
@@ -13,9 +13,8 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-thread_local! {
-    static NORMALIZED_INPUTS: std::cell::RefCell<Vec<SampleRange>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+
+const MODEL: &str = "whisper-large-v3-turbo-q5km";
 
 struct Fake {
     calls: Arc<AtomicUsize>,
@@ -23,7 +22,7 @@ struct Fake {
 }
 impl Recognizer for Fake {
     fn model_id(&self) -> &str {
-        "moss-transcribe-diarize-q80"
+        MODEL
     }
     fn native_token_timestamps(&self) -> bool {
         self.native_tokens
@@ -62,43 +61,6 @@ impl Recognizer for Fake {
                 end_ms: pcm.len() as u64 / 16,
                 text: "Hello there".into(),
             }],
-        })
-    }
-    fn transcribe_normalized(
-        &mut self,
-        pcm: &[f32],
-        r: &RecognitionRequest,
-    ) -> Result<RecognitionOutput, AsrError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        let coverage = SampleRange {
-            start: r.start_sample,
-            end: r.start_sample + pcm.len() as u64,
-        };
-        NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().push(coverage));
-        Ok(RecognitionOutput {
-            scope: r.scope.clone(),
-            revision: 0,
-            coverage,
-            text: "Hello there".into(),
-            segments: vec![RecognitionSegment {
-                id: RecognitionId {
-                    scope: r.scope.clone(),
-                    input_start_sample: r.start_sample,
-                    ordinal: 0,
-                },
-                range: coverage,
-                timing: TimingPrecision::NativeSegment,
-                text: "Hello there".into(),
-                speaker: Some(SpeakerKey {
-                    scope: r.scope.clone(),
-                    input_start_sample: r.start_sample,
-                    local_id: 1,
-                }),
-                revision: 0,
-                text_finality: Finality::Final,
-                speaker_finality: Finality::Final,
-            }],
-            speaker_turns: vec![],
         })
     }
 }
@@ -162,7 +124,7 @@ impl EngineProvider for Provider {
 }
 fn spec(source: SpeakerSource) -> ExecutionSpec {
     resolve(&RecognitionConfig {
-        asr_model: "moss-transcribe-diarize-q80".into(),
+        asr_model: MODEL.into(),
         speaker_source: source,
         ..Default::default()
     })
@@ -231,10 +193,42 @@ fn setup_audio(
     .unwrap();
     (temp, store, spec, segments)
 }
+/// Save one completed speaker turn for each segment. The tests then need no
+/// speaker model.
+fn seed_speakers(
+    store: &pipeline::SharedStore,
+    segments: &[session_core::Segment],
+    epoch: u64,
+) -> Vec<asr::SpeakerTurn> {
+    let turns = segments
+        .iter()
+        .map(|segment| asr::SpeakerTurn {
+            range: SampleRange {
+                start: segment.offset_ms * 16,
+                end: (segment.offset_ms + segment.duration_ms) * 16,
+            },
+            timing: TimingPrecision::NativeSegment,
+            speaker: SpeakerKey {
+                scope: asr::SpeakerScope {
+                    generation: "speaker-analysis".into(),
+                    epoch,
+                },
+                input_start_sample: 0,
+                local_id: 1,
+            },
+            finality: Finality::Final,
+        })
+        .collect::<Vec<_>>();
+    pipeline::recognition::durable::persist_speakers(store, "route", &turns).unwrap();
+    turns
+}
 #[test]
-fn off_and_integrated_execute_without_separate_weights() {
-    for source in [SpeakerSource::Off, SpeakerSource::Integrated] {
+fn off_and_separate_speakers_execute_without_speaker_inference() {
+    for source in [SpeakerSource::Off, SpeakerSource::Nemotron] {
         let (temp, store, spec, segments) = setup(source);
+        if source == SpeakerSource::Nemotron {
+            seed_speakers(&store, &segments, 0);
+        }
         let provider = Provider {
             calls: Arc::new(AtomicUsize::new(0)),
             loads: Arc::new(AtomicUsize::new(0)),
@@ -292,7 +286,7 @@ fn off_and_integrated_execute_without_separate_weights() {
             .unwrap();
         assert_eq!(
             result.rows.iter().any(|r| r.speaker.is_some()),
-            source == SpeakerSource::Integrated
+            source == SpeakerSource::Nemotron
         );
     }
 }
@@ -358,54 +352,6 @@ fn off_reuses_successful_live_text_without_asr() {
         provider.loads.load(Ordering::SeqCst),
         0,
         "completed live text must not reload the model"
-    );
-}
-#[test]
-fn integrated_after_stop_runs_requested_native_labels_after_live_preview() {
-    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
-    let end = segments[0].duration_ms;
-    pipeline::live::save_part(
-        &store,
-        "route",
-        0,
-        0,
-        &asr::LivePart {
-            start_ms: 0,
-            end_ms: end,
-            words: vec![asr::LiveWord {
-                start_ms: 0,
-                end_ms: end,
-                text: "Preview only".into(),
-            }],
-        },
-    )
-    .unwrap();
-    let provider = Provider {
-        calls: Arc::new(AtomicUsize::new(0)),
-        loads: Arc::new(AtomicUsize::new(0)),
-        fail_speaker: false,
-        native_tokens: false,
-    };
-    pipeline::recognition::execute(
-        &store,
-        "route",
-        &temp.path().join("route"),
-        &segments,
-        &spec,
-        &provider,
-        Stage::Transcribe,
-        &Unattended,
-        &mut |_| {},
-    )
-    .unwrap();
-    assert!(provider.calls.load(Ordering::SeqCst) > 0);
-    assert!(
-        pipeline::recognition::saved_result(&store, "route")
-            .unwrap()
-            .unwrap()
-            .rows
-            .iter()
-            .all(|r| r.speaker.is_some())
     );
 }
 #[tokio::test]
@@ -563,8 +509,8 @@ fn native_token_route_keeps_context_and_joins_alternating_speakers() {
 }
 
 #[test]
-fn changed_preprocessing_invalidates_completed_native_windows() {
-    let (temp, store, mut spec, segments) = setup(SpeakerSource::Integrated);
+fn changed_preprocessing_invalidates_completed_transcription() {
+    let (temp, store, mut spec, segments) = setup(SpeakerSource::Off);
     let provider = Provider {
         calls: Arc::new(AtomicUsize::new(0)),
         loads: Arc::new(AtomicUsize::new(0)),
@@ -594,7 +540,7 @@ fn changed_preprocessing_invalidates_completed_native_windows() {
     assert_eq!(
         provider.loads.load(Ordering::SeqCst),
         loads,
-        "cached native output must not reload the model"
+        "completed text must not reload the model"
     );
     spec.preprocessing_revision.push_str("-changed");
     run(&spec);
@@ -603,7 +549,7 @@ fn changed_preprocessing_invalidates_completed_native_windows() {
 
 #[test]
 fn join_writes_portable_output_referenced_by_the_manifest() {
-    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
     let provider = Provider {
         calls: Arc::new(AtomicUsize::new(0)),
         loads: Arc::new(AtomicUsize::new(0)),
@@ -675,7 +621,7 @@ fn unstamped_live_text_requires_an_explicit_retranscription_choice() {
 
 #[test]
 fn audio_changes_and_external_transcript_edits_block_stale_reuse() {
-    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
     let provider = Provider {
         calls: Arc::new(AtomicUsize::new(0)),
         loads: Arc::new(AtomicUsize::new(0)),
@@ -789,7 +735,7 @@ fn current_count_edit_retains_timed_asr_but_invalidates_speakers() {
 
 #[test]
 fn changed_archive_cannot_reuse_a_stale_processing_file() {
-    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
     let dir = temp.path().join("route");
     pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec).unwrap();
     use std::io::Write;
@@ -807,7 +753,8 @@ fn changed_archive_cannot_reuse_a_stale_processing_file() {
 #[test]
 fn portable_reuse_requires_unchanged_transcript_and_suitable_timing() {
     use session_core::recognition::{ARTIFACT_FILE, Reuse, read_artifact, write_artifact};
-    let (temp, store, spec, segments) = setup(SpeakerSource::Integrated);
+    let (temp, store, spec, segments) = setup(SpeakerSource::Nemotron);
+    seed_speakers(&store, &segments, 0);
     let dir = temp.path().join("route");
     let provider = Provider {
         calls: Arc::new(AtomicUsize::new(0)),
@@ -1138,11 +1085,36 @@ struct SavedResume {
     provider: Provider,
     original: pipeline::recognition::RouteResult,
 }
+impl SavedResume {
+    /// The number of model calls that the appended audio needs.
+    fn appended_windows(&self) -> usize {
+        pipeline::transcribe::plan_segment(&self.dir, &self.segments[1], &[])
+            .unwrap()
+            .windows
+            .len()
+    }
+    /// Save the completed speaker analysis of the resumed note. The appended
+    /// audio gets its own speaker scope, as a new analysis gives.
+    fn seed_appended_speakers(&self) {
+        pipeline::recognition::durable::prepare(
+            &self.store,
+            "route",
+            &self.dir,
+            &self.segments,
+            &self.spec,
+        )
+        .unwrap();
+        let mut turns = self.original.speakers.clone();
+        turns.extend(seed_speakers(&self.store, &self.segments[1..], 1));
+        pipeline::recognition::durable::persist_speakers(&self.store, "route", &turns).unwrap();
+    }
+}
 fn saved_resume_case(tail: &[f32]) -> SavedResume {
     saved_resume_audio(&common::speech(), tail)
 }
 fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
-    let (temp, store, spec, mut segments) = setup_audio(SpeakerSource::Integrated, old.to_vec());
+    let (temp, store, spec, mut segments) = setup_audio(SpeakerSource::Nemotron, old.to_vec());
+    let saved_turns = seed_speakers(&store, &segments, 0);
     let dir = temp.path().join("route");
     let home = temp.path().join("saved");
     let provider = Provider {
@@ -1213,6 +1185,7 @@ fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
     segments.push(appended.clone());
     common::stop_session(&store, "route", 200);
     pipeline::assemble::run(&store, "route", &dir, &segments, Some(&home), &Unattended).unwrap();
+    assert_eq!(saved_turns, original.speakers);
     SavedResume {
         _temp: temp,
         store,
@@ -1228,6 +1201,7 @@ fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
 #[test]
 fn resume_reuses_verified_saved_prefix_and_recognizes_only_appended_audio() {
     let case = saved_resume_case(&common::speech());
+    case.seed_appended_speakers();
     let SavedResume {
         store,
         spec,
@@ -1238,7 +1212,7 @@ fn resume_reuses_verified_saved_prefix_and_recognizes_only_appended_audio() {
         ..
     } = &case;
     let appended = &segments[1];
-    NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+    provider.calls.store(0, Ordering::SeqCst);
     pipeline::recognition::execute(
         store,
         "route",
@@ -1251,13 +1225,14 @@ fn resume_reuses_verified_saved_prefix_and_recognizes_only_appended_audio() {
         &mut |_| {},
     )
     .unwrap();
-    let inputs = NORMALIZED_INPUTS.with(|inputs| inputs.borrow().clone());
-    assert!(!inputs.is_empty(), "the new recording must be recognized");
     assert!(
-        inputs
-            .iter()
-            .all(|range| range.start >= appended.offset_ms * 16),
-        "completed saved audio was recognized again: {inputs:?}",
+        case.appended_windows() > 0,
+        "the new recording must be recognized"
+    );
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        case.appended_windows(),
+        "completed saved audio was recognized again",
     );
     let combined = pipeline::recognition::saved_result(store, "route")
         .unwrap()
@@ -1349,7 +1324,8 @@ fn resume_reuses_verified_saved_prefix_and_recognizes_only_appended_audio() {
 fn resumed_silent_tail_preserves_saved_words_without_model_inference() {
     let silence = vec![0.0; 16000 * 5];
     let case = saved_resume_case(&silence);
-    NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+    case.seed_appended_speakers();
+    case.provider.calls.store(0, Ordering::SeqCst);
     for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
         pipeline::recognition::execute(
             &case.store,
@@ -1364,7 +1340,7 @@ fn resumed_silent_tail_preserves_saved_words_without_model_inference() {
         )
         .unwrap();
     }
-    assert!(NORMALIZED_INPUTS.with(|inputs| inputs.borrow().is_empty()));
+    assert_eq!(case.provider.calls.load(Ordering::SeqCst), 0);
     let result = pipeline::recognition::saved_result(&case.store, "route")
         .unwrap()
         .unwrap();
@@ -1389,7 +1365,7 @@ fn completed_nemo_resume(separate: bool) {
     let mut case = saved_resume_case(&common::speech());
     case.spec = resolve(&RecognitionConfig {
         asr_model: if separate {
-            "granite-speech-4.1-2b-plus-q5km"
+            MODEL
         } else {
             "nemotron-speech-streaming-en-0.6b-q80"
         }
@@ -1412,6 +1388,9 @@ fn completed_nemo_resume(separate: bool) {
     // This synthetic native result uses the same neutral saved-artifact contract.
     let mut doc = session_core::generation::manifest(&case.home).unwrap();
     let mut blocks = vec![];
+    if separate {
+        case.original.speakers.clear();
+    }
     let mut header = read_artifact(
         &case.home.join("recognition.jsonl"),
         doc.recognition_artifact.as_ref().unwrap(),
@@ -1594,6 +1573,7 @@ fn resumed_recognition_retry_retains_prefix_after_cancellation() {
         }
     }
     let case = saved_resume_case(&common::speech());
+    case.seed_appended_speakers();
     let error = pipeline::recognition::execute(
         &case.store,
         "route",
@@ -1607,7 +1587,7 @@ fn resumed_recognition_retry_retains_prefix_after_cancellation() {
     )
     .unwrap_err();
     assert!(matches!(error, pipeline::StageError::Cancelled));
-    NORMALIZED_INPUTS.with(|inputs| inputs.borrow_mut().clear());
+    case.provider.calls.store(0, Ordering::SeqCst);
     pipeline::recognition::execute(
         &case.store,
         "route",
@@ -1621,7 +1601,7 @@ fn resumed_recognition_retry_retains_prefix_after_cancellation() {
     )
     .unwrap();
     assert!(
-        NORMALIZED_INPUTS.with(|inputs| !inputs.borrow().is_empty()),
+        case.provider.calls.load(Ordering::SeqCst) > 0,
         "retry must infer new spoken audio"
     );
     for stage in [Stage::Join, Stage::Verify] {
@@ -1638,12 +1618,11 @@ fn resumed_recognition_retry_retains_prefix_after_cancellation() {
         )
         .unwrap();
     }
-    assert!(NORMALIZED_INPUTS.with(|inputs| {
-        inputs
-            .borrow()
-            .iter()
-            .all(|range| range.start >= case.segments[1].offset_ms * 16)
-    }));
+    assert_eq!(
+        case.provider.calls.load(Ordering::SeqCst),
+        case.appended_windows(),
+        "retry recognized completed saved audio again"
+    );
     let result = pipeline::recognition::saved_result(&case.store, "route")
         .unwrap()
         .unwrap();
@@ -1662,6 +1641,7 @@ fn review_merged_independent_single_scope_results_explain_speaker_uncertainty() 
     let speech = common::speech();
     let clip = &speech[..16000 * 3];
     let case = saved_resume_audio(clip, clip);
+    case.seed_appended_speakers();
     assert!(
         pipeline::recognition::found_speakers(&case.original).is_some(),
         "the original fixture must have one speaker namespace"
