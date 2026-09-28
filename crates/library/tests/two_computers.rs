@@ -354,6 +354,62 @@ fn a_root_that_goes_missing_leaves_every_row() {
 }
 
 #[test]
+fn transcribe_again_reads_the_speaker_count_that_another_computer_wrote() {
+    use models::recognition::{RecognitionConfig, SpeakerSource};
+    use pipeline::reprocess::{Guards, Readiness, Refusal};
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    b.sync(&root, Instant::now());
+    let settings = RecognitionConfig {
+        speaker_source: SpeakerSource::Sortformer,
+        ..Default::default()
+    };
+    let ready = |_: &models::recognition::ExecutionSpec| Readiness::Ready;
+    let check = |b: &Computer| {
+        pipeline::reprocess::check(
+            &b.store.lock().unwrap(),
+            "n1",
+            Guards::default(),
+            &settings,
+            &ready,
+        )
+    };
+    let model = check(&b).unwrap().config.asr_model;
+
+    // A sets a count above the Sortformer limit while the dialog on B is open.
+    edit_doc(&folder, |doc| {
+        doc.speaker_count = Some(session_core::SpeakerCount::Exact(6));
+    });
+    assert!(check(&b).is_ok(), "the check does not read the folder");
+    let refused = pipeline::reprocess::queue(
+        &mut b.store.lock().unwrap(),
+        "n1",
+        Guards::default(),
+        &settings,
+        &model,
+        &ready,
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused,
+        Refusal {
+            message: "This note has 6 speakers. Sortformer supports up to 4. Choose another \
+                      speaker source or model in Settings."
+                .into(),
+            in_settings: true,
+        }
+    );
+    assert_eq!(b.state("n1"), SessionState::Saved);
+    assert_eq!(
+        b.record("n1").unwrap().speaker_count,
+        Some(session_core::SpeakerCount::Exact(6))
+    );
+    assert!(b.store.lock().unwrap().queue().unwrap().is_empty());
+}
+
+#[test]
 fn a_claimed_row_or_a_row_that_is_not_saved_follows_a_rename_but_is_never_refreshed_or_forgotten() {
     let (dir, root) = shared_root();
     let a = computer();

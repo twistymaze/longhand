@@ -7,6 +7,7 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
+use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SummaryEndpoint,
 };
@@ -19,7 +20,7 @@ use tauri_specta::Event as _;
 use crate::managers::capture::CaptureManager;
 use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
-use crate::managers::models::ModelsManager;
+use crate::managers::models::{ModelState, ModelsManager};
 use crate::managers::settings;
 
 /// What processing is doing, for the surface.
@@ -473,10 +474,28 @@ fn notify_saved(app: &AppHandle, path: &std::path::Path) {
     }
 }
 
+/// The readiness of a run whose artifacts `missing` are not on disk. An
+/// artifact that is not downloading comes first: the user must start its
+/// download in Settings.
+fn readiness_of(missing: Vec<String>, downloading: impl Fn(&str) -> bool) -> Readiness {
+    match missing.iter().find(|id| !downloading(id)) {
+        Some(id) => Readiness::Missing {
+            artifact: id.clone(),
+        },
+        None => match missing.into_iter().next() {
+            Some(artifact) => Readiness::Downloading { artifact },
+            None => Readiness::Ready,
+        },
+    }
+}
+
 pub struct ProcessingManager {
     runner: Arc<Runner>,
     live: Arc<LiveManager>,
     app: AppHandle,
+    /// The Transcribe Again check reads if the artifacts of a run are on
+    /// disk (KTD2).
+    models: Arc<ModelsManager>,
     store: pipeline::SharedStore,
     liveness: session_core::jobs::Liveness,
     library: std::sync::Mutex<LibrarySlot>,
@@ -516,7 +535,7 @@ impl ProcessingManager {
             working_root: capture.working_root().to_path_buf(),
             engines: Box::new(Models {
                 app: app.clone(),
-                models,
+                models: Arc::clone(&models),
                 secrets,
             }),
             suspended: Box::new(move || suspended.is_capturing() || draining.busy()),
@@ -549,6 +568,7 @@ impl ProcessingManager {
             runner,
             live: Arc::clone(live),
             app: app.clone(),
+            models,
             store: capture.shared_store(),
             liveness,
             library: std::sync::Mutex::default(),
@@ -739,32 +759,39 @@ impl ProcessingManager {
             .map_err(|e| e.to_string())
     }
 
-    /// Queue a saved session to be transcribed again with `model` (R15).
-    pub fn transcribe_again(&self, session_id: &str, model: &str) -> Result<(), String> {
+    /// Check if Transcribe Again can start on a saved note now, with the
+    /// recognition settings (KTD1, KTD2). Returns the transcription model
+    /// of the run.
+    pub fn check_transcribe_again(&self, session_id: &str) -> Result<String, Refusal> {
+        let settings = settings::get_settings(&self.app).recognition_config();
         self.runner
-            .transcribe_again(session_id, model)
-            .map_err(|e| e.to_string())
+            .check_transcribe_again(session_id, &settings, &|spec| self.readiness(spec))
+            .map(|spec| spec.config.asr_model)
     }
 
-    pub fn preview_reprocess(
-        &self,
-        id: &str,
-        config: &models::recognition::RecognitionConfig,
-    ) -> Result<pipeline::reprocess::Preview, String> {
+    /// Queue a saved note to be transcribed again with the recognition
+    /// settings (R15, KTD2). `model_id` is the model that the user
+    /// confirmed.
+    pub fn transcribe_again(&self, session_id: &str, model_id: &str) -> Result<(), Refusal> {
+        let settings = settings::get_settings(&self.app).recognition_config();
         self.runner
-            .preview_reprocess(id, config)
-            .map_err(|e| e.to_string())
+            .transcribe_again(session_id, &settings, model_id, &|spec| {
+                self.readiness(spec)
+            })
     }
 
-    pub fn reprocess(
-        &self,
-        id: &str,
-        preview: &pipeline::reprocess::Preview,
-        allow_transcription: bool,
-    ) -> Result<(), String> {
-        self.runner
-            .reprocess(id, preview, allow_transcription)
-            .map_err(|e| e.to_string())
+    /// Whether the artifacts of `spec` are on disk, or downloading.
+    fn readiness(&self, spec: &models::recognition::ExecutionSpec) -> Readiness {
+        let missing = self.models.missing_spec(spec);
+        if missing.is_empty() {
+            return Readiness::Ready;
+        }
+        let statuses = self.models.statuses(&spec.config.asr_model);
+        readiness_of(missing, |id| {
+            statuses
+                .iter()
+                .any(|s| s.id == id && s.state == ModelState::Downloading)
+        })
     }
 
     /// Summarize a saved session again, replacing its `summary.md` (AE17).
@@ -802,6 +829,24 @@ mod tests {
         let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
         assert!(removed.is_empty());
         assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn an_artifact_that_is_not_downloading_is_missing_before_one_that_is() {
+        let downloading = |id: &str| id == "a";
+        assert_eq!(
+            readiness_of(vec!["a".into(), "b".into()], downloading),
+            Readiness::Missing {
+                artifact: "b".into()
+            }
+        );
+        assert_eq!(
+            readiness_of(vec!["a".into()], downloading),
+            Readiness::Downloading {
+                artifact: "a".into()
+            }
+        );
+        assert_eq!(readiness_of(vec![], downloading), Readiness::Ready);
     }
 
     #[test]

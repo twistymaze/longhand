@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::diarize::Speakers;
 use crate::folder_rename::{self, FolderRename};
 use crate::live::{EngineAccess, EngineSlot};
+use crate::reprocess::{self, Guards, Readiness, Refusal};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
@@ -416,117 +417,55 @@ impl Runner {
         .map_err(|e| StageError::Failed(format!("the summary stopped unexpectedly: {e}")))?
     }
 
-    /// The user's Transcribe Again on a saved session (R15, KTD14): queue it
-    /// for a full recognition pass with `model`, the model selected now.
-    /// Refused while the session's summary is regenerated or the session is
-    /// deleted, while a capture is active, and when the session's folder
-    /// does not hold every segment's audio.
-    pub fn transcribe_again(&self, session_id: &str, model: &str) -> Result<(), StageError> {
-        let regenerating = self.claims.busy(session_id);
-        let capture_active = (self.env.suspended)();
-        {
-            let mut store = lock(&self.env.store);
-            // The row follows its folder first (KTD3): the run keeps the
-            // notes and the title that another computer wrote, and decodes
-            // the segments that the folder holds.
-            if !regenerating {
-                crate::follow::follow_folder(&mut store, session_id, false)?;
-            }
-            let audio_intact = save::home_intact(&store, session_id)?;
-            let refusal = if regenerating {
-                Some("The summary of this note is being made again. Try again when it is done.")
-            } else if capture_active {
-                Some("A recording is in progress. Try again after it stops.")
-            } else if !audio_intact {
-                Some(
-                    "The note's folder does not have all of its audio, so it can't be transcribed again.",
-                )
-            } else {
-                None
-            };
-            if let Some(refusal) = refusal {
-                return Err(StageError::Failed(refusal.into()));
-            }
-            store.transcribe_again(
-                session_id,
-                model,
-                &Event::UserTranscribeAgain {
-                    at: now(),
-                    audio_intact,
-                    capture_active,
-                    regenerating,
-                },
-            )?;
-            if let Some(home) = store.session(session_id)?.and_then(|r| r.home_path) {
-                let hash = session_core::folder::fingerprint(&std::fs::read(
-                    std::path::Path::new(&home).join("session.md"),
-                )?);
-                store.set_result_state(
-                    session_id,
-                    "replacement-base",
-                    &serde_json::to_value((home, hash))?,
-                )?;
-            }
-        }
-        log::info!("{session_id} is queued to be transcribed again with '{model}'");
-        self.wake();
-        Ok(())
-    }
-
-    pub fn preview_reprocess(
+    /// Check if the user's Transcribe Again can start on a saved note now
+    /// (KTD2), and give the execution of the run: `settings` with After
+    /// Stop timing and the speaker count of the note. This is read-only.
+    /// `ready` tells if the artifacts of the run are on disk.
+    pub fn check_transcribe_again(
         &self,
         session_id: &str,
-        config: &models::recognition::RecognitionConfig,
-    ) -> Result<crate::reprocess::Preview, StageError> {
-        let store = lock(&self.env.store);
-        let home = store
-            .session(session_id)?
-            .and_then(|r| r.home_path)
-            .ok_or_else(|| StageError::Failed("the note has no saved folder".into()))?;
-        crate::reprocess::preview(std::path::Path::new(&home), config)
+        settings: &models::recognition::RecognitionConfig,
+        ready: &dyn Fn(&models::recognition::ExecutionSpec) -> Readiness,
+    ) -> Result<models::recognition::ExecutionSpec, Refusal> {
+        let guards = self.guards(session_id);
+        reprocess::check(&lock(&self.env.store), session_id, guards, settings, ready)
     }
 
-    pub fn reprocess(
+    /// The user's Transcribe Again on a saved note (R15, KTD14): queue it
+    /// for a run with the execution that [`Runner::check_transcribe_again`]
+    /// gives. Every check runs again after the row follows its folder.
+    /// Refused when the settings no longer select `model_id`, the model that
+    /// the user confirmed.
+    pub fn transcribe_again(
         &self,
         session_id: &str,
-        preview: &crate::reprocess::Preview,
-        allow_transcription: bool,
-    ) -> Result<(), StageError> {
-        let mut store = lock(&self.env.store);
-        let record = store
-            .session(session_id)?
-            .ok_or_else(|| StageError::Failed("the note is absent".into()))?;
-        let home = record
-            .home_path
-            .ok_or_else(|| StageError::Failed("the note has no saved folder".into()))?;
-        let fresh =
-            crate::reprocess::preview(std::path::Path::new(&home), &preview.execution.config)?;
-        if fresh.manifest != preview.manifest || fresh.execution != preview.execution {
-            return Err(StageError::Failed(
-                "the note or model configuration changed; review the replacement again".into(),
-            ));
-        }
-        if fresh.requires_transcription && !allow_transcription {
-            return Err(StageError::Failed(fresh.explanation));
-        }
-        let capture_active = (self.env.suspended)();
-        let regenerating = self.claims.busy(session_id);
-        let audio_intact = save::home_intact(&store, session_id)?;
-        store.begin_reprocess(
+        settings: &models::recognition::RecognitionConfig,
+        model_id: &str,
+        ready: &dyn Fn(&models::recognition::ExecutionSpec) -> Readiness,
+    ) -> Result<(), Refusal> {
+        let guards = self.guards(session_id);
+        let spec = reprocess::queue(
+            &mut lock(&self.env.store),
             session_id,
-            &fresh.execution.config.asr_model,
-            &Event::UserTranscribeAgain {
-                at: now(),
-                audio_intact,
-                capture_active,
-                regenerating,
-            },
-            Some(&serde_json::to_value(&fresh.execution)?),
-            Some(&serde_json::to_value((home, fresh.manifest))?),
+            guards,
+            settings,
+            model_id,
+            ready,
         )?;
-        drop(store);
+        log::info!(
+            "{session_id} is queued to be transcribed again with '{}'",
+            spec.config.asr_model
+        );
         self.wake();
         Ok(())
+    }
+
+    /// The state outside the store that refuses a Transcribe Again run.
+    fn guards(&self, session_id: &str) -> Guards {
+        Guards {
+            regenerating: self.claims.busy(session_id),
+            capture_active: (self.env.suspended)(),
+        }
     }
 
     /// True while `session_id` has its summary regenerated or waits to.
