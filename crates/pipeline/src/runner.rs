@@ -912,6 +912,14 @@ impl Runner {
         cancel: CancellationToken,
         attempt: &mut crate::recognition::durable::Attempt,
     ) -> Result<(), StageError> {
+        let control = StageControl {
+            cancel,
+            env: Arc::clone(&self.env),
+            session_id: id.to_string(),
+            power: ActivePower::new(self.power.clone()),
+        };
+        // Preparation reads and hashes audio before the stage starts.
+        control.power.resume();
         let segments = lock(&self.env.store).segments(id)?;
         let mut prepared = None;
         if matches!(
@@ -988,14 +996,7 @@ impl Runner {
         let env = Arc::clone(&self.env);
         let engine = Arc::clone(&self.engine);
         let (id_owned, model) = (id.to_string(), model.to_string());
-        let power = self.power.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let control = StageControl {
-                cancel,
-                env: Arc::clone(&env),
-                session_id: id_owned.clone(),
-                power: ActivePower::new(power),
-            };
             control.proceed()?;
             execute(
                 &env,

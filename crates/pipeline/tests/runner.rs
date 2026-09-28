@@ -5210,6 +5210,41 @@ fn observed_power() -> (power::ProcessingPower, Arc<AtomicUsize>, Arc<AtomicUsiz
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn processing_power_covers_stage_preparation_and_start() {
+    let r = rig().await;
+    let (power, held, _) = observed_power();
+    let active = Arc::clone(&held);
+    let runner = Runner::with_power(
+        Environment {
+            store: Arc::clone(&r.store),
+            working_root: r.root.clone(),
+            engines: Box::new(Provider(Arc::clone(&r.script))),
+            suspended: Box::new(|| false),
+            events: Box::new(move |event| {
+                if matches!(event, RunnerEvent::StageStarted { .. }) {
+                    assert_eq!(
+                        active.load(Ordering::SeqCst),
+                        1,
+                        "protection starts before stage preparation and notification"
+                    );
+                }
+            }),
+        },
+        power,
+    );
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(held.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn processing_power_releases_during_capture_and_after_summary_regeneration() {
     let r = rig().await;
     let (power, held, acquired) = observed_power();
