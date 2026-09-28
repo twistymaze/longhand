@@ -153,7 +153,7 @@ jobs:
           $expected = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
           if (-not (Test-Path $expected)) { throw "MSVC linker is absent: $expected" }
           $expected = (Get-Item -LiteralPath $expected).FullName
-          $actual = (Get-Command link.exe -CommandType Application -ErrorAction Stop).Source
+          $actual = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
           if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Wrong linker selected: $actual; expected $expected"
           }
