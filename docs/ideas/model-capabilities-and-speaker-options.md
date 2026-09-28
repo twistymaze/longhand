@@ -11,7 +11,7 @@ related: [faster-diarization, alternative-diarization-architectures]
 
 ## Idea
 
-Show which models support live transcription and speaker labels, including label timing, speaker limits, languages, size, and published speed and accuracy assessments. Reuse Handy assessments with attribution. Let users set defaults and override them for one note without choosing runtimes.
+Show which models support live transcription and speaker labels, including label timing, speaker limits, languages, size, and published speed and accuracy assessments. Reuse Handy assessments with attribution. Let users set defaults without choosing runtimes. New Note starts immediately with those defaults. Changes to an existing note use explicit reprocessing.
 
 ## Current state
 

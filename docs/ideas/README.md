@@ -93,7 +93,7 @@ This folder is our own convention, not something compound engineering defines, s
 
 | Idea | Status | In short |
 |---|---|---|
-| [Model capabilities and speaker options](model-capabilities-and-speaker-options.md) | in-progress | Show live support, speaker limits, and published assessments; defaults and per-note choices |
+| [Model capabilities and speaker options](model-capabilities-and-speaker-options.md) | in-progress | Show live support, speaker limits, and published assessments; defaults and explicit reprocessing |
 | [Library and desktop UI polish](ui-polish.md) | in-progress | Stable note selection, keyboard zoom, login startup, and a shared vector mark |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 | [Clickable links in notes](clickable-links-in-notes.md) | open | Open a link in a note's markdown in the default browser |
