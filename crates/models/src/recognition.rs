@@ -128,7 +128,28 @@ fn validate_count(count: Option<SpeakerCount>, limit: Option<u32>) -> Result<(),
     }
     Ok(())
 }
+/// Select the tested runtime without changing the user's model family or timing.
 pub fn resolve(config: &RecognitionConfig) -> Result<ExecutionSpec, ResolveError> {
+    let combined_live = config.processing_mode == ProcessingMode::DuringRecording
+        && matches!(
+            config.speaker_source,
+            SpeakerSource::Sortformer | SpeakerSource::Nemotron
+        )
+        && matches!(
+            config.asr_model.as_str(),
+            "nemotron-speech-streaming-en-0.6b-q80" | "nemotron-3.5-asr-streaming-0.6b-q80"
+        );
+    resolve_for_runtime(
+        config,
+        if combined_live {
+            AsrRuntime::Nemo
+        } else {
+            AsrRuntime::Transcribe
+        },
+    )
+}
+
+fn resolve_transcribe(config: &RecognitionConfig) -> Result<ExecutionSpec, ResolveError> {
     let asr = crate::CATALOG
         .iter()
         .find(|m| m.id == config.asr_model)
@@ -257,7 +278,7 @@ pub fn resolve_for_runtime(
     config: &RecognitionConfig,
     runtime: AsrRuntime,
 ) -> Result<ExecutionSpec, ResolveError> {
-    let mut spec = resolve(config)?;
+    let mut spec = resolve_transcribe(config)?;
     if runtime == AsrRuntime::Transcribe {
         return Ok(spec);
     }
@@ -290,5 +311,7 @@ pub fn resolve_for_runtime(
             revision: NEMO_REVISION.into(),
         },
     );
+    spec.capabilities.live_attributed_text =
+        spec.capabilities.live_transcription && spec.capabilities.live_speaker_analysis;
     Ok(spec)
 }

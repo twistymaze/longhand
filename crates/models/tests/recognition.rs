@@ -145,3 +145,56 @@ fn native_after_stop_accepts_live_preview_but_does_not_claim_live_labels() {
     config.speaker_source = SpeakerSource::Sortformer;
     assert!(resolve(&config).is_ok());
 }
+
+#[test]
+fn live_nemotron_choices_select_the_combined_runtime_and_attributed_capability() {
+    for id in [
+        "nemotron-speech-streaming-en-0.6b-q80",
+        "nemotron-3.5-asr-streaming-0.6b-q80",
+    ] {
+        for speaker_source in [SpeakerSource::Sortformer, SpeakerSource::Nemotron] {
+            let config = RecognitionConfig {
+                asr_model: id.into(),
+                speaker_source,
+                processing_mode: ProcessingMode::DuringRecording,
+                speaker_processing_mode: ProcessingMode::DuringRecording,
+                ..Default::default()
+            };
+            let spec = resolve(&config).unwrap();
+            assert_eq!(spec.artifacts[0].format, "nemo-gguf");
+            assert!(spec.capabilities.live_attributed_text);
+            assert_eq!(spec.runtimes.len(), 1);
+            assert_eq!(spec.config, config);
+        }
+    }
+}
+
+#[test]
+fn explicit_transcribe_comparison_keeps_its_artifact_even_for_live_nemotron() {
+    use models::recognition::{AsrRuntime, resolve_for_runtime};
+    let config = RecognitionConfig {
+        asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+        speaker_source: SpeakerSource::Nemotron,
+        processing_mode: ProcessingMode::DuringRecording,
+        speaker_processing_mode: ProcessingMode::DuringRecording,
+        ..Default::default()
+    };
+    let spec = resolve_for_runtime(&config, AsrRuntime::Transcribe).unwrap();
+    assert_eq!(spec.artifacts[0].format, "transcribe-gguf");
+    assert!(!spec.capabilities.live_attributed_text);
+}
+
+#[test]
+fn live_nemotron_without_a_nemo_speaker_model_keeps_the_transcribe_route() {
+    for speaker_source in [SpeakerSource::Off, SpeakerSource::Pyannote] {
+        let config = RecognitionConfig {
+            asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+            speaker_source,
+            processing_mode: ProcessingMode::DuringRecording,
+            ..Default::default()
+        };
+        let spec = resolve(&config).unwrap();
+        assert_eq!(spec.artifacts[0].format, "transcribe-gguf");
+        assert!(!spec.capabilities.live_attributed_text);
+    }
+}

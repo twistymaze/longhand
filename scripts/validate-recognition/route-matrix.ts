@@ -48,7 +48,7 @@ let failures = 0;
 for (const item of cases) {
   const id = `${item.model}--${item.speaker}--${item.runtime}`;
   const started = performance.now();
-  const child = Bun.spawn([testBinary, '--ignored', '--nocapture'], {
+  const child = Bun.spawn([testBinary, '--exact', 'production_route_recording_excerpt', '--ignored', '--nocapture'], {
     cwd: root,
     env: {
       ...process.env,
