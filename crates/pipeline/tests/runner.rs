@@ -5225,3 +5225,266 @@ async fn processing_power_releases_after_failure_and_cancellation() {
         assert_eq!(held.load(Ordering::SeqCst), 0);
     }
 }
+
+fn staged_summary(
+    r: &Rig,
+    home: &std::path::Path,
+) -> (std::path::PathBuf, session_save::result::Publication) {
+    let local = r.root.join("summary-recovery");
+    std::fs::create_dir_all(&local).unwrap();
+    std::fs::copy(home.join(TRANSCRIPT_FILE), local.join(TRANSCRIPT_FILE)).unwrap();
+    std::fs::write(local.join("summary.md"), "replacement summary").unwrap();
+    let doc = session_md(home);
+    let expected =
+        session_core::folder::fingerprint(&std::fs::read(home.join("session.md")).unwrap());
+    let publication = session_save::result::prepare(home, &local, &local, doc, &expected).unwrap();
+    r.store
+        .lock()
+        .unwrap()
+        .set_result_state(
+            "s",
+            "summary-publication",
+            &serde_json::to_value(&local).unwrap(),
+        )
+        .unwrap();
+    (local, publication)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publication_recovery_does_not_rollback_a_possible_live_instance() {
+    let r = rig().await;
+    let home = saved_note(&r, None).await;
+    let previous = read(&home, "summary.md");
+    let (local, publication) = staged_summary(&r, &home);
+    while read(&home, "summary.md") != "replacement summary" {
+        publication.step().unwrap();
+    }
+    let before = read(&home, "session.md");
+    r.runner
+        .reclaim(session_core::jobs::Liveness::Unknown {
+            now: chrono::Utc::now().fixed_offset(),
+        })
+        .unwrap();
+    assert_eq!(read(&home, "summary.md"), "replacement summary");
+    assert_eq!(read(&home, "session.md"), before);
+    assert!(local.join(session_save::result::JOURNAL).exists());
+    r.runner
+        .reclaim(session_core::jobs::Liveness::OnlyInstance)
+        .unwrap();
+    assert_eq!(read(&home, "summary.md"), previous);
+    assert!(
+        r.store
+            .lock()
+            .unwrap()
+            .result_state("s", "summary-publication")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publication_recovery_error_does_not_prevent_stale_job_reclaim() {
+    let r = rig().await;
+    let home = saved_note(&r, None).await;
+    let (local, _) = staged_summary(&r, &home);
+    std::fs::write(local.join(session_save::result::JOURNAL), "invalid json").unwrap();
+    queue_session(
+        &r.store,
+        &r.root,
+        "other",
+        200,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    r.store
+        .lock()
+        .unwrap()
+        .dequeue_session("other", "dead-owner", chrono::Utc::now().fixed_offset())
+        .unwrap();
+    assert_eq!(
+        r.runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        vec!["other"]
+    );
+    assert!(local.join(session_save::result::JOURNAL).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publication_notes_change_keeps_previous_result_and_retry_summarizes_current_notes() {
+    let r = rig().await;
+    let home = saved_note(&r, Some("Kept title")).await;
+    let transcript = read(&home, TRANSCRIPT_FILE);
+    let summary = read(&home, "summary.md");
+    let store = Arc::clone(&r.store);
+    let changed = AtomicBool::new(false);
+    let mock = summaries_from(
+        &r,
+        http::Reply::With(Arc::new(move |_| {
+            if !changed.swap(true, Ordering::SeqCst) {
+                pipeline::save::set_notes(
+                    &mut store.lock().unwrap(),
+                    "s",
+                    "Updated notes for retry",
+                )
+                .unwrap();
+            }
+            (200, http::completion("A replacement summary."))
+        })),
+        None,
+    )
+    .await;
+    r.runner.transcribe_again("s", "tdt").unwrap();
+    assert!(matches!(
+        r.runner.run_next().await.unwrap().1,
+        Outcome::Failed {
+            stage: Stage::Save,
+            ..
+        }
+    ));
+    assert_eq!(read(&home, TRANSCRIPT_FILE), transcript);
+    assert_eq!(read(&home, "summary.md"), summary);
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    r.runner.retry("s").unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), calls);
+    assert!(
+        mock.seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .body
+            .contains("Updated notes for retry")
+    );
+    assert_eq!(read(&home, "notes.md"), "Updated notes for retry");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publication_incoming_transition_is_not_accepted_as_an_external_edit() {
+    let r = rig().await;
+    let home = saved_note(&r, None).await;
+    let (local, publication) = staged_summary(&r, &home);
+    // Model a synchronized transcript that arrives before its manifest.
+    let mut transition: session_core::generation::Transition = serde_json::from_slice(
+        &std::fs::read(home.join(session_core::generation::TRANSITION)).unwrap(),
+    )
+    .unwrap();
+    let bytes = b"Incoming transcript\n";
+    transition.files.insert(
+        TRANSCRIPT_FILE.into(),
+        (
+            publication.previous.files.get(TRANSCRIPT_FILE).cloned(),
+            session_core::folder::fingerprint(bytes),
+        ),
+    );
+    std::fs::write(
+        home.join(session_core::generation::TRANSITION),
+        serde_json::to_vec(&transition).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(home.join(TRANSCRIPT_FILE), bytes).unwrap();
+    r.store
+        .lock()
+        .unwrap()
+        .clear_result_state("s", "summary-publication")
+        .unwrap();
+    let manifest = read(&home, "session.md");
+    assert!(r.runner.regenerate_summary("s").await.is_err());
+    assert_eq!(read(&home, "session.md"), manifest);
+    assert!(local.join(session_save::result::JOURNAL).exists());
+}
+
+struct InterruptPublication {
+    home: std::path::PathBuf,
+    previous: String,
+    cancel: bool,
+    interrupted: AtomicBool,
+}
+
+impl pipeline::Control for InterruptPublication {
+    fn proceed(&self) -> Result<(), pipeline::StageError> {
+        if read(&self.home, "summary.md") != self.previous
+            && !self.interrupted.swap(true, Ordering::SeqCst)
+        {
+            std::fs::write(
+                self.home.join("notes.md"),
+                "Notes edited during publication\n",
+            )
+            .unwrap();
+            if self.cancel {
+                return Err(pipeline::StageError::Cancelled);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn publication_step_error_and_cancel_restore_previous_files_and_allow_retry() {
+    for cancel in [false, true] {
+        let r = rig().await;
+        let home = saved_note(&r, Some("Kept title")).await;
+        let previous = read(&home, "summary.md");
+        let manifest = read(&home, "session.md");
+        summaries_from(
+            &r,
+            http::Reply::With(Arc::new(|_| {
+                (200, http::completion("Replacement summary."))
+            })),
+            None,
+        )
+        .await;
+        let control = InterruptPublication {
+            home: home.clone(),
+            previous: previous.clone(),
+            cancel,
+            interrupted: AtomicBool::new(false),
+        };
+        let store = Arc::clone(&r.store);
+        let root = r.root.clone();
+        let endpoint = r
+            .script
+            .summary
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
+        let failed = tokio::task::spawn_blocking(move || {
+            pipeline::save::regenerate_summary(
+                &store,
+                "s",
+                &root,
+                endpoint,
+                summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap(),
+                &|_| {},
+                &control,
+                &mut |_, _| {},
+            )
+        })
+        .await
+        .unwrap();
+        assert!(failed.is_err());
+        assert_eq!(read(&home, "summary.md"), previous);
+        // A legacy note can gain an immutable generation before cancellation.
+        let before = session_core::folder::SessionDoc::parse(&manifest).unwrap();
+        assert_eq!(
+            session_md(&home).transcript_fingerprint,
+            before.transcript_fingerprint
+        );
+        assert_eq!(read(&home, "notes.md"), "Notes edited during publication\n");
+        assert!(
+            r.store
+                .lock()
+                .unwrap()
+                .result_state("s", "summary-publication")
+                .unwrap()
+                .is_none()
+        );
+        r.runner.regenerate_summary("s").await.unwrap();
+        assert!(read(&home, "summary.md").contains("Replacement summary."));
+    }
+}

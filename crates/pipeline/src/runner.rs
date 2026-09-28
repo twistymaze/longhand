@@ -288,7 +288,13 @@ impl Runner {
         &self,
         liveness: session_core::jobs::Liveness,
     ) -> Result<Vec<String>, StageError> {
-        save::recover_summary_publications(&self.env.store)?;
+        // Summary regeneration has no job heartbeat. An uncertain instance
+        // lock cannot prove that its publication owner has stopped.
+        if matches!(liveness, session_core::jobs::Liveness::OnlyInstance)
+            && let Err(error) = save::recover_summary_publications(&self.env.store)
+        {
+            log::warn!("could not recover summary publications: {error}");
+        }
         Ok(lock(&self.env.store).reclaim_at_launch(&self.owner, liveness)?)
     }
 

@@ -263,6 +263,32 @@ impl Publication {
         }
     }
 
+    /// Restore an uncommitted publication and let a retry prepare new inputs.
+    /// Keep the journal and staged generations if rollback detects a conflict.
+    pub fn abort(&self, local: &Path) -> io::Result<()> {
+        if self.committed() {
+            return Err(conflict());
+        }
+        self.rollback()?;
+        if let Some(initial) = &self.initial
+            && std::fs::read(self.home.join("session.md"))? == self.before.as_bytes()
+        {
+            home_write::write_atomic(&self.home, "session.md", initial.as_bytes())?;
+        }
+        let transition_path = self.home.join(generation::TRANSITION);
+        if let Ok(bytes) = std::fs::read(&transition_path) {
+            let transition: Transition = serde_json::from_slice(&bytes)?;
+            if transition.before == fingerprint(self.before.as_bytes())
+                && transition.after == fingerprint(self.after.as_bytes())
+            {
+                std::fs::remove_file(transition_path)?;
+                sync_dir(&self.home)?;
+            }
+        }
+        std::fs::remove_file(local.join(JOURNAL))?;
+        sync_dir(local)
+    }
+
     /// Call only after local configuration and state promotion.
     pub fn acknowledge(&self, local: &Path) -> io::Result<()> {
         if !self.committed() {

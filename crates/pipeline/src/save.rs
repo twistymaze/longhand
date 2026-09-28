@@ -67,27 +67,41 @@ pub fn home_changed(store: &Store, session_id: &str) -> Result<bool, StageError>
 pub fn recover_summary_publications(store: &SharedStore) -> Result<(), StageError> {
     let guard = lock(store);
     for record in guard.sessions()? {
-        let Some(value) = guard.result_state(&record.id, "summary-publication")? else {
-            continue;
-        };
-        let local: PathBuf = serde_json::from_value(value)?;
-        if !local.join(session_save::result::JOURNAL).exists() {
-            continue;
-        }
-        let publication = session_save::result::load(&local)?;
-        if record.home_path.as_deref().map(Path::new) != Some(publication.home.as_path()) {
-            log::warn!("summary publication folder changed for {}", record.id);
-            continue;
-        }
-        if publication.committed() {
-            let doc = session_core::generation::manifest(&publication.home)?;
-            guard.set_result_state(&record.id, "verified-manifest", &serde_json::to_value(doc)?)?;
-            guard.clear_summary_not_updated(&record.id)?;
-            publication.acknowledge(&local)?;
+        let recovered = (|| -> Result<(), StageError> {
+            let Some(value) = guard.result_state(&record.id, "summary-publication")? else {
+                return Ok(());
+            };
+            let local: PathBuf = serde_json::from_value(value)?;
+            if !local.join(session_save::result::JOURNAL).exists() {
+                return Ok(());
+            }
+            let publication = session_save::result::load(&local)?;
+            if record.home_path.as_deref().map(Path::new) != Some(publication.home.as_path()) {
+                return Err(StageError::Failed(
+                    "summary publication folder changed".into(),
+                ));
+            }
+            if publication.committed() {
+                let doc = session_core::generation::manifest(&publication.home)?;
+                guard.set_result_state(
+                    &record.id,
+                    "verified-manifest",
+                    &serde_json::to_value(doc)?,
+                )?;
+                guard.clear_summary_not_updated(&record.id)?;
+                publication.acknowledge(&local)?;
+            } else {
+                publication.abort(&local)?;
+            }
             guard.clear_result_state(&record.id, "summary-publication")?;
             std::fs::remove_dir_all(local)?;
-        } else if let Err(error) = publication.rollback() {
-            log::warn!("summary publication conflict for {}: {error}", record.id);
+            Ok(())
+        })();
+        if let Err(error) = recovered {
+            log::warn!(
+                "summary publication recovery failed for {}: {error}",
+                record.id
+            );
         }
     }
     Ok(())
@@ -416,9 +430,18 @@ fn update_home(
             .find(|(key, _)| key == "source-notes")
             .map(|(_, value)| serde_json::from_str(&value))
             .transpose()?;
-        if summary_notes.as_ref().is_some_and(|hash| {
-            *hash != folder::fingerprint(guard.notes(session_id).unwrap_or_default().as_bytes())
-        }) {
+        let current_notes = folder::fingerprint(guard.notes(session_id)?.as_bytes());
+        if summary_notes
+            .as_ref()
+            .is_some_and(|hash| *hash != current_notes)
+        {
+            if working.join(session_save::result::JOURNAL).exists() {
+                session_save::result::load(working)?.abort(working)?;
+            }
+            // Retry must produce a summary from the current notes. Keep the
+            // recognition checkpoints and the prior published generation.
+            guard.clear_checkpoints(session_id, Stage::Summarize)?;
+            guard.delete_checkpoint(session_id, Stage::Save, STATE)?;
             return Err(StageError::Failed(
                 "notes changed after the summary started; the previous result was kept".into(),
             ));
@@ -454,12 +477,20 @@ fn update_home(
             if publication.committed() {
                 break;
             }
-            if let Err(error) = control.proceed() {
-                publication.rollback()?;
-                return Err(error);
-            }
-            if publication.step()? {
-                break;
+            let step = control
+                .proceed()
+                .and_then(|()| publication.step().map_err(StageError::from));
+            match step {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(_) if publication.committed() => break,
+                Err(error) => {
+                    publication.abort(working)?;
+                    let guard = lock(store);
+                    guard.clear_checkpoints(session_id, Stage::Summarize)?;
+                    guard.delete_checkpoint(session_id, Stage::Save, STATE)?;
+                    return Err(error);
+                }
             }
         }
         let done = SaveState::Done { path: home.clone() };
@@ -942,6 +973,9 @@ pub fn regenerate_summary(
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
+    if let Some(home) = home_path(&lock(store), session_id)? {
+        refuse_pending_transcript(&home)?;
+    }
     let regenerated = summarize_again(
         store,
         session_id,
@@ -952,11 +986,56 @@ pub fn regenerate_summary(
         control,
         progress,
     );
+    if regenerated.is_err()
+        && let Some(home) = home_path(&lock(store), session_id)?
+        && refuse_pending_transcript(&home).is_err()
+    {
+        // Do not let rename reconciliation adopt an incoming result after
+        // regeneration refused that same transition.
+        return regenerated;
+    }
     // The regeneration has ended, and the caller holds the one processing
     // permit, so no other regeneration runs.
     let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
     let path = regenerated?;
     Ok(moved_to(session_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
+}
+
+fn refuse_pending_transcript(home: &Path) -> Result<(), StageError> {
+    let doc = session_core::generation::manifest(home)?;
+    let path = home.join(TRANSCRIPT_FILE);
+    let bytes = std::fs::read(&path).map_err(|error| unreadable(&path, &error.to_string()))?;
+    let hash = folder::fingerprint(&bytes);
+    if doc.transcript_fingerprint.as_ref() != Some(&hash)
+        || doc
+            .result_generation
+            .as_ref()
+            .is_some_and(|g| g.files.get(TRANSCRIPT_FILE) != Some(&hash))
+    {
+        refuse_transcript_transition(home, &hash)?;
+    }
+    Ok(())
+}
+
+fn refuse_transcript_transition(home: &Path, hash: &str) -> Result<(), StageError> {
+    let transition = std::fs::read(home.join(session_core::generation::TRANSITION))
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<session_core::generation::Transition>(&bytes).ok()
+        });
+    let manifest_hash = folder::fingerprint(&std::fs::read(home.join(SESSION_FILE))?);
+    if transition.is_some_and(|transition| {
+        (transition.before == manifest_hash || transition.after == manifest_hash)
+            && transition
+                .files
+                .get(TRANSCRIPT_FILE)
+                .is_some_and(|(old, new)| old.as_deref() == Some(hash) || new == hash)
+    }) {
+        return Err(StageError::Failed(
+            "waiting for result files to sync".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -997,6 +1076,7 @@ fn summarize_again(
             .as_ref()
             .is_some_and(|g| g.files.get(TRANSCRIPT_FILE) != Some(&current_hash))
     {
+        refuse_transcript_transition(&home, &current_hash)?;
         current.transcript_fingerprint = Some(current_hash);
         current.summary_fingerprint = fingerprint_of(&home, SUMMARY_FILE)?;
         current.recognition_artifact = None;
@@ -1077,11 +1157,18 @@ fn summarize_again(
         let publication = session_save::result::prepare(&path, &local, &local, doc, &expected)?;
         drop(guard);
         while !publication.committed() {
-            if let Err(e) = control.proceed() {
-                publication.rollback()?;
-                return Err(e);
+            let step = control
+                .proceed()
+                .and_then(|()| publication.step().map_err(StageError::from));
+            if let Err(error) = step {
+                if publication.committed() {
+                    break;
+                }
+                publication.abort(&local)?;
+                lock(store).clear_result_state(session_id, "summary-publication")?;
+                std::fs::remove_dir_all(&local)?;
+                return Err(error);
             }
-            publication.step()?;
         }
         let guard = lock(store);
         let published = session_core::generation::manifest(&path)?;
