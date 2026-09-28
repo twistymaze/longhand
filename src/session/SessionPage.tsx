@@ -469,6 +469,7 @@ export function SessionPage({
         hasSpeakers={doc.has_speakers}
         foundSpeakers={entry?.found_speakers ?? null}
         durationMs={entry?.duration_ms ?? 0}
+        transcriptMarkdown={doc.transcript_markdown}
       />
     );
   };

@@ -10,9 +10,9 @@ const turn = (position_ms: number, speaker: number | null, text: string): DocLin
   text,
 });
 
-function renderTab(lines: DocLine[], { hasSpeakers = true, speakers = 3 as number | null, durationMs = 35 * 60_000 + 48_000 } = {}) {
+function renderTab(lines: DocLine[], { hasSpeakers = true, speakers = 3 as number | null, durationMs = 35 * 60_000 + 48_000, transcriptMarkdown = "" } = {}) {
   return render(
-    <TranscriptTab lines={lines} hasSpeakers={hasSpeakers} foundSpeakers={speakers} durationMs={durationMs} />,
+    <TranscriptTab lines={lines} hasSpeakers={hasSpeakers} foundSpeakers={speakers} durationMs={durationMs} transcriptMarkdown={transcriptMarkdown} />,
   );
 }
 
@@ -62,6 +62,28 @@ describe("TranscriptTab", () => {
     renderTab([turn(0, null, "Hello.")], { hasSpeakers: false, speakers: null });
     expect(screen.getByText(/no speaker marks/).textContent).toContain("this note");
     expect(screen.queryByText(/^Speaker \d/)).toBeNull();
+  });
+
+  test("a transcript made with speaker recognition off says so without a failure notice", () => {
+    renderTab([turn(0, null, "Hello.")], {
+      hasSpeakers: false,
+      speakers: null,
+      transcriptMarkdown: "# Transcript\n\n> Speaker recognition was off for this transcript.\n\n- [00:00:00] Hello.\n",
+    });
+    expect(screen.getByText("Speaker recognition was off for this note.")).toBeTruthy();
+    expect(screen.queryByText(/Speaker separation failed/)).toBeNull();
+    expect(screen.queryByText(/^Speaker \d/)).toBeNull();
+  });
+
+  test("words in a transcript turn do not change the speaker failure notice", () => {
+    const text = "> Speaker recognition was off for this transcript.";
+    renderTab([turn(0, null, text)], {
+      hasSpeakers: false,
+      speakers: null,
+      transcriptMarkdown: `# Transcript\n\n> This transcript carries no speaker marks: speaker separation failed for this session.\n\n- [00:00:00] ${text}\n`,
+    });
+    expect(screen.getByText("Speaker separation failed for this note, so the transcript has no speaker marks.")).toBeTruthy();
+    expect(screen.queryByText("Speaker recognition was off for this note.")).toBeNull();
   });
 
   test("the tab opens at the end of the transcript", () => {

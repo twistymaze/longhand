@@ -1159,6 +1159,30 @@ function Synced({ id }: { id: string }) {
 }
 
 describe("SessionPage and the synced library", () => {
+  test("a loaded note uses its saved speaker mode and updates the notice when its transcript changes", async () => {
+    const e = entry("s", { found_speakers: null });
+    let transcriptMarkdown = "# Transcript\n\n> Speaker recognition was off for this transcript.\n\n- [00:00:00] Hello.\n";
+    const tauri = mockPage(e, {}, {
+      list_sessions: () => [e],
+      session_document: () => ({
+        ...doc,
+        has_speakers: false,
+        lines: [{ kind: "turn", position_ms: 0, speaker: null, text: "Hello." }],
+        transcript_markdown: transcriptMarkdown,
+      }),
+    });
+    render(<Synced id="s" />);
+    await screen.findByText("We agreed the budget.");
+    await userEvent.setup().click(tab("Transcript"));
+    expect(await screen.findByText("Speaker recognition was off for this note.")).toBeTruthy();
+    expect(screen.queryByText(/Speaker separation failed/)).toBeNull();
+
+    transcriptMarkdown = "# Transcript\n\n> This transcript carries no speaker marks: speaker separation failed for this session.\n\n- [00:00:00] Hello.\n";
+    await act(() => tauri.emit("library-changed", { changed: ["s"], removed: [] }));
+    expect(await screen.findByText("Speaker separation failed for this note, so the transcript has no speaker marks.")).toBeTruthy();
+    expect(screen.queryByText("Speaker recognition was off for this note.")).toBeNull();
+  });
+
   test("a library change for the open note reloads its detail and document", async () => {
     const e = entry("s");
     let body = "We agreed the budget.";
