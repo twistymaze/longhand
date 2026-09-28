@@ -721,6 +721,7 @@ impl Gaps {
             duration_ms: 60_000,
             voiced_ms: 60_000,
             voiced: vec![span(0, 60_000)],
+            speech: Some(vec![span(0, 60_000)]),
             windows: (0..6).map(|i| span(i * 10_000, (i + 1) * 10_000)).collect(),
         };
         let key = checkpoint::plan_key(0);

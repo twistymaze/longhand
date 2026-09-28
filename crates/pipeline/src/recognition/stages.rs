@@ -643,6 +643,10 @@ fn verify(
     validate_result(&result, &ranges(dir, segments)?)?;
     for segment in segments {
         let plan = transcribe::plan_segment(dir, segment, &[])?;
+        let speech = plan
+            .speech
+            .as_deref()
+            .expect("a new plan includes speech spans");
         let start = segment.offset_ms * 16;
         let end = start + plan.duration_ms * 16;
         let own: Vec<_> = result
@@ -650,7 +654,7 @@ fn verify(
             .iter()
             .filter(|r| r.range.start >= start && r.range.start < end)
             .collect();
-        if plan.voiced_ms > 0 && own.is_empty() {
+        if !speech.is_empty() && own.is_empty() {
             return Err(failed(format!(
                 "segment {} has speech but no text",
                 segment.index
@@ -676,7 +680,7 @@ fn verify(
                 end_ms: r.range.end.saturating_sub(start) / 16,
             })
             .collect();
-        let coverage = crate::verify::measure(segment.index, &plan.voiced, &text);
+        let coverage = crate::verify::measure(segment.index, speech, &text);
         checkpoint::put(
             store,
             id,

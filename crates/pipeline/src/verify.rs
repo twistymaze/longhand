@@ -25,9 +25,7 @@ use crate::{SharedStore, StageError, checkpoint, lock};
 pub const MIN_COVERAGE: f64 = 0.9;
 /// The most voiced time one untranscribed stretch may hold (provisional).
 pub const MAX_UNCOVERED_MS: u64 = 60_000;
-/// How far text covers beyond its timestamps. The VAD pads every voiced
-/// span by 450 ms at each end, and recognizer timestamps round; without the
-/// slack a fully transcribed conversation measures near 91% (U20).
+/// How far text covers beyond its timestamps to allow for timing error.
 pub const SLACK_MS: u64 = 1_000;
 /// Written when verification fails; a retry reads it to know what to redo.
 pub const FAILED: &str = "failed";
@@ -87,18 +85,20 @@ pub fn run(
         .ok_or_else(|| {
             StageError::Failed(format!("segment {} has no window plan", segment.index))
         })?;
-        // A plan checkpointed before voiced spans were kept: measure again
-        // rather than let an empty list pass as silence.
-        let voiced = if plan.voiced.is_empty() && plan.voiced_ms > 0 {
-            plan_segment(session_dir, segment, &[])?.voiced
-        } else {
-            plan.voiced.clone()
+        // Old non-silent plans contain only padded spans. Read the audio
+        // again. Zero-voiced plans also preserve adopted transcript text.
+        let speech = match &plan.speech {
+            Some(speech) => speech.clone(),
+            None if plan.voiced_ms > 0 => plan_segment(session_dir, segment, &[])?
+                .speech
+                .expect("a new plan includes speech spans"),
+            None => Vec::new(),
         };
         let own: Vec<&WindowResult> = windows
             .iter()
             .filter(|w| w.segment == segment.index)
             .collect();
-        let coverage = measure(segment.index, &voiced, &text_spans(&own));
+        let coverage = measure(segment.index, &speech, &text_spans(&own));
         log::info!(
             "coverage of {session_id} segment {}: {:.1}% of {} s voiced, worst gap {} s",
             segment.index,

@@ -5,6 +5,215 @@ use pipeline::live::LiveRow;
 use pipeline::transcribe::WindowResult;
 use pipeline::verify::{MAX_UNCOVERED_MS, measure, text_spans};
 
+mod common;
+
+#[test]
+fn verification_counts_speech_without_request_padding() {
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("coverage", common::at(0), None)
+        .unwrap();
+    let segment = session_core::Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 20_000,
+        wall_start: common::at(0),
+        wall_end: common::at(20),
+        audio_file: "unused.opus".into(),
+        channels: 1,
+    };
+    let plan = serde_json::json!({
+        "segment": 0, "duration_ms": 20000, "voiced_ms": 9756,
+        "voiced": [span(286, 5394), span(5614, 9058), span(17342, 18546)],
+        "speech": [span(736, 4944), span(6064, 8608), span(17792, 17888), span(18016, 18096)],
+        "windows": [span(286, 9058), span(17342, 18546)]
+    });
+    pipeline::checkpoint::put(
+        &store,
+        "coverage",
+        session_core::Stage::Transcribe,
+        &pipeline::checkpoint::plan_key(0),
+        &plan,
+    )
+    .unwrap();
+    let mut window = WindowResult {
+        segment: 0,
+        window: 0,
+        start_ms: 286,
+        end_ms: 9058,
+        text: "Recorded speech".into(),
+        segments: vec![AsrSegment {
+            start_ms: 1120,
+            end_ms: 7772,
+            text: "Recorded speech".into(),
+        }],
+        words: None,
+        live: false,
+    };
+    let key = pipeline::checkpoint::window_key(0, 0);
+    pipeline::checkpoint::put(
+        &store,
+        "coverage",
+        session_core::Stage::Transcribe,
+        &key,
+        &window,
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    pipeline::verify::run(&store, "coverage", dir.path(), &[segment.clone()]).unwrap();
+    let coverage: pipeline::verify::Coverage = pipeline::checkpoint::get(
+        &store,
+        "coverage",
+        session_core::Stage::Verify,
+        &pipeline::checkpoint::segment_key(0),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(coverage.voiced_ms, 6928);
+    assert_eq!(coverage.voiced_ms - coverage.covered_ms, 176);
+    // The second utterance still counts when its text is absent.
+    window.segments[0].end_ms = 4000;
+    pipeline::checkpoint::put(
+        &store,
+        "coverage",
+        session_core::Stage::Transcribe,
+        &key,
+        &window,
+    )
+    .unwrap();
+    assert!(pipeline::verify::run(&store, "coverage", dir.path(), &[segment.clone()]).is_err());
+    window.segments.clear();
+    window.text.clear();
+    pipeline::checkpoint::put(
+        &store,
+        "coverage",
+        session_core::Stage::Transcribe,
+        &key,
+        &window,
+    )
+    .unwrap();
+    assert!(pipeline::verify::run(&store, "coverage", dir.path(), &[segment]).is_err());
+}
+
+#[test]
+fn legacy_non_silent_plan_rechecks_audio_instead_of_using_padding() {
+    let store = common::store();
+    let dir = tempfile::tempdir().unwrap();
+    common::queue_session(
+        &store,
+        dir.path(),
+        "legacy",
+        20,
+        None,
+        &[(16000, common::speech())],
+    );
+    let segments = store.lock().unwrap().segments("legacy").unwrap();
+    pipeline::assemble::run(
+        &store,
+        "legacy",
+        &dir.path().join("legacy"),
+        &segments,
+        None,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    let legacy = serde_json::json!({
+        "segment": 0, "duration_ms": segments[0].duration_ms, "voiced_ms": 1,
+        "voiced": [span(0, 1)], "windows": [span(0, 1)]
+    });
+    pipeline::checkpoint::put(
+        &store,
+        "legacy",
+        session_core::Stage::Transcribe,
+        &pipeline::checkpoint::plan_key(0),
+        &legacy,
+    )
+    .unwrap();
+    assert!(
+        pipeline::verify::run(&store, "legacy", &dir.path().join("legacy"), &segments).is_err()
+    );
+    let coverage: pipeline::verify::Coverage = pipeline::checkpoint::get(
+        &store,
+        "legacy",
+        session_core::Stage::Verify,
+        &pipeline::checkpoint::segment_key(0),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        coverage.voiced_ms > 1,
+        "legacy padding must be replaced by audio analysis"
+    );
+}
+
+#[test]
+fn legacy_zero_voiced_plan_preserves_the_adopted_transcript_skip() {
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("adopted", common::at(0), None)
+        .unwrap();
+    let segment = session_core::Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 20_000,
+        wall_start: common::at(0),
+        wall_end: common::at(20),
+        audio_file: "unavailable.opus".into(),
+        channels: 1,
+    };
+    let legacy = serde_json::json!({
+        "segment": 0, "duration_ms": 20000, "voiced_ms": 0,
+        "voiced": [], "windows": [span(0, 20000)]
+    });
+    pipeline::checkpoint::put(
+        &store,
+        "adopted",
+        session_core::Stage::Transcribe,
+        &pipeline::checkpoint::plan_key(0),
+        &legacy,
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    pipeline::verify::run(&store, "adopted", dir.path(), &[segment]).unwrap();
+}
+
+#[test]
+fn legacy_speech_without_audio_fails_instead_of_passing_as_silence() {
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("missing", common::at(0), None)
+        .unwrap();
+    let segment = session_core::Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 20_000,
+        wall_start: common::at(0),
+        wall_end: common::at(20),
+        audio_file: "unavailable.opus".into(),
+        channels: 1,
+    };
+    let legacy = serde_json::json!({
+        "segment": 0, "duration_ms": 20000, "voiced_ms": 1000,
+        "voiced": [], "windows": [span(0, 20000)]
+    });
+    pipeline::checkpoint::put(
+        &store,
+        "missing",
+        session_core::Stage::Transcribe,
+        &pipeline::checkpoint::plan_key(0),
+        &legacy,
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    assert!(pipeline::verify::run(&store, "missing", dir.path(), &[segment]).is_err());
+}
+
 const MIN: u64 = 60_000;
 
 fn span(start_ms: u64, end_ms: u64) -> Span {

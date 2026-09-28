@@ -234,6 +234,32 @@ fn off_and_integrated_execute_without_separate_weights() {
             .unwrap();
         }
         assert!(provider.calls.load(Ordering::SeqCst) > 0);
+        let path = temp
+            .path()
+            .join("route")
+            .join(pipeline::proc_file(&segments[0].audio_file));
+        let audio = hound::WavReader::open(path)
+            .unwrap()
+            .into_samples::<f32>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        let mut voicing = asr::Voicing::new();
+        voicing.push(&audio);
+        let expected: u64 = voicing
+            .frames()
+            .split(|voiced| !*voiced)
+            .filter(|run| run.len() >= 4)
+            .map(|run| run.len() as u64 * 16)
+            .sum();
+        let coverage: pipeline::verify::Coverage =
+            checkpoint::get(&store, "route", Stage::Verify, &checkpoint::segment_key(0))
+                .unwrap()
+                .unwrap();
+        assert!(expected > 0);
+        assert_eq!(
+            coverage.voiced_ms, expected,
+            "Verify must exclude request padding"
+        );
         if source == SpeakerSource::Off {
             let text = std::fs::read_to_string(temp.path().join("route/transcript.md")).unwrap();
             assert!(text.contains("Speaker recognition was off"));

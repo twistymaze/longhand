@@ -37,12 +37,15 @@ pub const MERGE_MS: u64 = 150;
 pub struct WindowPlan {
     pub segment: u32,
     pub duration_ms: u64,
-    /// Voiced duration by VAD.
+    /// Duration of the padded VAD spans.
     pub voiced_ms: u64,
-    /// The voiced spans themselves, which verification measures coverage
-    /// against (U20). Empty in a plan checkpointed before they were kept.
+    /// Padded VAD spans for request windows and live gap filling.
+    /// Empty in a plan checkpointed before they were kept.
     #[serde(default)]
     pub voiced: Vec<Span>,
+    /// Onset-qualified speech without request padding. None in old plans.
+    #[serde(default)]
+    pub speech: Option<Vec<Span>>,
     pub windows: Vec<Span>,
 }
 
@@ -575,6 +578,7 @@ pub fn plan_segment(
         voiced_ms: asr::voiced_ms(&spans),
         windows: voicing.windows(turn_cuts_ms),
         voiced: spans,
+        speech: Some(voicing.speech_spans()),
     })
 }
 
@@ -674,6 +678,7 @@ pub fn seed_from_transcript(
             duration_ms: segment.duration_ms,
             voiced_ms: 0,
             voiced: Vec::new(),
+            speech: Some(Vec::new()),
             windows: vec![whole],
         };
         let result = WindowResult {
