@@ -1,6 +1,7 @@
 ---
 title: Windows Rust selected Git's linker after MSVC setup
 date: 2026-09-28
+last_updated: 2026-09-28
 module: Windows CI and native helper builds
 problem_type: build_error
 component: infrastructure
@@ -48,7 +49,10 @@ out this separate tool-discovery failure.
 The [MSVC action documentation](https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash)
 describes this name conflict. The diagnosis also inspected
 [find-msvc-tools 0.1.5](https://docs.rs/crate/find-msvc-tools/0.1.5/source/src/find_tools.rs),
-the version in the Rust 1.94 compiler dependency graph.
+the version in the [Rust 1.94 dependency lock](https://github.com/rust-lang/rust/blob/1.94.0/Cargo.lock).
+The compiler's [linker selection code](https://github.com/rust-lang/rust/blob/1.94.0/compiler/rustc_codegen_ssa/src/back/linker.rs)
+uses that discovery result. This diagnosis describes that version's behavior;
+it does not establish the discovery order of future Rust versions.
 
 ## Solution
 
@@ -57,6 +61,12 @@ In `.github/workflows/ci.yml`, all Windows steps that invoke Rust use a literal
 The native helper build script still runs through Bash. It does not invoke Cargo.
 
 The early test checks the selected linker before compiling the expensive SDK.
+It builds and runs the Rust test helper declared in
+`crates/nemo-runtime/Cargo.toml`. The process tests in
+`crates/nemo-runtime/tests/process.rs` use that helper, not the C++ SDK.
+This checks Rust executable linking and process invocation before the native
+build starts. It supplements the full-workspace tests.
+
 PowerShell application discovery can return multiple matches. Select the first
 match before comparing its path:
 
@@ -83,7 +93,9 @@ also passed. This does not establish Windows GPU inference or meeting-length
 recording behavior.
 
 When adding a native build environment, inspect every later Rust invocation,
-including commands inside packaging tools. Check the selected tool in the shell
+including commands inside packaging tools. Tauri invokes Rust indirectly, so
+searching only for literal `cargo` commands misses one affected step.
+Check the selected tool in the shell
 that will execute it. Validate workflow changes with `actionlint`, and execute
 PowerShell checks in PowerShell rather than relying on syntax inspection alone.
 

@@ -64,10 +64,10 @@ A part of a stereo segment where the microphone holds echo of the system audio. 
 ## Transcription
 
 ### Recognition model
-The model that turns speech into text. The user selects one transcription model in Settings from the catalog of ten. The catalog includes Granite Speech 4.1 2B Plus. The user can also select a compatible speaker-recognition source and processing time. A note records its effective configuration and exact model artifacts when recording starts. A later change to the defaults does not change that note. Longhand selects the runtime internally.
+The model that turns speech into text. The user selects a transcription model and compatible processing choices. A note records its effective configuration and exact model artifacts when recording starts. A later change to the defaults does not change that note. Longhand selects the runtime internally.
 
 ### Speaker recognition
-The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A transcription model can supply labels itself, or a separate speaker model can supply a timeline to join with the text. Separate choices are Nemotron 3 Diarization, Sortformer, and pyannote/WeSpeaker. Speaker recognition can also be off. The selected artifacts determine valid processing times and speaker limits.
+The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A transcription model can supply labels itself, or a separate speaker model can supply a timeline to join with the text. Speaker recognition can also be off. The selected artifacts determine valid processing times and speaker limits.
 
 ### Live transcript
 The text that a streaming recognition model makes during recording. It shows in the Transcript tab when the selected model supports live transcription and the note uses that mode. Live text and speaker labels can be provisional. The runtime can revise them before finalization. Compatible durable results are reused after Stop; missing or invalid results require processing. Live speaker analysis is a separate choice and can run with an offline transcription model.
