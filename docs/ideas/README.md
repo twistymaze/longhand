@@ -18,7 +18,7 @@ Each idea file has this frontmatter and a short body:
 ---
 title: A plain-language name
 status: open            # open | parked | in-progress | done
-area: capture           # capture | transcript-and-summary | processing | library-and-sharing | interface
+area: capture           # capture | transcript-and-summary | processing | library-and-sharing | interface | distribution
 added: 2026-09-24
 source: "where it came up (a plan section, a brainstorm, a conversation)"
 related: [other-idea-slug]
@@ -97,6 +97,12 @@ This folder is our own convention, not something compound engineering defines, s
 | [Library and desktop UI polish](ui-polish.md) | in-progress | Stable note selection, keyboard zoom, login startup, and a shared vector mark |
 | [Settings attached to the main window](settings-attached-to-main-window.md) | parked | A child window or sheet that moves with the main window |
 | [Clickable links in notes](clickable-links-in-notes.md) | open | Open a link in a note's markdown in the default browser |
+
+## Distribution
+
+| Idea | Status | In short |
+|---|---|---|
+| [Preview builds and in-app updates](preview-builds-and-updates.md) | in-progress | A notarized build from each push to main, offered in a macOS update dialog |
 
 ## Done
 

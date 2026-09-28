@@ -107,3 +107,11 @@ The full licence text of every open source component that the app ships on one p
 
 ### Native entry
 A hand-kept record in the full licence list for a shipped component that no licence tool can read, such as a runtime library or a model that one of Longhand's own crates compiles in. Each native entry names its licence files and its source. Nothing fails when a native entry is missing, so a change that ships a new file of this kind must add one.
+
+## Updates
+
+### Track
+The stream of builds that the updater offers to an installed app. A build records its track, and the track is a setting of the one app: switching tracks needs no reinstall. Only the preview track exists now. A stable track comes later.
+
+### Preview build
+A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMM>`, so a later build always has a higher version.
