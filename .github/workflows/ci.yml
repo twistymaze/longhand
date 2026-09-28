@@ -141,6 +141,30 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun install --frozen-lockfile
 
+      # msvc-dev-cmd documents that Git Bash can select GNU link.exe before MSVC.
+      # Use the native Windows shell for Rust, as upstream transcribe.cpp does:
+      # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
+      - name: Rust helper tests before SDK build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+          if (-not (Test-Path $expected)) { throw "MSVC linker is absent: $expected" }
+          $expected = (Get-Item -LiteralPath $expected).FullName
+          $actual = (Get-Command link.exe -CommandType Application -ErrorAction Stop).Source
+          if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Wrong linker selected: $actual; expected $expected"
+          }
+          Write-Output "Rust linker: $actual"
+          cargo test -p nemo-runtime --features test-helper
+          if ($LASTEXITCODE -ne 0) { throw 'Rust helper tests failed' }
+
+      - name: Rust helper tests before SDK build (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test -p nemo-runtime --features test-helper
+
       - name: Build and stage NeMo helper
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
@@ -151,8 +175,10 @@ jobs:
           echo "LONGHAND_NEMO_CACHE=$LONGHAND_NEMO_CACHE" >> "$GITHUB_ENV"
           bun test scripts/windows-redist.test.ts
           bun scripts/prepare-nemo.ts
-          bun scripts/test-nemo.ts --helper "src-tauri/nemo-runtime/bin/longhand-nemo-helper${{ runner.os == 'Windows' && '.exe' || '' }}"
-          cargo test -p nemo-runtime --features test-helper
+
+      - name: Native helper protocol smoke test
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: bun scripts/test-nemo.ts --helper "src-tauri/nemo-runtime/bin/longhand-nemo-helper${{ runner.os == 'Windows' && '.exe' || '' }}"
 
       # The two jobs run side by side, so the run lasts as long as the slower
       # Windows job. Checks that come out the same on every platform
@@ -203,6 +229,7 @@ jobs:
       # test binaries start on Windows because build.rs embeds the app
       # manifest in every binary the app crate links.
       - name: tests
+        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: cargo test --workspace --features nemo-runtime/test-helper
 
@@ -260,6 +287,7 @@ jobs:
 
       - name: Tauri build (Windows installer)
         if: runner.os == 'Windows'
+        shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun tauri build --debug --bundles nsis
 
