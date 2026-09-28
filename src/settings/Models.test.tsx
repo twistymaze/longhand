@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type {
   ExecutionSpec,
   DownloadUpdate,
+  ModelDeletionSummary,
   ModelStatus,
   RecognitionConfig,
   Settings,
@@ -128,8 +129,10 @@ function open(
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
     set_recognition_defaults: () => initial,
     download_recognition_artifacts: () => null,
+    recording_status: () => ({ recording: false }),
     ...handlers,
   });
+  const refreshes = { count: 0 };
   const view = render(
     <TestModels
       models={catalog}
@@ -137,11 +140,13 @@ function open(
       settings={initial}
       actions={{
         cancel: () => {},
-        refresh: async () => {},
+        refresh: async () => {
+          refreshes.count++;
+        },
       }}
     />,
   );
-  return { tauri, user: userEvent.setup(), rerender: view.rerender };
+  return { tauri, user: userEvent.setup(), rerender: view.rerender, refreshes };
 }
 async function ready() {
   await waitFor(() =>
@@ -746,4 +751,216 @@ test("model keys move focus, wrap, and save the selected model", async () => {
       expect((saves[saves.length - 1].args.config as RecognitionConfig).asr_model).toBe(id);
     });
   }
+});
+
+describe("delete models", () => {
+  const segmentation: ModelStatus = {
+    ...model("segmentation", "Speaker segmentation weights with a very long name for the row"),
+    role: "segmentation",
+    size_bytes: 200_000_000,
+  };
+  const catalogWithSupport = [...models, segmentation];
+  const summary = (overrides: Partial<ModelDeletionSummary> = {}): ModelDeletionSummary => ({
+    models: [
+      { id: stream, name: "Parakeet", size_bytes: 1_000_000_000, unused: false },
+      { id: "segmentation", name: "Speaker segmentation", size_bytes: 200_000_000, unused: false },
+      { id: offline, name: "MOSS", size_bytes: 2_500_000_000, unused: true },
+    ],
+    unfinished_notes: 0,
+    delete_all_block: null,
+    ...overrides,
+  });
+  const allUsed = (overrides: Partial<ModelDeletionSummary> = {}) =>
+    summary({
+      models: [
+        { id: stream, name: "Parakeet", size_bytes: 1_000_000_000, unused: false },
+        { id: "segmentation", name: "Speaker segmentation", size_bytes: 200_000_000, unused: false },
+      ],
+      ...overrides,
+    });
+  const deleteButton = () =>
+    screen.getByRole("button", { name: "Delete models…" }) as HTMLButtonElement;
+  const dialog = () => screen.getByRole("alertdialog");
+
+  test("unused models give two choices with the space each one recovers (AE5)", async () => {
+    const { user } = open({ model_deletion_summary: () => summary() }, settings, catalogWithSupport);
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    expect(screen.getByRole("button", { name: "Delete unused (2.5 GB)" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete all (3.7 GB)" })).toBeTruthy();
+    expect(dialog().textContent).toContain("cannot transcribe new notes");
+  });
+
+  test("no unused model gives only Delete all, with the warning (AE6)", async () => {
+    const { user } = open({ model_deletion_summary: () => allUsed() }, settings, catalogWithSupport);
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    expect(screen.queryByRole("button", { name: /Delete unused/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete all (1.2 GB)" })).toBeTruthy();
+    expect(dialog().textContent).toContain(
+      "Longhand cannot transcribe new notes until you download the models again.",
+    );
+    expect(dialog().textContent).not.toMatch(/unfinished/);
+  });
+
+  test("Delete all warns about waiting notes, deletes every model and refreshes (AE7)", async () => {
+    const { user, tauri, refreshes } = open(
+      { model_deletion_summary: () => allUsed({ unfinished_notes: 2 }), delete_models: () => [] },
+      settings,
+      catalogWithSupport,
+    );
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    expect(dialog().textContent).toContain("2 unfinished notes will wait for the models.");
+    await user.click(screen.getByRole("button", { name: /^Delete all/ }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(tauri.calls.find((c) => c.cmd === "delete_models")?.args.scope).toBe("all");
+    expect(refreshes.count).toBe(1);
+  });
+
+  test("one unfinished note is singular", async () => {
+    const { user } = open(
+      { model_deletion_summary: () => allUsed({ unfinished_notes: 1 }) },
+      settings,
+      catalogWithSupport,
+    );
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    expect(dialog().textContent).toContain("1 unfinished note will wait for the models.");
+  });
+
+  test("a recording turns the button off (AE8)", async () => {
+    open({ recording_status: () => ({ recording: true }) }, settings, catalogWithSupport);
+    await ready();
+    await waitFor(() => expect(deleteButton().disabled).toBe(true));
+  });
+
+  test("the button follows recording changes", async () => {
+    let recording = false;
+    const { tauri } = open({ recording_status: () => ({ recording }) }, settings, catalogWithSupport);
+    await ready();
+    expect(deleteButton().disabled).toBe(false);
+    recording = true;
+    await act(async () => tauri.emit("recording-changed", { session_id: "s" }));
+    await waitFor(() => expect(deleteButton().disabled).toBe(true));
+  });
+
+  test("an active download turns the button off", async () => {
+    open({}, settings, catalogWithSupport, {
+      [offline]: { kind: "progress", downloaded: 1, total: 2 },
+    });
+    await ready();
+    expect(deleteButton().disabled).toBe(true);
+  });
+
+  test("a model in the downloading state turns the button off", async () => {
+    open({}, settings, [...models, { ...segmentation, state: { state: "downloading" } }]);
+    await ready();
+    expect(deleteButton().disabled).toBe(true);
+  });
+
+  test("no downloaded model turns the button off", async () => {
+    open(
+      {},
+      settings,
+      models.map((m) => ({ ...m, state: { state: "absent" as const, partial_bytes: 0 } })),
+    );
+    await ready();
+    expect(deleteButton().disabled).toBe(true);
+  });
+
+  test("a transcribing note turns Delete all off, and Delete unused still works (AE9)", async () => {
+    const { user, tauri } = open(
+      {
+        model_deletion_summary: () => summary({ delete_all_block: "transcription" }),
+        delete_models: () => [],
+      },
+      settings,
+      catalogWithSupport,
+    );
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    const all = screen.getByRole("button", { name: /^Delete all/ }) as HTMLButtonElement;
+    expect(all.disabled).toBe(true);
+    expect(dialog().textContent).toContain("Delete all is off while a note is transcribing.");
+    await user.click(screen.getByRole("button", { name: /^Delete unused/ }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(tauri.calls.find((c) => c.cmd === "delete_models")?.args.scope).toBe("unused");
+  });
+
+  for (const [block, reason] of [
+    ["recording", "Delete all is off while a recording is in progress."],
+    ["download", "Delete all is off while a download is in progress."],
+  ] as const) {
+    test(`the ${block} block gives its reason`, async () => {
+      const { user } = open(
+        { model_deletion_summary: () => summary({ delete_all_block: block }) },
+        settings,
+        catalogWithSupport,
+      );
+      await ready();
+      await user.click(deleteButton());
+      await screen.findByRole("alertdialog");
+      expect(dialog().textContent).toContain(reason);
+    });
+  }
+
+  test("a partial failure names each model that was not deleted", async () => {
+    const { user, refreshes } = open(
+      {
+        model_deletion_summary: () => summary(),
+        delete_models: () => [
+          { id: offline, name: "MOSS", message: "The file is in use." },
+          { id: "segmentation", name: "Speaker segmentation", message: "Permission denied." },
+        ],
+      },
+      settings,
+      catalogWithSupport,
+    );
+    await ready();
+    await user.click(deleteButton());
+    await screen.findByRole("alertdialog");
+    await user.click(screen.getByRole("button", { name: /^Delete all/ }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.getByText(/Could not delete MOSS and Speaker segmentation/)).toBeTruthy();
+    expect(refreshes.count).toBe(1);
+  });
+
+  test("a summary failure shows the error and no dialog", async () => {
+    const { user } = open(
+      {
+        model_deletion_summary: () => {
+          throw "The model folder could not be read";
+        },
+      },
+      settings,
+      catalogWithSupport,
+    );
+    await ready();
+    await user.click(deleteButton());
+    expect(await screen.findByText(/The model folder could not be read/)).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(deleteButton().disabled).toBe(false);
+  });
+
+  test("the supporting models list opens from Show models", async () => {
+    const { user } = open({}, settings, catalogWithSupport);
+    await ready();
+    const toggle = screen.getByRole("button", { name: "Show models" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(segmentation.name)).toBeNull();
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const list = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    expect(list.textContent).toContain(segmentation.name);
+    expect(list.textContent).toContain("200 MB");
+    expect(
+      Array.from(list.querySelectorAll("button")).some((b) => b.textContent === "Delete…"),
+    ).toBe(true);
+  });
 });
