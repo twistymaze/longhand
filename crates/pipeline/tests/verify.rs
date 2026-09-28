@@ -62,7 +62,13 @@ fn verification_counts_speech_without_request_padding() {
     )
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    pipeline::verify::run(&store, "coverage", dir.path(), &[segment.clone()]).unwrap();
+    pipeline::verify::run(
+        &store,
+        "coverage",
+        dir.path(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap();
     let coverage: pipeline::verify::Coverage = pipeline::checkpoint::get(
         &store,
         "coverage",
@@ -83,7 +89,15 @@ fn verification_counts_speech_without_request_padding() {
         &window,
     )
     .unwrap();
-    assert!(pipeline::verify::run(&store, "coverage", dir.path(), &[segment.clone()]).is_err());
+    assert!(
+        pipeline::verify::run(
+            &store,
+            "coverage",
+            dir.path(),
+            std::slice::from_ref(&segment)
+        )
+        .is_err()
+    );
     window.segments.clear();
     window.text.clear();
     pipeline::checkpoint::put(
