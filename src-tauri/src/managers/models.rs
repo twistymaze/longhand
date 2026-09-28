@@ -156,12 +156,9 @@ pub fn delete_refusal(
     live_model: Option<&str>,
     sessions: &[SessionRecord],
 ) -> Option<String> {
-    let Some(model) = models::model(id) else {
+    let Some(catalog_model) = models::model(id) else {
         return Some(format!("no model named '{id}'"));
     };
-    if model.kind != ModelKind::Asr {
-        return Some("Speaker detection needs this model.".into());
-    }
     if settings.asr_model == id
         || models::recognition::resolve(&settings.recognition_config())
             .is_ok_and(|spec| spec.artifacts.iter().any(|artifact| artifact.id == id))
@@ -196,7 +193,13 @@ pub fn delete_refusal(
                 serde_json::from_value::<models::recognition::ExecutionSpec>(v.clone()).ok()
             })
             .is_some_and(|spec| spec.artifacts.iter().any(|a| a.id == id));
-        (model == Some(id) || snapshot_needs)
+        // Older notes use the original speaker pipeline without a snapshot.
+        let legacy_speaker_needs = s.recognition_snapshot.is_none()
+            && matches!(
+                catalog_model.kind,
+                ModelKind::Segmentation | ModelKind::Embedding
+            );
+        (model == Some(id) || snapshot_needs || legacy_speaker_needs)
             && !matches!(s.state, SessionState::Saved | SessionState::Discarded)
     });
     if needed {
@@ -925,10 +928,39 @@ mod tests {
     }
 
     #[test]
-    fn delete_refuses_the_speaker_detection_weights_and_unknown_ids() {
+    fn delete_protects_needed_speaker_weights_and_allows_unused_weights() {
         let settings = whisper_selected();
         assert!(delete_refusal("pyannote-segmentation-3.0", &settings, None, &[]).is_some());
         assert!(delete_refusal("no-such-model", &settings, None, &[]).is_some());
+        let mut without_speakers = settings;
+        without_speakers.speaker_source = models::recognition::SpeakerSource::Off;
+        assert!(
+            delete_refusal(
+                "pyannote-segmentation-3.0",
+                &without_speakers,
+                None,
+                &[note(
+                    PARAKEET,
+                    SessionState::Queued {
+                        stopped_at: stopped()
+                    }
+                )],
+            )
+            .is_some()
+        );
+        assert_eq!(
+            delete_refusal("pyannote-segmentation-3.0", &without_speakers, None, &[]),
+            None
+        );
+        assert_eq!(
+            delete_refusal(
+                "wespeaker-voxceleb-resnet34-lm",
+                &without_speakers,
+                None,
+                &[]
+            ),
+            None
+        );
     }
 
     #[test]

@@ -8,7 +8,8 @@ import type {
   Settings,
 } from "../bindings";
 import { mockTauri } from "../test/tauri";
-import { Models, describeLanguages } from "./Models";
+import { Models } from "./Models";
+import { describeLanguages } from "./languages";
 
 const stream = "parakeet-unified-en-0.6b-q80";
 const offline = "moss-transcribe-diarize-q80";
@@ -38,7 +39,7 @@ const model = (id: string, name: string): ModelStatus => ({
 const models = [model(stream, "Parakeet"), model(offline, "MOSS")];
 const settings = {
   asr_model: stream,
-  speaker_source: "pyannote",
+  speaker_source: "nemotron",
   live_transcript: true,
   speaker_processing_mode: "after_stop",
   default_speaker_count: null,
@@ -105,6 +106,7 @@ function resolve(config: RecognitionConfig): ExecutionSpec {
 function open(
   handlers: Record<string, (args: Record<string, unknown>) => unknown> = {},
   initial = settings,
+  catalog = models,
 ) {
   const tauri = mockTauri({
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
@@ -114,15 +116,12 @@ function open(
   });
   render(
     <Models
-      models={models}
-      speakers={null}
+      models={catalog}
       live={{}}
       settings={initial}
       onSettings={() => {}}
       actions={{
-        download: () => {},
         cancel: () => {},
-        select: async () => null,
         refresh: async () => {},
       }}
     />,
@@ -145,7 +144,9 @@ describe("recognition defaults", () => {
     expect(screen.getByLabelText("Speaker recognition")).toBeTruthy();
     expect(screen.getByLabelText("Transcription timing")).toBeTruthy();
     expect(screen.queryByLabelText("Speaker timing")).toBeNull();
-    expect(screen.getAllByLabelText("Transcription accuracy: Not rated")).toHaveLength(2);
+    expect(
+      screen.getAllByLabelText("Transcription accuracy: Not rated"),
+    ).toHaveLength(2);
     expect(screen.queryByLabelText("Runtime")).toBeNull();
     expect(describeLanguages(["en", "zh"])).toBe("English and Chinese");
   });
@@ -365,4 +366,134 @@ test("rapid setting changes save in order and keep the latest choice", async () 
   expect(
     (saved[1].args.config as RecognitionConfig).speaker_processing_mode,
   ).toBe("during_recording");
+});
+
+test("installed artifacts show Models ready instead of a download size", async () => {
+  open({
+    resolve_recognition: ({ config }) => {
+      const spec = resolve(config as RecognitionConfig);
+      return { ...spec, artifacts: [{ ...spec.artifacts[0], id: stream }] };
+    },
+  });
+  await ready();
+  expect(screen.getByText("Models ready")).toBeTruthy();
+  expect(screen.queryByText(/Required download size/)).toBeNull();
+});
+
+test("download size excludes present files and retained partial bytes", async () => {
+  const partial = {
+    ...model("extra", "Additional weights"),
+    role: "recognition_artifact" as const,
+    state: { state: "absent" as const, partial_bytes: 25_000_000 },
+  };
+  open(
+    {
+      resolve_recognition: ({ config }) => {
+        const spec = resolve(config as RecognitionConfig);
+        return {
+          ...spec,
+          artifacts: [
+            { ...spec.artifacts[0], id: stream },
+            { ...spec.artifacts[0], id: "extra", size_bytes: 100_000_000 },
+          ],
+        };
+      },
+    },
+    settings,
+    [...models, partial],
+  );
+  await ready();
+  expect(screen.getByText("Download needed: 75 MB")).toBeTruthy();
+});
+
+test("recommended models appear first with one plain recommendation badge", async () => {
+  open({}, settings, [models[0], { ...models[1], recommended: true }]);
+  await ready();
+  expect(screen.getAllByRole("radio")[0].getAttribute("aria-label")).toBe(
+    "MOSS",
+  );
+  expect(screen.getByText("Recommended")).toBeTruthy();
+  expect(
+    screen.queryByText(/Recommended afterwards|Recommended for live/),
+  ).toBeNull();
+});
+
+test("models sort alphabetically within the recommended and other groups", async () => {
+  open({}, settings, [
+    model("z", "Zebra"),
+    { ...model("b", "Beta"), recommended: true },
+    model("a", "Alpha"),
+    { ...model("c", "Aster"), recommended: true },
+  ]);
+  await waitFor(() => expect(screen.getAllByRole("radio")).toHaveLength(4));
+  expect(
+    screen.getAllByRole("radio").map((row) => row.getAttribute("aria-label")),
+  ).toEqual(["Aster", "Beta", "Alpha", "Zebra"]);
+});
+
+test("chosen recommendations precede the alphabetical model list", async () => {
+  open({}, settings, [
+    model("z", "Zebra"),
+    {
+      ...model("granite-speech-4.1-2b-plus-q5km", "Granite"),
+      recommended: true,
+    },
+    {
+      ...model("parakeet-unified-en-0.6b-q80", "Parakeet Unified"),
+      recommended: true,
+    },
+    model("a", "Alpha"),
+    {
+      ...model("nemotron-speech-streaming-en-0.6b-q80", "Nemotron"),
+      recommended: true,
+    },
+  ]);
+  await waitFor(() => expect(screen.getAllByRole("radio")).toHaveLength(5));
+  expect(
+    screen.getAllByRole("radio").map((row) => row.getAttribute("aria-label")),
+  ).toEqual(["Nemotron", "Parakeet Unified", "Granite", "Alpha", "Zebra"]);
+});
+
+test("deletes a transcription model from its existing row without selecting it", async () => {
+  let removed: unknown;
+  let saves = 0;
+  const { user } = open({
+    delete_model: ({ modelId }) => {
+      removed = modelId;
+    },
+    set_recognition_defaults: () => {
+      saves++;
+      return settings;
+    },
+  });
+  await ready();
+  const row = screen.getByRole("radio", { name: "MOSS" }).parentElement!;
+  const button = Array.from(row.querySelectorAll("button")).find(
+    (b) => b.textContent === "Delete…",
+  )!;
+  await user.click(button);
+  await user.click(screen.getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(removed).toBe(offline));
+  expect(saves).toBe(0);
+  expect(screen.queryByText("Downloaded models")).toBeNull();
+});
+
+test("opening settings preserves a saved speaker model override", async () => {
+  const { user, tauri } = open({}, { ...settings, speaker_source: "pyannote" });
+  await ready();
+  await user.click(screen.getByText("Advanced options"));
+  expect(
+    (screen.getByLabelText("Speaker model override") as HTMLSelectElement)
+      .value,
+  ).toBe("pyannote");
+  await user.click(
+    screen.getByRole("button", { name: "Download required models" }),
+  );
+  const spec = tauri.calls.find(
+    (c) => c.cmd === "download_recognition_artifacts",
+  )?.args.spec as ExecutionSpec;
+  expect(spec.config.speaker_source).toBe("pyannote");
+  expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(
+    false,
+  );
 });

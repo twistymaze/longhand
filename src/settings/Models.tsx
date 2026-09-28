@@ -6,7 +6,6 @@ import {
   type ModelRole,
   type ModelStatus,
   type Settings,
-  type SpeakerModelsStatus,
 } from "../bindings";
 import { sentence } from "../processing/describe";
 import { RecognitionOptions, recognitionDefaults } from "./RecognitionOptions";
@@ -19,17 +18,9 @@ export const roleLabel: Record<ModelRole, string> = {
   embedding: "Speaker embedding",
 };
 export type Actions = {
-  download: (ids: string[]) => void;
   cancel: () => void;
-  select: (id: string) => Promise<string | null>;
   refresh: () => Promise<void>;
 };
-const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
-export function describeLanguages(codes: string[]): string {
-  return codes.length > 2
-    ? `${codes.length} languages`
-    : codes.map((c) => languageNames.of(c) ?? c).join(" and ");
-}
 
 export function Models({
   models,
@@ -39,7 +30,6 @@ export function Models({
   onSettings,
 }: {
   models: ModelStatus[];
-  speakers: SpeakerModelsStatus | null;
   live: Record<string, DownloadUpdate>;
   actions: Actions;
   settings: Settings;
@@ -112,27 +102,46 @@ export function Models({
   const active = Object.values(live).some(
     (v) => v.kind === "progress" || v.kind === "verifying",
   );
+  const modelAction = (m: ModelStatus) =>
+    m.state.state !== "present" ? null : deleting === m.id ? (
+      <>
+        <Button disabled={busy} onClick={() => setDeleting(null)}>
+          Cancel
+        </Button>
+        <Button destructive disabled={busy} onClick={() => void remove(m.id)}>
+          Delete
+        </Button>
+      </>
+    ) : (
+      <Button
+        disabled={busy || saving || active || m.id === settings.asr_model}
+        onClick={() => setDeleting(m.id)}
+      >
+        Delete…
+      </Button>
+    );
   return (
     <Pane title="Transcription">
-      <Group
-        header="Default recognition choices"
-        footer="New notes use these choices. You can change them for one note before recording."
-      >
-        {settings.pending_recognition && (
-          <p role="status" className="px-4 pt-3">
-            Models are downloading for{" "}
-            {models.find(
-              (m) => m.id === settings.pending_recognition?.asr_model,
-            )?.name ?? settings.pending_recognition.asr_model}
-            . Current defaults stay until they are ready.
-          </p>
-        )}
-        <RecognitionOptions
-          models={models}
-          initial={recognitionDefaults(settings)}
-          onResolved={setSpec}
-          onChanged={apply}
-        />
+      <p className="text-[0.85rem] text-label-secondary">
+        New notes use these choices. You can change them for one note before
+        recording.
+      </p>
+      {settings.pending_recognition && (
+        <p role="status" className="px-4 pt-3">
+          Models are downloading for{" "}
+          {models.find((m) => m.id === settings.pending_recognition?.asr_model)
+            ?.name ?? settings.pending_recognition.asr_model}
+          . Current defaults stay until they are ready.
+        </p>
+      )}
+      <RecognitionOptions
+        models={models}
+        initial={recognitionDefaults(settings)}
+        onResolved={setSpec}
+        onChanged={apply}
+        modelAction={modelAction}
+      />
+      <Group header="Downloads">
         {saving && (
           <p role="status" className="px-4 pb-2 text-label-secondary">
             Saving…
@@ -169,34 +178,16 @@ export function Models({
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
       <Group
-        header="Downloaded models"
+        header="Supporting models"
         footer="You can download a deleted model again. Models in use cannot be deleted."
       >
         {models
-          .filter((m) => m.state.state === "present")
+          .filter(
+            (m) => m.role !== "recognition" && m.state.state === "present",
+          )
           .map((m) => (
             <Row key={m.id} label={m.name} detail={formatBytes(m.size_bytes)}>
-              {deleting === m.id ? (
-                <>
-                  <Button disabled={busy} onClick={() => setDeleting(null)}>
-                    Cancel
-                  </Button>
-                  <Button
-                    destructive
-                    disabled={busy}
-                    onClick={() => void remove(m.id)}
-                  >
-                    Delete
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  disabled={busy || m.required || m.id === settings.asr_model}
-                  onClick={() => setDeleting(m.id)}
-                >
-                  Delete…
-                </Button>
-              )}
+              {modelAction(m)}
             </Row>
           ))}
       </Group>

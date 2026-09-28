@@ -278,10 +278,28 @@ mod tests {
     }
 
     #[test]
-    fn only_the_default_model_is_recommended() {
+    fn recommended_models_cover_live_and_integrated_afterwards() {
         let recommended: Vec<_> = CATALOG.iter().filter(|m| m.recommended).collect();
-        assert_eq!(recommended.len(), 1);
-        assert_eq!(recommended[0].id, DEFAULT_ASR_MODEL);
+        assert_eq!(
+            recommended
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "parakeet-unified-en-0.6b-q80",
+                "nemotron-speech-streaming-en-0.6b-q80",
+                "granite-speech-4.1-2b-plus-q5km"
+            ]
+        );
+        assert!(recommended[0].streaming);
+        assert!(
+            recommended[2]
+                .speaker_preferences
+                .as_ref()
+                .unwrap()
+                .after_stop
+                .contains(&crate::recognition::SpeakerSource::Integrated)
+        );
     }
 
     #[test]

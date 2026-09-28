@@ -51,7 +51,7 @@
       "languages": [
         "en"
       ],
-      "recommended": false,
+      "recommended": true,
       "repository": "https://huggingface.co/handy-computer/nemotron-speech-streaming-en-0.6b-gguf",
       "revision": "7d9b719206789e4068d87c6398262ab4dfd4e45d",
       "filename": "nemotron-speech-streaming-en-0.6b-Q8_0.gguf",
@@ -562,7 +562,7 @@
         "es",
         "pt"
       ],
-      "recommended": false,
+      "recommended": true,
       "repository": "https://huggingface.co/handy-computer/granite-speech-4.1-2b-plus-gguf",
       "revision": "f73a59df77fef89ac0a34bc539d09d756793b065",
       "filename": "granite-speech-4.1-2b-plus-Q5_K_M.gguf",

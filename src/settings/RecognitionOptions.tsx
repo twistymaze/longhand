@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   commands,
   type ExecutionSpec,
@@ -8,7 +8,7 @@ import {
   type Settings,
   type SpeakerSource,
 } from "../bindings";
-import { fieldClass, formatBytes } from "./ui";
+import { Group, fieldClass, formatBytes } from "./ui";
 import { RecognitionModelPicker } from "./RecognitionModelPicker";
 
 const sources: [SpeakerSource, string][] = [
@@ -22,7 +22,7 @@ const timings: [ProcessingMode, string][] = [
   ["during_recording", "During recording"],
   ["after_stop", "After Stop"],
 ];
-const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+import { languageName } from "./languages";
 export function recognitionDefaults(settings: Settings): RecognitionConfig {
   return {
     asr_model: settings.asr_model,
@@ -41,11 +41,13 @@ export function RecognitionOptions({
   initial,
   onResolved,
   onChanged,
+  modelAction,
 }: {
   models: ModelStatus[];
   initial: RecognitionConfig;
   onResolved: (spec: ExecutionSpec | null) => void;
   onChanged?: (spec: ExecutionSpec) => void;
+  modelAction?: (model: ModelStatus) => ReactNode;
 }) {
   const [draft, setDraft] = useState(initial);
   const edited = useRef(false);
@@ -60,7 +62,16 @@ export function RecognitionOptions({
       onChanged?.(spec);
     }
   };
-  const [engine, setEngine] = useState<SpeakerSource | null>(null);
+  const [engine, setEngine] = useState<SpeakerSource | null>(() => {
+    const preferred = models.find((m) => m.id === initial.asr_model)
+      ?.speaker_preferences?.[
+      initial.speaker_processing_mode ?? "after_stop"
+    ]?.[0];
+    return initial.speaker_source === "off" ||
+      initial.speaker_source === preferred
+      ? null
+      : initial.speaker_source;
+  });
   const [advanced, setAdvanced] = useState(false);
   const [valid, setValid] = useState<ExecutionSpec[]>([]);
   const [loading, setLoading] = useState(true);
@@ -223,6 +234,17 @@ export function RecognitionOptions({
           s.config.processing_mode === draft.processing_mode &&
           s.config.speaker_processing_mode === draft.speaker_processing_mode,
       );
+  const missingArtifacts =
+    current?.artifacts.filter(
+      (artifact) =>
+        models.find((model) => model.id === artifact.id)?.state.state !==
+        "present",
+    ) ?? [];
+  const downloadBytes = missingArtifacts.reduce((sum, artifact) => {
+    const state = models.find((model) => model.id === artifact.id)?.state;
+    const partial = state?.state === "absent" ? state.partial_bytes : 0;
+    return sum + Math.max(0, artifact.size_bytes - partial);
+  }, 0);
   const canMode = (
     field: "processing_mode" | "speaker_processing_mode",
     value: string,
@@ -239,279 +261,288 @@ export function RecognitionOptions({
             s.config.processing_mode === draft.processing_mode)),
     );
   return (
-    <div className="grid min-w-0 gap-3 p-4">
-      <RecognitionModelPicker
-        models={models}
-        value={draft.asr_model}
-        onChange={(asr_model) => {
-          if (asr_model === draft.asr_model) return;
-          invalidate();
-          setEngine(null);
-          setDraft({ ...draft, asr_model });
-        }}
-      />
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="grid gap-1">
-          Transcription timing
-          <select
-            aria-label="Transcription timing"
-            className={fieldClass}
-            value={draft.processing_mode}
-            disabled={loading}
-            onChange={(e) => chooseMode("processing_mode", e.target.value)}
-          >
-            {timings.map(([id, text]) => (
-              <option
-                key={id}
-                value={id}
-                disabled={!canMode("processing_mode", id)}
-              >
-                {text}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="grid gap-1">
-          Speaker recognition
-          <select
-            aria-label="Speaker recognition"
-            className={fieldClass}
-            value={
-              draft.speaker_source === "off"
-                ? "off"
-                : draft.speaker_processing_mode
-            }
-            disabled={loading}
-            onChange={(e) =>
-              chooseMode("speaker_processing_mode", e.target.value)
-            }
-          >
-            <option value="off">Off</option>
-            {timings.map(([id, text]) => (
-              <option
-                key={id}
-                value={id}
-                disabled={!canMode("speaker_processing_mode", id)}
-              >
-                {text}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <p className="text-[0.85rem] text-label-secondary">
-        Work done during recording reduces the work left after Stop. Speaker
-        labels distinguish voices; they do not identify people.
-      </p>
-      {current && (
-        <p className="text-[0.85rem] text-label-secondary">
-          Required download size:{" "}
-          {formatBytes(
-            current.artifacts.reduce((sum, a) => sum + a.size_bytes, 0),
-          )}
-          {current.capabilities.maximum_speakers != null &&
-            ` · Up to ${current.capabilities.maximum_speakers} speakers`}
-        </p>
-      )}
-      {draft.speaker_source === "integrated" && (
-        <p className="text-[0.85rem] text-label-secondary">
-          Speaker labels can change between processing sections.
-        </p>
-      )}
-      <details onToggle={(e) => setAdvanced(e.currentTarget.open)}>
-        <summary className="cursor-pointer text-[0.85rem]">
-          Advanced options
-        </summary>
-        {advanced && (
-          <div className="mt-3 grid gap-3">
+    <div className="grid min-w-0 gap-6">
+      <Group header="Transcription model">
+        <div className="p-4">
+          <RecognitionModelPicker
+            models={models}
+            modelAction={modelAction}
+            value={draft.asr_model}
+            onChange={(asr_model) => {
+              if (asr_model === draft.asr_model) return;
+              invalidate();
+              setEngine(null);
+              setDraft({ ...draft, asr_model });
+            }}
+          />
+        </div>
+      </Group>
+      <Group header="Processing options">
+        <div className="grid gap-3 p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
             <label className="grid gap-1">
-              Speaker model override
+              Transcription timing
               <select
-                aria-label="Speaker model override"
+                aria-label="Transcription timing"
                 className={fieldClass}
-                value={engine ?? "automatic"}
+                value={draft.processing_mode}
                 disabled={loading}
-                onChange={(e) => {
-                  invalidate();
-                  setEngine(
-                    e.target.value === "automatic"
-                      ? null
-                      : (e.target.value as SpeakerSource),
-                  );
-                }}
+                onChange={(e) => chooseMode("processing_mode", e.target.value)}
               >
-                <option value="automatic">
-                  Automatic (from model catalog)
-                </option>
-                {sources
-                  .filter(([id]) => id !== "off")
-                  .map(([id, label]) => (
-                    <option
-                      key={id}
-                      value={id}
-                      disabled={
-                        !valid.some((s) => s.config.speaker_source === id)
-                      }
-                    >
-                      {label}
-                    </option>
-                  ))}
-              </select>
-            </label>
-            <label className="grid gap-1">
-              Language
-              <select
-                aria-label="Language"
-                className={fieldClass}
-                value={draft.language ?? ""}
-                onChange={(e) => {
-                  invalidate();
-                  setDraft({ ...draft, language: e.target.value || null });
-                }}
-              >
-                <option value="">Automatic</option>
-                {draft.language &&
-                  !selected?.languages.includes(draft.language) && (
-                    <option value={draft.language} disabled>
-                      {draft.language} (not supported by this model)
-                    </option>
-                  )}
-                {selected?.languages.map((code) => (
-                  <option key={code} value={code}>
-                    {languageNames.of(code) ?? code}
+                {timings.map(([id, text]) => (
+                  <option
+                    key={id}
+                    value={id}
+                    disabled={!canMode("processing_mode", id)}
+                  >
+                    {text}
                   </option>
                 ))}
               </select>
             </label>
             <label className="grid gap-1">
-              Expected speakers
+              Speaker recognition
               <select
-                aria-label="Expected speakers"
+                aria-label="Speaker recognition"
                 className={fieldClass}
-                value={draft.speaker_count?.kind ?? "automatic"}
-                onChange={(e) => {
-                  invalidate();
-                  setDraft({
-                    ...draft,
-                    speaker_count:
-                      e.target.value === "automatic"
-                        ? null
-                        : e.target.value === "exact"
-                          ? { kind: "exact", count: 4 }
-                          : { kind: "range", min: 2, max: 6 },
-                  });
-                }}
+                value={
+                  draft.speaker_source === "off"
+                    ? "off"
+                    : draft.speaker_processing_mode
+                }
+                disabled={loading}
+                onChange={(e) =>
+                  chooseMode("speaker_processing_mode", e.target.value)
+                }
               >
-                <option value="automatic">Automatic</option>
-                <option value="exact">Exactly</option>
-                <option value="range">Between</option>
+                <option value="off">Off</option>
+                {timings.map(([id, text]) => (
+                  <option
+                    key={id}
+                    value={id}
+                    disabled={!canMode("speaker_processing_mode", id)}
+                  >
+                    {text}
+                  </option>
+                ))}
               </select>
             </label>
-            {draft.speaker_count?.kind === "exact" && (
-              <input
-                aria-label="Exact speaker count"
-                className={fieldClass}
-                type="number"
-                min={1}
-                max={32}
-                value={draft.speaker_count.count}
-                onChange={(e) => {
-                  invalidate();
-                  setDraft({
-                    ...draft,
-                    speaker_count: {
-                      kind: "exact",
-                      count: Number(e.target.value),
-                    },
-                  });
-                }}
-              />
-            )}
-            {draft.speaker_count?.kind === "range" && (
-              <div className="flex gap-2">
-                {(["min", "max"] as const).map((field) => (
+          </div>
+          <p className="text-[0.85rem] text-label-secondary">
+            Work done during recording reduces the work left after Stop. Speaker
+            labels distinguish voices; they do not identify people.
+          </p>
+          {current && (
+            <p className="text-[0.85rem] text-label-secondary">
+              {missingArtifacts.length === 0
+                ? "Models ready"
+                : downloadBytes === 0
+                  ? "Downloaded models need verification"
+                  : `Download needed: ${formatBytes(downloadBytes)}`}
+              {current.capabilities.maximum_speakers != null &&
+                ` · Up to ${current.capabilities.maximum_speakers} speakers`}
+            </p>
+          )}
+          {draft.speaker_source === "integrated" && (
+            <p className="text-[0.85rem] text-label-secondary">
+              Speaker labels can change between processing sections.
+            </p>
+          )}
+          <details onToggle={(e) => setAdvanced(e.currentTarget.open)}>
+            <summary className="cursor-pointer text-[0.85rem]">
+              Advanced options
+            </summary>
+            {advanced && (
+              <div className="mt-3 grid gap-3">
+                <label className="grid gap-1">
+                  Speaker model override
+                  <select
+                    aria-label="Speaker model override"
+                    className={fieldClass}
+                    value={engine ?? "automatic"}
+                    disabled={loading}
+                    onChange={(e) => {
+                      invalidate();
+                      setEngine(
+                        e.target.value === "automatic"
+                          ? null
+                          : (e.target.value as SpeakerSource),
+                      );
+                    }}
+                  >
+                    <option value="automatic">
+                      Automatic (from model catalog)
+                    </option>
+                    {sources
+                      .filter(([id]) => id !== "off")
+                      .map(([id, label]) => (
+                        <option
+                          key={id}
+                          value={id}
+                          disabled={
+                            !valid.some((s) => s.config.speaker_source === id)
+                          }
+                        >
+                          {label}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="grid gap-1">
+                  Language
+                  <select
+                    aria-label="Language"
+                    className={fieldClass}
+                    value={draft.language ?? ""}
+                    onChange={(e) => {
+                      invalidate();
+                      setDraft({ ...draft, language: e.target.value || null });
+                    }}
+                  >
+                    <option value="">Automatic</option>
+                    {draft.language &&
+                      !selected?.languages.includes(draft.language) && (
+                        <option value={draft.language} disabled>
+                          {draft.language} (not supported by this model)
+                        </option>
+                      )}
+                    {selected?.languages.map((code) => (
+                      <option key={code} value={code}>
+                        {languageName(code)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="grid gap-1">
+                  Expected speakers
+                  <select
+                    aria-label="Expected speakers"
+                    className={fieldClass}
+                    value={draft.speaker_count?.kind ?? "automatic"}
+                    onChange={(e) => {
+                      invalidate();
+                      setDraft({
+                        ...draft,
+                        speaker_count:
+                          e.target.value === "automatic"
+                            ? null
+                            : e.target.value === "exact"
+                              ? { kind: "exact", count: 4 }
+                              : { kind: "range", min: 2, max: 6 },
+                      });
+                    }}
+                  >
+                    <option value="automatic">Automatic</option>
+                    <option value="exact">Exactly</option>
+                    <option value="range">Between</option>
+                  </select>
+                </label>
+                {draft.speaker_count?.kind === "exact" && (
                   <input
-                    key={field}
-                    aria-label={
-                      field === "min" ? "Fewest speakers" : "Most speakers"
-                    }
-                    className={`${fieldClass} min-w-0 w-24`}
+                    aria-label="Exact speaker count"
+                    className={fieldClass}
                     type="number"
                     min={1}
                     max={32}
-                    value={
-                      draft.speaker_count?.kind === "range"
-                        ? draft.speaker_count[field]
-                        : 0
-                    }
+                    value={draft.speaker_count.count}
                     onChange={(e) => {
-                      if (draft.speaker_count?.kind === "range") {
-                        invalidate();
-                        setDraft({
-                          ...draft,
-                          speaker_count: {
-                            ...draft.speaker_count,
-                            [field]: Number(e.target.value),
-                          },
-                        });
-                      }
+                      invalidate();
+                      setDraft({
+                        ...draft,
+                        speaker_count: {
+                          kind: "exact",
+                          count: Number(e.target.value),
+                        },
+                      });
                     }}
                   />
-                ))}
-              </div>
-            )}
-            {current && (
-              <div className="text-[0.85rem] text-label-secondary">
-                <p>
-                  Live transcription:{" "}
-                  {current.capabilities.live_transcription
-                    ? "Supported"
-                    : "Not supported"}
-                </p>
-                <p>
-                  Live speaker analysis:{" "}
-                  {current.capabilities.live_speaker_analysis
-                    ? "Supported"
-                    : "Not supported"}
-                </p>
-                <p>
-                  Live text with speaker labels:{" "}
-                  {current.capabilities.live_attributed_text
-                    ? "Supported"
-                    : "Not supported"}
-                </p>
-                <p>
-                  Speaker limit:{" "}
-                  {current.capabilities.maximum_speakers ?? "Not specified"}
-                </p>
-                {draft.speaker_source === "integrated" && (
-                  <p>
-                    Speaker labels can change between processing sections.
-                    Labels from different sections do not identify the same
-                    voice.
-                  </p>
                 )}
-                <details>
-                  <summary>Downloaded artifact details</summary>
-                  {current.artifacts.map((a) => (
-                    <p key={a.id} className="[overflow-wrap:anywhere]">
-                      {a.filename} · {a.format} · {a.revision}
+                {draft.speaker_count?.kind === "range" && (
+                  <div className="flex gap-2">
+                    {(["min", "max"] as const).map((field) => (
+                      <input
+                        key={field}
+                        aria-label={
+                          field === "min" ? "Fewest speakers" : "Most speakers"
+                        }
+                        className={`${fieldClass} min-w-0 w-24`}
+                        type="number"
+                        min={1}
+                        max={32}
+                        value={
+                          draft.speaker_count?.kind === "range"
+                            ? draft.speaker_count[field]
+                            : 0
+                        }
+                        onChange={(e) => {
+                          if (draft.speaker_count?.kind === "range") {
+                            invalidate();
+                            setDraft({
+                              ...draft,
+                              speaker_count: {
+                                ...draft.speaker_count,
+                                [field]: Number(e.target.value),
+                              },
+                            });
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+                {current && (
+                  <div className="text-[0.85rem] text-label-secondary">
+                    <p>
+                      Live transcription:{" "}
+                      {current.capabilities.live_transcription
+                        ? "Supported"
+                        : "Not supported"}
                     </p>
-                  ))}
-                </details>
+                    <p>
+                      Live speaker analysis:{" "}
+                      {current.capabilities.live_speaker_analysis
+                        ? "Supported"
+                        : "Not supported"}
+                    </p>
+                    <p>
+                      Live text with speaker labels:{" "}
+                      {current.capabilities.live_attributed_text
+                        ? "Supported"
+                        : "Not supported"}
+                    </p>
+                    <p>
+                      Speaker limit:{" "}
+                      {current.capabilities.maximum_speakers ?? "Not specified"}
+                    </p>
+                    {draft.speaker_source === "integrated" && (
+                      <p>
+                        Speaker labels can change between processing sections.
+                        Labels from different sections do not identify the same
+                        voice.
+                      </p>
+                    )}
+                    <details>
+                      <summary>Downloaded artifact details</summary>
+                      {current.artifacts.map((a) => (
+                        <p key={a.id} className="[overflow-wrap:anywhere]">
+                          {a.filename} · {a.format} · {a.revision}
+                        </p>
+                      ))}
+                    </details>
+                  </div>
+                )}
               </div>
             )}
-
-          </div>
-        )}
-      </details>
-      {loading && <p role="status">Checking compatible choices…</p>}
-      {notice && <p role="status">{notice}</p>}
-      {error && (
-        <p role="alert" className="text-negative">
-          {error}
-        </p>
-      )}
+          </details>
+          {loading && <p role="status">Checking compatible choices…</p>}
+          {notice && <p role="status">{notice}</p>}
+          {error && (
+            <p role="alert" className="text-negative">
+              {error}
+            </p>
+          )}
+        </div>
+      </Group>
     </div>
   );
 }

@@ -11,7 +11,6 @@ import {
   type ModelStatus,
   type Readiness,
   type Settings,
-  type SpeakerModelsStatus,
 } from "../bindings";
 import { sentence } from "../processing/describe";
 
@@ -19,8 +18,6 @@ export type AppSettings = {
   settings: Settings | null;
   readiness: Readiness | null;
   models: ModelStatus[];
-  /// The speaker-detection weights as one item, or null before the first read.
-  speakers: SpeakerModelsStatus | null;
   /// Why the last read failed, or null. The last values read stay.
   error: string | null;
   refresh: () => Promise<void>;
@@ -31,21 +28,18 @@ export function useAppSettings(): AppSettings {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [models, setModels] = useState<ModelStatus[]>([]);
-  const [speakers, setSpeakers] = useState<SpeakerModelsStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, r, m, sp] = await Promise.all([
+      const [s, r, m] = await Promise.all([
         commands.getSettings(),
         commands.readiness(),
         commands.modelStatuses(),
-        commands.speakerModelsStatus(),
       ]);
       setSettings(s);
       if (r.status === "ok") setReadiness(r.data);
       setModels(m);
-      setSpeakers(sp);
       setError(r.status === "error" ? sentence(r.error) : null);
     } catch (e) {
       // The commands without a Result reject with the error text.
@@ -68,5 +62,5 @@ export function useAppSettings(): AppSettings {
     };
   }, [refresh]);
 
-  return { settings, readiness, models, speakers, error, refresh, setSettings };
+  return { settings, readiness, models, error, refresh, setSettings };
 }
