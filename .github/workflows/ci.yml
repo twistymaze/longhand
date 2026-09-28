@@ -145,7 +145,10 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
           APPLE_SIGNING_IDENTITY: "-"
+          # rust-cache removes non-Cargo files from target during cache save.
+          LONGHAND_NEMO_CACHE: ${{ runner.temp }}/longhand-nemo
         run: |
+          echo "LONGHAND_NEMO_CACHE=$LONGHAND_NEMO_CACHE" >> "$GITHUB_ENV"
           bun scripts/prepare-nemo.ts
           bun scripts/test-nemo.ts --helper "src-tauri/nemo-runtime/bin/longhand-nemo-helper${{ runner.os == 'Windows' && '.exe' || '' }}"
           cargo test -p nemo-runtime --features test-helper
