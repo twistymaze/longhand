@@ -31,7 +31,7 @@ Settings gets a recognition-model picker. It offers a curated list of nine model
 
 ### Problem Frame
 
-The walking skeleton hard-codes Whisper large-v3-turbo. The user does not want to use this model every day (`docs/ideas/recognition-model-picker.md`). Whisper does not stream, so all recognition waits until after Stop. Recognition is not the slowest step: for 30 minutes of audio, speaker detection takes about 300 s and Whisper recognition about 70 s (walking-skeleton plan, Phase 2b checkpoint). The Transcript tab exists during recording, but it shows only "The transcript is ready after you stop recording." (`src/session/SessionPage.tsx`). The Transcription settings pane shows one row for each required weight file: "Speech recognition", "Speaker segmentation" and "Speaker embedding" (`src/settings/Models.tsx`). The user has no choice to make about the last two, but must still read about them.
+The walking skeleton hard-codes Whisper large-v3-turbo. The user does not want to use this model every day (`docs/ideas/done/recognition-model-picker.md`). Whisper does not stream, so all recognition waits until after Stop. Recognition is not the slowest step: for 30 minutes of audio, speaker detection takes about 300 s and Whisper recognition about 70 s (walking-skeleton plan, Phase 2b checkpoint). The Transcript tab exists during recording, but it shows only "The transcript is ready after you stop recording." (`src/session/SessionPage.tsx`). The Transcription settings pane shows one row for each required weight file: "Speech recognition", "Speaker segmentation" and "Speaker embedding" (`src/settings/Models.tsx`). The user has no choice to make about the last two, but must still read about them.
 
 The skeleton prepared for this change. The catalog lists models and has a `streaming` flag. Settings carry `asr_model`. Each session records its model. Recognition sits behind the `Recognizer` trait. Handy's catalog is a bundled `catalog.json` that a build-time script generates from the `handy-computer` Hugging Face organization, and every entry runs on `transcribe-cpp`. Longhand already uses `transcribe-cpp` 0.2.3, which has a streaming API. Thus the second-engine problem in skeleton KTD6 (a second `ort` pin through `transcribe-rs`) does not apply.
 
@@ -122,7 +122,7 @@ The skeleton prepared for this change. The catalog lists models and has a `strea
 
 ### Scope Boundaries
 
-- Speaker labels from the recognition model (MOSS, Multitalker Parakeet). `docs/ideas/alternative-diarization-architectures.md` records this.
+- Speaker labels from the recognition model (MOSS, Multitalker Parakeet). `docs/ideas/done/alternative-diarization-architectures.md` records this.
 - A choice of speaker-detection models.
 - A language setting. The multilingual models detect the language.
 - Import of custom model files, and models from Handy's catalog outside R1.
@@ -641,8 +641,8 @@ stateDiagram-v2
 **Files:**
 - `CONCEPTS.md`
 - `docs/ideas/README.md`
-- `docs/ideas/recognition-model-picker.md`
-- `docs/ideas/live-transcript-view.md`
+- `docs/ideas/done/recognition-model-picker.md`
+- `docs/ideas/done/live-transcript-view.md`
 - `docs/ideas/power-aware-processing.md`
 
 **Approach:**

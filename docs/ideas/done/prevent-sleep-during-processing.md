@@ -1,6 +1,6 @@
 ---
 title: Prevent sleep during processing
-status: in-progress
+status: done
 area: processing
 added: 2026-09-27
 source: "User-confirmed speaker recognition brainstorm"
@@ -15,4 +15,4 @@ Prevent idle system sleep while post-recording work runs. Release protection on 
 
 ## Current state
 
-Covered by the [flexible speaker recognition plan](../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md).
+Shipped in PR #18 ([flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md)). The pipeline runner holds a processing lease while it works (`crates/power/src/processing.rs`).

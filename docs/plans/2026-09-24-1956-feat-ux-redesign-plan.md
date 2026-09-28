@@ -26,7 +26,7 @@ Longhand changes from one window with a sidebar to a Home list of sessions and o
 
 ### Problem Frame
 
-The walking skeleton works, but the user does not want to use it. At the Phase 2b checkpoint (`docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`, checkpoint log) the user found that nothing was broken and that the experience was still wrong. Settings and Status are sidebar sections inside the main window. Saved sessions are a sidebar list, a pattern the user dislikes in Anarlog. The completed-session view puts the notes in a narrow side column. The scratchpad records one timestamped line per note, which the user never wanted: the intent was a note-taking document that you can edit and rearrange. Every session is named "Longhand session" with a date, so the list and the folders are hard to read. Test sessions stay in the list because nothing can remove them. `docs/ideas/ux-redesign.md` holds the full brief and the user confirmed it on 2026-09-24.
+The walking skeleton works, but the user does not want to use it. At the Phase 2b checkpoint (`docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`, checkpoint log) the user found that nothing was broken and that the experience was still wrong. Settings and Status are sidebar sections inside the main window. Saved sessions are a sidebar list, a pattern the user dislikes in Anarlog. The completed-session view puts the notes in a narrow side column. The scratchpad records one timestamped line per note, which the user never wanted: the intent was a note-taking document that you can edit and rearrange. Every session is named "Longhand session" with a date, so the list and the folders are hard to read. Test sessions stay in the list because nothing can remove them. `docs/ideas/done/ux-redesign.md` holds the full brief and the user confirmed it on 2026-09-24.
 
 ### Key Decisions
 
@@ -48,10 +48,10 @@ The walking skeleton works, but the user does not want to use it. At the Phase 2
 This plan covers area A of a broader request to make Longhand real and usable. The areas below are the current understanding, not a committed roadmap.
 
 - **A. UX redesign and markdown notes:** this plan.
-- **B. Model selection:** a recognition-model picker and a second engine (`docs/ideas/recognition-model-picker.md`).
+- **B. Model selection:** a recognition-model picker and a second engine (`docs/ideas/done/recognition-model-picker.md`).
   - Depends on A for the Recognition pane in the Settings window (R2).
   - Can proceed independently of A in the capture and recognition code.
-- **C. Live transcript:** support for streaming models (`docs/ideas/live-transcript-view.md`).
+- **C. Live transcript:** support for streaming models (`docs/ideas/done/live-transcript-view.md`).
   - Depends on B, because a streaming model must be selectable.
   - Depends on A for the Transcript tab during recording (R13).
   - Still to decide: how a live view fits the attention budget (KD2).
@@ -189,7 +189,7 @@ The questions deferred to planning are answered in the Planning Contract (KTD4, 
 
 ### Sources / Research
 
-- `docs/ideas/ux-redesign.md`: the redesign brief, confirmed by the user on 2026-09-24. Reference screenshots of Wispr Flow are in the gitignored `docs/ideas/ux-redesign-screenshots/`.
+- `docs/ideas/done/ux-redesign.md`: the redesign brief, confirmed by the user on 2026-09-24. Reference screenshots of Wispr Flow are in the gitignored `docs/ideas/done/ux-redesign-screenshots/`.
 - `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`: KD6, KD7, R12, R12a, R13, R18 (the notes model this plan replaces), U7 (attention budget), U11 (session folder), U24 (resume) and the Phase 2b checkpoint.
 - `src/settings/Settings.tsx`: the current single shell with the sidebar, the settings panes and the session list.
 - `src/session/SessionView.tsx`: the notes column, the summary and transcript toggle, and the Resume and Regenerate controls.
@@ -661,7 +661,7 @@ Manual checks on the signed bundle (microphone, Keychain, menus and the Trash ne
 - The six manual checks pass on the signed bundle.
 - `src/editor/PROVENANCE.md` records every copied file, and `scripts/check-provenance.sh` lists `src/editor`.
 - `CONCEPTS.md` matches the renamed-folder and Title meanings.
-- `docs/ideas/ux-redesign.md` is set to `done` with its row moved to Done in `docs/ideas/README.md`, once the work ships.
+- `docs/ideas/done/ux-redesign.md` is set to `done` with its row moved to Done in `docs/ideas/README.md`, once the work ships.
 - Cleanup: the removed surfaces (sidebar shell, scratchpad, notes column, note anchors, pending notes, `navigate.ts`) leave no dead code, commented-out blocks or unused bindings.
 
 **Per unit**

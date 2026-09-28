@@ -1,6 +1,6 @@
 ---
 title: Model capabilities and speaker options
-status: in-progress
+status: done
 area: interface
 added: 2026-09-27
 source: "User-confirmed speaker recognition brainstorm"
@@ -15,4 +15,4 @@ Show which models support live transcription and speaker labels, including label
 
 ## Current state
 
-Covered by the [flexible speaker recognition plan](../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md).
+Shipped in PR #18 ([flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md)).

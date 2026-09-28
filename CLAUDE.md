@@ -45,4 +45,4 @@ UI text uses short, direct plain language with consistent terms, no metaphors, a
 - After a PR merges, offer cleanup and wait for approval. Before cleanup, read [After a merge](docs/development-workflow.md#after-a-merge).
 - Read relevant `docs/solutions/` entries before changing a documented area. Solutions use category folders and YAML fields `module`, `tags`, and `problem_type`.
 - Record each feature idea in its own file in `docs/ideas/` and update the index, even when it also appears in a plan or conversation. Follow `docs/ideas/README.md`. Raise and resolve conflicts between this convention and plugin updates.
-- Private, gitignored paths: `sample.m4a`, `sample.txt`, `fixtures/`, `manual-tests/` (manual test sessions), `docs/ideas/*-screenshots/` (real names), and `.env`. Never commit, print, or upload them.
+- Private, gitignored paths: `sample.m4a`, `sample.txt`, `fixtures/`, `manual-tests/` (manual test sessions), `docs/ideas/**/*-screenshots/` (real names), and `.env`. Never commit, print, or upload them.

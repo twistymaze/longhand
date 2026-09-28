@@ -380,5 +380,5 @@ The `cargo` and `uv` commands need the sandbox bypass. Keychain reads must be te
 - On a new install, Settings shows the OpenAI Base URL and sends nothing until a key is saved.
 - With a real OpenAI key, the picker lists the account's models, and a chosen model writes a summary.
 - With a local server, the picker lists its models with no key.
-- `docs/ideas/summary-model-picker.md` has status `done` and its row is in the Done list of `docs/ideas/README.md`.
+- `docs/ideas/done/summary-model-picker.md` has status `done` and its row is in the Done list of `docs/ideas/README.md`.
 - No experimental code, abandoned approaches or debug output stay in the diff.

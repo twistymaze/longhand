@@ -238,9 +238,9 @@ The app is not in use. All existing data is test data and the user can delete it
 - **Goal:** The docs use "Save" and "Saved", and the glossary records the terms to avoid.
 - **Requirements:** R6, R7.
 - **Dependencies:** U4.
-- **Files:** `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`, `docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`, `docs/ideas/ux-redesign.md`, `CONCEPTS.md`.
+- **Files:** `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`, `docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`, `docs/ideas/done/ux-redesign.md`, `CONCEPTS.md`.
 - **Approach:**
-  1. In the walking-skeleton plan, the solutions doc and `docs/ideas/ux-redesign.md`, change each use, including code names, which must match the KTD2 names. The unit IDs and the checkpoint log's order and facts do not change.
+  1. In the walking-skeleton plan, the solutions doc and `docs/ideas/done/ux-redesign.md`, change each use, including code names, which must match the KTD2 names. The unit IDs and the checkpoint log's order and facts do not change.
   2. Update the solutions doc's frontmatter `module` and `tags` if they use the term.
   3. In `CONCEPTS.md`, rename the "Landing" entry to "Save" and rewrite the Staging and Home folder entries. The avoid line lists "land", "lands", "landed" and "landing" for all text.
 - **Test scenarios:**

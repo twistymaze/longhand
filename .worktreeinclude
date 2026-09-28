@@ -8,7 +8,7 @@ reference-source/
 .env
 
 # Reference screenshots for idea briefs.
-/docs/ideas/*-screenshots/
+/docs/ideas/**/*-screenshots/
 
 # Not copied:
 # - fixtures/, sample.m4a, sample.txt, manual-tests/: large, and tests read them

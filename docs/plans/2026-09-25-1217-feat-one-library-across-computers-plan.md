@@ -126,7 +126,7 @@ None remain. Planning resolved each question that the brainstorm deferred:
 
 ### Sources / Research
 
-- `docs/ideas/cross-machine-library.md`: the idea this plan picks up.
+- `docs/ideas/done/cross-machine-library.md`: the idea this plan picks up.
 - `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`: KD5, R6d (resume reprocesses from the folder's audio), R25, R25a, KTD10 (the database as working state plus a rebuildable row per saved session).
 - `crates/session-core/src/folder.rs`: `SessionDoc`, the `session.md` frontmatter (id, started, title, speaker count, segments).
 - `crates/session-core/migrations/0001_init.sql` to `0006_capture_choice_and_channels.sql` (store version 6): `title_source`, `asr_model`, `found_speakers` and `home_path`, which only the database holds, and the per-computer columns added since (`live_transcript`, the Transcribe Again marks, `mic_id`, `system_audio`, `stereo_from`).
@@ -503,7 +503,7 @@ flowchart LR
 **Files:**
 - `CONCEPTS.md`
 - `docs/ideas/README.md`
-- `docs/ideas/cross-machine-library.md`
+- `docs/ideas/done/cross-machine-library.md`
 - `docs/ideas/library-and-browsing.md`
 
 **Approach:**

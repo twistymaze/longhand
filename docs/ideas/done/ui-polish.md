@@ -1,6 +1,6 @@
 ---
 title: Library and desktop UI polish
-status: in-progress
+status: done
 area: interface
 added: 2026-09-26
 source: "User feedback after using Longhand"
@@ -19,4 +19,4 @@ Hover previews proved difficult to use. The user wants familiar desktop controls
 
 ## Notes / Current state
 
-The combined [UI polish plan](../plans/2026-09-26-2119-feat-ui-polish-plan.md) defines the approved scope and implementation checks.
+Shipped in PR #17. The combined [UI polish plan](../../plans/2026-09-26-2119-feat-ui-polish-plan.md) defines the approved scope and implementation checks.
