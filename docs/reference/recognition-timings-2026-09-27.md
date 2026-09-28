@@ -269,4 +269,16 @@ The app was rebuilt, verified with its Developer ID signature, and restarted bef
 
 The long-note display check exposed a separate history-selection defect after the batching fix. Source `5a7ca68` corrects it. A new signed build then completed another five-minute Resume check on that same new test note. The visible history appeared once, new words and labels continued, and Stop responded within about 1.3 seconds. The renderer's highest sampled RSS was 772,800 KiB, about 0.74 GiB, across 29 samples at ten-second intervals. This is a short check with a long existing transcript, not another full 176-minute live run or an exact allocation peak. Local evidence: `native-dedup-resume-memory.jsonl`.
 
-That build still recognizes saved historical audio after Resume. Appending a segment changes the whole-recording audio identity; decoding the saved Opus archive can also change the processing-PCM digest. The conservative checks then invalidate earlier recognition. A verified saved-prefix reuse path is being tested separately. Until it passes a native check, do not describe Resume as processing only new audio. The intended-laptop target and native Windows runtime checks remain open.
+That build still recognized saved historical audio after Resume. It saved about 19 minutes 7 seconds after Stop. Appending a segment changed the whole-recording audio identity; decoding the saved Opus archive could also change the processing-PCM digest. The conservative checks then invalidated earlier recognition.
+
+### Saved history reuse, source `c1c064a`
+
+The corrected signed app appended another full five-minute playback to the same new long test note. Stop responded in about 1.4 seconds. The transcript and summary saved **about 69 seconds after Stop**, including audio preparation, coverage verification, summary generation, and Save. This replaces the roughly 19-minute wait for this Resume case. No other native processing job ran at the same time.
+
+The saved artifact retained all 26,124 previous text rows with identical text, timings, and speaker keys. It added 828 rows, with no duplicate row IDs. Processing coverage increased from 11 intervals to 12. The app retained only the appended segment's recognition checkpoint. Audio preparation and verification still cover the full recording; the change avoids repeating successful recognition of the saved history.
+
+The live view remained responsive. Across 28 samples at ten-second intervals, renderer RSS reached 761,216 KiB, about 0.73 GiB. Executable SHA-256: `4b58f81683dd52df90135c59006d7d63fc1fa7fd14d359a5c168c2b8b9dfe0bd`. Local evidence: `native-prefix-reuse-comparison.json` and `native-prefix-reuse-memory.jsonl`.
+
+Reuse requires unchanged saved audio, transcript, configuration, generation, and equivalent coverage. Invalid proof selects ordinary processing before reuse starts; a parent change during an attempt stops publication. An explicit speaker count with pyannote retains whole-recording processing, because that count must not be forced onto a short appended section.
+
+This is a successful five-minute Resume test with a long saved transcript on the M3 Ultra. It does not replace the failed original 176-minute live-view test, establish fresh three-hour completion time, or validate laptop performance. The intended-laptop target and native Windows runtime checks remain open.
