@@ -41,7 +41,7 @@ The reference apps each miss part of the expected macOS behaviour. Handy shows o
 - KD3. **The track is a setting of one app, not a separate app for each track.** A user can move between tracks with no reinstall. (session-settled: user-directed — chosen over anarlog's separate app for each track: switching then means installing another app.) Governs R8.
 - KD4. **The app asks before it downloads.** Nothing downloads without consent, and "Remind Me Later" waits 24 hours. (session-settled: user-directed — chosen over a background download followed by a question, and over a third "Install When I Quit" button. The 24-hour delay was chosen over "until next launch" and 4 hours.) Governs R13, R15, R16.
 - KD5. **The first unit proves the version form on real macOS.** Tauri writes the version into both bundle version fields (`tauri-codegen-2.6.3/src/context.rs:324`). A spike must show that notarization, Gatekeeper, TCC and the updater accept a pre-release version before other work continues. Governs R6.
-- KD6. **The update flow never interrupts a recording.** The recording surface must not draw attention back to the screen (U7's attention budget in `CLAUDE.md`). (session-settled: user-directed — chosen over a relaunch with no second question after the recording, or a silent install at the next quit.) Governs R14, R17.
+- KD6. **The update flow never interrupts a recording.** The recording surface must not draw attention back to the screen (U7's attention budget in `CLAUDE.md`). (session-settled: user-directed — chosen over a relaunch with no second question after the recording, or an install at the next quit with no second question.) Governs R14, R17.
 - KD7. **Automatic checks can be turned off in General, and a manual check always works.** (session-settled: user-directed — chosen over automatic checks with no setting: the user asked for the setting in General.) Governs R10, R11.
 
 ---
@@ -53,12 +53,13 @@ The reference apps each miss part of the expected macOS behaviour. Handy shows o
 - R1. Each push to main that runs CI and passes all checks makes a preview build of the macOS app. The build is signed with the Developer ID certificate, notarized and stapled. Docs-only pushes already run no CI (`.github/workflows/ci.yml`, `push.paths`).
 - R2. A preview build runs on Apple silicon only.
 - R3. CI publishes each preview build to the public repository that holds only builds. The publication contains a DMG for the first install, the update archive with its signature, and an update manifest that identifies the newest preview build.
-- R4. A failed build, signature or notarization step publishes nothing, and the manifest continues to identify the previous preview build.
+- R4. A failed build, signature or notarization step publishes nothing, and the manifest continues to identify the previous preview build. CI also publishes nothing when the build's commit is no longer the tip of main at publish time, or when its version is not higher than the version the manifest identifies. Thus a late or re-run build of an older commit cannot replace a newer build.
 - R5. The source repository stays private. The public repository holds only built files.
+- R19. Only the preview build job for pushes to main can read the signing certificate, the notarization key, the updater private key and the publish credential. Pull request runs get none of them.
 
 **Version and track**
 
-- R6. A preview build's version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMM>`, for example `0.2.0-preview.202609281430`. A later build always has a higher version.
+- R6. A preview build's version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMMSS>`, for example `0.2.0-preview.20260928143012`. A later build always has a higher version.
 - R7. Settings → About shows the full version and the short commit of the installed build.
 - R8. Each build records its track, which is `preview` for all builds in this plan. The updater offers only builds of the track that is set, and the stored track value is a setting of the same app. Thus a later plan can add a stable track and a track picker with no new app identity and no reinstall.
 
@@ -66,16 +67,16 @@ The reference apps each miss part of the expected macOS behaviour. Handy shows o
 
 - R9. When automatic checks are on, the app checks for a newer build at launch and at regular intervals while it runs.
 - R10. Settings → General has a setting to check for updates automatically. It is on by default. When it is off, the app makes no automatic check.
-- R11. "Check for Updates…" in the app menu checks at once. It ignores R10 and any remind delay from R15. If no newer build exists, it says the app is up to date. If the check fails, it shows the error.
+- R11. "Check for Updates…" in the app menu checks at once. It ignores R10 and any remind delay from R15. It shows its result at once, also while a note is recording or processing, because the user asked for it. If the user then clicks "Install and Relaunch", the download starts, and R17 holds the relaunch until recording and processing end. If no newer build exists, it says the app is up to date. If the check fails, it shows the error.
 - R12. An automatic check that fails, for example with no network, shows nothing to the user.
 
 **Update dialog and install**
 
 - R13. When a newer build exists, the app shows a standard macOS dialog: "Longhand <new version> is available. You have <installed version>." It has two buttons: "Install and Relaunch" and "Remind Me Later".
-- R14. The app never shows the dialog, downloads or installs while a note is recording or processing. If an offer is due during that time, the app shows it when recording and processing both end.
+- R14. While a note is recording or processing, the app does not show the dialog, start a download, install or relaunch. A download that started before the recording can finish. If an offer is due during that time, the app shows it when recording and processing both end.
 - R15. After "Remind Me Later", no automatic dialog shows for 24 hours, even when newer builds are published. After 24 hours, the next check offers the newest build.
-- R16. "Install and Relaunch" downloads the build with visible progress, checks its signature, installs it and relaunches Longhand. Nothing downloads before this click.
-- R17. If a recording starts before the download ends, the app does not relaunch. When recording and processing both end, it asks: "Longhand <new version> is ready. [Relaunch Now] [Later]". "Later" installs the build when the user next quits Longhand.
+- R16. "Install and Relaunch" downloads the build with visible progress, checks its signature, installs it and relaunches Longhand. The build does not download before this click. A check reads only the update manifest.
+- R17. If a recording starts before the download ends, the app does not relaunch. When recording and processing both end, it asks: "Longhand <new version> is ready. [Relaunch Now] [Later]". "Later" installs the build when the user next quits Longhand. Closing the window does not quit Longhand, so if it has not quit 24 hours after "Later", the next check asks the ready question again, or offers a newer build if one exists.
 - R18. If a download or signature check fails, the app shows the error with a choice to try again. The installed app does not change.
 
 ---
@@ -106,6 +107,7 @@ The reference apps each miss part of the expected macOS behaviour. Handy shows o
 - AE2. **Covers R14.** Given the dialog is open, when the user starts a recording with the shortcut, then the dialog closes. The dialog shows again when recording and processing end.
 - AE3. **Covers R15.** Given the user clicked "Remind Me Later" at 09:00 and three newer builds are published before 17:00, then no automatic dialog shows until 09:00 the next day. At that time the dialog offers the newest of the three builds.
 - AE4. **Covers R11, R15.** Given the remind delay is active, when the user chooses "Check for Updates…", then the dialog shows at once.
+- AE8. **Covers R11, R17.** Given a note is recording, when the user chooses "Check for Updates…" and clicks "Install and Relaunch", then the download starts, and the app does not relaunch until recording and processing end.
 - AE5. **Covers R10, R11.** Given automatic checks are off, when Longhand starts, then it makes no network request for updates. When the user chooses "Check for Updates…", then the app checks.
 - AE6. **Covers R4.** Given the notarization of a new build fails, then the manifest still identifies the previous build, and no user receives an offer for the failed build.
 - AE7. **Covers R17.** Given the "ready" question shows after a recording and the user clicks "Later", when the user quits Longhand, then the new build is installed, and the next launch runs it.
@@ -126,8 +128,8 @@ The reference apps each miss part of the expected macOS behaviour. Handy shows o
 ### Dependencies / Assumptions
 
 - The Developer ID certificate and the App Store Connect API key that local notarized builds use (see `docs/development-workflow.md`) can be stored as CI secrets.
-- The user creates the public repository that holds only builds and gives CI permission to publish to it.
-- The updater's signing key pair is new. Its private key is a CI secret and must not be lost. Without it, installed builds cannot accept any later update.
+- The user creates the public repository that holds only builds. CI gets a credential that can write only to that repository's contents and releases (a fine-grained token or a GitHub App limited to that repository), stored as a CI secret.
+- The updater's signing key pair is new. Its private key is a CI secret and must not be lost. Without it, installed builds cannot accept any later update. If the private key leaks, make a new key pair, publish a build with the new public key as a DMG, and tell each user to reinstall from it by hand. Installed builds cannot move to a new key through an update.
 - Builds installed before this work have no updater. Each user installs the first preview build from its DMG by hand.
 - Each preview build adds a signed and notarized macOS build to the billed CI minutes on each push to main.
 - Anyone who has the public repository's link can download a build. A build contains no user data.
@@ -138,8 +140,8 @@ The reference apps each miss part of the expected macOS behaviour. Handy shows o
 
 **Deferred to Planning**
 
-- If the spike (KD5) shows that macOS or notarization rejects a pre-release version in the bundle's short version field, use the fallback: set the bundle build number to the timestamp and the short version to the plain `X.Y.Z`. The update manifest still carries the full version from R6.
-- Is the dialog a native macOS alert or a small app window? It must look and behave like a standard macOS alert, with progress for R16.
+- If the spike (KD5) shows that macOS or notarization rejects a pre-release version in the bundle's short version field, use the fallback: set the bundle build number to the timestamp and the short version to the plain `X.Y.Z`. The build must still embed the full R6 version, the updater must compare against that value (not the plain config version), and Settings → About (R7) shows it. Otherwise every newer preview build sorts below the installed `X.Y.Z` and no update is offered.
+- Build the dialog as a small app window that looks and behaves like a standard macOS alert, with progress for R16. The dialog plugin's native alert blocks the main thread in a modal loop: code cannot close it and it cannot show progress, so it cannot meet AE2 or R16. What does the window look like in detail?
 - How often does R9 check while the app runs?
 - How many old preview builds does the public repository keep?
 - Is the preview build a separate CI job after the checks, or a separate workflow that runs when CI passes? It must meet R1 and R4.

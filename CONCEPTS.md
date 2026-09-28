@@ -114,4 +114,4 @@ A hand-kept record in the full licence list for a shipped component that no lice
 The stream of builds that the updater offers to an installed app. A build records its track, and the track is a setting of the one app: switching tracks needs no reinstall. Only the preview track exists now. A stable track comes later.
 
 ### Preview build
-A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMM>`, so a later build always has a higher version.
+A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMMSS>`, so a later build always has a higher version.
