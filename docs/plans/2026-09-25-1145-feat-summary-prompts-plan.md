@@ -87,11 +87,11 @@ The current summary has one fixed shape: an overview, then "Key points" with a `
 
 ### Scope Boundaries
 
-- Choosing the prompt from the destination folder. This is the existing idea `docs/ideas/summary-kind-per-folder.md`, and it builds on this list.
+- Choosing the prompt from the destination folder. This is the existing idea `docs/ideas/someday/summary-kind-per-folder.md`, and it builds on this list.
 - Choosing a prompt for one note at Regenerate time, or before a recording.
-- Carrying context from the previous session (`docs/ideas/session-to-session-context.md`).
+- Carrying context from the previous session (`docs/ideas/someday/session-to-session-context.md`).
 - Editing the title prompt, and placeholders or variables in prompt text.
-- A participant list that gives people reliable names. This is a new idea, `docs/ideas/participant-names.md`.
+- A participant list that gives people reliable names. This is a new idea, `docs/ideas/someday/participant-names.md`.
 - A change to how the transcript view labels speakers. The transcript still shows Speaker N.
 - Import, export or sharing of prompts.
 

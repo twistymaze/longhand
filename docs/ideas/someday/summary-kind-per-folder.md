@@ -1,6 +1,6 @@
 ---
 title: Summary kinds chosen by folder
-status: open
+description: "A summary prompt chosen by folder: a recap for Pathfinder, decisions and follow-ups for work"
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

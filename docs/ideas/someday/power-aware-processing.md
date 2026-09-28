@@ -1,10 +1,10 @@
 ---
 title: Schedule processing around power and thermals
-status: open
+description: "Wait for idle and mains power before heavy processing"
 area: processing
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"
-related: [prevent-sleep-opt-out]
+related: []
 ---
 
 # Schedule processing around power and thermals

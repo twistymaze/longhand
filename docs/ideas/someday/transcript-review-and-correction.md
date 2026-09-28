@@ -1,6 +1,6 @@
 ---
 title: Transcript review and correction
-status: open
+description: "Seek, merge and split turns, and fix wrong names in a transcript"
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

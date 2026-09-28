@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A person who uses Longhand on several computers that sync one folder sees the same notes in Home on each computer, and can do anything with a note on any of them, whichever computer recorded it.
 - **Means:** `session.md` becomes the complete record of a saved note (KD2, KTD2). Notes from other computers become ordinary saved rows in this computer's database, built from their folders (KTD1). Every writer follows the folder first (KD4, KTD3). A library scan at launch and a folder watcher while open keep the rows current (KTD5–KTD7).
-- **Product authority:** This plan covers the shared library, the complete `session.md`, folder watching, and the change of the UI term "Destination" to "Storage". Search and the other parts of `docs/ideas/library-and-browsing.md` are not active scope. The Product Contract wins on behavior. A KTD wins on mechanism within the Rs that it cites.
+- **Product authority:** This plan covers the shared library, the complete `session.md`, folder watching, and the change of the UI term "Destination" to "Storage". Search and the other parts of `docs/ideas/someday/library-and-browsing.md` are not active scope. The Product Contract wins on behavior. A KTD wins on mechanism within the Rs that it cites.
 - **Stop conditions:** Stop and ask when a saved-row import cannot fit the session state machine without a new state, when `notify` cannot watch a folder under `~/Library/CloudStorage` at all, or when a change would alter a KD.
 - **Execution profile:** Eight units in four phases. `ce-work` implements in a worktree named `one-library-across-computers`. Commit per unit. Local checks are the gate (see Verification Contract). The synced-folder behavior is tested manually from the signed bundle on two computers.
 - **Open blockers:** None.
@@ -99,7 +99,7 @@ Walking-skeleton `KD5` and `R25` already say that the folders hold the content a
 ### Scope Boundaries
 
 - Several people sharing one library (KD1).
-- Search, and any other part of `docs/ideas/library-and-browsing.md`.
+- Search, and any other part of `docs/ideas/someday/library-and-browsing.md`.
 - Any in-app way to merge or resolve a sync conflict (KD6).
 - Showing notes that another computer is recording or processing (R2).
 - Renaming "Destination" in code, docs or `CONCEPTS.md` (KD8).
@@ -504,7 +504,7 @@ flowchart LR
 - `CONCEPTS.md`
 - `docs/ideas/README.md`
 - `docs/ideas/done/cross-machine-library.md`
-- `docs/ideas/library-and-browsing.md`
+- `docs/ideas/someday/library-and-browsing.md`
 
 **Approach:**
 1. Add to `CONCEPTS.md`: Library (every saved note in the retained storage folders), Adopt, and Conflict copy.

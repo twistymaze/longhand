@@ -1,6 +1,6 @@
 ---
 title: A recording shortcut per destination folder
-status: parked
+description: "A shortcut for each destination, so that the recording goes to the right place"
 area: capture
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

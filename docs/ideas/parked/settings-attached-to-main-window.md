@@ -1,6 +1,6 @@
 ---
 title: Settings attached to the main window
-status: parked
+description: "A Settings window or sheet that moves with the main window"
 area: interface
 added: 2026-09-25
 source: "User review of the UX redesign bundle, 2026-09-25"

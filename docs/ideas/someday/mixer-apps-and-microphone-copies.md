@@ -1,6 +1,6 @@
 ---
 title: Mixer apps and copies of the microphone in system audio
-status: open
+description: "Keep mixer apps such as Wave Link out of the system channel, and detect copies of the microphone"
 area: capture
 added: 2026-09-26
 source: "PR #12 signed-bundle tests with Elgato Wave Link"

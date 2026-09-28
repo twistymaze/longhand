@@ -1,6 +1,6 @@
 ---
 title: Choose the recognition model
-status: done
+description: "A Settings picker for the transcription model, with download and delete"
 area: interface
 added: 2026-09-21
 source: "Deferred from the walking skeleton (docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md, Scope Boundaries); also in the UX redesign input"

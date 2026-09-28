@@ -1,6 +1,6 @@
 ---
 title: Choose the shortcuts
-status: done
+description: "Set, reset or clear the recording shortcut and a show/hide shortcut in Settings"
 area: interface
 added: 2026-09-25
 source: "a ce-brainstorm session, 2026-09-25"

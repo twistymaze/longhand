@@ -131,4 +131,4 @@ macOS 26 changed where the buttons are inside their frame. The same y therefore 
 ## Related Issues
 
 - `docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`, Completion record: the user-facing result of this fix.
-- `docs/ideas/settings-attached-to-main-window.md`: the Settings window, which keeps a standard title bar.
+- `docs/ideas/parked/settings-attached-to-main-window.md`: the Settings window, which keeps a standard title bar.

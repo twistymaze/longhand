@@ -1,6 +1,6 @@
 ---
 title: Import an existing recording
-status: open
+description: "Process an audio file from a separate recorder as a note"
 area: capture
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

@@ -1,6 +1,6 @@
 ---
 title: Obsidian vault sync
-status: open
+description: "Keep saved notes in step with an Obsidian vault"
 area: library-and-sharing
 added: 2026-09-21
 source: "Separate track named in the walking skeleton (docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md)"

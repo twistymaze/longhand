@@ -55,7 +55,7 @@ This plan covers area A of a broader request to make Longhand real and usable. T
   - Depends on B, because a streaming model must be selectable.
   - Depends on A for the Transcript tab during recording (R13).
   - Still to decide: how a live view fits the attention budget (KD2).
-- **D. System audio capture:** a second capture source (`docs/ideas/system-audio-capture.md`).
+- **D. System audio capture:** a second capture source (`docs/ideas/parked/system-audio-capture.md`).
   - Can proceed independently of A, B and C.
   - Still to decide: where the source control goes on the recording page and in Settings.
 
@@ -163,7 +163,7 @@ flowchart TB
 
 **Deferred for later**
 
-- Search across sessions, and the session index it needs (`docs/ideas/library-and-browsing.md`).
+- Search across sessions, and the session index it needs (`docs/ideas/someday/library-and-browsing.md`).
 - The recognition-model picker and a second engine (area B).
 - The live transcript view (area C). R13 is the recording-state text until then.
 - System audio capture (area D).
@@ -694,7 +694,7 @@ Manual checks on the signed bundle (microphone, Keychain, menus and the Trash ne
 - P3: `src/session/NotesTab.tsx`. A failed notes save shows an error but does not try again.
 - P3: No test covers a failed regeneration with a rename pending, or a store-write failure in the middle of a rename.
 
-**Parked:** Settings as a window attached to the main window (`docs/ideas/settings-attached-to-main-window.md`).
+**Parked:** Settings as a window attached to the main window (`docs/ideas/parked/settings-attached-to-main-window.md`).
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Carry context from the previous session
-status: open
+description: "Give the summary of the previous note as context for the next one in a series"
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

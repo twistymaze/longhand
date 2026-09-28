@@ -1,6 +1,6 @@
 ---
 title: One library across computers that share a destination
-status: done
+description: "Every computer that shares a synced storage folder lists and works on every note in it"
 area: library-and-sharing
 added: 2026-09-23
 source: "Session conversation, recorded in docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md (How This Work Fits Together)"

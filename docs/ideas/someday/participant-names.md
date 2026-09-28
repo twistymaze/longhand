@@ -1,6 +1,6 @@
 ---
 title: Participant names for a session
-status: open
+description: "The user lists who was present, so that the summary can use names"
 area: transcript-and-summary
 added: 2026-09-25
 source: "the summary prompts brainstorm (docs/plans/2026-09-25-1145-feat-summary-prompts-plan.md)"

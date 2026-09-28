@@ -1,6 +1,6 @@
 ---
 title: Live transcript while recording
-status: done
+description: "A streaming model shows the transcript during recording"
 area: transcript-and-summary
 added: 2026-09-21
 source: "Deferred from the walking skeleton (docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md, KD8, R10); the retired FUTURE-IDEAS.md"

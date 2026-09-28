@@ -1,6 +1,6 @@
 ---
 title: Prevent sleep during processing
-status: done
+description: "Processing after Stop keeps the Mac awake; the display can sleep"
 area: processing
 added: 2026-09-27
 source: "User-confirmed speaker recognition brainstorm"

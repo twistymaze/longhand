@@ -1,6 +1,6 @@
 ---
 title: Saved summary prompts
-status: done
+description: "Named summary prompts in Settings, with Topic summary and Play-by-play summary built in"
 area: transcript-and-summary
 added: 2026-09-25
 source: "a ce-brainstorm session, 2026-09-25"

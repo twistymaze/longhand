@@ -22,8 +22,8 @@ deepened: 2026-09-26
 - **Status (2026-09-26, after the signed-bundle tests):**
   - All units are built. The microphone choice (U1–U3) and R18 (U11) ship.
   - Computer audio is hidden and turned off (`SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`). Two Teams test calls failed Verify because the mono mix of KD4 fails when one channel has a fault. In the first call, a mixer app put a late copy of the microphone and extra copies of the call on the system channel. In the second, speaker echo gave false copy hits.
-  - KD4 and KD6 are open again. The likely replacement is [per-channel processing](../ideas/per-channel-processing.md), which needs [faster diarization](../ideas/faster-diarization.md) first.
-  - The findings are in [mixer apps and microphone copies](../ideas/mixer-apps-and-microphone-copies.md).
+  - KD4 and KD6 are open again. The likely replacement is [per-channel processing](../ideas/someday/per-channel-processing.md), which needs [faster diarization](../ideas/next/faster-diarization.md) first.
+  - The findings are in [mixer apps and microphone copies](../ideas/someday/mixer-apps-and-microphone-copies.md).
 
 ---
 
@@ -740,7 +740,7 @@ A note whose choice is "System default" has only the Chosen and Interrupted stat
 
 **Files:**
 - `CONCEPTS.md` (Microphone choice, System audio and Echo removal, updated to the shipped behavior)
-- `docs/ideas/system-audio-capture.md` and `docs/ideas/README.md` (status done, row moved to Done)
+- `docs/ideas/parked/system-audio-capture.md` and `docs/ideas/README.md` (status done, row moved to Done)
 - The `PROVENANCE.md` files that U4, U6, U8 and U10 created or changed
 
 **Approach:** Update the entries, and check that each borrowed file has a record.

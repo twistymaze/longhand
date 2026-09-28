@@ -1,6 +1,6 @@
 ---
 title: Alternative diarization architectures
-status: done
+description: "Speaker labels from the transcription model or a separate speaker model, or off"
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

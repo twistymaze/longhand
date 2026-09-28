@@ -1,6 +1,6 @@
 ---
 title: A diarization evaluation loop on real sessions
-status: open
+description: "Measure speaker turns on real notes again and again"
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

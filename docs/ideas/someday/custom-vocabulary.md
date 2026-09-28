@@ -1,6 +1,6 @@
 ---
 title: Custom vocabulary per folder
-status: open
+description: "A word list for each folder that corrects names and jargon in the transcript"
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

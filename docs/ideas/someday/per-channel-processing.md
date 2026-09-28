@@ -1,6 +1,6 @@
 ---
 title: Process each channel of a stereo note on its own
-status: open
+description: "Recognize and diarize the room and the call separately, in place of the mono mix"
 area: processing
 added: 2026-09-26
 source: "PR #12 signed-bundle tests and the discussion of anarlog's two-stream design"
@@ -20,7 +20,7 @@ For a note with Computer audio, recognize and diarize the microphone channel and
 ## Notes
 - **anarlog's assumption:** anarlog does this with one assumption that Longhand must not make. It treats the microphone as one person ("You") and diarizes only the system channel. Longhand's main case is a room with several people plus a call, so both channels need diarization. The people on the two channels are different, except through echo.
 - **Echo removal:** the microphone still needs echo removal after Stop (the echo spans and the DTLN-aec pass exist), but only to prevent duplicate lines.
-- **Cost:** about twice the recognition time, and twice the diarization time, for a note with Computer audio. A note with only the microphone does not change. Depends on [faster diarization](faster-diarization.md).
+- **Cost:** about twice the recognition time, and twice the diarization time, for a note with Computer audio. A note with only the microphone does not change. Depends on [faster diarization](../next/faster-diarization.md).
 - **Stages that change:** Transcribe runs once per channel, Diarize runs once per channel, Join merges by time, and Verify checks each channel.
 - **Data to test with:** the stereo recordings of the test notes of 2026-09-26 are kept, so a new design can process them again.
 - **anarlog reference:** `crates/listener-core`, `crates/owhisper-client/src/live.rs`, `crates/transcript/src/label.rs` and `crates/listener2-core/src/batch/diarize.rs` in the anarlog clone.

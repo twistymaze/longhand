@@ -1,6 +1,6 @@
 ---
 title: Remember a speaker count per folder
-status: open
+description: "A default speaker count for each folder; each note can already have its own count"
 area: capture
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"

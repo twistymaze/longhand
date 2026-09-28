@@ -1,10 +1,11 @@
 ---
 title: Preview builds and in-app updates
-status: in-progress
+description: "A notarized build from each push to main, offered in a macOS update dialog"
 area: distribution
 added: 2026-09-28
 source: "a brainstorm on 2026-09-28"
 related: []
+plan: docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md
 ---
 
 # Preview builds and in-app updates

@@ -1,6 +1,6 @@
 ---
 title: Choose the summary model from the server's list
-status: done
+description: "A searchable summary model picker filled from the server's model list"
 area: interface
 added: 2026-09-25
 source: "a ce-brainstorm session, 2026-09-25"

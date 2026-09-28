@@ -193,7 +193,7 @@ NeMo-Speech.cpp, Granite Plus, and the speaker-capable Multitalker bundle were n
 
 This extends the [recognition-model and live-transcript plan](2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md). Its fixed speaker pipeline decision, KD4, is superseded for this scope by R2 and R10-R13. Its final-live-text assumption changes under R23. Completed plans remain historical records.
 
-The [faster diarization](../ideas/faster-diarization.md) and [alternative architectures](../ideas/done/alternative-diarization-architectures.md) ideas now use this plan. [Per-channel processing](../ideas/per-channel-processing.md) stays separate. The sleep fix can be delivered independently within this scope. The [capability display](../ideas/done/model-capabilities-and-speaker-options.md) and [processing sleep protection](../ideas/done/prevent-sleep-during-processing.md) entries track their parts of this outcome.
+The [faster diarization](../ideas/next/faster-diarization.md) and [alternative architectures](../ideas/done/alternative-diarization-architectures.md) ideas now use this plan. [Per-channel processing](../ideas/someday/per-channel-processing.md) stays separate. The sleep fix can be delivered independently within this scope. The [capability display](../ideas/done/model-capabilities-and-speaker-options.md) and [processing sleep protection](../ideas/done/prevent-sleep-during-processing.md) entries track their parts of this outcome.
 
 ---
 

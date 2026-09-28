@@ -1,6 +1,6 @@
 ---
 title: Model capabilities and speaker options
-status: done
+description: "The model picker shows live support, speaker limits and assessments"
 area: interface
 added: 2026-09-27
 source: "User-confirmed speaker recognition brainstorm"

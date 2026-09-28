@@ -1,6 +1,6 @@
 ---
 title: Acknowledgements and full licences in an About pane
-status: done
+description: "Settings > About thanks anarlog and Handy and shows the full licence of every component"
 area: interface
 added: 2026-09-26
 source: "a ce-brainstorm session, 2026-09-26"

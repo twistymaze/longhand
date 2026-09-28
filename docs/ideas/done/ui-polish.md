@@ -1,6 +1,6 @@
 ---
 title: Library and desktop UI polish
-status: done
+description: "Select and open notes like a desktop app, keyboard zoom, Start at login, and a shared vector mark"
 area: interface
 added: 2026-09-26
 source: "User feedback after using Longhand"

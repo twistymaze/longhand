@@ -1,6 +1,6 @@
 ---
 title: Follow-ups from the live transcript review
-status: open
+description: "Eight small risks that the PR #8 review found and did not fix"
 area: processing
 added: 2026-09-25
 source: "Unapplied P3 findings of the code review of PR #8 (run 20260925-rmlt-01), docs/plans/2026-09-25-1121-feat-recognition-models-and-live-transcript-plan.md"

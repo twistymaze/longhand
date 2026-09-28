@@ -1,6 +1,6 @@
 ---
 title: A local CLI over the session store
-status: open
+description: "Command-line access to the session store"
 area: library-and-sharing
 added: 2026-09-21
 source: "Separate track named in the walking skeleton (docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md)"

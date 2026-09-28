@@ -132,7 +132,7 @@ The skeleton prepared for this change. The catalog lists models and has a `strea
 #### Deferred to Follow-Up Work
 
 - Gap repair during recording. Anarlog fills gaps from the saved audio while the meeting continues. This plan fills gaps after Stop only.
-- Power-aware streaming, for example no live transcript on battery (`docs/ideas/power-aware-processing.md`).
+- Power-aware streaming, for example no live transcript on battery (`docs/ideas/someday/power-aware-processing.md`).
 - Handy's accuracy and speed scores in the picker.
 
 ### Dependencies / Assumptions
@@ -643,7 +643,7 @@ stateDiagram-v2
 - `docs/ideas/README.md`
 - `docs/ideas/done/recognition-model-picker.md`
 - `docs/ideas/done/live-transcript-view.md`
-- `docs/ideas/power-aware-processing.md`
+- `docs/ideas/someday/power-aware-processing.md`
 
 **Approach:**
 1. Add to `CONCEPTS.md`: Recognition model, Live transcript, Part (of a live stream), Gap and Transcribe Again.
