@@ -49,7 +49,7 @@ pub fn saved_result(store: &SharedStore, id: &str) -> Result<Option<RouteResult>
 }
 
 /// Execute one route-specific recognition stage. Other stages remain owned by
-/// the runner. U7 adds portable neutral artifacts around these result values.
+/// the runner.
 #[allow(clippy::too_many_arguments)]
 pub fn execute(
     store: &SharedStore,
@@ -420,21 +420,13 @@ fn transcribe_route(
                         &checkpoint::plan_key(segment.index),
                         &plan,
                     )?;
-                    let engine = match &mut recognizer {
-                        Some(engine) => engine,
-                        None => recognizer.insert(provider.load_exact(spec).map_err(failed)?),
-                    };
                     let mut reader = crate::assemble::open_proc(dir, segment)?;
                     for (index, window) in plan.windows.iter().enumerate() {
                         control.proceed()?;
-                        reader.seek(
-                            u32::try_from(window.start_ms * 16)
-                                .map_err(|_| failed("audio seek overflow"))?,
-                        )?;
-                        let pcm = reader
-                            .samples::<f32>()
-                            .take((window.duration_ms() * 16) as usize)
-                            .collect::<Result<Vec<_>, _>>()?;
+                        let seek = u32::try_from(window.start_ms * 16)
+                            .map_err(|_| failed("audio seek overflow"))?;
+                        let sample_count = (window.duration_ms() * 16)
+                            .min(u64::from(reader.duration().saturating_sub(seek)));
                         let key = format!("native-window/{:08}/{index:08}", segment.index);
                         let saved = lock(store).recognition_block(id, &generation, &key)?;
                         let output = if let Some(saved) = saved {
@@ -450,6 +442,17 @@ fn transcribe_route(
                                 speaker_turns: saved.speakers,
                             }
                         } else {
+                            let engine = match &mut recognizer {
+                                Some(engine) => engine,
+                                None => {
+                                    recognizer.insert(provider.load_exact(spec).map_err(failed)?)
+                                }
+                            };
+                            reader.seek(seek)?;
+                            let pcm = reader
+                                .samples::<f32>()
+                                .take(sample_count as usize)
+                                .collect::<Result<Vec<_>, _>>()?;
                             engine
                                 .transcribe_normalized(
                                     &pcm,
@@ -468,7 +471,7 @@ fn transcribe_route(
                         if output.coverage
                             != (SampleRange {
                                 start: range.start + window.start_ms * 16,
-                                end: range.start + window.start_ms * 16 + pcm.len() as u64,
+                                end: range.start + window.start_ms * 16 + sample_count,
                             })
                         {
                             return Err(failed("native transcription coverage is incomplete"));

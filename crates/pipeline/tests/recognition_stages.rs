@@ -529,8 +529,14 @@ fn changed_preprocessing_invalidates_completed_native_windows() {
     };
     run(&spec);
     let calls = provider.calls.load(Ordering::SeqCst);
+    let loads = provider.loads.load(Ordering::SeqCst);
     run(&spec);
     assert_eq!(provider.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(
+        provider.loads.load(Ordering::SeqCst),
+        loads,
+        "cached native output must not reload the model"
+    );
     spec.preprocessing_revision.push_str("-changed");
     run(&spec);
     assert!(provider.calls.load(Ordering::SeqCst) > calls);

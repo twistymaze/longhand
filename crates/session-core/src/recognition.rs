@@ -521,13 +521,7 @@ impl Store {
         prefix: &str,
         after: &str,
     ) -> crate::jobs::Result<Vec<OutputBlock>> {
-        let pattern = format!(
-            "{}%",
-            prefix
-                .replace('!', "!!")
-                .replace('%', "!%")
-                .replace('_', "!_")
-        );
+        let pattern = prefix_pattern(prefix);
         let mut stmt=self.conn.prepare("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!' AND key>?4 ORDER BY key LIMIT 128")?;
         let values = stmt.query_map(params![id, generation, pattern, after], |r| {
             r.get::<_, String>(0)
@@ -548,13 +542,7 @@ impl Store {
         generation: &str,
         prefix: &str,
     ) -> crate::jobs::Result<Option<OutputBlock>> {
-        let pattern = format!(
-            "{}%",
-            prefix
-                .replace('!', "!!")
-                .replace('%', "!%")
-                .replace('_', "!_")
-        );
+        let pattern = prefix_pattern(prefix);
         let value:Option<String>=self.conn.query_row("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!' ORDER BY key DESC LIMIT 1",params![id,generation,pattern],|r|r.get(0)).optional()?;
         value
             .map(|s| {
@@ -575,14 +563,18 @@ impl Store {
         generation: &str,
         prefix: &str,
     ) -> crate::jobs::Result<()> {
-        let pattern = format!(
-            "{}%",
-            prefix
-                .replace('!', "!!")
-                .replace('%', "!%")
-                .replace('_', "!_")
-        );
+        let pattern = prefix_pattern(prefix);
         self.conn.execute("DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!'",params![id,generation,pattern])?;
         Ok(())
     }
+}
+
+fn prefix_pattern(prefix: &str) -> String {
+    format!(
+        "{}%",
+        prefix
+            .replace('!', "!!")
+            .replace('%', "!%")
+            .replace('_', "!_")
+    )
 }

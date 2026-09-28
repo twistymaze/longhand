@@ -52,14 +52,18 @@ pub fn read_frame(reader: &mut impl Read) -> io::Result<Frame> {
     }
     Ok(Frame { metadata, pcm })
 }
-pub fn write_frame(writer: &mut impl Write, frame: &Frame) -> io::Result<()> {
-    let json = serde_json::to_vec(&frame.metadata).map_err(io::Error::other)?;
+fn validated_json(metadata: &Value, pcm: &[f32]) -> io::Result<Vec<u8>> {
+    let json = serde_json::to_vec(metadata).map_err(io::Error::other)?;
     if json.len() > MAX_JSON_BYTES
-        || frame.pcm.len() > MAX_PCM_SAMPLES
-        || frame.pcm.iter().any(|v| !v.is_finite())
+        || pcm.len() > MAX_PCM_SAMPLES
+        || pcm.iter().any(|v| !v.is_finite())
     {
         return Err(invalid("invalid frame size or PCM"));
     }
+    Ok(json)
+}
+pub fn write_frame(writer: &mut impl Write, frame: &Frame) -> io::Result<()> {
+    let json = validated_json(&frame.metadata, &frame.pcm)?;
     writer.write_all(&(json.len() as u32).to_le_bytes())?;
     writer.write_all(&((frame.pcm.len() * 4) as u32).to_le_bytes())?;
     writer.write_all(&json)?;
@@ -182,13 +186,7 @@ impl Helper {
         metadata["epoch"] = self.epoch.into();
         metadata["seq"] = self.next_sequence.into();
         // Validate before queueing so an invalid request cannot terminate the writer.
-        write_frame(
-            &mut io::sink(),
-            &Frame {
-                metadata: metadata.clone(),
-                pcm: pcm.clone(),
-            },
-        )?;
+        validated_json(&metadata, &pcm)?;
         self.input
             .as_ref()
             .ok_or_else(|| invalid("helper stopped"))?
