@@ -228,8 +228,13 @@ jobs:
       # dependencies compile once and ggml's C++ build runs once. The app's
       # test binaries start on Windows because build.rs embeds the app
       # manifest in every binary the app crate links.
-      - name: tests
-        shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      - name: Workspace Rust tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --workspace --features nemo-runtime/test-helper
+
+      - name: Workspace Rust tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: cargo test --workspace --features nemo-runtime/test-helper
 
