@@ -64,13 +64,13 @@ A part of a stereo segment where the microphone holds echo of the system audio. 
 ## Transcription
 
 ### Recognition model
-The model that turns speech into text. The user selects one recognition model in Settings from the catalog of nine. A session records its recognition model when recording starts and keeps it through processing. The speaker-detection weights are not recognition models: the user does not select them, and the UI shows them as one item, "Other required models".
+The model that turns speech into text. The user selects one transcription model in Settings from the catalog of ten. The catalog includes Granite Speech 4.1 2B Plus. The user can also select a compatible speaker-recognition source and processing time. A note records its effective configuration and exact model artifacts when recording starts. A later change to the defaults does not change that note. Longhand selects the runtime internally.
 
 ### Speaker recognition
-The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A transcription model can supply labels itself, or a separate speaker model can supply a timeline to join with the text.
+The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A transcription model can supply labels itself, or a separate speaker model can supply a timeline to join with the text. Separate choices are Nemotron 3 Diarization, Sortformer, and pyannote/WeSpeaker. Speaker recognition can also be off. The selected artifacts determine valid processing times and speaker limits.
 
 ### Live transcript
-The text that a streaming recognition model makes during recording. It shows in the Transcript tab. A live transcript runs only when the session's recognition model streams and the Live transcript switch is on; the session records this live mode when recording starts. The text of the live transcript is final: processing after Stop does not transcribe it again.
+The text that a streaming recognition model makes during recording. It shows in the Transcript tab when the selected model supports live transcription and the note uses that mode. Live text and speaker labels can be provisional. The runtime can revise them before finalization. Compatible durable results are reused after Stop; missing or invalid results require processing. Live speaker analysis is a separate choice and can run with an offline transcription model.
 
 ### Part
 A span of a live transcript that the app saves as one checkpoint. A part ends at the first pause of at least 600 ms after 4 minutes, and always at 8 minutes. The live stream then starts again for the next part.
@@ -79,7 +79,7 @@ A span of a live transcript that the app saves as one checkpoint. A part ends at
 Audio of a session that has no live transcript: a span that the live transcript missed because it fell behind, failed or stopped, or a part that did not save before a crash. After Stop, recognition transcribes only the gaps in batch ("gap fill").
 
 ### Transcribe Again
-The action that makes a new transcript and a new summary of a saved session with the selected recognition model. The session's audio, its notes and its title stay. When the run fails before Save, the session stays Saved with its previous files. The UI label is "Transcribe Again…".
+The menu action that opens reprocessing choices for a saved note. Reprocessing can use a different transcription model, speaker source, or processing configuration. The preview states whether the selected route can reuse verified timed text or requires transcription again. The summary is refreshed from the resulting transcript. The recording, notes, and title stay. The previous complete result remains available until the replacement is published successfully.
 
 ## Summaries
 
