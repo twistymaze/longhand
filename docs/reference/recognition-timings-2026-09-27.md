@@ -203,3 +203,13 @@ The local matrix verified these inputs before execution. File paths are omitted.
 | `nemotron-3-diarization-q80` | `08456d9e22cd9a323c0364d98375f3746d6e68507ebb705cd46438c534c7a3a1` |
 | `pyannote-segmentation-3.0` | `057ee564753071c0b09b5b611648b50ac188d50846bff5f01e9f7bbf1591ea25` |
 | `wespeaker-voxceleb-resnet34-lm` | `7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068` |
+
+## Later verification on the same host
+
+A second five-minute route matrix passed all 49 combinations. It used source revision `d8e2fd3` and frozen executable SHA-256 `594c00fd1a5f5996015aaf3a8ec404b4ff8fb5854022dbe136af53b0b8d285c9`. The local evidence is `post-review-route-matrix-300/summary.json`. Builds and other tests ran on the host during this matrix, so these results verify execution and coverage; they do not replace the timing estimates above.
+
+A separate five-minute replay, paced at recording speed, completed with combined Nemotron Speech Streaming EN and Nemotron 3 Diarization. It produced 575 updates and 802 final rows. Stop through Verify took 16.710 seconds. This excludes summary generation and Save. Evidence: `post-review-live-300.log`.
+
+A signed-app check then played 30 seconds of recorded conversation through system audio into the selected virtual microphone. Parakeet Unified produced live text, speaker recognition completed afterwards, and the app saved the transcript and summary. Recording and processing each held a sleep assertion, which was released at completion. This short test establishes the audio route and complete app flow; it is not a performance benchmark or a substitute for the longer UI tests.
+
+These checks preceded the live paragraph-rendering fix and the correction that excludes ASR request padding from the speech-coverage denominator. Those changes require their own current-build checks.
