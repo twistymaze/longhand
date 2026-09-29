@@ -4,7 +4,7 @@ description: "The summary model can read earlier notes, search the library, read
 area: transcript-and-summary
 added: 2026-09-28
 source: "the user, in the idea review of 2026-09-28; includes the earlier idea 'carry context from the previous session'"
-related: [summary-prompt-by-note-type, note-folders, library-and-browsing, custom-vocabulary]
+related: [summary-prompt-by-note-type, note-folders, library-and-browsing]
 ---
 
 # A summary agent with tools
