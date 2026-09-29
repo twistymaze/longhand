@@ -16,7 +16,6 @@ import { useLiveTranscript } from "./useLiveTranscript";
 import { recognitionRows, speakerBlocks, type RecognitionView } from "./liveRecognition";
 import {
   buildLiveRows,
-  paragraphText,
   type LiveRowItem,
   type LiveSpeakerRow,
   type NativeRow,
@@ -53,20 +52,51 @@ function line(mode: LiveMode, state: string | null, hasText: boolean): string | 
 }
 
 const isSpeakerRow = (item: LiveRowItem): item is LiveSpeakerRow => item.kind === "speaker";
-const rowText = (row: LiveSpeakerRow) => row.paragraphs.map(paragraphText).join("\n");
 
 /**
- * True when a change moved, split or joined a speaker row that had a
- * heading, or changed its number. New text at the end of a row, and a first
- * heading on text that had none, are not changes of the labels.
+ * The characters of the rows in order, with no spaces, and the speaker label
+ * of each character. A label is the speaker id and the shown number, or null
+ * when the text has no heading.
+ */
+function labelledText(items: LiveRowItem[]): { text: string[]; labels: (string | null)[] } {
+  const text: string[] = [];
+  const labels: (string | null)[] = [];
+  for (const item of items) {
+    if (!isSpeakerRow(item)) continue;
+    const label = item.number === null ? null : `${item.speaker}/${item.number}`;
+    for (const paragraph of item.paragraphs)
+      for (const piece of paragraph.pieces)
+        for (const char of piece.text) {
+          if (/\s/.test(char)) continue;
+          text.push(char);
+          labels.push(label);
+        }
+  }
+  return { text, labels };
+}
+
+/**
+ * True when a row with a heading keeps its key and changes its number, or
+ * when text that showed under a heading now shows under a different speaker
+ * label. The second check stops at the first character that changed, so new
+ * or rewritten text is not a change of the labels. A first heading on text
+ * that had none is not a change either.
  */
 function labelsChanged(before: LiveRowItem[], after: LiveRowItem[]): boolean {
   const next = new Map(after.filter(isSpeakerRow).map((row) => [row.key, row]));
-  return before.filter(isSpeakerRow).some((row) => {
-    if (row.number === null) return false;
+  const renumbered = before.filter(isSpeakerRow).some((row) => {
     const now = next.get(row.key);
-    return !now || now.number !== row.number || !rowText(now).startsWith(rowText(row));
+    return row.number !== null && now !== undefined && now.number !== row.number;
   });
+  if (renumbered) return true;
+  const old = labelledText(before);
+  const now = labelledText(after);
+  const length = Math.min(old.text.length, now.text.length);
+  for (let i = 0; i < length; i++) {
+    if (old.text[i] !== now.text[i]) return false;
+    if (old.labels[i] !== null && old.labels[i] !== now.labels[i]) return true;
+  }
+  return false;
 }
 
 /**

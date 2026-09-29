@@ -190,6 +190,23 @@ describe("speaker rows", () => {
     expect(rows(tie)[0].speaker).toBe(id(0, 1));
   });
 
+  test("a long turn that starts before shorter turns still covers a later word", () => {
+    const words = [{ start_ms: 9_000, end_ms: 9_300, text: "late" }];
+    const items = buildLiveRows(input({
+      parts: [{ segment: 0, part: 0, offset_ms: 0, words }],
+      speakers: [block(0, [turn(0, 10_000, id(0, 1)), turn(1_000, 2_000, id(0, 2)), turn(3_000, 4_000, id(0, 2))])],
+    }));
+    expect(rows(items)[0].speaker).toBe(id(0, 1));
+  });
+
+  test("each word of a long note takes the turn it overlaps", () => {
+    const turns = Array.from({ length: 500 }, (_, i) => turn(i * 1_000, i * 1_000 + 1_000, id(0, (i % 2) + 1)));
+    const words = Array.from({ length: 500 }, (_, i) => ({ start_ms: i * 1_000 + 100, end_ms: i * 1_000 + 400, text: `w${i}` }));
+    const items = buildLiveRows(input({ parts: [{ segment: 0, part: 0, offset_ms: 0, words }], speakers: [block(0, turns)] }));
+    expect(rows(items)).toHaveLength(500);
+    expect(rows(items).map((row) => row.number)).toEqual(turns.map((_, i) => (i % 2) + 1));
+  });
+
   test("a turn with no words makes no heading", () => {
     const words = [...spoken("One two three"), ...spoken("four five", 1_300)];
     const built = buildLiveRows(input({

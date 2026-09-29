@@ -290,15 +290,44 @@ function usedTurns(blocks: SpeakerBlock[], afterStop: boolean): Turn[] {
   return turns.sort((a, b) => a.start_sample - b.start_sample || a.end_sample - b.end_sample);
 }
 
+/**
+ * The highest end sample of each turn and all turns before it. The value
+ * does not decrease, so a binary search finds the first turn that can
+ * overlap a word.
+ */
+function highestEnds(turns: Turn[]): number[] {
+  const ends: number[] = [];
+  let highest = -Infinity;
+  for (const turn of turns) {
+    highest = Math.max(highest, turn.end_sample);
+    ends.push(highest);
+  }
+  return ends;
+}
+
+/** The index of the first turn whose highest end is after `start`. */
+function firstAfter(ends: number[], start: number): number {
+  let low = 0;
+  let high = ends.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (ends[middle] > start) high = middle;
+    else low = middle + 1;
+  }
+  return low;
+}
+
 /** The turn with the largest sample overlap; on a tie, the earlier turn (KTD10). */
-function turnFor(unit: Unit, turns: Turn[]): Turn | null {
+function turnFor(unit: Unit, turns: Turn[], ends: number[]): Turn | null {
   if (unit.start === null || unit.end === null) return null;
   const start = unit.start * SAMPLES_PER_MS;
   // A word with no length counts as one sample.
   const end = Math.max(unit.end * SAMPLES_PER_MS, start + 1);
   let best: Turn | null = null;
   let bestOverlap = 0;
-  for (const turn of turns) {
+  // The turns before this index end at or before the word start.
+  for (let i = firstAfter(ends, start); i < turns.length; i++) {
+    const turn = turns[i];
     if (turn.start_sample >= end) break;
     const overlap = Math.min(end, turn.end_sample) - Math.max(start, turn.start_sample);
     if (overlap > bestOverlap) {
@@ -342,6 +371,7 @@ export function buildLiveRows(input: LiveRowsInput): LiveRowItem[] {
   } else if (native.length) units = native;
 
   const turns = usedTurns(input.speakers, input.afterStop ?? false);
+  const ends = highestEnds(turns);
   const items: LiveRowItem[] = [];
   let row: LiveSpeakerRow | null = null;
   let paragraph: LiveParagraph | null = null;
@@ -351,7 +381,7 @@ export function buildLiveRows(input: LiveRowsInput): LiveRowItem[] {
   let lastEnd: number | null = null;
 
   for (const unit of units) {
-    const turn = unit.fixed ? null : turnFor(unit, turns);
+    const turn = unit.fixed ? null : turnFor(unit, turns, ends);
     const assigned: Assigned | null =
       unit.fixed ?? (turn ? { scope: turn.scope, speaker: turn.speaker, final: turn.speaker_final } : previous);
     // A word with no turn continues the speaker before it (R6), and that speaker can still change.

@@ -691,4 +691,21 @@ describe("speaker rows (U6)", () => {
     await send(tauri, snapshot(4, [turn(0, 1500, "g:0:0:1"), turn(1500, 2500, "g:0:0:2")]));
     expect(screen.getByText("Speaker labels updated.")).toBe(message);
   });
+
+  test("a speaker revision and new tentative words in one update play no screen-reader message", async () => {
+    const tauri = mockLive();
+    render(<Harness />);
+    await screen.findByText("The transcript shows here as people speak.");
+    await send(tauri, snapshot(1, [turn(0, 2500, "g:0:0:1")]));
+    await act(() => tauri.emit("live-transcript-event", openText("Hello there", " how are")));
+    expect(headings()).toEqual(["Speaker 1"]);
+    // The text event applies the queued speaker events in the same update.
+    await act(() => {
+      for (const event of snapshot(2, [turn(0, 2500, "g:0:0:1")])) tauri.emit("live-recognition-event", event);
+      tauri.emit("live-transcript-event", openText("Hello there how", " is it"));
+    });
+    await act(() => new Promise((done) => setTimeout(done, 120)));
+    expect(paragraphs()).toEqual(["Hello there how is it"]);
+    expect(screen.queryByText("Speaker labels updated.")).toBeNull();
+  });
 });
