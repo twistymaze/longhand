@@ -9,14 +9,28 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{Device, InterfaceType, SampleFormat, SupportedStreamConfig};
+use cpal::{Device, DeviceDescription, InterfaceType, SampleFormat, SupportedStreamConfig};
 
 use audio::Error;
 
 use crate::{Input, MicChoice};
 
+/// The name of a device whose description cpal cannot read.
+pub const UNKNOWN_DEVICE_NAME: &str = "Unknown microphone";
+
+/// The device's name, or [`UNKNOWN_DEVICE_NAME`]. cpal 0.18's `Display` for
+/// `Device` returns an error when the description cannot be read, and
+/// `to_string()` then panics.
 pub fn device_name(device: &Device) -> String {
-    device.to_string()
+    name_or_fallback(device.description())
+}
+
+/// Only `name()`: the `Display` of a description adds the manufacturer and
+/// the device type.
+fn name_or_fallback<E>(description: Result<DeviceDescription, E>) -> String {
+    description
+        .map(|d| d.name().to_owned())
+        .unwrap_or_else(|_| UNKNOWN_DEVICE_NAME.to_owned())
 }
 
 /// cpal's stable device ID in its saved form (KTD1): the CoreAudio device UID
@@ -207,6 +221,32 @@ mod tests {
             id: id.into(),
             label: label.into(),
         }
+    }
+
+    #[test]
+    fn a_readable_description_gives_its_name_only() {
+        let description = cpal::DeviceDescriptionBuilder::new("MacBook Pro Microphone")
+            .manufacturer("Apple Inc.")
+            .interface_type(InterfaceType::BuiltIn)
+            .build();
+        assert_eq!(
+            name_or_fallback(Ok::<_, ()>(description)),
+            "MacBook Pro Microphone"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_description_gives_the_fallback_name() {
+        assert_eq!(name_or_fallback(Err(())), UNKNOWN_DEVICE_NAME);
+    }
+
+    #[test]
+    fn a_saved_id_matches_an_input_with_the_fallback_name() {
+        let devices = [
+            input("usb-1", "USB Audio"),
+            input("usb-2", UNKNOWN_DEVICE_NAME),
+        ];
+        assert_eq!(find_choice(&devices, &choice("usb-2", "Old Name")), Some(1));
     }
 
     #[test]

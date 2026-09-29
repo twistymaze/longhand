@@ -9,7 +9,7 @@ Borrowed material in this crate, one record per file (R27). The provider in `src
 - Source paths: `src-tauri/src/audio_toolkit/audio/recorder.rs` (`get_preferred_config`)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
-- Status: modified — ported to the cpal 0.18 API; the Bluetooth-default replacement follows anarlog, recorded next
+- Status: modified — ported to the cpal 0.18 API; `device_name` reads `description().name()` with a fallback, so an unreadable description cannot panic; the Bluetooth-default replacement follows anarlog, recorded next
 
 ## `src/config.rs`
 
