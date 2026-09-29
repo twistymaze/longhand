@@ -36,6 +36,19 @@ Docs-only changes need no PR. Commit and push them directly on `main`; CI costs 
 
 Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, watch it until CI passes.
 
+### Before a PR
+
+Other worktrees often merge into `main` while a branch is in progress. Immediately before you create a PR:
+
+1. Run `git fetch origin main`, then `git log --stat HEAD..origin/main`.
+2. If all new commits change only docs (the definition above), do not rebase.
+3. Otherwise, rebase onto `origin/main` and resolve the conflicts.
+4. Use `git grep` to find each identifier that the branch removed or renamed. New code on `main` can use a removed name without a conflict.
+5. Read the new code on `main` in the areas that the branch changed. Find text or logic that the change of the branch made incorrect.
+6. Run the local checks again, then create the PR. In the PR, identify the manual and real-audio results that come from before the rebase.
+
+[Rebase before a PR when main moved](solutions/workflow-issues/rebase-before-pr-when-main-moved.md) records the example that caused this rule.
+
 ### Local recognition checks
 
 Keep real-model route matrices, paced recording tests, and long-audio tests local and opt-in. Do not add them to normal CI. Run the applicable local checks when capture, preprocessing, transcription, speaker recognition, routing, result reuse, or publication code changes. Keep audio, model paths, and raw results outside tracked files.
