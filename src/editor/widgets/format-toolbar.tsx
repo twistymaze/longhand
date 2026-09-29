@@ -9,13 +9,14 @@ import {
 import {
   useEditorEffect,
   useEditorEventCallback,
+  useEditorEventListener,
   useEditorState,
 } from "@handlewithcare/react-prosemirror";
 import { toggleMark } from "prosemirror-commands";
 import type { MarkType } from "prosemirror-model";
 import type { EditorState, Transaction } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
-import { type ComponentType, useRef, useState } from "react";
+import { type ComponentType, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "../cn";
@@ -127,8 +128,49 @@ export function FormatToolbar() {
   const [linkDraft, setLinkDraft] = useState<string | null>(null);
   const [linkInvalid, setLinkInvalid] = useState(false);
 
+  // During an IME composition, the DOM selection is a range over the composed
+  // text. That range is not a real selection, so the toolbar stays hidden
+  // until the composition ends. ProseMirror applies the committed text and
+  // the last selection in its own 20 ms timer after compositionend. Thus the
+  // gate opens at the first selection change after compositionend, or after
+  // 50 ms. After that time, a range cannot be the composition range.
+  const [isComposing, setIsComposing] = useState(false);
+  const compositionEndState = useRef<EditorState | null>(null);
+  const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelReleaseTimer = () => {
+    if (releaseTimer.current != null) {
+      clearTimeout(releaseTimer.current);
+      releaseTimer.current = null;
+    }
+  };
+  const releaseComposition = () => {
+    compositionEndState.current = null;
+    cancelReleaseTimer();
+    setIsComposing(false);
+  };
+  // Stop the timer when the toolbar unmounts.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => cancelReleaseTimer, []);
+  useEditorEventListener("compositionstart", () => {
+    compositionEndState.current = null;
+    cancelReleaseTimer();
+    setIsComposing(true);
+  });
+  useEditorEventListener("compositionend", (view) => {
+    compositionEndState.current = view.state;
+    releaseTimer.current = setTimeout(releaseComposition, 50);
+  });
+  useEditorEffect((view) => {
+    const snapshot = compositionEndState.current;
+    if (snapshot && !view.state.selection.eq(snapshot.selection)) {
+      releaseComposition();
+    }
+  });
+
   const editorState = useEditorState();
-  const shouldShowToolbar = editorState ? !editorState.selection.empty : false;
+  const shouldShowToolbar = editorState
+    ? !editorState.selection.empty && !isComposing
+    : false;
 
   if (!shouldShowToolbar && linkDraft !== null) {
     setLinkDraft(null);

@@ -59,11 +59,11 @@ Borrowed material in this directory, one record per file (R27). The source is An
 ## `widgets/format-toolbar.tsx`
 
 - Repository: https://github.com/fastrepl/anarlog
-- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Revision: 5338e3c7cfe0349a43813838f6ce08d084086531
 - Source paths: `packages/editor/src/widgets/format-toolbar.tsx`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — underline, code and comment buttons and the title check dropped; a link button and `setLink` added; Longhand icons, `cn` and colour tokens
+- Status: modified — underline, code and comment buttons and the title check dropped; a link button and `setLink` added; Longhand icons, `cn` and colour tokens; composition gate ported with `useEffect`
 
 ## `widgets/slash-command.tsx`
 
@@ -244,6 +244,15 @@ Borrowed material in this directory, one record per file (R27). The source is An
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: modified — the title tests dropped; Longhand adds the `setLink` cases
+
+## `widgets/format-toolbar.test.tsx`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 5338e3c7cfe0349a43813838f6ce08d084086531
+- Source paths: `packages/editor/src/note/index.test.ts`
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — only the IME composition case kept, split into one test for each rule; `bun:test` and fake timers in place of real waits; the toolbar mounts in a small `ProseMirror` harness in place of `NoteEditor`; composition events do not bubble and are cancelled, so that ProseMirror's own handler does not collapse the selection in the test DOM; Longhand adds the no-composition and unmount cases
 
 ## `node-views/task-checkbox.test.tsx`
 

@@ -3,7 +3,7 @@ use crate::{DEFAULT_ASR_MODEL, ModelKind, model};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-pub const TRANSCRIBE_REVISION: &str = "63a44d9239d610b3908e8a66b384924cd4a77217";
+pub const TRANSCRIBE_REVISION: &str = "4807edaf210d0d7e8a6f7fb2a44b65966a2797f0";
 pub const NEMO_REVISION: &str = "97a15afa5caa9bce5baaa86c1184103877af4101";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
