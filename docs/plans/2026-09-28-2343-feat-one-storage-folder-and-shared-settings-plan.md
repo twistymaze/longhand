@@ -18,7 +18,7 @@ execution: code
 - **Open blockers:** None.
 - **Execution profile:** One branch and one PR, in a worktree made from `origin/main`. Commit per unit and push in batches. A manual test on two Macs with a notarized build is necessary (Verification Contract).
 - **Stop conditions:** Stop and ask if iCloud Drive does not deliver `.longhand/` to a second Mac, or renames it (R11). Stop and ask if a Move cannot keep one complete copy of a note at every step (R5).
-- **Product Contract preservation:** changed: R21, AE10 and one Key Decision. During planning on 2026-09-28, the user removed the "not yet synced" wait. The planning answers replace the deferred questions. No other scope changed.
+- **Product Contract preservation:** changed: R21, AE10, AE12 and one Key Decision. During planning on 2026-09-28, the user removed the "not yet synced" wait, and accepted that a save made before another computer's change arrives can undo that change. The planning answers replace the deferred questions. No other scope changed.
 
 ---
 
@@ -111,7 +111,7 @@ The library also keeps every storage folder that the user has chosen (R25a of th
 - AE9. **Covers R9, R21.** Given A and C share a folder, when A moves the notes to a new folder, C's library empties with no notice, and C keeps the shared settings of the old folder.
 - AE10. **Covers R21.** Given a folder has notes but no settings file, when B changes to that folder, B writes its current shared settings into the folder and uses them.
 - AE11. **Covers R17.** Given A runs a newer version and selects a model that B's older version does not know, when B reads and then saves a change to another setting, the file still names A's model.
-- AE12. **Covers R15.** Given B has not yet received A's change of the active prompt, when the user turns off live transcript on B, A's active prompt stays.
+- AE12. **Covers R15.** Given B has received A's change of the active prompt, when the user turns off live transcript on B, A's active prompt stays.
 - AE13. **Covers R10.** Given a Move stops because the disk is full, when the user frees space and selects Retry, the Move continues, and no note is listed twice.
 
 ### Scope Boundaries
@@ -224,9 +224,11 @@ flowchart TB
   B -->|yes| X[Refuse with the cause]
   B -->|no| C{Move, Leave them, or Cancel}
   C -->|Cancel| Z[No change]
-  C -->|Move or Leave them| D{New folder has a readable settings.json?}
-  D -->|yes| E[Use it and merge the prompts]
-  D -->|no| F[Write this computer's shared settings into it]
+  C -->|Move or Leave them| D{New folder's settings.json}
+  D -->|parses| E[Use it and merge the prompts]
+  D -->|missing| F[Write this computer's shared settings into it]
+  D -->|does not parse| R[Use the cache, read-only, write nothing]
+  R --> G
   E --> G[Set the storage folder]
   F --> G
   G -->|Move| H[Open the journal, watch both folders, move each note]
@@ -252,6 +254,7 @@ flowchart TB
 |---|---|
 | A sync service drops or renames `.longhand/` (iCloud has renamed `.git` to `git 2`). | Manual two-Mac test on iCloud Drive. Stop condition in the Goal Capsule. |
 | A partly synced settings file makes a computer write over the full file. | KTD3: a file that does not parse is read-only. Test for partial-sync order. |
+| A save on one computer before another computer's change has synced undoes that change. | Accepted: only a person's edits write the shared file, so this needs edits on two computers within the sync delay. |
 | A crash during Move leaves a note in no folder or in two listings. | KTD9 and KTD10. One lost-record test at each step, on one volume and across volumes. |
 | A note edit during a Move goes to the old copy after the verify. | KTD9: the note is held busy from the final check to the home change. |
 | An older computer resets a newer computer's choice. | KTD2 and a test with a higher schema version and unknown fields. |
@@ -327,6 +330,7 @@ flowchart TB
   - A join that runs two times adds each prompt one time.
   - An empty folder, and a folder with notes and no settings file, both get the cache written in (AE10).
   - A folder that does not exist writes nothing and gives the cache as read-only (AE7).
+  - A folder whose `settings.json` does not parse keeps that file unchanged and gives the cache as read-only.
   - Partial-sync order: a settings file that names a prompt that has not arrived uses the cached text for it and writes nothing; a prompt file that arrives before the settings file shows as a prompt and changes nothing else.
   - A cache from folder X is not used to fill folder Y without a change of folder.
 - **Verification:** `cargo test -p shared-settings` passes.
@@ -483,7 +487,7 @@ The manual test on two Macs that use one iCloud Drive folder:
 
 - Every R1–R22 has code and a test, or a manual test step above.
 - All the checks in the Verification Contract pass, and CI is green on the PR.
-- No code path reads `destination_roots`, `current_destination`, `pending_asr_model` or `pending_recognition` (`git grep` finds none).
+- No code path reads `destination_roots`, `current_destination`, `pending_asr_model` or `pending_recognition` (`git grep` finds none in `src/`, `src-tauri/src/` and `crates/`).
 - A read of the shared settings never writes into the storage folder (U1 and U5 tests).
 - The manual two-Mac test passes, or a failed step has a named follow-up that the user accepts.
 - Code from approaches that were not used is removed from the diff.
