@@ -36,7 +36,7 @@ This file records the upstream commit up to which each clone in `reference-sourc
 Ranges: anarlog `39613e5..b02b58de` (108 commits, about 44 relevant), Handy `8f9cf53..29bd2c0` (6 commits), and a first full review of shorthand at `90b8d40`. Shorthand last merged Handy at `05e0aed` (release 0.9.7).
 
 **Act now**
-- Handy `2d526b1`: transcribe-cpp 0.2.3 to 0.2.4. The decode budget grows with audio length, and Parakeet uses less memory on long audio. Update `TRANSCRIBE_REVISION` in `crates/models/src/recognition.rs` with the bump.
+- Handy `2d526b1`: transcribe-cpp 0.2.3 to 0.2.4. Parakeet uses less memory on long audio (#161), and Whisper failures report the real error code (#171). The decode-budget change (#165) does not affect Longhand's catalog models. Update `TRANSCRIBE_REVISION` in `crates/models/src/recognition.rs` with the bump.
 - Shorthand `a5da3f0`: on cpal 0.18, `Device::to_string()` panics when `description()` fails. Longhand calls it in `crates/audio-cpal/src/config.rs:19`. Use `device.description()` with a fallback.
 - anarlog `7b57ea48`, `5338e3c7`: hide the format toolbar during IME composition. Longhand's borrowed `src/editor/widgets/format-toolbar.tsx` does not have the fix. Update `src/editor/PROVENANCE.md` after the port.
 
