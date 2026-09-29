@@ -117,7 +117,7 @@ A hand-kept record in the full licence list for a shipped component that no lice
 The stream of builds that the updater offers to an installed app. A build records its track, and the track is a setting of the one app: switching tracks needs no reinstall. Only the preview track exists now. A stable track comes later.
 
 ### Preview build
-A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMMSS>`, so a later build always has a higher version.
+A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC commit time as YYYYMMDDHHMMSS>`, so a later commit on main has a higher version.
 
 ### Update manifest
 The file that identifies the newest build of a track: its version, date, archive address and signature. The app reads only this file when it checks for updates. For the preview track, it is `preview/latest.json` in the public builds repository.
