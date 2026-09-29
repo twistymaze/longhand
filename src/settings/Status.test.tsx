@@ -38,6 +38,7 @@ const baseSettings: Settings = {
   microphone: null,
   system_audio_default: false,
   hide_from_dock: false,
+  check_updates_automatically: true,
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
@@ -245,6 +246,58 @@ describe("the Hide from Dock switch on macOS", () => {
       expect(group().textContent).toContain("Closing the window keeps Longhand running only in the menu bar."),
     );
     expect(group().textContent).not.toContain("Dock and the menu bar");
+  });
+});
+
+function renderUpdatesGroup(handlers: Record<string, (args: Record<string, unknown>) => unknown> = {}) {
+  const tauri = mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled", ...handlers });
+  render(<Harness readiness={readiness} />);
+  const group = () => screen.getByRole("heading", { name: "Updates" }).closest("section") as HTMLElement;
+  return { tauri, group };
+}
+
+describe("the Updates group on macOS", () => {
+  beforeEach(() => setUserAgent("Mozilla/5.0 (Macintosh; Mac OS X)"));
+  afterEach(() => {
+    delete (navigator as { userAgent?: string }).userAgent;
+  });
+
+  test("shows after Processing, and the switch is on by default", () => {
+    const { group } = renderUpdatesGroup();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
+      "Window",
+      "Recording",
+      "Processing",
+      "Updates",
+      "Alerts",
+    ]);
+    const toggle = within(group()).getByRole("switch", { name: "Check for updates automatically" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(group().textContent).toContain("Longhand asks before it installs a new version.");
+  });
+
+  test("a click turns automatic checks off", async () => {
+    const { tauri, group } = renderUpdatesGroup({
+      set_check_updates_automatically: (args) => ({ ...baseSettings, check_updates_automatically: args.enabled as boolean }),
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Check for updates automatically" });
+    await userEvent.setup().click(toggle);
+    expect(tauri.calls.filter((c) => c.cmd === "set_check_updates_automatically").map((c) => c.args)).toEqual([
+      { enabled: false },
+    ]);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+  });
+
+  test("a failed change shows the error and keeps the previous value", async () => {
+    const { group } = renderUpdatesGroup({
+      set_check_updates_automatically: () => {
+        throw "could not save settings";
+      },
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Check for updates automatically" });
+    await userEvent.setup().click(toggle);
+    expect(await within(group()).findByText(/could not save settings/i)).toBeTruthy();
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 });
 

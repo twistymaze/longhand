@@ -180,6 +180,12 @@ export function StatusPane({
         </Row>
       </Group>
 
+      {isMac() && (
+        <Group header="Updates" footer="Longhand asks before it installs a new version.">
+          <AutomaticUpdates settings={settings} onSettings={onSettings} />
+        </Group>
+      )}
+
       <AlertSound />
     </Pane>
   );
@@ -212,6 +218,40 @@ function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings
         <Switch
           label="Hide from Dock"
           checked={settings.hide_from_dock}
+          disabled={pending}
+          onChange={(v) => void change(v)}
+        />
+      </Row>
+      {error && <ErrorText>{error}</ErrorText>}
+    </>
+  );
+}
+
+/// The switch for automatic update checks (R10, KD7). Updates are macOS
+/// only, so the group shows on macOS only. A failed change keeps the
+/// previous value.
+function AutomaticUpdates({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const change = async (enabled: boolean) => {
+    setPending(true);
+    try {
+      const result = await commands.setCheckUpdatesAutomatically(enabled);
+      if (result.status === "error") setError(sentence(result.error));
+      else {
+        setError(null);
+        onSettings(result.data);
+      }
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <>
+      <Row label="Check for updates automatically" detail="Checks when Longhand opens and every hour">
+        <Switch
+          label="Check for updates automatically"
+          checked={settings.check_updates_automatically}
           disabled={pending}
           onChange={(v) => void change(v)}
         />

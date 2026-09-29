@@ -175,6 +175,18 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 }
 },
 /**
+ * Choose whether the app checks for updates by itself (R10). The next
+ * scheduled check reads the new value.
+ */
+async setCheckUpdatesAutomatically(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_check_updates_automatically", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app has no Dock icon while no window is visible
  * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
  * the next close of the last visible window, which reads the new value
@@ -1345,6 +1357,12 @@ system_audio_default: boolean;
  * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
  */
 hide_from_dock: boolean; 
+/**
+ * The app checks for a newer build of its track at launch, each hour
+ * and at each wake (R9, R10). On by default. "Check for Updates…"
+ * works when it is off (R11).
+ */
+check_updates_automatically: boolean; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).

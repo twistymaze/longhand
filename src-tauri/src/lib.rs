@@ -39,6 +39,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::list_microphones,
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
+            commands::settings::set_check_updates_automatically,
             commands::settings::set_hide_from_dock,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
@@ -330,6 +331,7 @@ pub fn run() {
         // Stop the live workers and free the recognition engine before
         // static destructors run.
         tauri::RunEvent::Exit => {
+            log::info!("app exit");
             if let Some(processing) =
                 app.try_state::<std::sync::Arc<managers::processing::ProcessingManager>>()
             {

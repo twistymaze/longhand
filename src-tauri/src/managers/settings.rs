@@ -140,6 +140,10 @@ pub struct Settings {
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
+    /// The app checks for a newer build of its track at launch, each hour
+    /// and at each wake (R9, R10). On by default. "Check for Updates…"
+    /// works when it is off (R11).
+    pub check_updates_automatically: bool,
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
@@ -264,6 +268,7 @@ impl Default for Settings {
             microphone: None,
             system_audio_default: false,
             hide_from_dock: false,
+            check_updates_automatically: true,
             learned_context_limits: Default::default(),
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
@@ -1047,6 +1052,30 @@ mod tests {
         assert!(!settings.hide_from_dock);
         assert_eq!(settings.endpoint_model, "kept");
         assert!(!Settings::default().hide_from_dock);
+    }
+
+    #[test]
+    fn a_store_without_the_update_setting_reads_as_on_and_needs_no_migration() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert!(settings.check_updates_automatically);
+        assert_eq!(settings.endpoint_model, "kept");
+        assert!(Settings::default().check_updates_automatically);
+    }
+
+    #[test]
+    fn a_stored_update_setting_is_kept() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "check_updates_automatically": false,
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert!(!settings.check_updates_automatically);
     }
 
     #[test]

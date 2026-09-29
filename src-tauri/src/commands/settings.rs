@@ -244,6 +244,17 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
     })
 }
 
+/// Choose whether the app checks for updates by itself (R10). The next
+/// scheduled check reads the new value.
+#[tauri::command]
+#[specta::specta]
+pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| {
+        s.check_updates_automatically = enabled;
+        Ok(())
+    })
+}
+
 /// Choose whether the app has no Dock icon while no window is visible
 /// (R2, R4). Off applies at once: the Dock icon comes back. On applies at
 /// the next close of the last visible window, which reads the new value

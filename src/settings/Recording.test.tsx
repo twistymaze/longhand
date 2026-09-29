@@ -28,6 +28,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     microphone: null,
     system_audio_default: false,
     hide_from_dock: false,
+    check_updates_automatically: true,
     learned_context_limits: {},
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
