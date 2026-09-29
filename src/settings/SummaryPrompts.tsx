@@ -397,13 +397,15 @@ export function SummaryPrompts({
     });
   };
   // The text stays editable while a save runs. Only valid text waits for
-  // the timer; the last valid text stays saved.
+  // the timer; the last valid text stays saved. Text of a prompt that
+  // changed on another computer does not wait for the timer: only Keep My
+  // Text saves it.
   const change = (text: string) => {
     const saved = selected.text;
     setBases((m) => (id in m ? m : { ...m, [id]: saved }));
     setDrafts((m) => ({ ...m, [id]: text }));
     cancel();
-    if (!valid(text)) return;
+    if (!valid(text) || changedElsewhere(selected)) return;
     pending.current = { id, text };
     timer.current = setTimeout(() => void flush(), saveDelay);
   };

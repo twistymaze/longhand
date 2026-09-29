@@ -772,6 +772,25 @@ describe("shared prompts", () => {
     expect(textCalls(tauri)).toEqual([]);
   });
 
+  test("text typed after the change from another computer is not saved until Keep My Text", async () => {
+    const { tauri, remote } = sharedBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "My unsaved text" } });
+    await remote({ text: "Text from the other computer" });
+    expect(await screen.findByText("This prompt changed on another computer.")).toBeTruthy();
+    fireEvent.change(textArea(), { target: { value: "My unsaved text and more" } });
+    expect(screen.getByText("This prompt changed on another computer.")).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 1200));
+    fireEvent.blur(textArea());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(textCalls(tauri)).toEqual([]);
+    await user.click(button("Keep My Text"));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "My unsaved text and more" }]));
+    await waitFor(() => expect(screen.queryByText("This prompt changed on another computer.")).toBeNull());
+  });
+
   test("Keep My Text saves the unsaved text over the change from another computer", async () => {
     const { tauri, remote } = sharedBackend();
     renderPrompts();
