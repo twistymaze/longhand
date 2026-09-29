@@ -1,6 +1,6 @@
-// The page has three windows (KTD3). The Settings window loads it with
-// `?window=settings`, the licences window with `?window=licences`, and the
-// main window with no query.
+// The page has four windows (KTD3). The Settings window loads it with
+// `?window=settings`, the licences window with `?window=licences`, the update
+// window with `?window=update`, and the main window with no query.
 
 import { useEffect, useState } from "react";
 import { useInterfaceZoom } from "./lib/useInterfaceZoom";
@@ -12,6 +12,7 @@ import { useCapture } from "./recording/useCapture";
 import { SessionPage } from "./session/SessionPage";
 import { useSessions } from "./session/useSessions";
 import { SettingsWindow } from "./settings/SettingsWindow";
+import { UpdateWindow } from "./update/UpdateWindow";
 import { useAppSettings } from "./settings/useAppSettings";
 
 const isMac = navigator.userAgent.includes("Mac");
@@ -107,7 +108,15 @@ export default function App() {
   const zoom = useInterfaceZoom();
   const which = new URLSearchParams(window.location.search).get("window");
   return <>
-    {which === "settings" ? <SettingsWindow /> : which === "licences" ? <LicencesWindow /> : <MainWindow />}
+    {which === "settings" ? (
+      <SettingsWindow />
+    ) : which === "licences" ? (
+      <LicencesWindow />
+    ) : which === "update" ? (
+      <UpdateWindow />
+    ) : (
+      <MainWindow />
+    )}
     {zoom.error && <div role="alert" className="fixed inset-x-3 bottom-3 z-50 rounded-lg bg-group p-3 text-label shadow-lg">
       <p>Could not change the interface size: {zoom.error}</p>
       <button onClick={zoom.dismiss} className="mt-2 text-accent">Dismiss</button>

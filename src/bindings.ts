@@ -175,6 +175,18 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 }
 },
 /**
+ * Choose whether the app checks for updates by itself (R10). The next
+ * scheduled check reads the new value.
+ */
+async setCheckUpdatesAutomatically(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_check_updates_automatically", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app has no Dock icon while no window is visible
  * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
  * the next close of the last visible window, which reads the new value
@@ -723,6 +735,30 @@ async openLicences() : Promise<void> {
     await TAURI_INVOKE("open_licences");
 },
 /**
+ * Return the version, the short commit and the track of this build.
+ */
+async buildInfo() : Promise<BuildInfo> {
+    return await TAURI_INVOKE("build_info");
+},
+/**
+ * The current update state, which the window reads once at open.
+ */
+async updateState() : Promise<UpdateState> {
+    return await TAURI_INVOKE("update_state");
+},
+/**
+ * "Check for Updates…" (R11).
+ */
+async checkForUpdates() : Promise<void> {
+    await TAURI_INVOKE("check_for_updates");
+},
+/**
+ * A button in the update window, or a close of the window.
+ */
+async chooseUpdate(choice: Choice) : Promise<void> {
+    await TAURI_INVOKE("choose_update", { choice });
+},
+/**
  * Return the full licence list for the platform of this build.
  */
 async licenceText() : Promise<string> {
@@ -752,7 +788,8 @@ modelDownloadEvent: ModelDownloadEvent,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
-showSession: ShowSession
+showSession: ShowSession,
+updateStateChanged: UpdateStateChanged
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
@@ -765,7 +802,8 @@ modelDownloadEvent: "model-download-event",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
-showSession: "show-session"
+showSession: "show-session",
+updateStateChanged: "update-state-changed"
 })
 
 /** user-defined constants **/
@@ -776,6 +814,19 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
+export type BuildInfo = { 
+/**
+ * The full version, for example `0.1.0-preview.20260928143012`.
+ */
+version: string; 
+/**
+ * The short commit of the build. None for a local build.
+ */
+commit: string | null; 
+/**
+ * None for a local build.
+ */
+track: Track | null }
 export type Capabilities = { live_transcription: boolean; live_speaker_analysis: boolean; live_attributed_text: boolean; maximum_speakers: number | null; 
 /**
  * Catalog support is distinct from an installed-package acceptance test.
@@ -811,6 +862,10 @@ position_ms: number;
  * jumping by the time spent away.
  */
 recorded_ms: number }
+/**
+ * A choice in the update window. A close of the window is `Close`.
+ */
+export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close"
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
@@ -1346,6 +1401,12 @@ system_audio_default: boolean;
  */
 hide_from_dock: boolean; 
 /**
+ * The app checks for a newer build of its track at launch, each hour
+ * and at each wake (R9, R10). On by default. "Check for Updates…"
+ * works when it is off (R11).
+ */
+check_updates_automatically: boolean; 
+/**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).
  */
@@ -1454,6 +1515,10 @@ export type SystemAudioPermission = "allowed" | "denied" |
  */
 "unknown"
 /**
+ * The update track of a build. Each track has its own update manifest.
+ */
+export type Track = "preview"
+/**
  * The transcription model of a Transcribe Again run, for the dialog.
  */
 export type TranscribeAgainCheck = { model_id: string; model_name: string }
@@ -1462,6 +1527,67 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * What the update window shows, and what the manager does in the
+ * background. A state with a view shows the update window.
+ */
+export type UpdateState = 
+/**
+ * Nothing to show.
+ */
+{ state: "idle" } | 
+/**
+ * A check runs. `manual` is true for "Check for Updates…".
+ */
+{ state: "checking"; manual: boolean } | 
+/**
+ * A newer build is offered (R13).
+ */
+{ state: "offered"; version: string; current: string } | 
+/**
+ * A newer build is found while busy. The offer shows when busy ends (R14).
+ */
+{ state: "held"; version: string } | 
+/**
+ * The result of a manual check: no newer build.
+ */
+{ state: "up_to_date"; current: string } | 
+/**
+ * The result of a manual check that failed.
+ */
+{ state: "check_failed"; error: string } | 
+/**
+ * The result of a manual check in a build with no track.
+ */
+{ state: "local_build" } | 
+/**
+ * The build downloads (R16). `total` is none when the server sends no size.
+ */
+{ state: "downloading"; version: string; downloaded: number; total: number | null } | 
+/**
+ * The download or the signature check failed (R18).
+ */
+{ state: "failed"; version: string; error: string } | 
+/**
+ * The build is downloaded while busy. The ready question shows when busy ends (R17).
+ */
+{ state: "ready_held"; version: string } | 
+/**
+ * The build is downloaded: "Relaunch Now" or "Later" (R17).
+ */
+{ state: "ready"; version: string } | 
+/**
+ * After "Later": the build installs at the next quit.
+ */
+{ state: "waiting_for_quit"; version: string } | 
+/**
+ * The build installs, and the app restarts.
+ */
+{ state: "installing"; version: string }
+/**
+ * The update state changed. The update window follows it.
+ */
+export type UpdateStateChanged = { state: UpdateState }
 /**
  * A part of a note that the sync has not delivered yet (R6).
  */

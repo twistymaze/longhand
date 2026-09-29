@@ -14,6 +14,7 @@ set -euo pipefail
 # Directories that contain borrowed code. A unit that borrows into a new
 # directory adds it here, so the record cannot be forgotten.
 BORROWED_DIRS=(
+  .github/workflows
   native/nemo-helper
   crates/aec
   crates/audio

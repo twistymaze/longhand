@@ -13,6 +13,7 @@ use tauri::{
 pub const MAIN_WINDOW: &str = "main";
 pub const SETTINGS_WINDOW: &str = "settings";
 pub const LICENCES_WINDOW: &str = "licences";
+pub const UPDATE_WINDOW: &str = "update";
 
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     crate::interface_zoom::build(app, |percent| {
@@ -240,6 +241,51 @@ fn open_licences_window(app: &AppHandle) {
     }
 }
 
+/// Show or remove the update window to match the update state (KTD9). A
+/// window that shows stays as it is: the page follows the state event, and
+/// progress does not take the focus again. The page registers no close
+/// listener, and a close by the user counts as "Remind Me Later" or "Later".
+pub fn show_update_window(app: &AppHandle, visible: bool) {
+    let existing = app.get_webview_window(UPDATE_WINDOW);
+    match (visible, existing) {
+        (true, None) => {
+            let built = crate::interface_zoom::build(app, |percent| {
+                WebviewWindowBuilder::new(
+                    app,
+                    UPDATE_WINDOW,
+                    WebviewUrl::App("index.html?window=update".into()),
+                )
+                .visible(false)
+                .zoom_hotkeys_enabled(false)
+                .initialization_script(crate::interface_zoom::initialization(percent))
+                .title("Software Update")
+                .inner_size(480.0, 200.0)
+                .resizable(false)
+                .maximizable(false)
+                .minimizable(false)
+                .center()
+                .build()
+            });
+            match built {
+                Ok(window) => front(app, &window),
+                Err(e) => log::error!("failed to open the update window: {e}"),
+            }
+        }
+        (false, Some(window)) => {
+            // The state closed the window, so the page's close is no choice.
+            CLOSED_BY_STATE.store(true, Ordering::SeqCst);
+            if let Err(e) = window.destroy() {
+                CLOSED_BY_STATE.store(false, Ordering::SeqCst);
+                log::error!("failed to close the update window: {e}");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// True while the update manager closes the update window itself.
+static CLOSED_BY_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The time from a close request of the Settings window to the destroy
 /// here. The page's close takes at most 5 s (2 s for the save and 1 s for
 /// each of three later steps), so this limit applies only when the page did
@@ -346,6 +392,19 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         // window.
         WindowEvent::Destroyed if window.label() == LICENCES_WINDOW => {
             hide_dock_icon_if_no_window(window);
+        }
+        // A close by the user is a choice (KTD9). A close that the update
+        // state made is not.
+        WindowEvent::Destroyed if window.label() == UPDATE_WINDOW => {
+            hide_dock_icon_if_no_window(window);
+            if !CLOSED_BY_STATE.swap(false, Ordering::SeqCst) {
+                let app = window.app_handle();
+                if let Some(updates) =
+                    app.try_state::<std::sync::Arc<crate::managers::updates::UpdateManager>>()
+                {
+                    updates.choose(crate::managers::updates::Choice::Close);
+                }
+            }
         }
         _ => {}
     }

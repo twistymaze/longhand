@@ -36,6 +36,27 @@ function mock() {
 
 const section = (name: string) => screen.getByRole("heading", { name }).closest("section") as HTMLElement;
 
+describe("the version row", () => {
+  test("shows the version and the short commit of a CI build", async () => {
+    mockTauri({ build_info: () => ({ version: "0.1.0-preview.20260928143012", commit: "a1b2c3d", track: "preview" }) });
+    render(<About models={models} />);
+    expect(await screen.findByText("Version 0.1.0-preview.20260928143012 (a1b2c3d)")).toBeTruthy();
+  });
+
+  test("says local build when the build has no commit and no track", async () => {
+    mockTauri({ build_info: () => ({ version: "0.1.0", commit: null, track: null }) });
+    render(<About models={models} />);
+    expect(await screen.findByText("Version 0.1.0 (local build)")).toBeTruthy();
+  });
+
+  test("comes before the acknowledgements", async () => {
+    mockTauri({ build_info: () => ({ version: "0.1.0", commit: null, track: null }) });
+    render(<About models={models} />);
+    const row = await screen.findByText("Version 0.1.0 (local build)");
+    expect(row.compareDocumentPosition(section("Acknowledgements")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
 describe("About", () => {
   test("the pane is About, with Acknowledgements, Licences and then the full list row", () => {
     render(<About models={models} />);

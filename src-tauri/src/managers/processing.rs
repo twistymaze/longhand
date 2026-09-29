@@ -740,6 +740,14 @@ impl ProcessingManager {
         self.runner.unblock(session_id).map_err(|e| e.to_string())
     }
 
+    /// True while the live worker drains or the runner runs a stage or a
+    /// summary regeneration (KTD7 of the preview builds plan). A note that
+    /// waits in the queue does not count. This locks neither the capture
+    /// state nor the store.
+    pub fn is_working(&self) -> bool {
+        self.live.busy() || self.runner.is_working()
+    }
+
     /// The claims that a delete takes: a summary regeneration and a delete
     /// exclude each other, and a folder rename waits for both (R8).
     pub fn claims(&self) -> session_core::jobs::Claims {

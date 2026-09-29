@@ -470,6 +470,13 @@ impl Runner {
         }
     }
 
+    /// True while a stage or a summary regeneration runs. A session that
+    /// waits in the queue does not count. This reads only the permit, not
+    /// the store, so a caller can hold any lock.
+    pub fn is_working(&self) -> bool {
+        self.permit.available_permits() == 0
+    }
+
     /// True while `session_id` has its summary regenerated or waits to.
     pub fn is_regenerating(&self, session_id: &str) -> bool {
         self.claims.is_regenerating(session_id)
@@ -1289,6 +1296,26 @@ mod tests {
             0,
             "waiting for another job must not acquire processing power"
         );
+    }
+
+    #[tokio::test]
+    async fn the_runner_works_only_while_a_job_holds_the_permit() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = Runner::new(Environment {
+            store: Arc::new(Mutex::new(session_core::Store::open_in_memory().unwrap())),
+            working_root: root.path().into(),
+            engines: Box::new(UnusedEngines),
+            suspended: Box::new(|| false),
+            events: Box::new(|_| {}),
+        });
+        assert!(!runner.is_working(), "a runner with no job is not working");
+        let job = runner.permit.clone().acquire_owned().await.unwrap();
+        assert!(
+            runner.is_working(),
+            "a runner with a stage or a regeneration is working"
+        );
+        drop(job);
+        assert!(!runner.is_working());
     }
 
     fn id(model: &str) -> &str {

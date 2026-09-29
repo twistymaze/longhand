@@ -17,6 +17,8 @@ Give both ways to run the build, using the exact checkout path:
 - On this Mac: `open <checkout>/target/release/bundle/macos/Longhand.app`.
 - On a remote Mac: zip the bundle with `ditto -c -k --keepParent`. Provide the `scp`, unzip, move-to-Applications, and `open` steps for that build. A remote Mac needs a notarized build or Gatekeeper stops the app. Explain this requirement and notarize when the user tests remotely.
 
+A local build has no track, so it gets no updates. After a manual test, install the DMG of the newest preview build to get updates again ([Preview builds](preview-builds.md#install-the-first-build)).
+
 ## Checks and CI
 
 Run local checks, including:

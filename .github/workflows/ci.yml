@@ -214,6 +214,10 @@ jobs:
         if: runner.os == 'macOS'
         run: bun run test
 
+      - name: Publish script tests
+        if: runner.os == 'macOS'
+        run: bun test scripts/publish-preview.test.ts
+
       - name: rustfmt
         if: runner.os == 'macOS'
         run: cargo fmt --all --check
@@ -357,3 +361,140 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses sources bans
+
+  # Each push to main that passes the checks publishes a signed, notarized
+  # preview build to the public builds repository (docs/preview-builds.md).
+  # Only this job can read the signing and publish secrets: the `preview`
+  # environment accepts only main, and each secret goes only to the step
+  # that uses it. Each action is pinned by its commit SHA, because a moved
+  # tag must not get these secrets.
+  preview:
+    name: Preview build
+    # A build publishes only when every check passes, the licence gate too (R1).
+    needs: [checks, deny]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    environment: preview
+    permissions:
+      contents: read
+    # One preview job at a time. A queued job for a newer push replaces a
+    # queued older one. The version check (KTD2) makes any order safe.
+    concurrency:
+      group: preview
+      cancel-in-progress: false
+    timeout-minutes: 120
+    env:
+      BUILDS_REPOSITORY: twistymaze/longhand-builds
+    steps:
+      # The start time bounds the commit time (KTD5). The job-level env
+      # cannot use the runner context, so this step sets the temporary
+      # paths. rust-cache removes non-Cargo files from target during cache
+      # save, so the NeMo cache is outside target.
+      - name: Record the job start and the temporary paths
+        run: |
+          {
+            echo "JOB_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "KEYCHAIN=$RUNNER_TEMP/preview.keychain-db"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8"
+            echo "LONGHAND_NEMO_CACHE=$RUNNER_TEMP/longhand-nemo"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
+
+      # A release build has its own artifacts, so it has its own cache key.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-preview
+          cache-on-failure: true
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      # `<config version>-preview.<UTC committer time>` (R6). The config file
+      # also turns on the updater archive, so local builds need no updater key.
+      - name: Preview version
+        id: version
+        run: |
+          version=$(bun scripts/publish-preview.ts version \
+            "$(jq -r .version src-tauri/tauri.conf.json)" "$(git log -1 --format=%cI)" "$JOB_START")
+          jq -n --arg version "$version" '{version: $version, bundle: {createUpdaterArtifacts: true}}' \
+            > "$RUNNER_TEMP/preview.json"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Preview version: $version"
+
+      # beforeBuildCommand signs the NeMo helper before Tauri's own
+      # certificate import would run, so the certificate goes into a
+      # temporary keychain first (KTD4). Steps as in Handy's build.yml.
+      - name: Import the Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          password=$(openssl rand -base64 24)
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$KEYCHAIN"
+          security set-keychain-settings -t 7200 -u "$KEYCHAIN"
+          security unlock-keychain -p "$password" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep -q "Developer ID Application" \
+            || { echo "The certificate is not a Developer ID Application identity"; exit 1; }
+
+      - name: Write the notarization key
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$APPLE_API_KEY_PATH"
+
+      # Tauri signs, notarizes and staples the app, then makes the updater
+      # archive and its signature from the stapled app.
+      - name: Tauri build (release, notarized)
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          LONGHAND_BUILD_COMMIT: ${{ github.sha }}
+          LONGHAND_TRACK: preview
+        run: bun tauri build --bundles app,dmg --config "$RUNNER_TEMP/preview.json"
+
+      - name: Notarize and staple the DMG
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          dmg=$(ls target/release/bundle/dmg/*.dmg)
+          xcrun notarytool submit "$dmg" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" --wait --timeout 30m
+          xcrun stapler staple "$dmg"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Check the signatures and the notarization
+        run: |
+          app=target/release/bundle/macos/Longhand.app
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$DMG"
+          spctl -a -vv "$app"
+          spctl -a -vv -t open --context context:primary-signature "$DMG"
+          test -s target/release/bundle/macos/Longhand.app.tar.gz.sig
+
+      - name: Publish
+        env:
+          BUILDS_TOKEN: ${{ secrets.BUILDS_TOKEN }}
+        run: |
+          bun scripts/publish-preview.ts publish "${{ steps.version.outputs.version }}" "$DMG" \
+            target/release/bundle/macos/Longhand.app.tar.gz target/release/bundle/macos/Longhand.app.tar.gz.sig
+
+      - name: Delete the keychain and the notarization key
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+          rm -f "$APPLE_API_KEY_PATH"
