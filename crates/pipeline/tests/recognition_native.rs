@@ -81,7 +81,6 @@ fn production_route_recording_excerpt() {
         .unwrap_or("off")
     {
         "off" => SpeakerSource::Off,
-        "integrated" => SpeakerSource::Integrated,
         "pyannote" => SpeakerSource::Pyannote,
         "sortformer" => SpeakerSource::Sortformer,
         "nemotron" => SpeakerSource::Nemotron,

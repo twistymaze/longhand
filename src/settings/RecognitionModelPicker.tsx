@@ -5,11 +5,7 @@ import { CheckIcon } from "./icons";
 
 import { describeLanguages } from "./languages";
 
-const recommendationOrder = [
-  "nemotron-speech-streaming-en-0.6b-q80",
-  "parakeet-unified-en-0.6b-q80",
-  "granite-speech-4.1-2b-plus-q5km",
-];
+const recommendationOrder = ["parakeet-unified-en-0.6b-q80"];
 
 function recommendationRank(model: ModelStatus): number {
   if (!model.recommended) return recommendationOrder.length + 1;
@@ -78,8 +74,6 @@ export function RecognitionModelPicker({
         aria-label="Transcription model"
       >
         {choices.map((m, index) => {
-          const nativeSpeakers =
-            m.speaker_preferences?.after_stop.includes("integrated");
           const selected = m.id === value;
           const activity = modelActivity?.(m);
           return (
@@ -144,11 +138,6 @@ export function RecognitionModelPicker({
                           ? "Live transcription"
                           : "Transcription afterwards"}
                       </span>
-                      {nativeSpeakers && (
-                        <span className="rounded-md bg-fill px-2 py-0.5 text-[0.8rem] font-medium text-label">
-                          Built-in speaker recognition
-                        </span>
-                      )}
                     </span>
                     <span className="text-[0.85rem] leading-relaxed text-label-secondary">
                       {describeLanguages(m.languages)}

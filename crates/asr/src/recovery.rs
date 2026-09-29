@@ -43,37 +43,6 @@ fn split(
     }
 }
 
-pub(crate) fn normalize_parts(
-    parts: Vec<DecodedPart>,
-    request: &crate::RecognitionRequest,
-    samples: usize,
-    normalize: impl Fn(
-        Transcript,
-        usize,
-        &crate::RecognitionRequest,
-    ) -> Result<crate::RecognitionOutput, crate::AsrError>,
-) -> Result<crate::RecognitionOutput, crate::AsrError> {
-    let mut result = crate::RecognitionOutput {
-        scope: request.scope.clone(),
-        revision: request.revision,
-        coverage: request.coverage(samples)?,
-        text: String::new(),
-        segments: Vec::new(),
-        speaker_turns: Vec::new(),
-    };
-    for part in parts {
-        let mut child = request.clone();
-        child.start_sample += part.offset as u64;
-        // Speaker keys and row IDs include input_start_sample. Separate
-        // decodes must not imply that equal local labels name the same person.
-        let output = normalize(part.transcript, part.samples, &child)?;
-        append_text(&mut result.text, &output.text);
-        result.segments.extend(output.segments);
-        result.speaker_turns.extend(output.speaker_turns);
-    }
-    Ok(result)
-}
-
 pub(crate) fn append_text(target: &mut String, text: &str) {
     let text = text.trim();
     if !text.is_empty() {
@@ -130,83 +99,6 @@ mod tests {
         });
         assert!(matches!(result, Err(Error::OutputTruncated { .. })));
         assert_eq!(calls, 5);
-    }
-
-    #[test]
-    fn recovered_native_labels_keep_independent_identity_and_absolute_times() {
-        let request = crate::RecognitionRequest {
-            scope: crate::SpeakerScope {
-                generation: "test".into(),
-                epoch: 2,
-            },
-            start_sample: 80_000,
-            revision: 3,
-            attribution: crate::Attribution::Native,
-        };
-        let transcript = || Transcript {
-            text: "speech".into(),
-            speaker_segments: vec![transcribe_cpp::SpeakerSegment {
-                t0_ms: 0,
-                t1_ms: 1_000,
-                speaker_id: 1,
-                ..Default::default()
-            }],
-            segments: vec![transcribe_cpp::Segment {
-                t0_ms: 0,
-                t1_ms: 1_000,
-                text: "speech".into(),
-                speaker_id: 1,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let parts = vec![
-            DecodedPart {
-                offset: 0,
-                samples: 16_000,
-                transcript: transcript(),
-            },
-            DecodedPart {
-                offset: 16_000,
-                samples: 16_000,
-                transcript: transcript(),
-            },
-        ];
-        let result = normalize_parts(parts, &request, 32_000, crate::normalize_transcript).unwrap();
-        assert_eq!(
-            result.coverage,
-            crate::SampleRange {
-                start: 80_000,
-                end: 112_000
-            }
-        );
-        assert_eq!(result.text, "speech speech");
-        assert_eq!(
-            result.segments[0].range,
-            crate::SampleRange {
-                start: 80_000,
-                end: 96_000
-            }
-        );
-        assert_eq!(
-            result.segments[1].range,
-            crate::SampleRange {
-                start: 96_000,
-                end: 112_000
-            }
-        );
-        assert_ne!(result.segments[0].id, result.segments[1].id);
-        assert_ne!(result.segments[0].speaker, result.segments[1].speaker);
-        assert_eq!(result.speaker_turns.len(), 2);
-        for (turn, segment) in result.speaker_turns.iter().zip(&result.segments) {
-            assert_eq!(turn.range, segment.range);
-            assert_eq!(Some(&turn.speaker), segment.speaker.as_ref());
-        }
-        assert_ne!(
-            result.speaker_turns[0].speaker,
-            result.speaker_turns[1].speaker
-        );
-        assert!(result.segments.iter().all(|row| row.revision == 3));
     }
 
     #[test]

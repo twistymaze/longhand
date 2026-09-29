@@ -1,7 +1,7 @@
 //! Exact compatibility checks precede checkpoint reuse and stage shortcuts.
 use super::{RouteResult, failed};
 use crate::{SharedStore, StageError, checkpoint, lock};
-use models::recognition::{ExecutionSpec, SpeakerSource};
+use models::recognition::ExecutionSpec;
 use session_core::{Segment, Stage, recognition::*};
 use std::path::Path;
 
@@ -107,14 +107,15 @@ pub(crate) fn spec_fingerprints(
         "transcribe.cpp"
     };
     let runtime = spec.runtimes.iter().find(|r| r.name == asr_runtime);
-    let integrated = spec.config.speaker_source == SpeakerSource::Integrated;
     Ok(Fingerprints {
         execution: hash(spec)?,
+        // The literal `false` keeps the fingerprint of every saved note. Do not
+        // remove it.
         asr: hash(&(
             spec.artifacts.first(),
             runtime,
             &spec.config.language,
-            integrated,
+            false,
         ))?,
         speakers: hash(&(
             spec.config.speaker_source,
@@ -399,8 +400,7 @@ fn prepare_fingerprints(
     let live_matches = live_identity.as_ref().is_some_and(|f| {
         f.asr == next.asr && f.audio == next.audio && f.preprocessing == next.preprocessing
     });
-    if !live.is_empty() && !live_matches && spec.config.speaker_source != SpeakerSource::Integrated
-    {
+    if !live.is_empty() && !live_matches {
         return Err(failed(
             "Saved live text has no compatible audio and model identity. Choose Transcribe Again explicitly.",
         ));
@@ -1040,6 +1040,7 @@ pub(super) fn load_speakers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use models::recognition::SpeakerSource;
 
     fn audio_fixture() -> (tempfile::TempDir, SharedStore, Segment, ExecutionSpec) {
         let temp = tempfile::tempdir().unwrap();
@@ -1080,6 +1081,52 @@ mod tests {
         })
         .unwrap();
         (temp, store, segment, spec)
+    }
+
+    /// Saved notes compare this value. A change stops text reuse for every note.
+    #[test]
+    fn asr_fingerprint_of_a_fixed_spec_is_stable() {
+        use models::recognition::*;
+        let spec = ExecutionSpec {
+            schema_version: 1,
+            catalog_revision: "catalog".into(),
+            config: RecognitionConfig {
+                asr_model: "whisper-large-v3-turbo-q5km".into(),
+                speaker_source: SpeakerSource::Pyannote,
+                processing_mode: ProcessingMode::AfterStop,
+                speaker_processing_mode: ProcessingMode::AfterStop,
+                speaker_count: None,
+                language: Some("en".into()),
+            },
+            artifacts: vec![ArtifactSpec {
+                id: "whisper-large-v3-turbo-q5km".into(),
+                filename: "whisper.gguf".into(),
+                sha256: "0".repeat(64),
+                revision: "revision".into(),
+                url: "https://example.invalid/whisper.gguf".into(),
+                size_bytes: 1,
+                format: "transcribe-gguf".into(),
+            }],
+            runtimes: vec![RuntimeSpec {
+                name: "transcribe.cpp".into(),
+                revision: "runtime-revision".into(),
+            }],
+            capabilities: Capabilities {
+                live_transcription: false,
+                live_speaker_analysis: false,
+                live_attributed_text: false,
+                maximum_speakers: None,
+                locally_verified: false,
+            },
+            enabled_live_transcription: false,
+            enabled_live_speaker_analysis: false,
+            preprocessing_revision: "mono-16khz-v1".into(),
+        };
+        let asr = spec_fingerprints("audio".into(), &spec).unwrap().asr;
+        assert_eq!(
+            asr,
+            "85f58a898b07e6d23265ebeaf49a846cbc271a2860464941aa857cb357aad195"
+        );
     }
 
     #[test]

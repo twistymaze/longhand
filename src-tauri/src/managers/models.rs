@@ -706,8 +706,8 @@ mod tests {
 
     const WHISPER: &str = "whisper-large-v3-turbo-q5km";
     const PARAKEET: &str = "parakeet-unified-en-0.6b-q80";
-    const TDT_1_1B: &str = "parakeet-tdt-1.1b-q5km";
-    const TDT_V2: &str = "parakeet-tdt-0.6b-v2-q80";
+    const TDT_V3: &str = "parakeet-tdt-0.6b-v3-q80";
+    const NEMOTRON_3_5: &str = "nemotron-3.5-asr-streaming-0.6b-q80";
 
     fn whisper_selected() -> Settings {
         Settings {
@@ -722,9 +722,9 @@ mod tests {
 
     #[test]
     fn a_pick_waits_for_its_download_while_the_selected_model_stays() {
-        // AE5: Whisper is selected and downloaded, Parakeet TDT 1.1B is not.
+        // AE5: Whisper is selected and downloaded, Parakeet TDT v3 is not.
         let mut settings = whisper_selected();
-        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        let pick = apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
         assert_eq!(
             pick,
             Pick {
@@ -733,74 +733,74 @@ mod tests {
             }
         );
         assert_eq!(settings.asr_model, WHISPER);
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_1_1B));
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V3));
 
         // Progress and the outcome of another model change nothing.
         assert!(!settle_pending(
             &mut settings,
-            TDT_1_1B,
+            TDT_V3,
             &DownloadUpdate::Verifying
         ));
         assert!(!settle_pending(
             &mut settings,
-            TDT_V2,
+            NEMOTRON_3_5,
             &DownloadUpdate::Completed
         ));
         assert_eq!(settings.asr_model, WHISPER);
 
         assert!(settle_pending(
             &mut settings,
-            TDT_1_1B,
+            TDT_V3,
             &DownloadUpdate::Completed
         ));
-        assert_eq!(settings.asr_model, TDT_1_1B);
+        assert_eq!(settings.asr_model, TDT_V3);
         assert_eq!(settings.pending_asr_model, None);
     }
 
     #[test]
     fn a_pick_with_the_selected_model_absent_applies_at_once() {
         let mut settings = whisper_selected();
-        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[]));
+        let pick = apply_pick(&mut settings, TDT_V3, only(&[]));
         assert!(pick.download);
-        assert_eq!(settings.asr_model, TDT_1_1B);
+        assert_eq!(settings.asr_model, TDT_V3);
         assert_eq!(settings.pending_asr_model, None);
     }
 
     #[test]
     fn a_pick_of_a_downloaded_model_applies_at_once() {
         let mut settings = whisper_selected();
-        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER, TDT_1_1B]));
+        let pick = apply_pick(&mut settings, TDT_V3, only(&[WHISPER, TDT_V3]));
         assert!(!pick.download);
-        assert_eq!(settings.asr_model, TDT_1_1B);
+        assert_eq!(settings.asr_model, TDT_V3);
     }
 
     #[test]
     fn a_second_pick_replaces_the_pending_pick_and_cancels_its_download() {
         let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
-        let pick = apply_pick(&mut settings, TDT_V2, only(&[WHISPER]));
+        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
+        let pick = apply_pick(&mut settings, NEMOTRON_3_5, only(&[WHISPER]));
         assert_eq!(
             pick,
             Pick {
                 download: true,
-                cancel: Some(TDT_1_1B.into())
+                cancel: Some(TDT_V3.into())
             }
         );
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V2));
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(NEMOTRON_3_5));
         // The cancelled download does not clear the new pick.
         assert!(!settle_pending(
             &mut settings,
-            TDT_1_1B,
+            TDT_V3,
             &DownloadUpdate::Cancelled
         ));
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V2));
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(NEMOTRON_3_5));
     }
 
     #[test]
     fn a_pick_of_the_pending_model_again_keeps_its_download() {
         let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
-        let pick = apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
+        let pick = apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
         assert_eq!(
             pick,
             Pick {
@@ -808,19 +808,19 @@ mod tests {
                 cancel: None
             }
         );
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_1_1B));
+        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V3));
     }
 
     #[test]
     fn a_pick_of_the_selected_model_clears_the_pending_pick() {
         let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
         let pick = apply_pick(&mut settings, WHISPER, only(&[WHISPER]));
         assert_eq!(
             pick,
             Pick {
                 download: false,
-                cancel: Some(TDT_1_1B.into())
+                cancel: Some(TDT_V3.into())
             }
         );
         assert_eq!(settings.asr_model, WHISPER);
@@ -830,11 +830,11 @@ mod tests {
     #[test]
     fn a_failed_download_clears_the_pending_pick() {
         let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_1_1B, only(&[WHISPER]));
+        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
         let failed = DownloadUpdate::Failed {
             message: "checksum".into(),
         };
-        assert!(settle_pending(&mut settings, TDT_1_1B, &failed));
+        assert!(settle_pending(&mut settings, TDT_V3, &failed));
         assert_eq!(settings.asr_model, WHISPER);
         assert_eq!(settings.pending_asr_model, None);
     }
@@ -913,10 +913,13 @@ mod tests {
     #[test]
     fn delete_refuses_the_pending_and_the_live_model() {
         let mut settings = whisper_selected();
-        settings.pending_asr_model = Some(TDT_1_1B.into());
-        assert!(delete_refusal(TDT_1_1B, &settings, None, &[]).is_some());
+        settings.pending_asr_model = Some(TDT_V3.into());
+        assert!(delete_refusal(TDT_V3, &settings, None, &[]).is_some());
         assert!(delete_refusal(PARAKEET, &settings, Some(PARAKEET), &[]).is_some());
-        assert_eq!(delete_refusal(PARAKEET, &settings, Some(TDT_V2), &[]), None);
+        assert_eq!(
+            delete_refusal(PARAKEET, &settings, Some(NEMOTRON_3_5), &[]),
+            None
+        );
     }
 
     #[test]
@@ -980,11 +983,11 @@ mod tests {
         ] {
             let name = state.name();
             let sessions = [SessionRecord {
-                transcribe_again_model: Some(TDT_1_1B.into()),
+                transcribe_again_model: Some(TDT_V3.into()),
                 ..note(PARAKEET, state)
             }];
             assert!(
-                delete_refusal(TDT_1_1B, &settings, None, &sessions).is_some(),
+                delete_refusal(TDT_V3, &settings, None, &sessions).is_some(),
                 "{name}"
             );
             assert_eq!(
@@ -995,10 +998,10 @@ mod tests {
         }
         // A saved note with a stale mark needs no model.
         let sessions = [SessionRecord {
-            transcribe_again_model: Some(TDT_1_1B.into()),
+            transcribe_again_model: Some(TDT_V3.into()),
             ..note(PARAKEET, SessionState::Saved)
         }];
-        assert_eq!(delete_refusal(TDT_1_1B, &settings, None, &sessions), None);
+        assert_eq!(delete_refusal(TDT_V3, &settings, None, &sessions), None);
     }
 
     #[test]
@@ -1169,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn statuses_list_the_nine_recognition_models_with_their_catalog_fields() {
+    fn statuses_list_the_five_recognition_models_with_their_catalog_fields() {
         let dir = tempfile::tempdir().unwrap();
         let manager = ModelsManager::at(dir.path().to_path_buf());
         let statuses = manager.statuses(PARAKEET);
@@ -1177,7 +1180,7 @@ mod tests {
             .iter()
             .filter(|s| s.role == ModelRole::Recognition)
             .collect();
-        assert_eq!(asr.len(), 10);
+        assert_eq!(asr.len(), 5);
         let parakeet = asr.iter().find(|s| s.id == PARAKEET).unwrap();
         assert!(parakeet.recommended && parakeet.streaming && parakeet.required);
         assert_eq!(parakeet.languages, ["en"]);

@@ -544,17 +544,117 @@ fn format_count(n: usize) -> String {
 /// differs from what would be written back, so the caller persists the
 /// migration once and then converges.
 pub fn settings_from_value(stored: &Value) -> (Settings, bool) {
-    let (mut settings, mut updated) = match serde_json::from_value::<Settings>(stored.clone()) {
-        Ok(settings) => (settings, false),
+    let mut stored = stored.clone();
+    let rewritten = rewrite_stale_recognition(&mut stored);
+    let (mut settings, mut updated) = match Settings::deserialize(&stored) {
+        Ok(settings) => (settings, rewritten),
         Err(e) => {
             log::warn!("failed to parse stored settings ({e}); salvaging valid fields");
-            (salvage_settings(stored), true)
+            (salvage_settings(&stored), true)
         }
     };
-    if apply_settings_migrations(&mut settings, stored) {
+    if apply_settings_migrations(&mut settings, &stored) {
         updated = true;
     }
     (settings, updated)
+}
+
+/// Rewrite the stored recognition values that the catalog no longer
+/// supports (R9, R10, KTD2). The rewrite runs before the parse, so the
+/// parse and the salvage see only valid values. Returns whether a value
+/// changed.
+fn rewrite_stale_recognition(stored: &mut Value) -> bool {
+    use models::recognition::SpeakerCount;
+    let Some(map) = stored.as_object_mut() else {
+        return false;
+    };
+    let speaker_count = map
+        .get("default_speaker_count")
+        .and_then(|v| serde_json::from_value::<SpeakerCountSetting>(v.clone()).ok())
+        .map(|c| match c {
+            SpeakerCountSetting::Exact { count } => SpeakerCount::Exact { count },
+            SpeakerCountSetting::Range { min, max } => SpeakerCount::Range { min, max },
+        });
+    let mut changed = rewrite_recognition_fields(map, speaker_count);
+    // Nothing can download a model that is not in the catalog.
+    if map
+        .get("pending_asr_model")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !is_catalog_asr_model(id))
+    {
+        map.remove("pending_asr_model");
+        changed = true;
+    }
+    if let Some(pending) = map
+        .get_mut("pending_recognition")
+        .and_then(Value::as_object_mut)
+    {
+        let speaker_count = pending
+            .get("speaker_count")
+            .and_then(|v| serde_json::from_value::<SpeakerCount>(v.clone()).ok());
+        changed |= rewrite_recognition_fields(pending, speaker_count);
+    }
+    changed
+}
+
+/// Rewrite `asr_model` and `speaker_source` in Settings or in a stored
+/// `RecognitionConfig`. Both use the same field names.
+fn rewrite_recognition_fields(
+    map: &mut serde_json::Map<String, Value>,
+    speaker_count: Option<models::recognition::SpeakerCount>,
+) -> bool {
+    let mut changed = false;
+    if map
+        .get("asr_model")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !is_catalog_asr_model(id))
+    {
+        map.insert("asr_model".into(), models::DEFAULT_ASR_MODEL.into());
+        changed = true;
+    }
+    // "integrated" was the removed "Transcription model labels" source.
+    if map.get("speaker_source").and_then(Value::as_str) == Some("integrated") {
+        let asr_model = map
+            .get("asr_model")
+            .and_then(Value::as_str)
+            .unwrap_or(models::DEFAULT_ASR_MODEL);
+        let source = automatic_speaker_source(asr_model, speaker_count);
+        map.insert(
+            "speaker_source".into(),
+            serde_json::to_value(source).expect("a speaker source serializes"),
+        );
+        changed = true;
+    }
+    changed
+}
+
+fn is_catalog_asr_model(id: &str) -> bool {
+    models::CATALOG
+        .iter()
+        .any(|m| m.id == id && m.kind == models::ModelKind::Asr)
+}
+
+/// The automatic speaker choice (KTD5): the first after-Stop preference of
+/// the model that resolves with the speaker count.
+fn automatic_speaker_source(
+    asr_model: &str,
+    speaker_count: Option<models::recognition::SpeakerCount>,
+) -> models::recognition::SpeakerSource {
+    use models::recognition::{RecognitionConfig, SpeakerSource, resolve};
+    models::model(asr_model)
+        .and_then(|m| m.speaker_preferences.as_ref())
+        .and_then(|preferences| {
+            preferences.after_stop.iter().copied().find(|&source| {
+                resolve(&RecognitionConfig {
+                    asr_model: asr_model.into(),
+                    speaker_source: source,
+                    speaker_count,
+                    ..Default::default()
+                })
+                .is_ok()
+            })
+        })
+        .unwrap_or(SpeakerSource::Pyannote)
 }
 
 fn apply_settings_migrations(settings: &mut Settings, stored: &Value) -> bool {
@@ -1615,5 +1715,172 @@ mod recognition_tests {
         let spec = models::recognition::resolve(&settings.recognition_config()).unwrap();
         assert!(!spec.enabled_live_transcription);
         assert!(spec.enabled_live_speaker_analysis);
+    }
+}
+
+#[cfg(test)]
+mod stale_recognition_tests {
+    use serde_json::json;
+
+    use super::*;
+    use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
+
+    const GRANITE: &str = "granite-speech-4.1-2b-plus-q5km";
+
+    fn current(fields: Value) -> Value {
+        let mut stored = json!({ "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION });
+        for (key, value) in fields.as_object().unwrap() {
+            stored[key] = value.clone();
+        }
+        stored
+    }
+
+    #[test]
+    fn a_removed_model_reads_as_parakeet_unified() {
+        let (settings, updated) = settings_from_value(&current(json!({ "asr_model": GRANITE })));
+        assert!(updated);
+        assert_eq!(settings.asr_model, models::DEFAULT_ASR_MODEL);
+    }
+
+    #[test]
+    fn the_removed_speaker_source_reads_as_the_automatic_choice() {
+        let (settings, updated) = settings_from_value(&current(json!({
+            "asr_model": GRANITE,
+            "speaker_source": "integrated",
+        })));
+        assert!(updated);
+        // A salvage resets the source to pyannote, so Nemotron shows that
+        // the rewrite ran before the parse.
+        assert_eq!(settings.speaker_source, SpeakerSource::Nemotron);
+        // Settings shows the first preference as "Automatic".
+        let automatic = models::model(&settings.asr_model)
+            .and_then(|m| m.speaker_preferences.as_ref())
+            .map(|p| p.after_stop[0]);
+        assert_eq!(automatic, Some(settings.speaker_source));
+    }
+
+    #[test]
+    fn the_removed_speaker_source_with_more_than_eight_speakers_reads_as_pyannote() {
+        let (settings, updated) = settings_from_value(&current(json!({
+            "speaker_source": "integrated",
+            "default_speaker_count": { "kind": "exact", "count": 9 },
+        })));
+        assert!(updated);
+        assert_eq!(settings.speaker_source, SpeakerSource::Pyannote);
+        assert_eq!(
+            settings.default_speaker_count,
+            Some(SpeakerCountSetting::Exact { count: 9 })
+        );
+    }
+
+    #[test]
+    fn a_pending_recognition_gets_the_same_rewrite() {
+        let pending = |asr_model: &str, speaker_source: &str, count: Option<u32>| {
+            json!({
+                "asr_model": asr_model,
+                "speaker_source": speaker_source,
+                "processing_mode": "after_stop",
+                "speaker_processing_mode": "after_stop",
+                "speaker_count": count.map(|count| json!({ "kind": "exact", "count": count })),
+                "language": "en",
+            })
+        };
+        let (settings, updated) = settings_from_value(&current(json!({
+            "pending_recognition": pending(GRANITE, "integrated", None),
+        })));
+        assert!(updated);
+        let config = settings.pending_recognition.unwrap();
+        assert_eq!(config.asr_model, models::DEFAULT_ASR_MODEL);
+        assert_eq!(config.speaker_source, SpeakerSource::Nemotron);
+        assert_eq!(config.processing_mode, ProcessingMode::AfterStop);
+        assert_eq!(config.language.as_deref(), Some("en"));
+
+        let (settings, updated) = settings_from_value(&current(json!({
+            "pending_recognition": pending(models::DEFAULT_ASR_MODEL, "integrated", Some(9)),
+        })));
+        assert!(updated);
+        let config = settings.pending_recognition.unwrap();
+        assert_eq!(config.speaker_source, SpeakerSource::Pyannote);
+        assert_eq!(config.speaker_count, Some(SpeakerCount::Exact { count: 9 }));
+    }
+
+    #[test]
+    fn a_pending_model_that_is_not_in_the_catalog_is_cleared() {
+        let (settings, updated) =
+            settings_from_value(&current(json!({ "pending_asr_model": GRANITE })));
+        assert!(updated);
+        assert_eq!(settings.pending_asr_model, None);
+    }
+
+    #[test]
+    fn kept_values_are_not_changed_and_not_marked_updated() {
+        let stored = current(json!({
+            "asr_model": "whisper-large-v3-turbo-q5km",
+            "pending_asr_model": "parakeet-tdt-0.6b-v3-q80",
+            "speaker_source": "sortformer",
+            "default_speaker_count": { "kind": "range", "min": 2, "max": 4 },
+            "pending_recognition": {
+                "asr_model": "parakeet-tdt-0.6b-v3-q80",
+                "speaker_source": "pyannote",
+                "processing_mode": "after_stop",
+                "speaker_processing_mode": "after_stop",
+                "speaker_count": null,
+                "language": null,
+            },
+        }));
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
+        assert_eq!(
+            settings.pending_asr_model.as_deref(),
+            Some("parakeet-tdt-0.6b-v3-q80")
+        );
+        assert_eq!(settings.speaker_source, SpeakerSource::Sortformer);
+        assert_eq!(
+            settings.pending_recognition.unwrap().asr_model,
+            "parakeet-tdt-0.6b-v3-q80"
+        );
+    }
+
+    #[test]
+    fn the_rewrite_keeps_other_fields_and_converges() {
+        let stored = current(json!({
+            "interface_zoom_percent": 120,
+            "endpoint_base_url": "http://localhost:11434/v1",
+            "endpoint_model": "llama3",
+            "default_speaker_count": { "kind": "exact", "count": 3 },
+            "asr_model": GRANITE,
+            "pending_asr_model": "cohere-transcribe",
+            "live_transcript": false,
+            "speaker_source": "integrated",
+            "speaker_processing_mode": "after_stop",
+            "recognition_language": "de",
+            "system_audio_default": true,
+            "destination_roots": ["/vault/a"],
+            "current_destination": "/vault/a",
+        }));
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(updated);
+        assert_eq!(
+            settings,
+            Settings {
+                interface_zoom_percent: 120,
+                endpoint_base_url: Some("http://localhost:11434/v1".into()),
+                endpoint_model: "llama3".into(),
+                default_speaker_count: Some(SpeakerCountSetting::Exact { count: 3 }),
+                asr_model: models::DEFAULT_ASR_MODEL.into(),
+                pending_asr_model: None,
+                live_transcript: false,
+                speaker_source: SpeakerSource::Nemotron,
+                speaker_processing_mode: ProcessingMode::AfterStop,
+                recognition_language: Some("de".into()),
+                system_audio_default: true,
+                destination_roots: vec!["/vault/a".into()],
+                current_destination: Some("/vault/a".into()),
+                ..Settings::default()
+            }
+        );
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(settings_from_value(&written), (settings, false));
     }
 }

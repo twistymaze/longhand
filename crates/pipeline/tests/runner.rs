@@ -4038,7 +4038,7 @@ async fn a_new_model_that_cannot_use_the_saved_text_runs_a_full_transcription() 
     let calls = r.script.calls.load(Ordering::SeqCst);
 
     let other = RecognitionConfig {
-        asr_model: "parakeet-tdt-0.6b-v2-q80".into(),
+        asr_model: "parakeet-tdt-0.6b-v3-q80".into(),
         ..settings()
     };
     again_with(&r, &other).unwrap();
@@ -4201,7 +4201,7 @@ async fn a_note_count_above_the_speaker_limit_is_refused_with_the_count_and_the_
     };
     let expected = refusal(
         "This note has 5 speakers. Sortformer supports up to 4. Choose another speaker \
-         source or model in Settings.",
+         source in Settings.",
         true,
     );
     assert_eq!(check_with(&r, &config).unwrap_err(), expected);
@@ -4216,7 +4216,7 @@ async fn a_confirmation_after_the_settings_changed_is_refused() {
     let shown = check_with(&r, &settings()).unwrap().config.asr_model;
     // The user selects another model in Settings while the dialog is open.
     let now = RecognitionConfig {
-        asr_model: "parakeet-tdt-0.6b-v2-q80".into(),
+        asr_model: "parakeet-tdt-0.6b-v3-q80".into(),
         ..settings()
     };
     assert_eq!(

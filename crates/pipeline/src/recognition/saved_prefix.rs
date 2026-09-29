@@ -227,8 +227,8 @@ mod tests {
                 .set_home_path("s", temp.path().to_str().unwrap())
                 .unwrap();
             let spec = models::recognition::resolve(&RecognitionConfig {
-                asr_model: "moss-transcribe-diarize-q80".into(),
-                speaker_source: SpeakerSource::Integrated,
+                asr_model: "whisper-large-v3-turbo-q5km".into(),
+                speaker_source: SpeakerSource::Nemotron,
                 ..Default::default()
             })
             .unwrap();

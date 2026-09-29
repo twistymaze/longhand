@@ -1,37 +1,16 @@
 //! Opt-in model checks. Output contains counts and times, never transcript text.
 //! Set LONGHAND_ASR_MODEL, LONGHAND_ASR_WAV and optionally LONGHAND_ASR_SECONDS.
-//! LONGHAND_ASR_MODE selects native (default), off, or live. Optional
+//! LONGHAND_ASR_MODE selects off (default) or live. Off transcribes independent
+//! 30-second windows after Stop; live streams the audio. Optional
 //! LONGHAND_ASR_RESULT writes private JSON to a new file in a temporary directory.
 
-use asr::{Attribution, Engine, RecognitionRequest, Recognizer, SpeakerScope, TimingPrecision};
-
-struct BoundsLogger;
-static BOUNDS_LOGGER: BoundsLogger = BoundsLogger;
-
-impl log::Log for BoundsLogger {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.target() == "asr::result" && metadata.level() <= log::Level::Warn
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            eprintln!("{}", record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
+use asr::{Engine, Recognizer};
 
 #[test]
-#[ignore = "requires a verified native speaker model and mono 16 kHz PCM16 audio"]
-fn native_labels_cover_each_independent_window() {
-    log::set_logger(&BOUNDS_LOGGER).expect("install numeric bounds logger");
-    log::set_max_level(log::LevelFilter::Warn);
-    let mode = std::env::var("LONGHAND_ASR_MODE").unwrap_or_else(|_| "native".into());
-    assert!(
-        ["native", "off", "live"].contains(&mode.as_str()),
-        "invalid ASR mode"
-    );
+#[ignore = "requires a verified recognition model and mono 16 kHz PCM16 audio"]
+fn recognition_covers_each_independent_window() {
+    let mode = std::env::var("LONGHAND_ASR_MODE").unwrap_or_else(|_| "off".into());
+    assert!(["off", "live"].contains(&mode.as_str()), "invalid ASR mode");
     let model = std::env::var("LONGHAND_ASR_MODEL").expect("model path");
     let audio = std::env::var("LONGHAND_ASR_WAV").expect("audio path");
     let seconds: usize = std::env::var("LONGHAND_ASR_SECONDS")
@@ -76,93 +55,55 @@ fn native_labels_cover_each_independent_window() {
         write_result(&serde_json::json!({ "mode": mode, "seconds": seconds, "parts": result }));
         return;
     }
-    let attribution = if mode == "native" {
-        Attribution::Native
-    } else {
-        Attribution::Off
-    };
-    let mut snapshots = Vec::new();
-    let mut next_sample = 0;
-    let mut labels = 0;
+    const WINDOW_MS: u64 = 30_000;
+    let mut windows = Vec::new();
     let mut rows = 0;
-    for (epoch, chunk) in pcm.chunks(30 * 16_000).enumerate() {
-        let request = RecognitionRequest {
-            scope: SpeakerScope {
-                generation: "native-test".into(),
-                epoch: epoch as u64,
-            },
-            start_sample: next_sample,
-            revision: 0,
-            attribution,
-        };
-        let result = engine.transcribe_normalized(chunk, &request).unwrap();
+    let mut timed_words = 0;
+    for (index, chunk) in pcm.chunks(WINDOW_MS as usize * 16).enumerate() {
+        let start_ms = index as u64 * WINDOW_MS;
+        let length_ms = chunk.len() as u64 / 16;
+        let text = engine
+            .transcribe(chunk)
+            .expect("segment recognition succeeds");
         assert!(
-            !result.text.trim().is_empty(),
-            "known speech window {epoch} produced no text"
+            !text.text.trim().is_empty(),
+            "known speech window {index} produced no text"
         );
-        if attribution == Attribution::Off {
-            assert!(result.segments.iter().all(|row| row.speaker.is_none()));
-            assert!(result.speaker_turns.is_empty());
+        for row in &text.segments {
+            assert!(row.start_ms <= row.end_ms);
+            assert!(row.end_ms <= length_ms);
         }
-        assert_eq!(result.coverage.start, next_sample);
-        next_sample += chunk.len() as u64;
-        assert_eq!(result.coverage.end, next_sample);
-        for row in &result.segments {
-            assert!(row.range.start >= result.coverage.start);
-            assert!(row.range.end <= result.coverage.end);
-            assert!(row.range.start < row.range.end);
-            if row.timing == TimingPrecision::SourceWindow {
-                assert_eq!(row.range, result.coverage);
-            }
-            if let Some(speaker) = &row.speaker {
-                assert_eq!(speaker.scope, request.scope);
-                labels += 1;
-            }
+        let tokens = engine
+            .transcribe_tokens(chunk)
+            .expect("token recognition succeeds");
+        let words = asr::words_from_tokens(&tokens, start_ms);
+        assert!(
+            !words.iter().all(|word| word.text.trim().is_empty()),
+            "known speech window {index} produced no timed words"
+        );
+        for word in &words {
+            assert!(word.start_ms >= start_ms);
+            assert!(word.start_ms <= word.end_ms);
+            assert!(word.end_ms <= start_ms + length_ms);
         }
-        rows += result.segments.len();
         eprintln!(
-            "window={epoch} samples={} rows={} attributed={} source_window={}",
+            "window={index} samples={} rows={} words={} native_timing={}",
             chunk.len(),
-            result.segments.len(),
-            result
-                .segments
-                .iter()
-                .filter(|row| row.speaker.is_some())
-                .count(),
-            result
-                .segments
-                .iter()
-                .filter(|row| row.timing == TimingPrecision::SourceWindow)
-                .count()
+            text.segments.len(),
+            words.len(),
+            engine.native_token_timestamps()
         );
-        snapshots.push(result);
+        rows += text.segments.len();
+        timed_words += words.len();
+        windows.push(serde_json::json!({
+            "start_ms": start_ms,
+            "end_ms": start_ms + length_ms,
+            "text": text,
+            "words": words,
+        }));
     }
-    assert_eq!(next_sample, pcm.len() as u64);
-    if attribution == Attribution::Native {
-        assert!(labels > 0, "native model returned no attributed text");
-        let off = engine
-            .transcribe_normalized(
-                &pcm[..pcm.len().min(30 * 16_000)],
-                &RecognitionRequest {
-                    scope: SpeakerScope {
-                        generation: "off-test".into(),
-                        epoch: 0,
-                    },
-                    start_sample: 0,
-                    revision: 0,
-                    attribution: Attribution::Off,
-                },
-            )
-            .expect("Off transcribes without native attribution");
-        assert!(
-            !off.text.trim().is_empty(),
-            "known speech produced no Off text"
-        );
-        assert!(off.segments.iter().all(|row| row.speaker.is_none()));
-        assert!(off.speaker_turns.is_empty());
-    }
-    write_result(&serde_json::json!({ "mode": mode, "seconds": seconds, "windows": snapshots }));
-    eprintln!("seconds={seconds} processed_samples={next_sample} rows={rows} attributed={labels}");
+    write_result(&serde_json::json!({ "mode": mode, "seconds": seconds, "windows": windows }));
+    eprintln!("mode=off seconds={seconds} rows={rows} words={timed_words}");
 }
 
 fn write_result(value: &serde_json::Value) {

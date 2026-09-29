@@ -45,24 +45,21 @@ fn turn(start: u64, end: u64, id: u32) -> SpeakerTurn {
     }
 }
 #[test]
-fn off_and_integrated_have_no_separate_task() {
-    for source in [SpeakerSource::Off, SpeakerSource::Integrated] {
+fn only_off_has_no_separate_task() {
+    for (source, route) in [
+        (SpeakerSource::Off, Route::Off),
+        (SpeakerSource::Pyannote, Route::SeparatePyannote),
+        (SpeakerSource::Nemotron, Route::SeparateNemo),
+    ] {
         let spec = resolve(&RecognitionConfig {
-            asr_model: "moss-transcribe-diarize-q80".into(),
+            asr_model: "whisper-large-v3-turbo-q5km".into(),
             speaker_source: source,
             ..Default::default()
         })
         .unwrap();
         let graph = TaskGraph::resolve(&spec).unwrap();
-        assert!(!graph.separate_analysis);
-        assert_eq!(
-            graph.route,
-            if source == SpeakerSource::Off {
-                Route::Off
-            } else {
-                Route::Integrated
-            }
-        );
+        assert_eq!(graph.separate_analysis, source != SpeakerSource::Off);
+        assert_eq!(graph.route, route);
     }
 }
 #[test]
@@ -104,7 +101,7 @@ fn completion_requires_processed_coverage_and_final_requested_labels() {
         end: 16000,
     };
     let mut result = RouteResult {
-        route: Route::Integrated,
+        route: Route::SeparatePyannote,
         coverage: vec![expected],
         rows: vec![row()],
         speakers: vec![],
@@ -184,7 +181,7 @@ fn transcript_groups_words_but_preserves_scope_and_pause_boundaries() {
     };
     fourth.text = "Later".into();
     let result = RouteResult {
-        route: Route::Integrated,
+        route: Route::SeparatePyannote,
         coverage: vec![SampleRange {
             start: 0,
             end: 65600,
@@ -272,7 +269,7 @@ fn scoped_labels_do_not_claim_a_count_of_unique_people() {
     let mut second = first.clone();
     second.speaker.as_mut().unwrap().local_id = 2;
     let mut result = RouteResult {
-        route: Route::Integrated,
+        route: Route::SeparatePyannote,
         coverage: vec![first.range],
         rows: vec![first, second],
         speakers: vec![],

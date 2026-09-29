@@ -51,7 +51,7 @@
       "languages": [
         "en"
       ],
-      "recommended": true,
+      "recommended": false,
       "repository": "https://huggingface.co/handy-computer/nemotron-speech-streaming-en-0.6b-gguf",
       "revision": "7d9b719206789e4068d87c6398262ab4dfd4e45d",
       "filename": "nemotron-speech-streaming-en-0.6b-Q8_0.gguf",
@@ -149,87 +149,6 @@
       }
     },
     {
-      "id": "multitalker-parakeet-streaming-0.6b-v1-q80",
-      "kind": "asr",
-      "name": "Multitalker Parakeet Streaming 0.6B",
-      "description": "English, token-level timestamps, streaming.",
-      "streaming": true,
-      "timestamps": "token",
-      "languages": [
-        "en"
-      ],
-      "recommended": false,
-      "repository": "https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf",
-      "revision": "31042fb4b5018be38240018492bdbde1923789dc",
-      "filename": "bundle-multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
-      "url": "https://huggingface.co/handy-computer/multitalker-parakeet-streaming-0.6b-v1-gguf/resolve/31042fb4b5018be38240018492bdbde1923789dc/bundle/multitalker-parakeet-streaming-0.6b-v1-Q8_0.gguf",
-      "size_bytes": 873443328,
-      "sha256": "847df2b5b7576ee69801d74d60f5863df1503d09a790a57f0609323c15f26d64",
-      "licence": {
-        "name": "NVIDIA Open Model License",
-        "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
-        "attribution": "GGUF conversion by handy-computer of nvidia/multitalker-parakeet-streaming-0.6b-v1 (NVIDIA, NVIDIA Open Model License)."
-      },
-      "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 96,
-        "asr_accuracy_score": 86,
-        "speaker_accuracy_score": null,
-        "benchmark_context": null
-      },
-      "speaker_preferences": {
-        "after_stop": [
-          "nemotron",
-          "pyannote",
-          "integrated"
-        ],
-        "during_recording": [
-          "nemotron"
-        ]
-      }
-    },
-    {
-      "id": "parakeet-tdt-0.6b-v2-q80",
-      "kind": "asr",
-      "name": "Parakeet TDT 0.6B v2",
-      "description": "English, token-level timestamps, not streaming.",
-      "streaming": false,
-      "timestamps": "token",
-      "languages": [
-        "en"
-      ],
-      "recommended": false,
-      "repository": "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v2-gguf",
-      "revision": "07cee0616125a08ef619729bb47f40ef747e4bc4",
-      "filename": "parakeet-tdt-0.6b-v2-Q8_0.gguf",
-      "url": "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v2-gguf/resolve/07cee0616125a08ef619729bb47f40ef747e4bc4/parakeet-tdt-0.6b-v2-Q8_0.gguf",
-      "size_bytes": 729574912,
-      "sha256": "f0d0e99cebb6d3b83f1f7069b82b5d3c2e39a54545b0da039cb4bafd9c4e5caa",
-      "licence": {
-        "name": "CC-BY-4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-tdt-0.6b-v2 (NVIDIA, CC-BY-4.0)."
-      },
-      "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 85,
-        "asr_accuracy_score": 89,
-        "speaker_accuracy_score": null,
-        "benchmark_context": null
-      },
-      "speaker_preferences": {
-        "after_stop": [
-          "nemotron",
-          "pyannote"
-        ],
-        "during_recording": [
-          "nemotron"
-        ]
-      }
-    },
-    {
       "id": "parakeet-tdt-0.6b-v3-q80",
       "kind": "asr",
       "name": "Parakeet TDT 0.6B v3",
@@ -280,46 +199,6 @@
         "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
         "speed_score": 79,
         "asr_accuracy_score": 88,
-        "speaker_accuracy_score": null,
-        "benchmark_context": null
-      },
-      "speaker_preferences": {
-        "after_stop": [
-          "nemotron",
-          "pyannote"
-        ],
-        "during_recording": [
-          "nemotron"
-        ]
-      }
-    },
-    {
-      "id": "parakeet-tdt-1.1b-q5km",
-      "kind": "asr",
-      "name": "Parakeet TDT 1.1B",
-      "description": "English, token-level timestamps, not streaming.",
-      "streaming": false,
-      "timestamps": "token",
-      "languages": [
-        "en"
-      ],
-      "recommended": false,
-      "repository": "https://huggingface.co/handy-computer/parakeet-tdt-1.1b-gguf",
-      "revision": "8c21810615694c53a4f4745996190fcca880f8e5",
-      "filename": "parakeet-tdt-1.1b-Q5_K_M.gguf",
-      "url": "https://huggingface.co/handy-computer/parakeet-tdt-1.1b-gguf/resolve/8c21810615694c53a4f4745996190fcca880f8e5/parakeet-tdt-1.1b-Q5_K_M.gguf",
-      "size_bytes": 935758496,
-      "sha256": "18c22888fed10676fde72fdd5b833fab9175a6abf4e0cb390eb0a59b0b107cd3",
-      "licence": {
-        "name": "CC-BY-4.0",
-        "url": "https://creativecommons.org/licenses/by/4.0/",
-        "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-tdt-1.1b (NVIDIA, CC-BY-4.0)."
-      },
-      "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 76,
-        "asr_accuracy_score": 91,
         "speaker_accuracy_score": null,
         "benchmark_context": null
       },
@@ -473,48 +352,6 @@
       }
     },
     {
-      "id": "moss-transcribe-diarize-q80",
-      "kind": "asr",
-      "name": "MOSS Transcribe Diarize",
-      "description": "2 languages, segment-level timestamps, not streaming.",
-      "streaming": false,
-      "timestamps": "segment",
-      "languages": [
-        "en",
-        "zh"
-      ],
-      "recommended": false,
-      "repository": "https://huggingface.co/handy-computer/moss-transcribe-diarize-gguf",
-      "revision": "6fdfa33aed776bbb0ac11a1a9835634fe6d75dd7",
-      "filename": "MOSS-Transcribe-Diarize-Q8_0.gguf",
-      "url": "https://huggingface.co/handy-computer/moss-transcribe-diarize-gguf/resolve/6fdfa33aed776bbb0ac11a1a9835634fe6d75dd7/MOSS-Transcribe-Diarize-Q8_0.gguf",
-      "size_bytes": 986899616,
-      "sha256": "64ec654dc6ffcfdfe180422dffce1d33422b0c30959b7edfd131bad77ee35039",
-      "licence": {
-        "name": "Apache-2.0",
-        "url": "https://www.apache.org/licenses/LICENSE-2.0",
-        "attribution": "GGUF conversion by handy-computer of OpenMOSS-Team/MOSS-Transcribe-Diarize (OpenMOSS Team, Apache-2.0)."
-      },
-      "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 31,
-        "asr_accuracy_score": 88,
-        "speaker_accuracy_score": null,
-        "benchmark_context": null
-      },
-      "speaker_preferences": {
-        "after_stop": [
-          "nemotron",
-          "pyannote",
-          "integrated"
-        ],
-        "during_recording": [
-          "nemotron"
-        ]
-      }
-    },
-    {
       "id": "pyannote-segmentation-3.0",
       "kind": "segmentation",
       "name": "pyannote segmentation 3.0 (ONNX)",
@@ -546,51 +383,6 @@
         "name": "CC-BY-4.0",
         "url": "https://creativecommons.org/licenses/by/4.0/",
         "attribution": "WeSpeaker ResNet34-LM r-vector, trained on VoxCeleb2 by the WeNet community (wenet-e2e/wespeaker)."
-      }
-    },
-    {
-      "id": "granite-speech-4.1-2b-plus-q5km",
-      "kind": "asr",
-      "name": "Granite Speech 4.1 2B Plus",
-      "description": "5 languages, word-level timestamps, not streaming.",
-      "streaming": false,
-      "timestamps": "word",
-      "languages": [
-        "en",
-        "fr",
-        "de",
-        "es",
-        "pt"
-      ],
-      "recommended": true,
-      "repository": "https://huggingface.co/handy-computer/granite-speech-4.1-2b-plus-gguf",
-      "revision": "f73a59df77fef89ac0a34bc539d09d756793b065",
-      "filename": "granite-speech-4.1-2b-plus-Q5_K_M.gguf",
-      "url": "https://huggingface.co/handy-computer/granite-speech-4.1-2b-plus-gguf/resolve/f73a59df77fef89ac0a34bc539d09d756793b065/granite-speech-4.1-2b-plus-Q5_K_M.gguf",
-      "size_bytes": 1691297088,
-      "sha256": "3415f2c2d5979ded038dc012e5a875d77602fa5a0699cc75ee7fa47991f42530",
-      "licence": {
-        "name": "Apache-2.0",
-        "url": "https://www.apache.org/licenses/LICENSE-2.0",
-        "attribution": "GGUF conversion by handy-computer of ibm-granite/granite-speech-4.1-2b-plus (IBM, Apache-2.0)."
-      },
-      "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 29,
-        "asr_accuracy_score": 90,
-        "speaker_accuracy_score": null,
-        "benchmark_context": null
-      },
-      "speaker_preferences": {
-        "after_stop": [
-          "nemotron",
-          "pyannote",
-          "integrated"
-        ],
-        "during_recording": [
-          "nemotron"
-        ]
       }
     },
     {

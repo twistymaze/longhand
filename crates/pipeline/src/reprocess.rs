@@ -128,7 +128,7 @@ impl From<Cause> for Refusal {
             } => (
                 format!(
                     "This note has {requested} speakers. {source} supports up to {maximum}. \
-                     Choose another speaker source or model in Settings."
+                     Choose another speaker source in Settings."
                 ),
                 true,
             ),
@@ -179,12 +179,10 @@ pub fn model_name(id: &str) -> String {
     models::model(id).map_or_else(|| id.to_string(), |m| m.name.clone())
 }
 
-/// The speaker source name that Settings shows. For the labels of the
-/// transcription model, it is the model name.
+/// The speaker source name that Settings shows.
 fn source_name(config: &RecognitionConfig) -> String {
     match config.speaker_source {
         SpeakerSource::Off => "Off".into(),
-        SpeakerSource::Integrated => model_name(&config.asr_model),
         SpeakerSource::Pyannote => "pyannote / WeSpeaker".into(),
         SpeakerSource::Sortformer => "Sortformer".into(),
         SpeakerSource::Nemotron => "Nemotron 3".into(),
@@ -372,10 +370,9 @@ pub(crate) fn read_reusable(
     spec: &ExecutionSpec,
     mut visit: impl FnMut(recognition::OutputBlock),
 ) -> Result<Option<recognition::ArtifactHeader>, StageError> {
-    if matches!(
-        crate::recognition::TaskGraph::resolve(spec)?.route,
-        crate::recognition::Route::Integrated | crate::recognition::Route::CombinedNemo
-    ) {
+    if crate::recognition::TaskGraph::resolve(spec)?.route
+        == crate::recognition::Route::CombinedNemo
+    {
         return Ok(None);
     }
     let (Some(reference), Some(audio)) = (&doc.recognition_artifact, &doc.recognition_audio) else {
@@ -487,23 +484,28 @@ mod tests {
     }
 
     #[test]
-    fn integrated_and_combined_routes_do_not_reuse_saved_text() {
-        for config in [
-            RecognitionConfig {
-                asr_model: "moss-transcribe-diarize-q80".into(),
-                speaker_source: SpeakerSource::Integrated,
-                ..Default::default()
-            },
-            RecognitionConfig {
-                asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
-                speaker_source: SpeakerSource::Nemotron,
-                processing_mode: ProcessingMode::DuringRecording,
-                speaker_processing_mode: ProcessingMode::DuringRecording,
-                ..Default::default()
-            },
+    fn only_the_combined_route_does_not_reuse_saved_text() {
+        let combined = RecognitionConfig {
+            asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+            speaker_source: SpeakerSource::Nemotron,
+            processing_mode: ProcessingMode::DuringRecording,
+            speaker_processing_mode: ProcessingMode::DuringRecording,
+            ..Default::default()
+        };
+        let temp = saved(&combined);
+        assert!(!reuses(temp.path(), &combined).unwrap());
+        for speaker_source in [
+            SpeakerSource::Off,
+            SpeakerSource::Pyannote,
+            SpeakerSource::Nemotron,
         ] {
+            let config = RecognitionConfig {
+                asr_model: "whisper-large-v3-turbo-q5km".into(),
+                speaker_source,
+                ..Default::default()
+            };
             let temp = saved(&config);
-            assert!(!reuses(temp.path(), &config).unwrap());
+            assert!(reuses(temp.path(), &config).unwrap(), "{speaker_source:?}");
         }
     }
 
@@ -536,30 +538,29 @@ mod tests {
         );
         assert_eq!(
             text(Cause::NotDownloaded {
-                artifact: "granite-speech-4.1-2b-plus-q5km".into()
+                artifact: "whisper-large-v3-turbo-q5km".into()
             }),
             (
-                "Granite Speech 4.1 2B Plus is not downloaded. Download it in Settings.".into(),
+                "Whisper Large v3 Turbo is not downloaded. Download it in Settings.".into(),
                 true
             )
         );
         assert_eq!(
             text(Cause::Downloading {
-                artifact: "granite-speech-4.1-2b-plus-q5km".into()
+                artifact: "whisper-large-v3-turbo-q5km".into()
             }),
             (
-                "Granite Speech 4.1 2B Plus is still downloading. Try again when it is ready."
-                    .into(),
+                "Whisper Large v3 Turbo is still downloading. Try again when it is ready.".into(),
                 false
             )
         );
         assert_eq!(
             text(Cause::Language {
-                model: "parakeet-tdt-0.6b-v2-q80".into(),
+                model: "parakeet-unified-en-0.6b-q80".into(),
                 language: "fr".into()
             }),
             (
-                "Parakeet TDT 0.6B v2 does not support French. Choose another model or \
+                "Parakeet Unified EN 0.6B does not support French. Choose another model or \
                  language in Settings."
                     .into(),
                 true
@@ -593,16 +594,10 @@ mod tests {
     }
 
     #[test]
-    fn the_speaker_limit_names_the_model_when_its_own_labels_are_the_source() {
-        let config = RecognitionConfig {
-            asr_model: "multitalker-parakeet-streaming-0.6b-v1-q80".into(),
-            speaker_source: SpeakerSource::Integrated,
-            ..Default::default()
-        };
-        assert_eq!(source_name(&config), "Multitalker Parakeet Streaming 0.6B");
+    fn the_speaker_limit_names_the_speaker_source() {
         let config = RecognitionConfig {
             speaker_source: SpeakerSource::Sortformer,
-            ..config
+            ..Default::default()
         };
         assert_eq!(
             Refusal::from(Cause::SpeakerLimit {
@@ -612,7 +607,7 @@ mod tests {
             }),
             Refusal {
                 message: "This note has 5 speakers. Sortformer supports up to 4. Choose \
-                          another speaker source or model in Settings."
+                          another speaker source in Settings."
                     .into(),
                 in_settings: true
             }

@@ -396,7 +396,7 @@ fn transcribe_again_reads_the_speaker_count_that_another_computer_wrote() {
         refused,
         Refusal {
             message: "This note has 6 speakers. Sortformer supports up to 4. Choose another \
-                      speaker source or model in Settings."
+                      speaker source in Settings."
                 .into(),
             in_settings: true,
         }

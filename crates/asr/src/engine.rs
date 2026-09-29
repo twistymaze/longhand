@@ -17,7 +17,6 @@ use transcribe_cpp::{
 
 use crate::SAMPLES_PER_MS;
 use crate::stream::{LiveStream, LiveText, TimedToken};
-use crate::{Attribution, RecognitionOutput, RecognitionRequest, normalize_transcript};
 
 /// Whisper returns zero segments, and no error, for input under a second
 /// (KTD6); shorter windows are zero-padded to this length.
@@ -57,45 +56,6 @@ pub trait Recognizer: Send {
     }
     /// Transcribe one window of mono 16 kHz audio.
     fn transcribe(&mut self, pcm: &[f32]) -> Result<WindowText, AsrError>;
-    /// Transcribe one independent input window on the canonical sample timeline.
-    /// Native attribution requires an implementation that preserves model labels.
-    fn transcribe_normalized(
-        &mut self,
-        pcm: &[f32],
-        request: &RecognitionRequest,
-    ) -> Result<RecognitionOutput, AsrError> {
-        validate_input(pcm, request)?;
-        if request.attribution == Attribution::Native {
-            return Err(AsrError::Run("native speaker output is unavailable".into()));
-        }
-        if pcm.is_empty() {
-            return normalize_transcript(Default::default(), 0, request);
-        }
-        let result = self.transcribe(pcm)?;
-        let segments = result
-            .segments
-            .into_iter()
-            .map(|row| {
-                Ok(transcribe_cpp::Segment {
-                    t0_ms: i64::try_from(row.start_ms)
-                        .map_err(|_| AsrError::Run("segment time overflow".into()))?,
-                    t1_ms: i64::try_from(row.end_ms)
-                        .map_err(|_| AsrError::Run("segment time overflow".into()))?,
-                    text: row.text,
-                    ..Default::default()
-                })
-            })
-            .collect::<Result<Vec<_>, AsrError>>()?;
-        normalize_transcript(
-            transcribe_cpp::Transcript {
-                text: result.text,
-                segments,
-                ..Default::default()
-            },
-            pcm.len(),
-            request,
-        )
-    }
     /// Transcribe one window with token times, in milliseconds from the
     /// start of the window, for a gap fill after Stop (KTD6). Build words
     /// with [`words_from_tokens`](crate::words_from_tokens). The default
@@ -178,11 +138,8 @@ pub struct Engine {
     model_id: String,
     session: Session,
     is_whisper: bool,
-    is_moss: bool,
-    is_multitalker: bool,
     streaming: bool,
     native_timing: Option<TimestampKind>,
-    max_audio_ms: i64,
     language: Option<String>,
 }
 
@@ -211,16 +168,12 @@ impl Engine {
         };
         let model = Model::load_with(path, &ModelOptions::default()).map_err(load_error)?;
         let is_whisper = model.arch().to_ascii_lowercase().contains("whisper");
-        let is_moss = model.arch().eq_ignore_ascii_case("moss");
-        let is_multitalker = model.arch().eq_ignore_ascii_case("parakeet")
-            && model.variant() == "multitalker-parakeet-streaming-0.6b-v1";
         let streaming = streams(
             model_id,
             catalog_streaming,
             model.capabilities().supports_streaming,
         );
         let native_timing = native_timing_kind(model.capabilities().max_timestamp_kind);
-        let max_audio_ms = model.capabilities().max_audio_ms;
         log::info!(
             "loaded {model_id} ({} on {})",
             model.arch(),
@@ -231,11 +184,8 @@ impl Engine {
             model_id: model_id.to_string(),
             session,
             is_whisper,
-            is_moss,
-            is_multitalker,
             streaming,
             native_timing,
-            max_audio_ms,
             language: None,
         })
     }
@@ -351,16 +301,6 @@ fn run_error(e: transcribe_cpp::Error) -> AsrError {
     AsrError::Run(e.to_string())
 }
 
-fn validate_input(pcm: &[f32], request: &RecognitionRequest) -> Result<(), AsrError> {
-    request.coverage(pcm.len())?;
-    if pcm.iter().any(|sample| !sample.is_finite()) {
-        return Err(AsrError::Run(
-            "recognition audio contains a non-finite sample".into(),
-        ));
-    }
-    Ok(())
-}
-
 /// Tokens with text, with times clamped into `[0, limit_ms]`. Special
 /// tokens such as `<|endoftext|>` are not speech.
 fn timed_tokens(tokens: &[transcribe_cpp::Token], limit_ms: u64) -> Vec<TimedToken> {
@@ -436,42 +376,6 @@ impl Recognizer for Engine {
 
     fn transcribe_tokens(&mut self, pcm: &[f32]) -> Result<Vec<TimedToken>, AsrError> {
         self.transcribe_timed(pcm)
-    }
-
-    fn transcribe_normalized(
-        &mut self,
-        pcm: &[f32],
-        request: &RecognitionRequest,
-    ) -> Result<RecognitionOutput, AsrError> {
-        validate_input(pcm, request)?;
-        if pcm.is_empty() {
-            return normalize_transcript(Default::default(), 0, request);
-        }
-        if self.max_audio_ms > 0
-            && pcm.len() as u64 > (self.max_audio_ms as u64).saturating_mul(SAMPLES_PER_MS)
-        {
-            return Err(AsrError::Run(
-                "recognition input exceeds the model's audio limit; use independent windows".into(),
-            ));
-        }
-        // Granite Plus cannot combine explicit word times with attribution.
-        // Auto retains the model's supported timing and attribution contract.
-        let options = RunOptions {
-            language: self.language.clone(),
-            timestamps: TimestampKind::Auto,
-            diarize: request.attribution.diarize(),
-            family: self.family(),
-            ..Default::default()
-        };
-        let parts = self.decode_parts(pcm, &options)?;
-        let normalize = if self.is_moss {
-            crate::result::normalize_moss_transcript
-        } else if self.is_multitalker {
-            crate::result::normalize_multitalker_transcript
-        } else {
-            normalize_transcript
-        };
-        crate::recovery::normalize_parts(parts, request, pcm.len(), normalize)
     }
 
     fn start_stream(&mut self) -> Result<Option<Box<dyn LiveStream + '_>>, AsrError> {

@@ -3,8 +3,8 @@ use crate::{
     Control, SharedStore, StageError, checkpoint, lock, runner::EngineProvider, transcribe,
 };
 use asr::{
-    Attribution, Finality, RecognitionId, RecognitionRequest, RecognitionSegment, SampleRange,
-    SpeakerKey, SpeakerScope, SpeakerTurn, TimingPrecision,
+    Finality, RecognitionId, RecognitionSegment, SampleRange, SpeakerKey, SpeakerScope,
+    SpeakerTurn, TimingPrecision,
 };
 use models::recognition::{ExecutionSpec, SpeakerCount};
 use session_core::{Segment, Stage};
@@ -485,126 +485,25 @@ fn transcribe_route(
             join_separate(&mut result.rows, &result.speakers);
         }
     } else {
-        if route == Route::CombinedNemo && !crate::live::rows(store, id)?.is_empty() {
+        // Only the combined NeMo route comes here.
+        if !crate::live::rows(store, id)?.is_empty() {
             return Err(failed(
                 "saved live text lacks this route's speaker output; a second transcription pass requires an explicit replacement choice",
             ));
         }
-        let mut recognizer = None;
         for (segment, range) in segments.iter().zip(&expected) {
             control.proceed()?;
-            let output = {
-                let mut own = RouteResult {
-                    route,
-                    coverage: vec![*range],
-                    rows: vec![],
-                    speakers: vec![],
-                    coverage_limitations: vec![],
-                };
-                if route == Route::CombinedNemo {
-                    own = super::nemo::run_file(
-                        store,
-                        id,
-                        spec,
-                        provider,
-                        &dir.join(crate::proc_file(&segment.audio_file)),
-                        *range,
-                        &generation,
-                        true,
-                        control,
-                    )?;
-                } else {
-                    let plan = transcribe::plan_segment(dir, segment, &[])?;
-                    checkpoint::put(
-                        store,
-                        id,
-                        Stage::Transcribe,
-                        &checkpoint::plan_key(segment.index),
-                        &plan,
-                    )?;
-                    let mut reader = crate::assemble::open_proc(dir, segment)?;
-                    for (index, window) in plan.windows.iter().enumerate() {
-                        control.proceed()?;
-                        let seek = u32::try_from(window.start_ms * 16)
-                            .map_err(|_| failed("audio seek overflow"))?;
-                        let sample_count = (window.duration_ms() * 16)
-                            .min(u64::from(reader.duration().saturating_sub(seek)));
-                        let key = format!("native-window/{:08}/{index:08}", segment.index);
-                        let saved = lock(store).recognition_block(id, &generation, &key)?;
-                        let output = if let Some(saved) = saved {
-                            asr::RecognitionOutput {
-                                scope: saved.scope,
-                                revision: saved.revision,
-                                coverage: saved
-                                    .coverage
-                                    .committed
-                                    .ok_or_else(|| failed("native window is provisional"))?,
-                                text: String::new(),
-                                segments: saved.rows,
-                                speaker_turns: saved.speakers,
-                            }
-                        } else {
-                            let engine = match &mut recognizer {
-                                Some(engine) => engine,
-                                None => {
-                                    recognizer.insert(provider.load_exact(spec).map_err(failed)?)
-                                }
-                            };
-                            reader.seek(seek)?;
-                            let pcm = reader
-                                .samples::<f32>()
-                                .take(sample_count as usize)
-                                .collect::<Result<Vec<_>, _>>()?;
-                            engine
-                                .transcribe_normalized(
-                                    &pcm,
-                                    &RecognitionRequest {
-                                        scope: SpeakerScope {
-                                            generation: generation.clone(),
-                                            epoch: segment.index as u64,
-                                        },
-                                        start_sample: range.start + window.start_ms * 16,
-                                        revision: 0,
-                                        attribution: Attribution::Native,
-                                    },
-                                )
-                                .map_err(|e| failed(e.to_string()))?
-                        };
-                        if output.coverage
-                            != (SampleRange {
-                                start: range.start + window.start_ms * 16,
-                                end: range.start + window.start_ms * 16 + sample_count,
-                            })
-                        {
-                            return Err(failed("native transcription coverage is incomplete"));
-                        }
-                        lock(store).commit_recognition(
-                            id,
-                            &session_core::recognition::OutputBlock {
-                                key,
-                                scope: output.scope.clone(),
-                                revision: output.revision,
-                                coverage: session_core::recognition::Coverage {
-                                    received: Some(output.coverage),
-                                    computed: Some(output.coverage),
-                                    provisional: None,
-                                    committed: Some(output.coverage),
-                                },
-                                rows: output.segments.clone(),
-                                speakers: output.speaker_turns.clone(),
-                            },
-                        )?;
-                        own.rows.extend(output.segments);
-                        own.speakers.extend(output.speaker_turns);
-                        progress(transcribe::Progress {
-                            segment: segment.index,
-                            windows_done: index + 1,
-                            windows_total: plan.windows.len(),
-                        });
-                    }
-                }
-                own
-            };
+            let output = super::nemo::run_file(
+                store,
+                id,
+                spec,
+                provider,
+                &dir.join(crate::proc_file(&segment.audio_file)),
+                *range,
+                &generation,
+                true,
+                control,
+            )?;
             result.coverage.extend(output.coverage);
             result.rows.extend(output.rows);
             result.speakers.extend(output.speakers);
@@ -775,11 +674,7 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
     let failure: Option<crate::verify::VerifyFailure> =
         checkpoint::get(store, id, Stage::Verify, crate::verify::FAILED)?;
     crate::verify::prepare_retry(store, id)?;
-    let generation = generation(store, id)?;
     let guard = lock(store);
-    // Native output is replayed after a failed verification. Its old completed
-    // output remains in other generations for replacement recovery.
-    guard.delete_recognition_prefix(id, &generation, "native-window/")?;
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
         if key.starts_with("recognition-epoch-") {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
