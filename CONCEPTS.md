@@ -118,3 +118,6 @@ The stream of builds that the updater offers to an installed app. A build record
 
 ### Preview build
 A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC build time as YYYYMMDDHHMMSS>`, so a later build always has a higher version.
+
+### Update manifest
+The file that identifies the newest build of a track: its version, date, archive address and signature. The app reads only this file when it checks for updates. For the preview track, it is `preview/latest.json` in the public builds repository.
