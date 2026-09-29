@@ -74,6 +74,10 @@ The user-facing term for diarization: assigning anonymous speaker labels to spee
 
 After Stop, the Finding speakers step shows one percent for the whole note. During one attempt, the percent does not go back, and it stays below 100 until the step is complete. Work that cannot be measured shows activity, not a percent. Saved work of an earlier attempt counts at the start of a new attempt, but the percent of the earlier attempt does not show.
 
+### Speaker analysis window
+A span of audio that the speaker model analyzes on its own, with its own speaker labels. A window ends at a fixed maximum length or at the end of its segment, and the next window starts there. The labels restart in each window, and no rule links the labels of two windows, so two labels can be the same person. The live transcript shows each restart as a "Speaker labels restart" divider. Code calls a window an epoch.
+*Avoid:* epoch (in docs and UI)
+
 ### Live transcript
 The text that a streaming recognition model makes during recording. It shows in the Transcript tab when the selected model supports live transcription and the note uses that mode. Live text and speaker labels can be provisional. The runtime can revise them before finalization. Compatible durable results are reused after Stop; missing or invalid results require processing. Live speaker analysis is a separate choice and can run with an offline transcription model.
 

@@ -83,7 +83,7 @@ The UI does not get the word times.
 ### Scope Boundaries
 
 - No change to the processing pipeline, the models, the speaker analysis windows, or the transcript after Stop.
-- No link of speakers across windows. That needs validated evidence (`docs/ideas/next/live-speaker-labels.md`) and is a pipeline change.
+- No link of speakers across windows. That needs validated evidence (`docs/ideas/done/live-speaker-labels.md`) and is a pipeline change.
 - No measurement or improvement of live speaker accuracy.
 - No change to when the Transcript tab opens during a recording. It still does not open by default.
 
@@ -102,7 +102,7 @@ The UI does not get the word times.
 - `crates/pipeline/src/live.rs:78-88` — `LiveRow` with words.
 - `crates/pipeline/src/recognition/nemo.rs:17` — `MAX_EPOCH_SAMPLES`, the 20-minute window.
 - `crates/pipeline/src/recognition.rs:284` — the note that labels restart at each window.
-- `docs/ideas/next/live-speaker-labels.md` — the idea this plan comes from.
+- `docs/ideas/done/live-speaker-labels.md` — the idea this plan comes from.
 
 ---
 
