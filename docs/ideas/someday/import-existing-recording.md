@@ -16,4 +16,5 @@ Drop in an audio file from a dedicated recorder and process it as a session.
 Sidesteps capture entirely and takes the simplest diarization path. Raised early, never resolved.
 
 ## Notes
-Check it against `STRATEGY.md`'s boundary that nothing writes into Longhand except what you record and type. A file you recorded yourself on another device plausibly counts as "what you record", but settle that before building.
+- **Strategy:** settled on 2026-09-28. A recording that the user made on another device counts as "what you record", so the idea is inside the `STRATEGY.md` boundary "Nothing writes into Longhand". The boundary still excludes integrations that pull outside context in.
+- The pipeline already processes an audio file after Stop, so an import mostly skips the capture step.

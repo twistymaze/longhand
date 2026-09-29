@@ -4,7 +4,7 @@ description: "Named summary prompts in Settings, with Topic summary and Play-by-
 area: transcript-and-summary
 added: 2026-09-25
 source: "a ce-brainstorm session, 2026-09-25"
-related: [summary-kind-per-folder, participant-names]
+related: [summary-prompt-by-note-type]
 ---
 
 # Saved summary prompts

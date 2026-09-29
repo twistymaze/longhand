@@ -4,7 +4,7 @@ description: "Give the summary of the previous note as context for the next one 
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"
-related: [summary-kind-per-folder]
+related: [summary-prompt-by-note-type]
 ---
 
 # Carry context from the previous session

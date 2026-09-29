@@ -81,7 +81,7 @@ The recording shortcut is fixed at `CommandOrControl+Alt+Shift+L`. It is registe
 
 ### Scope Boundaries
 
-- One recording shortcut for each destination folder. This stays parked (`docs/ideas/parked/shortcut-per-folder.md`).
+- One recording shortcut for each destination folder. The idea was removed on 2026-09-28.
 - A chord made only of modifier keys, or one that uses the fn key or Right Command. These need a keyboard event tap, which needs the Accessibility permission on macOS (KTD1).
 - Shortcuts for other actions, such as opening Settings or adding a note.
 - A shortcut that works only while Longhand is the frontmost app. Both shortcuts are global.

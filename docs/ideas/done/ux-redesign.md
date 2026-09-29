@@ -4,7 +4,7 @@ description: "One main window with Home and a tabbed note page, a Settings windo
 area: interface
 added: 2026-09-23
 source: "Phase 2b checkpoint feedback on the walking skeleton"
-related: [library-and-browsing, live-transcript-view, recognition-model-picker, transcript-review-and-correction]
+related: [library-and-browsing, live-transcript-view, recognition-model-picker]
 ---
 
 # UX redesign

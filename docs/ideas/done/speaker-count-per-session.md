@@ -10,4 +10,4 @@ related: []
 # A speaker count per session
 
 ## Idea
-An optional count or range for each session, with an app-wide default (KD15, R36). The default for each folder is a separate idea: [speaker-count-per-folder](../someday/speaker-count-per-folder.md).
+An optional count or range for each session, with an app-wide default (KD15, R36). A default for each folder was considered and removed on 2026-09-28.

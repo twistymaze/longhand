@@ -27,6 +27,7 @@ To learn about one idea, read its `description:` first. Read the full file only 
 Add ideas as they come up in any session, not only in planning.
 
 - **A new idea** gets its own file, `docs/ideas/someday/<kebab-case-slug>.md`, in the format below. Put it in `next/` only when the user confirms it as a priority. Run `bun scripts/ideas.ts` first: if the idea extends an existing one, add a note to that file.
+- **One idea for each file.** A file holds one well-formed idea, or a small set of closely related ideas in one area. It is not a list of small unrelated tasks, such as the residual findings of a code review. Those findings go to the PR, to a plan, or to a separate idea file each.
 - **An idea only mentioned in passing** in a plan, brainstorm, review or conversation also gets a file here, so that the list stays complete.
 - **To change the status,** move the file with `bun scripts/ideas.ts move <slug> <folder>`. The script runs `git mv` and changes every link to the file in `docs/` and the root documents. Do not move an idea file by hand.
 - **When an idea is picked up,** move it to `next/` if it is not there, and add `plan: docs/plans/<plan>.md`. When it ships, move it to `done/` and write the PR in its file.
@@ -77,4 +78,4 @@ These conflict with a boundary in `STRATEGY.md`.
 - **Speaker identity:** enrollment, voiceprints, names attached to speakers. Turn boundaries are the requirement; generic labels that drift across a long session are acceptable.
 - **Calendar integration,** including auto-start and prefill. Revisit only if a genuinely simple path appears inside an enterprise.
 - **Any organization scheme beyond folders:** no linking, no graph, no tags. Obsidian exists.
-- **Anything that writes into Longhand from outside:** the only inputs are what you record and what you type.
+- **Anything that writes into Longhand from outside:** the only inputs are what you record (in Longhand or on another device) and what you type.

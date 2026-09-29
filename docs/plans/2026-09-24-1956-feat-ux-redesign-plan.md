@@ -694,7 +694,7 @@ Manual checks on the signed bundle (microphone, Keychain, menus and the Trash ne
 - P3: `src/session/NotesTab.tsx`. A failed notes save shows an error but does not try again.
 - P3: No test covers a failed regeneration with a rename pending, or a store-write failure in the middle of a rename.
 
-**Parked:** Settings as a window attached to the main window (`docs/ideas/parked/settings-attached-to-main-window.md`).
+**Parked:** Settings as a window attached to the main window (`docs/ideas/someday/settings-attached-to-main-window.md`).
 
 ---
 

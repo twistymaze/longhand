@@ -4,7 +4,7 @@ description: "Speaker labels from the transcription model or a separate speaker 
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md"
-related: [diarization-evaluation-loop, faster-diarization, model-capabilities-and-speaker-options]
+related: [faster-diarization, model-capabilities-and-speaker-options]
 ---
 
 # Alternative diarization architectures

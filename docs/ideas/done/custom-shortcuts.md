@@ -4,7 +4,7 @@ description: "Set, reset or clear the recording shortcut and a show/hide shortcu
 area: interface
 added: 2026-09-25
 source: "a ce-brainstorm session, 2026-09-25"
-related: [shortcut-per-folder]
+related: []
 ---
 
 # Choose the shortcuts

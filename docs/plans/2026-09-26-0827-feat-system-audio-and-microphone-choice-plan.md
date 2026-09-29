@@ -22,8 +22,8 @@ deepened: 2026-09-26
 - **Status (2026-09-26, after the signed-bundle tests):**
   - All units are built. The microphone choice (U1–U3) and R18 (U11) ship.
   - Computer audio is hidden and turned off (`SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`). Two Teams test calls failed Verify because the mono mix of KD4 fails when one channel has a fault. In the first call, a mixer app put a late copy of the microphone and extra copies of the call on the system channel. In the second, speaker echo gave false copy hits.
-  - KD4 and KD6 are open again. The likely replacement is [per-channel processing](../ideas/someday/per-channel-processing.md), which needs [faster diarization](../ideas/next/faster-diarization.md) first.
-  - The findings are in [mixer apps and microphone copies](../ideas/someday/mixer-apps-and-microphone-copies.md).
+  - KD4 and KD6 are open again. The likely replacement is [per-channel processing](../ideas/parked/system-audio-capture.md#process-each-channel-on-its-own), which needs [faster diarization](../ideas/done/faster-diarization.md) first.
+  - The findings are in [mixer apps and copies of the microphone](../ideas/parked/system-audio-capture.md#mixer-apps-and-copies-of-the-microphone).
 
 ---
 

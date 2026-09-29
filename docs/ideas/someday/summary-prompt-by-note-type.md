@@ -1,0 +1,22 @@
+---
+title: A summary prompt for each type of note
+description: "The type of a note chooses its summary prompt: a recap for Pathfinder, decisions and follow-ups for work"
+area: transcript-and-summary
+added: 2026-09-23
+source: "the retired FUTURE-IDEAS.md; changed from 'summary kinds chosen by folder' in the idea review of 2026-09-28"
+related: [summary-prompts]
+---
+
+# A summary prompt for each type of note
+
+## Idea
+Each note has a type, and the type chooses one of the saved summary prompts. For example, a Pathfinder note gets a recap of the session, and a work note gets decisions and follow-ups.
+
+The mechanism that gives a note its type is open. It can be a folder, a tag, or something else. This idea does not depend on one organization scheme, and it stays separate from the organization idea so that each idea stays small.
+
+## Why
+One summary shape does not fit every kind of note. The walking skeleton used one shape because that got to a usable app faster.
+
+## Notes / Current state
+- Saved summary prompts shipped ([done/summary-prompts.md](../done/summary-prompts.md)): Settings holds a list of named prompts that control the output, with one active prompt for the whole app. This idea adds the choice of a prompt for each note, from its type.
+- Open questions: what gives a note its type; what happens when a note has no type (the app-wide prompt); and whether the user can change the type after the summary exists (Regenerate with the new prompt).

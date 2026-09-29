@@ -11,7 +11,7 @@ Sometimes you're in a meeting or a group situation where you want to engage in t
 
 ## Positioning
 
-The transcript is the system of record, so the notes can stay lazy: a scratchpad with basic markdown editor tooling, combined with a solid local transcript that supplies the details you didn't type. The store stays on your machine — inference is a swappable endpoint you point at something you trust, and local ASR is the default because local models are good enough and cloud ASR isn't worth the bandwidth or cost, not because audio may never leave. Complexity is allowed; it lives outside the app, reached through your vault or a local CLI rather than built into the UI.
+The transcript is the system of record, so the notes can stay lazy: a scratchpad with basic markdown editor tooling, combined with a solid local transcript that supplies the details you didn't type. The store stays on your machine — inference is a swappable endpoint you point at something you trust, and local ASR is the default because local models are good enough and cloud ASR isn't worth the bandwidth or cost, not because audio may never leave. Complexity is allowed; it lives outside the app, reached through your vault or the plain files in the storage folder rather than built into the UI.
 
 ## Users
 
@@ -25,7 +25,7 @@ The transcript is the system of record, so the notes can stay lazy: a scratchpad
 - **No calendar integration.** Not auto-start, not prefill. Calendar access inside an enterprise is complicated; revisit only if a genuinely simple path appears.
 - **No speaker identity.** Diarization marks that the speaker changed so an LLM can follow the turn-taking. No voiceprints, no enrollment, no names.
 - **No note-organization scheme.** Folders, and that's it. No inter-note linking, no graph, no tag system — Obsidian already exists and Longhand hands off to it.
-- **Nothing writes into Longhand.** The only inputs are what you record and what you type. The CLI and vault sync move data out to your agents and notes; no integration pulls outside context in.
+- **Nothing writes into Longhand.** The only inputs are what you record and what you type. A recording you made on another device counts as what you record. The plain files in the storage folder move data out to your agents and notes, for example through a storage folder inside an Obsidian vault; no integration pulls outside context in.
 - **No distribution machinery until someone asks.** Cross-platform correctness from day one; installers and update paths only when a real person wants one.
 - **No time limits.** A four-hour session is a supported case, not an edge case.
 
@@ -60,6 +60,6 @@ _Why it serves the approach:_ Engaging in the conversation is the whole point, s
 
 ### Library and handoff
 
-Finding the note from three weeks ago, plus getting data out — Obsidian sync and a local CLI over the local store.
+Finding the note from three weeks ago, plus getting data out — plain files in the storage folder that an agent or an Obsidian vault can read directly.
 
 _Why it serves the approach:_ This is the escape hatch that lets the app stay simple: complicated things happen outside, on your data.
