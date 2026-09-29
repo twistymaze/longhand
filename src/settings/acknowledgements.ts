@@ -90,22 +90,22 @@ export const components: LicenceEntry[] = [
     name: "ggml",
     licence: {
       name: "MIT",
-      url: "https://docs.rs/crate/transcribe-cpp-sys/0.2.3/source/ggml/LICENSE",
+      url: "https://docs.rs/crate/transcribe-cpp-sys/0.2.4/source/ggml/LICENSE",
       attribution: "Copyright (c) 2023-2026 The ggml authors",
     },
     source: "github.com/ggml-org/ggml, in transcribe-cpp-sys",
-    revision: "0.2.3",
+    revision: "0.2.4",
   },
   {
     id: "transcribe-cpp",
     name: "transcribe.cpp",
     licence: {
       name: "MIT",
-      url: "https://docs.rs/crate/transcribe-cpp-sys/0.2.3/source/LICENSE",
+      url: "https://docs.rs/crate/transcribe-cpp-sys/0.2.4/source/LICENSE",
       attribution: "Copyright (c) 2026 The transcribe.cpp authors",
     },
     source: "github.com/handy-computer/transcribe.cpp",
-    revision: "0.2.3",
+    revision: "0.2.4",
   },
   {
     id: "onnxruntime",

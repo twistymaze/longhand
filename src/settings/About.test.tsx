@@ -150,7 +150,7 @@ describe("About", () => {
     const d = within(details);
     expect(d.getByText("MIT")).toBeTruthy();
     expect(d.getByText("Copyright (c) 2023-2026 The ggml authors")).toBeTruthy();
-    expect(d.getByText("https://docs.rs/crate/transcribe-cpp-sys/0.2.3/source/ggml/LICENSE")).toBeTruthy();
+    expect(d.getByText("https://docs.rs/crate/transcribe-cpp-sys/0.2.4/source/ggml/LICENSE")).toBeTruthy();
     expect(d.getByText(/github\.com\/ggml-org\/ggml/)).toBeTruthy();
     await user.click(row);
     expect(row.getAttribute("aria-expanded")).toBe("false");
@@ -203,7 +203,7 @@ describe("About", () => {
     await waitFor(() =>
       expect(tauri.calls.filter((c) => c.cmd === "plugin:opener|open_url").map((c) => c.args.url)).toEqual([
         "https://github.com/ggml-org/ggml",
-        "https://docs.rs/crate/transcribe-cpp-sys/0.2.3/source/ggml/LICENSE",
+        "https://docs.rs/crate/transcribe-cpp-sys/0.2.4/source/ggml/LICENSE",
       ]),
     );
     expect(leadingAddress("libopus, in opusic-sys 0.7.5")).toBeNull();
