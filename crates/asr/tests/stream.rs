@@ -220,10 +220,25 @@ impl LiveStream for ScriptedStream<'_> {
         LiveText::default()
     }
 
+    fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
+        Ok(self.tokens())
+    }
+
+    fn reset(&mut self) {
+        self.first_ms = None;
+        self.samples = 0;
+    }
+
+    fn open_words(&self) -> Vec<LiveWord> {
+        words_from_tokens(&self.tokens(), 0)
+    }
+}
+
+impl ScriptedStream<'_> {
     /// Every word the stream heard any of, split into two tokens. A word cut
     /// at either edge comes back clipped to the heard audio, as a real model
     /// guesses at a partial word.
-    fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
+    fn tokens(&self) -> Vec<TimedToken> {
         let (from, to) = self.heard();
         let mut tokens = Vec::new();
         for w in self
@@ -237,10 +252,8 @@ impl LiveStream for ScriptedStream<'_> {
             tokens.push(token(&format!(" {}", &w.text[..1]), start, mid));
             tokens.push(token(&w.text[1..], mid, end));
         }
-        Ok(tokens)
+        tokens
     }
-
-    fn reset(&mut self) {}
 }
 
 /// Voiced everywhere except inside the given pauses, read off the clock.
@@ -413,6 +426,74 @@ fn restart_at_starts_the_next_part_after_a_gap_without_a_replay() {
         assert!(got.contains(w), "{w:?} is missing");
     }
     assert_eq!(parts.part_start_ms(), 30_000);
+}
+
+fn spans(words: &[LiveWord]) -> Vec<(u64, u64, &str)> {
+    words
+        .iter()
+        .map(|w| (w.start_ms, w.end_ms, w.text.as_str()))
+        .collect()
+}
+
+#[test]
+fn the_open_words_are_the_words_so_far_in_stream_time() {
+    let mut recognizer = Scripted::new(talk(0, 10_000));
+    let mut stream = recognizer.start_stream().unwrap().unwrap();
+    assert!(stream.open_words().is_empty(), "no audio, no words");
+    // Three chunks of 400 ms from segment time 1 000 ms.
+    for chunk in clock(1_000, 2_200).chunks(400 * MS as usize) {
+        stream.feed(chunk).unwrap();
+    }
+    // Two tokens make each word; times start at the stream's first sample,
+    // and a word cut at an edge is clipped to the heard audio.
+    assert_eq!(
+        spans(&stream.open_words()),
+        vec![
+            (0, 100, "w800"),
+            (200, 500, "w1200"),
+            (600, 900, "w1600"),
+            (1_000, 1_200, "w2000"),
+        ]
+    );
+    // The open words do not end the stream: it takes more audio.
+    stream.feed(&clock(2_200, 2_600)).unwrap();
+    assert_eq!(
+        spans(&stream.open_words())[3..],
+        [(1_000, 1_300, "w2000"), (1_400, 1_600, "w2400")]
+    );
+}
+
+#[test]
+fn a_stream_without_open_words_gives_no_words() {
+    struct Plain;
+    impl LiveStream for Plain {
+        fn feed(&mut self, _: &[f32]) -> Result<bool, AsrError> {
+            Ok(true)
+        }
+        fn text(&self) -> LiveText {
+            LiveText {
+                committed: "some text".into(),
+                tentative: String::new(),
+            }
+        }
+        fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
+            Ok(vec![token(" some", 0, 100)])
+        }
+        fn reset(&mut self) {}
+    }
+    let mut plain = Plain;
+    plain.feed(&[0.0; 320]).unwrap();
+    assert!(plain.open_words().is_empty());
+}
+
+#[test]
+fn after_a_reset_the_stream_gives_no_open_words() {
+    let mut recognizer = Scripted::new(talk(0, 10_000));
+    let mut stream = recognizer.start_stream().unwrap().unwrap();
+    stream.feed(&clock(0, 2_000)).unwrap();
+    assert!(!stream.open_words().is_empty());
+    stream.reset();
+    assert!(stream.open_words().is_empty());
 }
 
 #[test]

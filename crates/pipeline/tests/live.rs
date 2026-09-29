@@ -104,8 +104,23 @@ impl LiveStream for ClickStream {
         if let Some(gate) = gate {
             let _ = gate.recv();
         }
-        Ok(self
-            .clicks
+        Ok(self.tokens())
+    }
+
+    fn reset(&mut self) {
+        self.samples = 0;
+        self.clicks.clear();
+    }
+
+    fn open_words(&self) -> Vec<LiveWord> {
+        asr::words_from_tokens(&self.tokens(), 0)
+    }
+}
+
+impl ClickStream {
+    /// One 50 ms token for each click, in stream time.
+    fn tokens(&self) -> Vec<TimedToken> {
+        self.clicks
             .iter()
             .enumerate()
             .map(|(n, &at)| TimedToken {
@@ -113,12 +128,7 @@ impl LiveStream for ClickStream {
                 start_ms: at / 16,
                 end_ms: at / 16 + 50,
             })
-            .collect())
-    }
-
-    fn reset(&mut self) {
-        self.samples = 0;
-        self.clicks.clear();
+            .collect()
     }
 }
 

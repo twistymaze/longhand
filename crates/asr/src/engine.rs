@@ -244,24 +244,7 @@ fn tokens_from_parts(
         let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
         let limit_ms = part.samples as u64 / SAMPLES_PER_MS;
         let local = if timing == TimestampKind::Word {
-            part.transcript
-                .words
-                .iter()
-                .filter_map(|word| {
-                    let text = word.text.trim();
-                    if text.is_empty() {
-                        return None;
-                    }
-                    let start_ms = (word.t0_ms.max(0) as u64).min(limit_ms);
-                    Some(TimedToken {
-                        // The adapter exposes complete words through the token
-                        // interface. Keep a word boundary for words_from_tokens.
-                        text: format!(" {text}"),
-                        start_ms,
-                        end_ms: (word.t1_ms.max(0) as u64).clamp(start_ms, limit_ms),
-                    })
-                })
-                .collect()
+            word_tokens(&part.transcript.words, limit_ms)
         } else {
             timed_tokens(&part.transcript.tokens, limit_ms)
         };
@@ -295,6 +278,38 @@ fn text_from_parts(parts: Vec<crate::recovery::DecodedPart>) -> WindowText {
         }
     }
     result
+}
+
+/// Word rows as timed tokens, with times clamped into `[0, limit_ms]`.
+fn word_tokens(words: &[transcribe_cpp::Word], limit_ms: u64) -> Vec<TimedToken> {
+    words
+        .iter()
+        .filter_map(|word| {
+            let text = word.text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            let start_ms = (word.t0_ms.max(0) as u64).min(limit_ms);
+            Some(TimedToken {
+                // The adapter exposes complete words through the token
+                // interface. Keep a word boundary for words_from_tokens.
+                text: format!(" {text}"),
+                start_ms,
+                end_ms: (word.t1_ms.max(0) as u64).clamp(start_ms, limit_ms),
+            })
+        })
+        .collect()
+}
+
+/// The timed words of a stream snapshot, in stream time. The returned
+/// timing kind selects the collection to read. Other kinds give no words.
+fn open_words(transcript: &transcribe_cpp::Transcript) -> Vec<crate::LiveWord> {
+    let tokens = match transcript.timestamp_kind {
+        TimestampKind::Token => timed_tokens(&transcript.tokens, u64::MAX),
+        TimestampKind::Word => word_tokens(&transcript.words, u64::MAX),
+        _ => return Vec::new(),
+    };
+    crate::words_from_tokens(&tokens, 0)
 }
 
 fn run_error(e: transcribe_cpp::Error) -> AsrError {
@@ -351,6 +366,10 @@ impl LiveStream for EngineStream<'_> {
 
     fn reset(&mut self) {
         self.stream.reset();
+    }
+
+    fn open_words(&self) -> Vec<crate::LiveWord> {
+        open_words(&self.stream.snapshot())
     }
 }
 
@@ -494,6 +513,76 @@ mod tests {
         assert_eq!(
             crate::join_words(&crate::words_from_tokens(&tokens, 0)),
             "first second"
+        );
+    }
+
+    fn snapshot(kind: TimestampKind) -> transcribe_cpp::Transcript {
+        let token = |text: &str, t0_ms, t1_ms| transcribe_cpp::Token {
+            t0_ms,
+            t1_ms,
+            text: text.into(),
+            ..Default::default()
+        };
+        transcribe_cpp::Transcript {
+            timestamp_kind: kind,
+            tokens: vec![
+                token("\u{2581}hel", 0, 100),
+                token("lo", 100, 200),
+                token(" wor", 300, 400),
+                token("ld,", 400, 500),
+                token("<|endoftext|>", 500, 500),
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn spans(words: &[crate::LiveWord]) -> Vec<(u64, u64, &str)> {
+        words
+            .iter()
+            .map(|w| (w.start_ms, w.end_ms, w.text.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn open_words_start_at_a_space_or_a_sentencepiece_marker() {
+        let words = open_words(&snapshot(TimestampKind::Token));
+        assert_eq!(spans(&words), vec![(0, 200, "hello"), (300, 500, "world,")]);
+    }
+
+    #[test]
+    fn open_words_are_absent_when_the_returned_timing_is_not_token_or_word() {
+        for kind in [
+            TimestampKind::None,
+            TimestampKind::Auto,
+            TimestampKind::Segment,
+        ] {
+            assert!(open_words(&snapshot(kind)).is_empty(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn open_words_come_from_the_word_rows_when_the_returned_timing_is_word() {
+        // Test the returned collection, not only the kind: a word-timed model
+        // can return no token rows.
+        let mut transcript = snapshot(TimestampKind::Word);
+        transcript.tokens.clear();
+        transcript.words = vec![
+            transcribe_cpp::Word {
+                t0_ms: 0,
+                t1_ms: 200,
+                text: "hello".into(),
+                ..Default::default()
+            },
+            transcribe_cpp::Word {
+                t0_ms: 300,
+                t1_ms: 500,
+                text: "world,".into(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            spans(&open_words(&transcript)),
+            vec![(0, 200, "hello"), (300, 500, "world,")]
         );
     }
 

@@ -68,6 +68,14 @@ pub trait LiveStream: Send {
     fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError>;
     /// Discard the stream's state without a result.
     fn reset(&mut self);
+    /// The timed words of the open part so far, in milliseconds from the
+    /// start of the stream. The stream continues to take audio. The words
+    /// are built with [`words_from_tokens`], as [`Parts::finish`] builds the
+    /// words of a finished part. A stream that has no word times gives no
+    /// words; this is the default.
+    fn open_words(&self) -> Vec<LiveWord> {
+        Vec::new()
+    }
 }
 
 /// Characters of scripts that put no spaces between words: CJK
