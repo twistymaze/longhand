@@ -91,15 +91,16 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
           if (performance.now() - (lastBump.current[id] ?? 0) >= REREAD_MS) bump(id);
           return;
         }
+        const forget = <T,>(l: Record<string, T>) => {
+          const next = { ...l };
+          delete next[id];
+          return next;
+        };
+        // Any other update ends the speaker attempt, so its events no longer count.
+        setSpeakers(forget);
         if (update.kind === "stage_started") {
           setStages((s) => ({ ...s, [id]: update.stage }));
-          const forget = <T,>(l: Record<string, T>) => {
-            const next = { ...l };
-            delete next[id];
-            return next;
-          };
           setLive(forget);
-          setSpeakers(forget);
         }
         bump(id);
         void refresh();

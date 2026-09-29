@@ -105,7 +105,7 @@ html {
   height: calc(44px / var(--interface-scale, 1));
 }
 
-/* Only the download bar moves, and only to report progress. */
+/* A bar fill moves only to report progress. */
 .progress-fill {
   transition: width 240ms linear;
 }

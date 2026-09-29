@@ -72,8 +72,8 @@ describe("speaker meter", () => {
     expect(speakerMeter(running(progress("a", 60, true)), progress("a", 55, true))).toEqual({ percent: 60, measuring: false });
   });
 
-  test("an event of an earlier attempt does not count", () => {
-    expect(speakerMeter(running(progress("b", 10, true)), progress("a", 80, true))).toEqual({ percent: 10, measuring: false });
+  test("saved progress of an earlier attempt does not count", () => {
+    expect(speakerMeter(running(progress("a", 80, true)), progress("b", 10, true))).toEqual({ percent: 10, measuring: true });
   });
 
   test("work with no fraction keeps the value and shows activity", () => {

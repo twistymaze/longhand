@@ -879,6 +879,10 @@ impl Runner {
         cancel: CancellationToken,
         attempt: &mut crate::recognition::durable::Attempt,
     ) -> Result<(), StageError> {
+        // A new attempt does not show the progress of an earlier attempt.
+        if stage == Stage::Diarize {
+            lock(&self.env.store).delete_checkpoint(id, stage, crate::progress::SPEAKER_KEY)?;
+        }
         let _permit = self
             .permit
             .clone()

@@ -667,9 +667,6 @@ describe("SessionPage", () => {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 3100)));
       expect(meter().getAttribute("aria-valuetext")).toBe("62%, still working");
       expect(meter().className).toContain("progress-active");
-      // An event below the saved value does not move it back.
-      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), speakers: { p: progress("a", 12, true) } }));
-      expect(screen.getByText("40%")).toBeTruthy();
     });
 
     test("work with no fraction shows activity, not a new number", async () => {

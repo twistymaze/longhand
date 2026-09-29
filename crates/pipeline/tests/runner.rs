@@ -46,6 +46,9 @@ struct Script {
     /// Called with the ordinal (0-based) of each speaker analysis, halfway
     /// through it.
     on_analysis: Mutex<Option<Hook>>,
+    /// The attempt of the saved speaker progress at each start of the
+    /// speaker stage.
+    saved_at_start: Mutex<Vec<Option<String>>>,
     /// Where summaries go; unset is an unconfigured endpoint.
     summary: Mutex<Option<Result<SummaryEndpoint, EndpointProblem>>>,
     /// Limits the summarize stage learned.
@@ -488,12 +491,28 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
     let sink = Arc::clone(&events);
     let path = root.path().to_path_buf();
     let capturing = Arc::clone(&script);
+    let recording = Arc::clone(&script);
+    let saved = Arc::clone(&store);
     let runner = Runner::new(Environment {
         store: Arc::clone(&store),
         working_root: path.clone(),
         engines: Box::new(Provider(Arc::clone(&script))),
         suspended: Box::new(move || capturing.capturing.load(Ordering::SeqCst)),
-        events: Box::new(move |e| sink.lock().unwrap().push(e)),
+        events: Box::new(move |e| {
+            if let RunnerEvent::StageStarted {
+                session_id,
+                stage: Stage::Diarize,
+            } = &e
+            {
+                let progress = pipeline::progress::speakers(&saved, session_id).unwrap();
+                recording
+                    .saved_at_start
+                    .lock()
+                    .unwrap()
+                    .push(progress.map(|p| p.attempt));
+            }
+            sink.lock().unwrap().push(e)
+        }),
     });
     Rig {
         runner,
@@ -1050,6 +1069,11 @@ async fn a_new_attempt_replaces_speaker_progress_and_counts_saved_segments_first
     let (_, outcome) = first.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Cancelled);
     let earlier = speaker_progress(&first)[0].attempt.clone();
+    assert!(
+        pipeline::progress::speakers(&first.store, "s")
+            .unwrap()
+            .is_some()
+    );
 
     // A new process: the old claim is reclaimed at launch.
     let Rig { _root, .. } = first;
@@ -1063,6 +1087,8 @@ async fn a_new_attempt_replaces_speaker_progress_and_counts_saved_segments_first
     assert_eq!(outcome, Outcome::Finished);
     // Only the second segment is analysed again.
     assert_eq!(second.script.analyses.load(Ordering::SeqCst), 1);
+    // The new attempt starts without the earlier attempt's saved progress.
+    assert_eq!(*second.script.saved_at_start.lock().unwrap(), vec![None]);
     let seen = speaker_progress(&second);
     assert!(seen.iter().all(|p| p.attempt != earlier), "{seen:?}");
     // The saved first segment counts before the second one runs.
