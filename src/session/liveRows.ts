@@ -187,7 +187,20 @@ function align(shown: string[], timed: string[]): (number | null)[] {
   return match;
 }
 
+// The units of each saved part. A saved part does not change, and the live
+// state keeps the same object for it, so the words are converted one time.
+const savedCache = new WeakMap<SavedPart, Unit[]>();
+
 function savedUnits(part: SavedPart): Unit[] {
+  let units = savedCache.get(part);
+  if (!units) {
+    units = convertSaved(part);
+    savedCache.set(part, units);
+  }
+  return units;
+}
+
+function convertSaved(part: SavedPart): Unit[] {
   const group = String(part.segment);
   return [...part.words]
     .sort((a, b) => a.start_ms - b.start_ms)
@@ -209,9 +222,9 @@ function openUnits(part: OpenPart): Unit[] {
     ...tokens(part.committed).map((text) => ({ text, tentative: false })),
     ...tokens(part.tentative).map((text) => ({ text, tentative: true })),
   ];
-  const timed = (part.words ?? []).flatMap((word) => tokens(word.text).map(() => word));
-  const timedTokens = (part.words ?? []).flatMap((word) => tokens(word.text));
-  const match = align(shown.map((s) => normal(s.text)), timedTokens.map(normal));
+  const pairs = (part.words ?? []).flatMap((word) => tokens(word.text).map((text) => ({ text, word })));
+  const timed = pairs.map((pair) => pair.word);
+  const match = align(shown.map((s) => normal(s.text)), pairs.map((pair) => normal(pair.text)));
   return shown.map((word, i) => {
     const time = match[i] === null ? null : timed[match[i]!];
     return {
@@ -246,7 +259,11 @@ function nativeUnits(rows: NativeRow[]): Unit[] {
     }));
 }
 
-const overlaps = (a: SpeakerTurn, b: SpeakerTurn) =>
+/** True when two sample spans overlap. */
+export const overlaps = (
+  a: { start_sample: number; end_sample: number },
+  b: { start_sample: number; end_sample: number },
+) =>
   a.start_sample < b.end_sample && b.start_sample < a.end_sample;
 
 /**

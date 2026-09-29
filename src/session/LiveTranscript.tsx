@@ -207,13 +207,15 @@ export function LiveTranscript({
     if (following.current) toBottom();
     else if (el && anchor.current && rows.current) {
       const { key, top } = anchor.current;
-      const p = [...rows.current.querySelectorAll<HTMLElement>("[data-key]")].find((n) => n.dataset.key === key);
+      const p = rows.current.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
       if (p) {
         const shift = p.getBoundingClientRect().top - el.getBoundingClientRect().top - top;
         if (shift !== 0) el.scrollTop += shift;
       }
     }
-    record();
+    // The anchor is read only while the reader is scrolled up. The scroll
+    // handler records it when the reader leaves the bottom.
+    if (!following.current) record();
   }, [live, items, toBottom, record, scroller]);
 
   if (!live.loaded) return null;

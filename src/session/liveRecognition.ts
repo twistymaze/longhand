@@ -1,5 +1,5 @@
 import type { LiveRecognitionEvent, LiveRecognitionRow } from "../bindings";
-import type { SpeakerBlock } from "./liveRows";
+import { overlaps, type SpeakerBlock } from "./liveRows";
 
 type Block = {
   event: LiveRecognitionEvent;
@@ -22,8 +22,6 @@ const scope = (e: LiveRecognitionEvent) =>
   JSON.stringify([e.generation, e.epoch]);
 const identity = (e: LiveRecognitionEvent) =>
   JSON.stringify([e.generation, e.epoch, e.key]);
-const overlaps = (a: LiveRecognitionRow, b: LiveRecognitionRow) =>
-  a.start_sample < b.end_sample && b.start_sample < a.end_sample;
 
 export function applyRecognition(
   view: RecognitionView,
