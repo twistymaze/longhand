@@ -2,7 +2,7 @@
 // the view opens, then applies the live events for the note's id. Events
 // that arrive before the catch-up returns wait, and apply after it.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   commands,
   events,
@@ -16,20 +16,46 @@ import {
   type LiveRecognitionEvent,
 } from "../bindings";
 import { applyRecognition, applyRecognitionEvents, emptyRecognition, type RecognitionView } from "./liveRecognition";
+import type { NumberMap } from "./liveRows";
 
 export type LiveView = {
-  /// The saved parts, in order of segment and part.
+  /// The saved parts, with their words and segment offset, in order of
+  /// segment and part.
   parts: LivePartText[];
-  /// The text of the open part, or null.
+  /// The open parts, in order of segment and part. A part stays open until
+  /// its saved event arrives, so the last part of a segment can stay open
+  /// while the first part of the next segment grows.
+  open: LiveCurrent[];
+  /// The newest open part, or null.
   current: LiveCurrent | null;
   /// What the live worker does now. Null when no worker reported.
   state: LiveState | null;
   /// The catch-up returned.
   loaded: boolean;
   recognition: RecognitionView;
+  /// The shown speaker numbers of the note (KTD12). The row builder adds a
+  /// number when a heading first shows. The map stays while the app runs.
+  numbers: NumberMap;
 };
 
-const none: LiveView = { parts: [], current: null, state: null, loaded: false, recognition: emptyRecognition };
+type State = Omit<LiveView, "numbers">;
+
+const none: State = { parts: [], open: [], current: null, state: null, loaded: false, recognition: emptyRecognition };
+
+// The number map of each note (KTD12). It is module state, so a remount of
+// the view (a tab switch or a reopened note) keeps the numbers that the
+// reader saw. Each note has its own map.
+const numberMaps = new Map<string, NumberMap>();
+
+/// The shown speaker numbers of a note. The same note always gets the same map.
+export function liveNumbers(sessionId: string): NumberMap {
+  let numbers = numberMaps.get(sessionId);
+  if (!numbers) {
+    numbers = new Map();
+    numberMaps.set(sessionId, numbers);
+  }
+  return numbers;
+}
 
 type Change =
   | { kind: "recognition"; data: LiveRecognitionEvent }
@@ -41,14 +67,19 @@ type Change =
 const same = (a: { segment: number; part: number }, b: { segment: number; part: number }) =>
   a.segment === b.segment && a.part === b.part;
 
-const order = (a: LivePartText, b: LivePartText) => a.segment - b.segment || a.part - b.part;
+const order = (a: { segment: number; part: number }, b: { segment: number; part: number }) => a.segment - b.segment || a.part - b.part;
 
 /// Add a saved part, or replace the part with the same number.
 function withPart(parts: LivePartText[], part: LivePartText): LivePartText[] {
   return [...parts.filter((p) => !same(p, part)), part].sort(order);
 }
 
-export function apply(live: LiveView, change: Change): LiveView {
+/// Set the open parts, and the newest open part.
+function withOpen(live: State, open: LiveCurrent[]): State {
+  return { ...live, open, current: open[open.length - 1] ?? null };
+}
+
+export function apply(live: State, change: Change): State {
   switch (change.kind) {
     case "recognition": return { ...live, recognition: applyRecognition(live.recognition, change.data) };
     case "catchup": {
@@ -56,38 +87,44 @@ export function apply(live: LiveView, change: Change): LiveView {
       const byKey = new Map(live.parts.map((p) => [`${p.segment}-${p.part}`, p]));
       for (const p of change.data.parts) byKey.set(`${p.segment}-${p.part}`, p);
       const parts = [...byKey.values()].sort(order);
+      // The catch-up holds the full word list of its open part (KTD4).
       const current = change.data.current;
-      return {
+      const open = current && !parts.some((p) => same(p, current)) ? [current] : [];
+      return withOpen({
         recognition: change.data.recognition ? applyRecognitionEvents(emptyRecognition, change.data.recognition) : live.recognition,
         parts,
-        current: current && !parts.some((p) => same(p, current)) ? current : null,
+        open,
+        current: null,
         state: change.data.state,
         loaded: true,
-      };
+      }, open);
     }
     case "text": {
       const { segment, part, offset_ms, committed, tentative, word_start, words } = change.data;
       // A late event of a part that is already saved changes nothing.
       if (live.parts.some((p) => same(p, change.data))) return live;
+      const earlier = live.open.find((p) => same(p, change.data));
       // Keep the words before word_start, then add the changed words (KTD3).
-      const before = live.current && same(live.current, change.data) ? live.current.words.slice(0, word_start) : [];
-      return { ...live, current: { segment, part, offset_ms, committed, tentative, words: [...before, ...words] } };
+      const before = earlier ? earlier.words.slice(0, word_start) : [];
+      const next: LiveCurrent = { segment, part, offset_ms, committed, tentative, words: [...before, ...words] };
+      // One worker sends the parts of a segment in order, and it sends the
+      // saved event of a part before the text of the next part. So an
+      // earlier open part of the same segment was not saved, and it ends
+      // here. The open part of an earlier segment stays until its saved event.
+      const others = live.open.filter((p) => !same(p, next) && !(p.segment === segment && p.part < part));
+      return withOpen(live, [...others, next].sort(order));
     }
     case "saved": {
       const { segment, part, offset_ms, start_ms, end_ms, text, words } = change.data;
       const saved = { segment, part, offset_ms, start_ms, end_ms, text, words };
-      return {
-        ...live,
-        parts: withPart(live.parts, saved),
-        current: live.current && same(live.current, saved) ? null : live.current,
-      };
+      return withOpen({ ...live, parts: withPart(live.parts, saved) }, live.open.filter((p) => !same(p, saved)));
     }
     case "status":
       return { ...live, state: change.data.state };
   }
 }
 
-function applyChanges(live: LiveView, changes: Change[]): LiveView {
+function applyChanges(live: State, changes: Change[]): State {
   let next = live;
   for (let i = 0; i < changes.length;) {
     const recognition: LiveRecognitionEvent[] = [];
@@ -105,10 +142,15 @@ function applyChanges(live: LiveView, changes: Change[]): LiveView {
 }
 
 export function useLiveTranscript(sessionId: string): LiveView {
-  const [live, setLive] = useState<LiveView>(none);
+  // The state records its note. Before the effect of a new note resets it,
+  // a render shows no state of the earlier note.
+  const [held, setHeld] = useState<{ id: string; live: State }>({ id: sessionId, live: none });
+  const live = held.id === sessionId ? held.live : none;
 
   useEffect(() => {
-    setLive(none);
+    const setLive = (change: (l: State) => State) =>
+      setHeld((h) => ({ id: sessionId, live: change(h.id === sessionId ? h.live : none) }));
+    setHeld({ id: sessionId, live: none });
     let open = true;
     // Null after the catch-up: recognition events then apply once per frame.
     let waiting: Change[] | null = [];
@@ -183,5 +225,5 @@ export function useLiveTranscript(sessionId: string): LiveView {
     };
   }, [sessionId]);
 
-  return live;
+  return useMemo(() => ({ ...live, numbers: liveNumbers(sessionId) }), [live, sessionId]);
 }
