@@ -89,7 +89,7 @@ The current summary has one fixed shape: an overview, then "Key points" with a `
 
 - Choosing the prompt from the destination folder. This is the existing idea `docs/ideas/someday/summary-prompt-by-note-type.md`, and it builds on this list.
 - Choosing a prompt for one note at Regenerate time, or before a recording.
-- Carrying context from the previous session (`docs/ideas/someday/session-to-session-context.md`).
+- Carrying context from the previous session (now part of `docs/ideas/someday/agentic-summary.md`).
 - Editing the title prompt, and placeholders or variables in prompt text.
 - A participant list that gives people reliable names. The idea was removed on 2026-09-28: the user can list the people in the first line of the note.
 - A change to how the transcript view labels speakers. The transcript still shows Speaker N.
