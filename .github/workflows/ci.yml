@@ -141,6 +141,11 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: bun install --frozen-lockfile
 
+      # Frontmatter and links of the feature ideas (docs/ideas/README.md).
+      - name: Feature ideas
+        if: runner.os == 'macOS'
+        run: bun scripts/ideas.ts check
+
       # msvc-dev-cmd documents that Git Bash can select GNU link.exe before MSVC.
       # Use the native Windows shell for Rust, as upstream transcribe.cpp does:
       # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
