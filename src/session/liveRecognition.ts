@@ -1,4 +1,5 @@
 import type { LiveRecognitionEvent, LiveRecognitionRow } from "../bindings";
+import { overlaps, type SpeakerBlock } from "./liveRows";
 
 type Block = {
   event: LiveRecognitionEvent;
@@ -10,23 +11,17 @@ export type RecognitionView = {
   batches: Record<string, Batch>;
   revisions: Record<string, number>;
   error: string | null;
-  announcement: string;
-  announcementId: number;
 };
 export const emptyRecognition: RecognitionView = {
   blocks: {},
   batches: {},
   revisions: {},
   error: null,
-  announcement: "",
-  announcementId: 0,
 };
 const scope = (e: LiveRecognitionEvent) =>
   JSON.stringify([e.generation, e.epoch]);
 const identity = (e: LiveRecognitionEvent) =>
   JSON.stringify([e.generation, e.epoch, e.key]);
-const overlaps = (a: LiveRecognitionRow, b: LiveRecognitionRow) =>
-  a.start_sample < b.end_sample && b.start_sample < a.end_sample;
 
 export function applyRecognition(
   view: RecognitionView,
@@ -125,31 +120,11 @@ export function applyRecognition(
     const kind = event.phase === "patch" ? "text" : family;
     blocks[`${identity(next)}/${kind}`] = { event: { ...next, rows }, kind };
   }
-  const previous = new Map<number, Map<number, Set<string | null>>>();
-  for (const row of recognitionRows(view)) {
-    const ends = previous.get(row.start_sample) ?? new Map<number, Set<string | null>>();
-    const speakers = ends.get(row.end_sample) ?? new Set<string | null>();
-    speakers.add(row.speaker);
-    ends.set(row.end_sample, speakers);
-    previous.set(row.start_sample, ends);
-  }
-  const next = recognitionRows({ ...view, blocks });
-  const corrected = next.some((row) => {
-    if (!row.speaker_final) return false;
-    const speakers = previous.get(row.start_sample)?.get(row.end_sample);
-    return speakers !== undefined && (speakers.size > 1 || !speakers.has(row.speaker));
-  });
-  return {
-    ...view,
-    blocks,
-    batches,
-    revisions,
-    announcement: corrected ? "Speaker labels updated." : view.announcement,
-    announcementId: view.announcementId + Number(corrected),
-  };
+  return { ...view, blocks, batches, revisions };
 }
 
-type ScopedRow = LiveRecognitionRow & { scope: string };
+/** A text row with its speaker from the snapshot, and its speaker analysis window. */
+export type ScopedRow = LiveRecognitionRow & { scope: string; generation: string; epoch: number };
 
 export function applyRecognitionEvents(view: RecognitionView, events: LiveRecognitionEvent[]): RecognitionView {
   let next = view;
@@ -167,72 +142,30 @@ export function applyRecognitionEvents(view: RecognitionView, events: LiveRecogn
   return next;
 }
 
-type SpanSpeakers = Map<string | null, { count: number; final: number }>;
-const spanKey = (row: LiveRecognitionRow) => `${row.start_sample}/${row.end_sample}`;
-const ambiguous = (speakers: SpanSpeakers | undefined) =>
-  speakers !== undefined && speakers.size > 1 && [...speakers.values()].some((s) => s.final > 0);
-
 /** Apply patches without copying all stored words for each event. */
 function applyPatches(view: RecognitionView, events: LiveRecognitionEvent[]): RecognitionView {
   const blocks = { ...view.blocks };
-  const speakerRows = speakersByScope(Object.values(blocks));
   const revisions = { ...view.revisions };
-  const spans = new Map<string, SpanSpeakers>();
   const interim = new Map<string, Map<string, Block>>();
-  let ambiguousCount = 0;
-  const changeRow = (row: LiveRecognitionRow, delta: number) => {
-    if (!row.text) return;
-    const key = spanKey(row);
-    const speakers = spans.get(key) ?? new Map();
-    ambiguousCount -= Number(ambiguous(speakers));
-    const counts = speakers.get(row.speaker) ?? { count: 0, final: 0 };
-    counts.count += delta;
-    counts.final += delta * Number(row.speaker_final);
-    if (counts.count) speakers.set(row.speaker, counts);
-    else speakers.delete(row.speaker);
-    if (speakers.size) spans.set(key, speakers);
-    else spans.delete(key);
-    ambiguousCount += Number(ambiguous(speakers));
-  };
   for (const [key, block] of Object.entries(blocks)) {
-    if (block.kind === "speakers") continue;
+    if (block.kind !== "interim") continue;
     const eventScope = scope(block.event);
-    for (const row of block.event.rows) {
-      if (row.text) changeRow(projectSpeaker(row, speakerRows.get(eventScope)), 1);
-    }
-    if (block.kind === "interim") {
-      const scoped = interim.get(eventScope) ?? new Map<string, Block>();
-      scoped.set(key, block);
-      interim.set(eventScope, scoped);
-    }
+    const scoped = interim.get(eventScope) ?? new Map<string, Block>();
+    scoped.set(key, block);
+    interim.set(eventScope, scoped);
   }
-  let announcementId = view.announcementId;
   let changed = false;
   for (const event of events) {
     const key = identity(event);
     if (event.revision <= (revisions[key] ?? -1)) continue;
     changed = true;
     revisions[key] = event.revision;
-    const before = new Map<string, Set<string | null>>();
     const eventScope = scope(event);
-    let unchangedAmbiguous = ambiguousCount;
-    const update = (row: LiveRecognitionRow, delta: number) => {
-      if (!row.text) return;
-      const key = spanKey(row);
-      if (!before.has(key)) {
-        const speakers = spans.get(key);
-        before.set(key, new Set(speakers?.keys()));
-        unchangedAmbiguous -= Number(ambiguous(speakers));
-      }
-      changeRow(projectSpeaker(row, speakerRows.get(eventScope)), delta);
-    };
     const scoped = interim.get(eventScope);
     if (scoped) for (const [blockKey, block] of scoped) {
-      const rows = block.event.rows.filter((row) => {
-        if (!event.rows.some((next) => overlaps(row, next))) return true;
-        update(row, -1);
-        return false;
-      });
+      const rows = block.event.rows.filter(
+        (row) => !event.rows.some((next) => overlaps(row, next)),
+      );
       if (rows.length) {
         const next = { ...block, event: { ...block.event, rows } };
         blocks[blockKey] = next;
@@ -242,28 +175,10 @@ function applyPatches(view: RecognitionView, events: LiveRecognitionEvent[]): Re
         scoped.delete(blockKey);
       }
     }
-    const blockKey = `${key}/text`;
-    const old = blocks[blockKey];
-    if (old) for (const row of old.event.rows) update(row, -1);
-    for (const row of event.rows) update(row, 1);
-    blocks[blockKey] = { kind: "text", event: { ...event, rows: event.rows } };
-    let corrected = unchangedAmbiguous > 0;
-    if (!corrected) for (const [key, previous] of before) {
-      if (!previous.size) continue;
-      const speakers = spans.get(key);
-      if (speakers && [...speakers].some(([speaker, counts]) =>
-        counts.final > 0 && (previous.size > 1 || !previous.has(speaker)))) {
-        corrected = true;
-        break;
-      }
-    }
-    announcementId += Number(corrected);
+    blocks[`${key}/text`] = { kind: "text", event: { ...event, rows: event.rows } };
   }
   if (!changed) return view;
-  return {
-    ...view, blocks, revisions, announcementId,
-    announcement: announcementId > view.announcementId ? "Speaker labels updated." : view.announcement,
-  };
+  return { ...view, blocks, revisions };
 }
 
 function speakersByScope(blocks: Block[]): Map<string, LiveRecognitionRow[]> {
@@ -307,43 +222,34 @@ export function recognitionRows(view: RecognitionView): ScopedRow[] {
       const eventScope = scope(event);
       return event.rows
         .filter((r) => r.text)
-        .map((row) => ({ ...projectSpeaker(row, speakers.get(eventScope)), scope: eventScope }));
+        .map((row) => ({
+          ...projectSpeaker(row, speakers.get(eventScope)),
+          scope: eventScope,
+          generation: event.generation,
+          epoch: event.epoch,
+        }));
     })
     .sort(
       (a, b) => a.start_sample - b.start_sample || a.end_sample - b.end_sample,
     );
 }
 
-
-// Match the unspaced scripts in asr::stream::join_words.
-const unspaced = /[\u3000-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2ffff}]/u;
-function joinText(left: string, right: string): string {
-  const characters = Array.from(left);
-  const end = characters[characters.length - 1] ?? "";
-  const start = Array.from(right)[0] ?? "";
-  const space = left && right && !unspaced.test(end) && !unspaced.test(start)
-    && !/^[,.;:!?%)\]}]/u.test(right) && !/[([{]$/u.test(left);
-  return left + (space ? " " : "") + right;
-}
-
-/** Group timed words for display without changing the stored recognition rows. */
-export function recognitionParagraphs(rows: ScopedRow[]): ScopedRow[] {
-  const paragraphs: ScopedRow[] = [];
-  for (const row of rows) {
-    const text = row.text?.trim();
-    if (!text) continue;
-    const last = paragraphs[paragraphs.length - 1];
-    if (last && last.scope === row.scope && last.speaker === row.speaker
-      && row.start_sample - last.end_sample <= 2 * 16000
-      && row.end_sample - last.start_sample <= 30 * 16000
-      && (last.text?.length ?? 0) + text.length <= 600) {
-      last.text = joinText(last.text ?? "", text);
-      last.end_sample = Math.max(last.end_sample, row.end_sample);
-      last.text_final &&= row.text_final;
-      last.speaker_final &&= row.speaker_final;
-    } else {
-      paragraphs.push({ ...row, text });
-    }
+/** The speaker turns of each speaker analysis window, for the row builder. */
+export function speakerBlocks(view: RecognitionView): SpeakerBlock[] {
+  const byScope = new Map<string, SpeakerBlock>();
+  for (const block of Object.values(view.blocks)) {
+    if (block.kind !== "speakers") continue;
+    const { generation, epoch } = block.event;
+    const key = scope(block.event);
+    const entry = byScope.get(key) ?? { generation, epoch, turns: [] };
+    for (const row of block.event.rows)
+      entry.turns.push({
+        start_sample: row.start_sample,
+        end_sample: row.end_sample,
+        speaker: row.speaker,
+        speaker_final: row.speaker_final,
+      });
+    byScope.set(key, entry);
   }
-  return paragraphs;
+  return [...byScope.values()];
 }

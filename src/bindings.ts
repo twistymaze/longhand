@@ -1009,16 +1009,42 @@ export type ListNotRequested = "no-base-url" | "keychain-locked" | "keychain-fai
 /**
  * The text of the part that is open now.
  */
-export type LiveCurrent = { segment: number; part: number; committed: string; tentative: string }
+export type LiveCurrent = { segment: number; part: number; 
+/**
+ * The start of the segment, in milliseconds from the start of the note.
+ */
+offset_ms: number; committed: string; tentative: string; 
+/**
+ * All timed words of the open part, in milliseconds from the start of
+ * the segment.
+ */
+words: LiveWord[] }
 /**
  * A part of the live transcript was saved. The open part of the next
- * event starts after it.
+ * event starts after it. The part has the same shape as a part of the
+ * catch-up (KTD4).
  */
-export type LivePartSaved = { session_id: string; segment: number; part: number; start_ms: number; end_ms: number; text: string }
+export type LivePartSaved = ({ segment: number; part: number; 
+/**
+ * The start of the segment, in milliseconds from the start of the note.
+ */
+offset_ms: number; start_ms: number; end_ms: number; text: string; 
+/**
+ * In milliseconds from the start of the segment.
+ */
+words: LiveWord[] }) & { session_id: string }
 /**
  * One saved part of the live transcript.
  */
-export type LivePartText = { segment: number; part: number; start_ms: number; end_ms: number; text: string }
+export type LivePartText = { segment: number; part: number; 
+/**
+ * The start of the segment, in milliseconds from the start of the note.
+ */
+offset_ms: number; start_ms: number; end_ms: number; text: string; 
+/**
+ * In milliseconds from the start of the segment.
+ */
+words: LiveWord[] }
 /**
  * Durable text or speaker revisions on the canonical 16 kHz timeline.
  */
@@ -1058,12 +1084,24 @@ state: LiveState | null }
 /**
  * The text of the open part changed (KTD10). `committed` does not change
  * again; `tentative` can change with the next event.
+ * 
+ * `words` are the timed words of the open part from index `word_start`
+ * (KTD3). The words before `word_start` did not change. A new part starts
+ * at index 0.
  */
-export type LiveTranscriptEvent = { session_id: string; segment: number; part: number; committed: string; tentative: string }
+export type LiveTranscriptEvent = { session_id: string; segment: number; part: number; 
+/**
+ * The start of the segment, in milliseconds from the start of the note.
+ */
+offset_ms: number; committed: string; tentative: string; word_start: number; words: LiveWord[] }
 /**
  * What the live worker does now, for the lines of the live view (U8).
  */
 export type LiveTranscriptStatus = { session_id: string; segment: number; state: LiveState }
+/**
+ * One timed word, in milliseconds from the start of its segment.
+ */
+export type LiveWord = { start_ms: number; end_ms: number; text: string }
 /**
  * A session's notes document and the fingerprint of the `notes.md` that
  * holds it. The editor sends the fingerprint back with each save

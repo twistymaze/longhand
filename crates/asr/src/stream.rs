@@ -68,6 +68,14 @@ pub trait LiveStream: Send {
     fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError>;
     /// Discard the stream's state without a result.
     fn reset(&mut self);
+    /// The timed words of the open part so far, in milliseconds from the
+    /// start of the stream. The stream continues to take audio. The words
+    /// are built with [`words_from_tokens`], as [`Parts::finish`] builds the
+    /// words of a finished part. A stream that has no word times gives no
+    /// words; this is the default.
+    fn open_words(&self) -> Vec<LiveWord> {
+        Vec::new()
+    }
 }
 
 /// Characters of scripts that put no spaces between words: CJK
@@ -250,6 +258,16 @@ impl Parts {
         self.start_ms
     }
 
+    /// The timed words of the open part so far, in milliseconds from the
+    /// start of the segment, without the words that repeat the part before
+    /// it. The shift, the clamp and the replay filter are the same as in
+    /// [`Parts::finish`]. An open part has no cut yet, so no words go to the
+    /// next part.
+    pub fn open_words(&self, stream: &dyn LiveStream) -> Vec<LiveWord> {
+        let end_ms = self.start_ms + self.samples / SAMPLES_PER_MS;
+        in_part(stream.open_words(), self.start_ms, end_ms, self.floor_ms)
+    }
+
     /// The voiced time that every part so far has heard, the replay
     /// included. A new part and [`Parts::restart_at`] do not reset it.
     pub fn voiced_ms(&self) -> u64 {
@@ -338,14 +356,7 @@ impl Parts {
         self.frame.clear();
 
         let tokens = stream.finish()?;
-        let mut words = words_from_tokens(&tokens, start_ms);
-        for word in &mut words {
-            word.start_ms = word.start_ms.min(end_ms);
-            word.end_ms = word.end_ms.clamp(word.start_ms, end_ms);
-        }
-        if let Some(floor) = floor_ms {
-            words.retain(|w| (w.start_ms + w.end_ms) / 2 >= floor);
-        }
+        let mut words = in_part(words_from_tokens(&tokens, 0), start_ms, end_ms, floor_ms);
         if let Some(boundary) = boundary_ms {
             words.retain(|w| w.start_ms < boundary);
             self.floor_ms = Some(words.last().map_or(boundary, |w| w.end_ms));
@@ -369,6 +380,25 @@ impl Parts {
         self.floor_ms = None;
         self.cut = None;
     }
+}
+
+/// Move `words` from stream time to segment time for a part that starts at
+/// `start_ms` and ends at `end_ms`, keep them in that span, and remove the
+/// words whose midpoint is before `floor_ms`.
+fn in_part(
+    mut words: Vec<LiveWord>,
+    start_ms: u64,
+    end_ms: u64,
+    floor_ms: Option<u64>,
+) -> Vec<LiveWord> {
+    for word in &mut words {
+        word.start_ms = (start_ms + word.start_ms).min(end_ms);
+        word.end_ms = (start_ms + word.end_ms).clamp(word.start_ms, end_ms);
+    }
+    if let Some(floor) = floor_ms {
+        words.retain(|w| (w.start_ms + w.end_ms) / 2 >= floor);
+    }
+    words
 }
 
 /// Stream `pcm` through `recognizer` in feeds of `chunk` samples, one stream

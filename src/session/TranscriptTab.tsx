@@ -8,6 +8,7 @@ import { useLayoutEffect, useRef } from "react";
 import type { DocLine } from "../bindings";
 import { speakerCount } from "../home/group";
 import { formatPosition } from "../lib/timeline";
+import { Marker } from "./Marker";
 
 type Turn = Extract<DocLine, { kind: "turn" }>;
 
@@ -55,16 +56,6 @@ function parts(lines: DocLine[]): Part[] {
     }
   }
   return out;
-}
-
-function Marker({ label }: { label: string }) {
-  return (
-    <div className="my-5 flex items-center gap-3 text-[0.85rem] text-label-tertiary">
-      <span className="h-px flex-1 bg-separator" />
-      {label}
-      <span className="h-px flex-1 bg-separator" />
-    </div>
-  );
 }
 
 function speakerRecognitionWasOff(markdown: string): boolean {

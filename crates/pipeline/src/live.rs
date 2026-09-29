@@ -314,8 +314,12 @@ pub trait LiveSink: Send {
     fn model(&mut self, _held: Option<&str>) {}
     fn status(&mut self, _status: LiveStatus) {}
     fn failed(&mut self, _message: &str) {}
-    /// The text of the open part changed.
-    fn text(&mut self, _part: u32, _text: &LiveText) {}
+    /// The text of the open part changed. `words` are the open part's timed
+    /// words from index `word_start`, in milliseconds from the start of the
+    /// segment, with the replay removed. The words before `word_start` did
+    /// not change since the last call for this part. A stream that has no
+    /// word times gives no words.
+    fn text(&mut self, _part: u32, _text: &LiveText, _word_start: u32, _words: &[LiveWord]) {}
     /// A part was saved.
     fn saved(&mut self, _row: &LiveRow) {}
     fn recognition(&mut self, _block: &session_core::recognition::OutputBlock) {}
@@ -714,6 +718,8 @@ struct Work<'a> {
     voiced_at_commit: u64,
     /// Segment time when the committed text last changed.
     commit_ms: u64,
+    /// The open-part words that the sink has, in segment time.
+    sent_words: Vec<LiveWord>,
     status: LiveStatus,
 }
 
@@ -736,6 +742,7 @@ impl<'a> Work<'a> {
             committed: String::new(),
             voiced_at_commit: 0,
             commit_ms: 0,
+            sent_words: Vec::new(),
             status: LiveStatus::Starting,
         }
     }
@@ -762,6 +769,7 @@ impl<'a> Work<'a> {
     /// A new stream starts at segment time `at_ms`.
     fn began(&mut self, at_ms: u64) {
         self.committed.clear();
+        self.sent_words.clear();
         self.voiced_at_commit = self.parts.voiced_ms();
         self.commit_ms = at_ms;
     }
@@ -803,7 +811,16 @@ impl<'a> Work<'a> {
             if !text.committed.is_empty() || !text.tentative.is_empty() {
                 self.set_status(LiveStatus::Running);
             }
-            self.sink.text(self.part, &text);
+            let words = self.parts.open_words(stream);
+            let same = self
+                .sent_words
+                .iter()
+                .zip(&words)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let word_start = u32::try_from(same).unwrap_or(u32::MAX);
+            self.sink.text(self.part, &text, word_start, &words[same..]);
+            self.sent_words = words;
         }
         Ok(fed.cut)
     }
@@ -856,6 +873,7 @@ impl<'a> Work<'a> {
         match save_part(self.store, id, self.config.segment, self.part, &part) {
             Ok(row) => {
                 self.part += 1;
+                self.sent_words.clear();
                 self.sink.saved(&row);
             }
             Err(e) => log::warn!(
@@ -924,11 +942,11 @@ impl LiveSink for SharedSink {
             .unwrap_or_else(|e| e.into_inner())
             .status(status);
     }
-    fn text(&mut self, part: u32, text: &LiveText) {
+    fn text(&mut self, part: u32, text: &LiveText, word_start: u32, words: &[LiveWord]) {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .text(part, text);
+            .text(part, text, word_start, words);
     }
     fn saved(&mut self, row: &LiveRow) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).saved(row);

@@ -504,3 +504,46 @@ fn the_join_stage_reads_the_saved_live_rows() {
     let t = pipeline::join::run(&store, "s", dir.path(), &segments).unwrap();
     assert_eq!(turns_of(&t.lines), vec![(2_000, None, "hello".into())]);
 }
+
+/// The paragraph rule of the final transcript gives the paragraphs in the
+/// shared fixture. `src/session/liveRows.test.ts` holds the live copy of the
+/// rule to the same fixture (KTD7).
+#[test]
+fn the_paragraph_rule_gives_the_paragraphs_of_the_shared_fixture() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/paragraph-rule.json")).unwrap();
+    let cases = fixture["cases"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    for case in cases {
+        let name = case["name"].as_str().unwrap();
+        let words: Vec<(u64, u64, &str)> = case["words"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                (
+                    w[0].as_u64().unwrap(),
+                    w[1].as_u64().unwrap(),
+                    w[2].as_str().unwrap(),
+                )
+            })
+            .collect();
+        let expected: Vec<(u64, Option<u32>, String)> = case["paragraphs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let first = p[0].as_u64().unwrap() as usize;
+                (words[first].0, None, p[1].as_str().unwrap().to_string())
+            })
+            .collect();
+        let end_ms = words.last().unwrap().1;
+        let t = build(
+            &[segment(0, 0, end_ms)],
+            &[live_part(0, 0, &words)],
+            &Speakers::Unavailable,
+        );
+        assert_eq!(t.lines.len(), expected.len(), "{name}");
+        assert_eq!(turns_of(&t.lines), expected, "{name}");
+    }
+}
