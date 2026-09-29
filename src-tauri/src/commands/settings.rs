@@ -15,7 +15,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::managers::capture::CaptureManager;
 use crate::managers::models::{self as model_manager, ModelsManager};
-use crate::managers::processing::ProcessingManager;
+use crate::managers::processing::{MoveStatus, ProcessingManager};
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
     self, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
@@ -394,18 +394,16 @@ pub enum OldNotes {
     Leave,
 }
 
-/// Until the Move exists (U8), a change of folder refuses it.
-const MOVE_NOT_AVAILABLE: &str = "Longhand cannot move notes yet. Choose Leave Them.";
-
 /// The checks before a change of storage folder from `current` to `folder`
-/// (KTD11). The error is the cause, as Settings shows it. Returns the new
-/// folder.
-fn check_change(current: &str, folder: &str, old_notes: OldNotes) -> Result<PathBuf, String> {
+/// (KTD11): no Move runs or is paused, and the new folder can be the
+/// storage folder. The error is the cause, as Settings shows it. Returns
+/// the new folder.
+fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf, String> {
+    if move_open {
+        return Err(crate::managers::processing::MOVE_OPEN.into());
+    }
     let folder = PathBuf::from(folder);
     crate::managers::destination::check_new_folder(Path::new(current), &folder)?;
-    if old_notes == OldNotes::Move {
-        return Err(MOVE_NOT_AVAILABLE.into());
-    }
     Ok(folder)
 }
 
@@ -413,10 +411,12 @@ fn check_change(current: &str, folder: &str, old_notes: OldNotes) -> Result<Path
 /// new folder apply, and this computer's custom prompts merge into them,
 /// or this computer's shared settings go into a folder that has none
 /// (KTD8). Notes that wait for a folder try the new one, and the library
-/// watches the new folder. With Leave them, the library forgets the notes
-/// of the old folder and keeps their files; a busy note is forgotten when
-/// it is free (R7). A note that records during the change saves to the new
-/// folder.
+/// watches the new folder. With Move, the Move journal opens before the
+/// folder changes, and the Move puts each note in the new folder while the
+/// library lists it from the old folder until it moves (R5, R10). With
+/// Leave them, the library forgets the notes of the old folder and keeps
+/// their files; a busy note is forgotten when it is free (R7). A note that
+/// records during the change saves to the new folder.
 #[tauri::command]
 #[specta::specta]
 pub async fn change_storage_folder(
@@ -435,31 +435,67 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     // One change at a time, so two changes never join two folders.
     static CHANGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one_at_a_time = CHANGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let processing = app.try_state::<Arc<ProcessingManager>>();
     let current = settings::get_settings(app).storage_folder;
-    let new = check_change(&current, folder, old_notes)?;
+    let move_open = processing.as_ref().is_some_and(|p| p.move_open());
+    let new = check_change(&current, folder, move_open)?;
     let shared = app.try_state::<Arc<SharedSettingsManager>>();
     if let Some(shared) = &shared {
-        shared.change_folder(Some(new));
+        shared.change_folder(Some(new.clone()));
+    }
+    // The journal opens before the folder changes, so the library keeps
+    // the notes of the old folder in the meantime (KTD10).
+    let moving = old_notes == OldNotes::Move;
+    if moving && let Some(processing) = &processing {
+        let opened = processing.open_move(Path::new(&current), &new);
+        if let Err(e) = opened {
+            if let Some(shared) = &shared {
+                shared.change_folder(settings::get_settings(app).storage_folder());
+            }
+            return Err(e);
+        }
     }
     let set = settings::update_settings(app, |s| {
         s.storage_folder = folder.to_string();
         Ok(())
     });
     if let Err(e) = set {
-        // The shared settings stay with the storage folder.
+        // The shared settings stay with the storage folder, and no note
+        // has moved.
         if let Some(shared) = &shared {
             shared.change_folder(settings::get_settings(app).storage_folder());
+        }
+        if moving && let Some(processing) = &processing {
+            processing.close_move();
         }
         return Err(e);
     }
     log::info!("the storage folder changed");
-    if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+    if let Some(processing) = &processing {
         processing.retry_awaiting();
         processing.forget_outside_roots();
         processing.roots_changed();
+        if moving {
+            processing.start_move();
+        }
     }
     settings::emit_settings_changed(app);
     Ok(())
+}
+
+/// The Move of the notes to the storage folder, or `None` when no Move
+/// runs or is paused.
+#[tauri::command]
+#[specta::specta]
+pub fn move_status(processing: State<'_, Arc<ProcessingManager>>) -> Option<MoveStatus> {
+    processing.move_status()
+}
+
+/// Continue a paused Move (R10, AE13).
+#[tauri::command]
+#[specta::specta]
+pub fn retry_move(processing: State<'_, Arc<ProcessingManager>>) -> Result<(), String> {
+    processing.retry_move()
 }
 
 #[tauri::command]
@@ -654,33 +690,29 @@ mod tests {
 
     const LOCAL: &str = "http://localhost:11434/v1";
 
+    /// KTD11: Change is not available while a Move runs or is paused.
     #[test]
-    fn a_change_of_folder_refuses_move_until_the_move_exists_and_accepts_leave() {
+    fn a_change_of_folder_is_refused_while_a_move_is_open() {
         let dir = tempfile::tempdir().unwrap();
         let (current, new) = (dir.path().join("Notes"), dir.path().join("Disk"));
         std::fs::create_dir_all(&current).unwrap();
         std::fs::create_dir_all(&new).unwrap();
         let (current, new) = (current.to_str().unwrap(), new.to_str().unwrap());
         assert_eq!(
-            check_change(current, new, OldNotes::Move),
-            Err(MOVE_NOT_AVAILABLE.to_string())
+            check_change(current, new, true),
+            Err(crate::managers::processing::MOVE_OPEN.to_string())
         );
-        assert_eq!(
-            check_change(current, new, OldNotes::Leave),
-            Ok(PathBuf::from(new))
-        );
+        assert_eq!(check_change(current, new, false), Ok(PathBuf::from(new)));
     }
 
     #[test]
-    fn a_change_of_folder_gives_the_cause_of_a_refused_folder_first() {
+    fn a_change_of_folder_gives_the_cause_of_a_refused_folder() {
         let dir = tempfile::tempdir().unwrap();
         let current = dir.path().join("Notes");
         std::fs::create_dir_all(&current).unwrap();
         let current = current.to_str().unwrap();
-        for old_notes in [OldNotes::Move, OldNotes::Leave] {
-            let cause = check_change(current, current, old_notes).unwrap_err();
-            assert!(cause.contains("already the storage folder"), "{cause}");
-        }
+        let cause = check_change(current, current, false).unwrap_err();
+        assert!(cause.contains("already the storage folder"), "{cause}");
     }
 
     #[test]

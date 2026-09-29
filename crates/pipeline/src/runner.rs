@@ -370,11 +370,19 @@ impl Runner {
     /// Summarize a saved session again, replacing its `summary.md` (R19,
     /// AE17). Takes its turn with the stages, one at a time (R20c).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
-        let _claim = self.claims.regenerate(session_id).ok_or_else(|| {
-            StageError::Failed(
-                "This note is being deleted, so its summary cannot be made again.".into(),
-            )
-        })?;
+        // While the Move holds the note for its final check, the
+        // regeneration waits (KTD9).
+        let _claim = loop {
+            if let Some(claim) = self.claims.regenerate(session_id) {
+                break claim;
+            }
+            if !self.claims.is_held(session_id) {
+                return Err(StageError::Failed(
+                    "This note is being deleted, so its summary cannot be made again.".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
         let _permit = self
             .permit
             .clone()
@@ -465,7 +473,7 @@ impl Runner {
     /// and the capture manager locks its state and then the store.
     fn guards(&self, session_id: &str) -> Guards {
         Guards {
-            regenerating: self.claims.busy(session_id),
+            regenerating: self.claims.is_regenerating_or_deleting(session_id),
             capture_active: (self.env.suspended)(),
         }
     }
@@ -496,8 +504,10 @@ impl Runner {
         session_id: &str,
         title: &str,
     ) -> Result<FolderRename, StageError> {
-        folder_rename::rename_session(
-            &self.env.store,
+        // The rename waits while the Move holds the note (KTD9).
+        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, session_id);
+        folder_rename::rename_locked(
+            &mut store,
             session_id,
             title,
             &|id| self.claims.busy(id),

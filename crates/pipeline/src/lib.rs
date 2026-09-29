@@ -14,6 +14,7 @@ pub mod folder_rename;
 pub mod follow;
 pub mod join;
 pub mod live;
+pub mod move_notes;
 mod opus_ms;
 pub mod progress;
 pub mod recognition;

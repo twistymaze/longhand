@@ -1964,14 +1964,17 @@ impl CaptureManager {
     /// the store lock (R20). When another computer changed the file since
     /// the editor loaded it, the file stays and the document goes into a
     /// draft beside it. A session id that the store does not hold is
-    /// refused: the app keeps no notes outside a session (R27).
+    /// refused: the app keeps no notes outside a session (R27). While the
+    /// Move holds the note for its final check, the save waits (KTD9):
+    /// `claims` are the processing claims.
     pub fn save_session_notes(
         &self,
         session_id: &str,
         document: &str,
         loaded: Option<&str>,
+        claims: &session_core::jobs::Claims,
     ) -> Result<pipeline::save::NotesSave, CaptureError> {
-        let mut store = self.store();
+        let mut store = pipeline::move_notes::lock_unheld(&self.store, claims, session_id);
         pipeline::save::save_notes(&mut store, session_id, document, loaded)
             .map_err(|e| CaptureError::Other(e.to_string()))
     }

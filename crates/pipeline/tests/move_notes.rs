@@ -1,0 +1,815 @@
+//! The Move (U8, KTD9, KTD10): every note of the old storage folder goes to
+//! the new one, one step at a time, and a lost record at any step gives one
+//! complete copy and one listing. Notes are saved through the real save
+//! stage. A rename that crosses volumes is simulated.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use chrono::{DateTime, FixedOffset};
+use library::reconcile::{Reconciler, Target};
+use library::scan::{Known, ScanOptions};
+use pipeline::move_notes::{self, MARKER, Mover, PassEnd, STAGING_PREFIX, Taken};
+use pipeline::{SharedStore, StageError};
+use session_core::folder::SessionDoc;
+use session_core::jobs::Claims;
+use session_core::{Event, MoveJournal, MovePause, MoveStep, Segment, SessionState, Stage, Store};
+use session_save::{Fs, RealFs};
+
+fn started() -> DateTime<FixedOffset> {
+    DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap()
+}
+
+/// An old and a new storage folder, and the store of one computer.
+struct Folders {
+    _dir: tempfile::TempDir,
+    old: PathBuf,
+    new: PathBuf,
+    working: PathBuf,
+    store: SharedStore,
+    claims: Claims,
+}
+
+fn folders() -> Folders {
+    let dir = tempfile::tempdir().unwrap();
+    let (old, new, working) = (
+        dir.path().join("old"),
+        dir.path().join("new"),
+        dir.path().join("working"),
+    );
+    for path in [&old, &new, &working] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    assert!(library::scan::write_marker(&old));
+    Folders {
+        _dir: dir,
+        old,
+        new,
+        working,
+        store: Arc::new(Mutex::new(Store::open_in_memory().unwrap())),
+        claims: Claims::default(),
+    }
+}
+
+/// Renames that cross devices between the old and the new folder, when
+/// `cross` is set.
+struct Volumes {
+    old: PathBuf,
+    new: PathBuf,
+    cross: bool,
+}
+
+impl Volumes {
+    fn of(f: &Folders, cross: bool) -> Self {
+        Self {
+            old: f.old.clone(),
+            new: f.new.clone(),
+            cross,
+        }
+    }
+
+    fn crosses(&self, from: &Path, to: &Path) -> bool {
+        self.cross
+            && (from.starts_with(&self.old) && to.starts_with(&self.new)
+                || from.starts_with(&self.new) && to.starts_with(&self.old))
+    }
+}
+
+impl Fs for Volumes {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if self.crosses(from, to) {
+            return Err(io::Error::from(io::ErrorKind::CrossesDevices));
+        }
+        RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if self.crosses(from, to) {
+            return Err(io::Error::from(io::ErrorKind::CrossesDevices));
+        }
+        RealFs.rename_new(from, to)
+    }
+}
+
+/// A save whose final rename fails: the save stops with its staged copy.
+struct StopsBeforeFinalRename;
+
+impl Fs for StopsBeforeFinalRename {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealFs.rename(from, to)
+    }
+    fn rename_new(&self, _: &Path, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("stopped before the final rename"))
+    }
+}
+
+fn segment() -> Segment {
+    Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 60_000,
+        wall_start: started(),
+        wall_end: started() + chrono::TimeDelta::minutes(1),
+        audio_file: "audio/segment-01.opus".into(),
+        channels: 1,
+    }
+}
+
+impl Folders {
+    /// Record and process the note `id` with the title `title`, then save
+    /// it through the real save stage into `root`.
+    fn save_with(
+        &self,
+        id: &str,
+        title: &str,
+        root: &Path,
+        fs: &dyn Fs,
+    ) -> Result<PathBuf, StageError> {
+        let segment = segment();
+        let working = self.working.join(id);
+        if self.store.lock().unwrap().session(id).unwrap().is_none() {
+            let mut s = self.store.lock().unwrap();
+            s.create_session(id, started(), None).unwrap();
+            s.put_segment(id, &segment).unwrap();
+            s.set_asr_model(id, "m").unwrap();
+            s.set_notes(id, "first\n").unwrap();
+            s.set_title(id, title, session_core::TitleSource::User)
+                .unwrap();
+            s.apply(
+                id,
+                &Event::UserStop {
+                    at: segment.wall_end,
+                    retained_audio: true,
+                },
+            )
+            .unwrap();
+            s.dequeue_session(id, "test", segment.wall_end).unwrap();
+            drop(s);
+            std::fs::create_dir_all(working.join("audio")).unwrap();
+            std::fs::write(working.join(&segment.audio_file), vec![7u8; 50_000]).unwrap();
+            std::fs::write(
+                working.join("transcript.md"),
+                "# Transcript\n\n- [00:00:01] Speaker 1: We start.\n",
+            )
+            .unwrap();
+            pipeline::checkpoint::mark_complete(&self.store, id, Stage::Verify, 1).unwrap();
+        }
+        pipeline::save::run(
+            &self.store,
+            id,
+            &working,
+            &[segment],
+            Some(root),
+            fs,
+            &pipeline::Unattended,
+        )
+        .map(|saved| saved.path)
+    }
+
+    fn save_note(&self, id: &str, title: &str) -> PathBuf {
+        let path = self.save_with(id, title, &self.old, &RealFs).unwrap();
+        assert_eq!(self.state(id), SessionState::Saved);
+        path
+    }
+
+    fn state(&self, id: &str) -> SessionState {
+        self.store
+            .lock()
+            .unwrap()
+            .session(id)
+            .unwrap()
+            .unwrap()
+            .state
+    }
+
+    fn home(&self, id: &str) -> PathBuf {
+        PathBuf::from(
+            self.store
+                .lock()
+                .unwrap()
+                .session(id)
+                .unwrap()
+                .unwrap()
+                .home_path
+                .unwrap(),
+        )
+    }
+
+    fn step(&self, id: &str) -> Option<MoveStep> {
+        self.store.lock().unwrap().move_step(id).unwrap()
+    }
+
+    fn open(&self) {
+        assert!(move_notes::open(&self.store, &self.old, &self.new).unwrap());
+    }
+
+    fn roots(&self) -> Vec<PathBuf> {
+        move_notes::library_roots(&self.store.lock().unwrap(), Some(self.new.clone()))
+    }
+
+    /// How many times the library lists the note `id`: a scan of the
+    /// library roots gives one entry for each note id.
+    fn listed(&self, id: &str) -> usize {
+        let known = Known::from_records(&self.store.lock().unwrap().sessions().unwrap());
+        let scan = library::scan::scan(&self.roots(), &known, &ScanOptions::default());
+        scan.notes
+            .iter()
+            .filter(|note| note.doc.session_id == id)
+            .count()
+    }
+
+    /// Reconcile the store with a scan of the library roots, as the
+    /// watcher does.
+    fn reconcile(&self) -> library::reconcile::Changes {
+        Reconciler::default()
+            .run(&self.store, &Target::Full(self.roots()), &|_| false)
+            .unwrap()
+    }
+}
+
+fn mover<'a>(f: &'a Folders, fs: &'a dyn Fs) -> Mover<'a> {
+    Mover {
+        store: &f.store,
+        claims: &f.claims,
+        fs,
+        copy: &move_notes::copy_note,
+    }
+}
+
+fn pass(m: &Mover) -> PassEnd {
+    m.pass(&mut |_, _| {}).unwrap()
+}
+
+/// Run passes until the Move is finished.
+fn finish(m: &Mover) {
+    for _ in 0..10 {
+        match pass(m) {
+            PassEnd::Finished => return,
+            PassEnd::Waiting => continue,
+            PassEnd::Paused(pause) => panic!("the move paused: {pause:?}"),
+        }
+    }
+    panic!("the move did not finish");
+}
+
+fn journal(m: &Mover) -> MoveJournal {
+    m.prepare().unwrap().unwrap()
+}
+
+/// Take and record steps of `id` until its step is one that `stop`
+/// accepts. Returns that step.
+fn drive(
+    f: &Folders,
+    m: &Mover,
+    j: &MoveJournal,
+    id: &str,
+    stop: &dyn Fn(&MoveStep) -> bool,
+) -> MoveStep {
+    for _ in 0..10 {
+        let step = f.step(id).unwrap();
+        if stop(&step) {
+            return step;
+        }
+        let Taken::Next(next) = m.step(j, id, &step).unwrap() else {
+            panic!("{id} did not take its step from {step:?}");
+        };
+        f.store.lock().unwrap().set_move_step(id, &next).unwrap();
+    }
+    panic!("{id} did not reach the step");
+}
+
+/// The folders in `root` that hold the note `id`.
+fn folders_of(root: &Path, id: &str) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|path| {
+            std::fs::read_to_string(path.join("session.md"))
+                .ok()
+                .and_then(|text| SessionDoc::parse(&text).ok())
+                .is_some_and(|doc| doc.session_id == id)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+fn staging_left(root: &Path) -> Vec<String> {
+    std::fs::read_dir(root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(STAGING_PREFIX))
+        .collect()
+}
+
+/// The note `id` has one complete copy, in the new folder, and the library
+/// lists it one time.
+fn assert_moved(f: &Folders, id: &str) -> PathBuf {
+    let home = f.home(id);
+    assert_eq!(home.parent(), Some(f.new.as_path()), "{id}");
+    assert_eq!(folders_of(&f.new, id), vec![home.clone()], "{id}");
+    assert!(folders_of(&f.old, id).is_empty(), "{id}");
+    for file in [
+        "session.md",
+        "transcript.md",
+        "notes.md",
+        "audio/segment-01.opus",
+    ] {
+        assert!(home.join(file).is_file(), "{id}: {file}");
+    }
+    assert_eq!(
+        std::fs::read(home.join("audio/segment-01.opus")).unwrap(),
+        vec![7u8; 50_000]
+    );
+    assert!(!home.join(MARKER).exists(), "{id}");
+    assert!(staging_left(&f.new).is_empty());
+    assert_eq!(f.listed(id), 1, "{id}");
+    let changes = f.reconcile();
+    assert!(changes.removed.is_empty(), "{changes:?}");
+    assert_eq!(f.home(id), home);
+    home
+}
+
+fn is_pending(step: &MoveStep) -> bool {
+    matches!(step, MoveStep::Pending)
+}
+fn is_copied(step: &MoveStep) -> bool {
+    matches!(step, MoveStep::Copied { .. })
+}
+fn is_placed(step: &MoveStep) -> bool {
+    matches!(step, MoveStep::Placed { .. })
+}
+fn is_homed(step: &MoveStep) -> bool {
+    matches!(step, MoveStep::Homed { .. })
+}
+
+/// A crash after the step from the first step that `before` accepts, and
+/// before its record: the step runs again from the same record, gives the
+/// same result, and the Move then finishes with one copy.
+fn lost_record(cross: bool, before: fn(&MoveStep) -> bool, label: &str) {
+    let f = folders();
+    let fs = Volumes::of(&f, cross);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    assert_eq!(j.cross_volume, Some(cross));
+    let recorded = drive(&f, &m, &j, "a", &|s| before(s));
+    let after = m.step(&j, "a", &recorded).unwrap();
+    // The note is listed one time while its record is lost.
+    assert_eq!(f.listed("a"), 1, "{label}");
+    let again = m.step(&j, "a", &recorded).unwrap();
+    assert_eq!(again, after, "{label}, cross-volume: {cross}");
+    let Taken::Next(next) = again else {
+        panic!("{label}: {again:?}");
+    };
+    f.store.lock().unwrap().set_move_step("a", &next).unwrap();
+    finish(&m);
+    assert_moved(&f, "a");
+}
+
+#[test]
+fn a_lost_record_after_each_step_on_one_volume_gives_one_copy() {
+    lost_record(false, is_pending, "the rename");
+    lost_record(false, is_placed, "the home change");
+    lost_record(false, is_homed, "the source removal");
+}
+
+#[test]
+fn a_lost_record_after_each_step_across_volumes_gives_one_copy() {
+    lost_record(true, is_pending, "the copy");
+    lost_record(true, is_copied, "the rename into place");
+    lost_record(true, is_placed, "the home change");
+    lost_record(true, is_homed, "the source removal");
+}
+
+#[test]
+fn a_move_on_one_volume_renames_each_note_and_across_volumes_copies_it() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let a = f.save_note("a", "Budget");
+        f.save_note("b", "Planning");
+        f.open();
+        let m = mover(&f, &fs);
+        let mut seen = Vec::new();
+        assert_eq!(m.pass(&mut |_, p| seen.push(p)).unwrap(), PassEnd::Finished);
+        assert_eq!(seen.last().map(|p| (p.moved, p.total)), Some((2, 2)));
+        assert_eq!(assert_moved(&f, "a").file_name(), a.file_name());
+        assert_moved(&f, "b");
+        assert!(f.store.lock().unwrap().move_journal().unwrap().is_none());
+    }
+}
+
+/// KTD9: the Move staging prefix is not the save's, so the launch sweep
+/// keeps a staged copy. The Move removes its own leftovers when it resumes.
+#[test]
+fn a_crash_at_copied_keeps_the_staged_copy_through_the_launch_sweep() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    let MoveStep::Copied { staging, .. } = drive(&f, &m, &j, "a", &|s| is_copied(s)) else {
+        unreachable!();
+    };
+    // A relaunch: the staging sweep runs on every library root.
+    for root in f.roots() {
+        session_save::sweep_staging(&root, |_| true).unwrap();
+    }
+    assert!(staging.join("session.md").is_file());
+    // A copy that a crash stopped before its record is a leftover.
+    let leftover = f.new.join(move_notes::staging_name("gone"));
+    std::fs::create_dir_all(&leftover).unwrap();
+    finish(&m);
+    assert!(!leftover.exists());
+    assert_moved(&f, "a");
+}
+
+/// AE13: a full disk pauses the Move, the partial copy goes, the source
+/// stays, and Retry finishes the Move with no note listed twice.
+#[test]
+fn a_full_disk_pauses_the_move_and_retry_finishes_it() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    let source = f.save_note("a", "Budget");
+    f.open();
+    let full = AtomicBool::new(true);
+    let copy = |from: &Path, to: &Path| -> io::Result<u64> {
+        if full.load(Ordering::SeqCst) {
+            std::fs::create_dir(to)?;
+            std::fs::write(to.join("part"), b"x")?;
+            return Err(io::Error::from(io::ErrorKind::StorageFull));
+        }
+        move_notes::copy_note(from, to)
+    };
+    let m = Mover {
+        store: &f.store,
+        claims: &f.claims,
+        fs: &fs,
+        copy: &copy,
+    };
+    let full_disk = MovePause::DiskFull {
+        folder: f.new.to_string_lossy().into_owned(),
+    };
+    assert_eq!(pass(&m), PassEnd::Paused(full_disk.clone()));
+    assert!(staging_left(&f.new).is_empty());
+    assert!(source.join("audio/segment-01.opus").is_file());
+    assert_eq!(f.home("a"), source);
+    assert_eq!(f.listed("a"), 1);
+    let status = move_notes::status(&f.store.lock().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.journal.pause, Some(full_disk.clone()));
+    // The Move stays paused until Retry.
+    full.store(false, Ordering::SeqCst);
+    assert_eq!(pass(&m), PassEnd::Paused(full_disk));
+    move_notes::retry(&f.store).unwrap();
+    finish(&m);
+    assert_moved(&f, "a");
+}
+
+#[test]
+fn a_new_folder_that_is_not_reachable_pauses_the_move() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    f.open();
+    std::fs::remove_dir_all(&f.new).unwrap();
+    let m = mover(&f, &fs);
+    assert_eq!(
+        pass(&m),
+        PassEnd::Paused(MovePause::NotReachable {
+            folder: f.new.to_string_lossy().into_owned(),
+        })
+    );
+    assert_eq!(f.step("a"), Some(MoveStep::Pending));
+    std::fs::create_dir_all(&f.new).unwrap();
+    move_notes::retry(&f.store).unwrap();
+    finish(&m);
+    assert_moved(&f, "a");
+}
+
+/// A signed-out sync client removes the files and the marker of the old
+/// folder. The notes are not gone, so the Move pauses and drops none.
+#[test]
+fn an_old_folder_with_no_marker_pauses_the_move() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    f.open();
+    std::fs::remove_file(library::scan::marker(&f.old)).unwrap();
+    let m = mover(&f, &fs);
+    assert!(matches!(
+        pass(&m),
+        PassEnd::Paused(MovePause::NotReachable { .. })
+    ));
+    assert_eq!(f.step("a"), Some(MoveStep::Pending));
+}
+
+#[test]
+fn a_note_that_processes_when_the_move_starts_moves_after_processing() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let source = f.save_note("a", "Budget");
+        {
+            let mut s = f.store.lock().unwrap();
+            s.apply(
+                "a",
+                &Event::UserTranscribeAgain {
+                    at: started(),
+                    audio_intact: true,
+                    capture_active: false,
+                    regenerating: false,
+                },
+            )
+            .unwrap();
+            s.dequeue("run", started()).unwrap();
+        }
+        f.open();
+        let m = mover(&f, &fs);
+        assert_eq!(pass(&m), PassEnd::Waiting);
+        assert_eq!(f.step("a"), Some(MoveStep::Pending));
+        assert_eq!(f.home("a"), source);
+        f.store
+            .lock()
+            .unwrap()
+            .apply("a", &Event::TranscribeAgainFailed)
+            .unwrap();
+        finish(&m);
+        assert_moved(&f, "a");
+    }
+}
+
+#[test]
+fn a_note_whose_summary_is_made_again_moves_after_that() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let regeneration = f.claims.regenerate("a").unwrap();
+    assert_eq!(pass(&m), PassEnd::Waiting);
+    assert_eq!(f.step("a"), Some(MoveStep::Pending));
+    drop(regeneration);
+    finish(&m);
+    assert_moved(&f, "a");
+}
+
+/// An edit after the copy and before the final check is in the new copy.
+#[test]
+fn an_edit_after_the_copy_is_in_the_moved_note() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    let source = f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    drive(&f, &m, &j, "a", &|s| is_placed(s));
+    pipeline::save::set_notes(&mut f.store.lock().unwrap(), "a", "edited\n").unwrap();
+    assert!(
+        std::fs::read_to_string(source.join("notes.md"))
+            .unwrap()
+            .contains("edited")
+    );
+    finish(&m);
+    let home = assert_moved(&f, "a");
+    assert!(
+        std::fs::read_to_string(home.join("notes.md"))
+            .unwrap()
+            .contains("edited")
+    );
+    assert_eq!(f.store.lock().unwrap().notes("a").unwrap(), "edited\n");
+}
+
+/// A My Notes edit just after the home change goes to the new folder and
+/// is kept when the source goes.
+#[test]
+fn an_edit_just_after_the_home_change_is_kept() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    drive(&f, &m, &j, "a", &|s| is_homed(s));
+    assert_eq!(f.home("a").parent(), Some(f.new.as_path()));
+    pipeline::save::set_notes(&mut f.store.lock().unwrap(), "a", "after\n").unwrap();
+    finish(&m);
+    let home = assert_moved(&f, "a");
+    assert!(
+        std::fs::read_to_string(home.join("notes.md"))
+            .unwrap()
+            .contains("after")
+    );
+}
+
+/// From the final check to the home change, a note edit waits.
+#[test]
+fn a_note_edit_waits_while_the_move_holds_the_note() {
+    let f = folders();
+    f.save_note("a", "Budget");
+    let hold = f.claims.hold("a").unwrap();
+    let edited = Arc::new(AtomicBool::new(false));
+    let editor = {
+        let (store, claims, edited) = (Arc::clone(&f.store), f.claims.clone(), Arc::clone(&edited));
+        std::thread::spawn(move || {
+            let mut guard = move_notes::lock_unheld(&store, &claims, "a");
+            pipeline::save::set_notes(&mut guard, "a", "later\n").unwrap();
+            edited.store(true, Ordering::SeqCst);
+        })
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!edited.load(Ordering::SeqCst));
+    assert_eq!(f.store.lock().unwrap().notes("a").unwrap(), "first\n");
+    drop(hold);
+    editor.join().unwrap();
+    assert_eq!(f.store.lock().unwrap().notes("a").unwrap(), "later\n");
+}
+
+/// A rename during the Move waits, and the folder takes its name when the
+/// Move is done with it.
+#[test]
+fn a_rename_during_the_move_names_the_moved_folder() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let renamed =
+        pipeline::folder_rename::rename_session(&f.store, "a", "Review", &|_| false, &RealFs)
+            .unwrap();
+    assert_eq!(renamed, pipeline::folder_rename::FolderRename::Later);
+    let m = mover(&f, &fs);
+    finish(&m);
+    let home = assert_moved(&f, "a");
+    assert!(
+        home.to_string_lossy().ends_with("Review"),
+        "{}",
+        home.display()
+    );
+}
+
+#[test]
+fn a_source_that_another_computer_moved_away_leaves_the_move() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let source = f.save_note("a", "Budget");
+        f.open();
+        let elsewhere = f.working.join("elsewhere");
+        std::fs::rename(&source, &elsewhere).unwrap();
+        let m = mover(&f, &fs);
+        assert_eq!(pass(&m), PassEnd::Finished);
+        assert!(f.store.lock().unwrap().move_journal().unwrap().is_none());
+        assert!(folders_of(&f.new, "a").is_empty());
+        assert!(elsewhere.join("session.md").is_file());
+    }
+}
+
+/// KTD10: a save that a crash stopped resumes into the old folder during
+/// the Move. The Move waits for it and moves that note too.
+#[test]
+fn a_note_that_a_resumed_save_puts_in_the_old_folder_also_moves() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        f.save_note("a", "Budget");
+        assert!(
+            f.save_with("b", "Planning", &f.old, &StopsBeforeFinalRename)
+                .is_err()
+        );
+        assert_ne!(f.state("b"), SessionState::Saved);
+        f.open();
+        let m = mover(&f, &fs);
+        assert_eq!(pass(&m), PassEnd::Waiting);
+        assert_moved(&f, "a");
+        // The save resumes: its staged copy is in the old folder, so the
+        // note is saved there, whatever the storage folder is now.
+        let saved = f.save_with("b", "Planning", &f.new, &RealFs).unwrap();
+        assert_eq!(saved.parent(), Some(f.old.as_path()));
+        finish(&m);
+        assert_moved(&f, "b");
+    }
+}
+
+/// AE6: a note recorded during the Move saves to the new folder and is
+/// listed one time.
+#[test]
+fn a_new_recording_during_the_move_saves_to_the_new_folder_once() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let regeneration = f.claims.regenerate("a").unwrap();
+    assert_eq!(pass(&m), PassEnd::Waiting);
+    let b = f.save_with("b", "Planning", &f.new, &RealFs).unwrap();
+    assert_eq!(b.parent(), Some(f.new.as_path()));
+    f.reconcile();
+    assert_eq!(f.listed("b"), 1);
+    assert_eq!(f.listed("a"), 1);
+    drop(regeneration);
+    finish(&m);
+    assert_moved(&f, "a");
+    assert_eq!(f.home("b"), b);
+    assert_eq!(folders_of(&f.new, "b"), vec![b]);
+    assert_eq!(f.listed("b"), 1);
+}
+
+#[test]
+fn a_name_that_is_taken_in_the_new_folder_gives_a_free_name() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let source = f.save_note("a", "Budget");
+        let name = source.file_name().unwrap();
+        let taken = f.new.join(name);
+        std::fs::create_dir_all(&taken).unwrap();
+        std::fs::write(taken.join("mine.txt"), "keep").unwrap();
+        f.open();
+        finish(&mover(&f, &fs));
+        let home = assert_moved(&f, "a");
+        assert_eq!(
+            home.file_name().unwrap().to_string_lossy(),
+            format!("{}-2", name.to_string_lossy())
+        );
+        assert_eq!(
+            std::fs::read_to_string(taken.join("mine.txt")).unwrap(),
+            "keep"
+        );
+    }
+}
+
+/// A note that is in the new folder already gets no second copy.
+#[test]
+fn a_note_that_is_in_the_new_folder_already_is_not_placed_twice() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let source = f.save_note("a", "Budget");
+        let there = f.new.join(source.file_name().unwrap());
+        move_notes::copy_note(&source, &there).unwrap();
+        let expected = std::fs::read_to_string(source.join("notes.md")).unwrap();
+        std::fs::write(there.join("notes.md"), "older\n").unwrap();
+        f.open();
+        finish(&mover(&f, &fs));
+        let home = assert_moved(&f, "a");
+        assert_eq!(home, there);
+        // The final check found the difference and copied the source again.
+        assert_eq!(
+            std::fs::read_to_string(home.join("notes.md")).unwrap(),
+            expected
+        );
+    }
+}
+
+/// After the Move, the old folder is not a library root, and its
+/// `.longhand/` folder stays for another computer that uses it (R21).
+#[test]
+fn after_the_move_the_old_folder_is_not_watched_and_keeps_its_longhand_folder() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    let settings = f.old.join(".longhand").join("settings.json");
+    std::fs::write(&settings, "{}").unwrap();
+    f.open();
+    assert_eq!(f.roots(), vec![f.new.clone(), f.old.clone()]);
+    finish(&mover(&f, &fs));
+    assert_eq!(f.roots(), vec![f.new.clone()]);
+    assert!(library::scan::marker(&f.old).exists());
+    assert!(settings.is_file());
+    assert_moved(&f, "a");
+}
+
+/// KTD11: one journal at a time.
+#[test]
+fn a_second_move_is_refused_while_one_is_open() {
+    let f = folders();
+    f.save_note("a", "Budget");
+    f.open();
+    assert!(!move_notes::open(&f.store, &f.new, &f.old).unwrap());
+}
+
+#[test]
+fn same_contents_compares_every_file_but_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    for d in [&a, &b] {
+        std::fs::create_dir_all(d.join("audio")).unwrap();
+        std::fs::write(d.join("audio/x.opus"), [1, 2, 3]).unwrap();
+        std::fs::write(d.join("notes.md"), "n").unwrap();
+    }
+    std::fs::write(b.join(MARKER), "a").unwrap();
+    assert!(move_notes::same_contents(&a, &b).unwrap());
+    std::fs::write(b.join("audio/x.opus"), [1, 2, 4]).unwrap();
+    assert!(!move_notes::same_contents(&a, &b).unwrap());
+    std::fs::write(b.join("audio/x.opus"), [1, 2, 3]).unwrap();
+    std::fs::write(b.join("extra.md"), "e").unwrap();
+    assert!(!move_notes::same_contents(&a, &b).unwrap());
+}

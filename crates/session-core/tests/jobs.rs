@@ -570,8 +570,8 @@ fn a_session_whose_summary_is_regenerating_is_refused() {
 fn a_regeneration_and_a_delete_exclude_each_other_until_the_claim_is_dropped() {
     let claims = Claims::default();
     let regeneration = claims.regenerate("s").unwrap();
-    assert!(claims.delete("s").is_none());
-    assert!(claims.delete("other").is_some());
+    assert_eq!(claims.delete("s").err(), Some("regenerating"));
+    assert!(claims.delete("other").is_ok());
     assert!(claims.busy("s") && claims.is_regenerating("s"));
     drop(regeneration);
     assert!(!claims.busy("s"));
@@ -581,6 +581,55 @@ fn a_regeneration_and_a_delete_exclude_each_other_until_the_claim_is_dropped() {
     drop(delete);
     assert!(!claims.busy("s"));
     assert!(claims.regenerate("s").is_some());
+}
+
+/// The Move's claims (KTD9): the move claim refuses a delete, and the hold
+/// refuses a regeneration and makes an edit wait until it is released.
+#[test]
+fn the_move_claims_refuse_a_delete_and_a_hold_makes_an_edit_wait() {
+    let claims = Claims::default();
+    let moving = claims.moving("s").unwrap();
+    assert!(claims.moving("s").is_none());
+    assert!(claims.busy("s") && !claims.is_held("s"));
+    assert_eq!(claims.delete("s").err(), Some("moving"));
+    // A regeneration can run while the Move copies: the final check finds
+    // its change.
+    let regeneration = claims.regenerate("s").unwrap();
+    assert!(claims.hold("s").is_none());
+    drop(regeneration);
+    let hold = claims.hold("s").unwrap();
+    assert!(claims.is_held("s"));
+    assert!(claims.regenerate("s").is_none());
+
+    let waited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let waiter = {
+        let (claims, waited) = (claims.clone(), std::sync::Arc::clone(&waited));
+        std::thread::spawn(move || {
+            claims.wait_unheld("s");
+            waited.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!waited.load(std::sync::atomic::Ordering::SeqCst));
+    drop(hold);
+    waiter.join().unwrap();
+    assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
+    drop(moving);
+    assert!(!claims.busy("s"));
+    assert!(claims.moving("s").is_some());
+}
+
+#[test]
+fn a_move_waits_for_a_regeneration_or_a_delete() {
+    let claims = Claims::default();
+    let regeneration = claims.regenerate("s").unwrap();
+    assert!(claims.moving("s").is_none());
+    assert!(claims.is_regenerating_or_deleting("s"));
+    drop(regeneration);
+    let delete = claims.delete("s").unwrap();
+    assert!(claims.moving("s").is_none() && claims.hold("s").is_none());
+    drop(delete);
+    assert!(!claims.is_regenerating_or_deleting("s"));
 }
 
 #[test]
@@ -1546,4 +1595,122 @@ fn adoption_preserves_recognition_snapshot_without_queuing_work() {
         note.recognition_snapshot
     );
     assert!(store.queue().unwrap().is_empty());
+}
+
+/// The Move journal (KTD9): one journal at a time, a Pending row for each
+/// note in the old folder, and a note that the Move works on is not
+/// forgotten.
+#[test]
+fn the_move_journal_holds_the_notes_of_the_old_folder() {
+    use session_core::{MovePause, MoveStep};
+    let d = saved_session();
+    let old = d.home.parent().unwrap().to_path_buf();
+    let new = old.parent().unwrap().join("new");
+    let mut store = d.store.lock().unwrap();
+    assert!(store.move_journal().unwrap().is_none());
+    assert!(store.open_move(&old, &new).unwrap());
+    assert!(!store.open_move(&new, &old).unwrap());
+    let journal = store.move_journal().unwrap().unwrap();
+    assert_eq!(
+        (journal.old_folder, journal.new_folder),
+        (old.clone(), new.clone())
+    );
+    assert_eq!((journal.cross_volume, journal.pause), (None, None));
+    assert_eq!(
+        store.move_notes().unwrap(),
+        vec![("s".to_string(), MoveStep::Pending)]
+    );
+    assert_eq!(store.moving_notes().unwrap(), vec!["s".to_string()]);
+    assert!(!store.add_move_note("s").unwrap());
+
+    let cause = MovePause::DiskFull {
+        folder: new.to_string_lossy().into_owned(),
+    };
+    store.set_move_pause(Some(&cause)).unwrap();
+    assert_eq!(store.move_journal().unwrap().unwrap().pause, Some(cause));
+    store.set_move_pause(None).unwrap();
+    store.set_move_cross_volume(true).unwrap();
+    let journal = store.move_journal().unwrap().unwrap();
+    assert_eq!((journal.cross_volume, journal.pause), (Some(true), None));
+
+    // A note that the Move works on is not forgotten.
+    assert!(!store.forget("s").unwrap());
+    let placed = new.join("2026-09-22 Budget review");
+    let homed = MoveStep::Homed {
+        source: Some(d.home.clone()),
+        path: placed.clone(),
+    };
+    store.set_move_home("s", &placed, &homed).unwrap();
+    assert_eq!(store.move_step("s").unwrap(), Some(homed));
+    assert_eq!(
+        store.session("s").unwrap().unwrap().home_path.as_deref(),
+        placed.to_str()
+    );
+    store.set_move_step("s", &MoveStep::Done).unwrap();
+    assert!(store.moving_notes().unwrap().is_empty());
+    store.close_move().unwrap();
+    assert!(store.move_journal().unwrap().is_none());
+    assert!(store.move_notes().unwrap().is_empty());
+    assert!(store.forget("s").unwrap());
+}
+
+#[test]
+fn a_note_that_the_move_has_copied_is_not_deleted() {
+    use session_core::MoveStep;
+    let d = saved_session();
+    let old = d.home.parent().unwrap().to_path_buf();
+    {
+        let mut store = d.store.lock().unwrap();
+        store.open_move(&old, &old.join("new")).unwrap();
+        let copied = MoveStep::Copied {
+            source: d.home.clone(),
+            staging: old.join("new").join(".longhand-move-s"),
+            replaces: None,
+        };
+        store.set_move_step("s", &copied).unwrap();
+    }
+    let claims = Claims::default();
+    let mut calls = Vec::new();
+    let err =
+        delete_session(&d.store, "s", &d.working, &claims, recording(&mut calls)).unwrap_err();
+    assert!(
+        matches!(err, DeleteError::Busy { state: "moving" }),
+        "{err:?}"
+    );
+    assert!(calls.is_empty());
+    // A Pending note can be deleted: its row leaves the journal.
+    d.store
+        .lock()
+        .unwrap()
+        .set_move_step("s", &MoveStep::Pending)
+        .unwrap();
+    delete_session(&d.store, "s", &d.working, &claims, recording(&mut calls)).unwrap();
+    assert!(d.store.lock().unwrap().move_notes().unwrap().is_empty());
+}
+
+#[test]
+fn a_save_into_the_old_folder_is_found_until_the_note_is_saved() {
+    let mut store = Store::open_in_memory().unwrap();
+    let old = Path::new("/notes/old");
+    store.create_session("s", t(0), None).unwrap();
+    store
+        .put_checkpoint(
+            "s",
+            Stage::Save,
+            "state",
+            r#"{"step":"staged","staging":"/notes/old/.longhand-staging-s","copied":false}"#,
+        )
+        .unwrap();
+    assert_eq!(store.saves_into(old).unwrap(), vec!["s".to_string()]);
+    assert!(
+        store
+            .saves_into(Path::new("/notes/new"))
+            .unwrap()
+            .is_empty()
+    );
+    store.put_segment("s", &segment(0, 0)).unwrap();
+    stop(&mut store, "s", 5);
+    store.dequeue("run", t(6)).unwrap();
+    store.apply("s", &Event::Saved).unwrap();
+    assert!(store.saves_into(old).unwrap().is_empty());
 }

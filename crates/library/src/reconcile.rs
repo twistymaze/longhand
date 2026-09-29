@@ -5,8 +5,9 @@
 //!   is Saved and no stage has claimed it.
 //! - A note in a new folder moves the row's home path there, whatever the
 //!   row's state or claim, so the home path follows a rename by id (R8). A
-//!   row with a rename intent on this computer keeps its home path: this
-//!   computer moves that folder itself.
+//!   row with a rename intent on this computer, or a note that the Move has
+//!   not finished (KTD10), keeps its row as it is: this computer moves that
+//!   folder itself.
 //! - A row whose folder is gone from an available Destination gets a
 //!   pending delete. After [`DELETE_WAIT`] with no folder for its id, the
 //!   row is forgotten, if it is Saved, unclaimed and has no rename intent
@@ -234,11 +235,7 @@ impl Reconciler {
         scan: &LibraryScan,
         claimed: &dyn Fn(&str) -> bool,
     ) -> Result<Vec<Stale>, StoreError> {
-        let intents: HashSet<String> = store
-            .rename_intents()?
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+        let intents = moved_here(store)?;
         let mut stale = Vec::new();
         for note in &scan.notes {
             let id = note.doc.session_id.as_str();
@@ -304,11 +301,7 @@ impl Reconciler {
             .into_iter()
             .map(|record| (record.id.clone(), record))
             .collect();
-        let intents: HashSet<String> = store
-            .rename_intents()?
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+        let intents = moved_here(store)?;
         self.pending.retain(|id, _| records.contains_key(id));
 
         let mut changed = Vec::new();
@@ -385,6 +378,18 @@ impl Reconciler {
         removed.sort();
         Ok(Changes { changed, removed })
     }
+}
+
+/// The rows whose folders this computer moves itself: a folder rename
+/// intent (KTD8), or a note that the Move has not finished (KTD10). The
+/// reconcile keeps their rows as they are.
+fn moved_here(store: &Store) -> Result<HashSet<String>, StoreError> {
+    Ok(store
+        .rename_intents()?
+        .into_iter()
+        .map(|(id, _)| id)
+        .chain(store.moving_notes()?)
+        .collect())
 }
 
 /// A known row that a scan changes, before its folder is read again.
@@ -679,6 +684,54 @@ mod tests {
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
         assert_eq!(changes.changed, vec!["A1".to_string()]);
         assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "theirs\n");
+    }
+
+    /// KTD10: during a Move the note is in both folders for a time. The
+    /// reconcile keeps the row as the Move sets it, as for a rename intent.
+    #[test]
+    fn a_note_that_the_move_works_on_keeps_its_row() {
+        let (root, folder, store, mut reconciler) = adopted();
+        let new = tempfile::tempdir().unwrap();
+        crate::scan::write_marker(new.path());
+        let placed = new.path().join("2026-09-25 0900 Planning");
+        fs::create_dir(&placed).unwrap();
+        fs::copy(folder.join("session.md"), placed.join("session.md")).unwrap();
+        fs::write(placed.join("notes.md"), "placed\n").unwrap();
+        fs::write(folder.join("notes.md"), "theirs\n").unwrap();
+        store
+            .lock()
+            .unwrap()
+            .open_move(root.path(), new.path())
+            .unwrap();
+        fs::remove_dir_all(&folder).unwrap();
+
+        let target = Target::Full(vec![root.path().to_path_buf(), new.path().to_path_buf()]);
+        let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
+        assert!(changes.is_empty(), "{changes:?}");
+        let s = store.lock().unwrap();
+        let record = s.session("A1").unwrap().unwrap();
+        assert_eq!(record.home_path.map(PathBuf::from), Some(folder.clone()));
+        assert_eq!(s.notes("A1").unwrap(), "first\n");
+        drop(s);
+
+        // The pending delete of the old folder does not forget the row.
+        let result = scan_of(root.path(), &store);
+        let later = Instant::now() + DELETE_WAIT * 2;
+        let mut s = store.lock().unwrap();
+        reconciler
+            .reconcile(
+                &mut s,
+                &result,
+                &Coverage::Full,
+                Instant::now(),
+                &never_claimed,
+            )
+            .unwrap();
+        let changes = reconciler
+            .reconcile(&mut s, &result, &Coverage::Full, later, &never_claimed)
+            .unwrap();
+        assert!(changes.removed.is_empty(), "{changes:?}");
+        assert!(s.session("A1").unwrap().is_some());
     }
 
     #[test]

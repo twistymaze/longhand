@@ -286,14 +286,34 @@ async pickStorageFolder() : Promise<Result<string | null, string>> {
  * new folder apply, and this computer's custom prompts merge into them,
  * or this computer's shared settings go into a folder that has none
  * (KTD8). Notes that wait for a folder try the new one, and the library
- * watches the new folder. With Leave them, the library forgets the notes
- * of the old folder and keeps their files; a busy note is forgotten when
- * it is free (R7). A note that records during the change saves to the new
- * folder.
+ * watches the new folder. With Move, the Move journal opens before the
+ * folder changes, and the Move puts each note in the new folder while the
+ * library lists it from the old folder until it moves (R5, R10). With
+ * Leave them, the library forgets the notes of the old folder and keeps
+ * their files; a busy note is forgotten when it is free (R7). A note that
+ * records during the change saves to the new folder.
  */
 async changeStorageFolder(folder: string, oldNotes: OldNotes) : Promise<Result<Settings, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_storage_folder", { folder, oldNotes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The Move of the notes to the storage folder, or `None` when no Move
+ * runs or is paused.
+ */
+async moveStatus() : Promise<MoveStatus | null> {
+    return await TAURI_INVOKE("move_status");
+},
+/**
+ * Continue a paused Move (R10, AE13).
+ */
+async retryMove() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_move") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -794,6 +814,8 @@ liveRecognitionEvent: LiveRecognitionEvent,
 liveTranscriptEvent: LiveTranscriptEvent,
 liveTranscriptStatus: LiveTranscriptStatus,
 modelDownloadEvent: ModelDownloadEvent,
+movePaused: MovePaused,
+moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
@@ -808,6 +830,8 @@ liveRecognitionEvent: "live-recognition-event",
 liveTranscriptEvent: "live-transcript-event",
 liveTranscriptStatus: "live-transcript-status",
 modelDownloadEvent: "model-download-event",
+movePaused: "move-paused",
+moveProgress: "move-progress",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
@@ -1079,6 +1103,45 @@ bundle_size_bytes: number;
  * Every file of the bundle is on disk.
  */
 bundle_complete: boolean }
+/**
+ * Why the Move is paused, with the text that Settings shows.
+ */
+export type MovePauseCause = { kind: MovePauseKind; message: string }
+export type MovePauseKind = "disk_full" | "folder_not_available" | "failed"
+/**
+ * The Move paused (R10).
+ */
+export type MovePaused = { cause: MovePauseCause }
+/**
+ * The progress of the Move, sent after each note and when the state
+ * changes.
+ */
+export type MoveProgress = { moved: number; total: number; state: MoveState }
+/**
+ * What the Move of the notes to a new storage folder does (KTD9).
+ */
+export type MoveState = 
+/**
+ * The Move puts the notes in the new folder.
+ */
+"running" | 
+/**
+ * A note records, saves or is processed: it moves when it is free.
+ */
+"waiting" | 
+/**
+ * A full disk or a folder that is not available stopped the Move.
+ * Retry continues it.
+ */
+"paused" | 
+/**
+ * Every note is in the new folder.
+ */
+"finished"
+/**
+ * The open Move, for Settings > Storage.
+ */
+export type MoveStatus = { old_folder: string; new_folder: string; moved: number; total: number; state: MoveState; cause: MovePauseCause | null }
 /**
  * What a notes save did.
  */
