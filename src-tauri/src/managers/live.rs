@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use asr::{LiveText, PartPolicy, Parts};
+use asr::{LiveText, LiveWord, PartPolicy, Parts};
 use pipeline::live::{
     LiveConfig, LiveEnd, LiveRow, LiveSink, LiveStatus, LiveTap, LiveWorker, Workers,
 };
@@ -445,7 +445,7 @@ impl LiveSink for AppSink {
         .emit(&self.app);
     }
 
-    fn text(&mut self, part: u32, text: &LiveText) {
+    fn text(&mut self, part: u32, text: &LiveText, _word_start: u32, _words: &[LiveWord]) {
         self.part = part;
         self.update(|now| {
             now.current = LiveCurrent {

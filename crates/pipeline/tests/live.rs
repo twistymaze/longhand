@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,6 +37,10 @@ struct Script {
     fail_feed: Mutex<Option<(usize, u64)>>,
     /// Each finish waits for a message on this channel.
     finish_gate: Mutex<Option<mpsc::Receiver<()>>>,
+    /// From this number of clicks, the word at this index has a new text.
+    revise: Mutex<Option<(usize, usize)>>,
+    /// The streams give no timed words for the open part.
+    no_open_words: AtomicBool,
 }
 
 struct Clicker {
@@ -113,20 +117,29 @@ impl LiveStream for ClickStream {
     }
 
     fn open_words(&self) -> Vec<LiveWord> {
+        if self.script.no_open_words.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
         asr::words_from_tokens(&self.tokens(), 0)
     }
 }
 
 impl ClickStream {
-    /// One 50 ms token for each click, in stream time.
+    /// One 50 ms token for each click, in stream time. A revised word has
+    /// the text `rN` in place of `cN`.
     fn tokens(&self) -> Vec<TimedToken> {
+        let revise = *self.script.revise.lock().unwrap();
         self.clicks
             .iter()
             .enumerate()
-            .map(|(n, &at)| TimedToken {
-                text: format!(" c{n}"),
-                start_ms: at / 16,
-                end_ms: at / 16 + 50,
+            .map(|(n, &at)| {
+                let revised =
+                    revise.is_some_and(|(after, index)| self.clicks.len() >= after && n == index);
+                TimedToken {
+                    text: format!(" {}{n}", if revised { 'r' } else { 'c' }),
+                    start_ms: at / 16,
+                    end_ms: at / 16 + 50,
+                }
             })
             .collect()
     }
@@ -156,6 +169,15 @@ fn access(slot: &EngineSlot, script: &Arc<Script>, shutdown: CancellationToken) 
     )
 }
 
+/// One report of the open part's text.
+#[derive(Debug, Clone)]
+struct TextCall {
+    part: u32,
+    text: LiveText,
+    word_start: u32,
+    words: Vec<LiveWord>,
+}
+
 /// Records what the worker reports.
 #[derive(Default, Clone)]
 struct Seen {
@@ -163,6 +185,7 @@ struct Seen {
     saved: Arc<Mutex<Vec<LiveRow>>>,
     models: Arc<Mutex<Vec<Option<String>>>>,
     texts: Arc<AtomicUsize>,
+    calls: Arc<Mutex<Vec<TextCall>>>,
     /// Cancel this when the given number of parts is saved.
     cancel_after: Arc<Mutex<Option<(usize, CancellationToken)>>>,
 }
@@ -174,8 +197,14 @@ impl LiveSink for Seen {
     fn status(&mut self, status: LiveStatus) {
         self.statuses.lock().unwrap().push(status);
     }
-    fn text(&mut self, _: u32, _: &LiveText) {
+    fn text(&mut self, part: u32, text: &LiveText, word_start: u32, words: &[LiveWord]) {
         self.texts.fetch_add(1, Ordering::SeqCst);
+        self.calls.lock().unwrap().push(TextCall {
+            part,
+            text: text.clone(),
+            word_start,
+            words: words.to_vec(),
+        });
     }
     fn saved(&mut self, row: &LiveRow) {
         let mut saved = self.saved.lock().unwrap();
@@ -398,6 +427,155 @@ fn a_stream_error_ends_the_part_and_a_new_stream_goes_on() {
         assert!(near(*got, want, 50), "{got} against {want}");
     }
     assert_eq!(r.script.streams.load(Ordering::SeqCst), 2);
+}
+
+/// The open-part words of `part` that the text calls sent, with each call
+/// applied from its start index.
+fn sent_words(calls: &[TextCall], part: u32) -> Vec<LiveWord> {
+    let mut words = Vec::new();
+    for call in calls.iter().filter(|c| c.part == part) {
+        words.truncate(call.word_start as usize);
+        words.extend(call.words.iter().cloned());
+    }
+    words
+}
+
+fn texts(words: &[LiveWord]) -> Vec<&str> {
+    words.iter().map(|w| w.text.as_str()).collect()
+}
+
+/// One click 200 ms into each second, fed in frames of one second at
+/// 16 kHz, so no word is cut at the end of the audio fed so far.
+fn click_each_second(r: &Run, seconds: u64) {
+    let rate = 16_000;
+    let said: Vec<u64> = (0..seconds).map(|s| s * 1_000 + 200).collect();
+    let audio = clicks(rate, seconds * 1_000, &said);
+    r.run(
+        config(rate),
+        always_voiced(PartPolicy::default()),
+        frames(&audio, rate, 16_000, &[]),
+        LiveEnd::Keep,
+    );
+}
+
+#[test]
+fn each_text_call_sends_only_the_new_open_part_words() {
+    let r = Run::new();
+    click_each_second(&r, 3);
+    let calls = r.seen.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    for (n, call) in calls.iter().enumerate() {
+        assert_eq!(call.part, 0);
+        assert_eq!(call.word_start, n as u32, "{calls:?}");
+        let start_ms = n as u64 * 1_000 + 200;
+        assert_eq!(
+            call.words,
+            vec![LiveWord {
+                start_ms,
+                end_ms: start_ms + 50,
+                text: format!("c{n}"),
+            }]
+        );
+        assert_eq!(call.text.committed, format!("{} clicks", n + 1));
+    }
+    // The saved part has the words that the text calls sent.
+    let rows = r.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].words, sent_words(&calls, 0));
+}
+
+#[test]
+fn a_revised_word_sends_the_words_from_its_index() {
+    let r = Run::new();
+    // The seventh click changes the text of word 5.
+    *r.script.revise.lock().unwrap() = Some((7, 5));
+    click_each_second(&r, 8);
+    let calls = r.seen.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 8, "{calls:?}");
+    assert_eq!(calls[6].word_start, 5);
+    assert_eq!(texts(&calls[6].words), vec!["r5", "c6"]);
+    assert_eq!(calls[7].word_start, 7);
+    assert_eq!(texts(&calls[7].words), vec!["c7"]);
+    let rows = r.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].words, sent_words(&calls, 0));
+}
+
+#[test]
+fn after_a_cut_at_the_limit_the_open_part_words_leave_out_the_replay() {
+    let rate = 16_000;
+    let policy = PartPolicy {
+        min_ms: 1_000,
+        max_ms: 2_000,
+        pause_ms: 600,
+        replay_ms: 500,
+    };
+    // The replay is 1.5 s to 2 s. The click at 1.6 s stays in the first
+    // part; the click at 1.85 s goes to the second part.
+    let audio = clicks(rate, 3_000, &[300, 1_600, 1_850, 2_300]);
+    let r = Run::new();
+    r.run(
+        config(rate),
+        always_voiced(policy),
+        frames(&audio, rate, 320, &[]),
+        LiveEnd::Keep,
+    );
+    let rows = r.rows();
+    assert_eq!(spans(&rows), vec![(0, 2_000), (1_500, 3_000)]);
+    let calls = r.seen.calls.lock().unwrap().clone();
+    let second: Vec<&TextCall> = calls.iter().filter(|c| c.part == 1).collect();
+    assert!(!second.is_empty());
+    assert_eq!(second[0].word_start, 0, "a new part starts at index 0");
+    let sent = sent_words(&calls, 1);
+    let starts: Vec<u64> = sent.iter().map(|w| w.start_ms).collect();
+    assert_eq!(starts, vec![1_850, 2_300], "{sent:?}");
+    assert!(
+        second
+            .iter()
+            .flat_map(|c| &c.words)
+            .all(|w| w.start_ms >= 1_650),
+        "{second:?}"
+    );
+    // A saved part keeps the words that the text calls sent, less the
+    // words that its finish moved to the next part or changed.
+    for row in &rows {
+        let sent = sent_words(&calls, row.part);
+        let row_starts: Vec<u64> = row.words.iter().map(|w| w.start_ms).collect();
+        let sent_starts: Vec<u64> = sent.iter().map(|w| w.start_ms).collect();
+        assert!(
+            sent_starts.starts_with(&row_starts),
+            "{row_starts:?} against {sent_starts:?}"
+        );
+        assert_eq!(
+            texts(&row.words),
+            texts(&sent[..row.words.len()]),
+            "part {}",
+            row.part
+        );
+    }
+}
+
+#[test]
+fn a_stream_without_timed_words_sends_the_text_with_no_words() {
+    let r = Run::new();
+    r.script.no_open_words.store(true, Ordering::SeqCst);
+    click_each_second(&r, 3);
+    let calls = r.seen.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 3, "{calls:?}");
+    for (n, call) in calls.iter().enumerate() {
+        assert_eq!(call.word_start, 0);
+        assert!(call.words.is_empty());
+        assert_eq!(call.text.committed, format!("{} clicks", n + 1));
+    }
+    assert!(
+        r.seen
+            .statuses
+            .lock()
+            .unwrap()
+            .contains(&LiveStatus::Running)
+    );
+    // The saved part still has its words.
+    assert_eq!(r.rows()[0].words.len(), 3);
 }
 
 #[test]
