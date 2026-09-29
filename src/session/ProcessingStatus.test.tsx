@@ -18,6 +18,7 @@ const waiting: SessionDetail = {
   },
   done: ["transcribe", "summarize"],
   current: null,
+  speakers: null,
   windows_done: null,
   windows_total: null,
   failed_stage: null,
