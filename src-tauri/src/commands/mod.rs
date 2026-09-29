@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod build_info;
 pub mod capture;
 pub mod licences;
 pub mod models;

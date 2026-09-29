@@ -4,12 +4,32 @@
 // licence address and the source.
 
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type ReactNode, useState } from "react";
-import { commands, type ModelStatus } from "../bindings";
+import { type ReactNode, useEffect, useState } from "react";
+import { commands, type BuildInfo, type ModelStatus } from "../bindings";
 import { type Acknowledgement, components, type LicenceEntry, personal, technical } from "./acknowledgements";
 import { ChevronIcon, ExternalIcon } from "./icons";
 import { roleLabel } from "./Models";
-import { Group, Pane } from "./ui";
+import { Group, Pane, Row } from "./ui";
+
+/// "Version <version> (<commit>)", or "(local build)" for a build that CI
+/// did not make (R7).
+export function versionText(info: BuildInfo): string {
+  return `Version ${info.version} (${info.commit ?? "local build"})`;
+}
+
+/// The version and commit of the running build, at the top of the pane.
+function BuildVersion() {
+  const [info, setInfo] = useState<BuildInfo | null>(null);
+  useEffect(() => {
+    // A failed call leaves the row empty.
+    commands.buildInfo().then(setInfo, () => {});
+  }, []);
+  return (
+    <Group>
+      <Row label="Longhand" detail={<span className="select-text">{info ? versionText(info) : " "}</span>} />
+    </Group>
+  );
+}
 
 /// The name of a project, as a link that opens its page in the default
 /// browser (R6, KTD8). The webview does not go to the page.
@@ -147,6 +167,7 @@ const modelEntry = (m: ModelStatus): LicenceEntry => ({
 export function About({ models }: { models: ModelStatus[] }) {
   return (
     <Pane title="About">
+      <BuildVersion />
       <Group header="Acknowledgements">
         {personal.map((a) => (
           <AcknowledgementRow key={a.name} entry={a} />

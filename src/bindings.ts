@@ -735,6 +735,12 @@ async openLicences() : Promise<void> {
     await TAURI_INVOKE("open_licences");
 },
 /**
+ * Return the version, the short commit and the track of this build.
+ */
+async buildInfo() : Promise<BuildInfo> {
+    return await TAURI_INVOKE("build_info");
+},
+/**
  * Return the full licence list for the platform of this build.
  */
 async licenceText() : Promise<string> {
@@ -788,6 +794,19 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
+export type BuildInfo = { 
+/**
+ * The full version, for example `0.1.0-preview.20260928143012`.
+ */
+version: string; 
+/**
+ * The short commit of the build. None for a local build.
+ */
+commit: string | null; 
+/**
+ * None for a local build.
+ */
+track: Track | null }
 export type Capabilities = { live_transcription: boolean; live_speaker_analysis: boolean; live_attributed_text: boolean; maximum_speakers: number | null; 
 /**
  * Catalog support is distinct from an installed-package acceptance test.
@@ -1471,6 +1490,10 @@ export type SystemAudioPermission = "allowed" | "denied" |
  * The private check is missing on this macOS.
  */
 "unknown"
+/**
+ * The update track of a build. Each track has its own update manifest.
+ */
+export type Track = "preview"
 /**
  * The transcription model of a Transcribe Again run, for the dialog.
  */

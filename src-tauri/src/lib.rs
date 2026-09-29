@@ -93,6 +93,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::window::open_settings,
             commands::window::close_settings_window,
             commands::window::open_licences,
+            commands::build_info::build_info,
             commands::licences::licence_text,
             commands::webview_log::log_from_webview,
         ])
