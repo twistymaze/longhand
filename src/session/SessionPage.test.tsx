@@ -1135,7 +1135,7 @@ describe("SessionPage", () => {
   describe("live transcript", () => {
     const saidSoFar: LiveTranscript = {
       recognition: [],
-      parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "What we said so far." }],
+      parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "What we said so far." }],
       current: null,
       state: "running",
     };
@@ -1153,6 +1153,9 @@ describe("SessionPage", () => {
           session_id: "rec",
           segment: 0,
           part: 1,
+          offset_ms: 0,
+          word_start: 0,
+          words: [],
           committed: "And then",
           tentative: " we",
         }),
@@ -1166,6 +1169,9 @@ describe("SessionPage", () => {
           session_id: "rec",
           segment: 0,
           part: 1,
+          offset_ms: 0,
+          word_start: 0,
+          words: [],
           committed: "And then we",
           tentative: " agreed",
         }),

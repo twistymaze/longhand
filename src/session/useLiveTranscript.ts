@@ -66,14 +66,16 @@ export function apply(live: LiveView, change: Change): LiveView {
       };
     }
     case "text": {
-      const { segment, part, committed, tentative } = change.data;
+      const { segment, part, offset_ms, committed, tentative, word_start, words } = change.data;
       // A late event of a part that is already saved changes nothing.
       if (live.parts.some((p) => same(p, change.data))) return live;
-      return { ...live, current: { segment, part, committed, tentative } };
+      // Keep the words before word_start, then add the changed words (KTD3).
+      const before = live.current && same(live.current, change.data) ? live.current.words.slice(0, word_start) : [];
+      return { ...live, current: { segment, part, offset_ms, committed, tentative, words: [...before, ...words] } };
     }
     case "saved": {
-      const { segment, part, start_ms, end_ms, text } = change.data;
-      const saved = { segment, part, start_ms, end_ms, text };
+      const { segment, part, offset_ms, start_ms, end_ms, text, words } = change.data;
+      const saved = { segment, part, offset_ms, start_ms, end_ms, text, words };
       return {
         ...live,
         parts: withPart(live.parts, saved),

@@ -26,8 +26,11 @@ const text = (session_id: string, committed: string, tentative = "", part = 0) =
   session_id,
   segment: 0,
   part,
+  offset_ms: 0,
   committed,
   tentative,
+  word_start: 0,
+  words: [],
 });
 
 // happy-dom does no layout: give the scroller a size, so the view can tell
@@ -280,11 +283,11 @@ describe("LiveTranscript", () => {
   test("a view opened after three saved parts shows them from the catch-up, in order", async () => {
     mockLive({
       recognition: [], parts: [
-        { segment: 0, part: 1, start_ms: 240_000, end_ms: 480_000, text: "Second part." },
-        { segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "First part." },
-        { segment: 0, part: 2, start_ms: 480_000, end_ms: 600_000, text: "Third part." },
+        { segment: 0, part: 1, offset_ms: 0, words: [], start_ms: 240_000, end_ms: 480_000, text: "Second part." },
+        { segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "First part." },
+        { segment: 0, part: 2, offset_ms: 0, words: [], start_ms: 480_000, end_ms: 600_000, text: "Third part." },
       ],
-      current: { segment: 0, part: 3, committed: "Now", tentative: " speaking" },
+      current: { segment: 0, part: 3, offset_ms: 0, words: [], committed: "Now", tentative: " speaking" },
       state: "running",
     });
     render(<Harness />);
@@ -304,8 +307,10 @@ describe("LiveTranscript", () => {
         segment: 0,
         part: 0,
         start_ms: 0,
+        offset_ms: 0,
         end_ms: 240_000,
         text: "We agreed the budget.",
+        words: [],
       }),
     );
     expect(screen.getAllByTestId("live-part").map((p) => p.textContent)).toEqual(["We agreed the budget."]);
@@ -322,8 +327,8 @@ describe("LiveTranscript", () => {
     await act(() => tauri.emit("live-transcript-event", text("rec", "Newer text", "", 1)));
     await act(async () =>
       answer({
-        recognition: [], parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "Older part." }],
-        current: { segment: 0, part: 1, committed: "Newer", tentative: "" },
+        recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "Older part." }],
+        current: { segment: 0, part: 1, offset_ms: 0, words: [], committed: "Newer", tentative: "" },
         state: "running",
       }),
     );
@@ -340,7 +345,7 @@ describe("LiveTranscript", () => {
 
   test("a gap shows the paused line, and the text from before the gap stays", async () => {
     const tauri = mockLive({
-      recognition: [], parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "Before the gap." }],
+      recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "Before the gap." }],
       current: null,
       state: "running",
     });
@@ -379,7 +384,7 @@ describe("LiveTranscript", () => {
 
   test("an interrupted recording keeps the text from before the break", async () => {
     mockLive({
-      recognition: [], parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "Before the break." }],
+      recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "Before the break." }],
       current: null,
       state: "ended",
     });
@@ -390,7 +395,7 @@ describe("LiveTranscript", () => {
 
   test("after Stop, the text stays with a line that says the final transcript comes", async () => {
     mockLive({
-      recognition: [], parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "All we said." }],
+      recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "All we said." }],
       current: null,
       state: "ended",
     });
@@ -401,7 +406,7 @@ describe("LiveTranscript", () => {
 
   test("a scroll up stops the follow and shows Scroll to bottom; a click scrolls down and follows again", async () => {
     const tauri = mockLive({
-      recognition: [], parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 240_000, text: "Long text." }],
+      recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "Long text." }],
       current: null,
       state: "running",
     });
@@ -478,8 +483,8 @@ test("live word grouping keeps punctuation and unspaced scripts readable", () =>
 
 test("partial post-recording results do not duplicate the complete live transcript", async () => {
   mockLive({
-    parts: [{ segment: 0, part: 0, start_ms: 0, end_ms: 10000, text: "The first passage." }],
-    current: { segment: 1, part: 0, committed: "The resumed passage.", tentative: "" },
+    parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 10000, text: "The first passage." }],
+    current: { segment: 1, part: 0, offset_ms: 0, words: [], committed: "The resumed passage.", tentative: "" },
     state: "ended",
     recognition: [{ session_id: "rec", generation: "g", epoch: 0, key: "native-window/0/0", phase: "patch", revision: 1,
       rows: [{ start_sample: 0, end_sample: 160000, text: "The first passage.", speaker: "g:0:0:1", text_final: true, speaker_final: true }],

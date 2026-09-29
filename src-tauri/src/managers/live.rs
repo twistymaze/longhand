@@ -7,9 +7,10 @@
 //! runner's engine slot, so this manager gets the workers from the
 //! processing manager once the runner exists.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use asr::{LiveText, LiveWord, PartPolicy, Parts};
+use asr::{LiveText, PartPolicy, Parts};
 use pipeline::live::{
     LiveConfig, LiveEnd, LiveRow, LiveSink, LiveStatus, LiveTap, LiveWorker, Workers,
 };
@@ -96,25 +97,31 @@ pub struct LiveRecognitionRow {
 
 /// The text of the open part changed (KTD10). `committed` does not change
 /// again; `tentative` can change with the next event.
+///
+/// `words` are the timed words of the open part from index `word_start`
+/// (KTD3). The words before `word_start` did not change. A new part starts
+/// at index 0.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct LiveTranscriptEvent {
     pub session_id: String,
     pub segment: u32,
     pub part: u32,
+    /// The start of the segment, in milliseconds from the start of the note.
+    pub offset_ms: u64,
     pub committed: String,
     pub tentative: String,
+    pub word_start: u32,
+    pub words: Vec<LiveWord>,
 }
 
 /// A part of the live transcript was saved. The open part of the next
-/// event starts after it.
+/// event starts after it. The part has the same shape as a part of the
+/// catch-up (KTD4).
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct LivePartSaved {
     pub session_id: String,
-    pub segment: u32,
-    pub part: u32,
-    pub start_ms: u64,
-    pub end_ms: u64,
-    pub text: String,
+    #[serde(flatten)]
+    pub part: LivePartText,
 }
 
 /// What the live worker does now, for the lines of the live view (U8).
@@ -150,24 +157,48 @@ impl From<LiveStatus> for LiveState {
     }
 }
 
-/// One saved part of the live transcript.
+/// One timed word, in milliseconds from the start of its segment.
 #[derive(Serialize, Clone, Type, Debug, PartialEq, Eq)]
-pub struct LivePartText {
-    pub segment: u32,
-    pub part: u32,
+pub struct LiveWord {
     pub start_ms: u64,
     pub end_ms: u64,
     pub text: String,
 }
 
-impl From<&LiveRow> for LivePartText {
-    fn from(row: &LiveRow) -> Self {
+impl From<&asr::LiveWord> for LiveWord {
+    fn from(word: &asr::LiveWord) -> Self {
+        Self {
+            start_ms: word.start_ms,
+            end_ms: word.end_ms,
+            text: word.text.clone(),
+        }
+    }
+}
+
+/// One saved part of the live transcript.
+#[derive(Serialize, Clone, Type, Debug, PartialEq, Eq)]
+pub struct LivePartText {
+    pub segment: u32,
+    pub part: u32,
+    /// The start of the segment, in milliseconds from the start of the note.
+    pub offset_ms: u64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+    /// In milliseconds from the start of the segment.
+    pub words: Vec<LiveWord>,
+}
+
+impl LivePartText {
+    fn new(row: &LiveRow, offset_ms: u64) -> Self {
         Self {
             segment: row.segment,
             part: row.part,
+            offset_ms,
             start_ms: row.start_ms,
             end_ms: row.end_ms,
             text: row.text(),
+            words: row.words.iter().map(LiveWord::from).collect(),
         }
     }
 }
@@ -177,8 +208,13 @@ impl From<&LiveRow> for LivePartText {
 pub struct LiveCurrent {
     pub segment: u32,
     pub part: u32,
+    /// The start of the segment, in milliseconds from the start of the note.
+    pub offset_ms: u64,
     pub committed: String,
     pub tentative: String,
+    /// All timed words of the open part, in milliseconds from the start of
+    /// the segment.
+    pub words: Vec<LiveWord>,
 }
 
 /// The live transcript so far: the catch-up for a tab that opens during
@@ -203,10 +239,15 @@ struct Now {
     failure: Option<LiveRecognitionEvent>,
 }
 
+/// The segment offsets that `start` received, by note and segment. The
+/// open segment has no segment row until capture closes it (KTD4).
+type Offsets = BTreeMap<(String, u32), u64>;
+
 pub struct LiveManager {
     models: Arc<ModelsManager>,
     workers: OnceLock<Workers>,
     now: Arc<Mutex<Option<Now>>>,
+    offsets: Mutex<Offsets>,
 }
 
 impl LiveManager {
@@ -215,7 +256,16 @@ impl LiveManager {
             models,
             workers: OnceLock::new(),
             now: Arc::new(Mutex::new(None)),
+            offsets: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Keep the offset of a segment that starts. Only the offsets of the
+    /// newest note stay: the segments of an earlier note have their rows.
+    fn keep_offset(&self, session_id: &str, segment: u32, offset_ms: u64) {
+        let mut offsets = self.offsets.lock().unwrap_or_else(|e| e.into_inner());
+        offsets.retain(|(id, _), _| id == session_id);
+        offsets.insert((session_id.to_string(), segment), offset_ms);
     }
 
     /// Give the manager its workers, once the runner exists.
@@ -257,13 +307,17 @@ impl LiveManager {
         offset_ms: u64,
         snapshot: Option<models::recognition::ExecutionSpec>,
     ) -> Option<(LiveTap, LiveWorker)> {
+        self.keep_offset(session_id, segment, offset_ms);
         let sink = || AppSink {
             app: app.clone(),
             models: Arc::clone(&self.models),
-            now: Arc::clone(&self.now),
-            session_id: session_id.to_string(),
-            segment,
-            part: 0,
+            report: Report {
+                now: Arc::clone(&self.now),
+                session_id: session_id.to_string(),
+                segment,
+                offset_ms,
+                part: 0,
+            },
         };
         let Some(workers) = self.workers.get() else {
             log::warn!("no live workers are attached; {session_id} is transcribed after Stop");
@@ -309,10 +363,35 @@ impl LiveManager {
         store: &pipeline::SharedStore,
         session_id: &str,
     ) -> Result<LiveTranscript, String> {
+        // A segment row is canonical. The open segment has only the offset
+        // that `start` received.
+        let mut offsets: BTreeMap<u32, u64> = self
+            .offsets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((id, _), _)| id == session_id)
+            .map(|((_, segment), offset)| (*segment, *offset))
+            .collect();
+        let segments = store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .segments(session_id)
+            .map_err(|e| e.to_string())?;
+        offsets.extend(segments.iter().map(|s| (s.index, s.offset_ms)));
         let parts = pipeline::live::rows(store, session_id)
             .map_err(|e| e.to_string())?
             .iter()
-            .map(LivePartText::from)
+            .map(|row| {
+                let offset = offsets.get(&row.segment).copied().unwrap_or_else(|| {
+                    log::warn!(
+                        "no offset is known for segment {} of {session_id}; its live words use 0",
+                        row.segment
+                    );
+                    0
+                });
+                LivePartText::new(row, offset)
+            })
             .collect();
         let now = self
             .now
@@ -340,24 +419,26 @@ impl LiveManager {
 struct AppSink {
     app: AppHandle,
     models: Arc<ModelsManager>,
+    report: Report,
+}
+
+/// Keeps what one worker reported in `Now`, and makes its event payloads.
+struct Report {
     now: Arc<Mutex<Option<Now>>>,
     session_id: String,
     segment: u32,
+    /// The start of the segment, in milliseconds from the start of the note.
+    offset_ms: u64,
     /// The number of the open part.
     part: u32,
 }
 
-impl AppSink {
+impl Report {
     fn update(&self, change: impl FnOnce(&mut Now)) {
         let mut now = self.now.lock().unwrap_or_else(|e| e.into_inner());
         let fresh = || Now {
             session_id: self.session_id.clone(),
-            current: LiveCurrent {
-                segment: self.segment,
-                part: self.part,
-                committed: String::new(),
-                tentative: String::new(),
-            },
+            current: self.empty(self.part),
             state: LiveState::Starting,
             failure: None,
         };
@@ -367,12 +448,68 @@ impl AppSink {
         }
         change(entry);
     }
+
+    fn empty(&self, part: u32) -> LiveCurrent {
+        LiveCurrent {
+            segment: self.segment,
+            part,
+            offset_ms: self.offset_ms,
+            committed: String::new(),
+            tentative: String::new(),
+            words: Vec::new(),
+        }
+    }
+
+    /// Keep the full word list of the open part: the words before
+    /// `word_start`, then `words` (KTD3).
+    fn text(
+        &mut self,
+        part: u32,
+        text: &LiveText,
+        word_start: u32,
+        words: &[asr::LiveWord],
+    ) -> LiveTranscriptEvent {
+        self.part = part;
+        let words: Vec<LiveWord> = words.iter().map(LiveWord::from).collect();
+        self.update(|now| {
+            if now.current.part != part {
+                now.current = self.empty(part);
+            }
+            let current = &mut now.current;
+            current.committed = text.committed.clone();
+            current.tentative = text.tentative.clone();
+            current
+                .words
+                .truncate(usize::try_from(word_start).unwrap_or(usize::MAX));
+            current.words.extend(words.iter().cloned());
+        });
+        LiveTranscriptEvent {
+            session_id: self.session_id.clone(),
+            segment: self.segment,
+            part,
+            offset_ms: self.offset_ms,
+            committed: text.committed.clone(),
+            tentative: text.tentative.clone(),
+            word_start,
+            words,
+        }
+    }
+
+    fn saved(&mut self, row: &LiveRow) -> LivePartSaved {
+        self.part = row.part + 1;
+        let next = self.empty(self.part);
+        self.update(|now| now.current = next);
+        LivePartSaved {
+            session_id: self.session_id.clone(),
+            part: LivePartText::new(row, self.offset_ms),
+        }
+    }
 }
 
 impl LiveSink for AppSink {
     fn interim_snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
         let _ = LiveRecognitionEvent {
-            session_id: self.session_id.clone(),
+            session_id: self.report.session_id.clone(),
             phase: if begin {
                 LiveRecognitionPhase::InterimBegin
             } else {
@@ -389,7 +526,7 @@ impl LiveSink for AppSink {
 
     fn failed(&mut self, message: &str) {
         let failure = LiveRecognitionEvent {
-            session_id: self.session_id.clone(),
+            session_id: self.report.session_id.clone(),
             phase: LiveRecognitionPhase::Failed,
             key: "failure".into(),
             generation: String::new(),
@@ -404,13 +541,14 @@ impl LiveSink for AppSink {
                 speaker_final: false,
             }],
         };
-        self.update(|now| now.failure = Some(failure.clone()));
+        self.report
+            .update(|now| now.failure = Some(failure.clone()));
         let _ = failure.emit(&self.app);
     }
 
     fn snapshot(&mut self, scope: &asr::SpeakerScope, revision: u64, begin: bool) {
         let _ = LiveRecognitionEvent {
-            session_id: self.session_id.clone(),
+            session_id: self.report.session_id.clone(),
             phase: if begin {
                 LiveRecognitionPhase::SnapshotBegin
             } else {
@@ -426,7 +564,7 @@ impl LiveSink for AppSink {
     }
 
     fn recognition(&mut self, block: &session_core::recognition::OutputBlock) {
-        let _ = recognition_event(&self.session_id, block).emit(&self.app);
+        let _ = recognition_event(&self.report.session_id, block).emit(&self.app);
     }
 
     fn model(&mut self, held: Option<&str>) {
@@ -436,56 +574,24 @@ impl LiveSink for AppSink {
 
     fn status(&mut self, status: LiveStatus) {
         let state = LiveState::from(status);
-        self.update(|now| now.state = state);
+        self.report.update(|now| now.state = state);
         let _ = LiveTranscriptStatus {
-            session_id: self.session_id.clone(),
-            segment: self.segment,
+            session_id: self.report.session_id.clone(),
+            segment: self.report.segment,
             state,
         }
         .emit(&self.app);
     }
 
-    fn text(&mut self, part: u32, text: &LiveText, _word_start: u32, _words: &[LiveWord]) {
-        self.part = part;
-        self.update(|now| {
-            now.current = LiveCurrent {
-                segment: self.segment,
-                part,
-                committed: text.committed.clone(),
-                tentative: text.tentative.clone(),
-            };
-        });
-        let _ = LiveTranscriptEvent {
-            session_id: self.session_id.clone(),
-            segment: self.segment,
-            part,
-            committed: text.committed.clone(),
-            tentative: text.tentative.clone(),
-        }
-        .emit(&self.app);
+    fn text(&mut self, part: u32, text: &LiveText, word_start: u32, words: &[asr::LiveWord]) {
+        let _ = self
+            .report
+            .text(part, text, word_start, words)
+            .emit(&self.app);
     }
 
     fn saved(&mut self, row: &LiveRow) {
-        self.part = row.part + 1;
-        let next = self.part;
-        self.update(|now| {
-            now.current = LiveCurrent {
-                segment: row.segment,
-                part: next,
-                committed: String::new(),
-                tentative: String::new(),
-            };
-        });
-        let text = LivePartText::from(row);
-        let _ = LivePartSaved {
-            session_id: self.session_id.clone(),
-            segment: text.segment,
-            part: text.part,
-            start_ms: text.start_ms,
-            end_ms: text.end_ms,
-            text: text.text,
-        }
-        .emit(&self.app);
+        let _ = self.report.saved(row).emit(&self.app);
     }
 }
 
@@ -769,8 +875,10 @@ mod tests {
             current: LiveCurrent {
                 segment: 0,
                 part: 2,
+                offset_ms: 0,
                 committed: committed.into(),
                 tentative: "and".into(),
+                words: vec![],
             },
             state: LiveState::Running,
         }
@@ -1139,6 +1247,275 @@ mod tests {
         block.key = "result/9/row/0".into();
         block.rows[0].id.ordinal += 1;
         assert_ne!(recognition_event("s", &block).key, live.key);
+    }
+
+    fn word(start_ms: u64, text: &str) -> asr::LiveWord {
+        asr::LiveWord {
+            start_ms,
+            end_ms: start_ms + 200,
+            text: text.into(),
+        }
+    }
+
+    fn shown(words: &[LiveWord]) -> Vec<&str> {
+        words.iter().map(|w| w.text.as_str()).collect()
+    }
+
+    fn report(live: &LiveManager, session_id: &str, segment: u32, offset_ms: u64) -> Report {
+        Report {
+            now: Arc::clone(&live.now),
+            session_id: session_id.into(),
+            segment,
+            offset_ms,
+            part: 0,
+        }
+    }
+
+    fn session_row(store: &pipeline::SharedStore, session_id: &str) {
+        store
+            .lock()
+            .unwrap()
+            .create_session(session_id, chrono::Local::now().fixed_offset(), None)
+            .unwrap();
+    }
+
+    fn close_segment(store: &pipeline::SharedStore, session_id: &str, index: u32, offset_ms: u64) {
+        let at = chrono::Local::now().fixed_offset();
+        store
+            .lock()
+            .unwrap()
+            .put_segment(
+                session_id,
+                &session_core::Segment {
+                    index,
+                    offset_ms,
+                    duration_ms: 10_000,
+                    wall_start: at,
+                    wall_end: at,
+                    audio_file: format!("audio/segment-{index:02}.opus"),
+                    channels: 1,
+                },
+            )
+            .unwrap();
+    }
+
+    fn save(store: &pipeline::SharedStore, session_id: &str, segment: u32, part: u32) -> LiveRow {
+        let at = u64::from(part) * 1_000;
+        pipeline::live::save_part(
+            store,
+            session_id,
+            segment,
+            part,
+            &asr::LivePart {
+                start_ms: at,
+                end_ms: at + 1_000,
+                words: vec![word(at, "one"), word(at + 300, "two")],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_saved_part_event_has_the_row_words_and_the_segment_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = manager(dir.path());
+        let store = store();
+        session_row(&store, "a");
+        let row = save(&store, "a", 1, 3);
+        let mut report = report(&live, "a", 1, 90_000);
+
+        let event = report.saved(&row);
+        assert_eq!(event.session_id, "a");
+        assert_eq!(event.part.segment, 1);
+        assert_eq!(event.part.part, 3);
+        assert_eq!(event.part.offset_ms, 90_000);
+        assert_eq!(event.part.text, "one two");
+        assert_eq!(shown(&event.part.words), vec!["one", "two"]);
+        assert_eq!(event.part.words[1].start_ms, 3_300);
+        // The saved event and the catch-up give the same part.
+        live.keep_offset("a", 1, 90_000);
+        let got = live.transcript(&store, "a").unwrap();
+        assert_eq!(got.parts, vec![event.part]);
+    }
+
+    #[test]
+    fn the_catch_up_gives_each_part_the_offset_of_its_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = manager(dir.path());
+        let store = store();
+        session_row(&store, "a");
+        close_segment(&store, "a", 0, 0);
+        close_segment(&store, "a", 1, 60_000);
+        for (segment, part) in [(0, 0), (0, 1), (1, 0)] {
+            save(&store, "a", segment, part);
+        }
+        // The segment row is canonical for a closed segment.
+        live.keep_offset("a", 1, 59_000);
+
+        let got = live.transcript(&store, "a").unwrap();
+        let offsets: Vec<_> = got
+            .parts
+            .iter()
+            .map(|p| (p.segment, p.part, p.offset_ms))
+            .collect();
+        assert_eq!(offsets, vec![(0, 0, 0), (0, 1, 0), (1, 0, 60_000)]);
+        assert!(got.parts.iter().all(|p| shown(&p.words) == ["one", "two"]));
+    }
+
+    #[test]
+    fn the_catch_up_in_the_open_second_segment_uses_the_offset_that_start_received() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = manager(dir.path());
+        let store = store();
+        session_row(&store, "a");
+        live.keep_offset("a", 0, 0);
+        close_segment(&store, "a", 0, 0);
+        save(&store, "a", 0, 0);
+        // Capture writes no row for the open segment until it closes it.
+        live.keep_offset("a", 1, 75_000);
+        save(&store, "a", 1, 0);
+        save(&store, "a", 1, 1);
+        let mut report = report(&live, "a", 1, 75_000);
+        report.text(
+            2,
+            &LiveText {
+                committed: "so".into(),
+                tentative: String::new(),
+            },
+            0,
+            &[word(2_000, "so")],
+        );
+
+        let got = live.transcript(&store, "a").unwrap();
+        let offsets: Vec<_> = got.parts.iter().map(|p| p.offset_ms).collect();
+        assert_eq!(offsets, vec![0, 75_000, 75_000]);
+        assert_eq!(got.current.unwrap().offset_ms, 75_000);
+    }
+
+    #[test]
+    fn the_catch_up_current_has_all_open_part_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = manager(dir.path());
+        let store = store();
+        session_row(&store, "a");
+        let mut report = report(&live, "a", 1, 40_000);
+        let text = |committed: &str| LiveText {
+            committed: committed.into(),
+            tentative: "x".into(),
+        };
+        let first = report.text(
+            0,
+            &text("a b c"),
+            0,
+            &[word(0, "a"), word(300, "b"), word(600, "c")],
+        );
+        assert_eq!(first.word_start, 0);
+        assert_eq!(first.offset_ms, 40_000);
+        // A revision of word 2 and one new word.
+        let second = report.text(
+            0,
+            &text("a b see d"),
+            2,
+            &[word(600, "see"), word(900, "d")],
+        );
+        assert_eq!(second.word_start, 2);
+        assert_eq!(shown(&second.words), vec!["see", "d"]);
+        report.text(0, &text("a b see d e"), 4, &[word(1_200, "e")]);
+
+        let current = live.transcript(&store, "a").unwrap().current.unwrap();
+        assert_eq!((current.segment, current.part), (1, 0));
+        assert_eq!(current.offset_ms, 40_000);
+        assert_eq!(shown(&current.words), vec!["a", "b", "see", "d", "e"]);
+
+        // A saved part starts the next part with no words.
+        save(&store, "a", 1, 0);
+        report.saved(&pipeline::live::segment_rows(&store, "a", 1).unwrap()[0]);
+        report.text(1, &text("f"), 0, &[word(1_500, "f")]);
+        let current = live.transcript(&store, "a").unwrap().current.unwrap();
+        assert_eq!(current.part, 1);
+        assert_eq!(shown(&current.words), vec!["f"]);
+    }
+
+    #[test]
+    fn speaker_catchup_in_the_second_epoch_has_its_latest_complete_revision() {
+        use session_core::recognition::*;
+        let store = store();
+        session_row(&store, "s");
+        pipeline::checkpoint::put(
+            &store,
+            "s",
+            session_core::Stage::Transcribe,
+            "recognition-generation-v1",
+            &"g",
+        )
+        .unwrap();
+        let range = SampleRange {
+            start: 0,
+            end: 16000,
+        };
+        let commit = |block: OutputBlock| {
+            store
+                .lock()
+                .unwrap()
+                .commit_recognition("s", &block)
+                .unwrap();
+        };
+        for (epoch, revisions, complete) in [(0u64, 1..=1u64, 1u64), (1, 1..=3, 2)] {
+            let scope = SpeakerScope {
+                generation: "g".into(),
+                epoch,
+            };
+            for revision in revisions {
+                commit(OutputBlock {
+                    key: format!("nemo/{epoch:020}/turn{revision}/0"),
+                    scope: scope.clone(),
+                    revision,
+                    coverage: Coverage {
+                        received: Some(range),
+                        computed: Some(range),
+                        provisional: Some(range),
+                        committed: None,
+                    },
+                    rows: vec![],
+                    speakers: vec![SpeakerTurn {
+                        range,
+                        timing: TimingPrecision::NativeSegment,
+                        speaker: SpeakerKey {
+                            scope: scope.clone(),
+                            input_start_sample: 0,
+                            local_id: revision as u32,
+                        },
+                        finality: Finality::Provisional,
+                    }],
+                });
+            }
+            commit(OutputBlock {
+                key: format!("nemo/{epoch:020}/turn-commit"),
+                scope,
+                revision: complete,
+                coverage: Coverage::default(),
+                rows: vec![],
+                speakers: vec![],
+            });
+        }
+        let got = recognition_catchup(&store, "s").unwrap();
+        let second: Vec<_> = got.iter().filter(|event| event.epoch == 1).collect();
+        assert_eq!(
+            second.iter().map(|event| event.phase).collect::<Vec<_>>(),
+            vec![
+                LiveRecognitionPhase::SnapshotBegin,
+                LiveRecognitionPhase::SnapshotBatch,
+                LiveRecognitionPhase::SnapshotEnd
+            ]
+        );
+        assert!(second.iter().all(|event| event.revision == 2));
+        assert!(
+            second[1].rows[0]
+                .speaker
+                .as_ref()
+                .unwrap()
+                .ends_with(":1:0:2")
+        );
     }
 
     #[test]
