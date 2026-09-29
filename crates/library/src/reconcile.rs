@@ -184,7 +184,10 @@ impl Reconciler {
             claimed,
             &rereads,
         )?;
-        let noted = self.status.apply(&result, &coverage, &store.sessions()?);
+        let moving: HashSet<String> = store.moving_notes()?.into_iter().collect();
+        let noted = self
+            .status
+            .apply(&result, &coverage, &store.sessions()?, &moving);
         // A file that changed in a note folder can leave the row as it is,
         // for example a new summary.md. The note is reported as changed, so
         // an open note page reads its documents again.

@@ -66,12 +66,16 @@ impl LibraryStatus {
     }
 
     /// Apply a scan. `records` are the rows after the reconcile of the
-    /// scan. Returns the ids whose status changed, sorted.
+    /// scan. `moving` holds the notes that the Move has not finished
+    /// (KTD10): such a note can be in the old and the new folder, and that
+    /// other folder is not another version (R6). Returns the ids whose
+    /// status changed, sorted.
     pub fn apply(
         &self,
         scan: &LibraryScan,
         coverage: &Coverage,
         records: &[SessionRecord],
+        moving: &HashSet<String>,
     ) -> Vec<String> {
         let mut inner = self.lock();
         let mut changed = HashSet::new();
@@ -102,12 +106,17 @@ impl LibraryStatus {
 
         let mut found: HashMap<String, (PathBuf, NoteStatus)> = HashMap::new();
         for note in &scan.notes {
+            let duplicates: &[PathBuf] = if moving.contains(&note.doc.session_id) {
+                &[]
+            } else {
+                &note.duplicate_folders
+            };
             let status = NoteStatus {
                 waiting: note.waiting.clone(),
                 other_versions: note
                     .conflict_copies
                     .iter()
-                    .chain(&note.duplicate_folders)
+                    .chain(duplicates)
                     .cloned()
                     .collect(),
                 unreadable: false,

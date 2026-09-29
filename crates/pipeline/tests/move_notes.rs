@@ -405,6 +405,54 @@ fn a_move_on_one_volume_renames_each_note_and_across_volumes_copies_it() {
     }
 }
 
+/// While a note is in both folders, the library does not show its other
+/// folder as another version of the note (R6). After the Move, a second
+/// folder with the note's id shows again.
+#[test]
+fn a_note_that_the_move_placed_shows_no_other_version() {
+    // Across volumes, the copy is placed before the source goes.
+    {
+        let f = folders();
+        let fs = Volumes::of(&f, true);
+        f.save_note("a", "Budget");
+        f.open();
+        let m = mover(&f, &fs);
+        let j = journal(&m);
+        let MoveStep::Placed { path, .. } = drive(&f, &m, &j, "a", &|s| is_placed(s)) else {
+            unreachable!();
+        };
+        assert!(path.join("session.md").is_file());
+        assert!(f.home("a").join("session.md").is_file(), "in both folders");
+        let status = Arc::new(library::status::LibraryStatus::default());
+        let mut reconciler = Reconciler::default().with_status(Arc::clone(&status));
+        reconciler
+            .run(&f.store, &Target::Full(f.roots()), &|_| false)
+            .unwrap();
+        assert_eq!(status.note("a").other_versions, Vec::<PathBuf>::new());
+
+        finish(&m);
+        let moved = assert_moved(&f, "a");
+        let copy = f.new.join("Budget copy");
+        copy_folder(&moved, &copy);
+        reconciler
+            .run(&f.store, &Target::Full(f.roots()), &|_| false)
+            .unwrap();
+        assert_eq!(status.note("a").other_versions, [copy]);
+    }
+}
+
+fn copy_folder(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_folder(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
 /// KTD9: the Move staging prefix is not the save's, so the launch sweep
 /// keeps a staged copy. The Move removes its own leftovers when it resumes.
 #[test]

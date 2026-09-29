@@ -147,9 +147,54 @@ pub fn record_session(
     model: Option<&str>,
     segments: &[(u32, Vec<f32>)],
 ) {
+    record_session_with_prompt(store, root, id, stopped_at, model, segments, None);
+}
+
+/// [`queue_session`] for a note that recorded `prompt` as its active
+/// summary prompt at the start (KTD15).
+pub fn queue_session_with_prompt(
+    store: &SharedStore,
+    root: &Path,
+    id: &str,
+    stopped_at: i64,
+    model: Option<&str>,
+    segments: &[(u32, Vec<f32>)],
+    prompt: &session_core::PromptSnapshot,
+) {
+    record_session_with_prompt(store, root, id, stopped_at, model, segments, Some(prompt));
+    stop_session(store, id, stopped_at);
+}
+
+fn record_session_with_prompt(
+    store: &SharedStore,
+    root: &Path,
+    id: &str,
+    stopped_at: i64,
+    model: Option<&str>,
+    segments: &[(u32, Vec<f32>)],
+    prompt: Option<&session_core::PromptSnapshot>,
+) {
     let dir = root.join(id);
     let mut s = store.lock().unwrap();
-    s.create_session(id, at(stopped_at - 100), None).unwrap();
+    match prompt {
+        None => s.create_session(id, at(stopped_at - 100), None).unwrap(),
+        Some(prompt) => {
+            let model = session_core::RecordingModel {
+                asr_model: model.unwrap_or("m").into(),
+                live_transcript: false,
+            };
+            s.start_session_with_recognition(
+                id,
+                at(stopped_at - 100),
+                None,
+                &model,
+                &session_core::CaptureChoice::default(),
+                None,
+                Some(prompt),
+            )
+            .unwrap();
+        }
+    }
     let mut offset = 0;
     for (rate, audio) in segments {
         let segment = write_segment(

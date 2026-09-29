@@ -89,7 +89,9 @@ pub trait EngineProvider: Send + Sync {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
     /// A snapshot of the active summary prompt, read fresh for each
     /// summarize stage like the endpoint. A run that saved a snapshot
-    /// before uses its saved one (KTD4).
+    /// before uses its saved one (KTD4). The first automatic summary of a
+    /// note that recorded its prompt at the start uses that prompt instead
+    /// (KTD15). Summarize Again always uses this prompt.
     fn summary_prompt(&self) -> summarize::Prompt;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
@@ -1095,13 +1097,15 @@ fn execute(
         Stage::Summarize => {
             let endpoint = endpoint(env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
+            let prompt = first_summary_prompt(&env.store, id)?
+                .unwrap_or_else(|| env.engines.summary_prompt());
             summarize::run(
                 &env.store,
                 id,
                 &dir,
                 segments,
                 endpoint,
-                env.engines.summary_prompt(),
+                prompt,
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 control,
                 &mut |done, total| {
@@ -1150,6 +1154,25 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
         EndpointProblem::Locked(message) => StageError::Blocked(message),
         EndpointProblem::Unconfigured(message) => StageError::Failed(message),
     })
+}
+
+/// The prompt of the note's first automatic summary: the active prompt
+/// when the note started (KTD15). `None` for a note with no snapshot, and
+/// for a Transcribe Again run, which the user starts later, as Summarize
+/// Again. Those use the active prompt.
+fn first_summary_prompt(
+    store: &SharedStore,
+    id: &str,
+) -> Result<Option<summarize::Prompt>, StageError> {
+    let store = lock(store);
+    if store.transcribe_again_marks(id)?.model.is_some() {
+        return Ok(None);
+    }
+    Ok(store.prompt_snapshot(id)?.map(|p| summarize::Prompt {
+        id: p.id,
+        name: p.name,
+        text: p.text,
+    }))
 }
 
 /// Empty `slot` when it holds `model`. A slot that a stage holds now stays

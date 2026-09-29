@@ -1043,6 +1043,12 @@ impl ProcessingManager {
         library_roots(&self.app, &self.store)
     }
 
+    /// The storage folder, whose `.longhand/` folder holds the shared
+    /// settings (KTD13).
+    fn storage_folder(&self) -> Option<std::path::PathBuf> {
+        settings::get_settings(&self.app).storage_folder()
+    }
+
     /// Forget the rows of the notes that are in no library root, and tell
     /// the surface. A busy note stays until a later call: each library
     /// reconcile makes this call again (R7).
@@ -1063,8 +1069,10 @@ impl ProcessingManager {
         let claims = self.runner.claims().clone();
         let events = self.app.clone();
         let app = self.app.clone();
+        let reader = self.app.clone();
         let started = LibraryWatcher::start(
             self.roots(),
+            self.storage_folder(),
             reconciler,
             Box::new(move |target, reconciler| {
                 let claimed = |id: &str| claims.busy(id);
@@ -1079,6 +1087,17 @@ impl ProcessingManager {
                     changes.removed.dedup();
                 }
                 Ok(changes)
+            }),
+            // On the watcher thread, never the main thread: a read can
+            // wait for an online-only file (KTD13, R20).
+            Box::new(move || {
+                if let Some(shared) =
+                    reader.try_state::<Arc<crate::managers::shared::SharedSettingsManager>>()
+                    && shared.reread()
+                {
+                    log::info!("shared settings: another computer changed them");
+                    settings::emit_settings_changed(&reader);
+                }
             }),
             Box::new(move |changes| emit_library_changed(&events, changes)),
             Timing::default(),
@@ -1105,7 +1124,7 @@ impl ProcessingManager {
     pub fn roots_changed(&self) {
         let library = self.library.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(watcher) = &library.watcher {
-            watcher.set_roots(self.roots());
+            watcher.set_roots(self.roots(), self.storage_folder());
         }
     }
 

@@ -243,6 +243,17 @@ struct Inner {
     /// change of folder.
     read: bool,
     view: SharedView,
+    /// Goes up by one at each join and each change. A read that runs with
+    /// no lock held keeps its result only when no join or change came
+    /// during the read (KTD13).
+    generation: u64,
+}
+
+/// A read of the shared files that runs with no lock held (KTD13).
+struct PendingRead {
+    root: PathBuf,
+    generation: u64,
+    cache: Option<Cache>,
 }
 
 /// The shared settings of the storage folder (KTD7).
@@ -267,6 +278,7 @@ impl SharedSettingsManager {
                 root,
                 read: false,
                 view,
+                generation: 0,
             }),
         }
     }
@@ -295,6 +307,7 @@ impl SharedSettingsManager {
     /// read-only. Returns whether the view changed.
     pub fn change_folder(&self, root: Option<PathBuf>) -> bool {
         let mut inner = self.lock();
+        inner.generation += 1;
         let before = snapshot_of(&inner);
         inner.root = root;
         inner.read = false;
@@ -306,6 +319,59 @@ impl SharedSettingsManager {
                 Availability::MissingFile,
             );
         }
+        snapshot_of(&inner) != before
+    }
+
+    /// Read the shared files again, after a file event in the storage
+    /// folder's `.longhand/` folder or at the full scan (KTD13, R20).
+    /// Returns whether the view changed. A read that gives the same view as
+    /// before, such as the read after this computer's own change, returns
+    /// false. This never writes into the storage folder, and it does
+    /// nothing before the first join. It holds no lock while it reads the
+    /// storage folder, so a read that waits for an online-only file does
+    /// not stop [`SharedSettingsManager::snapshot`]. Call it off the main
+    /// thread.
+    pub fn reread(&self) -> bool {
+        let Some(read) = self.begin_read() else {
+            return false;
+        };
+        let loaded = view::load(&read.root, read.cache.as_ref());
+        self.finish_read(read, loaded)
+    }
+
+    fn begin_read(&self) -> Option<PendingRead> {
+        let (root, generation) = {
+            let inner = self.lock();
+            // Before the first join, the join reads the folder.
+            if !inner.read {
+                return None;
+            }
+            (inner.root.clone()?, inner.generation)
+        };
+        Some(PendingRead {
+            root,
+            generation,
+            cache: cache::read_cache(&self.cache_dir),
+        })
+    }
+
+    /// Keep the result of `read`, unless a join or a change came during
+    /// the read: that result is newer.
+    fn finish_read(&self, read: PendingRead, loaded: view::Loaded) -> bool {
+        let mut inner = self.lock();
+        if inner.generation != read.generation || inner.root.as_ref() != Some(&read.root) {
+            return false;
+        }
+        if let Some(cache) = &loaded.cache
+            && let Err(e) = cache::write_cache(&self.cache_dir, cache)
+        {
+            log::warn!(
+                "shared settings: cannot write the cache in {}: {e}",
+                self.cache_dir.display()
+            );
+        }
+        let before = snapshot_of(&inner);
+        inner.view = loaded.view;
         snapshot_of(&inner) != before
     }
 
@@ -394,6 +460,7 @@ impl SharedSettingsManager {
     /// join, and `op` runs again (KTD8).
     fn change<T>(&self, op: impl Fn(&Path) -> Result<T, Failure>) -> Result<T, String> {
         let mut inner = self.lock();
+        inner.generation += 1;
         let Some(root) = inner.root.clone() else {
             return Err(ReadOnlyCause::NoStorageFolder.message().into());
         };
@@ -413,6 +480,7 @@ impl SharedSettingsManager {
     /// folder when the cache came from another folder, or from the local
     /// store of a version before shared settings (R21).
     fn join_locked(&self, inner: &mut Inner, kind: Option<JoinKind>) -> bool {
+        inner.generation += 1;
         let Some(root) = inner.root.clone() else {
             return false;
         };
@@ -485,7 +553,7 @@ fn topic_summary() -> summarize::Prompt {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use serde_json::{Value, json};
     use summarize::prompts::PLAY_BY_PLAY_ID;
@@ -970,6 +1038,127 @@ mod tests {
         // The old folder keeps its copy (R21).
         assert_eq!(prompt_files(old.path()).len(), 2);
         assert!(file::settings_path(old.path()).exists());
+    }
+
+    /// Everything in `root`, with the bytes of each file.
+    fn tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut folders = vec![root.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path.clone());
+                    files.push((path, Vec::new()));
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    files.push((path, bytes));
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn a_read_shows_a_prompt_that_another_computer_changed() {
+        // AE2, R14, R20: B reads A's new prompt text and active prompt
+        // while it runs.
+        let folder = TempDir::new().unwrap();
+        let (a, b) = (Computer::new(), Computer::new());
+        let a = a.manager(Some(folder.path()));
+        a.join_at_launch();
+        let id = a.create_prompt().unwrap();
+        a.rename_prompt(&id, "Recap").unwrap();
+        let b = b.manager(Some(folder.path()));
+        b.join_at_launch();
+        assert!(!b.reread(), "nothing changed since the join");
+
+        a.set_prompt_text(&id, "New recap text.").unwrap();
+        let before = tree(folder.path());
+        assert!(b.reread());
+        assert_eq!(tree(folder.path()), before, "a read never writes");
+        let settings = settings_of(&b);
+        let recap = settings
+            .summary_prompts
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(recap.text, "New recap text.");
+
+        a.activate_prompt(&id).unwrap();
+        assert!(b.reread());
+        assert_eq!(settings_of(&b).active_summary_prompt, id);
+        assert!(!b.reread());
+    }
+
+    #[test]
+    fn a_read_after_this_computers_own_change_gives_no_change() {
+        // KTD13: the event of this computer's own write causes no loop.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        assert!(!manager.reread());
+        let id = manager.create_prompt().unwrap();
+        manager.set_prompt_text(&id, "Mine.").unwrap();
+        assert!(!manager.reread());
+    }
+
+    #[test]
+    fn a_read_when_the_folder_goes_away_keeps_the_prompts_and_is_read_only() {
+        // R16: the view comes from the cache.
+        let parent = TempDir::new().unwrap();
+        let folder = parent.path().join("External");
+        std::fs::create_dir(&folder).unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(&folder));
+        manager.join_at_launch();
+        let id = manager.create_prompt().unwrap();
+        manager.rename_prompt(&id, "Recap").unwrap();
+
+        std::fs::rename(&folder, parent.path().join("Elsewhere")).unwrap();
+        assert!(manager.reread());
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.shared.availability,
+            read_only(ReadOnlyCause::FolderNotAvailable)
+        );
+        assert_eq!(names(&settings), ["Recap"]);
+        assert!(!manager.reread());
+
+        std::fs::rename(parent.path().join("Elsewhere"), &folder).unwrap();
+        assert!(manager.reread());
+        assert!(available(&manager));
+    }
+
+    #[test]
+    fn a_read_before_the_first_join_or_with_no_folder_does_nothing() {
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        assert!(!manager.reread());
+        assert!(!file::settings_path(folder.path()).exists());
+        assert_eq!(
+            manager.snapshot().availability,
+            read_only(ReadOnlyCause::NotReadYet)
+        );
+        assert!(!computer.manager(None).reread());
+    }
+
+    #[test]
+    fn a_read_that_a_change_passes_does_not_replace_the_view_of_the_change() {
+        // The read runs with no lock held. A change during the read wins.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let started = manager.begin_read().unwrap();
+        let loaded = view::load(&started.root, started.cache.as_ref());
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        assert!(!manager.finish_read(started, loaded));
+        assert!(!settings_of(&manager).live_transcript);
     }
 
     #[test]

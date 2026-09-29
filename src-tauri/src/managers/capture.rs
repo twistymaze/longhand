@@ -1120,6 +1120,9 @@ impl CaptureManager {
                 return Err(e);
             }
         };
+        // A change of the active prompt during the recording applies from
+        // the next note (R20, KTD15).
+        let prompt = prompt_snapshot(&settings);
         let stopped = match self.store().start_session_with_recognition(
             &id,
             started,
@@ -1127,6 +1130,7 @@ impl CaptureManager {
             &model,
             &capture,
             Some(&snapshot),
+            Some(&prompt),
         ) {
             Ok(stopped) => stopped,
             Err(e) => {
@@ -2836,6 +2840,16 @@ fn sleep_unless(cancel: &CancellationToken, duration: Duration) -> bool {
     false
 }
 
+/// The active summary prompt that a note records when it starts (KTD15).
+fn prompt_snapshot(settings: &Settings) -> session_core::PromptSnapshot {
+    let prompt = settings.active_summary_prompt_snapshot();
+    session_core::PromptSnapshot {
+        id: prompt.id,
+        name: prompt.name,
+        text: prompt.text,
+    }
+}
+
 /// Stop a segment whose session never came to exist, discarding its audio.
 fn abandon(active: ActiveSegment) {
     active.stop.cancel();
@@ -2883,6 +2897,7 @@ mod tests {
                 &recording_model(&settings),
                 &CaptureChoice::default(),
                 Some(&serde_json::to_value(&spec).unwrap()),
+                None,
             )
             .unwrap();
         let store = Arc::new(Mutex::new(store));
@@ -2891,6 +2906,28 @@ mod tests {
             Some(spec)
         );
         assert!(opening_recognition(&store, "absent", None).is_err());
+    }
+
+    #[test]
+    fn the_prompt_snapshot_is_the_active_prompt_at_the_start() {
+        // KTD15: the id, the name and the text of the active prompt.
+        let mut settings = Settings::default();
+        settings.summary_prompts = vec![settings::SummaryPrompt {
+            id: "b1".into(),
+            name: "Standup".into(),
+            text: "Write a standup.".into(),
+        }];
+        settings.active_summary_prompt = "b1".into();
+        assert_eq!(
+            prompt_snapshot(&settings),
+            session_core::PromptSnapshot {
+                id: "b1".into(),
+                name: "Standup".into(),
+                text: "Write a standup.".into(),
+            }
+        );
+        let topic = summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap();
+        assert_eq!(prompt_snapshot(&Settings::default()).text, topic.text);
     }
 
     #[test]
