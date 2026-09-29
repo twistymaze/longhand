@@ -224,6 +224,16 @@ struct PendingRead {
     cache: Option<Cache>,
 }
 
+/// How [`SharedSettingsManager::reread`] starts.
+enum ReadStart {
+    /// No storage folder is set, or no join ran yet.
+    Nothing,
+    /// The cache came from another folder, so the read joined the folder.
+    /// The value tells whether the view changed.
+    Joined(bool),
+    Read(PendingRead),
+}
+
 /// The shared settings of the storage folder (KTD7).
 pub struct SharedSettingsManager {
     /// The folder of the local cache (KTD6).
@@ -312,35 +322,50 @@ impl SharedSettingsManager {
     /// folder's `.longhand/` folder or at the full scan (KTD13, R20).
     /// Returns whether the view changed. A read that gives the same view as
     /// before, such as the read after this computer's own change, returns
-    /// false. This never writes into the storage folder, and it does
-    /// nothing before the first join. It holds no lock while it reads the
-    /// storage folder, so a read that waits for an online-only file does
-    /// not stop [`SharedSettingsManager::snapshot`]. Call it off the main
-    /// thread.
+    /// false. A read of a folder that this computer joined never writes
+    /// into it, and a read does nothing before the first join. It holds
+    /// no `inner` lock while it reads the storage folder, so a read that
+    /// waits for an online-only file does not stop
+    /// [`SharedSettingsManager::snapshot`]. Call it off the main thread.
+    ///
+    /// When the cache did not come from this folder, the read joins the
+    /// folder instead (R21, R22). The join at launch or after a change of
+    /// folder did not merge the cache when the folder was not available.
+    /// A plain read would replace the cache, and this computer's old
+    /// prompts would be lost.
     pub fn reread(&self) -> bool {
-        let Some(read) = self.begin_read() else {
-            return false;
+        let read = match self.begin_read() {
+            ReadStart::Nothing => return false,
+            ReadStart::Joined(changed) => return changed,
+            ReadStart::Read(read) => read,
         };
         let loaded = view::load(&read.root, read.cache.as_ref());
         self.finish_read(read, loaded)
     }
 
-    fn begin_read(&self) -> Option<PendingRead> {
+    fn begin_read(&self) -> ReadStart {
+        // A read that starts during a change starts after it, so the read
+        // sees the files as the change left them.
+        let _writer = self.writer();
         let (root, generation) = {
-            // A read that starts during a change starts after it, so the
-            // read sees the files as the change left them.
-            let _writer = self.writer();
             let inner = self.lock();
             // Before the first join, the join reads the folder.
             if !inner.read {
-                return None;
+                return ReadStart::Nothing;
             }
-            (inner.root.clone()?, inner.generation)
+            let Some(root) = inner.root.clone() else {
+                return ReadStart::Nothing;
+            };
+            (root, inner.generation)
         };
-        Some(PendingRead {
+        let cache = cache::read_cache(&self.cache_dir);
+        if cache.as_ref().is_some_and(|c| c.source != root) {
+            return ReadStart::Joined(self.join(None));
+        }
+        ReadStart::Read(PendingRead {
             root,
             generation,
-            cache: cache::read_cache(&self.cache_dir),
+            cache,
         })
     }
 
@@ -1147,6 +1172,41 @@ mod tests {
     }
 
     #[test]
+    fn a_read_after_a_first_launch_with_the_folder_not_reachable_merges_the_old_prompts() {
+        // R21, R22: the join at launch wrote nothing, so the first read
+        // that finds the folder joins it. B's old prompt is added, and A's
+        // settings and prompts stay.
+        let parent = TempDir::new().unwrap();
+        let folder = parent.path().join("External");
+        let b = Computer::new();
+        b.upgrade(&old_store());
+        let manager = b.manager(Some(&folder));
+        manager.join_at_launch();
+        assert_eq!(
+            manager.snapshot().availability,
+            read_only(ReadOnlyCause::FolderNotAvailable)
+        );
+
+        std::fs::create_dir(&folder).unwrap();
+        folder_of_a(&folder);
+        assert!(manager.reread());
+        assert!(available(&manager));
+        assert_eq!(prompt_files(&folder), ["Recap.md", "Standup.md"]);
+        assert_eq!(file_of(&folder)["asr_model"], "whisper-large-v3-turbo-q5km");
+        let settings = settings_of(&manager);
+        assert_eq!(names(&settings), ["Recap", "Standup"]);
+        assert_eq!(
+            settings.chosen_recognition.asr_model,
+            "whisper-large-v3-turbo-q5km"
+        );
+
+        // The folder is joined now, so the next read only reads.
+        let before = tree(&folder);
+        assert!(!manager.reread());
+        assert_eq!(tree(&folder), before, "a read never writes");
+    }
+
+    #[test]
     fn a_read_before_the_first_join_or_with_no_folder_does_nothing() {
         let folder = TempDir::new().unwrap();
         let computer = Computer::new();
@@ -1167,7 +1227,9 @@ mod tests {
         let computer = Computer::new();
         let manager = computer.manager(Some(folder.path()));
         manager.join_at_launch();
-        let started = manager.begin_read().unwrap();
+        let ReadStart::Read(started) = manager.begin_read() else {
+            panic!("the read did not start");
+        };
         let loaded = view::load(&started.root, started.cache.as_ref());
         manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
         assert!(!manager.finish_read(started, loaded));

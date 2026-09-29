@@ -26,7 +26,7 @@ use crate::prompts::{
     built_in_names, free_prompt_name, is_built_in, joined_id, same_name, scan_prompts,
     write_new_prompt,
 };
-use crate::view::{SharedView, load, store};
+use crate::view::{SharedView, load, load_after_join, store};
 
 /// Why the join runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,12 @@ pub fn join(root: &Path, cache: Option<&Cache>, kind: JoinKind) -> io::Result<Jo
         }
         FileRead::NotAvailable(_) => {}
     }
-    let loaded = load(root, cache);
+    // Only a change of folder merges a cache from another folder, so only
+    // it replaces that cache.
+    let loaded = match kind {
+        JoinKind::ChangeOfFolder => load_after_join(root, cache),
+        JoinKind::SameFolder => load(root, cache),
+    };
     Ok(Joined {
         view: loaded.view,
         written,

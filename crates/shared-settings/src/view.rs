@@ -84,7 +84,22 @@ pub struct Loaded {
 
 /// Read the shared settings of the storage folder `root`. `cache` is the
 /// last cache of this computer. This never writes.
+///
+/// A cache from another folder, or from the local store of a version
+/// before shared settings, can hold prompts that the folder does not have.
+/// Only a join merges them (R21, R22), so this load gives no new cache for
+/// it.
 pub fn load(root: &Path, cache: Option<&Cache>) -> Loaded {
+    let mut loaded = load_after_join(root, cache);
+    if cache.is_some_and(|c| c.source != root) {
+        loaded.cache = None;
+    }
+    loaded
+}
+
+/// [`load`] after a join that merged `cache` into `root`. The new cache
+/// replaces a cache from any folder.
+pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
     let file = match read_settings(root) {
         FileRead::Parsed(file) => file,
         FileRead::Missing => return from_cache(cache, Availability::MissingFile),

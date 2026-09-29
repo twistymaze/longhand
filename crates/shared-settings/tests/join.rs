@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use shared_settings::cache::{Cache, read_cache, write_cache};
@@ -585,6 +585,33 @@ fn a_load_that_matches_the_cache_gives_no_new_cache() {
     assert!(load(root.path(), Some(&cache)).cache.is_none());
     create_prompt(root.path(), "Standup", "Text.").unwrap();
     assert!(load(root.path(), Some(&cache)).cache.is_some());
+}
+
+#[test]
+fn a_load_keeps_a_cache_from_another_folder_until_a_change_of_folder_join() {
+    // R21, R22: only a join merges the prompts of that cache.
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = cache_of_b(old.path(), vec![prompt("standup-b", "Standup", "Text.")]);
+    let loaded = load(root.path(), Some(&cache));
+    assert_eq!(loaded.view.availability, Availability::Available);
+    assert_eq!(names(&loaded.view.prompts), vec!["Recap"]);
+    assert!(loaded.cache.is_none());
+    let legacy = Cache {
+        source: PathBuf::new(),
+        ..cache.clone()
+    };
+    assert!(load(root.path(), Some(&legacy)).cache.is_none());
+
+    let same = join(root.path(), Some(&cache), JoinKind::SameFolder).unwrap();
+    assert!(same.written.prompt_files.is_empty());
+    assert!(same.cache.is_none());
+
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert_eq!(joined.written.prompt_files, vec!["Standup.md".to_string()]);
+    let new_cache = joined.cache.unwrap();
+    assert_eq!(new_cache.source, root.path());
+    assert_eq!(names(&new_cache.prompts), vec!["Recap", "Standup"]);
 }
 
 #[test]
