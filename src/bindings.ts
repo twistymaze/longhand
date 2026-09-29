@@ -268,23 +268,32 @@ async activateSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
 }
 },
 /**
- * Pick a folder with the system dialog, make it current, and retain it as a
- * root (R23, R25a). `None` when the user closes the dialog.
+ * Pick a folder with the system dialog and return its path. Nothing
+ * changes: the surface then asks what to do with the notes in the old
+ * folder, and calls [`change_storage_folder`] (R4). `None` when the user
+ * closes the dialog.
  */
-async chooseDestination() : Promise<Result<Settings | null, string>> {
+async pickStorageFolder() : Promise<Result<string | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("choose_destination") };
+    return { status: "ok", data: await TAURI_INVOKE("pick_storage_folder") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Switch to a folder chosen earlier.
+ * Make `folder` the storage folder (R4, R21). The shared settings of the
+ * new folder apply, and this computer's custom prompts merge into them,
+ * or this computer's shared settings go into a folder that has none
+ * (KTD8). Notes that wait for a folder try the new one, and the library
+ * watches the new folder. With Leave them, the library forgets the notes
+ * of the old folder and keeps their files; a busy note is forgotten when
+ * it is free (R7). A note that records during the change saves to the new
+ * folder.
  */
-async setCurrentDestination(folder: string) : Promise<Result<Settings, string>> {
+async changeStorageFolder(folder: string, oldNotes: OldNotes) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_current_destination", { folder }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_storage_folder", { folder, oldNotes }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -891,7 +900,7 @@ export type DeleteSessionError =
  * A permanent delete or the store failed.
  */
 { kind: "failed"; message: string }
-export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: string; free_bytes: number | null } | 
+export type DestinationStatus = { kind: "ready"; path: string; free_bytes: number | null } | 
 /**
  * Deleted, renamed, or on a volume that is not mounted.
  */
@@ -1085,6 +1094,19 @@ export type NotesSaveResult =
  * beside it. The editor loads the notes again.
  */
 { kind: "conflict"; draft: string }
+/**
+ * What a change of storage folder does with the notes in the old folder
+ * (R4).
+ */
+export type OldNotes = 
+/**
+ * Move every note into the new folder (R5).
+ */
+"move" | 
+/**
+ * Keep the notes in the old folder. The library forgets them (R7).
+ */
+"leave"
 export type ProcessingMode = "during_recording" | "after_stop"
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
@@ -1160,9 +1182,9 @@ export type Readiness = { microphone_authorized: boolean;
  */
 system_audio: SystemAudioPermission; destination: DestinationStatus; 
 /**
- * Microphone authorized, a destination chosen, and the chord registered
- * or cleared (R1c, R13). A destination that is unreachable right now can be changed
- * before the session is saved (R23), so it is shown rather than blocking.
+ * Microphone authorized, and the chord registered or cleared (R1c,
+ * R13). A storage folder that is not available now is shown, and does
+ * not block a recording: the note waits to save (AE1).
  */
 armed: boolean; shortcut: ShortcutStatus; 
 /**
@@ -1392,14 +1414,11 @@ shortcut: string | null;
  */
 show_window_shortcut: string | null; 
 /**
- * Every folder the user has ever chosen, oldest first (R25a). The index
- * is rebuilt by scanning these, so a root is never dropped silently.
+ * The one storage folder (R1). The library lists the notes in it, and
+ * the next note saves to it. Empty only until the launch sets the
+ * default folder (R2, KTD12).
  */
-destination_roots: string[]; 
-/**
- * Where the next session is saved (R23). Always one of the roots.
- */
-current_destination: string | null; 
+storage_folder: string; 
 /**
  * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
  * `None` means a new install that has no settings yet, and

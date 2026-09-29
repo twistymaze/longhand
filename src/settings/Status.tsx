@@ -144,7 +144,7 @@ export function StatusPane({
         <Row label="Storage"detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
           {readiness.destination.kind !== "ready" && (
             <GoTo pane="destination" onNavigate={onNavigate}>
-              {readiness.destination.kind === "unset" ? "Choose…" : "Fix…"}
+              Fix…
             </GoTo>
           )}
         </Row>

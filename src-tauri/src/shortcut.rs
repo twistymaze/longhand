@@ -342,7 +342,7 @@ pub fn resume(app: &AppHandle) {
 }
 
 /// Stop a recording session, or start one when armed (R1a, R1c): the
-/// microphone is authorized and a destination is chosen.
+/// microphone is authorized.
 async fn toggle(app: AppHandle) {
     // One press at a time: a quick double press must not race two starts.
     static TOGGLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -362,17 +362,11 @@ async fn toggle(app: AppHandle) {
         return;
     }
     let current = settings::get_settings(&app);
+    // The storage folder does not count: a note that cannot save yet waits
+    // for its folder (AE1).
     let microphone = tauri_plugin_macos_permissions::check_microphone_permission().await;
-    if !microphone || current.current_destination.is_none() {
-        log::info!(
-            "shortcut pressed while not armed (microphone {}, destination {})",
-            if microphone { "ok" } else { "missing" },
-            if current.current_destination.is_some() {
-                "ok"
-            } else {
-                "missing"
-            }
-        );
+    if !microphone {
+        log::info!("shortcut pressed while not armed (microphone missing)");
         return;
     }
     let count = speaker_count(current.default_speaker_count);

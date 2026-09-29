@@ -691,7 +691,7 @@ test("transcription saves remain ordered after switching panes", async () => {
     readiness: () => ({
       microphone_authorized: true,
       system_audio: "allowed",
-      destination: { kind: "unset" },
+      destination: { kind: "ready", path: "/notes", free_bytes: null },
       armed: false,
       shortcut: shortcutStatuses.recording,
       missing_models: [],

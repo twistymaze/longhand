@@ -1,11 +1,9 @@
 import { useState } from "react";
-import { commands, type DestinationStatus, type Settings } from "../bindings";
+import { commands, type DestinationStatus, type Result, type Settings } from "../bindings";
 import { Button, ErrorText, Group, Pane, Row, Status, type Tone, folderName, formatBytes } from "./ui";
 
 export function describeDestination(status: DestinationStatus): { tone: Tone; text: string } {
   switch (status.kind) {
-    case "unset":
-      return { tone: "caution", text: "No folder chosen" };
     case "ready":
       return {
         tone: "positive",
@@ -22,6 +20,16 @@ export function describeDestination(status: DestinationStatus): { tone: Tone; te
   }
 }
 
+/// Pick a folder and make it the storage folder. The notes in the old
+/// folder stay there, and the library stops listing them. `null` data when
+/// the user closes the dialog. (U9 adds the Move / Leave them choice.)
+export async function changeToPickedFolder(): Promise<Result<Settings | null, string>> {
+  const picked = await commands.pickStorageFolder();
+  if (picked.status === "error") return picked;
+  if (picked.data === null) return { status: "ok", data: null };
+  return commands.changeStorageFolder(picked.data, "leave");
+}
+
 export function DestinationPicker({
   settings,
   status,
@@ -32,58 +40,30 @@ export function DestinationPicker({
   onSettings: (s: Settings) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const current = settings.current_destination;
+  const current = settings.storage_folder;
   const described = describeDestination(status);
 
   const choose = async () => {
-    const result = await commands.chooseDestination();
+    const result = await changeToPickedFolder();
     if (result.status === "error") setError(result.error);
     else {
       setError(null);
       if (result.data) onSettings(result.data);
     }
   };
-  const use = async (folder: string) => {
-    const result = await commands.setCurrentDestination(folder);
-    if (result.status === "error") setError(result.error);
-    else {
-      setError(null);
-      onSettings(result.data);
-    }
-  };
-
-  const earlier = settings.destination_roots.filter((root) => root !== current);
 
   return (
     <Pane title="Storage">
       <Group
         header="Notes are saved to"
-        footer="You can change this at any time, including while recording — a note is saved wherever this points when it finishes processing."
+        footer="When you change the folder, the notes in the old folder stay there, and Longhand no longer lists them."
       >
-        <Row
-          label={current ? folderName(current) : "No folder chosen"}
-          detail={current ?? "Choose a folder before the shortcut can start a recording."}
-        >
-          <Button prominent={!current} onClick={choose}>
-            {current ? "Change…" : "Choose Folder…"}
-          </Button>
+        <Row label={folderName(current)} detail={current}>
+          <Button onClick={choose}>Change…</Button>
         </Row>
         <Row label={<Status tone={described.tone}>{described.text}</Status>} />
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
-
-      {earlier.length > 0 && (
-        <Group
-          header="Earlier folders"
-          footer="Every folder you have chosen is remembered, so notes already saved there stay findable."
-        >
-          {earlier.map((root) => (
-            <Row key={root} label={folderName(root)} detail={root}>
-              <Button onClick={() => use(root)}>Use</Button>
-            </Row>
-          ))}
-        </Group>
-      )}
     </Pane>
   );
 }

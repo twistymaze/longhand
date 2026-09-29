@@ -364,11 +364,10 @@ impl EngineProvider for Models {
         }
     }
 
-    /// Read when the session is saved, so the last destination chosen wins (AE7).
+    /// Read when the note is saved, so a note that records during a change
+    /// of folder saves to the new storage folder (AE7).
     fn destination(&self) -> Option<std::path::PathBuf> {
-        settings::get_settings(&self.app)
-            .current_destination
-            .map(std::path::PathBuf::from)
+        settings::get_settings(&self.app).storage_folder()
     }
 
     /// Everything processing needs, diarization weights included: a
@@ -412,21 +411,47 @@ impl EngineProvider for Models {
 
 /// A session finished while the window was away (R15). Nothing is posted
 /// while the window is in front: the surface already says so.
-/// Remove staging folders that completed sessions left in any destination
-/// ever chosen (U18). Only with the instance lock held, so no other run is
+/// Remove staging folders that completed sessions left in the storage
+/// folder (U18). Only with the instance lock held, so no other run is
 /// saving into them.
 fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
-    let roots = crate::managers::settings::get_settings(app).destination_roots;
-    for root in roots {
-        match session_save::sweep_staging(std::path::Path::new(&root), |id| completed(store, id)) {
+    for root in library_roots(app) {
+        match session_save::sweep_staging(&root, |id| completed(store, id)) {
             Ok(removed) => {
                 for path in removed {
                     log::info!("removed leftover staging folder {}", path.display());
                 }
             }
-            Err(e) => log::warn!("could not sweep {root} for staging folders: {e}"),
+            Err(e) => log::warn!(
+                "could not sweep {} for staging folders: {e}",
+                root.display()
+            ),
         }
     }
+}
+
+/// The folders that the library lists notes from: the storage folder (R1).
+/// Empty only before the launch sets a storage folder.
+fn library_roots(app: &AppHandle) -> Vec<std::path::PathBuf> {
+    settings::get_settings(app)
+        .storage_folder()
+        .into_iter()
+        .collect()
+}
+
+/// Forget the rows of the notes that are in none of the library roots, for
+/// example after a change of folder with Leave them (R7, R8).
+fn forget_outside(
+    app: &AppHandle,
+    store: &pipeline::SharedStore,
+    claimed: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let roots = library_roots(app);
+    let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+    library::reconcile::forget_outside(&mut store, &roots, claimed).unwrap_or_else(|e| {
+        log::error!("could not forget the notes outside the storage folder: {e}");
+        Vec::new()
+    })
 }
 
 /// Whether the staging folder of `id` is left over from a save that
@@ -625,6 +650,9 @@ impl ProcessingManager {
             }
             Err(e) => log::error!("the launch scan of the library failed: {e}"),
         }
+        // The notes of earlier folders, and of an old folder that Leave them
+        // left while a note was busy, go out of the library (R7, R8).
+        self.forget_outside_roots();
         if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
             // Each saved folder takes the name its title gives (KTD8).
             if let Err(e) = self.runner.reconcile_folders() {
@@ -646,26 +674,47 @@ impl ProcessingManager {
         self.start_library(reconciler);
     }
 
-    /// The retained Destinations, as the settings hold them.
+    /// The folders that the library lists notes from.
     fn roots(&self) -> Vec<std::path::PathBuf> {
-        settings::get_settings(&self.app)
-            .destination_roots
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect()
+        library_roots(&self.app)
+    }
+
+    /// Forget the rows of the notes that are in no library root, and tell
+    /// the surface. A busy note stays until a later call: each library
+    /// reconcile makes this call again (R7).
+    pub fn forget_outside_roots(&self) {
+        let claims = self.runner.claims();
+        let removed = forget_outside(&self.app, &self.store, &|id| claims.busy(id));
+        if !removed.is_empty() {
+            let changes = library::reconcile::Changes {
+                changed: Vec::new(),
+                removed,
+            };
+            emit_library_changed(&self.app, changes.into());
+        }
     }
 
     fn start_library(&self, reconciler: library::reconcile::Reconciler) {
         let store = Arc::clone(&self.store);
         let claims = self.runner.claims().clone();
         let events = self.app.clone();
+        let app = self.app.clone();
         let started = LibraryWatcher::start(
             self.roots(),
             reconciler,
             Box::new(move |target, reconciler| {
-                reconciler
-                    .run(&store, target, &|id| claims.busy(id))
-                    .map_err(|e| e.to_string())
+                let claimed = |id: &str| claims.busy(id);
+                let mut changes = reconciler
+                    .run(&store, target, &claimed)
+                    .map_err(|e| e.to_string())?;
+                let removed = forget_outside(&app, &store, &claimed);
+                if !removed.is_empty() {
+                    changes.changed.retain(|id| !removed.contains(id));
+                    changes.removed.extend(removed);
+                    changes.removed.sort();
+                    changes.removed.dedup();
+                }
+                Ok(changes)
             }),
             Box::new(move |changes| emit_library_changed(&events, changes)),
             Timing::default(),
@@ -687,8 +736,8 @@ impl ProcessingManager {
         }
     }
 
-    /// The retained Destinations changed: the library watches start again
-    /// on the new set (KTD7).
+    /// The storage folder changed: the library watches start again on the
+    /// new roots, and a full scan runs (KTD7).
     pub fn roots_changed(&self) {
         let library = self.library.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(watcher) = &library.watcher {

@@ -48,8 +48,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_summary_prompt_text,
             commands::settings::delete_summary_prompt,
             commands::settings::activate_summary_prompt,
-            commands::settings::choose_destination,
-            commands::settings::set_current_destination,
+            commands::settings::pick_storage_folder,
+            commands::settings::change_storage_folder,
             commands::settings::credential_status,
             commands::settings::set_credential,
             commands::settings::delete_credential,
@@ -263,10 +263,13 @@ pub fn run() {
                 "settings loaded (schema version {})",
                 local.settings_schema_version
             );
+            // Before the shared settings join and the first library scan: a
+            // new install gets the default storage folder (R2, KTD12).
+            let local = managers::settings::ensure_storage_folder(&handle, local);
             app.manage(std::sync::Arc::new(
                 managers::shared::SharedSettingsManager::new(
                     managers::settings::shared_cache_dir(&handle)?,
-                    local.current_destination.map(std::path::PathBuf::from),
+                    local.storage_folder(),
                 ),
             ));
             let secrets = managers::secrets::SecretsManager::new(&handle);

@@ -6005,3 +6005,30 @@ async fn publication_step_error_and_cancel_restore_previous_files_and_allow_retr
         assert!(read(&home, "summary.md").contains("Replacement summary."));
     }
 }
+
+/// A note that records while the storage folder changes saves to the new
+/// folder, and the old folder gets nothing (U7).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_that_records_during_a_change_of_folder_saves_to_the_new_folder() {
+    let r = rig().await;
+    r.script.capturing.store(true, Ordering::SeqCst);
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let new = tempfile::tempdir().unwrap();
+    *r.script.destination.lock().unwrap() = Some(new.path().to_path_buf());
+    r.script.capturing.store(false, Ordering::SeqCst);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    assert_eq!(folder.parent(), Some(new.path()));
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
+}

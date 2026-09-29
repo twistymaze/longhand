@@ -12,8 +12,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     interface_zoom_percent: 100,
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
-    destination_roots: [],
-    current_destination: null,
+    storage_folder: "/notes",
     endpoint_base_url: "",
     endpoint_model: "",
     context_limit_tokens: null,
@@ -60,7 +59,7 @@ async function open({
     readiness: () => ({
       microphone_authorized: true,
       system_audio: "allowed",
-      destination: { kind: "unset" },
+      destination: { kind: "ready", path: "/notes", free_bytes: null },
       armed: false,
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },
       missing_models: [],

@@ -506,6 +506,42 @@ fn adopt(store: &mut Store, note: &NoteFolder) -> Result<bool, StoreError> {
     Ok(adopted)
 }
 
+/// Forget each row whose home folder is in none of `roots`, for example
+/// the notes of an old storage folder after a change of folder with Leave
+/// them (R7, R8). A row that is busy or has a rename intent stays, and a
+/// later call forgets it when it is free. No folder changes. With no root,
+/// nothing is forgotten. Returns the forgotten ids, sorted.
+pub fn forget_outside(
+    store: &mut Store,
+    roots: &[PathBuf],
+    claimed: &dyn Fn(&str) -> bool,
+) -> Result<Vec<String>, StoreError> {
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut removed = Vec::new();
+    for record in store.sessions()? {
+        let Some(home) = record.home_path.as_deref().map(Path::new) else {
+            continue;
+        };
+        if roots
+            .iter()
+            .any(|root| home.parent() == Some(root.as_path()))
+        {
+            continue;
+        }
+        if !busy(&record, claimed(&record.id)) && store.forget(&record.id)? {
+            log::info!(
+                "library: {} is not in the storage folder, so its row is removed",
+                record.id
+            );
+            removed.push(record.id);
+        }
+    }
+    removed.sort();
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -643,5 +679,77 @@ mod tests {
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
         assert_eq!(changes.changed, vec!["A1".to_string()]);
         assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "theirs\n");
+    }
+
+    #[test]
+    fn a_note_in_a_root_is_not_forgotten() {
+        let (root, _folder, store, _) = adopted();
+        let removed = forget_outside(
+            &mut store.lock().unwrap(),
+            &[root.path().to_path_buf()],
+            &never_claimed,
+        )
+        .unwrap();
+        assert!(removed.is_empty());
+        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+    }
+
+    /// Leave them (R7): the library forgets the notes of the old folder and
+    /// keeps their files.
+    #[test]
+    fn a_note_outside_every_root_is_forgotten_and_its_folder_stays() {
+        let (_root, folder, store, _) = adopted();
+        let other = tempfile::tempdir().unwrap();
+        let removed = forget_outside(
+            &mut store.lock().unwrap(),
+            &[other.path().to_path_buf()],
+            &never_claimed,
+        )
+        .unwrap();
+        assert_eq!(removed, vec!["A1".to_string()]);
+        assert!(store.lock().unwrap().session("A1").unwrap().is_none());
+        assert!(folder.join("session.md").exists());
+        assert!(folder.join("notes.md").exists());
+    }
+
+    #[test]
+    fn a_busy_note_outside_every_root_is_forgotten_when_it_is_free() {
+        let (_root, _folder, store, _) = adopted();
+        let other = tempfile::tempdir().unwrap();
+        let roots = [other.path().to_path_buf()];
+        let removed = forget_outside(&mut store.lock().unwrap(), &roots, &|_| true).unwrap();
+        assert!(removed.is_empty());
+        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+        let removed = forget_outside(&mut store.lock().unwrap(), &roots, &never_claimed).unwrap();
+        assert_eq!(removed, vec!["A1".to_string()]);
+    }
+
+    #[test]
+    fn with_no_root_and_for_a_note_with_no_home_nothing_is_forgotten() {
+        let (_root, _folder, store, _) = adopted();
+        let start = DateTime::parse_from_rfc3339("2026-09-25T10:00:00-05:00").unwrap();
+        store
+            .lock()
+            .unwrap()
+            .create_session("recording", start, None)
+            .unwrap();
+        let removed = forget_outside(&mut store.lock().unwrap(), &[], &never_claimed).unwrap();
+        assert!(removed.is_empty());
+        let other = tempfile::tempdir().unwrap();
+        let removed = forget_outside(
+            &mut store.lock().unwrap(),
+            &[other.path().to_path_buf()],
+            &never_claimed,
+        )
+        .unwrap();
+        assert_eq!(removed, vec!["A1".to_string()]);
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .session("recording")
+                .unwrap()
+                .is_some()
+        );
     }
 }

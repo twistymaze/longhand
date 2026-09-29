@@ -1,5 +1,5 @@
-//! The destination folder: choosing it and reporting whether it can take a
-//! session (R22c display, R23, R25a).
+//! The storage folder: its default path, the checks for a new one, and
+//! whether it can take a note (R1, R2, KTD11, KTD12).
 //!
 //! This is the status the surface shows. The binding checks at stop and
 //! immediately before saving belong to the save stage (U12), which adds
@@ -19,7 +19,6 @@ pub const FREE_SPACE_FLOOR_BYTES: u64 = 256 * 1024 * 1024;
 #[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DestinationStatus {
-    Unset,
     Ready {
         path: String,
         free_bytes: Option<u64>,
@@ -42,11 +41,51 @@ pub enum DestinationStatus {
     },
 }
 
-pub fn status(current: Option<&str>) -> DestinationStatus {
-    let Some(path) = current else {
-        return DestinationStatus::Unset;
-    };
-    check(Path::new(path), FREE_SPACE_FLOOR_BYTES)
+/// The status of the storage folder `folder`. An empty path is missing:
+/// the launch sets a storage folder before any reader asks.
+pub fn status(folder: &str) -> DestinationStatus {
+    check(Path::new(folder), FREE_SPACE_FLOOR_BYTES)
+}
+
+/// The default storage folder: `Longhand/Notes` under `local_data`, the
+/// local data folder of the operating system (KTD12). On macOS that is
+/// `~/Library/Application Support`, and on Windows `%LOCALAPPDATA%`. The
+/// folder is outside the app's own data folder, so an uninstall that
+/// deletes the app data keeps the notes (R2).
+pub fn default_storage_folder(local_data: &Path) -> PathBuf {
+    local_data.join("Longhand").join("Notes")
+}
+
+/// Whether `new` can become the storage folder in place of `current`
+/// (KTD11). The error is the cause, as Settings shows it. The same folder,
+/// a folder inside the storage folder, a folder that contains it, and a
+/// folder that Longhand cannot write are refused. An empty `current`
+/// means that no storage folder is set.
+pub fn check_new_folder(current: &Path, new: &Path) -> Result<(), String> {
+    let resolve = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !current.as_os_str().is_empty() {
+        let (current, new) = (resolve(current), resolve(new));
+        if new == current {
+            return Err("This folder is already the storage folder.".into());
+        }
+        if new.starts_with(&current) {
+            return Err(
+                "This folder is inside the storage folder. Choose a folder outside it.".into(),
+            );
+        }
+        if current.starts_with(&new) {
+            return Err(
+                "This folder contains the storage folder. Choose a folder that does not contain it."
+                    .into(),
+            );
+        }
+    }
+    match new.metadata() {
+        Err(_) => return Err("This folder is not available.".into()),
+        Ok(meta) if !meta.is_dir() => return Err("This is a file, not a folder.".into()),
+        Ok(_) => {}
+    }
+    probe_writable(new).map_err(|e| format!("Longhand cannot save notes in this folder: {e}"))
 }
 
 pub fn check(dir: &Path, floor_bytes: u64) -> DestinationStatus {
@@ -113,9 +152,101 @@ pub fn available_space(dir: &Path) -> Option<u64> {
 mod tests {
     use super::*;
 
+    /// The bundle identifier in `tauri.conf.json`.
+    const APP_IDENTIFIER: &str = "net.ewal.longhand";
+
     #[test]
-    fn no_destination_is_unset() {
-        assert_eq!(status(None), DestinationStatus::Unset);
+    fn no_storage_folder_is_missing() {
+        assert_eq!(
+            status(""),
+            DestinationStatus::Missing {
+                path: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn the_default_folder_is_longhand_notes_under_the_local_data_folder() {
+        let mac = Path::new("/Users/someone/Library/Application Support");
+        assert_eq!(
+            default_storage_folder(mac),
+            Path::new("/Users/someone/Library/Application Support/Longhand/Notes")
+        );
+    }
+
+    #[test]
+    fn the_default_folder_on_windows_is_under_local_app_data_and_outside_the_app_folder() {
+        // `local_data_dir()` is `%LOCALAPPDATA%` on Windows, not the roaming
+        // `%APPDATA%`. The uninstaller's "Delete the application data"
+        // removes only the folders named for the identifier (KTD12).
+        let local = PathBuf::from(r"C:\Users\someone\AppData\Local");
+        let folder = default_storage_folder(&local);
+        assert!(folder.starts_with(&local));
+        assert!(
+            folder
+                .components()
+                .all(|c| c.as_os_str() != APP_IDENTIFIER && c.as_os_str() != "Roaming")
+        );
+        assert!(!folder.starts_with(local.join(APP_IDENTIFIER)));
+        assert!(folder.ends_with(Path::new("Longhand").join("Notes")));
+    }
+
+    #[test]
+    fn the_same_folder_a_folder_inside_it_and_a_folder_that_contains_it_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        let inside = current.join("Archive");
+        std::fs::create_dir_all(&inside).unwrap();
+        let same = check_new_folder(&current, &current).unwrap_err();
+        assert!(same.contains("already"), "{same}");
+        // The same folder by another spelling is refused too.
+        let spelled = dir.path().join("Notes/../Notes");
+        assert!(check_new_folder(&current, &spelled).is_err());
+        let within = check_new_folder(&current, &inside).unwrap_err();
+        assert!(within.contains("inside the storage folder"), "{within}");
+        let contains = check_new_folder(&current, dir.path()).unwrap_err();
+        assert!(
+            contains.contains("contains the storage folder"),
+            "{contains}"
+        );
+    }
+
+    #[test]
+    fn a_sibling_folder_with_a_longer_name_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        let sibling = dir.path().join("Notes 2");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert_eq!(check_new_folder(&current, &sibling), Ok(()));
+        // A storage folder that is not available is no reason to refuse.
+        assert_eq!(check_new_folder(&dir.path().join("gone"), &sibling), Ok(()));
+        assert_eq!(check_new_folder(Path::new(""), &sibling), Ok(()));
+        assert_eq!(std::fs::read_dir(&sibling).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_missing_folder_and_a_file_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(check_new_folder(&current, &dir.path().join("gone")).is_err());
+        assert!(check_new_folder(&current, &file).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_longhand_cannot_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = check_new_folder(&dir.path().join("Notes"), &locked);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cause = result.unwrap_err();
+        assert!(cause.contains("cannot save"), "{cause}");
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! (R13). The shared settings and the custom prompts come from the shared
 //! settings manager (`managers::shared`). [`Settings`] joins both.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -160,8 +160,7 @@ pub struct LocalSettings {
     pub interface_zoom_percent: u16,
     pub shortcut: Option<String>,
     pub show_window_shortcut: Option<String>,
-    pub destination_roots: Vec<String>,
-    pub current_destination: Option<String>,
+    pub storage_folder: String,
     pub endpoint_base_url: Option<String>,
     pub endpoint_model: String,
     pub context_limit_tokens: Option<u32>,
@@ -179,6 +178,17 @@ impl Default for LocalSettings {
     }
 }
 
+impl LocalSettings {
+    /// The storage folder, or `None` before the launch sets one.
+    pub fn storage_folder(&self) -> Option<PathBuf> {
+        folder_path(&self.storage_folder)
+    }
+}
+
+fn folder_path(folder: &str) -> Option<PathBuf> {
+    (!folder.is_empty()).then(|| PathBuf::from(folder))
+}
+
 /// The settings that the app uses: the local settings of this computer and
 /// the shared settings of the storage folder (KTD7). The local store holds
 /// only the local fields. Each shared field comes from the shared view; a
@@ -194,11 +204,10 @@ pub struct Settings {
     pub shortcut: Option<String>,
     /// The chord that shows or hides the main window. Off by default (R5).
     pub show_window_shortcut: Option<String>,
-    /// Every folder the user has ever chosen, oldest first (R25a). The index
-    /// is rebuilt by scanning these, so a root is never dropped silently.
-    pub destination_roots: Vec<String>,
-    /// Where the next session is saved (R23). Always one of the roots.
-    pub current_destination: Option<String>,
+    /// The one storage folder (R1). The library lists the notes in it, and
+    /// the next note saves to it. Empty only until the launch sets the
+    /// default folder (R2, KTD12).
+    pub storage_folder: String,
     /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
     /// `None` means a new install that has no settings yet, and
     /// [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
@@ -361,8 +370,7 @@ impl Default for Settings {
             interface_zoom_percent: 100,
             shortcut: Some(DEFAULT_SHORTCUT.to_string()),
             show_window_shortcut: None,
-            destination_roots: Vec::new(),
-            current_destination: None,
+            storage_folder: String::new(),
             endpoint_base_url: None,
             endpoint_model: String::new(),
             context_limit_tokens: None,
@@ -399,8 +407,7 @@ impl Settings {
             interface_zoom_percent: local.interface_zoom_percent,
             shortcut: local.shortcut,
             show_window_shortcut: local.show_window_shortcut,
-            destination_roots: local.destination_roots,
-            current_destination: local.current_destination,
+            storage_folder: local.storage_folder,
             endpoint_base_url: local.endpoint_base_url,
             endpoint_model: local.endpoint_model,
             context_limit_tokens: local.context_limit_tokens,
@@ -457,8 +464,7 @@ impl Settings {
             interface_zoom_percent: self.interface_zoom_percent,
             shortcut: self.shortcut.clone(),
             show_window_shortcut: self.show_window_shortcut.clone(),
-            destination_roots: self.destination_roots.clone(),
-            current_destination: self.current_destination.clone(),
+            storage_folder: self.storage_folder.clone(),
             endpoint_base_url: self.endpoint_base_url.clone(),
             endpoint_model: self.endpoint_model.clone(),
             context_limit_tokens: self.context_limit_tokens,
@@ -511,12 +517,9 @@ impl Settings {
         Ok(())
     }
 
-    /// Make `folder` the current destination and retain it as a root (R23, R25a).
-    pub fn choose_destination(&mut self, folder: &str) {
-        if !self.destination_roots.iter().any(|r| r == folder) {
-            self.destination_roots.push(folder.to_string());
-        }
-        self.current_destination = Some(folder.to_string());
+    /// The storage folder, or `None` before the launch sets one.
+    pub fn storage_folder(&self) -> Option<PathBuf> {
+        folder_path(&self.storage_folder)
     }
 
     pub fn endpoint_configured(&self) -> bool {
@@ -664,7 +667,7 @@ fn topic_summary() -> summarize::Prompt {
 /// migration once and then converges.
 pub fn settings_from_value(stored: &Value) -> (LocalSettings, bool) {
     let mut stored = stored.clone();
-    let rewritten = rewrite_stale_recognition(&mut stored);
+    let rewritten = rewrite_stale_recognition(&mut stored) | rewrite_destinations(&mut stored);
     let (mut settings, mut updated) = match LocalSettings::deserialize(&stored) {
         Ok(settings) => (settings, rewritten),
         Err(e) => {
@@ -707,6 +710,30 @@ fn rewrite_stale_recognition(stored: &mut Value) -> bool {
         changed |= rewrite_recognition_fields(pending, speaker_count);
     }
     changed
+}
+
+/// Part of the version 6 migration: the current destination becomes the
+/// one storage folder, and the other retained folders are forgotten (R8).
+/// The rule looks at the fields, not at the version, because version 6
+/// stores with the old fields exist on development builds. A storage folder
+/// in the store stays. Returns whether a value changed.
+fn rewrite_destinations(stored: &mut Value) -> bool {
+    const ROOTS: &str = "destination_roots";
+    const CURRENT: &str = "current_destination";
+    let Some(map) = stored.as_object_mut() else {
+        return false;
+    };
+    if !map.contains_key(ROOTS) && !map.contains_key(CURRENT) {
+        return false;
+    }
+    map.remove(ROOTS);
+    if let Some(current) = map.remove(CURRENT)
+        && current.is_string()
+        && !map.contains_key("storage_folder")
+    {
+        map.insert("storage_folder".into(), current);
+    }
+    true
 }
 
 /// Rewrite `asr_model` and `speaker_source` in old settings or in a stored
@@ -972,6 +999,46 @@ pub fn shared_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// The settings that the app uses now.
 pub fn get_settings(app: &AppHandle) -> Settings {
     Settings::from_parts(get_local_settings(app), &shared_snapshot(app))
+}
+
+/// `local` with a storage folder: when it has none, the default folder
+/// under `local_data` (R2, KTD12). The default folder is made when it does
+/// not exist, also when the user removed it; a folder that the user chose
+/// is never made. Returns whether the settings changed.
+pub fn with_storage_folder(mut local: LocalSettings, local_data: &Path) -> (LocalSettings, bool) {
+    let default = crate::managers::destination::default_storage_folder(local_data);
+    let changed = local.storage_folder.is_empty();
+    if changed {
+        local.storage_folder = default.to_string_lossy().into_owned();
+    }
+    if local.storage_folder() == Some(default.clone())
+        && let Err(e) = std::fs::create_dir_all(&default)
+    {
+        log::error!("could not make the default storage folder: {e}");
+    }
+    (local, changed)
+}
+
+/// At launch, before the shared settings join and the first library scan:
+/// set and make the default storage folder when no storage folder is set
+/// (R2, KTD12). Returns the local settings that the app uses.
+pub fn ensure_storage_folder(app: &AppHandle, local: LocalSettings) -> LocalSettings {
+    let local_data = match app.path().local_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::error!("no local data folder for the default storage folder: {e}");
+            return local;
+        }
+    };
+    let (local, changed) = with_storage_folder(local, &local_data);
+    if changed {
+        log::info!("the storage folder is the default folder");
+        let _guard = UPDATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = write_settings(app, &local) {
+            log::error!("could not save the default storage folder: {e}");
+        }
+    }
+    local
 }
 
 /// The shared view of the shared settings manager, or the defaults before
@@ -1523,11 +1590,92 @@ mod tests {
 
     #[test]
     fn present_fields_survive_a_version_migration() {
-        let (settings, updated) =
-            settings_from_value(&json!({ "endpoint_model": "gpt-5", "destination_roots": ["/a"] }));
+        let (settings, updated) = settings_from_value(
+            &json!({ "endpoint_model": "gpt-5", "destination_roots": ["/a"], "current_destination": "/a" }),
+        );
         assert!(updated);
         assert_eq!(settings.endpoint_model, "gpt-5");
-        assert_eq!(settings.destination_roots, ["/a"]);
+        assert_eq!(settings.storage_folder, "/a");
+    }
+
+    /// R8: the current folder becomes the one storage folder, and the other
+    /// folders are forgotten.
+    #[test]
+    fn a_store_with_three_earlier_folders_keeps_only_the_current_one() {
+        for version in [OLD, u64::from(CURRENT_SETTINGS_SCHEMA_VERSION)] {
+            let stored = json!({
+                "settings_schema_version": version,
+                "endpoint_model": "kept",
+                "destination_roots": ["/vault/a", "/vault/b", "/vault/c", "/vault/d"],
+                "current_destination": "/vault/c",
+            });
+            let (settings, updated) = settings_from_value(&stored);
+            assert!(updated, "version {version}");
+            assert_eq!(settings.storage_folder, "/vault/c");
+            assert_eq!(settings.endpoint_model, "kept");
+            let written = serde_json::to_value(&settings).unwrap();
+            assert!(written.get("destination_roots").is_none());
+            assert!(written.get("current_destination").is_none());
+            assert_eq!(settings_from_value(&written), (settings, false));
+        }
+    }
+
+    #[test]
+    fn a_store_with_folders_and_no_current_one_has_no_storage_folder() {
+        let (settings, updated) = settings_from_value(&json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "destination_roots": ["/vault/a"],
+            "current_destination": null,
+        }));
+        assert!(updated);
+        assert_eq!(settings.storage_folder, "");
+        assert_eq!(settings.storage_folder(), None);
+    }
+
+    #[test]
+    fn a_storage_folder_in_the_store_is_not_replaced_by_an_old_destination() {
+        let (settings, updated) = settings_from_value(&json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "storage_folder": "/vault/new",
+            "current_destination": "/vault/old",
+        }));
+        assert!(updated);
+        assert_eq!(settings.storage_folder, "/vault/new");
+    }
+
+    #[test]
+    fn a_launch_with_no_storage_folder_sets_and_makes_the_default_folder() {
+        let local_data = tempfile::tempdir().unwrap();
+        let (settings, changed) = with_storage_folder(LocalSettings::default(), local_data.path());
+        assert!(changed);
+        let folder = local_data.path().join("Longhand").join("Notes");
+        assert_eq!(settings.storage_folder(), Some(folder.clone()));
+        assert!(folder.is_dir());
+        // A second launch changes nothing.
+        let (again, changed) = with_storage_folder(settings.clone(), local_data.path());
+        assert!(!changed);
+        assert_eq!(again, settings);
+    }
+
+    #[test]
+    fn a_launch_makes_the_default_folder_again_and_keeps_a_chosen_folder_as_it_is() {
+        let local_data = tempfile::tempdir().unwrap();
+        let (settings, _) = with_storage_folder(LocalSettings::default(), local_data.path());
+        let folder = settings.storage_folder().unwrap();
+        std::fs::remove_dir(&folder).unwrap();
+        let (_, changed) = with_storage_folder(settings, local_data.path());
+        assert!(!changed);
+        assert!(folder.is_dir(), "the default folder is made again");
+
+        let chosen = local_data.path().join("unplugged");
+        let local = LocalSettings {
+            storage_folder: chosen.to_string_lossy().into_owned(),
+            ..LocalSettings::default()
+        };
+        let (kept, changed) = with_storage_folder(local.clone(), local_data.path());
+        assert!(!changed);
+        assert_eq!(kept, local);
+        assert!(!chosen.exists(), "a chosen folder is never made");
     }
 
     /// The local store keeps only the fields that this version knows. The
@@ -2065,19 +2213,6 @@ mod tests {
             assert!(!endpoint_ready(&no_model, key));
         }
     }
-
-    #[test]
-    fn every_chosen_destination_is_retained_once() {
-        let mut settings = Settings::default();
-        for folder in ["/vault/a", "/vault/b", "/vault/a", "/vault/c"] {
-            settings.choose_destination(folder);
-        }
-        assert_eq!(
-            settings.destination_roots,
-            ["/vault/a", "/vault/b", "/vault/c"]
-        );
-        assert_eq!(settings.current_destination.as_deref(), Some("/vault/c"));
-    }
 }
 
 #[cfg(test)]
@@ -2293,8 +2428,7 @@ mod stale_recognition_tests {
                 speaker_processing_mode: ProcessingMode::AfterStop,
                 recognition_language: Some("de".into()),
                 system_audio_default: true,
-                destination_roots: vec!["/vault/a".into()],
-                current_destination: Some("/vault/a".into()),
+                storage_folder: "/vault/a".into(),
                 ..Settings::default()
             }
         );

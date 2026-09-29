@@ -4,9 +4,10 @@
 //! presence, length, and a short fingerprint, which is enough to prove a
 //! value survived a relaunch without moving the secret out of Rust.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
@@ -360,17 +361,17 @@ pub fn activate_summary_prompt(
     Ok(settings::get_settings(&app))
 }
 
-/// Pick a folder with the system dialog, make it current, and retain it as a
-/// root (R23, R25a). `None` when the user closes the dialog.
+/// Pick a folder with the system dialog and return its path. Nothing
+/// changes: the surface then asks what to do with the notes in the old
+/// folder, and calls [`change_storage_folder`] (R4). `None` when the user
+/// closes the dialog.
 #[tauri::command]
 #[specta::specta]
-pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, String> {
-    let dialog_app = app.clone();
+pub async fn pick_storage_folder(app: AppHandle) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        dialog_app
-            .dialog()
+        app.dialog()
             .file()
-            .set_title("Choose where sessions are saved")
+            .set_title("Choose where notes are saved")
             .blocking_pick_folder()
     })
     .await
@@ -379,45 +380,86 @@ pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, Stri
         return Ok(None);
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    let folder = path.to_string_lossy().into_owned();
-    settings::update_settings(&app, |s| {
-        s.choose_destination(&folder);
-        Ok(())
-    })?;
-    let joined = app.clone();
-    tauri::async_runtime::spawn_blocking(move || destination_changed(&joined, &folder))
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(Some(settings::get_settings(&app)))
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-/// The shared settings of the new folder apply, and this computer's custom
-/// prompts merge into them (R21, R22). Sessions waiting for a destination
-/// try the new one (R22b), and the library watches start again on the
-/// retained roots (KTD7).
-fn destination_changed(app: &AppHandle, folder: &str) {
-    if let Some(shared) = app.try_state::<Arc<SharedSettingsManager>>() {
-        shared.change_folder(Some(std::path::PathBuf::from(folder)));
+/// What a change of storage folder does with the notes in the old folder
+/// (R4).
+#[derive(Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OldNotes {
+    /// Move every note into the new folder (R5).
+    Move,
+    /// Keep the notes in the old folder. The library forgets them (R7).
+    Leave,
+}
+
+/// Until the Move exists (U8), a change of folder refuses it.
+const MOVE_NOT_AVAILABLE: &str = "Longhand cannot move notes yet. Choose Leave Them.";
+
+/// The checks before a change of storage folder from `current` to `folder`
+/// (KTD11). The error is the cause, as Settings shows it. Returns the new
+/// folder.
+fn check_change(current: &str, folder: &str, old_notes: OldNotes) -> Result<PathBuf, String> {
+    let folder = PathBuf::from(folder);
+    crate::managers::destination::check_new_folder(Path::new(current), &folder)?;
+    if old_notes == OldNotes::Move {
+        return Err(MOVE_NOT_AVAILABLE.into());
     }
-    if let Some(processing) = app.try_state::<std::sync::Arc<ProcessingManager>>() {
+    Ok(folder)
+}
+
+/// Make `folder` the storage folder (R4, R21). The shared settings of the
+/// new folder apply, and this computer's custom prompts merge into them,
+/// or this computer's shared settings go into a folder that has none
+/// (KTD8). Notes that wait for a folder try the new one, and the library
+/// watches the new folder. With Leave them, the library forgets the notes
+/// of the old folder and keeps their files; a busy note is forgotten when
+/// it is free (R7). A note that records during the change saves to the new
+/// folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn change_storage_folder(
+    app: AppHandle,
+    folder: String,
+    old_notes: OldNotes,
+) -> Result<Settings, String> {
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || change_folder(&worker, &folder, old_notes))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(settings::get_settings(&app))
+}
+
+fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(), String> {
+    // One change at a time, so two changes never join two folders.
+    static CHANGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = CHANGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let current = settings::get_settings(app).storage_folder;
+    let new = check_change(&current, folder, old_notes)?;
+    let shared = app.try_state::<Arc<SharedSettingsManager>>();
+    if let Some(shared) = &shared {
+        shared.change_folder(Some(new));
+    }
+    let set = settings::update_settings(app, |s| {
+        s.storage_folder = folder.to_string();
+        Ok(())
+    });
+    if let Err(e) = set {
+        // The shared settings stay with the storage folder.
+        if let Some(shared) = &shared {
+            shared.change_folder(settings::get_settings(app).storage_folder());
+        }
+        return Err(e);
+    }
+    log::info!("the storage folder changed");
+    if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
         processing.retry_awaiting();
+        processing.forget_outside_roots();
         processing.roots_changed();
     }
-}
-
-/// Switch to a folder chosen earlier.
-#[tauri::command(async)]
-#[specta::specta]
-pub fn set_current_destination(app: AppHandle, folder: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        if !s.destination_roots.contains(&folder) {
-            return Err("that folder has not been chosen as a destination".into());
-        }
-        s.current_destination = Some(folder.clone());
-        Ok(())
-    })?;
-    destination_changed(&app, &folder);
-    Ok(settings::get_settings(&app))
+    settings::emit_settings_changed(app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -611,6 +653,47 @@ mod tests {
     use summarize::ModelList;
 
     const LOCAL: &str = "http://localhost:11434/v1";
+
+    #[test]
+    fn a_change_of_folder_refuses_move_until_the_move_exists_and_accepts_leave() {
+        let dir = tempfile::tempdir().unwrap();
+        let (current, new) = (dir.path().join("Notes"), dir.path().join("Disk"));
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        let (current, new) = (current.to_str().unwrap(), new.to_str().unwrap());
+        assert_eq!(
+            check_change(current, new, OldNotes::Move),
+            Err(MOVE_NOT_AVAILABLE.to_string())
+        );
+        assert_eq!(
+            check_change(current, new, OldNotes::Leave),
+            Ok(PathBuf::from(new))
+        );
+    }
+
+    #[test]
+    fn a_change_of_folder_gives_the_cause_of_a_refused_folder_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        std::fs::create_dir_all(&current).unwrap();
+        let current = current.to_str().unwrap();
+        for old_notes in [OldNotes::Move, OldNotes::Leave] {
+            let cause = check_change(current, current, old_notes).unwrap_err();
+            assert!(cause.contains("already the storage folder"), "{cause}");
+        }
+    }
+
+    #[test]
+    fn old_notes_read_as_snake_case() {
+        assert_eq!(
+            serde_json::from_value::<OldNotes>(serde_json::json!("leave")).unwrap(),
+            OldNotes::Leave
+        );
+        assert_eq!(
+            serde_json::from_value::<OldNotes>(serde_json::json!("move")).unwrap(),
+            OldNotes::Move
+        );
+    }
 
     #[test]
     fn the_microphone_list_keeps_each_id_and_names_the_default_by_id() {

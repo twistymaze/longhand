@@ -15,7 +15,7 @@ The app's own storage, where a session lives while it records and processes: its
 Some of what it holds never leaves it: the processing audio and the raw recovery chunks stay behind when the session moves to its Destination.
 
 ### Destination
-The folder the user chose to receive finished sessions, possibly on another volume or in a synced cloud folder that several computers share. Nothing partial ever appears in it. The UI calls it "Storage" (Settings > Storage); "Destination" is the term in code and docs only.
+The one storage folder that receives finished sessions, possibly on another volume or in a synced cloud folder that several computers share. A new install uses the default folder `Longhand/Notes` in the local app data folder until the user chooses another. Nothing partial ever appears in it. The UI calls it "Storage" (Settings > Storage); the settings field is `storage_folder`, and "Destination" is the term in older code and docs.
 
 ### Save
 The step that moves a finished, verified session from the Working location into the Destination under its final folder name. Its end state is Saved. At every moment, exactly one location holds a complete copy. After a crash at any point, Save continues from what is on disk. It does not start again and it does not lose the session.
@@ -37,7 +37,7 @@ The name of a session, shown on Home, on the session page and in the home folder
 ## The library
 
 ### Library
-Every saved session in the retained Destinations: the Destination that the user chose now, and each earlier one that the settings keep. Several computers of one person can share a Destination through a sync service (OneDrive, Google Drive, Dropbox, iCloud). Each computer lists the whole library, including the sessions that other computers recorded. The home folders are the authority: each computer keeps its store in step with them through a library scan at launch and a folder watcher while Longhand runs.
+Every saved session in the Destination. After a change of storage folder, the library forgets the sessions of the old folder and leaves their folders on disk. Several computers of one person can share a Destination through a sync service (OneDrive, Google Drive, Dropbox, iCloud). Each computer lists the whole library, including the sessions that other computers recorded. The home folders are the authority: each computer keeps its store in step with them through a library scan at launch and a folder watcher while Longhand runs.
 
 A computer that only receives a sync changes no home folder. An automatic step, such as a launch reconcile, writes into a home folder only for work that this computer started and recorded. A partial sync can make the files of one home folder disagree for a time, so the shared files cannot tell which computer made a change.
 

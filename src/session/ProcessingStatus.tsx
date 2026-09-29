@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { commands, type SessionDetail } from "../bindings";
 import { type StageRow, sentence, stageLabel, stageRows, stoppedAt } from "../processing/describe";
+import { changeToPickedFolder } from "../settings/DestinationPicker";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
 import type { Live } from "./useSessions";
 
@@ -114,7 +115,7 @@ function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => vo
               prominent
               onClick={() =>
                 // Choosing a folder retries every session waiting for one.
-                void commands.chooseDestination().then(onDone)
+                void changeToPickedFolder().then(onDone)
               }
             >
               Choose Folder…
