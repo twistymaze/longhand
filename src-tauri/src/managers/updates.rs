@@ -389,6 +389,9 @@ pub fn install_at_launch(app: &AppHandle) {
     if !crate::managers::settings::get_settings(app).check_updates_automatically {
         return;
     }
+    // The launch waits for this check. The client timeout applies to the
+    // request only, so the outer timeout also limits the client build and
+    // any other step that does not end.
     let checked = tauri::async_runtime::block_on(async {
         tokio::time::timeout(
             LAUNCH_CHECK_TIMEOUT,

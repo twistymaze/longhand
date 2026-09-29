@@ -7,15 +7,15 @@ import { useEffect, useRef, useState } from "react";
 import { commands, events, type Choice, type UpdateState } from "../bindings";
 import { AppIcon } from "../settings/icons";
 import { sentence } from "../processing/describe";
-import { formatBytes } from "../settings/ui";
+import { Button, formatBytes } from "../settings/ui";
 
 /// A prominent button is blue, as the default button of a macOS alert.
-type Button = { label: string; choice: Choice; prominent?: boolean };
+type Action = { label: string; choice: Choice; prominent?: boolean };
 
 /// The text and the buttons of one state. The last button is the default.
-type View = { title: string; message?: string; progress?: { downloaded: number; total: number | null }; buttons: Button[] };
+type View = { title: string; message?: string; progress?: { downloaded: number; total: number | null }; buttons: Action[] };
 
-const ok: Button = { label: "OK", choice: "close", prominent: true };
+const ok: Action ={ label: "OK", choice: "close", prominent: true };
 
 export function viewOf(state: UpdateState): View | null {
   switch (state.state) {
@@ -139,19 +139,14 @@ export function UpdateWindow() {
           {view.buttons.map((b, i) => {
             const isDefault = i === view.buttons.length - 1;
             return (
-              <button
+              <Button
                 key={b.choice}
                 ref={isDefault ? defaultButton : undefined}
-                type="button"
+                prominent={b.prominent}
                 onClick={() => choose(b.choice)}
-                className={`rounded-md px-2.5 py-[3px] outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent ${
-                  b.prominent
-                    ? "bg-accent text-white active:opacity-80"
-                    : "bg-fill text-label active:bg-fill-pressed"
-                }`}
               >
                 {b.label}
-              </button>
+              </Button>
             );
           })}
         </div>

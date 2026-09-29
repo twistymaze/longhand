@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type Settings, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type Result, type Settings, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
 import { sentence } from "../processing/describe";
 import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
@@ -191,10 +191,21 @@ export function StatusPane({
   );
 }
 
-/// The Hide from Dock switch (R2, KTD3). It shows on macOS only, because
-/// the setter returns an error on other platforms. A failed change keeps
-/// the previous value.
-function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+/// A switch for one Boolean setting. A failed change keeps the previous
+/// value.
+function SettingSwitch({
+  label,
+  detail,
+  checked,
+  set,
+  onSettings,
+}: {
+  label: string;
+  detail: string;
+  checked: boolean;
+  set: (enabled: boolean) => Promise<Result<Settings, string>>;
+  onSettings: (s: Settings) => void;
+}) {
   const [error, setError] = useState<string | null>(null);
   // The switch is off while a change is in progress, so a second click
   // cannot send a second request.
@@ -202,7 +213,7 @@ function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings
   const change = async (enabled: boolean) => {
     setPending(true);
     try {
-      const result = await commands.setHideFromDock(enabled);
+      const result = await set(enabled);
       if (result.status === "error") setError(sentence(result.error));
       else {
         setError(null);
@@ -214,50 +225,39 @@ function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings
   };
   return (
     <>
-      <Row label="Hide from Dock" detail="Show Longhand in the Dock only while a window is open">
-        <Switch
-          label="Hide from Dock"
-          checked={settings.hide_from_dock}
-          disabled={pending}
-          onChange={(v) => void change(v)}
-        />
+      <Row label={label} detail={detail}>
+        <Switch label={label} checked={checked} disabled={pending} onChange={(v) => void change(v)} />
       </Row>
       {error && <ErrorText>{error}</ErrorText>}
     </>
   );
 }
 
-/// The switch for automatic update checks (R10, KD7). Updates are macOS
-/// only, so the group shows on macOS only. A failed change keeps the
-/// previous value.
-function AutomaticUpdates({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  const change = async (enabled: boolean) => {
-    setPending(true);
-    try {
-      const result = await commands.setCheckUpdatesAutomatically(enabled);
-      if (result.status === "error") setError(sentence(result.error));
-      else {
-        setError(null);
-        onSettings(result.data);
-      }
-    } finally {
-      setPending(false);
-    }
-  };
+/// The Hide from Dock switch (R2, KTD3). It shows on macOS only, because
+/// the setter returns an error on other platforms.
+function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
   return (
-    <>
-      <Row label="Check for updates automatically" detail="Checks when Longhand opens and every hour">
-        <Switch
-          label="Check for updates automatically"
-          checked={settings.check_updates_automatically}
-          disabled={pending}
-          onChange={(v) => void change(v)}
-        />
-      </Row>
-      {error && <ErrorText>{error}</ErrorText>}
-    </>
+    <SettingSwitch
+      label="Hide from Dock"
+      detail="Show Longhand in the Dock only while a window is open"
+      checked={settings.hide_from_dock}
+      set={commands.setHideFromDock}
+      onSettings={onSettings}
+    />
+  );
+}
+
+/// The switch for automatic update checks (R10, KD7). Updates are macOS
+/// only, so the group shows on macOS only.
+function AutomaticUpdates({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  return (
+    <SettingSwitch
+      label="Check for updates automatically"
+      detail="Checks when Longhand opens and every hour"
+      checked={settings.check_updates_automatically}
+      set={commands.setCheckUpdatesAutomatically}
+      onSettings={onSettings}
+    />
   );
 }
 
