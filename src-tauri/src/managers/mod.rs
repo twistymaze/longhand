@@ -7,4 +7,5 @@ pub mod models;
 pub mod processing;
 pub mod secrets;
 pub mod settings;
+pub mod shared;
 pub mod updates;

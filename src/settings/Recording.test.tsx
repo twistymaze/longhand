@@ -12,19 +12,18 @@ function settings(extra: Partial<Settings> = {}): Settings {
     interface_zoom_percent: 100,
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
-    destination_roots: [],
-    current_destination: null,
+    storage_folder: "/notes",
     endpoint_base_url: "",
     endpoint_model: "",
     context_limit_tokens: null,
     default_speaker_count: null,
     asr_model: "parakeet-unified-en-0.6b-q80",
-    pending_asr_model: null,
     live_transcript: true,
     speaker_source: "pyannote",
     speaker_processing_mode: "after_stop",
     recognition_language: null,
-    pending_recognition: null,
+    chosen_recognition: { asr_model: "parakeet-unified-en-0.6b-q80", live_transcript: true, speaker_source: "pyannote", speaker_processing_mode: "after_stop", recognition_language: null, default_speaker_count: null },
+    recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
     microphone: null,
     system_audio_default: false,
     hide_from_dock: false,
@@ -32,6 +31,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     learned_context_limits: {},
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
+    shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
     ...extra,
   };
 }
@@ -56,10 +56,11 @@ async function open({
   const state = { settings: settings(extra), microphones };
   const mock = mockTauri({
     get_settings: () => state.settings,
+    move_status: () => null,
     readiness: () => ({
       microphone_authorized: true,
       system_audio: "allowed",
-      destination: { kind: "unset" },
+      destination: { kind: "ready", path: "/notes", free_bytes: null },
       armed: false,
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },
       missing_models: [],

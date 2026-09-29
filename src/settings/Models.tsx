@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   commands,
   type DownloadUpdate,
   type ModelRole,
   type ModelStatus,
+  type RecognitionConfig,
   type Settings,
 } from "../bindings";
 import { sentence } from "../processing/describe";
 import { RecognitionOptions, recognitionDefaults } from "./RecognitionOptions";
-import { Button, ErrorText, Pane, ProgressBar, formatBytes } from "./ui";
+import { readOnlyReason } from "./shared";
+import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, formatBytes } from "./ui";
 import type { RecognitionDefaultsSave } from "./useAppSettings";
 
 export const roleLabel: Record<ModelRole, string> = {
@@ -17,6 +19,18 @@ export const roleLabel: Record<ModelRole, string> = {
   segmentation: "Speaker segmentation",
   embedding: "Speaker embedding",
 };
+/// A text that identifies the six values of a recognition configuration.
+function configKey(c: RecognitionConfig): string {
+  return JSON.stringify([
+    c.asr_model,
+    c.speaker_source,
+    c.processing_mode,
+    c.speaker_processing_mode ?? "after_stop",
+    c.speaker_count,
+    c.language,
+  ]);
+}
+
 export type Actions = {
   cancel: () => void;
   refresh: () => Promise<void>;
@@ -78,11 +92,53 @@ export function Models({
       setBusy(false);
     }
   };
+  const modelName = (id: string) => models.find((m) => m.id === id)?.name ?? id;
   const active = Object.values(live).some(
     (v) => v.kind === "progress" || v.kind === "verifying",
   );
-  const pending = (m: ModelStatus) =>
-    settings.pending_recognition?.asr_model === m.id || settings.pending_asr_model === m.id;
+  const chosen = settings.chosen_recognition;
+  const waiting = settings.recognition.differs && !settings.recognition.chosen_not_known;
+  const failure = waiting ? settings.recognition.failure : null;
+  const pending = (m: ModelStatus) => waiting && !failure && chosen.asr_model === m.id;
+  const readOnly = readOnlyReason(settings);
+  // A chosen configuration that this pane did not send, for example from
+  // another computer, shows in new choices (R20). The pane's own choice
+  // keeps the choices, and the focus, where they are.
+  const chosenKey = configKey(recognitionDefaults(settings));
+  const sentKeys = useRef(new Set<string>());
+  const [optionsKey, setOptionsKey] = useState(chosenKey);
+  useEffect(() => {
+    if (sentKeys.current.has(chosenKey)) return;
+    sentKeys.current.clear();
+    setOptionsKey(chosenKey);
+  }, [chosenKey]);
+  // The progress of the files that the chosen configuration waits for.
+  const waitingUpdates = settings.recognition.waiting_for
+    .map((id) => live[id])
+    .filter((u): u is DownloadUpdate => Boolean(u));
+  const waitingBytes = waitingUpdates.reduce(
+    (sum, u) => (u.kind === "progress" ? { done: sum.done + u.downloaded, total: sum.total + u.total } : sum),
+    { done: 0, total: 0 },
+  );
+  const waitingProgress = waitingBytes.total > 0 ? waitingBytes.done / waitingBytes.total : null;
+  const waitingText =
+    waitingProgress !== null
+      ? `Downloading… ${formatBytes(waitingBytes.done)} of ${formatBytes(waitingBytes.total)}`
+      : waitingUpdates.some((u) => u.kind === "verifying")
+        ? "Checking download…"
+        : "Waiting to download…";
+  const retry = async () => {
+    setBusy(true);
+    try {
+      await commands.retryRecognitionDownloads();
+      setError(null);
+      await actions.refresh();
+    } catch {
+      setError("Could not start the model download.");
+    } finally {
+      setBusy(false);
+    }
+  };
   const updatesOf = (m: ModelStatus) =>
     (owners.has(m.id) || pending(m) ? m.bundle : [m.id])
       .map((id) => live[id])
@@ -116,7 +172,7 @@ export function Models({
     return message && <p role="status" className="text-[0.85rem] text-accent">{message}</p>;
   };
   const modelAction = (m: ModelStatus) => {
-    const selected = m.id === settings.asr_model;
+    const selected = m.id === settings.asr_model || m.id === chosen.asr_model;
     const present = m.state.state === "present";
     const repair =
       !m.bundle_complete && (present || selected) && !downloading(m) && !pending(m) ? (
@@ -150,13 +206,43 @@ export function Models({
       <p className="text-[0.85rem] text-label-secondary">
         New notes use these choices.
       </p>
-      {settings.pending_recognition && (
-        <p role="status" className="px-4 pt-3">
-          Models are downloading for{" "}
-          {models.find((m) => m.id === settings.pending_recognition?.asr_model)
-            ?.name ?? settings.pending_recognition.asr_model}
-          . Current defaults stay until they are ready.
+      {readOnly && (
+        <p role="status" className="text-[0.85rem] text-caution">
+          {readOnly} Transcription choices can’t be changed now.
         </p>
+      )}
+      {settings.recognition.differs && (
+        <Group header="Model change">
+          {settings.recognition.chosen_not_known ? (
+            <Row
+              label="Chosen in a newer version of Longhand"
+              detail="Update Longhand on this computer to use it."
+            />
+          ) : failure ? (
+            <Row
+              label={<Status tone="negative">{modelName(chosen.asr_model)} could not download</Status>}
+              detail={sentence(failure.message)}
+            >
+              <Button prominent disabled={busy} onClick={() => void retry()}>
+                Retry
+              </Button>
+            </Row>
+          ) : (
+            <Row label={modelName(chosen.asr_model)} detail={<span role="status">{waitingText}</span>}>
+              {waitingProgress !== null && <ProgressBar fraction={waitingProgress} />}
+            </Row>
+          )}
+          <Row
+            label={modelName(settings.asr_model)}
+            detail={
+              failure || settings.recognition.chosen_not_known
+                ? "New notes use this model."
+                : "New notes use this model until the download is done."
+            }
+          >
+            <span className="text-label-secondary">In use</span>
+          </Row>
+        </Group>
       )}
       {saving && (
         <p role="status" className="px-4 text-label-secondary">
@@ -165,14 +251,17 @@ export function Models({
       )}
       {(error || defaults.error) && <ErrorText>{error || defaults.error}</ErrorText>}
       <RecognitionOptions
+        key={optionsKey}
         models={models}
         initial={recognitionDefaults(settings)}
         onResolved={() => {}}
         onChanged={(next) => {
           setError(null);
           own(next.config.asr_model);
+          sentKeys.current.add(configKey(next.config));
           defaults.save(next.config);
         }}
+        disabled={readOnly !== null}
         modelAction={modelAction}
         modelActivity={modelActivity}
       />

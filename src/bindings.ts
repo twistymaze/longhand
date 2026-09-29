@@ -9,7 +9,8 @@ async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
 /**
- * Keep the complete default until every new artifact is downloaded.
+ * Choose the complete recognition configuration (R18). The configuration
+ * in use stays until every file of the chosen configuration is on disk.
  */
 async setRecognitionDefaults(config: RecognitionConfig) : Promise<Result<Settings, string>> {
     try {
@@ -116,9 +117,8 @@ async setDefaultSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result
 }
 },
 /**
- * Pick the recognition model (R5, KD7). A pick that is not downloaded
- * starts its download. While the selected model is downloaded, it stays in
- * use until the pick's download is verified.
+ * Choose the recognition model (R5, R18). The model in use stays until
+ * every file of the chosen configuration is on disk.
  */
 async selectAsrModel(modelId: string) : Promise<Result<Settings, string>> {
     try {
@@ -138,6 +138,13 @@ async setLiveTranscript(enabled: boolean) : Promise<Result<Settings, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Start the failed downloads of the chosen recognition configuration
+ * again (R19).
+ */
+async retryRecognitionDownloads() : Promise<Settings> {
+    return await TAURI_INVOKE("retry_recognition_downloads");
 },
 /**
  * The connected inputs for the Microphone choice (R1). The device list can
@@ -268,23 +275,65 @@ async activateSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
 }
 },
 /**
- * Pick a folder with the system dialog, make it current, and retain it as a
- * root (R23, R25a). `None` when the user closes the dialog.
+ * Pick a folder with the system dialog and return its path. Nothing
+ * changes: the surface then asks what to do with the notes in the old
+ * folder, and calls [`change_storage_folder`] (R4). `None` when the user
+ * closes the dialog.
  */
-async chooseDestination() : Promise<Result<Settings | null, string>> {
+async pickStorageFolder() : Promise<Result<string | null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("choose_destination") };
+    return { status: "ok", data: await TAURI_INVOKE("pick_storage_folder") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Switch to a folder chosen earlier.
+ * Make `folder` the storage folder (R4, R21). The shared settings of the
+ * new folder apply, and this computer's custom prompts merge into them,
+ * or this computer's shared settings go into a folder that has none
+ * (KTD8). Notes that wait for a folder try the new one, and the library
+ * watches the new folder. With Move, the Move journal opens before the
+ * folder changes, and the Move puts each note in the new folder while the
+ * library lists it from the old folder until it moves (R5, R10). With
+ * Leave them, the library forgets the notes of the old folder and keeps
+ * their files; a busy note is forgotten when it is free (R7). A note that
+ * records during the change saves to the new folder.
  */
-async setCurrentDestination(folder: string) : Promise<Result<Settings, string>> {
+async changeStorageFolder(folder: string, oldNotes: OldNotes) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_current_destination", { folder }) };
+    return { status: "ok", data: await TAURI_INVOKE("change_storage_folder", { folder, oldNotes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The Move of the notes to the storage folder, or `None` when no Move
+ * runs or is paused.
+ */
+async moveStatus() : Promise<MoveStatus | null> {
+    return await TAURI_INVOKE("move_status");
+},
+/**
+ * Continue a paused Move (R10, AE13).
+ */
+async retryMove() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("retry_move") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Open the storage folder in Finder, or in Explorer on Windows (R3,
+ * KTD17). The command opens the folder from Rust, so the Settings window
+ * gets no file path permission.
+ */
+async showStorageFolder() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("show_storage_folder") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -785,6 +834,8 @@ liveRecognitionEvent: LiveRecognitionEvent,
 liveTranscriptEvent: LiveTranscriptEvent,
 liveTranscriptStatus: LiveTranscriptStatus,
 modelDownloadEvent: ModelDownloadEvent,
+movePaused: MovePaused,
+moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
@@ -799,6 +850,8 @@ liveRecognitionEvent: "live-recognition-event",
 liveTranscriptEvent: "live-transcript-event",
 liveTranscriptStatus: "live-transcript-status",
 modelDownloadEvent: "model-download-event",
+movePaused: "move-paused",
+moveProgress: "move-progress",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
@@ -891,7 +944,7 @@ export type DeleteSessionError =
  * A permanent delete or the store failed.
  */
 { kind: "failed"; message: string }
-export type DestinationStatus = { kind: "unset" } | { kind: "ready"; path: string; free_bytes: number | null } | 
+export type DestinationStatus = { kind: "ready"; path: string; free_bytes: number | null } | 
 /**
  * Deleted, renamed, or on a volume that is not mounted.
  */
@@ -1071,6 +1124,45 @@ bundle_size_bytes: number;
  */
 bundle_complete: boolean }
 /**
+ * Why the Move is paused, with the text that Settings shows.
+ */
+export type MovePauseCause = { kind: MovePauseKind; message: string }
+export type MovePauseKind = "disk_full" | "folder_not_available" | "failed"
+/**
+ * The Move paused (R10).
+ */
+export type MovePaused = { cause: MovePauseCause }
+/**
+ * The progress of the Move, sent after each note and when the state
+ * changes.
+ */
+export type MoveProgress = { moved: number; total: number; state: MoveState }
+/**
+ * What the Move of the notes to a new storage folder does (KTD9).
+ */
+export type MoveState = 
+/**
+ * The Move puts the notes in the new folder.
+ */
+"running" | 
+/**
+ * A note records, saves or is processed: it moves when it is free.
+ */
+"waiting" | 
+/**
+ * A full disk or a folder that is not available stopped the Move.
+ * Retry continues it.
+ */
+"paused" | 
+/**
+ * Every note is in the new folder.
+ */
+"finished"
+/**
+ * The open Move, for Settings > Storage.
+ */
+export type MoveStatus = { old_folder: string; new_folder: string; moved: number; total: number; state: MoveState; cause: MovePauseCause | null }
+/**
  * What a notes save did.
  */
 export type NotesSaveResult = 
@@ -1085,6 +1177,19 @@ export type NotesSaveResult =
  * beside it. The editor loads the notes again.
  */
 { kind: "conflict"; draft: string }
+/**
+ * What a change of storage folder does with the notes in the old folder
+ * (R4).
+ */
+export type OldNotes = 
+/**
+ * Move every note into the new folder (R5).
+ */
+"move" | 
+/**
+ * Keep the notes in the old folder. The library forgets them (R7).
+ */
+"leave"
 export type ProcessingMode = "during_recording" | "after_stop"
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
 /**
@@ -1122,6 +1227,37 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * What processing is doing, for the surface.
  */
 export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
+/**
+ * Why the shared settings are read-only.
+ */
+export type ReadOnlyCause = 
+/**
+ * No storage folder is set.
+ */
+"no_storage_folder" | 
+/**
+ * Longhand did not read the storage folder since launch.
+ */
+"not_read_yet" | 
+/**
+ * The storage folder does not exist, for example because its disk is
+ * not connected.
+ */
+"folder_not_available" | 
+/**
+ * The storage folder or its settings file cannot be read.
+ */
+"not_readable" | 
+/**
+ * The settings file is not one complete JSON object, for example
+ * because a sync delivered only a part of it (KTD3).
+ */
+"does_not_parse" | 
+/**
+ * The storage folder has no settings file, and Longhand did not write
+ * one into it.
+ */
+"no_settings_file"
 export type Readiness = { microphone_authorized: boolean; 
 /**
  * The system audio permission (R9). It does not change `armed`: the
@@ -1129,13 +1265,15 @@ export type Readiness = { microphone_authorized: boolean;
  */
 system_audio: SystemAudioPermission; destination: DestinationStatus; 
 /**
- * Microphone authorized, a destination chosen, and the chord registered
- * or cleared (R1c, R13). A destination that is unreachable right now can be changed
- * before the session is saved (R23), so it is shown rather than blocking.
+ * Microphone authorized, and the chord registered or cleared (R1c,
+ * R13). A storage folder that is not available now is shown, and does
+ * not block a recording: the note waits to save (AE1).
  */
 armed: boolean; shortcut: ShortcutStatus; 
 /**
- * Catalog ids of required weights not yet on disk.
+ * Catalog ids of the weights that the next note needs and that are
+ * not on disk yet. They do not block a recording: processing waits
+ * for them (KTD16).
  */
 missing_models: string[]; 
 /**
@@ -1143,7 +1281,58 @@ missing_models: string[];
  * processing use them (KTD3). A locked Keychain does not clear it.
  */
 endpoint_configured: boolean }
+/**
+ * The six values of a recognition configuration, as the settings hold
+ * them (R18): the chosen configuration in the shared settings, or the
+ * configuration in use on this computer.
+ */
+export type RecognitionChoice = { 
+/**
+ * Catalog id of the transcription model (KTD6).
+ */
+asr_model: string; 
+/**
+ * A streaming model transcribes during recording (R18, KD9).
+ */
+live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; default_speaker_count: SpeakerCountSetting | null }
 export type RecognitionConfig = { asr_model: string; speaker_source: SpeakerSource; processing_mode: ProcessingMode; speaker_processing_mode?: ProcessingMode; speaker_count: SpeakerCount | null; language: string | null }
+/**
+ * A failed download of a file that the chosen configuration needs (R19).
+ */
+export type RecognitionFailure = { 
+/**
+ * The catalog id of the file.
+ */
+model_id: string; 
+/**
+ * The cause, as Settings shows it.
+ */
+message: string }
+/**
+ * The chosen recognition configuration compared with the configuration in
+ * use, for the Settings window (R18, R19).
+ */
+export type RecognitionState = { 
+/**
+ * The chosen configuration differs from the configuration in use.
+ */
+differs: boolean; 
+/**
+ * The chosen configuration has a value that this version does not
+ * know, for example a model from a newer version. The configuration in
+ * use stays, and no download starts.
+ */
+chosen_not_known: boolean; 
+/**
+ * The catalog ids of the files that the chosen configuration waits
+ * for. `ModelDownloadEvent` gives the progress of each.
+ */
+waiting_for: string[]; 
+/**
+ * A download of the chosen configuration failed. It stays failed
+ * until the user selects Retry.
+ */
+failure: RecognitionFailure | null }
 /**
  * A session started, stopped, or resumed recording.
  */
@@ -1342,6 +1531,13 @@ found_speakers: number | null;
  * be read now (R16). Opening it and its actions wait.
  */
 storage_unavailable: boolean }
+/**
+ * The settings that the app uses: the local settings of this computer and
+ * the shared settings of the storage folder (KTD7). The local store holds
+ * only the local fields. Each shared field comes from the shared view; a
+ * value that this version does not know reads as the default here, and
+ * `shared.unknown_values` names it.
+ */
 export type Settings = { settings_schema_version: number; interface_zoom_percent: number; 
 /**
  * The chord that starts and stops a recording. `None` when the user
@@ -1354,14 +1550,11 @@ shortcut: string | null;
  */
 show_window_shortcut: string | null; 
 /**
- * Every folder the user has ever chosen, oldest first (R25a). The index
- * is rebuilt by scanning these, so a root is never dropped silently.
+ * The one storage folder (R1). The library lists the notes in it, and
+ * the next note saves to it. Empty only until the launch sets the
+ * default folder (R2, KTD12).
  */
-destination_roots: string[]; 
-/**
- * Where the next session is saved (R23). Always one of the roots.
- */
-current_destination: string | null; 
+storage_folder: string; 
 /**
  * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
  * `None` means a new install that has no settings yet, and
@@ -1372,20 +1565,31 @@ endpoint_base_url: string | null; endpoint_model: string;
 /**
  * Overrides the probed context budget when set (KTD16).
  */
-context_limit_tokens: number | null; default_speaker_count: SpeakerCountSetting | null; 
+context_limit_tokens: number | null; 
+/**
+ * This field and the five after it are the recognition configuration
+ * in use on this computer (R18, KTD14). Recording, processing and
+ * Transcribe Again read them. They change to `chosen_recognition` as
+ * one unit when every model that it needs is on disk.
+ */
+default_speaker_count: SpeakerCountSetting | null; 
 /**
  * Catalog id of the recognition model (KTD6).
  */
 asr_model: string; 
 /**
- * A picked recognition model that is downloading. It becomes
- * `asr_model` when its download is verified (R5, KTD11).
- */
-pending_asr_model: string | null; 
-/**
  * A streaming model transcribes during recording (R18, KD9).
  */
-live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; pending_recognition: RecognitionConfig | null; 
+live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; 
+/**
+ * A shared setting. The chosen recognition configuration (R18).
+ */
+chosen_recognition: RecognitionChoice; 
+/**
+ * The chosen configuration compared with the configuration in use,
+ * and the downloads that it waits for (R19).
+ */
+recognition: RecognitionState; 
 /**
  * The microphone a new note records from. `None` is "System default"
  * (R1, KTD17).
@@ -1401,9 +1605,9 @@ system_audio_default: boolean;
  */
 hide_from_dock: boolean; 
 /**
- * The app checks for a newer build of its track at launch, each hour
- * and at each wake (R9, R10). On by default. "Check for Updates…"
- * works when it is off (R11).
+ * A shared setting. The app checks for a newer build of its track at
+ * launch, each hour and at each wake (R9, R10). On by default. "Check
+ * for Updates…" works when it is off (R11).
  */
 check_updates_automatically: boolean; 
 /**
@@ -1412,19 +1616,43 @@ check_updates_automatically: boolean;
  */
 learned_context_limits: Partial<{ [key in string]: number }>; 
 /**
- * The custom summary prompts, in the order the user made them (KTD6).
+ * A shared setting. The custom summary prompts, in the order that
+ * Settings shows them (KTD6).
  */
 summary_prompts: SummaryPrompt[]; 
 /**
- * The id of the prompt that the next summary uses. An id that matches
- * no prompt resolves to the Topic summary.
+ * A shared setting. The id of the prompt that the next summary uses.
+ * An id that matches no prompt resolves to the Topic summary.
  */
-active_summary_prompt: string }
+active_summary_prompt: string; 
+/**
+ * Whether this computer can change the shared settings now, and the
+ * values that this version does not know (R16, R17).
+ */
+shared: SharedState }
 /**
  * The settings changed without a command from the surface, for example
  * when a picked model becomes the selected model after its download.
  */
 export type SettingsChanged = { settings: Settings }
+/**
+ * Whether this computer can change the shared settings now (R16).
+ */
+export type SharedAvailability = { kind: "available" } | 
+/**
+ * The shared settings come from the local cache, or from the defaults
+ * when there is no cache.
+ */
+{ kind: "read_only"; cause: ReadOnlyCause }
+/**
+ * The state of the shared settings, for the Settings window.
+ */
+export type SharedState = { availability: SharedAvailability; 
+/**
+ * The settings file comes from a newer version of Longhand, so it can
+ * hold settings that this version does not show.
+ */
+newer_version: boolean; unknown_values: UnknownSharedValue[] }
 /**
  * Which of the two shortcuts a command acts on.
  */
@@ -1527,6 +1755,15 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * A value in the shared settings file that this version does not know.
+ * Longhand keeps it in the file (R17).
+ */
+export type UnknownSharedValue = { key: string; 
+/**
+ * The value as JSON text.
+ */
+value: string }
 /**
  * What the update window shows, and what the manager does in the
  * background. A state with a view shows the update window.

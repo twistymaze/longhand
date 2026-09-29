@@ -29,7 +29,8 @@ pub enum FolderRename {
     /// The folder already has the name its title gives.
     Unchanged,
     /// The session is busy: it records, is queued, processes, regenerates
-    /// its summary or is deleted. The folder takes the name when that ends.
+    /// its summary, is deleted or moves to a new storage folder. The folder
+    /// takes the name when that ends.
     Later,
     /// The folder has the new name at this path.
     Moved(PathBuf),
@@ -49,19 +50,31 @@ pub fn rename_session(
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    let mut guard = lock(store);
+    rename_locked(&mut lock(store), session_id, title, claimed, fs)
+}
+
+/// [`rename_session`] for a caller that holds the store lock: the runner
+/// takes it when the Move does not hold the note
+/// ([`crate::move_notes::lock_unheld`]).
+pub fn rename_locked(
+    guard: &mut Store,
+    session_id: &str,
+    title: &str,
+    claimed: &dyn Fn(&str) -> bool,
+    fs: &dyn Fs,
+) -> Result<FolderRename, StageError> {
     let claimed = claimed(session_id);
-    crate::follow::follow_folder(&mut guard, session_id, claimed)?;
+    crate::follow::follow_folder(guard, session_id, claimed)?;
     guard.set_title(session_id, title, TitleSource::User)?;
     // Recorded before the move, so a crash before the reconcile ends leaves
     // the rename to the next launch.
     guard.set_rename_owed(session_id, true)?;
-    let renamed = reconcile(&guard, session_id, claimed, true, fs)?;
+    let renamed = reconcile(guard, session_id, claimed, true, fs)?;
     // A folder that moves later, or that keeps its name because the move
     // failed, gets the title in its `session.md` now. Otherwise the next
     // library refresh reads the old title and puts it back in the row.
     if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
-        write_title(&guard, session_id);
+        write_title(guard, session_id);
     }
     Ok(renamed)
 }
@@ -135,7 +148,12 @@ fn reconcile_once(
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
     let record = require(store, session_id)?;
-    if busy(&record, claimed) {
+    // The Move puts the folder in the new storage folder first (KTD9).
+    let moving = !matches!(
+        store.move_step(session_id)?,
+        None | Some(session_core::MoveStep::Done)
+    );
+    if busy(&record, claimed) || moving {
         return Ok(FolderRename::Later);
     }
     // An intent that an earlier failure left is settled first, so the

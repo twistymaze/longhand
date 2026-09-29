@@ -58,6 +58,8 @@ session-save = { path = "../crates/session-save" }
 summarize = { path = "../crates/summarize" }
 diarize = { path = "../crates/diarize" }
 session-core = { path = "../crates/session-core" }
+# The shared settings and prompt files in the storage folder (KTD1).
+shared-settings = { path = "../crates/shared-settings" }
 supervisor = { path = "../crates/supervisor" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # The generation wrapper of a speaker stream (managers/capture.rs).
@@ -65,7 +67,7 @@ futures-util = "0.3"
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"
-uuid = { version = "1", features = ["v4"] }
+uuid.workspace = true
 trash = "5"
 # The library watcher (managers/library.rs), as anarlog's notify plugin uses them.
 notify = "8"

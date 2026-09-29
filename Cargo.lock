@@ -3025,6 +3025,7 @@ dependencies = [
  "session-save",
  "sfx",
  "sha2 0.10.9",
+ "shared-settings",
  "specta",
  "specta-typescript",
  "summarize",
@@ -5288,6 +5289,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5316,6 +5323,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared-settings"
+version = "0.1.0"
+dependencies = [
+ "library",
+ "log",
+ "models",
+ "serde",
+ "serde_json",
+ "session-save",
+ "summarize",
+ "tempfile",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]
@@ -6926,6 +6949,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "wasm-bindgen",
 ]
 

@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { commands, type SessionDetail } from "../bindings";
 import { type StageRow, sentence, stageLabel, stageRows, stoppedAt } from "../processing/describe";
+import { useFolderChange } from "../settings/OldNotesDialog";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
 import type { Live } from "./useSessions";
 
@@ -59,6 +60,7 @@ type Outcome = { status: "ok" } | { status: "error"; error: string };
 
 function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
+  const folder = useFolderChange();
   const run = (action: () => Promise<Outcome>) =>
     void action().then((r) => {
       setError(r.status === "error" ? r.error : null);
@@ -113,14 +115,15 @@ function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => vo
             <Button
               prominent
               onClick={() =>
-                // Choosing a folder retries every session waiting for one.
-                void commands.chooseDestination().then(onDone)
+                // A change of folder retries every note that waits for one.
+                run(folder.change)
               }
             >
               Choose Folder…
             </Button>
           </Row>
           {error && <ErrorText>{error}</ErrorText>}
+          {folder.dialog}
         </Group>
       );
     default:

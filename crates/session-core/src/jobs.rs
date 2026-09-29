@@ -67,6 +67,15 @@ pub struct RecordingModel {
     pub live_transcript: bool,
 }
 
+/// The active summary prompt when a note starts recording (KTD15). The
+/// note's first automatic summary uses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSnapshot {
+    pub id: String,
+    pub name: String,
+    pub text: String,
+}
+
 /// A microphone that a note chose: cpal's stable device ID, with the device
 /// name as its label (KTD1 of the system audio plan).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +216,61 @@ pub struct RenameIntent {
     pub temp: Option<String>,
 }
 
+/// The step of one note in a Move (KTD9). The Move records each step
+/// before it takes the next one. The paths are absolute.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum MoveStep {
+    /// The note is in the old folder only.
+    Pending,
+    /// The folders are on different volumes: `staging`, in the new folder,
+    /// holds a verified copy of `source`. `replaces` is a placed copy that
+    /// differed from the source: it goes before the staged copy takes its
+    /// place.
+    Copied {
+        source: std::path::PathBuf,
+        staging: std::path::PathBuf,
+        replaces: Option<std::path::PathBuf>,
+    },
+    /// The note is at `path` in the new folder. `source` is the note in the
+    /// old folder when the Move copied it; `None` after a rename.
+    Placed {
+        source: Option<std::path::PathBuf>,
+        path: std::path::PathBuf,
+    },
+    /// The store's home path is `path`. `source` is removed next.
+    Homed {
+        source: Option<std::path::PathBuf>,
+        path: std::path::PathBuf,
+    },
+    Done,
+}
+
+/// Why a Move is paused (R10). Retry continues it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MovePause {
+    /// The disk of `folder` is full.
+    DiskFull { folder: String },
+    /// `folder` is not reachable, for example on a disk that is not
+    /// connected.
+    NotReachable { folder: String },
+    /// Another error stopped the Move.
+    Failed { message: String },
+}
+
+/// The open Move journal (KTD9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveJournal {
+    pub old_folder: std::path::PathBuf,
+    pub new_folder: std::path::PathBuf,
+    /// `None` until the Move finds whether the folders are on different
+    /// volumes.
+    pub cross_volume: Option<bool>,
+    /// Set while the Move is paused.
+    pub pause: Option<MovePause>,
+}
+
 /// How long a claim's heartbeat may be quiet before its owner, when it
 /// cannot be shown dead, is taken to be gone (U17). The runner beats every
 /// 10 s.
@@ -283,9 +347,11 @@ impl Store {
             None,
             &CaptureChoice::default(),
             None,
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_session(
         &mut self,
         id: &str,
@@ -294,11 +360,13 @@ impl Store {
         model: Option<&RecordingModel>,
         capture: &CaptureChoice,
         snapshot: Option<&serde_json::Value>,
+        prompt: Option<&PromptSnapshot>,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
-               mic_id, mic_label, system_audio, recognition_snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+               mic_id, mic_label, system_audio, recognition_snapshot,
+               prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -312,6 +380,9 @@ impl Store {
                 capture.microphone.as_ref().map(|m| m.label.as_str()),
                 capture.system_audio,
                 snapshot.map(serde_json::to_string).transpose()?,
+                prompt.map(|p| p.id.as_str()),
+                prompt.map(|p| p.name.as_str()),
+                prompt.map(|p| p.text.as_str()),
             ],
         )?;
         Ok(())
@@ -328,10 +399,12 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
     ) -> Result<Vec<String>> {
-        self.start_session_with_recognition(id, now, speaker_count, model, capture, None)
+        self.start_session_with_recognition(id, now, speaker_count, model, capture, None, None)
     }
 
-    /// Store the configuration with the new session in the same INSERT.
+    /// Store the recognition configuration and the active summary prompt
+    /// (KTD15) with the new session in the same INSERT.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_session_with_recognition(
         &mut self,
         id: &str,
@@ -340,6 +413,7 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
         snapshot: Option<&serde_json::Value>,
+        prompt: Option<&PromptSnapshot>,
     ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
@@ -355,8 +429,37 @@ impl Store {
                 stopped.push(record.id);
             }
         }
-        self.insert_session(id, now, speaker_count, Some(model), capture, snapshot)?;
+        self.insert_session(
+            id,
+            now,
+            speaker_count,
+            Some(model),
+            capture,
+            snapshot,
+            prompt,
+        )?;
         Ok(stopped)
+    }
+
+    /// The active summary prompt when the note started (KTD15). `None` for
+    /// a note from before migration 0013, or one that another computer
+    /// recorded.
+    pub fn prompt_snapshot(&self, id: &str) -> Result<Option<PromptSnapshot>> {
+        type Columns = (Option<String>, Option<String>, Option<String>);
+        let (id_, name, text): Columns = self
+            .conn
+            .query_row(
+                "SELECT prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text
+                 FROM sessions WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.into()))?;
+        Ok(match (id_, name, text) {
+            (Some(id), Some(name), Some(text)) => Some(PromptSnapshot { id, name, text }),
+            _ => None,
+        })
     }
 
     pub fn recognition_snapshot(&self, id: &str) -> Result<Option<serde_json::Value>> {
@@ -613,12 +716,15 @@ impl Store {
     /// Remove the row of a saved note, with its segments, notes, checkpoints
     /// and job (KTD1, KTD6). No folder changes. Returns false and changes
     /// nothing when the note has no row, is not Saved, or has a folder rename
-    /// in progress: then capture, processing or a rename can still need the
-    /// row. The caller checks the claims of [`Claims`] first.
+    /// or a Move in progress: then capture, processing, a rename or the Move
+    /// can still need the row. The caller checks the claims of [`Claims`]
+    /// first.
     pub fn forget(&mut self, id: &str) -> Result<bool> {
         let removed = self.conn.execute(
             "DELETE FROM sessions WHERE id = ?1 AND json_extract(state, '$.state') = 'saved'
-             AND NOT EXISTS (SELECT 1 FROM rename_intents WHERE session_id = ?1)",
+             AND NOT EXISTS (SELECT 1 FROM rename_intents WHERE session_id = ?1)
+             AND NOT EXISTS (SELECT 1 FROM move_notes WHERE session_id = ?1
+                 AND json_extract(step, '$.step') != 'done')",
             [id],
         )?;
         Ok(removed > 0)
@@ -1034,6 +1140,207 @@ impl Store {
         Ok(ids)
     }
 
+    // ------------------------------------------------------------ move journal
+
+    /// Open the Move journal from `old` to `new` (KTD9), with a Pending row
+    /// for each note whose home folder is in `old`. Returns false and
+    /// changes nothing when a journal is open.
+    pub fn open_move(&mut self, old: &Path, new: &Path) -> Result<bool> {
+        let ids: Vec<String> = self
+            .sessions()?
+            .into_iter()
+            .filter(|r| {
+                r.home_path
+                    .as_deref()
+                    .is_some_and(|home| Path::new(home).parent() == Some(old))
+            })
+            .map(|r| r.id)
+            .collect();
+        let tx = self.conn.transaction()?;
+        let opened = tx.execute(
+            "INSERT INTO move_journal (id, old_folder, new_folder, state)
+             VALUES (1, ?1, ?2, 'running') ON CONFLICT (id) DO NOTHING",
+            params![old.to_string_lossy(), new.to_string_lossy()],
+        )?;
+        if opened == 0 {
+            return Ok(false);
+        }
+        for id in ids {
+            insert_pending_move_note(&tx, &id)?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The open Move journal, or `None` when no Move runs or is paused.
+    pub fn move_journal(&self) -> Result<Option<MoveJournal>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT old_folder, new_folder, cross_volume, pause FROM move_journal WHERE id = 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<bool>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((old, new, cross_volume, pause)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(MoveJournal {
+            old_folder: old.into(),
+            new_folder: new.into(),
+            cross_volume,
+            pause: pause.as_deref().map(serde_json::from_str).transpose()?,
+        }))
+    }
+
+    /// Record whether the two folders of the Move are on different volumes.
+    pub fn set_move_cross_volume(&self, cross: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE move_journal SET cross_volume = ?1 WHERE id = 1",
+            [cross],
+        )?;
+        Ok(())
+    }
+
+    /// Pause the Move with its cause, or continue it with `None` (Retry).
+    pub fn set_move_pause(&self, pause: Option<&MovePause>) -> Result<()> {
+        let (state, pause) = match pause {
+            Some(pause) => ("paused", Some(serde_json::to_string(pause)?)),
+            None => ("running", None),
+        };
+        self.conn.execute(
+            "UPDATE move_journal SET state = ?1, pause = ?2 WHERE id = 1",
+            params![state, pause],
+        )?;
+        Ok(())
+    }
+
+    /// Every note of the Move with its step, in id order.
+    pub fn move_notes(&self) -> Result<Vec<(String, MoveStep)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id, step FROM move_notes ORDER BY session_id")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, step)| Ok((id, serde_json::from_str(&step)?)))
+            .collect()
+    }
+
+    /// The step of `id` in the Move, or `None` when the Move has no row
+    /// for it.
+    pub fn move_step(&self, id: &str) -> Result<Option<MoveStep>> {
+        let step = self
+            .conn
+            .query_row(
+                "SELECT step FROM move_notes WHERE session_id = ?1",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(step.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
+    /// The ids of the notes that the Move has not finished (KTD10). The
+    /// library reconcile skips them, as it skips a rename intent.
+    pub fn moving_notes(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id FROM move_notes
+             WHERE json_extract(step, '$.step') != 'done' ORDER BY session_id",
+        )?;
+        let ids = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    /// Add a Pending row for `id` to the open Move. Returns false when the
+    /// Move already has a row for it.
+    pub fn add_move_note(&self, id: &str) -> Result<bool> {
+        Ok(insert_pending_move_note(&self.conn, id)? > 0)
+    }
+
+    pub fn set_move_step(&self, id: &str, step: &MoveStep) -> Result<()> {
+        self.conn.execute(
+            "UPDATE move_notes SET step = ?2 WHERE session_id = ?1",
+            params![id, serde_json::to_string(step)?],
+        )?;
+        Ok(())
+    }
+
+    /// Set the home path of `id` and record its step in one transaction:
+    /// the home change of the Move has no window between its effect and
+    /// its record.
+    pub fn set_move_home(&mut self, id: &str, path: &Path, step: &MoveStep) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET home_path = ?2 WHERE id = ?1",
+            params![id, path.to_string_lossy()],
+        )?;
+        tx.execute(
+            "UPDATE move_notes SET step = ?2 WHERE session_id = ?1",
+            params![id, serde_json::to_string(step)?],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove the Move's row for `id`: its source is gone.
+    pub fn drop_move_note(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM move_notes WHERE session_id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Close the Move journal and remove its rows.
+    pub fn close_move(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM move_notes", [])?;
+        tx.execute("DELETE FROM move_journal", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The sessions that are not Saved and whose save has put, or will put,
+    /// the session in `folder`: the save state names a staging directory or
+    /// a folder there. A Move from `folder` waits for them (KTD10).
+    pub fn saves_into(&self, folder: &Path) -> Result<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct Paths {
+            staging: Option<std::path::PathBuf>,
+            path: Option<std::path::PathBuf>,
+        }
+        let mut ids = Vec::new();
+        for record in self.sessions()? {
+            if record.state == SessionState::Saved {
+                continue;
+            }
+            let into = self
+                .checkpoints(&record.id, Stage::Save)?
+                .into_iter()
+                .filter(|(key, _)| key == SAVE_STATE)
+                .filter_map(|(_, payload)| serde_json::from_str::<Paths>(&payload).ok())
+                .any(|p| {
+                    p.staging
+                        .iter()
+                        .chain(&p.path)
+                        .any(|path| path.parent() == Some(folder))
+                });
+            if into {
+                ids.push(record.id);
+            }
+        }
+        Ok(ids)
+    }
+
     // ------------------------------------------------------------ notes
 
     /// The session's notes: one markdown document (KTD5).
@@ -1292,6 +1599,15 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+/// Add `id` to the Move with the step Pending, unless the Move has it.
+/// Returns the number of rows that it added.
+fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "INSERT OR IGNORE INTO move_notes (session_id, step) VALUES (?1, ?2)",
+        params![id, serde_json::to_string(&MoveStep::Pending)?],
+    )?)
 }
 
 fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Result<()> {
@@ -1561,13 +1877,21 @@ pub fn busy(record: &SessionRecord, claimed: bool) -> bool {
 }
 
 /// Work on a session that its state does not show: a summary that is
-/// regenerated and a delete that removes the session's directories. The
-/// two exclude each other, and a folder rename waits for both (R8, KTD8).
-/// Each claim is taken and checked under one lock, so a regeneration or a
-/// delete that starts later sees the claim that came first.
+/// regenerated, a delete that removes the session's directories, and a
+/// Move of the note to a new storage folder (KTD9). A regeneration and a
+/// delete exclude each other, and a folder rename waits for all of them
+/// (R8, KTD8). Each claim is taken and checked under one lock, so work that
+/// starts later sees the claim that came first.
+///
+/// The Move takes two claims. The move claim covers each step of the note
+/// and excludes a delete. The hold covers the Move's final check and its
+/// home change: note edits and renames wait for it
+/// ([`Claims::wait_unheld`]), and a regeneration cannot start.
 #[derive(Clone, Default)]
 pub struct Claims {
     set: std::sync::Arc<std::sync::Mutex<ClaimSet>>,
+    /// Signalled when a hold is released.
+    released: std::sync::Arc<std::sync::Condvar>,
 }
 
 #[derive(Default)]
@@ -1576,6 +1900,16 @@ struct ClaimSet {
     regenerating: Vec<String>,
     /// One entry for each delete that runs.
     deleting: Vec<String>,
+    /// The note that the Move works on.
+    moving: Vec<String>,
+    /// The note that the Move holds from its final check to its home change.
+    holding: Vec<String>,
+}
+
+impl ClaimSet {
+    fn has(ids: &[String], session_id: &str) -> bool {
+        ids.iter().any(|id| id == session_id)
+    }
 }
 
 /// Which work a [`Claim`] is for.
@@ -1583,6 +1917,8 @@ struct ClaimSet {
 enum ClaimKind {
     Regenerate,
     Delete,
+    Move,
+    Hold,
 }
 
 /// A claim on a session, released when it is dropped, also when the work
@@ -1599,25 +1935,58 @@ impl Claims {
     }
 
     /// Claim the session for a summary regeneration. None while a delete
-    /// runs on it.
+    /// runs on it, or while the Move holds it.
     pub fn regenerate(&self, session_id: &str) -> Option<Claim> {
         let mut set = self.set();
-        if set.deleting.iter().any(|id| id == session_id) {
+        if ClaimSet::has(&set.deleting, session_id) || ClaimSet::has(&set.holding, session_id) {
             return None;
         }
         set.regenerating.push(session_id.to_string());
         Some(self.claim(session_id, ClaimKind::Regenerate))
     }
 
-    /// Claim the session for a delete. None while its summary is
-    /// regenerated or waits to be.
-    pub fn delete(&self, session_id: &str) -> Option<Claim> {
+    /// Claim the session for a delete. The error is the name of the work
+    /// that refuses the delete: "regenerating" while its summary is
+    /// regenerated or waits to be, "moving" while the Move works on it.
+    pub fn delete(&self, session_id: &str) -> std::result::Result<Claim, &'static str> {
         let mut set = self.set();
-        if set.regenerating.iter().any(|id| id == session_id) {
-            return None;
+        if ClaimSet::has(&set.regenerating, session_id) {
+            return Err("regenerating");
+        }
+        if ClaimSet::has(&set.moving, session_id) || ClaimSet::has(&set.holding, session_id) {
+            return Err("moving");
         }
         set.deleting.push(session_id.to_string());
-        Some(self.claim(session_id, ClaimKind::Delete))
+        Ok(self.claim(session_id, ClaimKind::Delete))
+    }
+
+    /// Claim the note for a step of the Move. None while its summary is
+    /// regenerated or a delete runs on it: the note moves later.
+    pub fn moving(&self, session_id: &str) -> Option<Claim> {
+        let mut set = self.set();
+        if ClaimSet::has(&set.regenerating, session_id)
+            || ClaimSet::has(&set.deleting, session_id)
+            || ClaimSet::has(&set.moving, session_id)
+        {
+            return None;
+        }
+        set.moving.push(session_id.to_string());
+        Some(self.claim(session_id, ClaimKind::Move))
+    }
+
+    /// Hold the note for the Move's final check and home change. None while
+    /// its summary is regenerated or a delete runs on it. The caller holds
+    /// the store lock, so an edit that holds that lock ends first.
+    pub fn hold(&self, session_id: &str) -> Option<Claim> {
+        let mut set = self.set();
+        if ClaimSet::has(&set.regenerating, session_id)
+            || ClaimSet::has(&set.deleting, session_id)
+            || ClaimSet::has(&set.holding, session_id)
+        {
+            return None;
+        }
+        set.holding.push(session_id.to_string());
+        Some(self.claim(session_id, ClaimKind::Hold))
     }
 
     fn claim(&self, session_id: &str, kind: ClaimKind) -> Claim {
@@ -1630,16 +1999,39 @@ impl Claims {
 
     /// True while the session's summary is regenerated or waits to be.
     pub fn is_regenerating(&self, session_id: &str) -> bool {
-        self.set().regenerating.iter().any(|id| id == session_id)
+        ClaimSet::has(&self.set().regenerating, session_id)
     }
 
     /// True while a regeneration or a delete holds a claim on the session.
-    /// A folder rename then waits (KTD8).
+    /// The Move then waits, and Transcribe Again is refused.
+    pub fn is_regenerating_or_deleting(&self, session_id: &str) -> bool {
+        let set = self.set();
+        ClaimSet::has(&set.regenerating, session_id) || ClaimSet::has(&set.deleting, session_id)
+    }
+
+    /// True while the Move holds the note (see [`Claims::hold`]).
+    pub fn is_held(&self, session_id: &str) -> bool {
+        ClaimSet::has(&self.set().holding, session_id)
+    }
+
+    /// Return when the Move does not hold the note. The caller must not
+    /// hold the store lock.
+    pub fn wait_unheld(&self, session_id: &str) {
+        let mut set = self.set();
+        while ClaimSet::has(&set.holding, session_id) {
+            set = self.released.wait(set).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// True while a regeneration, a delete or the Move holds a claim on the
+    /// session. A folder rename then waits (KTD8).
     pub fn busy(&self, session_id: &str) -> bool {
         let set = self.set();
         set.regenerating
             .iter()
             .chain(&set.deleting)
+            .chain(&set.moving)
+            .chain(&set.holding)
             .any(|id| id == session_id)
     }
 }
@@ -1650,9 +2042,14 @@ impl Drop for Claim {
         let ids = match self.kind {
             ClaimKind::Regenerate => &mut set.regenerating,
             ClaimKind::Delete => &mut set.deleting,
+            ClaimKind::Move => &mut set.moving,
+            ClaimKind::Hold => &mut set.holding,
         };
         if let Some(i) = ids.iter().position(|id| *id == self.session_id) {
             ids.swap_remove(i);
+        }
+        if self.kind == ClaimKind::Hold {
+            self.claims.released.notify_all();
         }
     }
 }
@@ -1681,18 +2078,25 @@ where
     let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
     // The claim comes before the home folder is read. A rename that holds
     // the store lock now completes first, and the read gets its new path.
-    let Some(_claim) = claims.delete(id) else {
-        return Err(DeleteError::Busy {
-            state: "regenerating",
-        });
-    };
-    let (record, staging) = {
+    let _claim = claims
+        .delete(id)
+        .map_err(|state| DeleteError::Busy { state })?;
+    let (record, staging, moving) = {
         let store = lock();
         let record = store.require(id)?;
-        (record, store.save_staging(id)?)
+        let moving = !matches!(
+            store.move_step(id)?,
+            None | Some(MoveStep::Pending | MoveStep::Done)
+        );
+        (record, store.save_staging(id)?, moving)
     };
     if let Some(state) = delete_refusal(&record.state) {
         return Err(DeleteError::Busy { state });
+    }
+    // A note that the Move has copied or placed has a second folder. The
+    // delete waits until the Move is done with it.
+    if moving {
+        return Err(DeleteError::Busy { state: "moving" });
     }
     let home = record.home_path.as_deref().map(Path::new);
     for dir in home

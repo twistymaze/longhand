@@ -22,19 +22,18 @@ const baseSettings: Settings = {
   interface_zoom_percent: 100,
   shortcut: "Alt+Shift+L",
   show_window_shortcut: null,
-  destination_roots: [],
-  current_destination: null,
+  storage_folder: "/notes",
   endpoint_base_url: null,
   endpoint_model: "",
   context_limit_tokens: null,
   default_speaker_count: null,
   asr_model: "a",
-  pending_asr_model: null,
   live_transcript: true,
   speaker_source: "pyannote",
   speaker_processing_mode: "after_stop",
   recognition_language: null,
-  pending_recognition: null,
+  chosen_recognition: { asr_model: "a", live_transcript: true, speaker_source: "pyannote", speaker_processing_mode: "after_stop", recognition_language: null, default_speaker_count: null },
+  recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
   microphone: null,
   system_audio_default: false,
   hide_from_dock: false,
@@ -42,12 +41,21 @@ const baseSettings: Settings = {
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
 };
 
 /// The pane with the settings state that the Settings window holds. A
 /// successful setter replaces the settings, as a refresh does.
-function Harness({ readiness: r, onRefresh = async () => {} }: { readiness: Readiness; onRefresh?: () => Promise<void> }) {
-  const [settings, setSettings] = useState(baseSettings);
+function Harness({
+  readiness: r,
+  onRefresh = async () => {},
+  initial = baseSettings,
+}: {
+  readiness: Readiness;
+  onRefresh?: () => Promise<void>;
+  initial?: Settings;
+}) {
+  const [settings, setSettings] = useState(initial);
   return <StatusPane readiness={r} settings={settings} onSettings={setSettings} onRefresh={onRefresh} onNavigate={() => {}} />;
 }
 
@@ -298,6 +306,19 @@ describe("the Updates group on macOS", () => {
     await userEvent.setup().click(toggle);
     expect(await within(group()).findByText(/could not save settings/i)).toBeTruthy();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("the switch is read-only while the storage folder is not available", () => {
+    mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+    const readOnly: Settings = {
+      ...baseSettings,
+      shared: { ...baseSettings.shared, availability: { kind: "read_only", cause: "folder_not_available" } },
+    };
+    render(<Harness readiness={readiness} initial={readOnly} />);
+    const group = screen.getByRole("heading", { name: "Updates" }).closest("section") as HTMLElement;
+    const toggle = within(group).getByRole("switch", { name: "Check for updates automatically" }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(group.textContent).toContain("The storage folder is not available.");
   });
 });
 

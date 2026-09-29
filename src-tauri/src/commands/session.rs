@@ -399,14 +399,21 @@ pub enum NotesSaveResult {
 #[specta::specta]
 pub async fn save_session_notes(
     capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
     markdown: String,
     loaded_fingerprint: Option<String>,
 ) -> Result<NotesSaveResult, String> {
     let capture = Arc::clone(&capture);
+    let claims = processing.claims();
     tauri::async_runtime::spawn_blocking(move || {
         let saved = capture
-            .save_session_notes(&session_id, &markdown, loaded_fingerprint.as_deref())
+            .save_session_notes(
+                &session_id,
+                &markdown,
+                loaded_fingerprint.as_deref(),
+                &claims,
+            )
             .map_err(|e| e.to_string())?;
         Ok(match saved {
             pipeline::save::NotesSave::Saved { .. } => NotesSaveResult::Saved {
@@ -617,6 +624,9 @@ fn busy_message(state: &str) -> String {
         "regenerating" => {
             "This note's summary is being made again. You can delete it when that is done."
         }
+        "moving" => {
+            "This note is being moved to the new storage folder. You can delete it when that is done."
+        }
         _ => "This note is being processed. You can delete it when processing is done.",
     }
     .to_string()
@@ -760,6 +770,7 @@ mod delete_tests {
             ("queued", "waiting"),
             ("processing", "processed"),
             ("regenerating", "summary"),
+            ("moving", "moved"),
         ] {
             match delete_error(DeleteError::Busy { state }, Removal::Trash) {
                 DeleteSessionError::Busy { message } => {

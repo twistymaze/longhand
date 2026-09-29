@@ -89,7 +89,9 @@ pub trait EngineProvider: Send + Sync {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
     /// A snapshot of the active summary prompt, read fresh for each
     /// summarize stage like the endpoint. A run that saved a snapshot
-    /// before uses its saved one (KTD4).
+    /// before uses its saved one (KTD4). The first automatic summary of a
+    /// note that recorded its prompt at the start uses that prompt instead
+    /// (KTD15). Summarize Again always uses this prompt.
     fn summary_prompt(&self) -> summarize::Prompt;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
@@ -370,11 +372,19 @@ impl Runner {
     /// Summarize a saved session again, replacing its `summary.md` (R19,
     /// AE17). Takes its turn with the stages, one at a time (R20c).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
-        let _claim = self.claims.regenerate(session_id).ok_or_else(|| {
-            StageError::Failed(
-                "This note is being deleted, so its summary cannot be made again.".into(),
-            )
-        })?;
+        // While the Move holds the note for its final check, the
+        // regeneration waits (KTD9).
+        let _claim = loop {
+            if let Some(claim) = self.claims.regenerate(session_id) {
+                break claim;
+            }
+            if !self.claims.is_held(session_id) {
+                return Err(StageError::Failed(
+                    "This note is being deleted, so its summary cannot be made again.".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
         let _permit = self
             .permit
             .clone()
@@ -465,7 +475,7 @@ impl Runner {
     /// and the capture manager locks its state and then the store.
     fn guards(&self, session_id: &str) -> Guards {
         Guards {
-            regenerating: self.claims.busy(session_id),
+            regenerating: self.claims.is_regenerating_or_deleting(session_id),
             capture_active: (self.env.suspended)(),
         }
     }
@@ -496,8 +506,10 @@ impl Runner {
         session_id: &str,
         title: &str,
     ) -> Result<FolderRename, StageError> {
-        folder_rename::rename_session(
-            &self.env.store,
+        // The rename waits while the Move holds the note (KTD9).
+        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, session_id);
+        folder_rename::rename_locked(
+            &mut store,
             session_id,
             title,
             &|id| self.claims.busy(id),
@@ -1085,13 +1097,15 @@ fn execute(
         Stage::Summarize => {
             let endpoint = endpoint(env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
+            let prompt = first_summary_prompt(&env.store, id)?
+                .unwrap_or_else(|| env.engines.summary_prompt());
             summarize::run(
                 &env.store,
                 id,
                 &dir,
                 segments,
                 endpoint,
-                env.engines.summary_prompt(),
+                prompt,
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 control,
                 &mut |done, total| {
@@ -1140,6 +1154,25 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
         EndpointProblem::Locked(message) => StageError::Blocked(message),
         EndpointProblem::Unconfigured(message) => StageError::Failed(message),
     })
+}
+
+/// The prompt of the note's first automatic summary: the active prompt
+/// when the note started (KTD15). `None` for a note with no snapshot, and
+/// for a Transcribe Again run, which the user starts later, as Summarize
+/// Again. Those use the active prompt.
+fn first_summary_prompt(
+    store: &SharedStore,
+    id: &str,
+) -> Result<Option<summarize::Prompt>, StageError> {
+    let store = lock(store);
+    if store.transcribe_again_marks(id)?.model.is_some() {
+        return Ok(None);
+    }
+    Ok(store.prompt_snapshot(id)?.map(|p| summarize::Prompt {
+        id: p.id,
+        name: p.name,
+        text: p.text,
+    }))
 }
 
 /// Empty `slot` when it holds `model`. A slot that a stage holds now stays

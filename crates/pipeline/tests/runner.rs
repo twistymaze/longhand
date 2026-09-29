@@ -1780,6 +1780,115 @@ async fn regenerating_a_complete_summary_uses_the_prompt_active_now_and_records_
     assert_eq!(prompt_name(&path), Some("Team sync".into()));
 }
 
+fn snapshot_of(prompt: &summarize::Prompt) -> session_core::PromptSnapshot {
+    session_core::PromptSnapshot {
+        id: prompt.id.clone(),
+        name: prompt.name.clone(),
+        text: prompt.text.clone(),
+    }
+}
+
+/// "s" started with `started` as the active prompt, and the active prompt
+/// is `now` when it runs, as after a change during the recording.
+async fn note_started_with(
+    r: &Rig,
+    started: &summarize::Prompt,
+    now: &summarize::Prompt,
+) -> (http::Mock, std::path::PathBuf) {
+    let mock = numbered_summaries(r).await;
+    common::queue_session_with_prompt(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+        &snapshot_of(started),
+    );
+    use_prompt(r, now);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    (mock, saved_folder(r, "s").join("summary.md"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_summary_uses_the_prompt_that_was_active_when_the_note_started() {
+    // R20, KTD15: a change of the active prompt during the recording
+    // applies from the next note.
+    let r = rig().await;
+    let started = custom_prompt("Team sync", "FIRST-MARKER");
+    let now = custom_prompt("Business meeting", "SECOND-MARKER");
+    let (mock, path) = note_started_with(&r, &started, &now).await;
+    let calls = chat_messages(&mock);
+    assert!(calls.iter().any(|(s, _)| s.contains("FIRST-MARKER")));
+    assert!(calls.iter().all(|(s, _)| !s.contains("SECOND-MARKER")));
+    assert_eq!(prompt_name(&path), Some("Team sync".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_from_before_the_update_with_no_snapshot_uses_the_active_prompt() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.store.lock().unwrap().prompt_snapshot("s").unwrap(), None);
+    use_prompt(&r, &custom_prompt("Business meeting", "ACTIVE-MARKER"));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(
+        chat_messages(&mock)
+            .iter()
+            .any(|(s, _)| s.contains("ACTIVE-MARKER"))
+    );
+    let path = saved_folder(&r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Business meeting".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn summarize_again_on_a_note_with_a_snapshot_uses_the_prompt_that_the_user_selects() {
+    let r = rig().await;
+    let started = custom_prompt("Team sync", "FIRST-MARKER");
+    let (mock, path) = note_started_with(&r, &started, &started).await;
+    let before = chat_messages(&mock).len();
+    use_prompt(&r, &custom_prompt("Business meeting", "SELECTED-MARKER"));
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_messages(&mock);
+    assert!(
+        calls[before..]
+            .iter()
+            .any(|(s, _)| s.contains("SELECTED-MARKER"))
+    );
+    assert!(
+        calls[before..]
+            .iter()
+            .all(|(s, _)| !s.contains("FIRST-MARKER"))
+    );
+    assert_eq!(prompt_name(&path), Some("Business meeting".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_on_a_note_with_a_snapshot_uses_the_active_prompt() {
+    // Transcribe Again is a later action of the user, as Summarize Again.
+    let r = rig().await;
+    let started = custom_prompt("Team sync", "FIRST-MARKER");
+    let (mock, path) = note_started_with(&r, &started, &started).await;
+    let before = chat_messages(&mock).len();
+    use_prompt(&r, &custom_prompt("Business meeting", "ACTIVE-MARKER"));
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(
+        calls[before..]
+            .iter()
+            .any(|(s, _)| s.contains("ACTIVE-MARKER"))
+    );
+    assert_eq!(prompt_name(&path), Some("Business meeting".into()));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn regenerating_a_stub_with_the_same_prompt_reuses_its_part_notes() {
     let r = rig().await;
@@ -6004,4 +6113,31 @@ async fn publication_step_error_and_cancel_restore_previous_files_and_allow_retr
         r.runner.regenerate_summary("s").await.unwrap();
         assert!(read(&home, "summary.md").contains("Replacement summary."));
     }
+}
+
+/// A note that records while the storage folder changes saves to the new
+/// folder, and the old folder gets nothing (U7).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_that_records_during_a_change_of_folder_saves_to_the_new_folder() {
+    let r = rig().await;
+    r.script.capturing.store(true, Ordering::SeqCst);
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let new = tempfile::tempdir().unwrap();
+    *r.script.destination.lock().unwrap() = Some(new.path().to_path_buf());
+    r.script.capturing.store(false, Ordering::SeqCst);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    assert_eq!(folder.parent(), Some(new.path()));
+    assert!(
+        destination_entries(&r).is_empty(),
+        "{:?}",
+        destination_entries(&r)
+    );
 }

@@ -1,0 +1,25 @@
+[package]
+name = "shared-settings"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+log.workspace = true
+# The catalog and the recognition values, so that a known value parses as
+# the app parses it.
+models = { path = "../models" }
+serde.workspace = true
+serde_json.workspace = true
+# write_atomic for each write into the storage folder.
+session-save = { path = "../session-save" }
+# The built-in prompts and the prompt text limit.
+summarize = { path = "../summarize" }
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# The name of the hidden Longhand folder must match the library scan.
+library = { path = "../library" }
+tempfile = "3"

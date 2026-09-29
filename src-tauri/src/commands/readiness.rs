@@ -13,11 +13,13 @@ use crate::managers::secrets::SecretsManager;
 use crate::managers::settings;
 use crate::shortcut::{ShortcutKind, ShortcutRegistration, ShortcutStatus};
 
-/// Ready to record: the microphone authorized, a destination chosen, and the
-/// recording chord either registered or cleared. No chord is a choice; a
-/// chord that failed to register is a fault (KTD7, R13).
-fn armed(microphone: bool, destination: bool, shortcut: &ShortcutStatus) -> bool {
-    microphone && destination && shortcut.is_ok()
+/// Ready to record: the microphone authorized, and the recording chord
+/// either registered or cleared. No chord is a choice; a chord that failed
+/// to register is a fault (KTD7, R13). The storage folder does not count: a
+/// new install has the default folder, and a note waits to save while the
+/// folder is not available (AE1).
+fn armed(microphone: bool, shortcut: &ShortcutStatus) -> bool {
+    microphone && shortcut.is_ok()
 }
 
 /// The system audio permission, as the page reads it (R9, R10, KTD12).
@@ -108,12 +110,14 @@ pub struct Readiness {
     /// microphone alone is enough to record.
     pub system_audio: SystemAudioPermission,
     pub destination: DestinationStatus,
-    /// Microphone authorized, a destination chosen, and the chord registered
-    /// or cleared (R1c, R13). A destination that is unreachable right now can be changed
-    /// before the session is saved (R23), so it is shown rather than blocking.
+    /// Microphone authorized, and the chord registered or cleared (R1c,
+    /// R13). A storage folder that is not available now is shown, and does
+    /// not block a recording: the note waits to save (AE1).
     pub armed: bool,
     pub shortcut: ShortcutStatus,
-    /// Catalog ids of required weights not yet on disk.
+    /// Catalog ids of the weights that the next note needs and that are
+    /// not on disk yet. They do not block a recording: processing waits
+    /// for them (KTD16).
     pub missing_models: Vec<String>,
     /// A Base URL and a model are set, and the request gate lets summary
     /// processing use them (KTD3). A locked Keychain does not clear it.
@@ -132,11 +136,10 @@ pub async fn readiness(
     let settings = settings::get_settings(&app);
     let microphone_authorized = tauri_plugin_macos_permissions::check_microphone_permission().await;
     let system_audio = check_system_audio().await?;
-    let current = settings.current_destination.clone();
-    let destination =
-        tauri::async_runtime::spawn_blocking(move || destination::status(current.as_deref()))
-            .await
-            .map_err(|e| e.to_string())?;
+    let folder = settings.storage_folder.clone();
+    let destination = tauri::async_runtime::spawn_blocking(move || destination::status(&folder))
+        .await
+        .map_err(|e| e.to_string())?;
     // Read the key only when a Base URL and a model are set. Without them
     // the endpoint is not configured, whatever the key state is.
     let endpoint_configured = if settings.endpoint_configured() {
@@ -151,16 +154,16 @@ pub async fn readiness(
     Ok(Readiness {
         microphone_authorized,
         system_audio,
-        armed: armed(
-            microphone_authorized,
-            settings.current_destination.is_some(),
-            &shortcut,
-        ),
+        armed: armed(microphone_authorized, &shortcut),
         shortcut,
         destination,
         missing_models: models.missing_spec(
-            &models::recognition::resolve(&settings.recognition_config())
-                .map_err(|e| e.to_string())?,
+            &crate::managers::capture::recording_spec(
+                settings.recognition_config(),
+                settings.chosen_config(),
+                |spec| models.missing_spec(spec).is_empty(),
+            )
+            .map_err(|e| e.to_string())?,
         ),
         endpoint_configured,
     })
@@ -180,12 +183,12 @@ mod tests {
 
     #[test]
     fn a_cleared_shortcut_is_ready_to_record() {
-        assert!(armed(true, true, &status(None, false)));
+        assert!(armed(true, &status(None, false)));
     }
 
     #[test]
     fn a_failed_shortcut_is_not_ready() {
-        assert!(!armed(true, true, &status(Some("Super+KeyR"), false)));
+        assert!(!armed(true, &status(Some("Super+KeyR"), false)));
     }
 
     #[test]
@@ -222,13 +225,12 @@ mod tests {
             serde_json::to_value(SystemAudioPermission::NotAsked).unwrap(),
             serde_json::json!("not_asked")
         );
-        assert!(armed(true, true, &status(None, false)));
+        assert!(armed(true, &status(None, false)));
     }
 
     #[test]
     fn a_registered_shortcut_is_ready() {
-        assert!(armed(true, true, &status(Some("Super+KeyR"), true)));
-        assert!(!armed(false, true, &status(Some("Super+KeyR"), true)));
-        assert!(!armed(true, false, &status(None, false)));
+        assert!(armed(true, &status(Some("Super+KeyR"), true)));
+        assert!(!armed(false, &status(Some("Super+KeyR"), true)));
     }
 }

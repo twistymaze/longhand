@@ -4,21 +4,23 @@
 //! presence, length, and a short fingerprint, which is enough to prove a
 //! value survived a relaunch without moving the secret out of Rust.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::managers::capture::CaptureManager;
-use crate::managers::models::{self as model_manager, ModelsManager};
-use crate::managers::processing::ProcessingManager;
+use crate::managers::models::ModelsManager;
+use crate::managers::processing::{MoveStatus, ProcessingManager};
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
     self, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
 };
+use crate::managers::shared::SharedSettingsManager;
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -112,25 +114,39 @@ pub fn set_context_limit(app: AppHandle, limit: Option<u32>) -> Result<Settings,
     })
 }
 
-#[tauri::command]
+/// Change the chosen recognition configuration with `change`, then compare
+/// it with the configuration in use (R18, KTD14). The configuration in use
+/// changes at once when its models are on disk; otherwise their downloads
+/// start.
+fn choose_recognition(
+    app: &AppHandle,
+    manager: &Arc<ModelsManager>,
+    change: impl FnOnce(&mut settings::RecognitionChoice),
+) -> Result<Settings, String> {
+    settings::update_settings(app, |s| {
+        change(&mut s.chosen_recognition);
+        Ok(())
+    })?;
+    manager.follow_choice(app);
+    Ok(settings::get_settings(app))
+}
+
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_default_speaker_count(
     app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
     count: Option<SpeakerCountSetting>,
 ) -> Result<Settings, String> {
     if let Some(count) = &count {
         count.validate()?;
     }
-    settings::update_settings(&app, |s| {
-        s.default_speaker_count = count;
-        Ok(())
-    })
+    choose_recognition(&app, &manager, |c| c.default_speaker_count = count)
 }
 
-/// Pick the recognition model (R5, KD7). A pick that is not downloaded
-/// starts its download. While the selected model is downloaded, it stays in
-/// use until the pick's download is verified.
-#[tauri::command]
+/// Choose the recognition model (R5, R18). The model in use stays until
+/// every file of the chosen configuration is on disk.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn select_asr_model(
     app: AppHandle,
@@ -141,31 +157,33 @@ pub fn select_asr_model(
         Some(m) if m.kind == models::ModelKind::Asr => {}
         _ => return Err(format!("'{model_id}' is not a recognition model")),
     }
-    let mut pick = None;
-    let settings = settings::update_settings(&app, |s| {
-        pick = Some(model_manager::apply_pick(s, &model_id, |id| {
-            manager.is_present(id)
-        }));
-        Ok(())
-    })?;
-    let pick = pick.expect("the settings change ran");
-    if let Some(replaced) = pick.cancel {
-        manager.cancel(&replaced);
-    }
-    if pick.download {
-        manager.start_downloads(&app, vec![model_id])?;
-    }
-    Ok(settings)
+    choose_recognition(&app, &manager, |c| c.asr_model = model_id)
 }
 
 /// Turn the live transcript of streaming models on or off (R18, KD9).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn set_live_transcript(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.live_transcript = enabled;
-        Ok(())
-    })
+pub fn set_live_transcript(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+    enabled: bool,
+) -> Result<Settings, String> {
+    choose_recognition(&app, &manager, |c| c.live_transcript = enabled)
+}
+
+/// Start the failed downloads of the chosen recognition configuration
+/// again (R19).
+#[tauri::command(async)]
+#[specta::specta]
+pub fn retry_recognition_downloads(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+) -> Settings {
+    manager.retry_choice();
+    manager.follow_choice(&app);
+    // The failure is gone in every window.
+    settings::emit_settings_changed(&app);
+    settings::get_settings(&app)
 }
 
 /// One connected input, with cpal's stable ID (KTD1).
@@ -246,7 +264,7 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
 
 /// Choose whether the app checks for updates by itself (R10). The next
 /// scheduled check reads the new value.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
@@ -283,65 +301,93 @@ pub fn summary_prompts(app: AppHandle) -> SummaryPromptList {
     settings::get_settings(&app).summary_prompt_list()
 }
 
+// The prompt commands change the files of the storage folder through the
+// shared settings manager (R14). They run off the main thread, because a
+// read of a synced folder can wait for the sync service.
+
 /// Add a summary prompt named "New prompt" with the Topic summary text (R3).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn create_summary_prompt(app: AppHandle) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.create_summary_prompt();
-        Ok(())
-    })
+pub fn create_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+) -> Result<Settings, String> {
+    shared.create_prompt()?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Add a copy of a summary prompt, named "X copy" (R3).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn duplicate_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.duplicate_summary_prompt(&id).map(drop))
+pub fn duplicate_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+) -> Result<Settings, String> {
+    shared.duplicate_prompt(&id)?;
+    Ok(settings::get_settings(&app))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn rename_summary_prompt(app: AppHandle, id: String, name: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.rename_summary_prompt(&id, &name))
+pub fn rename_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+    name: String,
+) -> Result<Settings, String> {
+    shared.rename_prompt(&id, &name)?;
+    Ok(settings::get_settings(&app))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_summary_prompt_text(
     app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
     text: String,
 ) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.set_summary_prompt_text(&id, &text))
+    shared.set_prompt_text(&id, &text)?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Delete a custom summary prompt. The Topic summary becomes active when the
 /// deleted prompt was active (R4).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn delete_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.delete_summary_prompt(&id))
+pub fn delete_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+) -> Result<Settings, String> {
+    shared.delete_prompt(&id)?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Make a summary prompt the one that the next summary uses (R1).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn activate_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.activate_summary_prompt(&id))
+pub fn activate_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+) -> Result<Settings, String> {
+    shared.activate_prompt(&id)?;
+    Ok(settings::get_settings(&app))
 }
 
-/// Pick a folder with the system dialog, make it current, and retain it as a
-/// root (R23, R25a). `None` when the user closes the dialog.
+/// Pick a folder with the system dialog and return its path. Nothing
+/// changes: the surface then asks what to do with the notes in the old
+/// folder, and calls [`change_storage_folder`] (R4). `None` when the user
+/// closes the dialog.
 #[tauri::command]
 #[specta::specta]
-pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, String> {
-    let dialog_app = app.clone();
+pub async fn pick_storage_folder(app: AppHandle) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        dialog_app
-            .dialog()
+        app.dialog()
             .file()
-            .set_title("Choose where sessions are saved")
+            .set_title("Choose where notes are saved")
             .blocking_pick_folder()
     })
     .await
@@ -350,36 +396,157 @@ pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, Stri
         return Ok(None);
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    let folder = path.to_string_lossy().into_owned();
-    let settings = settings::update_settings(&app, |s| {
-        s.choose_destination(&folder);
-        Ok(())
-    })?;
-    destination_changed(&app);
-    Ok(Some(settings))
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-/// Sessions waiting for a destination try the new one (R22b), and the
-/// library watches start again on the retained roots (KTD7).
-fn destination_changed(app: &AppHandle) {
-    if let Some(processing) = app.try_state::<std::sync::Arc<ProcessingManager>>() {
-        processing.retry_awaiting();
-        processing.roots_changed();
+/// What a change of storage folder does with the notes in the old folder
+/// (R4).
+#[derive(Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OldNotes {
+    /// Move every note into the new folder (R5).
+    Move,
+    /// Keep the notes in the old folder. The library forgets them (R7).
+    Leave,
+}
+
+/// The checks before a change of storage folder from `current` to `folder`
+/// (KTD11): no Move runs or is paused, and the new folder can be the
+/// storage folder. The error is the cause, as Settings shows it. Returns
+/// the new folder.
+fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf, String> {
+    if move_open {
+        return Err(crate::managers::processing::MOVE_OPEN.into());
     }
+    let folder = PathBuf::from(folder);
+    crate::managers::destination::check_new_folder(Path::new(current), &folder)?;
+    Ok(folder)
 }
 
-/// Switch to a folder chosen earlier.
+/// Make `folder` the storage folder (R4, R21). The shared settings of the
+/// new folder apply, and this computer's custom prompts merge into them,
+/// or this computer's shared settings go into a folder that has none
+/// (KTD8). Notes that wait for a folder try the new one, and the library
+/// watches the new folder. With Move, the Move journal opens before the
+/// folder changes, and the Move puts each note in the new folder while the
+/// library lists it from the old folder until it moves (R5, R10). With
+/// Leave them, the library forgets the notes of the old folder and keeps
+/// their files; a busy note is forgotten when it is free (R7). A note that
+/// records during the change saves to the new folder.
 #[tauri::command]
 #[specta::specta]
-pub fn set_current_destination(app: AppHandle, folder: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        if !s.destination_roots.contains(&folder) {
-            return Err("that folder has not been chosen as a destination".into());
+pub async fn change_storage_folder(
+    app: AppHandle,
+    folder: String,
+    old_notes: OldNotes,
+) -> Result<Settings, String> {
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || change_folder(&worker, &folder, old_notes))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(settings::get_settings(&app))
+}
+
+fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(), String> {
+    // One change at a time, so two changes never join two folders.
+    static CHANGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one_at_a_time = CHANGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let processing = app.try_state::<Arc<ProcessingManager>>();
+    let current = settings::get_settings(app).storage_folder;
+    let move_open = processing.as_ref().is_some_and(|p| p.move_open());
+    let new = check_change(&current, folder, move_open)?;
+    let shared = app.try_state::<Arc<SharedSettingsManager>>();
+    if let Some(shared) = &shared {
+        shared.change_folder(Some(new.clone()));
+    }
+    // Give the shared settings back to the storage folder that the
+    // settings hold.
+    let roll_back_shared = || {
+        if let Some(shared) = &shared {
+            shared.change_folder(settings::get_settings(app).storage_folder());
         }
-        s.current_destination = Some(folder);
+    };
+    // The journal opens before the folder changes, so the library keeps
+    // the notes of the old folder in the meantime (KTD10).
+    let moving = old_notes == OldNotes::Move;
+    if moving && let Some(processing) = &processing {
+        let opened = processing.open_move(Path::new(&current), &new);
+        if let Err(e) = opened {
+            roll_back_shared();
+            return Err(e);
+        }
+    }
+    let set = settings::update_settings(app, |s| {
+        s.storage_folder = folder.to_string();
         Ok(())
-    })
-    .inspect(|_| destination_changed(&app))
+    });
+    if let Err(e) = set {
+        // The shared settings stay with the storage folder, and no note
+        // has moved.
+        roll_back_shared();
+        if moving && let Some(processing) = &processing {
+            processing.close_move();
+        }
+        return Err(e);
+    }
+    log::info!("the storage folder changed");
+    if let Some(processing) = &processing {
+        processing.retry_awaiting();
+        processing.forget_outside_roots();
+        processing.roots_changed();
+        if moving {
+            processing.start_move();
+        }
+    }
+    // The shared settings of the new folder can choose another recognition
+    // configuration (R18).
+    if let Some(models) = app.try_state::<Arc<ModelsManager>>() {
+        models.follow_choice(app);
+    }
+    settings::emit_settings_changed(app);
+    Ok(())
+}
+
+/// The Move of the notes to the storage folder, or `None` when no Move
+/// runs or is paused.
+#[tauri::command]
+#[specta::specta]
+pub fn move_status(processing: State<'_, Arc<ProcessingManager>>) -> Option<MoveStatus> {
+    processing.move_status()
+}
+
+/// The cause that Show in Finder gives when the storage folder is not
+/// available.
+const STORAGE_NOT_AVAILABLE: &str = "The storage folder is not available.";
+
+/// The storage folder that Show in Finder opens, or the cause when it is
+/// not a folder on disk now.
+fn folder_to_show(folder: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(folder);
+    if folder.is_empty() || !path.is_dir() {
+        return Err(STORAGE_NOT_AVAILABLE.into());
+    }
+    Ok(path)
+}
+
+/// Open the storage folder in Finder, or in Explorer on Windows (R3,
+/// KTD17). The command opens the folder from Rust, so the Settings window
+/// gets no file path permission.
+#[tauri::command]
+#[specta::specta]
+pub fn show_storage_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let folder = folder_to_show(&settings::get_settings(&app).storage_folder)?;
+    app.opener()
+        .open_path(folder.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("The storage folder could not open: {e}"))
+}
+
+/// Continue a paused Move (R10, AE13).
+#[tauri::command]
+#[specta::specta]
+pub fn retry_move(processing: State<'_, Arc<ProcessingManager>>) -> Result<(), String> {
+    processing.retry_move()
 }
 
 #[tauri::command]
@@ -573,6 +740,58 @@ mod tests {
     use summarize::ModelList;
 
     const LOCAL: &str = "http://localhost:11434/v1";
+
+    /// KTD11: Change is not available while a Move runs or is paused.
+    #[test]
+    fn a_change_of_folder_is_refused_while_a_move_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (current, new) = (dir.path().join("Notes"), dir.path().join("Disk"));
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        let (current, new) = (current.to_str().unwrap(), new.to_str().unwrap());
+        assert_eq!(
+            check_change(current, new, true),
+            Err(crate::managers::processing::MOVE_OPEN.to_string())
+        );
+        assert_eq!(check_change(current, new, false), Ok(PathBuf::from(new)));
+    }
+
+    /// KTD17: Show in Finder opens only a storage folder that exists.
+    #[test]
+    fn show_in_finder_needs_a_storage_folder_that_is_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Notes");
+        let not_available = Err(STORAGE_NOT_AVAILABLE.to_string());
+        assert_eq!(folder_to_show(""), not_available);
+        assert_eq!(folder_to_show(folder.to_str().unwrap()), not_available);
+        std::fs::write(&folder, b"a file").unwrap();
+        assert_eq!(folder_to_show(folder.to_str().unwrap()), not_available);
+        std::fs::remove_file(&folder).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        assert_eq!(folder_to_show(folder.to_str().unwrap()), Ok(folder));
+    }
+
+    #[test]
+    fn a_change_of_folder_gives_the_cause_of_a_refused_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        std::fs::create_dir_all(&current).unwrap();
+        let current = current.to_str().unwrap();
+        let cause = check_change(current, current, false).unwrap_err();
+        assert!(cause.contains("already the storage folder"), "{cause}");
+    }
+
+    #[test]
+    fn old_notes_read_as_snake_case() {
+        assert_eq!(
+            serde_json::from_value::<OldNotes>(serde_json::json!("leave")).unwrap(),
+            OldNotes::Leave
+        );
+        assert_eq!(
+            serde_json::from_value::<OldNotes>(serde_json::json!("move")).unwrap(),
+            OldNotes::Move
+        );
+    }
 
     #[test]
     fn the_microphone_list_keeps_each_id_and_names_the_default_by_id() {
@@ -771,30 +990,20 @@ pub async fn change_interface_zoom(
         .map_err(|e| e.to_string())?
 }
 
-/// Keep the complete default until every new artifact is downloaded.
-#[tauri::command]
+/// Choose the complete recognition configuration (R18). The configuration
+/// in use stays until every file of the chosen configuration is on disk.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_recognition_defaults(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
     config: models::recognition::RecognitionConfig,
 ) -> Result<Settings, String> {
-    let spec = models::recognition::resolve(&config).map_err(|e| e.to_string())?;
-    let missing = manager.missing_spec(&spec);
-    let result = settings::update_settings(&app, |s| {
-        s.pending_asr_model = None;
-        if missing.is_empty() {
-            s.apply_recognition(&config);
-        } else {
-            s.pending_recognition = Some(config.clone());
-        }
-        Ok(())
-    })?;
-    // The files of the selected choice download first, so that the pending
-    // pick settles on them. The rest of the bundle follows (KTD5).
-    if !missing.is_empty() {
-        manager.start_downloads(&app, missing.clone())?;
-    }
-    manager.start_bundle_downloads(&app, &config.asr_model, &missing)?;
+    models::recognition::resolve(&config).map_err(|e| e.to_string())?;
+    let choice = settings::RecognitionChoice::from_config(&config);
+    let result = choose_recognition(&app, &manager, |c| *c = choice)?;
+    // The files of the chosen configuration download first. The rest of
+    // the bundle follows (KTD5).
+    manager.start_bundle_downloads(&app, &config.asr_model, &[])?;
     Ok(result)
 }

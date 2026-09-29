@@ -14,7 +14,7 @@ use pipeline::{
 use secrets::{SecretError, SecretStore};
 use serde::Serialize;
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 
 use crate::managers::capture::CaptureManager;
@@ -22,6 +22,7 @@ use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
 use crate::managers::models::{ModelState, ModelsManager};
 use crate::managers::settings;
+use crate::managers::shared::SharedSettingsManager;
 
 /// What processing is doing, for the surface.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
@@ -82,6 +83,115 @@ pub enum ProcessingStep {
     Cancelled,
     Finished,
 }
+
+/// What the Move of the notes to a new storage folder does (KTD9).
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveState {
+    /// The Move puts the notes in the new folder.
+    Running,
+    /// A note records, saves or is processed: it moves when it is free.
+    Waiting,
+    /// A full disk or a folder that is not available stopped the Move.
+    /// Retry continues it.
+    Paused,
+    /// Every note is in the new folder.
+    Finished,
+}
+
+/// Why the Move is paused, with the text that Settings shows.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type)]
+pub struct MovePauseCause {
+    pub kind: MovePauseKind,
+    pub message: String,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum MovePauseKind {
+    DiskFull,
+    FolderNotAvailable,
+    Failed,
+}
+
+impl From<&session_core::MovePause> for MovePauseCause {
+    fn from(pause: &session_core::MovePause) -> Self {
+        use session_core::MovePause as P;
+        let (kind, message) = match pause {
+            P::DiskFull { folder } => (
+                MovePauseKind::DiskFull,
+                format!("The disk of {folder} is full. Make space on it, then select Retry."),
+            ),
+            P::NotReachable { folder } => (
+                MovePauseKind::FolderNotAvailable,
+                format!("{folder} is not available. Connect its disk, then select Retry."),
+            ),
+            P::Failed { message } => (
+                MovePauseKind::Failed,
+                format!("The notes could not be moved: {message}. Select Retry to try again."),
+            ),
+        };
+        Self { kind, message }
+    }
+}
+
+/// The progress of the Move, sent after each note and when the state
+/// changes.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type, tauri_specta::Event)]
+pub struct MoveProgress {
+    pub moved: u32,
+    pub total: u32,
+    pub state: MoveState,
+}
+
+impl MoveProgress {
+    /// The progress of `(moved, total)` notes in `state`.
+    fn new((moved, total): (u32, u32), state: MoveState) -> Self {
+        Self {
+            moved,
+            total,
+            state,
+        }
+    }
+}
+
+/// The Move paused (R10).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type, tauri_specta::Event)]
+pub struct MovePaused {
+    pub cause: MovePauseCause,
+}
+
+/// The open Move, for Settings > Storage.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type)]
+pub struct MoveStatus {
+    pub old_folder: String,
+    pub new_folder: String,
+    pub moved: u32,
+    pub total: u32,
+    pub state: MoveState,
+    pub cause: Option<MovePauseCause>,
+}
+
+/// The Move worker: one thread while a Move journal is open.
+#[derive(Default)]
+struct MoveWorker {
+    state: std::sync::Mutex<MoveWorkerState>,
+    signal: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct MoveWorkerState {
+    running: bool,
+    /// A Retry or a new Move came while the worker waited.
+    woken: bool,
+    /// The app quits.
+    stopped: bool,
+    /// The state of the last pass.
+    last: Option<MoveState>,
+}
+
+/// How long the worker waits before a pass tries a busy note again.
+const MOVE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(crate) fn stage_name(stage: session_core::Stage) -> String {
     serde_json::to_value(stage)
@@ -364,11 +474,10 @@ impl EngineProvider for Models {
         }
     }
 
-    /// Read when the session is saved, so the last destination chosen wins (AE7).
+    /// Read when the note is saved, so a note that records during a change
+    /// of folder saves to the new storage folder (AE7).
     fn destination(&self) -> Option<std::path::PathBuf> {
-        settings::get_settings(&self.app)
-            .current_destination
-            .map(std::path::PathBuf::from)
+        settings::get_settings(&self.app).storage_folder()
     }
 
     /// Everything processing needs, diarization weights included: a
@@ -412,21 +521,47 @@ impl EngineProvider for Models {
 
 /// A session finished while the window was away (R15). Nothing is posted
 /// while the window is in front: the surface already says so.
-/// Remove staging folders that completed sessions left in any destination
-/// ever chosen (U18). Only with the instance lock held, so no other run is
+/// Remove staging folders that completed sessions left in the storage
+/// folder (U18). Only with the instance lock held, so no other run is
 /// saving into them.
 fn sweep_staging(app: &AppHandle, store: &pipeline::SharedStore) {
-    let roots = crate::managers::settings::get_settings(app).destination_roots;
-    for root in roots {
-        match session_save::sweep_staging(std::path::Path::new(&root), |id| completed(store, id)) {
+    for root in library_roots(app, store) {
+        match session_save::sweep_staging(&root, |id| completed(store, id)) {
             Ok(removed) => {
                 for path in removed {
                     log::info!("removed leftover staging folder {}", path.display());
                 }
             }
-            Err(e) => log::warn!("could not sweep {root} for staging folders: {e}"),
+            Err(e) => log::warn!(
+                "could not sweep {} for staging folders: {e}",
+                root.display()
+            ),
         }
     }
+}
+
+/// The folders that the library lists notes from: the storage folder (R1)
+/// and, while a Move journal is open, the old folder (KTD10). Empty only
+/// before the launch sets a storage folder.
+fn library_roots(app: &AppHandle, store: &pipeline::SharedStore) -> Vec<std::path::PathBuf> {
+    let storage = settings::get_settings(app).storage_folder();
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    pipeline::move_notes::library_roots(&store, storage)
+}
+
+/// Forget the rows of the notes that are in none of the library roots, for
+/// example after a change of folder with Leave them (R7, R8).
+fn forget_outside(
+    app: &AppHandle,
+    store: &pipeline::SharedStore,
+    claimed: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let roots = library_roots(app, store);
+    let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+    library::reconcile::forget_outside(&mut store, &roots, claimed).unwrap_or_else(|e| {
+        log::error!("could not forget the notes outside the storage folder: {e}");
+        Vec::new()
+    })
 }
 
 /// Whether the staging folder of `id` is left over from a save that
@@ -441,6 +576,16 @@ fn completed(store: &pipeline::SharedStore, id: &str) -> bool {
         .ok()
         .flatten()
         .is_some_and(|r| r.state == session_core::SessionState::Saved)
+}
+
+/// Refuses a change of folder while a Move runs or is paused (KTD11).
+pub const MOVE_OPEN: &str =
+    "Longhand is moving your notes. Wait until the move is done, then change the folder.";
+
+fn emit_move(app: &AppHandle, progress: MoveProgress) {
+    if let Err(e) = progress.emit(app) {
+        log::warn!("could not emit the move progress: {e}");
+    }
 }
 
 fn emit_library_changed(app: &AppHandle, changes: LibraryChanged) {
@@ -502,6 +647,8 @@ pub struct ProcessingManager {
     /// What the latest library scans found. The launch scan and the
     /// watcher write it, and the note commands read it (KTD10).
     library_status: Arc<library::status::LibraryStatus>,
+    /// The Move of the notes to a new storage folder (KTD9).
+    mover: MoveWorker,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -573,6 +720,7 @@ impl ProcessingManager {
             liveness,
             library: std::sync::Mutex::default(),
             library_status: Arc::default(),
+            mover: MoveWorker::default(),
         }
     }
 
@@ -596,7 +744,19 @@ impl ProcessingManager {
         }
     }
 
-    fn launch(&self) {
+    fn launch(self: &Arc<Self>) {
+        // Before the library scan: the shared settings of the storage folder
+        // apply, and a folder with no settings file gets this computer's
+        // shared settings (R21, KTD8).
+        if let Some(shared) = self.app.try_state::<Arc<SharedSettingsManager>>()
+            && shared.join_at_launch()
+        {
+            settings::emit_settings_changed(&self.app);
+        }
+        // The chosen recognition configuration can differ from the one in
+        // use, for example after a change on another computer while this
+        // one was off (R18).
+        self.models.follow_choice(&self.app);
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
@@ -615,6 +775,9 @@ impl ProcessingManager {
             }
             Err(e) => log::error!("the launch scan of the library failed: {e}"),
         }
+        // The notes of earlier folders, and of an old folder that Leave them
+        // left while a note was busy, go out of the library (R7, R8).
+        self.forget_outside_roots();
         if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
             // Each saved folder takes the name its title gives (KTD8).
             if let Err(e) = self.runner.reconcile_folders() {
@@ -634,28 +797,303 @@ impl ProcessingManager {
         // The folder watcher starts after the runner (KTD9), and keeps the
         // pending deletes of the launch reconcile.
         self.start_library(reconciler);
+        // A Move that a quit or a crash stopped continues (R10). Only with
+        // the instance lock held, so no other run moves the same notes.
+        if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) && self.move_open() {
+            self.start_move();
+        }
     }
 
-    /// The retained Destinations, as the settings hold them.
+    /// Whether a Move runs or is paused.
+    pub fn move_open(&self) -> bool {
+        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(store.move_journal(), Ok(Some(_)))
+    }
+
+    /// Open the Move journal from `old` to `new` (KTD9). Call before the
+    /// storage folder changes, so the library keeps the old folder's notes
+    /// meanwhile (KTD10). Refused while a Move runs or is paused (KTD11).
+    pub fn open_move(&self, old: &std::path::Path, new: &std::path::Path) -> Result<(), String> {
+        match pipeline::move_notes::open(&self.store, old, new) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(MOVE_OPEN.into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Close a Move journal that [`ProcessingManager::open_move`] opened
+    /// when the change of folder then failed. No note has moved.
+    pub fn close_move(&self) {
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = store.close_move() {
+            log::error!("could not close the move journal: {e}");
+        }
+    }
+
+    /// The open Move, or `None`.
+    pub fn move_status(&self) -> Option<MoveStatus> {
+        let status = {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            pipeline::move_notes::status(&store)
+        };
+        let status = match status {
+            Ok(status) => status?,
+            Err(e) => {
+                log::error!("could not read the move journal: {e}");
+                return None;
+            }
+        };
+        let last = self
+            .mover
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last;
+        let cause = status.journal.pause.as_ref().map(MovePauseCause::from);
+        let state = if cause.is_some() {
+            MoveState::Paused
+        } else {
+            match last {
+                Some(MoveState::Waiting) => MoveState::Waiting,
+                _ => MoveState::Running,
+            }
+        };
+        Some(MoveStatus {
+            old_folder: status.journal.old_folder.to_string_lossy().into_owned(),
+            new_folder: status.journal.new_folder.to_string_lossy().into_owned(),
+            moved: status.progress.moved as u32,
+            total: status.progress.total as u32,
+            state,
+            cause,
+        })
+    }
+
+    /// Continue a paused Move (R10, AE13).
+    pub fn retry_move(self: &Arc<Self>) -> Result<(), String> {
+        pipeline::move_notes::retry(&self.store).map_err(|e| e.to_string())?;
+        self.start_move();
+        Ok(())
+    }
+
+    /// Start the Move worker, or wake it when it waits.
+    pub fn start_move(self: &Arc<Self>) {
+        {
+            let mut state = self.worker();
+            if state.stopped {
+                return;
+            }
+            if state.running {
+                state.woken = true;
+                self.mover.signal.notify_all();
+                return;
+            }
+            state.running = true;
+            state.woken = false;
+        }
+        // The library watches the old folder too while the Move runs.
+        self.roots_changed();
+        let manager = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("move".into())
+            .spawn(move || manager.run_move());
+        if let Err(e) = spawned {
+            log::error!("could not start the move of the notes: {e}");
+            self.worker().running = false;
+        }
+    }
+
+    /// The Move worker. A new Move that opens as the last one ends runs
+    /// too.
+    fn run_move(&self) {
+        loop {
+            self.move_until_done();
+            let mut state = self.worker();
+            if state.woken && !state.stopped {
+                state.woken = false;
+                continue;
+            }
+            state.running = false;
+            return;
+        }
+    }
+
+    /// A pass, then a wait while a note is busy or the Move is paused,
+    /// until every note is in the new folder or the app quits.
+    fn move_until_done(&self) {
+        let claims = self.runner.claims().clone();
+        loop {
+            let mover = pipeline::move_notes::Mover {
+                store: &self.store,
+                claims: &claims,
+                fs: &session_save::RealFs,
+                copy: &pipeline::move_notes::copy_note,
+            };
+            self.emit_move_progress(MoveState::Running);
+            let mut last = self
+                .move_status()
+                .map(|s| (s.moved, s.total))
+                .unwrap_or_default();
+            let end = mover.pass(&mut |id, progress| {
+                last = (progress.moved as u32, progress.total as u32);
+                emit_library_changed(
+                    &self.app,
+                    library::reconcile::Changes {
+                        changed: vec![id.to_string()],
+                        removed: Vec::new(),
+                    }
+                    .into(),
+                );
+                emit_move(&self.app, MoveProgress::new(last, MoveState::Running));
+            });
+            let wait = match end {
+                Ok(pipeline::move_notes::PassEnd::Finished) => {
+                    self.set_move_state(MoveState::Finished);
+                    emit_move(&self.app, MoveProgress::new(last, MoveState::Finished));
+                    // The old folder is not a library root any more.
+                    self.roots_changed();
+                    self.forget_outside_roots();
+                    break;
+                }
+                Ok(pipeline::move_notes::PassEnd::Waiting) => {
+                    self.set_move_state(MoveState::Waiting);
+                    self.emit_move_progress(MoveState::Waiting);
+                    Some(MOVE_WAIT)
+                }
+                Ok(pipeline::move_notes::PassEnd::Paused(pause)) => {
+                    self.set_move_state(MoveState::Paused);
+                    self.emit_move_progress(MoveState::Paused);
+                    let paused = MovePaused {
+                        cause: MovePauseCause::from(&pause),
+                    };
+                    if let Err(e) = paused.emit(&self.app) {
+                        log::warn!("could not emit the move pause: {e}");
+                    }
+                    None
+                }
+                Err(e) => {
+                    log::error!("the move of the notes failed: {e}");
+                    Some(MOVE_WAIT)
+                }
+            };
+            if !self.wait_move(wait) {
+                break;
+            }
+        }
+    }
+
+    /// Wait for `timeout`, or for Retry when it is `None`. Returns false
+    /// when the app quits.
+    fn wait_move(&self, timeout: Option<std::time::Duration>) -> bool {
+        let mut state = self.worker();
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        while !state.woken && !state.stopped {
+            match deadline {
+                Some(deadline) => {
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    state = self
+                        .mover
+                        .signal
+                        .wait_timeout(state, deadline - now)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+                None => {
+                    state = self
+                        .mover
+                        .signal
+                        .wait(state)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+            }
+        }
+        state.woken = false;
+        !state.stopped
+    }
+
+    fn set_move_state(&self, last: MoveState) {
+        self.worker().last = Some(last);
+    }
+
+    fn worker(&self) -> std::sync::MutexGuard<'_, MoveWorkerState> {
+        self.mover.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn emit_move_progress(&self, state: MoveState) {
+        if let Some(status) = self.move_status() {
+            emit_move(
+                &self.app,
+                MoveProgress::new((status.moved, status.total), state),
+            );
+        }
+    }
+
+    /// The folders that the library lists notes from.
     fn roots(&self) -> Vec<std::path::PathBuf> {
-        settings::get_settings(&self.app)
-            .destination_roots
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect()
+        library_roots(&self.app, &self.store)
+    }
+
+    /// The storage folder, whose `.longhand/` folder holds the shared
+    /// settings (KTD13).
+    fn storage_folder(&self) -> Option<std::path::PathBuf> {
+        settings::get_settings(&self.app).storage_folder()
+    }
+
+    /// Forget the rows of the notes that are in no library root, and tell
+    /// the surface. A busy note stays until a later call: each library
+    /// reconcile makes this call again (R7).
+    pub fn forget_outside_roots(&self) {
+        let claims = self.runner.claims();
+        let removed = forget_outside(&self.app, &self.store, &|id| claims.busy(id));
+        if !removed.is_empty() {
+            let changes = library::reconcile::Changes {
+                changed: Vec::new(),
+                removed,
+            };
+            emit_library_changed(&self.app, changes.into());
+        }
     }
 
     fn start_library(&self, reconciler: library::reconcile::Reconciler) {
         let store = Arc::clone(&self.store);
         let claims = self.runner.claims().clone();
         let events = self.app.clone();
+        let app = self.app.clone();
+        let reader = self.app.clone();
         let started = LibraryWatcher::start(
             self.roots(),
+            self.storage_folder(),
             reconciler,
             Box::new(move |target, reconciler| {
-                reconciler
-                    .run(&store, target, &|id| claims.busy(id))
-                    .map_err(|e| e.to_string())
+                let claimed = |id: &str| claims.busy(id);
+                let mut changes = reconciler
+                    .run(&store, target, &claimed)
+                    .map_err(|e| e.to_string())?;
+                let removed = forget_outside(&app, &store, &claimed);
+                if !removed.is_empty() {
+                    changes.changed.retain(|id| !removed.contains(id));
+                    changes.removed.extend(removed);
+                    changes.removed.sort();
+                    changes.removed.dedup();
+                }
+                Ok(changes)
+            }),
+            // On the watcher thread, never the main thread: a read can
+            // wait for an online-only file (KTD13, R20).
+            Box::new(move || {
+                if let Some(shared) = reader.try_state::<Arc<SharedSettingsManager>>()
+                    && shared.reread()
+                {
+                    log::info!("shared settings: another computer changed them");
+                    settings::emit_settings_changed(&reader);
+                    // Another computer can choose another recognition
+                    // configuration: its downloads start (R18, AE5).
+                    if let Some(models) = reader.try_state::<Arc<ModelsManager>>() {
+                        models.follow_choice(&reader);
+                    }
+                }
             }),
             Box::new(move |changes| emit_library_changed(&events, changes)),
             Timing::default(),
@@ -677,12 +1115,12 @@ impl ProcessingManager {
         }
     }
 
-    /// The retained Destinations changed: the library watches start again
-    /// on the new set (KTD7).
+    /// The storage folder changed: the library watches start again on the
+    /// new roots, and a full scan runs (KTD7).
     pub fn roots_changed(&self) {
         let library = self.library.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(watcher) = &library.watcher {
-            watcher.set_roots(self.roots());
+            watcher.set_roots(self.roots(), self.storage_folder());
         }
     }
 
@@ -698,6 +1136,11 @@ impl ProcessingManager {
         };
         if let Some(watcher) = watcher {
             watcher.stop();
+        }
+        {
+            let mut state = self.worker();
+            state.stopped = true;
+            self.mover.signal.notify_all();
         }
         self.live.shutdown();
         self.runner.shutdown();
@@ -837,6 +1280,26 @@ mod tests {
         let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
         assert!(removed.is_empty());
         assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn a_move_pause_names_its_cause_and_the_action_in_plain_words() {
+        use session_core::MovePause;
+        let full = MovePauseCause::from(&MovePause::DiskFull {
+            folder: "/Volumes/Disk/Notes".into(),
+        });
+        assert_eq!(full.kind, MovePauseKind::DiskFull);
+        assert!(full.message.contains("/Volumes/Disk/Notes") && full.message.contains("Retry"));
+        let gone = MovePauseCause::from(&MovePause::NotReachable {
+            folder: "/Volumes/Disk/Notes".into(),
+        });
+        assert_eq!(gone.kind, MovePauseKind::FolderNotAvailable);
+        assert!(gone.message.contains("not available"), "{}", gone.message);
+        let failed = MovePauseCause::from(&MovePause::Failed {
+            message: "denied".into(),
+        });
+        assert_eq!(failed.kind, MovePauseKind::Failed);
+        assert!(failed.message.contains("denied"));
     }
 
     #[test]

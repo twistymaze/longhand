@@ -15,9 +15,17 @@ Test microphone and Keychain behaviour from this bundle. An unsigned `tauri dev`
 Give both ways to run the build, using the exact checkout path:
 
 - On this Mac: `open <checkout>/target/release/bundle/macos/Longhand.app`.
-- On a remote Mac: zip the bundle with `ditto -c -k --keepParent`. Provide the `scp`, unzip, move-to-Applications, and `open` steps for that build. A remote Mac needs a notarized build or Gatekeeper stops the app. Explain this requirement and notarize when the user tests remotely.
+- On a remote Mac: zip the bundle with `ditto -c -k --keepParent`. Provide the `scp`, unzip, `spctl` and `open` steps for that build, and the cleanup step. A remote Mac needs a notarized build or Gatekeeper stops the app. Explain this requirement and notarize when the user tests remotely.
 
-A local build has no track, so it gets no updates. After a manual test, install the DMG of the newest preview build to get updates again ([Preview builds](preview-builds.md#install-the-first-build)).
+Never put a test build in `/Applications`. The app there is the installed preview build, and it gets updates. Unzip a test build into its own folder, such as `~/Downloads/longhand-test/`, and open it from there. Quit the preview build first: the test build has the same bundle ID, so the preview build can receive the launch instead. The test build uses the same app data as the preview build.
+
+After the test, quit the test build and delete its folder:
+
+```sh
+rm -rf ~/Downloads/longhand-test
+```
+
+A local build has no track, so it gets no updates. The preview build in `/Applications` keeps its updates.
 
 ## Checks and CI
 

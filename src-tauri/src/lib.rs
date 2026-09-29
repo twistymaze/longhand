@@ -36,6 +36,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_default_speaker_count,
             commands::settings::select_asr_model,
             commands::settings::set_live_transcript,
+            commands::settings::retry_recognition_downloads,
             commands::settings::list_microphones,
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
@@ -48,8 +49,11 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_summary_prompt_text,
             commands::settings::delete_summary_prompt,
             commands::settings::activate_summary_prompt,
-            commands::settings::choose_destination,
-            commands::settings::set_current_destination,
+            commands::settings::pick_storage_folder,
+            commands::settings::change_storage_folder,
+            commands::settings::move_status,
+            commands::settings::retry_move,
+            commands::settings::show_storage_folder,
             commands::settings::credential_status,
             commands::settings::set_credential,
             commands::settings::delete_credential,
@@ -107,6 +111,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
             managers::processing::ProcessingUpdate,
+            managers::processing::MoveProgress,
+            managers::processing::MovePaused,
             managers::library::LibraryChanged,
             managers::live::LiveTranscriptEvent,
             managers::live::LiveRecognitionEvent,
@@ -253,6 +259,25 @@ pub fn run() {
             if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
                 managers::updates::install_at_launch(&handle);
             }
+            // Read once before any other reader, so a first run writes the
+            // defaults and an old store migrates. The migration puts the old
+            // shared values into the cache (R21). The join with the storage
+            // folder runs on the launch thread, before the first library
+            // scan; until then the shared view comes from the cache.
+            let local = managers::settings::get_local_settings(&handle);
+            log::info!(
+                "settings loaded (schema version {})",
+                local.settings_schema_version
+            );
+            // Before the shared settings join and the first library scan: a
+            // new install gets the default storage folder (R2, KTD12).
+            let local = managers::settings::ensure_storage_folder(&handle, local);
+            app.manage(std::sync::Arc::new(
+                managers::shared::SharedSettingsManager::new(
+                    managers::settings::shared_cache_dir(&handle)?,
+                    local.storage_folder(),
+                ),
+            ));
             let secrets = managers::secrets::SecretsManager::new(&handle);
             let secret_store = secrets.store();
             app.manage(secrets);
@@ -324,14 +349,6 @@ pub fn run() {
                     log::warn!("microphone not prepared at launch: {e}");
                 }
             });
-            // Read once at launch so a first run writes the defaults and an old
-            // store migrates before anything else reads it.
-            let settings = managers::settings::get_settings(&handle);
-            log::info!(
-                "settings loaded (schema version {})",
-                settings.settings_schema_version
-            );
-
             window::create_main_window(&handle)?;
             tray::create_tray(&handle)?;
             #[cfg(target_os = "macos")]

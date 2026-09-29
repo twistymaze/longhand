@@ -22,16 +22,19 @@ const timings: [ProcessingMode, string][] = [
   ["after_stop", "After Stop"],
 ];
 import { languageName } from "./languages";
+/// The chosen configuration, which the Settings window shows and changes.
+/// The configuration in use can differ while the chosen one downloads.
 export function recognitionDefaults(settings: Settings): RecognitionConfig {
+  const chosen = settings.chosen_recognition;
   return {
-    asr_model: settings.asr_model,
-    speaker_source: settings.speaker_source,
-    processing_mode: settings.live_transcript
+    asr_model: chosen.asr_model,
+    speaker_source: chosen.speaker_source,
+    processing_mode: chosen.live_transcript
       ? "during_recording"
       : "after_stop",
-    speaker_processing_mode: settings.speaker_processing_mode,
-    speaker_count: settings.default_speaker_count,
-    language: settings.recognition_language,
+    speaker_processing_mode: chosen.speaker_processing_mode,
+    speaker_count: chosen.default_speaker_count,
+    language: chosen.recognition_language,
   };
 }
 
@@ -42,6 +45,7 @@ export function RecognitionOptions({
   onChanged,
   modelAction,
   modelActivity,
+  disabled = false,
 }: {
   models: ModelStatus[];
   initial: RecognitionConfig;
@@ -49,6 +53,9 @@ export function RecognitionOptions({
   onChanged?: (spec: ExecutionSpec) => void;
   modelAction?: (model: ModelStatus) => ReactNode;
   modelActivity?: (model: ModelStatus) => ReactNode;
+  /// The choices are read-only, for example while the storage folder is not
+  /// available (R16).
+  disabled?: boolean;
 }) {
   const [draft, setDraft] = useState(initial);
   const edited = useRef(false);
@@ -269,6 +276,7 @@ export function RecognitionOptions({
             models={models}
             modelAction={modelAction}
             modelActivity={modelActivity}
+            disabled={disabled}
             value={draft.asr_model}
             onChange={(asr_model) => {
               if (asr_model === draft.asr_model) return;
@@ -288,7 +296,7 @@ export function RecognitionOptions({
                 aria-label="Transcription timing"
                 className={fieldClass}
                 value={draft.processing_mode}
-                disabled={loading}
+                disabled={loading || disabled}
                 onChange={(e) => chooseMode("processing_mode", e.target.value)}
               >
                 {timings.map(([id, text]) => (
@@ -312,7 +320,7 @@ export function RecognitionOptions({
                     ? "off"
                     : draft.speaker_processing_mode
                 }
-                disabled={loading}
+                disabled={loading || disabled}
                 onChange={(e) =>
                   chooseMode("speaker_processing_mode", e.target.value)
                 }
@@ -357,7 +365,7 @@ export function RecognitionOptions({
                     aria-label="Speaker model override"
                     className={fieldClass}
                     value={engine ?? "automatic"}
-                    disabled={loading}
+                    disabled={loading || disabled}
                     onChange={(e) => {
                       invalidate();
                       setEngine(
@@ -390,6 +398,7 @@ export function RecognitionOptions({
                   <select
                     aria-label="Language"
                     className={fieldClass}
+                    disabled={disabled}
                     value={draft.language ?? ""}
                     onChange={(e) => {
                       invalidate();
@@ -415,6 +424,7 @@ export function RecognitionOptions({
                   <select
                     aria-label="Expected speakers"
                     className={fieldClass}
+                    disabled={disabled}
                     value={draft.speaker_count?.kind ?? "automatic"}
                     onChange={(e) => {
                       invalidate();
@@ -438,6 +448,7 @@ export function RecognitionOptions({
                   <input
                     aria-label="Exact speaker count"
                     className={fieldClass}
+                    disabled={disabled}
                     type="number"
                     min={1}
                     max={32}
@@ -463,6 +474,7 @@ export function RecognitionOptions({
                           field === "min" ? "Fewest speakers" : "Most speakers"
                         }
                         className={`${fieldClass} min-w-0 w-24`}
+                        disabled={disabled}
                         type="number"
                         min={1}
                         max={32}

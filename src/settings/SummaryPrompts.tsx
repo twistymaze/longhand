@@ -6,7 +6,7 @@
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
+import { commands, events, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { log, logText } from "../lib/log";
 import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } from "./ui";
 
@@ -64,12 +64,14 @@ function PromptRow({
   prompt,
   selected,
   active,
+  disabled,
   onSelect,
   onUse,
 }: {
   prompt: SummaryPromptEntry;
   selected: boolean;
   active: boolean;
+  disabled: boolean;
   onSelect: () => void;
   onUse: () => void;
 }) {
@@ -94,7 +96,7 @@ function PromptRow({
             In use
           </span>
         ) : (
-          <Button onClick={onUse}>
+          <Button disabled={disabled} onClick={onUse}>
             Use<span className="sr-only"> {prompt.name}</span>
           </Button>
         )}
@@ -114,9 +116,12 @@ function without<T>(map: Record<string, T>, id: string): Record<string, T> {
 
 export function SummaryPrompts({
   onSettings,
+  readOnly = null,
   closeSaveLimit = defaultCloseSaveLimit,
 }: {
   onSettings: (s: Settings) => void;
+  /// Why the shared settings are read-only now, or null (R16).
+  readOnly?: string | null;
   /// Tests set a shorter limit.
   closeSaveLimit?: number;
 }) {
@@ -125,6 +130,12 @@ export function SummaryPrompts({
   // The unsaved text of each prompt, by id. A prompt with no entry shows its
   // saved text.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // The saved text that each draft started from, by id. When the saved text
+  // changes to a text that this window did not send, another computer
+  // changed the prompt.
+  const [bases, setBases] = useState<Record<string, string>>({});
+  // The texts that this window sent, by id.
+  const sentTexts = useRef(new Map<string, Set<string>>());
   const [listError, setListError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   // The error of the last failed text save, by prompt id. The editor shows
@@ -148,8 +159,14 @@ export function SummaryPrompts({
       setListError(typeof e === "string" ? e : "The summary prompts could not be read.");
     }
   }, []);
+  // A change from another computer, or from the note page, reads the
+  // prompts again (R20).
   useEffect(() => {
     void load();
+    const unlisten = events.settingsChanged.listen(() => void load());
+    return () => {
+      void unlisten.then((f) => f());
+    };
   }, [load]);
 
   const cancel = useCallback(() => {
@@ -170,6 +187,8 @@ export function SummaryPrompts({
           failed.current.add(sent.id);
           setSaveErrors((m) => ({ ...m, [sent.id]: error }));
         };
+        const texts = sentTexts.current.get(sent.id) ?? new Set<string>();
+        sentTexts.current.set(sent.id, texts.add(sent.text));
         saving.current = saving.current
           .then(async () => {
             const result = await commands.setSummaryPromptText(sent.id, sent.text);
@@ -179,6 +198,7 @@ export function SummaryPrompts({
             }
             failed.current.delete(sent.id);
             setSaveErrors((m) => without(m, sent.id));
+            setBases((m) => ({ ...m, [sent.id]: sent.text }));
             onSettingsRef.current(result.data);
             await load();
             // Clear the draft only if it still holds the sent text, so that
@@ -273,6 +293,25 @@ export function SummaryPrompts({
     };
   }, [flush, closeSaveLimit]);
 
+  // A prompt whose unsaved text started from a saved text that another
+  // computer then changed. The editor keeps the unsaved text.
+  const changedElsewhere = (p: SummaryPromptEntry) =>
+    p.id in drafts && drafts[p.id] !== p.text && p.id in bases && p.text !== bases[p.id] && !sentTexts.current.get(p.id)?.has(p.text);
+  const held = list?.prompts.filter(changedElsewhere).map((p) => p.id) ?? [];
+  const heldKey = held.join("\n");
+  // The unsaved text of such a prompt waits for Reload or Keep My Text, and
+  // does not replace the text of the other computer.
+  useEffect(() => {
+    if (pending.current && held.includes(pending.current.id)) cancel();
+  }, [heldKey, cancel]);
+  // A base goes with its draft.
+  useEffect(() => {
+    setBases((m) => {
+      const kept = Object.fromEntries(Object.entries(m).filter(([id]) => id in drafts));
+      return Object.keys(kept).length === Object.keys(m).length ? m : kept;
+    });
+  }, [drafts]);
+
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
@@ -303,9 +342,11 @@ export function SummaryPrompts({
     setSelectedId(id);
   };
 
-  // A new prompt is the last one in the settings.
+  // A new prompt is the one that the list did not have before. The settings
+  // list the prompts by name, so a new prompt is not always the last one.
   const showNewest = (s: Settings) => {
-    const newest = s.summary_prompts[s.summary_prompts.length - 1];
+    const before = new Set(list?.prompts.map((p) => p.id));
+    const newest = s.summary_prompts.find((p) => !before.has(p.id));
     if (newest) show(newest.id);
   };
 
@@ -356,20 +397,45 @@ export function SummaryPrompts({
     });
   };
   // The text stays editable while a save runs. Only valid text waits for
-  // the timer; the last valid text stays saved.
+  // the timer; the last valid text stays saved. Text of a prompt that
+  // changed on another computer does not wait for the timer: only Keep My
+  // Text saves it.
   const change = (text: string) => {
+    const saved = selected.text;
+    setBases((m) => (id in m ? m : { ...m, [id]: saved }));
     setDrafts((m) => ({ ...m, [id]: text }));
     cancel();
-    if (!valid(text)) return;
+    if (!valid(text) || changedElsewhere(selected)) return;
     pending.current = { id, text };
     timer.current = setTimeout(() => void flush(), saveDelay);
   };
+  const changed = changedElsewhere(selected);
+  // Reload shows the text of the other computer and drops the unsaved text.
+  const reload = () => {
+    if (pending.current?.id === id) cancel();
+    setDrafts((m) => without(m, id));
+    setSaveErrors((m) => without(m, id));
+  };
+  // Keep My Text saves the unsaved text over the text of the other computer.
+  const keep = () => {
+    const saved = selected.text;
+    setBases((m) => ({ ...m, [id]: saved }));
+    if (valid(draft)) {
+      pending.current = { id, text: draft };
+      void flush();
+    }
+  };
+  const locked = readOnly !== null;
 
   return (
     <>
       <Group
         header="Prompts"
-        footer="The prompt in use writes each new summary. Summaries you already have don’t change."
+        footer={
+          locked
+            ? `${readOnly} Prompts can’t be changed now.`
+            : "The prompt in use writes each new summary. Summaries you already have don’t change."
+        }
       >
         <div role="radiogroup" aria-label="Summary prompts">
           {list.prompts.map((p) => (
@@ -378,6 +444,7 @@ export function SummaryPrompts({
               prompt={p}
               selected={p.id === id}
               active={p.id === list.active}
+              disabled={locked}
               onSelect={() => select(p.id)}
               onUse={() => void run(() => commands.activateSummaryPrompt(p.id), setListError)}
             />
@@ -385,7 +452,9 @@ export function SummaryPrompts({
         </div>
         <div className="settings-row px-4">
           <div className="py-2.5">
-            <Button onClick={() => void create()}>New Prompt</Button>
+            <Button disabled={locked} onClick={() => void create()}>
+              New Prompt
+            </Button>
           </div>
         </div>
         {listError && <ErrorText>{listError}</ErrorText>}
@@ -397,7 +466,7 @@ export function SummaryPrompts({
             key={id}
             label="Name"
             value={name}
-            disabled={selected.built_in}
+            disabled={selected.built_in || locked}
             onCommit={(v) => void run(() => commands.renameSummaryPrompt(id, v), setEditorError)}
           />
         </Row>
@@ -406,7 +475,7 @@ export function SummaryPrompts({
             <textarea
               aria-label="Prompt text"
               value={draft}
-              readOnly={selected.built_in}
+              readOnly={selected.built_in || locked}
               rows={14}
               onChange={(e) => change(e.target.value)}
               onBlur={() => void flush()}
@@ -421,7 +490,9 @@ export function SummaryPrompts({
                 <p className="min-w-0 flex-1 text-[0.85rem] leading-[1.4] text-label-secondary">
                   Built-in prompts can’t be changed. Duplicate one to make your own.
                 </p>
-                <Button onClick={() => void duplicate()}>Duplicate</Button>
+                <Button disabled={locked} onClick={() => void duplicate()}>
+                  Duplicate
+                </Button>
               </>
             ) : (
               <>
@@ -430,12 +501,30 @@ export function SummaryPrompts({
                 >
                   {`${format(count)} / ${format(limit)}`}
                 </span>
-                <Button onClick={() => void duplicate()}>Duplicate</Button>
-                <Button onClick={() => void remove()}>Delete</Button>
+                <Button disabled={locked} onClick={() => void duplicate()}>
+                  Duplicate
+                </Button>
+                <Button disabled={locked} onClick={() => void remove()}>
+                  Delete
+                </Button>
               </>
             )}
           </div>
         </div>
+        {changed && (
+          <div className="settings-row px-4">
+            <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
+              <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
+                <p className="font-medium text-caution">This prompt changed on another computer.</p>
+                <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
+              </div>
+              <Button onClick={keep}>Keep My Text</Button>
+              <Button prominent onClick={reload}>
+                Reload
+              </Button>
+            </div>
+          </div>
+        )}
         {empty && <ErrorText>A prompt can’t be empty.</ErrorText>}
         {saveError && <ErrorText>{saveError}</ErrorText>}
         {editorError && <ErrorText>{editorError}</ErrorText>}

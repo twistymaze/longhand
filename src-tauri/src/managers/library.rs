@@ -16,6 +16,12 @@
 //! reconcile that changes rows emits [`LibraryChanged`] (KTD10). Longhand's
 //! own writes cause scans too, but the refresh changes nothing for them
 //! (KTD3), so they emit nothing.
+//!
+//! An event on the shared settings file or in the prompts folder of the
+//! storage folder (`.longhand/settings.json`, `.longhand/prompts/`) starts
+//! no note scan. It asks the shared settings manager to read the shared
+//! files again. The full scan each minute asks for that read too, because a
+//! sync can deliver a change with no event (KTD13).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -29,6 +35,8 @@ use notify::event::{EventKind, ModifyKind, RenameMode};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use serde::Serialize;
+use shared_settings::file::{LONGHAND_FOLDER, SETTINGS_FILE};
+use shared_settings::prompts::PROMPTS_FOLDER;
 use specta::Type;
 
 /// The rows that a library reconcile changed (KTD10). `changed` holds
@@ -80,6 +88,26 @@ pub type ReconcileFn =
     Box<dyn FnMut(&Target, &mut Reconciler) -> Result<Changes, String> + Send + 'static>;
 /// Send one [`LibraryChanged`] to the UI.
 pub type EmitFn = Box<dyn Fn(LibraryChanged) + Send + 'static>;
+/// Read the shared settings and the prompts of the storage folder again
+/// (KTD13).
+pub type SharedFn = Box<dyn FnMut() + Send + 'static>;
+
+/// Whether `relative`, a path in the storage folder, is a shared settings
+/// path: the `.longhand/` folder itself, its `settings.json`, or a path in
+/// its `prompts/` folder. The library marker and other `.longhand/` paths
+/// are not.
+fn is_shared_path(relative: &Path) -> bool {
+    let mut components = relative.components();
+    if components.next() != Some(Component::Normal(LONGHAND_FOLDER.as_ref())) {
+        return false;
+    }
+    match components.next() {
+        None => true,
+        Some(Component::Normal(name)) if name == SETTINGS_FILE => components.next().is_none(),
+        Some(Component::Normal(name)) => name == PROMPTS_FOLDER,
+        Some(_) => false,
+    }
+}
 
 /// Whether the watcher ignores a change at `path`, whose path in its
 /// Destination is `relative`. As anarlog's `should_skip_path` (`path.rs`):
@@ -88,20 +116,23 @@ pub type EmitFn = Box<dyn Fn(LibraryChanged) + Send + 'static>;
 /// generations. Their delivery must refresh open notes. Audio files are
 /// not skipped: a note waits for its audio (R6).
 pub fn should_skip_path(relative: &Path, path: &Path) -> bool {
+    is_temporary(path)
+        || relative.components().any(|c| match c {
+            Component::Normal(name) => {
+                name.to_string_lossy().starts_with('.') && name != ".longhand-results"
+            }
+            _ => false,
+        })
+}
+
+/// `.DS_Store`, tempfile's `.tmp` names and the `.tmp` extension.
+fn is_temporary(path: &Path) -> bool {
     if let Some(name) = path.file_name().and_then(|n| n.to_str())
         && (name == ".DS_Store" || name.starts_with(".tmp"))
     {
         return true;
     }
-    if path.extension().is_some_and(|ext| ext == "tmp") {
-        return true;
-    }
-    relative.components().any(|c| match c {
-        Component::Normal(name) => {
-            name.to_string_lossy().starts_with('.') && name != ".longhand-results"
-        }
-        _ => false,
-    })
+    path.extension().is_some_and(|ext| ext == "tmp")
 }
 
 /// A watched Destination: its path as the settings hold it, and the same
@@ -111,13 +142,18 @@ pub fn should_skip_path(relative: &Path, path: &Path) -> bool {
 pub struct Watched {
     pub root: PathBuf,
     pub resolved: PathBuf,
+    /// The Destination is the storage folder, so its `.longhand/` folder
+    /// holds the shared settings that this computer uses (KTD13). The old
+    /// folder of a Move is not.
+    pub shared: bool,
 }
 
 impl Watched {
-    pub fn new(root: &Path) -> Self {
+    pub fn new(root: &Path, shared: bool) -> Self {
         Self {
             root: root.to_path_buf(),
             resolved: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            shared,
         }
     }
 
@@ -133,6 +169,9 @@ impl Watched {
         let Some(Component::Normal(first)) = relative.components().next() else {
             return Place::Root;
         };
+        if self.shared && !is_temporary(path) && is_shared_path(relative) {
+            return Place::Shared;
+        }
         if should_skip_path(relative, path) {
             return Place::Skipped;
         }
@@ -147,12 +186,16 @@ enum Place {
     Root,
     /// A path that is not in the Destination.
     Outside,
+    /// A shared settings path of the storage folder (KTD13).
+    Shared,
     Skipped,
 }
 
 /// The scans that a set of events asks for.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Batch {
+    /// The shared settings get a read (KTD13). This starts no note scan.
+    pub shared: bool,
     /// Destinations that get a full scan.
     pub full: BTreeSet<PathBuf>,
     /// The note folders that get a targeted scan, by Destination.
@@ -176,7 +219,7 @@ impl Batch {
                         watched.root.display()
                     );
                 }
-                self.full.insert(watched.root.clone());
+                self.scan_all(watched);
             }
         }
     }
@@ -184,7 +227,7 @@ impl Batch {
     pub fn add_event(&mut self, watched: &Watched, event: &notify::Event) {
         let root = &watched.root;
         if event.need_rescan() {
-            self.full.insert(root.clone());
+            self.scan_all(watched);
             return;
         }
         match event.kind {
@@ -193,7 +236,7 @@ impl Batch {
             // FSEvents gives each path of a rename as `Any`, and those
             // paths are marked as usual.
             EventKind::Modify(ModifyKind::Name(RenameMode::From | RenameMode::To)) => {
-                self.full.insert(root.clone());
+                self.scan_all(watched);
                 return;
             }
             // As anarlog: creates, removes, data changes and renames.
@@ -203,7 +246,7 @@ impl Batch {
             _ => return,
         }
         if event.paths.is_empty() {
-            self.full.insert(root.clone());
+            self.scan_all(watched);
             return;
         }
         for path in &event.paths {
@@ -211,12 +254,19 @@ impl Batch {
                 Place::Folder(folder) => {
                     self.folders.entry(root.clone()).or_default().insert(folder);
                 }
-                Place::Root | Place::Outside => {
-                    self.full.insert(root.clone());
-                }
+                Place::Root | Place::Outside => self.scan_all(watched),
+                Place::Shared => self.shared = true,
                 Place::Skipped => {}
             }
         }
+    }
+
+    /// A full scan of `watched`. The events can have lost a change of the
+    /// shared settings too, so a full scan of the storage folder also reads
+    /// them.
+    fn scan_all(&mut self, watched: &Watched) {
+        self.full.insert(watched.root.clone());
+        self.shared |= watched.shared;
     }
 
     /// The targets to reconcile. A full scan of a Destination includes
@@ -240,7 +290,10 @@ enum Command {
         watched: Watched,
         result: DebounceEventResult,
     },
-    Roots(Vec<PathBuf>),
+    Roots {
+        roots: Vec<PathBuf>,
+        storage: Option<PathBuf>,
+    },
     Stop,
 }
 
@@ -252,9 +305,13 @@ struct Watch {
 /// The state of the watcher thread.
 struct Worker {
     roots: Vec<PathBuf>,
+    /// The storage folder: the root whose `.longhand/` folder holds the
+    /// shared settings (KTD13).
+    storage: Option<PathBuf>,
     watches: BTreeMap<PathBuf, Watch>,
     reconciler: Reconciler,
     reconcile: ReconcileFn,
+    shared: SharedFn,
     emit: EmitFn,
     /// Each watch sends its events here.
     commands: Sender<Command>,
@@ -290,7 +347,7 @@ impl Worker {
     }
 
     fn watch(&self, root: &Path) -> notify::Result<Watch> {
-        let watched = Watched::new(root);
+        let watched = Watched::new(root, self.storage.as_deref() == Some(root));
         let commands = self.commands.clone();
         let sent = watched.clone();
         let mut debouncer = new_debouncer(
@@ -311,9 +368,11 @@ impl Worker {
     }
 
     /// A new set of Destinations: start the watches again on it, and scan
-    /// every Destination.
-    fn set_roots(&mut self, roots: Vec<PathBuf>) {
+    /// every Destination. The change of folder already read the shared
+    /// settings of the new storage folder.
+    fn set_roots(&mut self, roots: Vec<PathBuf>, storage: Option<PathBuf>) {
         self.roots = roots;
+        self.storage = storage;
         self.watches.clear();
         self.sync_watches();
         self.full_scan();
@@ -326,7 +385,11 @@ impl Worker {
         }
         let mut batch = Batch::default();
         batch.add(watched, result);
+        let shared = batch.shared;
         self.apply(batch.targets());
+        if shared {
+            (self.shared)();
+        }
     }
 
     fn full_scan(&mut self) {
@@ -372,13 +435,18 @@ impl Worker {
 
     /// No event came before [`Worker::deadline`].
     fn timeout(&mut self, now: Instant) {
-        if now >= self.next_full {
+        let minute = now >= self.next_full;
+        if minute {
             self.sync_watches();
             self.next_full = now + self.timing.full_scan_every;
         }
         // A full scan, for the minute or for a pending delete: only a full
         // scan can tell that a folder is still gone.
         self.full_scan();
+        // A sync can change the shared files with no event (KTD13).
+        if minute && self.storage.is_some() {
+            (self.shared)();
+        }
     }
 
     fn run(mut self, commands: Receiver<Command>) {
@@ -386,7 +454,7 @@ impl Worker {
             let wait = self.deadline().saturating_duration_since(Instant::now());
             match commands.recv_timeout(wait) {
                 Ok(Command::Events { watched, result }) => self.events(&watched, &result),
-                Ok(Command::Roots(roots)) => self.set_roots(roots),
+                Ok(Command::Roots { roots, storage }) => self.set_roots(roots, storage),
                 Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => self.timeout(Instant::now()),
             }
@@ -403,13 +471,16 @@ pub struct LibraryWatcher {
 }
 
 impl LibraryWatcher {
-    /// Start watching `roots`. `reconciler` holds the pending deletes of
-    /// the launch reconcile. No scan runs at the start: the launch scan
-    /// ran just before.
+    /// Start watching `roots`. `storage`, one of the roots, is the storage
+    /// folder: `shared` reads its shared settings again (KTD13).
+    /// `reconciler` holds the pending deletes of the launch reconcile. No
+    /// scan runs at the start: the launch scan ran just before.
     pub fn start(
         roots: Vec<PathBuf>,
+        storage: Option<PathBuf>,
         reconciler: Reconciler,
         reconcile: ReconcileFn,
+        shared: SharedFn,
         emit: EmitFn,
         timing: Timing,
     ) -> std::io::Result<Self> {
@@ -417,9 +488,11 @@ impl LibraryWatcher {
         let now = Instant::now();
         let mut worker = Worker {
             roots,
+            storage,
             watches: BTreeMap::new(),
             reconciler,
             reconcile,
+            shared,
             emit,
             commands: commands.clone(),
             timing,
@@ -441,9 +514,9 @@ impl LibraryWatcher {
     }
 
     /// The retained Destinations changed: the watches start again on
-    /// `roots`, and a full scan runs.
-    pub fn set_roots(&self, roots: Vec<PathBuf>) {
-        let _ = self.commands.send(Command::Roots(roots));
+    /// `roots`, with `storage` as the storage folder, and a full scan runs.
+    pub fn set_roots(&self, roots: Vec<PathBuf>, storage: Option<PathBuf>) {
+        let _ = self.commands.send(Command::Roots { roots, storage });
     }
 
     /// Stop the watches and the thread. Waits for a scan in progress, but
@@ -491,11 +564,68 @@ mod tests {
     const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
     const SUMMARY: &str = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";
 
+    /// The storage folder at `root`.
     fn watched(root: &str) -> Watched {
         Watched {
             root: PathBuf::from(root),
             resolved: PathBuf::from(format!("/private{root}")),
+            shared: true,
         }
+    }
+
+    #[test]
+    fn a_shared_settings_event_asks_for_a_read_and_no_note_scan() {
+        let w = watched("/var/notes");
+        for path in [
+            "/var/notes/.longhand/settings.json",
+            "/private/var/notes/.longhand/prompts/Recap.md",
+            "/var/notes/.longhand/prompts/Recap 2.md",
+            "/var/notes/.longhand/prompts",
+            "/var/notes/.longhand",
+        ] {
+            let b = batch(&w, vec![event(data(), &[path])]);
+            assert!(b.shared, "{path}");
+            assert!(b.targets().is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn other_longhand_paths_ask_for_no_read_and_no_note_scan() {
+        let w = watched("/var/notes");
+        for path in [
+            "/var/notes/.longhand/library",
+            "/var/notes/.longhand/settings 2.json",
+            "/var/notes/.longhand/settings.json/x",
+            "/var/notes/.longhand/.tmpA1B2",
+            "/var/notes/.longhand/prompts/.tmpA1B2",
+            "/var/notes/.longhand/prompts/.DS_Store",
+            "/var/notes/.longhand-moving",
+        ] {
+            let b = batch(&w, vec![event(data(), &[path])]);
+            assert_eq!(b, Batch::default(), "{path}");
+        }
+        // The old folder of a Move does not hold the shared settings.
+        let old = Watched {
+            shared: false,
+            ..watched("/var/old")
+        };
+        let b = batch(
+            &old,
+            vec![event(data(), &["/var/old/.longhand/settings.json"])],
+        );
+        assert_eq!(b, Batch::default());
+    }
+
+    #[test]
+    fn a_full_scan_of_the_storage_folder_also_reads_the_shared_settings() {
+        // The lost events can hold a change of the shared settings too.
+        let rescan = event(EventKind::Other, &[]).set_flag(Flag::Rescan);
+        assert!(batch(&watched("/var/notes"), vec![rescan.clone()]).shared);
+        let old = Watched {
+            shared: false,
+            ..watched("/var/old")
+        };
+        assert!(!batch(&old, vec![rescan]).shared);
     }
 
     fn event(kind: EventKind, paths: &[&str]) -> notify::Event {
@@ -726,10 +856,12 @@ mod tests {
         let (commands, received) = mpsc::channel();
         let now = Instant::now();
         let worker = Worker {
+            storage: roots.first().cloned(),
             roots,
             watches: BTreeMap::new(),
             reconciler: Reconciler::default(),
             reconcile: reconcile_into(store, Arc::clone(&targets)),
+            shared: Box::new(|| {}),
             emit: Box::new(|_| {}),
             commands,
             timing,
@@ -751,8 +883,10 @@ mod tests {
         let (sent, emitted) = mpsc::channel();
         let watcher = LibraryWatcher::start(
             vec![root.path().to_path_buf()],
+            Some(root.path().to_path_buf()),
             Reconciler::default(),
             reconcile_into(Arc::clone(&store), Arc::clone(&targets)),
+            Box::new(|| {}),
             Box::new(move |changes| {
                 let _ = sent.send(changes);
             }),
@@ -832,9 +966,13 @@ mod tests {
         assert_eq!(watched_roots(&worker), [first.path()]);
         let old = worker.watches[first.path()].watched.clone();
 
-        let roots = vec![second.path().to_path_buf()];
-        worker.set_roots(roots.clone());
-        assert_eq!(watched_roots(&worker), [second.path()]);
+        let roots = vec![second.path().to_path_buf(), first.path().to_path_buf()];
+        worker.set_roots(roots.clone(), Some(second.path().to_path_buf()));
+        let mut expected = [first.path(), second.path()];
+        expected.sort();
+        assert_eq!(watched_roots(&worker), expected);
+        assert!(worker.watches[second.path()].watched.shared);
+        assert!(!worker.watches[first.path()].watched.shared);
         assert_eq!(*targets.lock().unwrap(), [Target::Full(roots)]);
         // An event from the old watch asks for no scan.
         worker.events(
@@ -899,5 +1037,141 @@ mod tests {
         let due = worker.reconciler.next_due().unwrap();
         assert!(worker.deadline() >= due);
         assert!(worker.deadline() >= worker.last_run + worker.timing.retry_wait);
+    }
+
+    use crate::managers::shared::SharedSettingsManager;
+    use shared_settings::file::SharedValue;
+
+    /// Whether each read of the shared settings changed the view. The app
+    /// emits `SettingsChanged` for each `true`.
+    type Reads = Arc<Mutex<Vec<bool>>>;
+
+    /// One computer that uses the storage folder `root`: its shared settings
+    /// manager and its local cache.
+    struct Computer {
+        manager: Arc<SharedSettingsManager>,
+        _cache: tempfile::TempDir,
+    }
+
+    fn computer(root: &Path) -> Computer {
+        let cache = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SharedSettingsManager::new(
+            cache.path().to_path_buf(),
+            Some(root.to_path_buf()),
+        ));
+        manager.join_at_launch();
+        Computer {
+            manager,
+            _cache: cache,
+        }
+    }
+
+    /// A worker on `root` whose shared read goes to `b`, as in the app.
+    fn worker_of(root: &Path, b: &Computer) -> (Worker, Targets, Reads) {
+        let (mut worker, targets, _) = worker(vec![root.to_path_buf()], fast());
+        let reads = Reads::default();
+        let (manager, record) = (Arc::clone(&b.manager), Arc::clone(&reads));
+        worker.shared = Box::new(move || record.lock().unwrap().push(manager.reread()));
+        worker.sync_watches();
+        (worker, targets, reads)
+    }
+
+    fn deliver(worker: &mut Worker, root: &Path, relative: &str) {
+        let watched = worker.watches[root].watched.clone();
+        let path = root.join(relative);
+        let path = path.to_str().unwrap();
+        worker.events(
+            &watched,
+            &Ok(vec![DebouncedEvent::new(
+                event(data(), &[path]),
+                Instant::now(),
+            )]),
+        );
+    }
+
+    #[test]
+    fn an_event_on_the_settings_file_reads_the_shared_settings_and_starts_no_note_scan() {
+        let root = marked_root();
+        let (a, b) = (computer(root.path()), computer(root.path()));
+        let (mut worker, targets, reads) = worker_of(root.path(), &b);
+
+        a.manager
+            .save(&[SharedValue::LiveTranscript(false)])
+            .unwrap();
+        deliver(&mut worker, root.path(), ".longhand/settings.json");
+        assert!(targets.lock().unwrap().is_empty(), "no note scan");
+        assert_eq!(*reads.lock().unwrap(), [true]);
+        assert!(
+            !b.manager
+                .snapshot()
+                .view
+                .fields
+                .live_transcript
+                .known()
+                .unwrap()
+        );
+
+        // The library marker starts neither a read nor a scan.
+        deliver(&mut worker, root.path(), ".longhand/library");
+        assert!(targets.lock().unwrap().is_empty());
+        assert_eq!(reads.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_new_prompt_text_from_another_computer_changes_the_settings() {
+        // AE2: B shows A's change with no restart.
+        let root = marked_root();
+        let (a, b) = (computer(root.path()), computer(root.path()));
+        let id = a.manager.create_prompt().unwrap();
+        a.manager.rename_prompt(&id, "Recap").unwrap();
+        let (mut worker, _, reads) = worker_of(root.path(), &b);
+        deliver(&mut worker, root.path(), ".longhand/prompts/Recap.md");
+        assert_eq!(*reads.lock().unwrap(), [true]);
+
+        a.manager.set_prompt_text(&id, "New recap text.").unwrap();
+        deliver(&mut worker, root.path(), ".longhand/prompts/Recap.md");
+        assert_eq!(*reads.lock().unwrap(), [true, true]);
+        let prompts = b.manager.snapshot().view.prompts;
+        assert_eq!(prompts[0].text, "New recap text.");
+    }
+
+    #[test]
+    fn the_event_of_this_computers_own_write_emits_no_second_change() {
+        let root = marked_root();
+        let b = computer(root.path());
+        let (mut worker, _, reads) = worker_of(root.path(), &b);
+        // The command emits the change of the save itself.
+        b.manager
+            .save(&[SharedValue::LiveTranscript(false)])
+            .unwrap();
+        deliver(&mut worker, root.path(), ".longhand/settings.json");
+        let id = b.manager.create_prompt().unwrap();
+        b.manager.set_prompt_text(&id, "Mine.").unwrap();
+        deliver(&mut worker, root.path(), ".longhand/prompts/New prompt.md");
+        assert_eq!(*reads.lock().unwrap(), [false, false]);
+    }
+
+    #[test]
+    fn a_change_with_no_file_event_is_read_at_the_next_full_scan() {
+        let root = marked_root();
+        let (a, b) = (computer(root.path()), computer(root.path()));
+        let (mut worker, _, reads) = worker_of(root.path(), &b);
+        a.manager
+            .save(&[SharedValue::CheckUpdatesAutomatically(false)])
+            .unwrap();
+        // A scan for a pending delete, before the minute, does not read.
+        worker.timeout(Instant::now());
+        assert!(reads.lock().unwrap().is_empty());
+        worker.timeout(worker.next_full);
+        assert_eq!(*reads.lock().unwrap(), [true]);
+        assert!(
+            !b.manager
+                .snapshot()
+                .view
+                .fields
+                .check_updates_automatically
+                .known()
+                .unwrap()
+        );
     }
 }

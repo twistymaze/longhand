@@ -49,6 +49,44 @@ describe("ConfirmDialog", () => {
     expect(document.activeElement).toBe(cancel);
   });
 
+  test("Escape and Tab work when the focus is on the page body", () => {
+    // WKWebView: a click does not move the focus to a button.
+    const { onCancel } = renderDialog();
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("a second action sits between Cancel and the action, and Tab moves over the three", () => {
+    const onSecondary = mock(() => {});
+    const { onConfirm, onCancel } = renderDialog({
+      action: "Move Notes",
+      destructive: false,
+      secondary: { label: "Leave Them", onClick: onSecondary },
+      focus: "confirm",
+    });
+    const buttons = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(buttons).toEqual(["Cancel", "Leave Them", "Move Notes"]);
+    const confirm = screen.getByRole("button", { name: "Move Notes" });
+    expect(document.activeElement).toBe(confirm);
+    fireEvent.keyDown(confirm, { key: "Tab" });
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(document.activeElement?.textContent).toBe("Leave Them");
+    fireEvent.keyDown(document.activeElement!, { key: "Tab", shiftKey: true });
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    (document.activeElement as HTMLElement).blur();
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    expect(document.activeElement).toBe(confirm);
+    fireEvent.click(screen.getByRole("button", { name: "Leave Them" }));
+    expect(onSecondary).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
   test("an action that is not destructive uses the accent colour", () => {
     renderDialog({ destructive: false, action: "Transcribe Again" });
     const confirm = screen.getByRole("button", { name: "Transcribe Again" });
