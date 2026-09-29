@@ -20,9 +20,17 @@ Do these steps once, in this order.
    bun tauri signer generate -w ~/.tauri/longhand-updater.key
    ```
 
-   Set a password when it asks. Keep the private key file and its password in your password manager. The public key is in `~/.tauri/longhand-updater.key.pub`. Put its contents in `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. The public key is not secret.
+   A password is optional. In GitHub, the password and the key are secrets in the same environment, so the password protects only copies of the key file outside GitHub. Keep the private key file (and its password, if you set one) in your password manager. The public key is in `~/.tauri/longhand-updater.key.pub`. Put its contents in `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. The public key is not secret.
 
-3. **Export the Developer ID certificate.** In Keychain Access, find "Developer ID Application: Ervin Walter (7GLQLN8HXK)", with its private key. Export both as a `.p12` file with a password.
+3. **Make a Developer ID Application certificate and export it.** CI runs on a new Mac with an empty keychain, so the certificate and its private key go to CI as a `.p12` file. Only the Account Holder of the Apple Developer account can make this certificate.
+
+   1. In Keychain Access, choose Keychain Access → Certificate Assistant → Request a Certificate From a Certificate Authority. Enter your Apple Account email address and your name, leave "CA Email Address" empty, select "Saved to disk", and save the file. Keychain Access also makes the private key in the login keychain.
+   2. Open [Certificates](https://developer.apple.com/account/resources/certificates/list) in the Apple Developer account. Click "+", select "Developer ID Application", and click Continue.
+   3. Select the profile type "G2 Sub-CA (Xcode 11.4.1 or later)". Upload the request file from step 1, click Continue, and download the `.cer` file.
+   4. Open the `.cer` file. Keychain Access adds it to the login keychain, with the private key from step 1.
+   5. In Keychain Access, select the login keychain and the "My Certificates" tab. Find "Developer ID Application: Ervin Walter (7GLQLN8HXK)" whose expiry date is 5 years from today. Its private key shows under it.
+   6. Right-click that certificate, choose Export, select the format "Personal Information Exchange (.p12)", and set a password.
+   7. If an older certificate with the same name is in the keychain, delete it (the certificate and its private key) after the new one works. `codesign` refuses a name that matches two identities, so local builds fail until then. Do not revoke the older certificate: apps signed with it continue to work until it expires.
 
 4. **Create the `preview` environment.** In the source repository, go to Settings → Environments → New environment. Name it `preview`. Under "Deployment branches and tags", select "Selected branches and tags" and add the rule `main`. Pull request runs then cannot read its secrets.
 
@@ -38,12 +46,23 @@ Do these steps once, in this order.
    | `APPLE_API_ISSUER` | The App Store Connect issuer ID |
    | `APPLE_API_PRIVATE_KEY` | The `.p8` file: `gh secret set APPLE_API_PRIVATE_KEY --env preview < <path to .p8>` |
    | `TAURI_SIGNING_PRIVATE_KEY` | The updater private key: `gh secret set TAURI_SIGNING_PRIVATE_KEY --env preview < ~/.tauri/longhand-updater.key` |
-   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The updater key password |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The updater key password. Do not set it for a key with no password. |
    | `BUILDS_TOKEN` | The token from step 5 |
 
    For a secret that is not a file, run `gh secret set <name> --env preview` and paste the value at the prompt. Add `-R twistymaze/longhand` if `gh` does not find the repository.
 
 7. **Delete the local copies** of the `.p12` file. Keep the updater key only in your password manager.
+
+## Expiry dates
+
+| Credential | Expiry | Renewal |
+|---|---|---|
+| Developer ID Application certificate | 5 years after it is made | Do step 3 again and replace `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD`. The team ID stays the same, so installed builds accept updates, and the microphone and Keychain access stay. |
+| App Store Connect API key (`.p8`) | None. It works until it is revoked. | Make a new key and replace `APPLE_API_KEY`, `APPLE_API_ISSUER` and `APPLE_API_PRIVATE_KEY`. |
+| Updater key pair | None | See "A lost or leaked updater key". |
+| `BUILDS_TOKEN` | The date set in step 5 | Make a new token and replace `BUILDS_TOKEN`. |
+
+When a credential expires, the preview job fails and publishes nothing. Installed builds continue to work.
 
 ## Install the first build
 
