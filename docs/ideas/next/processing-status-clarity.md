@@ -5,6 +5,7 @@ area: interface
 added: 2026-09-28
 source: "the user, in the idea review of 2026-09-28"
 related: [faster-diarization]
+plan: docs/plans/2026-09-28-2353-feat-speaker-progress-plan.md
 ---
 
 # Clearer processing status
