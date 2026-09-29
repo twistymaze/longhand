@@ -18,7 +18,7 @@ use library::status::LibraryStatus;
 
 use crate::managers::capture::CaptureManager;
 use crate::managers::live::{LiveManager, LiveTranscript};
-use crate::managers::processing::{ProcessingManager, stage_name};
+use crate::managers::processing::{ProcessingManager, SpeakerProgressView, stage_name};
 use crate::managers::settings;
 
 #[derive(Serialize, Clone, Type)]
@@ -101,6 +101,8 @@ pub struct SessionDetail {
     pub current: Option<String>,
     pub windows_done: Option<u32>,
     pub windows_total: Option<u32>,
+    /// The speaker stage's last saved progress while that stage runs.
+    pub speakers: Option<SpeakerProgressView>,
     /// The stage a failed session stopped at.
     pub failed_stage: Option<String>,
     /// Why it failed, is blocked, or is waiting for its destination.
@@ -333,6 +335,7 @@ pub fn session_detail(
         current: snapshot.current.map(stage_name),
         windows_done: snapshot.windows.map(|(d, _)| d as u32),
         windows_total: snapshot.windows.map(|(_, t)| t as u32),
+        speakers: snapshot.speakers.map(SpeakerProgressView::from),
         failed_stage: failed_stage.map(stage_name),
         message,
         summary_problem,

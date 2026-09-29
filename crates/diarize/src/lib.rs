@@ -14,6 +14,7 @@ pub mod wav_source;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
+pub use pyannote_local::segmentation::WINDOW_SAMPLES;
 use pyannote_local::segmentation::WindowActivity;
 pub use pyannote_local::{
     Analysis, AnalysisChunk, AnalysisLayout, AudioSource, Backend, DiarizationConfig,

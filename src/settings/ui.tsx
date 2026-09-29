@@ -130,17 +130,31 @@ export function ErrorText({ children }: { children: ReactNode }) {
   return <p className="px-3 pb-2 text-[0.85rem] text-negative">{children}</p>;
 }
 
-export function ProgressBar({ fraction }: { fraction: number }) {
-  const percent = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
+/// A bar that fills. With `active`, a quiet sweep says that work continues
+/// that the fill does not show; `fraction` null has no fill yet.
+export function ProgressBar({
+  fraction,
+  label,
+  valueText,
+  active = false,
+}: {
+  fraction: number | null;
+  label?: string;
+  valueText?: string;
+  active?: boolean;
+}) {
+  const percent = fraction === null ? null : Math.round(Math.min(1, Math.max(0, fraction)) * 100);
   return (
     <div
       role="progressbar"
-      aria-valuenow={percent}
+      aria-label={label}
+      aria-valuenow={percent ?? undefined}
+      aria-valuetext={valueText}
       aria-valuemin={0}
       aria-valuemax={100}
-      className="h-1.5 w-28 overflow-hidden rounded-full bg-fill-pressed"
+      className={`relative h-1.5 w-28 overflow-hidden rounded-full bg-fill-pressed${active ? " progress-active" : ""}`}
     >
-      <div className="progress-fill h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
+      <div className="progress-fill h-full rounded-full bg-accent" style={{ width: `${percent ?? 0}%` }} />
     </div>
   );
 }

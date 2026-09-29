@@ -34,6 +34,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   current: null,
   windows_done: null,
   windows_total: null,
+  speakers: null,
   failed_stage: null,
   message: null,
   summary_problem: null,

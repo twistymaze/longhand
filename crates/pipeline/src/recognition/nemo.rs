@@ -1,4 +1,5 @@
 use super::{Route, RouteResult, failed, join_separate};
+use crate::progress::SpeakerMeter;
 use crate::{Control, StageError, runner::EngineProvider};
 use asr::{
     Finality, RecognitionId, RecognitionSegment, SampleRange, SpeakerKey, SpeakerScope,
@@ -27,6 +28,44 @@ struct StoredEpoch {
 }
 fn epoch_prefix(scope: &SpeakerScope) -> String {
     format!("native-final/{:020}/", scope.epoch)
+}
+fn epoch_key(start: u64) -> String {
+    format!("recognition-epoch-{start:020}")
+}
+/// The completed epoch `start..end` of this generation, if one is saved.
+fn saved_epoch(
+    store: &crate::SharedStore,
+    session: &str,
+    stage: session_core::Stage,
+    generation: &str,
+    start: u64,
+    end: u64,
+) -> Result<Option<StoredEpoch>, StageError> {
+    let saved: Option<StoredEpoch> =
+        crate::checkpoint::get(store, session, stage, &epoch_key(start))?;
+    Ok(saved.filter(|saved| {
+        saved.scope.generation == generation && saved.range == (SampleRange { start, end })
+    }))
+}
+/// The samples of `range` in saved separate-speaker epochs. [`run_file`]
+/// restores these epochs with no new input.
+pub(super) fn saved_samples(
+    store: &crate::SharedStore,
+    session: &str,
+    generation: &str,
+    range: SampleRange,
+) -> Result<u64, StageError> {
+    let mut samples = 0;
+    let mut start = range.start;
+    while start < range.end {
+        let end = range.end.min(start + MAX_EPOCH_SAMPLES);
+        let stage = session_core::Stage::Diarize;
+        if saved_epoch(store, session, stage, generation, start, end)?.is_some() {
+            samples += end - start;
+        }
+        start = end;
+    }
+    Ok(samples)
 }
 fn persist_epoch(
     store: &crate::SharedStore,
@@ -139,6 +178,7 @@ pub(super) fn run_file(
     generation: &str,
     combined: bool,
     control: &dyn Control,
+    mut speakers: Option<&mut SpeakerMeter>,
 ) -> Result<RouteResult, StageError> {
     let helper = provider.nemo_helper().map_err(StageError::Waiting)?;
     let text_only =
@@ -204,12 +244,9 @@ pub(super) fn run_file(
         } else {
             session_core::Stage::Diarize
         };
-        let key = format!("recognition-epoch-{start:020}");
-        let saved: Option<StoredEpoch> = crate::checkpoint::get(store, session, stage, &key)?;
-        if let Some(saved) = saved
-            && saved.scope.generation == generation
-            && saved.range == (SampleRange { start, end })
-        {
+        let key = epoch_key(start);
+        if let Some(saved) = saved_epoch(store, session, stage, generation, start, end)? {
+            // [`saved_samples`] counted this epoch before new input.
             let epoch = restore_epoch(store, session, &saved, result.route)?;
             result.coverage.extend(epoch.coverage);
             result.rows.extend(epoch.rows);
@@ -239,22 +276,25 @@ pub(super) fn run_file(
             scope,
         };
         let requested_gpu = provider.nemo_gpu();
-        let (mut epoch, scope) = match run_epoch(&input, requested_gpu, control) {
-            Ok(epoch) => epoch,
-            Err(StageError::Failed(message)) if requested_gpu >= 0 => {
-                // No output from a failed epoch is committed. Replay its complete
-                // input on CPU and record the fallback in the result.
-                control.proceed()?;
-                let reason = format!(
-                    "Accelerated NeMo attempt failed; epoch {start} replayed on CPU: {message}"
-                );
-                log::warn!("{reason}");
-                let (mut output, scope) = run_epoch(&input, -1, control)?;
-                output.coverage_limitations.push(reason);
-                (output, scope)
-            }
-            Err(error) => return Err(error),
-        };
+        let (mut epoch, scope) =
+            match run_epoch(&input, requested_gpu, control, speakers.as_deref_mut()) {
+                Ok(epoch) => epoch,
+                Err(StageError::Failed(message)) if requested_gpu >= 0 => {
+                    // No output from a failed epoch is committed. Replay its complete
+                    // input on CPU and record the fallback in the result. The
+                    // meter holds its value until the replay passes it (KTD2).
+                    control.proceed()?;
+                    let reason = format!(
+                        "Accelerated NeMo attempt failed; epoch {start} replayed on CPU: {message}"
+                    );
+                    log::warn!("{reason}");
+                    let (mut output, scope) =
+                        run_epoch(&input, -1, control, speakers.as_deref_mut())?;
+                    output.coverage_limitations.push(reason);
+                    (output, scope)
+                }
+                Err(error) => return Err(error),
+            };
         if native_route == "combined_offline" {
             join_separate(&mut epoch.rows, &epoch.speakers);
         }
@@ -265,6 +305,9 @@ pub(super) fn run_file(
             &scope.generation,
             &format!("nemo/{:020}/", scope.epoch),
         )?;
+        if let Some(meter) = speakers.as_deref_mut() {
+            meter.finished(end - start);
+        }
         result.coverage.extend(epoch.coverage);
         result.rows.extend(epoch.rows);
         result.speakers.extend(epoch.speakers);
@@ -724,12 +767,18 @@ fn until(
         }
     }
 }
+/// `speakers` measures the input that the helper accepts. Helper startup
+/// and finish give no fraction (KTD3).
 fn run_epoch(
     input: &EpochInput<'_>,
     gpu: i32,
     control: &dyn Control,
+    mut speakers: Option<&mut SpeakerMeter>,
 ) -> Result<(RouteResult, SpeakerScope), StageError> {
     use std::hash::{Hash, Hasher};
+    if let Some(meter) = speakers.as_deref_mut() {
+        meter.unmeasured();
+    }
     let mut hash = std::hash::DefaultHasher::new();
     input.scope.generation.hash(&mut hash);
     let replay = crate::lock(input.store).restart_recognition_epoch(
@@ -788,6 +837,12 @@ fn run_epoch(
         if number(&ack, "accepted_end")? != at {
             return Err(failed("NeMo input acknowledgement mismatch"));
         }
+        if let Some(meter) = speakers.as_deref_mut() {
+            meter.at(at - input.range.start);
+        }
+    }
+    if let Some(meter) = speakers {
+        meter.unmeasured();
     }
     helper
         .send(json!({"command":"finish"}), vec![])

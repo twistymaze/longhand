@@ -1434,20 +1434,47 @@ fn after_stop_reuses_verified_pyannote_windows_after_live_interruption() {
         processed, audio,
         "initial Assemble keeps raw-derived mono PCM beside the Opus archive"
     );
+    let mut seen = Vec::new();
+    let mut sink = |work| seen.push(work);
+    let mut speakers = pipeline::progress::SpeakerMeter::new(&mut sink);
+    speakers.plan(pipeline::diarize::segment_units(&segment), 0);
     pipeline::diarize::run(
         &r.store,
         ID,
         dir.path(),
-        &[segment],
+        std::slice::from_ref(&segment),
         None,
         &mut Analyzer {
             calls: calls.clone(),
             cancel: None,
         },
         &Unattended,
-        &mut |_, _| {},
+        &mut speakers,
     )
     .unwrap();
+    // Completing the live features is measured work (U2).
+    let percents: Vec<u8> = seen.iter().filter_map(|w| w.percent).collect();
+    assert!(
+        percents.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{percents:?}"
+    );
+    assert!(
+        seen.iter()
+            .filter(|w| w.measuring)
+            .filter_map(|w| w.percent)
+            .filter(|p| (1..99).contains(p))
+            .count()
+            >= 5,
+        "the missing windows advance the value: {seen:?}"
+    );
+    assert_eq!(
+        seen.last(),
+        Some(&pipeline::progress::SpeakerWork {
+            percent: Some(99),
+            measuring: false
+        }),
+        "clustering is active work below 100"
+    );
     let calls = calls.lock().unwrap();
     assert_eq!(
         calls.len(),

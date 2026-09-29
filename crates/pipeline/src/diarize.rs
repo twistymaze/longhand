@@ -6,12 +6,13 @@
 use std::path::Path;
 
 use diarize::{
-    DiarizeError, DiarizeRequest, SpeakerAnalyzer, SpeakerBounds, Turn, WavAudioSource,
-    analysis_path, cluster_session, read_analysis, smooth, write_analysis,
+    DiarizeError, DiarizeRequest, SpeakerAnalyzer, SpeakerBounds, Turn, WINDOW_SAMPLES,
+    WavAudioSource, analysis_path, cluster_session, read_analysis, smooth, write_analysis,
 };
 use serde::{Deserialize, Serialize};
 use session_core::{Segment, SpeakerCount, Stage};
 
+use crate::progress::SpeakerMeter;
 use crate::{Control, SharedStore, StageError, checkpoint, proc_file};
 
 pub const TURNS: &str = "turns";
@@ -51,6 +52,19 @@ pub fn bounds(count: Option<SpeakerCount>) -> SpeakerBounds {
     }
 }
 
+/// The analysis work of one segment, in samples. A segment shorter than one
+/// analysis window costs one window (KTD2).
+pub fn segment_units(segment: &Segment) -> u64 {
+    (segment.duration_ms * 16).max(WINDOW_SAMPLES as u64)
+}
+
+/// The analysis work of `segments`, in the units of [`segment_units`].
+pub fn units(segments: &[Segment]) -> u64 {
+    segments.iter().map(segment_units).sum()
+}
+
+/// Analyse each segment, then cluster them together. `speakers` is planned
+/// for the whole note; each segment adds its [`segment_units`].
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
@@ -60,16 +74,28 @@ pub fn run(
     speaker_count: Option<SpeakerCount>,
     analyzer: &mut dyn SpeakerAnalyzer,
     control: &dyn Control,
-    progress: &mut dyn FnMut(u32, f32),
+    speakers: &mut SpeakerMeter,
 ) -> Result<(), StageError> {
+    // Count the saved work first, so the first value covers it.
+    let mut pending = Vec::with_capacity(segments.len());
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
         let file = analysis_path(&session_dir.join(proc_file(&segment.audio_file)));
-        if checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?.is_some()
-            && file.exists()
-        {
-            continue;
+        let done = checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?
+            .is_some()
+            && file.exists();
+        // Features saved during recording need no new analysis.
+        let counted = done || crate::live::features::saved(store, session_id, segment.index)?;
+        if counted {
+            speakers.saved(segment_units(segment));
         }
+        if !done {
+            pending.push((segment, key, file, counted));
+        }
+    }
+    speakers.at(0);
+    for (segment, key, file, counted) in pending {
+        let units = segment_units(segment);
         control.proceed()?;
         let live_analysis =
             match crate::live::features::restore(store, session_id, session_dir, segment.index)? {
@@ -81,6 +107,7 @@ pub fn run(
                     segment,
                     analyzer,
                     control,
+                    &mut |fraction| speakers.at_fraction(units, fraction),
                 )?,
             };
         if let Some(analysis) = live_analysis {
@@ -96,6 +123,9 @@ pub fn run(
                     embeddings: analysis.embeddings.len(),
                 },
             )?;
+            if !counted {
+                speakers.finished(units);
+            }
             continue;
         }
         let mut source = WavAudioSource::open(&session_dir.join(proc_file(&segment.audio_file)))
@@ -110,8 +140,8 @@ pub fn run(
                 true
             }
         };
-        let sink = std::cell::RefCell::new(&mut *progress);
-        let report = |fraction: f32| (sink.borrow_mut())(segment.index, fraction);
+        let meter = std::cell::RefCell::new(&mut *speakers);
+        let report = |fraction: f32| meter.borrow_mut().at_fraction(units, fraction);
         let analysis = analyzer.analyze(
             &mut source,
             &DiarizeRequest {
@@ -143,6 +173,7 @@ pub fn run(
                 embeddings: analysis.embeddings.len(),
             },
         )?;
+        speakers.finished(units);
         log::info!(
             "analysed segment {} of {session_id}: {} windows, {} embeddings",
             segment.index,
@@ -151,6 +182,8 @@ pub fn run(
         );
     }
 
+    // Clustering, smoothing, and the writes give no fraction (KTD3).
+    speakers.unmeasured();
     control.proceed()?;
     let mut analyses = Vec::with_capacity(segments.len());
     for segment in segments {
@@ -162,11 +195,11 @@ pub fn run(
     let raw = cluster_session(&refs, bounds(speaker_count));
     let per_segment: Vec<_> = segments.iter().map(|s| s.index).zip(raw).collect();
     let turns = smooth(&per_segment);
-    let speakers: std::collections::BTreeSet<u32> = turns.iter().map(|t| t.speaker).collect();
+    let found: std::collections::BTreeSet<u32> = turns.iter().map(|t| t.speaker).collect();
     log::info!(
         "diarized {session_id}: {} turns, {} speakers",
         turns.len(),
-        speakers.len()
+        found.len()
     );
     // A retry after a failure must not keep the failure's marker.
     lock_clear_failure(store, session_id)?;

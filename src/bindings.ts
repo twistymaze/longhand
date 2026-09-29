@@ -1191,7 +1191,11 @@ export type OldNotes =
  */
 "leave"
 export type ProcessingMode = "during_recording" | "after_stop"
-export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | { kind: "stage_failed"; stage: string; message: string } | 
+export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | 
+/**
+ * The speaker stage's progress over the whole note (KTD1).
+ */
+({ kind: "speaker_progress" } & SpeakerProgressView) | { kind: "stage_failed"; stage: string; message: string } | 
 /**
  * The secret store holding the endpoint credential is locked (R20b).
  */
@@ -1439,6 +1443,10 @@ done: string[];
  * The stage started last.
  */
 current: string | null; windows_done: number | null; windows_total: number | null; 
+/**
+ * The speaker stage's last saved progress while that stage runs.
+ */
+speakers: SpeakerProgressView | null; 
 /**
  * The stage a failed session stopped at.
  */
@@ -1693,6 +1701,24 @@ state: ModelState }
  * checks runtime support, language, timing, and speaker count.
  */
 export type SpeakerPreferences = { after_stop: SpeakerSource[]; during_recording: SpeakerSource[] }
+/**
+ * The speaker stage's progress in one processing attempt. Only the stage's
+ * completion means 100%.
+ */
+export type SpeakerProgressView = { 
+/**
+ * A view keeps the value of the current attempt only.
+ */
+attempt: string; 
+/**
+ * The measured share of the whole note, 0 to 99. `None` before the
+ * first measurement.
+ */
+percent: number | null; 
+/**
+ * False while the stage does work that it cannot measure.
+ */
+measuring: boolean }
 export type SpeakerSource = "off" | "pyannote" | "sortformer" | "nemotron"
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are

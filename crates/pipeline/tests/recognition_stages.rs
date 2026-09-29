@@ -1509,7 +1509,8 @@ fn completed_nemo_resume(separate: bool) {
     // The provider has no real helper. Recomputing old or completed new audio fails.
     for _ in 0..2 {
         if separate {
-            pipeline::recognition::execute(
+            let mut seen = Vec::new();
+            pipeline::recognition::execute_with_speakers(
                 &case.store,
                 "route",
                 &case.dir,
@@ -1518,9 +1519,19 @@ fn completed_nemo_resume(separate: bool) {
                 &case.provider,
                 Stage::Diarize,
                 &Unattended,
+                &mut |work| seen.push(work),
                 &mut |_| {},
             )
             .unwrap();
+            // The saved prefix and the saved epoch count before new input,
+            // and the persistence is active work below 100 (U3).
+            assert_eq!(
+                seen,
+                vec![pipeline::progress::SpeakerWork {
+                    percent: Some(99),
+                    measuring: false
+                }]
+            );
         }
         pipeline::recognition::execute(
             &case.store,
@@ -1676,4 +1687,113 @@ fn review_merged_independent_single_scope_results_explain_speaker_uncertainty() 
             .any(|note| note == pipeline::recognition::SCOPED_LABELS_NOTE),
         "merging distinct single-scope outputs needs the speaker uncertainty note"
     );
+}
+
+/// Reports each quarter of each analysis, like the native window callback.
+struct Quarters;
+impl diarize::SpeakerAnalyzer for Quarters {
+    fn analyze(
+        &mut self,
+        audio: &mut dyn diarize::AudioSource,
+        request: &diarize::DiarizeRequest<'_>,
+    ) -> Result<diarize::Analysis, diarize::DiarizeError> {
+        for quarter in 1..=4 {
+            if let Some(report) = request.on_progress {
+                report(quarter as f32 / 4.0);
+            }
+        }
+        Ok(diarize::Analysis {
+            total: audio.sample_count()?,
+            step: 32_000,
+            ..Default::default()
+        })
+    }
+}
+
+/// [`Provider`] with a separate Pyannote analyzer.
+struct WithAnalyzer(Provider);
+impl EngineProvider for WithAnalyzer {
+    fn artifact_path(&self, a: &models::recognition::ArtifactSpec) -> Result<PathBuf, String> {
+        self.0.artifact_path(a)
+    }
+    fn load_exact(&self, spec: &ExecutionSpec) -> Result<Box<dyn Recognizer>, String> {
+        self.0.load_exact(spec)
+    }
+    fn analyzer_exact(
+        &self,
+        _: &ExecutionSpec,
+    ) -> Result<Box<dyn diarize::SpeakerAnalyzer>, diarize::DiarizeError> {
+        Ok(Box::new(Quarters))
+    }
+    fn ready(&self, model: &str) -> bool {
+        self.0.ready(model)
+    }
+    fn load(&self, model: &str) -> Result<Box<dyn Recognizer>, String> {
+        self.0.load(model)
+    }
+    fn default_model(&self) -> String {
+        self.0.default_model()
+    }
+    fn analyzer(&self) -> Result<Box<dyn diarize::SpeakerAnalyzer>, diarize::DiarizeError> {
+        self.0.analyzer()
+    }
+    fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
+        self.0.summary_endpoint()
+    }
+    fn summary_prompt(&self) -> pipeline::summarize::Prompt {
+        self.0.summary_prompt()
+    }
+    fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {
+        self.0.learn_limit(base_url, model, limit)
+    }
+    fn destination(&self) -> Option<PathBuf> {
+        self.0.destination()
+    }
+}
+
+#[test]
+fn prepared_pyannote_measures_its_analysis_and_stays_below_100() {
+    // Covers AE3, AE4 on the current Pyannote route (U2).
+    let audio = [common::speech(), common::speech(), common::speech()].concat();
+    let (temp, store, spec, segments) = setup_audio(SpeakerSource::Pyannote, audio);
+    let provider = WithAnalyzer(Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    });
+    let mut seen = Vec::new();
+    pipeline::recognition::execute_with_speakers(
+        &store,
+        "route",
+        &temp.path().join("route"),
+        &segments,
+        &spec,
+        &provider,
+        Stage::Diarize,
+        &Unattended,
+        &mut |work| seen.push(work),
+        &mut |_| {},
+    )
+    .unwrap();
+    let measured = |percent| pipeline::progress::SpeakerWork {
+        percent: Some(percent),
+        measuring: true,
+    };
+    assert_eq!(
+        seen,
+        vec![
+            measured(0),
+            measured(25),
+            measured(50),
+            measured(75),
+            measured(99),
+            pipeline::progress::SpeakerWork {
+                percent: Some(99),
+                measuring: false
+            },
+        ],
+        "the analysis callback reaches the meter; the stage checkpoint alone completes it"
+    );
+    assert!(checkpoint::is_complete(&store, "route", Stage::Diarize, segments.len()).unwrap());
 }

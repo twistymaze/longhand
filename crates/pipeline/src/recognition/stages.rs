@@ -1,4 +1,5 @@
 use super::{RESULT_KEY, Route, RouteResult, TaskGraph, failed, join_separate, validate_result};
+use crate::progress::{SpeakerMeter, SpeakerWork};
 use crate::{
     Control, SharedStore, StageError, checkpoint, lock, runner::EngineProvider, transcribe,
 };
@@ -68,10 +69,47 @@ pub fn execute(
     control: &dyn Control,
     progress: &mut dyn FnMut(transcribe::Progress),
 ) -> Result<(), StageError> {
+    execute_with_speakers(
+        store,
+        id,
+        dir,
+        segments,
+        spec,
+        provider,
+        stage,
+        control,
+        &mut |_| {},
+        progress,
+    )
+}
+
+/// [`execute`], with the speaker stage's progress sent to `speakers`.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_with_speakers(
+    store: &SharedStore,
+    id: &str,
+    dir: &Path,
+    segments: &[Segment],
+    spec: &ExecutionSpec,
+    provider: &dyn EngineProvider,
+    stage: Stage,
+    control: &dyn Control,
+    speakers: &mut dyn FnMut(SpeakerWork),
+    progress: &mut dyn FnMut(transcribe::Progress),
+) -> Result<(), StageError> {
     TaskGraph::resolve(spec)?;
     super::durable::prepare(store, id, dir, segments, spec)?;
     execute_prepared(
-        store, id, dir, segments, spec, provider, stage, control, progress,
+        store,
+        id,
+        dir,
+        segments,
+        spec,
+        provider,
+        stage,
+        control,
+        &mut SpeakerMeter::new(speakers),
+        progress,
     )
 }
 
@@ -86,15 +124,26 @@ pub(crate) fn execute_prepared(
     provider: &dyn EngineProvider,
     stage: Stage,
     control: &dyn Control,
+    speakers: &mut SpeakerMeter,
     progress: &mut dyn FnMut(transcribe::Progress),
 ) -> Result<(), StageError> {
     let graph = TaskGraph::resolve(spec)?;
     let prefix = super::saved_prefix::read(store, id, dir, segments, spec)?;
-    let active = prefix
-        .as_ref()
-        .map_or(segments, |prefix| &segments[prefix.count..]);
+    let saved = prefix.as_ref().map_or(0, |prefix| prefix.count);
+    let active = &segments[saved..];
     match stage {
-        Stage::Diarize => analyze(store, id, dir, active, spec, provider, graph.route, control),
+        Stage::Diarize => analyze(
+            store,
+            id,
+            dir,
+            segments,
+            saved,
+            spec,
+            provider,
+            graph.route,
+            control,
+            speakers,
+        ),
         Stage::Transcribe => transcribe_route(
             store,
             id,
@@ -166,17 +215,22 @@ pub(super) fn ranges(dir: &Path, segments: &[Segment]) -> Result<Vec<SampleRange
         })
         .collect()
 }
+/// Analyse the segments after the `saved` prefix. `speakers` measures the
+/// whole note, and the prefix counts as complete.
 #[allow(clippy::too_many_arguments)]
 fn analyze(
     store: &SharedStore,
     id: &str,
     dir: &Path,
-    segments: &[Segment],
+    note: &[Segment],
+    saved: usize,
     spec: &ExecutionSpec,
     provider: &dyn EngineProvider,
     route: Route,
     control: &dyn Control,
+    speakers: &mut SpeakerMeter,
 ) -> Result<(), StageError> {
+    let segments = &note[saved..];
     let generation = generation(store, id)?;
     let mut turns = Vec::new();
     let mut limitations = Vec::<String>::new();
@@ -194,6 +248,10 @@ fn analyze(
             } else {
                 lock(store).session(id)?.and_then(|r| r.speaker_count)
             };
+            speakers.plan(
+                crate::diarize::units(note),
+                crate::diarize::units(&note[..saved]),
+            );
             crate::diarize::run(
                 store,
                 id,
@@ -202,7 +260,7 @@ fn analyze(
                 count,
                 analyzer.as_mut(),
                 control,
-                &mut |_, _| {},
+                speakers,
             )?;
             let crate::diarize::Speakers::Turns(native) = crate::diarize::speakers(store, id)?
             else {
@@ -229,21 +287,32 @@ fn analyze(
             }
         }
         Route::SeparateNemo | Route::CombinedNemo => {
-            for (segment, range) in segments.iter().zip(ranges(dir, segments)?) {
+            let all = ranges(dir, note)?;
+            let length = |range: &SampleRange| range.end - range.start;
+            // Epochs saved by an earlier run count before new input (KTD2).
+            let mut complete: u64 = all[..saved].iter().map(length).sum();
+            for range in &all[saved..] {
+                complete += super::nemo::saved_samples(store, id, &generation, *range)?;
+            }
+            speakers.plan(all.iter().map(length).sum(), complete);
+            for (segment, range) in segments.iter().zip(&all[saved..]) {
                 let result = super::nemo::run_file(
                     store,
                     id,
                     spec,
                     provider,
                     &dir.join(crate::proc_file(&segment.audio_file)),
-                    range,
+                    *range,
                     &generation,
                     false,
                     control,
+                    Some(&mut *speakers),
                 )?;
                 turns.extend(result.speakers);
                 limitations.extend(result.coverage_limitations);
             }
+            // Persistence gives no fraction (KTD3).
+            speakers.unmeasured();
         }
         _ => return Err(failed("this route does not use separate speaker analysis")),
     }
@@ -503,6 +572,7 @@ fn transcribe_route(
                 &generation,
                 true,
                 control,
+                None,
             )?;
             result.coverage.extend(output.coverage);
             result.rows.extend(output.rows);

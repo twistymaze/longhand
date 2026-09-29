@@ -5,7 +5,7 @@ pub(crate) mod nemo;
 mod saved_prefix;
 mod stages;
 pub(crate) use stages::execute_prepared;
-pub use stages::{execute, prepare_retry, saved_result, snapshot};
+pub use stages::{execute, execute_with_speakers, prepare_retry, saved_result, snapshot};
 
 use crate::StageError;
 use asr::{Finality, RecognitionSegment, SampleRange, SpeakerTurn, TimingPrecision};

@@ -105,14 +105,52 @@ html {
   height: calc(44px / var(--interface-scale, 1));
 }
 
-/* Only the download bar moves, and only to report progress. */
+/* A bar fill moves only to report progress. */
 .progress-fill {
   transition: width 240ms linear;
+}
+
+/* Work that the fill does not show: a soft highlight crosses the track.
+   It is quiet, and it shows only after Stop, never while recording. An
+   accent sweep under the fill shows on the empty track; a light sheen over
+   the fill shows on the fill. Both move together. */
+.progress-active::before,
+.progress-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  animation: progress-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.progress-active::before {
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-accent) 55%, transparent), transparent);
+}
+.progress-active::after {
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.7), transparent);
+  /* The sheen lightens the fill and leaves the light track unchanged. */
+  mix-blend-mode: overlay;
+}
+.progress-active .progress-fill {
+  position: relative;
+}
+
+@keyframes progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .progress-fill {
     transition: none;
+  }
+  /* The row's text says that work continues instead. */
+  .progress-active::before,
+  .progress-active::after {
+    display: none;
   }
 }
 
