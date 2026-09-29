@@ -70,6 +70,8 @@ export function StatusPane({
   };
 
   const missing = readiness.missing_models.length;
+  // Only the Updates group, which shows on macOS only, uses it.
+  const readOnly = isMac() ? readOnlyReason(settings) : null;
 
   return (
     <Pane title="General">
@@ -185,8 +187,8 @@ export function StatusPane({
         <Group
           header="Updates"
           footer={
-            readOnlyReason(settings)
-              ? `${readOnlyReason(settings)} This setting can’t be changed now.`
+            readOnly
+              ? `${readOnly} This setting can’t be changed now.`
               : "Longhand asks before it installs a new version."
           }
         >

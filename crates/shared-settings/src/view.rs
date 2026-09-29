@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use serde_json::{Map, Value};
-use summarize::prompts::{Prompt, TOPIC_SUMMARY_ID};
+use summarize::prompts::Prompt;
 
 use crate::cache::{Cache, read_cache, write_cache};
 use crate::file::{Field, FileRead, SharedFields, Unavailable, default_settings, read_settings};
@@ -97,15 +97,7 @@ pub fn load(root: &Path, cache: Option<&Cache>) -> Loaded {
         Err(cause) => return from_cache(cache, Availability::NotAvailable(cause)),
     };
     let active = active_from_folder(&file.fields.active_summary_prompt, &scan, cache);
-    let prompts: Vec<Prompt> = scan
-        .prompts
-        .iter()
-        .map(|p| Prompt {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            text: p.text.clone(),
-        })
-        .collect();
+    let prompts: Vec<Prompt> = scan.prompts.iter().map(Prompt::from).collect();
     let new_cache = Cache {
         source: root.to_path_buf(),
         settings: file.raw.clone(),
@@ -147,7 +139,7 @@ pub fn cached(cache: Option<&Cache>, availability: Availability) -> SharedView {
 }
 
 /// Write `cache` into `cache_dir`, when there is one.
-pub(crate) fn store(cache_dir: &Path, cache: Option<&Cache>) {
+pub fn store(cache_dir: &Path, cache: Option<&Cache>) {
     if let Some(cache) = cache
         && let Err(e) = write_cache(cache_dir, cache)
     {
@@ -186,10 +178,7 @@ enum ActiveId<'a> {
 
 fn active_id(field: &Field<String>) -> ActiveId<'_> {
     match field {
-        Field::Absent => ActiveId::BuiltIn(
-            summarize::prompts::built_in(TOPIC_SUMMARY_ID)
-                .expect("the Topic summary is a built-in prompt"),
-        ),
+        Field::Absent => ActiveId::BuiltIn(summarize::prompts::topic_summary()),
         Field::Known(id) => match summarize::prompts::built_in(id) {
             Some(prompt) => ActiveId::BuiltIn(prompt),
             None => ActiveId::Custom(id),
@@ -219,11 +208,7 @@ fn active_from_folder(
         ActiveId::Missing(text) => return ActivePrompt::Missing(text),
         ActiveId::Custom(id) => id,
     };
-    let in_folder = scan.get(id).map(|p| Prompt {
-        id: p.id.clone(),
-        name: p.name.clone(),
-        text: p.text.clone(),
-    });
+    let in_folder = scan.get(id).map(Prompt::from);
     // While the id has a conflict copy, or its file is missing, the text
     // comes from the cache (R14).
     if let Some(prompt) = in_folder.clone().filter(|_| !scan.conflicted.contains(id)) {

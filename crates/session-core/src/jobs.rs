@@ -1165,12 +1165,8 @@ impl Store {
         if opened == 0 {
             return Ok(false);
         }
-        let pending = serde_json::to_string(&MoveStep::Pending)?;
         for id in ids {
-            tx.execute(
-                "INSERT OR IGNORE INTO move_notes (session_id, step) VALUES (?1, ?2)",
-                params![id, pending],
-            )?;
+            insert_pending_move_note(&tx, &id)?;
         }
         tx.commit()?;
         Ok(true)
@@ -1269,11 +1265,7 @@ impl Store {
     /// Add a Pending row for `id` to the open Move. Returns false when the
     /// Move already has a row for it.
     pub fn add_move_note(&self, id: &str) -> Result<bool> {
-        let added = self.conn.execute(
-            "INSERT OR IGNORE INTO move_notes (session_id, step) VALUES (?1, ?2)",
-            params![id, serde_json::to_string(&MoveStep::Pending)?],
-        )?;
-        Ok(added > 0)
+        Ok(insert_pending_move_note(&self.conn, id)? > 0)
     }
 
     pub fn set_move_step(&self, id: &str, step: &MoveStep) -> Result<()> {
@@ -1607,6 +1599,15 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+/// Add `id` to the Move with the step Pending, unless the Move has it.
+/// Returns the number of rows that it added.
+fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "INSERT OR IGNORE INTO move_notes (session_id, step) VALUES (?1, ?2)",
+        params![id, serde_json::to_string(&MoveStep::Pending)?],
+    )?)
 }
 
 fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Result<()> {

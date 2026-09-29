@@ -116,19 +116,43 @@ impl SharedFields {
         self.schema_version.is_some_and(|v| v > SCHEMA_VERSION)
     }
 
-    /// Whether any field has a value that this build does not know.
-    pub fn has_unknown(&self) -> bool {
-        fn unknown<T>(field: &Field<T>) -> bool {
-            matches!(field, Field::Unknown(_))
+    /// The key and the value of each field that has a value that this
+    /// build does not know, in the order of the fields.
+    pub fn unknown_values(&self) -> Vec<(&'static str, &Value)> {
+        fn unknown<T>(field: &Field<T>) -> Option<&Value> {
+            match field {
+                Field::Unknown(value) => Some(value),
+                Field::Absent | Field::Known(_) => None,
+            }
         }
-        unknown(&self.active_summary_prompt)
-            || unknown(&self.default_speaker_count)
-            || unknown(&self.asr_model)
-            || unknown(&self.live_transcript)
-            || unknown(&self.speaker_source)
-            || unknown(&self.speaker_processing_mode)
-            || unknown(&self.recognition_language)
-            || unknown(&self.check_updates_automatically)
+        [
+            (
+                KEY_ACTIVE_SUMMARY_PROMPT,
+                unknown(&self.active_summary_prompt),
+            ),
+            (
+                KEY_DEFAULT_SPEAKER_COUNT,
+                unknown(&self.default_speaker_count),
+            ),
+            (KEY_ASR_MODEL, unknown(&self.asr_model)),
+            (KEY_LIVE_TRANSCRIPT, unknown(&self.live_transcript)),
+            (KEY_SPEAKER_SOURCE, unknown(&self.speaker_source)),
+            (
+                KEY_SPEAKER_PROCESSING_MODE,
+                unknown(&self.speaker_processing_mode),
+            ),
+            (
+                KEY_RECOGNITION_LANGUAGE,
+                unknown(&self.recognition_language),
+            ),
+            (
+                KEY_CHECK_UPDATES_AUTOMATICALLY,
+                unknown(&self.check_updates_automatically),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| Some((key, value?)))
+        .collect()
     }
 }
 
@@ -259,13 +283,8 @@ pub enum SaveError {
 /// Read the shared settings file of the storage folder `root`. This never
 /// writes.
 pub fn read_settings(root: &Path) -> FileRead {
-    match std::fs::metadata(root) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return FileRead::NotAvailable(Unavailable::FolderMissing),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return FileRead::NotAvailable(Unavailable::FolderMissing);
-        }
-        Err(e) => return FileRead::NotAvailable(Unavailable::Unreadable(e.to_string())),
+    if let Err(cause) = check_root(root) {
+        return FileRead::NotAvailable(cause);
     }
     let bytes = match std::fs::read(settings_path(root)) {
         Ok(bytes) => bytes,
@@ -278,6 +297,17 @@ pub fn read_settings(root: &Path) -> FileRead {
             "the file is not a JSON object".into(),
         )),
         Err(e) => FileRead::NotAvailable(Unavailable::DoesNotParse(e.to_string())),
+    }
+}
+
+/// Refuse a storage folder `root` that is not a folder that exists and
+/// can be read.
+pub(crate) fn check_root(root: &Path) -> Result<(), Unavailable> {
+    match std::fs::metadata(root) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(Unavailable::FolderMissing),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(Unavailable::FolderMissing),
+        Err(e) => Err(Unavailable::Unreadable(e.to_string())),
     }
 }
 
@@ -316,9 +346,7 @@ pub fn save_settings(root: &Path, patch: &[SharedValue]) -> Result<SettingsFile,
 pub(crate) fn write_settings(root: &Path, raw: &Map<String, Value>) -> io::Result<()> {
     let folder = longhand_folder(root);
     std::fs::create_dir_all(&folder)?;
-    let mut bytes = serde_json::to_vec_pretty(raw).expect("a JSON object serializes");
-    bytes.push(b'\n');
-    session_save::home_write::write_atomic(&folder, SETTINGS_FILE, &bytes)
+    session_save::home_write::write_atomic(&folder, SETTINGS_FILE, &settings_bytes(raw))
 }
 
 /// Write `raw` as the shared settings file of `root` only when the folder
@@ -328,9 +356,14 @@ pub(crate) fn write_settings(root: &Path, raw: &Map<String, Value>) -> io::Resul
 pub(crate) fn write_new_settings(root: &Path, raw: &Map<String, Value>) -> io::Result<bool> {
     let folder = longhand_folder(root);
     std::fs::create_dir_all(&folder)?;
+    write_new(&folder, SETTINGS_FILE, &settings_bytes(raw))
+}
+
+/// The bytes of the settings file that holds `raw`.
+fn settings_bytes(raw: &Map<String, Value>) -> Vec<u8> {
     let mut bytes = serde_json::to_vec_pretty(raw).expect("a JSON object serializes");
     bytes.push(b'\n');
-    write_new(&folder, SETTINGS_FILE, &bytes)
+    bytes
 }
 
 /// Write `contents` as `dir/name` only when nothing is at that name. The

@@ -23,7 +23,8 @@ use summarize::prompts::Prompt;
 use crate::cache::{Cache, read_cache};
 use crate::file::{FileRead, apply_patch, default_settings, read_settings, write_new_settings};
 use crate::prompts::{
-    free_prompt_name, is_built_in, joined_id, same_name, scan_prompts, write_new_prompt,
+    built_in_names, free_prompt_name, is_built_in, joined_id, same_name, scan_prompts,
+    write_new_prompt,
 };
 use crate::view::{SharedView, load, store};
 
@@ -157,9 +158,7 @@ fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
         if present {
             continue;
         }
-        let taken: Vec<String> = summarize::prompts::built_ins()
-            .into_iter()
-            .map(|p| p.name)
+        let taken: Vec<String> = built_in_names()
             .chain(
                 folder
                     .iter()

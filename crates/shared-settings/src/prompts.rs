@@ -27,7 +27,9 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::file::{FileRead, Unavailable, longhand_folder, read_settings, write_new};
+use crate::file::{
+    FileRead, SettingsFile, Unavailable, check_root, longhand_folder, read_settings, write_new,
+};
 
 /// The folder in the hidden Longhand folder that holds the prompt files.
 pub const PROMPTS_FOLDER: &str = "prompts";
@@ -88,6 +90,16 @@ pub struct PromptFile {
     /// The id that the file holds. It differs from [`Self::id`] for a
     /// conflict copy, and it is `None` for a file with no id.
     pub id_in_file: Option<String>,
+}
+
+impl From<&PromptFile> for summarize::Prompt {
+    fn from(prompt: &PromptFile) -> Self {
+        Self {
+            id: prompt.id.clone(),
+            name: prompt.name.clone(),
+            text: prompt.text.clone(),
+        }
+    }
 }
 
 /// The custom prompts of a storage folder, in the order that Settings
@@ -313,6 +325,11 @@ pub(crate) fn is_built_in(id: &str) -> bool {
     summarize::prompts::built_in(id).is_some()
 }
 
+/// The names of the built-in prompts.
+pub(crate) fn built_in_names() -> impl Iterator<Item = String> {
+    summarize::prompts::built_ins().into_iter().map(|p| p.name)
+}
+
 /// One prompt file that the scan read.
 struct Entry {
     file_name: String,
@@ -331,12 +348,7 @@ impl Entry {
 /// Read the prompt files of the storage folder `root`. This never writes.
 /// A folder with no prompt folder has no custom prompts.
 pub fn scan_prompts(root: &Path) -> Result<PromptScan, Unavailable> {
-    match std::fs::metadata(root) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Err(Unavailable::FolderMissing),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Unavailable::FolderMissing),
-        Err(e) => return Err(Unavailable::Unreadable(e.to_string())),
-    }
+    check_root(root)?;
     let folder = prompts_folder(root);
     let dir = match std::fs::read_dir(&folder) {
         Ok(dir) => dir,
@@ -475,10 +487,7 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
             .cmp(a_qualifies)
             .then_with(|| a.file_name.as_bytes().cmp(b.file_name.as_bytes()))
     });
-    let mut taken: Vec<String> = summarize::prompts::built_ins()
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
+    let mut taken: Vec<String> = built_in_names().collect();
     let mut prompts: Vec<PromptFile> = prompts
         .into_iter()
         .map(|(mut prompt, _)| {
@@ -500,9 +509,10 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
 }
 
 /// Refuse a change while the shared settings are read-only (R16, KTD3).
-fn ensure_writable(root: &Path) -> Result<(), PromptError> {
+/// Returns the settings file that it read.
+fn ensure_writable(root: &Path) -> Result<SettingsFile, PromptError> {
     match read_settings(root) {
-        FileRead::Parsed(_) => Ok(()),
+        FileRead::Parsed(settings) => Ok(settings),
         FileRead::Missing => Err(PromptError::NoSettingsFile),
         FileRead::NotAvailable(cause) => Err(PromptError::NotAvailable(cause)),
     }
@@ -535,15 +545,12 @@ fn taken_names<'a>(
     scan: &'a PromptScan,
     except: Option<&'a str>,
 ) -> impl Iterator<Item = String> + 'a {
-    summarize::prompts::built_ins()
-        .into_iter()
-        .map(|p| p.name)
-        .chain(
-            scan.prompts
-                .iter()
-                .filter(move |p| Some(p.id.as_str()) != except)
-                .map(|p| p.name.clone()),
-        )
+    built_in_names().chain(
+        scan.prompts
+            .iter()
+            .filter(move |p| Some(p.id.as_str()) != except)
+            .map(|p| p.name.clone()),
+    )
 }
 
 /// The names in the prompt folder, in lower case, so that a free file name
@@ -676,10 +683,11 @@ pub fn set_prompt_text(root: &Path, id: &str, text: &str) -> Result<PromptFile, 
     })
 }
 
-/// Remove each file of the prompt `id`.
-pub fn delete_prompt(root: &Path, id: &str) -> Result<(), PromptError> {
+/// Remove each file of the prompt `id`. Returns the shared settings file
+/// as it was before the delete.
+pub fn delete_prompt(root: &Path, id: &str) -> Result<SettingsFile, PromptError> {
     check_custom(id)?;
-    ensure_writable(root)?;
+    let settings = ensure_writable(root)?;
     let scan = scan_for_change(root)?;
     let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?;
     settle_copies(root, &scan, id)?;
@@ -688,7 +696,7 @@ pub fn delete_prompt(root: &Path, id: &str) -> Result<(), PromptError> {
         remove_if_present(&folder.join(file_name))?;
     }
     session_save::fsync::sync_dir(&folder)?;
-    Ok(())
+    Ok(settings)
 }
 
 /// Write the made id into each conflict copy of `id` before Longhand

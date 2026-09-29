@@ -14,12 +14,12 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use shared_settings::cache::{self, Cache};
-use shared_settings::file::{self, Field, FileRead, SaveError, SharedValue, Unavailable};
+use shared_settings::file::{self, SaveError, SharedValue, Unavailable};
 use shared_settings::join::{self, JoinKind};
 use shared_settings::prompts::{self, PromptError};
 use shared_settings::view::{self, Availability, SharedView};
 use specta::Type;
-use summarize::prompts::TOPIC_SUMMARY_ID;
+use summarize::prompts::{TOPIC_SUMMARY_ID, topic_summary};
 
 /// The name of a prompt that the user adds (R3).
 const NEW_PROMPT_NAME: &str = "New prompt";
@@ -135,50 +135,18 @@ impl Default for SharedSnapshot {
 impl SharedSnapshot {
     pub fn state(&self) -> SharedState {
         let fields = &self.view.fields;
-        let mut unknown_values = Vec::new();
-        let mut note = |key: &str, value: Option<&serde_json::Value>| {
-            if let Some(value) = value {
-                unknown_values.push(UnknownSharedValue {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                });
-            }
-        };
-        note(
-            file::KEY_ACTIVE_SUMMARY_PROMPT,
-            unknown(&fields.active_summary_prompt),
-        );
-        note(
-            file::KEY_DEFAULT_SPEAKER_COUNT,
-            unknown(&fields.default_speaker_count),
-        );
-        note(file::KEY_ASR_MODEL, unknown(&fields.asr_model));
-        note(file::KEY_LIVE_TRANSCRIPT, unknown(&fields.live_transcript));
-        note(file::KEY_SPEAKER_SOURCE, unknown(&fields.speaker_source));
-        note(
-            file::KEY_SPEAKER_PROCESSING_MODE,
-            unknown(&fields.speaker_processing_mode),
-        );
-        note(
-            file::KEY_RECOGNITION_LANGUAGE,
-            unknown(&fields.recognition_language),
-        );
-        note(
-            file::KEY_CHECK_UPDATES_AUTOMATICALLY,
-            unknown(&fields.check_updates_automatically),
-        );
         SharedState {
             availability: self.availability.clone(),
             newer_version: fields.newer_schema(),
-            unknown_values,
+            unknown_values: fields
+                .unknown_values()
+                .into_iter()
+                .map(|(key, value)| UnknownSharedValue {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })
+                .collect(),
         }
-    }
-}
-
-fn unknown<T>(field: &Field<T>) -> Option<&serde_json::Value> {
-    match field {
-        Field::Unknown(value) => Some(value),
-        Field::Absent | Field::Known(_) => None,
     }
 }
 
@@ -260,7 +228,14 @@ struct PendingRead {
 pub struct SharedSettingsManager {
     /// The folder of the local cache (KTD6).
     cache_dir: PathBuf,
+    /// Held only for short steps with no file I/O in the storage folder, so
+    /// [`SharedSettingsManager::snapshot`] never waits for a slow write or
+    /// for an online-only file.
     inner: Mutex<Inner>,
+    /// Lets one change, join or change of folder run at a time. Only a
+    /// holder of this lock changes `inner.root`. A read waits for it before
+    /// it starts.
+    writer: Mutex<()>,
 }
 
 impl SharedSettingsManager {
@@ -280,11 +255,16 @@ impl SharedSettingsManager {
                 view,
                 generation: 0,
             }),
+            writer: Mutex::new(()),
         }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn writer(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.writer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The shared view that this computer uses now. This does no file I/O.
@@ -297,8 +277,8 @@ impl SharedSettingsManager {
     /// when it has no settings file. Call it off the main thread, before
     /// the first library scan. Returns whether the view changed.
     pub fn join_at_launch(&self) -> bool {
-        let mut inner = self.lock();
-        self.join_locked(&mut inner, None)
+        let _writer = self.writer();
+        self.join(None)
     }
 
     /// The storage folder changed to `root` (R21). The new folder's shared
@@ -306,20 +286,26 @@ impl SharedSettingsManager {
     /// (R22). With no folder, the view comes from the cache and is
     /// read-only. Returns whether the view changed.
     pub fn change_folder(&self, root: Option<PathBuf>) -> bool {
-        let mut inner = self.lock();
-        inner.generation += 1;
-        let before = snapshot_of(&inner);
-        inner.root = root;
-        inner.read = false;
-        if inner.root.is_some() {
-            self.join_locked(&mut inner, Some(JoinKind::ChangeOfFolder));
+        let _writer = self.writer();
+        let has_root = root.is_some();
+        let before = {
+            let mut inner = self.lock();
+            inner.generation += 1;
+            let before = snapshot_of(&inner);
+            inner.root = root;
+            inner.read = false;
+            before
+        };
+        if has_root {
+            self.join(Some(JoinKind::ChangeOfFolder));
         } else {
-            inner.view = view::cached(
+            let view = view::cached(
                 cache::read_cache(&self.cache_dir).as_ref(),
                 Availability::MissingFile,
             );
+            self.store_view(view);
         }
-        snapshot_of(&inner) != before
+        self.snapshot() != before
     }
 
     /// Read the shared files again, after a file event in the storage
@@ -341,6 +327,9 @@ impl SharedSettingsManager {
 
     fn begin_read(&self) -> Option<PendingRead> {
         let (root, generation) = {
+            // A read that starts during a change starts after it, so the
+            // read sees the files as the change left them.
+            let _writer = self.writer();
             let inner = self.lock();
             // Before the first join, the join reads the folder.
             if !inner.read {
@@ -362,14 +351,7 @@ impl SharedSettingsManager {
         if inner.generation != read.generation || inner.root.as_ref() != Some(&read.root) {
             return false;
         }
-        if let Some(cache) = &loaded.cache
-            && let Err(e) = cache::write_cache(&self.cache_dir, cache)
-        {
-            log::warn!(
-                "shared settings: cannot write the cache in {}: {e}",
-                self.cache_dir.display()
-            );
-        }
+        view::store(&self.cache_dir, loaded.cache.as_ref());
         let before = snapshot_of(&inner);
         inner.view = loaded.view;
         snapshot_of(&inner) != before
@@ -427,12 +409,8 @@ impl SharedSettingsManager {
     /// active in the same change (R4).
     pub fn delete_prompt(&self, id: &str) -> Result<(), String> {
         self.change(|root| {
-            prompts::delete_prompt(root, id)?;
-            let active = match file::read_settings(root) {
-                FileRead::Parsed(settings) => settings.fields.active_summary_prompt,
-                FileRead::Missing => return Err(Failure::Missing),
-                FileRead::NotAvailable(cause) => return Err(Failure::NotAvailable(cause)),
-            };
+            let settings = prompts::delete_prompt(root, id)?;
+            let active = settings.fields.active_summary_prompt;
             if active.known().is_some_and(|active| active == id) {
                 file::save_settings(
                     root,
@@ -458,39 +436,61 @@ impl SharedSettingsManager {
     /// A view that is not writable is joined again first, so a folder that
     /// came back is used. A folder with no settings file gets one from the
     /// join, and `op` runs again (KTD8).
+    /// The caller holds no lock: this takes the writer lock.
     fn change<T>(&self, op: impl Fn(&Path) -> Result<T, Failure>) -> Result<T, String> {
-        let mut inner = self.lock();
-        inner.generation += 1;
-        let Some(root) = inner.root.clone() else {
-            return Err(ReadOnlyCause::NoStorageFolder.message().into());
+        let _writer = self.writer();
+        let (root, join_first) = {
+            let mut inner = self.lock();
+            inner.generation += 1;
+            let Some(root) = inner.root.clone() else {
+                return Err(ReadOnlyCause::NoStorageFolder.message().into());
+            };
+            (root, !inner.read || !inner.view.writable())
         };
-        if !inner.read || !inner.view.writable() {
-            self.join_locked(&mut inner, None);
+        if join_first {
+            self.join(None);
         }
         let mut result = op(&root);
         if matches!(result, Err(Failure::Missing)) {
-            self.join_locked(&mut inner, Some(JoinKind::SameFolder));
+            self.join(Some(JoinKind::SameFolder));
             result = op(&root);
         }
-        inner.view = view::refresh(&root, &self.cache_dir);
+        self.store_view(view::refresh(&root, &self.cache_dir));
         result.map_err(Failure::message)
     }
 
     /// Join the storage folder. With no `kind`, the join is a change of
     /// folder when the cache came from another folder, or from the local
-    /// store of a version before shared settings (R21).
-    fn join_locked(&self, inner: &mut Inner, kind: Option<JoinKind>) -> bool {
-        inner.generation += 1;
-        let Some(root) = inner.root.clone() else {
-            return false;
+    /// store of a version before shared settings (R21). The caller holds
+    /// the writer lock.
+    fn join(&self, kind: Option<JoinKind>) -> bool {
+        let (root, before) = {
+            let mut inner = self.lock();
+            inner.generation += 1;
+            let Some(root) = inner.root.clone() else {
+                return false;
+            };
+            (root, snapshot_of(&inner))
         };
-        let before = snapshot_of(inner);
-        let kind = kind.unwrap_or_else(|| match cache::read_cache(&self.cache_dir) {
+        let view = self.joined_view(&root, kind);
+        let mut inner = self.lock();
+        inner.generation += 1;
+        inner.view = view;
+        inner.read = true;
+        snapshot_of(&inner) != before
+    }
+
+    /// The view after a join of `root`. This does the file I/O of the join
+    /// with no lock on `inner`.
+    fn joined_view(&self, root: &Path, kind: Option<JoinKind>) -> SharedView {
+        let old = cache::read_cache(&self.cache_dir);
+        let kind = kind.unwrap_or_else(|| match &old {
             Some(Cache { source, .. }) if source != root => JoinKind::ChangeOfFolder,
             _ => JoinKind::SameFolder,
         });
-        inner.view = match join::join_folder(&root, &self.cache_dir, kind) {
+        match join::join(root, old.as_ref(), kind) {
             Ok(joined) => {
+                view::store(&self.cache_dir, joined.cache.as_ref());
                 if joined.written.settings_file || !joined.written.prompt_files.is_empty() {
                     log::info!(
                         "shared settings: the join wrote the settings file: {}, and {} prompt file(s)",
@@ -505,11 +505,17 @@ impl SharedSettingsManager {
                     "shared settings: the join of {} failed: {e}",
                     root.display()
                 );
-                view::refresh(&root, &self.cache_dir)
+                view::refresh(root, &self.cache_dir)
             }
-        };
-        inner.read = true;
-        snapshot_of(inner) != before
+        }
+    }
+
+    /// Use `view` from now on. A read that started before this gives no
+    /// result (KTD13).
+    fn store_view(&self, view: SharedView) {
+        let mut inner = self.lock();
+        inner.generation += 1;
+        inner.view = view;
     }
 }
 
@@ -539,16 +545,8 @@ fn snapshot_of(inner: &Inner) -> SharedSnapshot {
 fn find_prompt(root: &Path, id: &str) -> Option<summarize::Prompt> {
     summarize::prompts::built_in(id).or_else(|| {
         let scan = prompts::scan_prompts(root).ok()?;
-        scan.get(id).map(|p| summarize::Prompt {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            text: p.text.clone(),
-        })
+        scan.get(id).map(summarize::Prompt::from)
     })
-}
-
-fn topic_summary() -> summarize::Prompt {
-    summarize::prompts::built_in(TOPIC_SUMMARY_ID).expect("the Topic summary is a built-in prompt")
 }
 
 #[cfg(test)]
@@ -1174,6 +1172,43 @@ mod tests {
         manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
         assert!(!manager.finish_read(started, loaded));
         assert!(!settings_of(&manager).chosen_recognition.live_transcript);
+    }
+
+    #[test]
+    fn a_snapshot_during_a_change_gives_the_view_from_before_the_change() {
+        // A slow save, such as a save to an online-only file, does not
+        // stop a read of the settings.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let before = manager.snapshot();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let manager = &manager;
+        std::thread::scope(|scope| {
+            let change = scope.spawn(move || {
+                manager.change(|root| {
+                    started_tx.send(()).unwrap();
+                    finish_rx.recv().unwrap();
+                    file::save_settings(root, &[SharedValue::LiveTranscript(false)])
+                        .map(drop)
+                        .map_err(Failure::from)
+                })
+            });
+            started_rx.recv().unwrap();
+            scope.spawn(move || read_tx.send(manager.snapshot()).unwrap());
+            let during = read_rx.recv_timeout(std::time::Duration::from_secs(5));
+            finish_tx.send(()).unwrap();
+            change.join().unwrap().unwrap();
+            assert_eq!(
+                during.ok(),
+                Some(before),
+                "the snapshot waited for the change"
+            );
+        });
+        assert!(!settings_of(manager).chosen_recognition.live_transcript);
     }
 
     #[test]

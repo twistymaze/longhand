@@ -3,80 +3,32 @@
 // has the focus, so Return moves the notes and no note is left behind by
 // accident.
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { commands, type OldNotes, type Result, type Settings } from "../bindings";
+import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { folderName } from "./ui";
 
 type Answer = OldNotes | "cancel";
 
 export function OldNotesDialog({ folder, onAnswer }: { folder: string; onAnswer: (answer: Answer) => void }) {
-  const id = useId();
-  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
-  const answer = useRef(onAnswer);
-  answer.current = onAnswer;
-  // Order in the row: Cancel, Leave Them, Move Notes. Move Notes has the
-  // focus at the start.
-  useEffect(() => buttons.current[2]?.focus(), []);
-  // The keys go to the window. In WKWebView a click does not give a button
-  // the focus, so the focus can be on the page body after a click in the
-  // dialog.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        answer.current("cancel");
-      }
-      if (e.key === "Tab") {
-        e.preventDefault();
-        const list = buttons.current.filter((b): b is HTMLButtonElement => b !== null);
-        const at = list.indexOf(document.activeElement as HTMLButtonElement);
-        const next = at < 0 ? list.length - 1 : (at + (e.shiftKey ? list.length - 1 : 1)) % list.length;
-        list[next]?.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  const button = (index: number, label: string, value: Answer, prominent = false) => (
-    <button
-      ref={(b) => {
-        buttons.current[index] = b;
-      }}
-      type="button"
-      onClick={() => onAnswer(value)}
-      className={`rounded-md px-2.5 py-[3px] whitespace-nowrap outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent ${
-        prominent ? "bg-accent text-white active:bg-accent-pressed" : "bg-fill text-label active:bg-fill-pressed"
-      }`}
-    >
-      {label}
-    </button>
-  );
+  // Order in the row: Cancel, Leave Them, Move Notes.
   return (
-    <div className="fixed inset-0 z-20 flex items-start justify-center bg-black/20 px-4 pt-[18vh] pb-4">
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={`${id}-title`}
-        aria-describedby={`${id}-message`}
-        className="fade-in flex max-h-[calc(82vh-1rem)] w-[22rem] max-w-[calc(100vw-2rem)] flex-col rounded-xl bg-group p-4 shadow-[0_0_0_0.5px_var(--separator),0_12px_40px_rgb(0_0_0/0.25)]"
-      >
-        <h2 id={`${id}-title`} className="shrink-0 font-semibold [overflow-wrap:anywhere]">
-          Move your notes to “{folderName(folder)}”?
-        </h2>
-        <div
-          id={`${id}-message`}
-          className="mt-1 grid min-h-0 gap-1.5 overflow-y-auto text-[0.85rem] text-label-secondary [overflow-wrap:anywhere]"
-        >
+    <ConfirmDialog
+      title={`Move your notes to “${folderName(folder)}”?`}
+      message={
+        <>
           <p>Move Notes puts every note in the new folder. You can keep working while they move.</p>
           <p>Leave Them keeps the notes in the old folder. Longhand no longer lists them.</p>
-        </div>
-        <div className="mt-4 flex shrink-0 flex-wrap justify-end gap-2">
-          {button(0, "Cancel", "cancel")}
-          {button(1, "Leave Them", "leave")}
-          {button(2, "Move Notes", "move", true)}
-        </div>
-      </div>
-    </div>
+        </>
+      }
+      action="Move Notes"
+      destructive={false}
+      secondary={{ label: "Leave Them", onClick: () => onAnswer("leave") }}
+      focus="confirm"
+      width="w-[22rem]"
+      onConfirm={() => onAnswer("move")}
+      onCancel={() => onAnswer("cancel")}
+    />
   );
 }
 

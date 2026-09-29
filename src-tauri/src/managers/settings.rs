@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use shared_settings::file::{Field, SharedValue};
+use shared_settings::file::{Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
 use summarize::prompts::TOPIC_SUMMARY_ID;
@@ -123,6 +123,16 @@ pub struct SummaryPrompt {
 
 impl From<&summarize::Prompt> for SummaryPrompt {
     fn from(prompt: &summarize::Prompt) -> Self {
+        Self {
+            id: prompt.id.clone(),
+            name: prompt.name.clone(),
+            text: prompt.text.clone(),
+        }
+    }
+}
+
+impl From<&SummaryPrompt> for summarize::Prompt {
+    fn from(prompt: &SummaryPrompt) -> Self {
         Self {
             id: prompt.id.clone(),
             name: prompt.name.clone(),
@@ -748,7 +758,7 @@ impl Settings {
                     .filter(|prompt| prompt.id == *id)
             })
             .or_else(|| self.find_summary_prompt(id))
-            .unwrap_or_else(topic_summary)
+            .unwrap_or_else(summarize::prompts::topic_summary)
     }
 
     pub fn summary_prompt_list(&self) -> SummaryPromptList {
@@ -778,11 +788,7 @@ impl Settings {
             self.summary_prompts
                 .iter()
                 .find(|p| p.id == id)
-                .map(|p| summarize::Prompt {
-                    id: p.id.clone(),
-                    name: p.name.clone(),
-                    text: p.text.clone(),
-                })
+                .map(summarize::Prompt::from)
         })
     }
 }
@@ -833,10 +839,6 @@ pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
         ));
     }
     patch
-}
-
-fn topic_summary() -> summarize::Prompt {
-    summarize::prompts::built_in(TOPIC_SUMMARY_ID).expect("the Topic summary is a built-in prompt")
 }
 
 /// Parse a stored value into the local settings. Returns whether the stored
@@ -936,10 +938,6 @@ fn rewrite_recognition_fields(
         changed = true;
     }
     changed
-}
-
-fn is_catalog_asr_model(id: &str) -> bool {
-    shared_settings::file::is_catalog_asr_model(id)
 }
 
 /// The automatic speaker choice (KTD5): the first after-Stop preference of
@@ -1166,11 +1164,7 @@ fn legacy_prompts(value: Option<&Value>) -> Vec<summarize::Prompt> {
             }
             usable
         })
-        .map(|p| summarize::Prompt {
-            id: p.id,
-            name: p.name,
-            text: p.text,
-        })
+        .map(|p| summarize::Prompt::from(&p))
         .collect()
 }
 

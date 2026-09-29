@@ -22,6 +22,7 @@ use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
 use crate::managers::models::{ModelState, ModelsManager};
 use crate::managers::settings;
+use crate::managers::shared::SharedSettingsManager;
 
 /// What processing is doing, for the surface.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
@@ -141,6 +142,17 @@ pub struct MoveProgress {
     pub moved: u32,
     pub total: u32,
     pub state: MoveState,
+}
+
+impl MoveProgress {
+    /// The progress of `(moved, total)` notes in `state`.
+    fn new((moved, total): (u32, u32), state: MoveState) -> Self {
+        Self {
+            moved,
+            total,
+            state,
+        }
+    }
 }
 
 /// The Move paused (R10).
@@ -736,9 +748,7 @@ impl ProcessingManager {
         // Before the library scan: the shared settings of the storage folder
         // apply, and a folder with no settings file gets this computer's
         // shared settings (R21, KTD8).
-        if let Some(shared) = self
-            .app
-            .try_state::<Arc<crate::managers::shared::SharedSettingsManager>>()
+        if let Some(shared) = self.app.try_state::<Arc<SharedSettingsManager>>()
             && shared.join_at_launch()
         {
             settings::emit_settings_changed(&self.app);
@@ -868,7 +878,7 @@ impl ProcessingManager {
     /// Start the Move worker, or wake it when it waits.
     pub fn start_move(self: &Arc<Self>) {
         {
-            let mut state = self.mover.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.worker();
             if state.stopped {
                 return;
             }
@@ -888,11 +898,7 @@ impl ProcessingManager {
             .spawn(move || manager.run_move());
         if let Err(e) = spawned {
             log::error!("could not start the move of the notes: {e}");
-            self.mover
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .running = false;
+            self.worker().running = false;
         }
     }
 
@@ -901,7 +907,7 @@ impl ProcessingManager {
     fn run_move(&self) {
         loop {
             self.move_until_done();
-            let mut state = self.mover.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.worker();
             if state.woken && !state.stopped {
                 state.woken = false;
                 continue;
@@ -937,26 +943,12 @@ impl ProcessingManager {
                     }
                     .into(),
                 );
-                emit_move(
-                    &self.app,
-                    MoveProgress {
-                        moved: progress.moved as u32,
-                        total: progress.total as u32,
-                        state: MoveState::Running,
-                    },
-                );
+                emit_move(&self.app, MoveProgress::new(last, MoveState::Running));
             });
             let wait = match end {
                 Ok(pipeline::move_notes::PassEnd::Finished) => {
                     self.set_move_state(MoveState::Finished);
-                    emit_move(
-                        &self.app,
-                        MoveProgress {
-                            moved: last.0,
-                            total: last.1,
-                            state: MoveState::Finished,
-                        },
-                    );
+                    emit_move(&self.app, MoveProgress::new(last, MoveState::Finished));
                     // The old folder is not a library root any more.
                     self.roots_changed();
                     self.forget_outside_roots();
@@ -992,7 +984,7 @@ impl ProcessingManager {
     /// Wait for `timeout`, or for Retry when it is `None`. Returns false
     /// when the app quits.
     fn wait_move(&self, timeout: Option<std::time::Duration>) -> bool {
-        let mut state = self.mover.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.worker();
         let deadline = timeout.map(|t| std::time::Instant::now() + t);
         while !state.woken && !state.stopped {
             match deadline {
@@ -1022,22 +1014,18 @@ impl ProcessingManager {
     }
 
     fn set_move_state(&self, last: MoveState) {
-        self.mover
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .last = Some(last);
+        self.worker().last = Some(last);
+    }
+
+    fn worker(&self) -> std::sync::MutexGuard<'_, MoveWorkerState> {
+        self.mover.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn emit_move_progress(&self, state: MoveState) {
         if let Some(status) = self.move_status() {
             emit_move(
                 &self.app,
-                MoveProgress {
-                    moved: status.moved,
-                    total: status.total,
-                    state,
-                },
+                MoveProgress::new((status.moved, status.total), state),
             );
         }
     }
@@ -1095,8 +1083,7 @@ impl ProcessingManager {
             // On the watcher thread, never the main thread: a read can
             // wait for an online-only file (KTD13, R20).
             Box::new(move || {
-                if let Some(shared) =
-                    reader.try_state::<Arc<crate::managers::shared::SharedSettingsManager>>()
+                if let Some(shared) = reader.try_state::<Arc<SharedSettingsManager>>()
                     && shared.reread()
                 {
                     log::info!("shared settings: another computer changed them");
@@ -1151,7 +1138,7 @@ impl ProcessingManager {
             watcher.stop();
         }
         {
-            let mut state = self.mover.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.worker();
             state.stopped = true;
             self.mover.signal.notify_all();
         }

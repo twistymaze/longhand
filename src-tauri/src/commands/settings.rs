@@ -459,15 +459,20 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     if let Some(shared) = &shared {
         shared.change_folder(Some(new.clone()));
     }
+    // Give the shared settings back to the storage folder that the
+    // settings hold.
+    let roll_back_shared = || {
+        if let Some(shared) = &shared {
+            shared.change_folder(settings::get_settings(app).storage_folder());
+        }
+    };
     // The journal opens before the folder changes, so the library keeps
     // the notes of the old folder in the meantime (KTD10).
     let moving = old_notes == OldNotes::Move;
     if moving && let Some(processing) = &processing {
         let opened = processing.open_move(Path::new(&current), &new);
         if let Err(e) = opened {
-            if let Some(shared) = &shared {
-                shared.change_folder(settings::get_settings(app).storage_folder());
-            }
+            roll_back_shared();
             return Err(e);
         }
     }
@@ -478,9 +483,7 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     if let Err(e) = set {
         // The shared settings stay with the storage folder, and no note
         // has moved.
-        if let Some(shared) = &shared {
-            shared.change_folder(settings::get_settings(app).storage_folder());
-        }
+        roll_back_shared();
         if moving && let Some(processing) = &processing {
             processing.close_move();
         }
