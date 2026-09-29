@@ -72,6 +72,8 @@ The model that turns speech into text. The user selects a transcription model an
 ### Speaker recognition
 The user-facing term for diarization: assigning anonymous speaker labels to speech. It does not identify named people, enroll voices, or retain voiceprints. A separate speaker model supplies a timeline, and Longhand joins it with the text. Transcription models do not supply the labels. Speaker recognition can also be off. The selected artifacts determine valid processing times and speaker limits.
 
+After Stop, the Finding speakers step shows one percent for the whole note. During one attempt, the percent does not go back, and it stays below 100 until the step is complete. Work that cannot be measured shows activity, not a percent. Saved work of an earlier attempt counts at the start of a new attempt, but the percent of the earlier attempt does not show.
+
 ### Live transcript
 The text that a streaming recognition model makes during recording. It shows in the Transcript tab when the selected model supports live transcription and the note uses that mode. Live text and speaker labels can be provisional. The runtime can revise them before finalization. Compatible durable results are reused after Stop; missing or invalid results require processing. Live speaker analysis is a separate choice and can run with an offline transcription model.
 
@@ -83,6 +85,9 @@ Audio of a session that has no live transcript: a span that the live transcript 
 
 ### Transcribe Again
 The menu action that makes the transcript and summary of a saved note again. It asks for one confirmation and offers no choices. The run uses the models, speaker source, and language in Settings, always with After Stop timing, and the speaker count of the note, including "auto". When the saved timed text is compatible, the run uses it again. The recording, notes, and title stay. During the run, the note shows progress in place of the transcript and summary. A failed run keeps the previous result.
+
+### Retry
+The action that puts a note back in line after its processing failed or its save found no storage folder. The new attempt does not start the processing again from the beginning. It skips each step whose saved work is still valid, so it continues at the step that failed, and it uses the saved work of that step again where it can. The note shows only the progress of the new attempt.
 
 ### Model bundle
 A transcription model and every supporting model that one of its valid choices can use: speaker models for each speaker source, and the NeMo copy of the model for live speaker labels. Longhand downloads the full bundle when the user selects the transcription model, and shows its total size. The user sees and deletes only transcription models. When a transcription model is deleted, Longhand deletes each supporting model that no other bundle needs.
