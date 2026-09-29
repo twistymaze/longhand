@@ -86,3 +86,7 @@ If an agent reads the wake as a real blocker, it stops watching a PR that only w
 
 - **PR #11, first push:** the watcher woke with `base-ref-blocked` while CI ran. A re-arm with the same invocation values kept it polling. It later woke with `merge-ready`, and the snapshot showed `all_checks_ok` true, `MERGEABLE`, `CLEAN`.
 - **PR #11, after merging `main`:** the watcher woke at once with `base-ref-blocked`, `all_checks_ok` false, `race`. The bounded `gh pr checks` loop waited for CI. All checks passed, and auto-merge merged the PR.
+
+## Related
+
+- [The PR watcher looks broken while it waits for its next poll after CI finishes](pr-watcher-seems-silent-after-ci.md): the other causes of a silent watcher, the settle window and the poll interval.
