@@ -65,7 +65,7 @@ futures-util = "0.3"
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"
-uuid = { version = "1", features = ["v4"] }
+uuid.workspace = true
 trash = "5"
 # The library watcher (managers/library.rs), as anarlog's notify plugin uses them.
 notify = "8"

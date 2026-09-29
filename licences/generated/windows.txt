@@ -2918,6 +2918,7 @@ alloc-no-stdlib 2.0.4
 alloc-stdlib 0.2.4
 brotli 8.0.4
     Copyright (c) 2016 Dropbox, Inc. All rights reserved.
+sha1_smol 1.0.1
 subtle 2.6.1
     Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
     Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved.

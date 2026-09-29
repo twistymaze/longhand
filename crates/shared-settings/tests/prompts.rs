@@ -1,0 +1,587 @@
+//! Prompt files (U2): each custom prompt is a markdown file with its id in
+//! the file, and a sync conflict copy shows as one more prompt (R14, KTD4,
+//! KTD5).
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use shared_settings::file::{Unavailable, default_settings};
+use shared_settings::prompts::{
+    PromptError, PromptScan, create_prompt, delete_prompt, free_prompt_name, rename_prompt,
+    render_prompt_file, safe_file_name, scan_prompts, set_prompt_text,
+};
+
+/// A storage folder with the default shared settings.
+fn folder() -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    let longhand = root.path().join(".longhand");
+    fs::create_dir_all(longhand.join("prompts")).unwrap();
+    fs::write(
+        longhand.join("settings.json"),
+        serde_json::to_vec(&default_settings()).unwrap(),
+    )
+    .unwrap();
+    root
+}
+
+fn prompts_dir(root: &Path) -> PathBuf {
+    root.join(".longhand").join("prompts")
+}
+
+fn scan(root: &Path) -> PromptScan {
+    scan_prompts(root).unwrap()
+}
+
+fn file_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(prompts_dir(root))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+fn write_file(root: &Path, name: &str, contents: &str) {
+    fs::write(prompts_dir(root).join(name), contents).unwrap();
+}
+
+#[test]
+fn a_new_prompt_is_one_file_that_reads_back() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Standup", "List what each person did.").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Standup.md"]);
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts.len(), 1);
+    let prompt = &scan.prompts[0];
+    assert_eq!(prompt.id, made.id);
+    assert_eq!(prompt.name, "Standup");
+    assert_eq!(prompt.text, "List what each person did.");
+    assert!(scan.conflicted.is_empty());
+}
+
+#[test]
+fn a_name_with_a_colon_gets_a_valid_windows_file_name_and_shows_as_typed() {
+    let root = folder();
+    create_prompt(root.path(), "1:1 notes", "Text.").unwrap();
+    let names = file_names(root.path());
+    assert_eq!(names.len(), 1);
+    let bad = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+    assert!(!names[0].contains(bad), "{}", names[0]);
+    assert_eq!(scan(root.path()).prompts[0].name, "1:1 notes");
+}
+
+#[test]
+fn a_safe_file_name_avoids_reserved_names_and_trailing_dots() {
+    assert_eq!(safe_file_name("Recap"), "Recap.md");
+    assert_eq!(safe_file_name("a/b\\c"), "a-b-c.md");
+    assert_eq!(safe_file_name("Notes. . "), "Notes.md");
+    assert_eq!(safe_file_name("CON"), "_CON.md");
+    assert_eq!(safe_file_name("com1"), "_com1.md");
+    assert_eq!(safe_file_name("lpt9.draft"), "_lpt9.draft.md");
+    assert_eq!(safe_file_name("Console"), "Console.md");
+    // A file name that the scan skips is never made.
+    assert_eq!(safe_file_name(".hidden"), "hidden.md");
+    assert_eq!(safe_file_name("~$lock"), "~-lock.md");
+    assert_eq!(safe_file_name("   "), "Prompt.md");
+    assert_eq!(safe_file_name("tab\there"), "tab-here.md");
+    let long = "x".repeat(400);
+    assert!(safe_file_name(&long).len() <= 200);
+}
+
+#[test]
+fn two_names_with_one_file_name_get_two_files() {
+    let root = folder();
+    let a = create_prompt(root.path(), "a/b", "One.").unwrap();
+    let b = create_prompt(root.path(), "a:b", "Two.").unwrap();
+    assert_eq!(file_names(root.path()), vec!["a-b 2.md", "a-b.md"]);
+    let scan = scan(root.path());
+    assert_eq!(scan.get(&a.id).unwrap().name, "a/b");
+    assert_eq!(scan.get(&b.id).unwrap().name, "a:b");
+}
+
+#[test]
+fn a_new_prompt_gets_a_free_name() {
+    let root = folder();
+    create_prompt(root.path(), "New prompt", "One.").unwrap();
+    let second = create_prompt(root.path(), "New prompt", "Two.").unwrap();
+    assert_eq!(second.name, "New prompt 2");
+    // A built-in name is taken too.
+    let third = create_prompt(root.path(), "Topic summary", "Three.").unwrap();
+    assert_eq!(third.name, "Topic summary 2");
+}
+
+#[test]
+fn free_prompt_name_compares_names_trimmed_and_without_case() {
+    assert_eq!(free_prompt_name("Recap", ["other"].into_iter()), "Recap");
+    assert_eq!(
+        free_prompt_name("Recap", [" recap "].into_iter()),
+        "Recap 2"
+    );
+    assert_eq!(
+        free_prompt_name("Recap", ["Recap", "RECAP 2"].into_iter()),
+        "Recap 3"
+    );
+}
+
+#[test]
+fn a_file_renamed_outside_longhand_keeps_its_id_and_name() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Standup", "Text.").unwrap();
+    fs::rename(
+        prompts_dir(root.path()).join("Standup.md"),
+        prompts_dir(root.path()).join("Daily.md"),
+    )
+    .unwrap();
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts.len(), 1);
+    assert_eq!(scan.prompts[0].id, made.id);
+    assert_eq!(scan.prompts[0].name, "Standup");
+    assert_eq!(scan.prompts[0].file_name, "Daily.md");
+}
+
+#[test]
+fn a_file_with_no_front_matter_is_a_prompt_named_for_its_file() {
+    let root = folder();
+    write_file(root.path(), "Weekly review.md", "Summarize the week.\n");
+    let first = scan(root.path());
+    assert_eq!(first.prompts.len(), 1);
+    assert_eq!(first.prompts[0].name, "Weekly review");
+    assert_eq!(first.prompts[0].text, "Summarize the week.");
+    // The id comes from the file name, so each scan gives the same id.
+    assert_eq!(scan(root.path()).prompts[0].id, first.prompts[0].id);
+    // The scan wrote nothing.
+    assert_eq!(
+        fs::read_to_string(prompts_dir(root.path()).join("Weekly review.md")).unwrap(),
+        "Summarize the week.\n"
+    );
+}
+
+#[test]
+fn a_change_of_a_file_with_no_front_matter_writes_its_id_first() {
+    let root = folder();
+    write_file(root.path(), "Weekly.md", "Summarize the week.");
+    let id = scan(root.path()).prompts[0].id.clone();
+    rename_prompt(root.path(), &id, "Monthly").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Monthly.md"]);
+    let after = scan(root.path());
+    assert_eq!(after.prompts[0].id, id);
+    assert_eq!(after.prompts[0].name, "Monthly");
+    assert_eq!(after.prompts[0].text, "Summarize the week.");
+}
+
+#[test]
+fn two_files_with_one_id_and_different_texts_show_as_two_prompts() {
+    // AE8: A and B changed one prompt offline, and the sync made a copy.
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text from A.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file(&made.id, "Recap", "Text from B."),
+    );
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts.len(), 2);
+    assert!(scan.conflicted.contains(&made.id));
+    let original = scan.get(&made.id).unwrap();
+    assert_eq!(original.text, "Text from A.");
+    assert_eq!(original.file_name, "Recap.md");
+    assert_eq!(original.name, "Recap");
+    let copy = scan.prompts.iter().find(|p| p.id != made.id).unwrap();
+    assert_eq!(copy.text, "Text from B.");
+    assert_eq!(copy.file_name, "Recap 2.md");
+    // A shown name that another prompt has gets a free name for display.
+    assert_eq!(copy.name, "Recap 2");
+    assert_eq!(copy.stored_name, "Recap");
+}
+
+#[test]
+fn two_computers_give_each_file_of_a_conflict_the_same_id() {
+    let a = folder();
+    let made = create_prompt(a.path(), "Recap", "Text from A.").unwrap();
+    write_file(
+        a.path(),
+        "Recap (conflict).md",
+        &render_prompt_file(&made.id, "Recap", "Text from B."),
+    );
+    // The second computer has a copy of the same files.
+    let b = folder();
+    for name in file_names(a.path()) {
+        fs::copy(
+            prompts_dir(a.path()).join(&name),
+            prompts_dir(b.path()).join(&name),
+        )
+        .unwrap();
+    }
+    let ids = |root: &Path| {
+        let mut ids: Vec<(String, String)> = scan(root)
+            .prompts
+            .into_iter()
+            .map(|p| (p.file_name, p.id))
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(a.path()), ids(b.path()));
+    // The file whose name matches its prompt name keeps the id, although
+    // the copy sorts first.
+    assert_eq!(scan(a.path()).get(&made.id).unwrap().file_name, "Recap.md");
+}
+
+#[test]
+fn when_no_file_matches_its_name_the_first_file_name_keeps_the_id() {
+    let root = folder();
+    let id = "4d1b7a4e-1111-4222-8333-444455556666";
+    write_file(
+        root.path(),
+        "b.md",
+        &render_prompt_file(id, "Recap", "B text."),
+    );
+    write_file(
+        root.path(),
+        "a.md",
+        &render_prompt_file(id, "Recap", "A text."),
+    );
+    let scan = scan(root.path());
+    assert_eq!(scan.get(id).unwrap().file_name, "a.md");
+}
+
+#[test]
+fn two_files_with_one_id_and_the_same_text_show_as_one_prompt() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Same text.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file(&made.id, "Recap", "Same text."),
+    );
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts.len(), 1);
+    assert!(scan.conflicted.is_empty());
+    assert_eq!(scan.prompts[0].file_name, "Recap.md");
+    assert_eq!(scan.prompts[0].duplicates, vec!["Recap 2.md".to_string()]);
+}
+
+#[test]
+fn a_delete_removes_each_file_of_the_prompt() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Same text.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file(&made.id, "Recap", "Same text."),
+    );
+    create_prompt(root.path(), "Other", "Other text.").unwrap();
+    delete_prompt(root.path(), &made.id).unwrap();
+    assert_eq!(file_names(root.path()), vec!["Other.md"]);
+    assert!(matches!(
+        delete_prompt(root.path(), &made.id),
+        Err(PromptError::NoSuchPrompt)
+    ));
+}
+
+#[test]
+fn a_delete_of_the_original_keeps_the_id_of_each_conflict_copy() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text from A.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file(&made.id, "Recap", "Text from B."),
+    );
+    let copy_id = scan(root.path())
+        .prompts
+        .into_iter()
+        .find(|p| p.id != made.id)
+        .unwrap()
+        .id;
+    delete_prompt(root.path(), &made.id).unwrap();
+    let after = scan(root.path());
+    assert_eq!(after.prompts.len(), 1);
+    assert_eq!(after.prompts[0].id, copy_id);
+    assert_eq!(after.prompts[0].text, "Text from B.");
+    assert!(after.get(&made.id).is_none());
+}
+
+#[test]
+fn a_change_of_text_writes_one_file() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Old text.").unwrap();
+    let before = fs::read_to_string(prompts_dir(root.path()).join("Recap.md")).unwrap();
+    set_prompt_text(root.path(), &made.id, "New text.").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Recap.md"]);
+    let after = fs::read_to_string(prompts_dir(root.path()).join("Recap.md")).unwrap();
+    assert_ne!(before, after);
+    let prompt = scan(root.path()).prompts.remove(0);
+    assert_eq!(prompt.id, made.id);
+    assert_eq!(prompt.text, "New text.");
+}
+
+#[test]
+fn a_text_keeps_its_leading_and_trailing_lines() {
+    let root = folder();
+    let text = "\n# Heading\n\nBody.\n\n";
+    let made = create_prompt(root.path(), "Spacing", text).unwrap();
+    assert_eq!(scan(root.path()).get(&made.id).unwrap().text, text);
+}
+
+#[test]
+fn a_rename_writes_the_name_into_the_file_and_renames_it() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text.").unwrap();
+    rename_prompt(root.path(), &made.id, "  Standup  ").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Standup.md"]);
+    let prompt = scan(root.path()).prompts.remove(0);
+    assert_eq!(prompt.id, made.id);
+    assert_eq!(prompt.name, "Standup");
+    assert_eq!(prompt.text, "Text.");
+}
+
+#[test]
+fn a_rename_that_changes_only_the_case_keeps_one_file() {
+    let root = folder();
+    let made = create_prompt(root.path(), "recap", "Text.").unwrap();
+    rename_prompt(root.path(), &made.id, "Recap").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Recap.md"]);
+    assert_eq!(scan(root.path()).prompts[0].name, "Recap");
+}
+
+#[test]
+fn a_crash_during_a_rename_leaves_one_file_with_the_id() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text.").unwrap();
+    // The first step of a rename writes the new name into the old file.
+    write_file(
+        root.path(),
+        "Recap.md",
+        &render_prompt_file(&made.id, "Standup", "Text."),
+    );
+    let scan_after_crash = scan(root.path());
+    assert_eq!(scan_after_crash.prompts.len(), 1);
+    assert_eq!(scan_after_crash.prompts[0].id, made.id);
+    assert_eq!(scan_after_crash.prompts[0].name, "Standup");
+    // A rename again finishes the second step.
+    rename_prompt(root.path(), &made.id, "Standup").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Standup.md"]);
+}
+
+#[test]
+fn a_rename_of_a_conflict_copy_keeps_its_made_id() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text from A.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file(&made.id, "Recap", "Text from B."),
+    );
+    let copy_id = scan(root.path())
+        .prompts
+        .into_iter()
+        .find(|p| p.id != made.id)
+        .unwrap()
+        .id;
+    rename_prompt(root.path(), &copy_id, "Recap from B").unwrap();
+    let after = scan(root.path());
+    assert_eq!(after.prompts.len(), 2);
+    assert!(after.conflicted.is_empty());
+    assert_eq!(after.get(&copy_id).unwrap().name, "Recap from B");
+    assert_eq!(after.get(&copy_id).unwrap().file_name, "Recap from B.md");
+    assert_eq!(after.get(&made.id).unwrap().text, "Text from A.");
+}
+
+#[test]
+fn a_rename_to_a_taken_name_is_refused() {
+    let root = folder();
+    create_prompt(root.path(), "Recap", "One.").unwrap();
+    let other = create_prompt(root.path(), "Other", "Two.").unwrap();
+    assert!(matches!(
+        rename_prompt(root.path(), &other.id, " recap "),
+        Err(PromptError::NameTaken)
+    ));
+    assert!(matches!(
+        rename_prompt(root.path(), &other.id, "Topic summary"),
+        Err(PromptError::NameTaken)
+    ));
+    assert!(matches!(
+        rename_prompt(root.path(), &other.id, "   "),
+        Err(PromptError::EmptyName)
+    ));
+    assert_eq!(file_names(root.path()), vec!["Other.md", "Recap.md"]);
+}
+
+#[test]
+fn a_text_that_is_empty_or_too_long_is_refused() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text.").unwrap();
+    assert!(matches!(
+        set_prompt_text(root.path(), &made.id, "  \n"),
+        Err(PromptError::EmptyText)
+    ));
+    let long = "x".repeat(summarize::prompts::PROMPT_TEXT_LIMIT + 1);
+    let refused = set_prompt_text(root.path(), &made.id, &long).unwrap_err();
+    assert!(matches!(refused, PromptError::TextTooLong));
+    assert_eq!(
+        refused.to_string(),
+        "The prompt text is too long. Use 4,000 characters or fewer."
+    );
+    assert!(matches!(
+        create_prompt(root.path(), "Other", ""),
+        Err(PromptError::EmptyText)
+    ));
+}
+
+#[test]
+fn a_built_in_prompt_cannot_be_changed() {
+    let root = folder();
+    let id = summarize::prompts::TOPIC_SUMMARY_ID;
+    assert!(matches!(
+        rename_prompt(root.path(), id, "Mine"),
+        Err(PromptError::BuiltIn)
+    ));
+    assert!(matches!(
+        set_prompt_text(root.path(), id, "Mine"),
+        Err(PromptError::BuiltIn)
+    ));
+    assert!(matches!(
+        delete_prompt(root.path(), id),
+        Err(PromptError::BuiltIn)
+    ));
+}
+
+#[test]
+fn a_file_that_names_a_built_in_id_does_not_replace_the_built_in_prompt() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Mine.md",
+        &render_prompt_file(summarize::prompts::TOPIC_SUMMARY_ID, "Mine", "Text."),
+    );
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts.len(), 1);
+    assert_ne!(scan.prompts[0].id, summarize::prompts::TOPIC_SUMMARY_ID);
+}
+
+#[test]
+fn files_that_are_not_prompts_are_skipped() {
+    let root = folder();
+    create_prompt(root.path(), "Recap", "Text.").unwrap();
+    write_file(root.path(), "~$Recap.md", "Lock file.");
+    write_file(root.path(), ".Recap.md.0123456789abcdef.tmp", "Partial.");
+    write_file(root.path(), ".Recap.md", "Hidden.");
+    write_file(root.path(), "notes.txt", "Not markdown.");
+    write_file(
+        root.path(),
+        "Long.md",
+        &"x".repeat(summarize::prompts::PROMPT_TEXT_LIMIT + 1),
+    );
+    fs::create_dir(prompts_dir(root.path()).join("Folder.md")).unwrap();
+    let scan = scan(root.path());
+    let names: Vec<&str> = scan.prompts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["Recap"]);
+}
+
+#[test]
+fn a_file_with_no_text_is_not_a_prompt_and_is_not_deleted() {
+    let root = folder();
+    write_file(root.path(), "Empty.md", "");
+    write_file(
+        root.path(),
+        "Blank.md",
+        &render_prompt_file("4d1b7a4e-1111-4222-8333-444455556666", "Blank", "  \n "),
+    );
+    assert!(scan(root.path()).prompts.is_empty());
+    create_prompt(root.path(), "Recap", "Text.").unwrap();
+    assert_eq!(
+        file_names(root.path()),
+        vec!["Blank.md", "Empty.md", "Recap.md"]
+    );
+}
+
+#[test]
+fn a_file_with_no_closing_front_matter_line_is_all_text() {
+    let root = folder();
+    write_file(root.path(), "Odd.md", "---\nid: x\nText with no end line.");
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts.len(), 1);
+    assert_eq!(scan.prompts[0].name, "Odd");
+    assert_eq!(scan.prompts[0].text, "---\nid: x\nText with no end line.");
+}
+
+#[test]
+fn front_matter_with_crlf_lines_and_extra_keys_parses() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Win.md",
+        "---\r\nid: abc\r\nname: Windows prompt\r\ncolour: blue\r\n---\r\n\r\nBody.\r\n",
+    );
+    let scan = scan(root.path());
+    assert_eq!(scan.prompts[0].id, "abc");
+    assert_eq!(scan.prompts[0].name, "Windows prompt");
+    assert_eq!(scan.prompts[0].text, "Body.");
+    // A change keeps the key that this build does not know.
+    set_prompt_text(root.path(), "abc", "New body.").unwrap();
+    let contents = fs::read_to_string(prompts_dir(root.path()).join("Win.md")).unwrap();
+    assert!(contents.contains("colour: blue"), "{contents}");
+}
+
+#[test]
+fn a_folder_with_no_prompts_folder_has_no_prompts() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(scan(root.path()).prompts.is_empty());
+}
+
+#[test]
+fn a_folder_that_does_not_exist_has_no_prompts_and_refuses_changes() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("gone");
+    assert!(matches!(
+        scan_prompts(&root),
+        Err(Unavailable::FolderMissing)
+    ));
+    assert!(matches!(
+        create_prompt(&root, "Recap", "Text."),
+        Err(PromptError::NotAvailable(Unavailable::FolderMissing))
+    ));
+    assert!(!root.exists());
+}
+
+#[test]
+fn a_settings_file_that_does_not_parse_makes_the_prompts_read_only() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text.").unwrap();
+    fs::write(
+        root.path().join(".longhand").join("settings.json"),
+        "{\"sche",
+    )
+    .unwrap();
+    assert!(matches!(
+        set_prompt_text(root.path(), &made.id, "New."),
+        Err(PromptError::NotAvailable(Unavailable::DoesNotParse(_)))
+    ));
+    assert_eq!(scan(root.path()).get(&made.id).unwrap().text, "Text.");
+}
+
+#[test]
+fn a_rename_of_the_original_keeps_the_id_of_each_conflict_copy() {
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text from A.").unwrap();
+    write_file(
+        root.path(),
+        "Recap (conflict).md",
+        &render_prompt_file(&made.id, "Recap", "Text from B."),
+    );
+    let copy_id = scan(root.path())
+        .prompts
+        .into_iter()
+        .find(|p| p.id != made.id)
+        .unwrap()
+        .id;
+    // The copy shows as "Recap 2", so the original can keep "Recap".
+    rename_prompt(root.path(), &made.id, "recap").unwrap();
+    rename_prompt(root.path(), &made.id, "Weekly recap").unwrap();
+    let after = scan(root.path());
+    assert!(after.conflicted.is_empty());
+    assert_eq!(after.get(&made.id).unwrap().text, "Text from A.");
+    assert_eq!(after.get(&made.id).unwrap().name, "Weekly recap");
+    assert_eq!(after.get(&copy_id).unwrap().text, "Text from B.");
+}
