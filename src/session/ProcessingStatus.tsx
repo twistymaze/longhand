@@ -221,7 +221,7 @@ function StageLine({
   row,
   detail,
   fraction,
-  meter = null,
+  meter,
   sent,
 }: {
   row: StageRow;

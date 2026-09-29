@@ -45,16 +45,16 @@ pub fn snapshot(store: &SharedStore, session_id: &str) -> Result<Snapshot, Stage
         }
     }
     // A failed, cancelled, or queued stage has no active meter.
-    let processing = matches!(
-        lock(store).session(session_id)?.map(|record| record.state),
-        Some(session_core::SessionState::Processing { .. })
-    );
-    let speakers =
-        if processing && current == Some(Stage::Diarize) && !done.contains(&Stage::Diarize) {
-            speakers(store, session_id)?
-        } else {
-            None
-        };
+    let speakers = if current == Some(Stage::Diarize)
+        && !done.contains(&Stage::Diarize)
+        && matches!(
+            lock(store).session(session_id)?.map(|record| record.state),
+            Some(session_core::SessionState::Processing { .. })
+        ) {
+        speakers(store, session_id)?
+    } else {
+        None
+    };
     Ok(Snapshot {
         done,
         current,

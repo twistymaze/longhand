@@ -81,16 +81,15 @@ pub fn run(
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
         let file = analysis_path(&session_dir.join(proc_file(&segment.audio_file)));
-        if checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?.is_some()
-            && file.exists()
-        {
+        let done = checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?
+            .is_some()
+            && file.exists();
+        // Features saved during recording need no new analysis.
+        let counted = done || crate::live::features::saved(store, session_id, segment.index)?;
+        if counted {
             speakers.saved(segment_units(segment));
-        } else {
-            // Features saved during recording need no new analysis.
-            let counted = crate::live::features::saved(store, session_id, segment.index)?;
-            if counted {
-                speakers.saved(segment_units(segment));
-            }
+        }
+        if !done {
             pending.push((segment, key, file, counted));
         }
     }

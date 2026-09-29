@@ -150,7 +150,6 @@ html {
   /* The row's text says that work continues instead. */
   .progress-active::before,
   .progress-active::after {
-    animation: none;
     display: none;
   }
 }
