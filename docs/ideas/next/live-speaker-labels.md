@@ -4,6 +4,7 @@ description: "Join the live text to the live speaker turns during recording, so 
 area: transcript-and-summary
 added: 2026-09-29
 source: "Shorthand review, 2026-09-29 (docs/reference/reference-source-reviews.md)"
+plan: docs/plans/2026-09-29-1143-feat-live-speaker-rows-plan.md
 related: [live-transcript-view, alternative-diarization-architectures, system-audio-capture]
 ---
 
