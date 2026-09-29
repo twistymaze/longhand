@@ -20,7 +20,7 @@ Some settings belong to the person, not to the computer. Keep them in a hidden L
 One person with several computers shares one library ([one library across computers](../done/cross-machine-library.md)), but must set up the prompts and the models again on each computer, and keep them the same by hand.
 
 ## Notes / Current state
-- Today all settings are in one `settings.json` in the app data folder of each computer (`tauri-plugin-store`, `src-tauri/src/managers/settings.rs`). They are not in the SQLite store. The storage folder has hidden folders inside each note (`.longhand-results`), but no Longhand folder at its root.
+- Today all settings are in one `settings.json` in the app data folder of each computer (`tauri-plugin-store`, `src-tauri/src/managers/settings.rs`). They are not in the SQLite store. The storage folder already has a hidden `.longhand/` folder at its root (`LONGHAND_FOLDER` in `crates/library/src/scan.rs`). It holds the library marker `.longhand/library`, which tells an available storage folder from one whose sync client removed its files. The library scan skips `.longhand/`, so the shared settings can go there.
 - A first split of the current fields, for a brainstorm to confirm:
   - **Shared:** `summary_prompts`, `active_summary_prompt`, `endpoint_base_url`, `endpoint_model`, `context_limit_tokens`, `default_speaker_count`, `asr_model`, `live_transcript`, `speaker_source`, `speaker_processing_mode`, `recognition_language`, `system_audio_default`. Possibly `learned_context_limits`.
   - **Local:** `destination_roots`, `current_destination`, `microphone`, `interface_zoom_percent`, `hide_from_dock`, the download state (`pending_asr_model`, `pending_recognition`), and the API key, which stays in the Keychain of each computer.
