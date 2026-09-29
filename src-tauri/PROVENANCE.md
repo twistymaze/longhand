@@ -110,3 +110,21 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
 - Status: modified — two named shortcuts instead of a binding map; the recording chord toggles a session, with arming checked at the press and presses serialized; a chord needs a modifier; the two chords cannot match; one lock serializes every register, change, suspend and resume; the change decision is a pure function
+
+## `src/managers/updates/archive.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Source paths: `plugins/updater2/src/ext.rs` (`cache_update_bytes`, `get_cached_update_bytes`, `prune_updates_dir`)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — the archive is saved with its signature and checked again before each install; only the newest archive above the running version is kept
+
+## `src/managers/updates.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Source paths: `plugins/updater2/src/ext.rs` (`check`, `download`, `install_and_relaunch`: check, download and install as separate steps)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — the flow asks before it downloads, holds offers while busy, and installs at quit or at the next launch; the decisions are in `src/managers/updates/flow.rs`, which is Longhand's own

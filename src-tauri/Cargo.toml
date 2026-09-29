@@ -70,6 +70,12 @@ trash = "5"
 # The library watcher (managers/library.rs), as anarlog's notify plugin uses them.
 notify = "8"
 notify-debouncer-full = "0.5"
+# The update manager (managers/updates.rs). The archive check uses the
+# same signature crates as the updater plugin.
+tauri-plugin-updater = "2.12"
+semver = "1"
+base64 = "0.22"
+minisign-verify = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 diarize = { path = "../crates/diarize", features = ["coreml"] }

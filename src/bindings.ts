@@ -741,6 +741,24 @@ async buildInfo() : Promise<BuildInfo> {
     return await TAURI_INVOKE("build_info");
 },
 /**
+ * The current update state, which the window reads once at open.
+ */
+async updateState() : Promise<UpdateState> {
+    return await TAURI_INVOKE("update_state");
+},
+/**
+ * "Check for Updates…" (R11).
+ */
+async checkForUpdates() : Promise<void> {
+    await TAURI_INVOKE("check_for_updates");
+},
+/**
+ * A button in the update window, or a close of the window.
+ */
+async chooseUpdate(choice: Choice) : Promise<void> {
+    await TAURI_INVOKE("choose_update", { choice });
+},
+/**
  * Return the full licence list for the platform of this build.
  */
 async licenceText() : Promise<string> {
@@ -770,7 +788,8 @@ modelDownloadEvent: ModelDownloadEvent,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
-showSession: ShowSession
+showSession: ShowSession,
+updateStateChanged: UpdateStateChanged
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
@@ -783,7 +802,8 @@ modelDownloadEvent: "model-download-event",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
-showSession: "show-session"
+showSession: "show-session",
+updateStateChanged: "update-state-changed"
 })
 
 /** user-defined constants **/
@@ -842,6 +862,10 @@ position_ms: number;
  * jumping by the time spent away.
  */
 recorded_ms: number }
+/**
+ * A choice in the update window. A close of the window is `Close`.
+ */
+export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close"
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
@@ -1503,6 +1527,67 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * What the update window shows, and what the manager does in the
+ * background. A state with a view shows the update window.
+ */
+export type UpdateState = 
+/**
+ * Nothing to show.
+ */
+{ state: "idle" } | 
+/**
+ * A check runs. `manual` is true for "Check for Updates…".
+ */
+{ state: "checking"; manual: boolean } | 
+/**
+ * A newer build is offered (R13).
+ */
+{ state: "offered"; version: string; current: string } | 
+/**
+ * A newer build is found while busy. The offer shows when busy ends (R14).
+ */
+{ state: "held"; version: string } | 
+/**
+ * The result of a manual check: no newer build.
+ */
+{ state: "up_to_date"; current: string } | 
+/**
+ * The result of a manual check that failed.
+ */
+{ state: "check_failed"; error: string } | 
+/**
+ * The result of a manual check in a build with no track.
+ */
+{ state: "local_build" } | 
+/**
+ * The build downloads (R16). `total` is none when the server sends no size.
+ */
+{ state: "downloading"; version: string; downloaded: number; total: number | null } | 
+/**
+ * The download or the signature check failed (R18).
+ */
+{ state: "failed"; version: string; error: string } | 
+/**
+ * The build is downloaded while busy. The ready question shows when busy ends (R17).
+ */
+{ state: "ready_held"; version: string } | 
+/**
+ * The build is downloaded: "Relaunch Now" or "Later" (R17).
+ */
+{ state: "ready"; version: string } | 
+/**
+ * After "Later": the build installs at the next quit.
+ */
+{ state: "waiting_for_quit"; version: string } | 
+/**
+ * The build installs, and the app restarts.
+ */
+{ state: "installing"; version: string }
+/**
+ * The update state changed. The update window follows it.
+ */
+export type UpdateStateChanged = { state: UpdateState }
 /**
  * A part of a note that the sync has not delivered yet (R6).
  */

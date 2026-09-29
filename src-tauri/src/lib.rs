@@ -94,6 +94,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::window::close_settings_window,
             commands::window::open_licences,
             commands::build_info::build_info,
+            commands::updates::update_state,
+            commands::updates::check_for_updates,
+            commands::updates::choose_update,
             commands::licences::licence_text,
             commands::webview_log::log_from_webview,
         ])
@@ -110,6 +113,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::live::LivePartSaved,
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,
+            managers::updates::UpdateStateChanged,
         ])
         .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)
 }
@@ -138,7 +142,18 @@ fn take_instance_lock(
     let data = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data)?;
     let instance = uuid::Uuid::new_v4().to_string();
-    match lock::acquire(&data, &instance) {
+    // A restart after an update starts this copy before the old copy exits
+    // (tauri's `process::restart`). Wait up to 5 s for the old copy to
+    // release the lock.
+    let mut acquired = lock::acquire(&data, &instance);
+    for _ in 0..50 {
+        if !matches!(acquired, Acquired::HeldBy(_)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        acquired = lock::acquire(&data, &instance);
+    }
+    match acquired {
         Acquired::Exclusive(held) => {
             if let Some(previous) = &held.displaced {
                 log::info!(
@@ -196,6 +211,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Restore the main and Settings windows to their saved size and position.
         // The licences window keeps its centred default.
         .plugin(
@@ -205,7 +221,7 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&[window::LICENCES_WINDOW])
+                .with_denylist(&[window::LICENCES_WINDOW, window::UPDATE_WINDOW])
                 .build(),
         )
         // The About pane opens the acknowledged projects' pages in the
@@ -232,6 +248,11 @@ pub fn run() {
 
             let handle = app.handle().clone();
             let liveness = take_instance_lock(&handle)?;
+            // Before any manager starts: a saved update that no quit
+            // installed installs now, and the app restarts (KTD10).
+            if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+                managers::updates::install_at_launch(&handle);
+            }
             let secrets = managers::secrets::SecretsManager::new(&handle);
             let secret_store = secrets.store();
             app.manage(secrets);
@@ -261,6 +282,11 @@ pub fn run() {
                 power::PowerEvent::DidWake => {
                     let capture = std::sync::Arc::clone(&sleeping);
                     let app = sleep_app.clone();
+                    if let Some(updates) =
+                        app.try_state::<std::sync::Arc<managers::updates::UpdateManager>>()
+                    {
+                        updates.wake();
+                    }
                     std::thread::spawn(move || capture.did_wake(&app));
                 }
             });
@@ -280,7 +306,15 @@ pub fn run() {
                 liveness,
             ));
             processing.start();
+            let working = std::sync::Arc::clone(&processing);
             app.manage(processing);
+            // Busy means that a note records or processes (KTD7).
+            let recording = std::sync::Arc::clone(&capture);
+            let updates = managers::updates::UpdateManager::new(&handle, move || {
+                recording.is_capturing() || working.is_working()
+            });
+            updates.start();
+            app.manage(updates);
             // Resolving the microphone queries the audio HAL; keep it off the
             // launch path. A failure here is retried at the first press.
             let preparing = std::sync::Arc::clone(&capture);
@@ -337,6 +371,13 @@ pub fn run() {
                 app.try_state::<std::sync::Arc<managers::processing::ProcessingManager>>()
             {
                 processing.shutdown();
+            }
+            // After processing stops: install the build that the user
+            // asked for (KTD10).
+            if let Some(updates) =
+                app.try_state::<std::sync::Arc<managers::updates::UpdateManager>>()
+            {
+                updates.install_at_exit();
             }
         }
         #[cfg(target_os = "macos")]

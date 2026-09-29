@@ -7,5 +7,6 @@ pub mod processing;
 pub mod readiness;
 pub mod session;
 pub mod settings;
+pub mod updates;
 pub mod webview_log;
 pub mod window;

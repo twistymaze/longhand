@@ -2700,6 +2700,8 @@ impl CaptureManager {
 
 fn changed(app: &AppHandle, session_id: Option<&str>) {
     crate::tray::recording_changed(app, session_id);
+    // A recording start closes the update window at once (AE2).
+    crate::managers::updates::recording_changed(app);
     let _ = RecordingChanged {
         session_id: session_id.map(str::to_string),
     }

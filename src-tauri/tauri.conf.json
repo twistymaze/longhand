@@ -39,5 +39,10 @@
         "Frameworks/LonghandNeMo": "nemo-runtime/bin"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": ""
+    }
   }
 }
