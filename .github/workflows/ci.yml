@@ -370,7 +370,8 @@ jobs:
   # tag must not get these secrets.
   preview:
     name: Preview build
-    needs: checks
+    # A build publishes only when every check passes, the licence gate too (R1).
+    needs: [checks, deny]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-latest
     environment: preview

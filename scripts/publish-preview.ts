@@ -147,9 +147,19 @@ export async function publish(
   }
   log(`published ${args.version}`);
 
-  for (const old of releasesToPrune(await api.listReleases(), tag)) {
-    log(`deleting ${old.tag_name}${old.draft ? " (draft)" : ""}`);
-    await api.deleteRelease(old);
+  // The build is public now, so a failed delete does not fail the job. The
+  // next publish tries the delete again.
+  try {
+    for (const old of releasesToPrune(await api.listReleases(), tag)) {
+      log(`deleting ${old.tag_name}${old.draft ? " (draft)" : ""}`);
+      try {
+        await api.deleteRelease(old);
+      } catch (e) {
+        log(`could not delete ${old.tag_name}: ${e}`);
+      }
+    }
+  } catch (e) {
+    log(`could not list the releases to delete: ${e}`);
   }
   return "published";
 }

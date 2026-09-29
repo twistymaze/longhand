@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   buildManifest,
   checkCommitTime,
+  githubApi,
   isNewer,
   previewVersion,
   publish,
@@ -223,4 +224,101 @@ test("a publish deletes the published preview releases after the 20 newest", asy
   expect(state.releases).toHaveLength(20);
   expect(state.releases.some((r) => r.tag_name === "preview-20260928110000")).toBe(false);
   expect(state.releases.some((r) => r.tag_name === "preview-20260928143012")).toBe(true);
+});
+
+test("a failed delete after the publish does not fail the publish", async () => {
+  const { api } = fakeRepo("0.1.0-preview.20260928120000");
+  for (let i = 0; i < 21; i++) {
+    const release = await api.createDraft(`preview-202609281100${String(i).padStart(2, "0")}`, "");
+    await api.publishRelease(release);
+  }
+  api.deleteRelease = async () => {
+    throw new Error("503");
+  };
+  const lines: string[] = [];
+  expect(await publish(api, args("0.1.0-preview.20260928143012"), (l) => lines.push(l))).toBe("published");
+  expect(lines.some((l) => l.startsWith("could not delete preview-20260928110000"))).toBe(true);
+});
+
+/// Replaces fetch with `respond` while `run` runs, and records each request.
+async function withFetch(respond: (url: string) => Response, run: () => Promise<void>): Promise<string[]> {
+  const requests: string[] = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    requests.push(`${init?.method ?? "GET"} ${url}`);
+    return respond(url);
+  }) as typeof fetch;
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = real;
+  }
+  return requests;
+}
+
+const API = `https://api.github.com/repos/${REPO}`;
+
+test("the GitHub binding reads the manifest, and a missing manifest is null", async () => {
+  const content = Buffer.from(JSON.stringify({ version: "0.1.0-preview.20260928143012" })).toString("base64");
+  await withFetch(
+    () => Response.json({ content, sha: "abc" }),
+    async () => {
+      expect(await githubApi(REPO, "t").readManifest()).toEqual({
+        manifest: { version: "0.1.0-preview.20260928143012" } as Manifest,
+        sha: "abc",
+      });
+    },
+  );
+  await withFetch(
+    () => new Response("not found", { status: 404 }),
+    async () => {
+      expect(await githubApi(REPO, "t").readManifest()).toBeNull();
+    },
+  );
+});
+
+test("the GitHub binding reports a SHA conflict as a lost write and fails on other errors", async () => {
+  const manifest = { version: "0.1.0-preview.20260928143012" } as Manifest;
+  for (const status of [409, 422]) {
+    await withFetch(
+      () => new Response("conflict", { status }),
+      async () => {
+        expect(await githubApi(REPO, "t").writeManifest(manifest, "abc")).toBe(false);
+      },
+    );
+  }
+  await withFetch(
+    () => new Response("server error", { status: 500 }),
+    async () => {
+      await expect(githubApi(REPO, "t").writeManifest(manifest, "abc")).rejects.toThrow(/500/);
+    },
+  );
+});
+
+test("the GitHub binding reads every page of releases", async () => {
+  const page = (n: number) => Array.from({ length: n }, (_, i) => ({ id: i, tag_name: `preview-${i}`, draft: false }));
+  const requests = await withFetch(
+    (url) => Response.json(url.endsWith("page=1") ? page(100) : page(3)),
+    async () => {
+      expect(await githubApi(REPO, "t").listReleases()).toHaveLength(103);
+    },
+  );
+  expect(requests).toEqual([`GET ${API}/releases?per_page=100&page=1`, `GET ${API}/releases?per_page=100&page=2`]);
+});
+
+test("the GitHub binding deletes the tag of a published release only", async () => {
+  const requests = await withFetch(
+    () => new Response(null, { status: 204 }),
+    async () => {
+      const api = githubApi(REPO, "t");
+      await api.deleteRelease({ id: 7, tag_name: "preview-7", draft: true });
+      await api.deleteRelease({ id: 8, tag_name: "preview-8", draft: false });
+    },
+  );
+  expect(requests).toEqual([
+    `DELETE ${API}/releases/7`,
+    `DELETE ${API}/releases/8`,
+    `DELETE ${API}/git/refs/tags/preview-8`,
+  ]);
 });

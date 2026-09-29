@@ -78,6 +78,10 @@ pub enum CaptureError {
     AlreadyCapturing,
     #[error("nothing is recording")]
     NotCapturing,
+    #[error(
+        "Longhand is restarting to install an update. Start the note again when Longhand opens."
+    )]
+    Restarting,
     #[error("microphone: {0}")]
     Audio(#[from] audio::Error),
     #[error(transparent)]
@@ -520,6 +524,9 @@ struct Inner {
     /// The last system audio permission check while system audio is on
     /// (KTD12). `None` while it is off.
     permission: Option<Permission>,
+    /// True after the update manager claimed a restart. No recording
+    /// starts after that, because the app restarts (KD6).
+    restart_claimed: bool,
 }
 
 /// What [`CaptureManager::status`] reads under the inner lock.
@@ -1005,6 +1012,18 @@ impl CaptureManager {
         inner.active.is_some() || inner.recovering.is_some()
     }
 
+    /// Claim a restart for an update (KD6). The claim fails while a note
+    /// records. The check and the claim use the lock that a start holds, so
+    /// a start cannot come between them.
+    pub fn claim_restart(&self) -> bool {
+        let mut inner = self.inner();
+        if inner.active.is_some() || inner.recovering.is_some() {
+            return false;
+        }
+        inner.restart_claimed = true;
+        true
+    }
+
     /// Start a new session recording (R1, R6c). A session already recording
     /// is closed first and then stopped and queued by the store.
     pub fn start_session(
@@ -1023,6 +1042,9 @@ impl CaptureManager {
         config: Option<models::recognition::RecognitionConfig>,
     ) -> Result<String, CaptureError> {
         let mut inner = self.inner();
+        if inner.restart_claimed {
+            return Err(CaptureError::Restarting);
+        }
         let settings = settings::get_settings(app);
         let config = config.unwrap_or_else(|| {
             let mut config = settings.recognition_config();
@@ -1243,6 +1265,9 @@ impl CaptureManager {
         let mut inner = self.inner();
         if inner.active.is_some() || inner.recovering.is_some() {
             return Err(CaptureError::AlreadyCapturing);
+        }
+        if inner.restart_claimed {
+            return Err(CaptureError::Restarting);
         }
         let space_ok = recorder::storage::check(
             recorder::storage::available_space(&self.working_root),

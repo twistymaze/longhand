@@ -167,16 +167,33 @@ impl Flow {
             | UpdateState::Ready { version }
             | UpdateState::WaitingForQuit { version }
             | UpdateState::Installing { version } => Some(version),
+            // A check and its result keep the build that waits for a quit.
+            UpdateState::Checking { .. }
+            | UpdateState::UpToDate { .. }
+            | UpdateState::CheckFailed { .. } => match &self.before_check {
+                UpdateState::WaitingForQuit { version } => Some(version),
+                _ => None,
+            },
             _ => None,
         }
     }
 
-    /// Idle, or the ready build that waits for a quit.
+    /// Idle, or the ready build that waits for a quit. A check and its
+    /// result return to the state before the check.
     fn rest(&self) -> UpdateState {
         match &self.state {
             UpdateState::WaitingForQuit { .. } => self.state.clone(),
+            UpdateState::Checking { .. }
+            | UpdateState::UpToDate { .. }
+            | UpdateState::CheckFailed { .. } => self.before_check.clone(),
             _ => UpdateState::Idle,
         }
+    }
+
+    /// Go to the rest state, and forget the state before the check.
+    fn settle(&mut self) {
+        self.state = self.rest();
+        self.before_check = UpdateState::Idle;
     }
 
     fn active(until: Option<i64>, now: i64) -> bool {
@@ -261,7 +278,12 @@ impl Flow {
         let UpdateState::Checking { manual } = self.state else {
             return vec![];
         };
-        let rest = std::mem::replace(&mut self.before_check, UpdateState::Idle);
+        // A manual result without a build keeps `before_check` until the
+        // window closes.
+        let rest = match (&result, manual) {
+            (Ok(None) | Err(_), true) => self.before_check.clone(),
+            _ => std::mem::replace(&mut self.before_check, UpdateState::Idle),
+        };
         match result {
             Ok(Some(version)) if self.saved.as_deref() == Some(version.as_str()) => {
                 // The build is already downloaded and verified.
@@ -306,16 +328,21 @@ impl Flow {
                         version: version.clone(),
                     }
                 }
-                UpdateState::Ready { version } => {
+                // An install that could not claim the restart waits too.
+                UpdateState::Ready { version } | UpdateState::Installing { version } => {
                     self.state = UpdateState::ReadyHeld {
                         version: version.clone(),
                     }
                 }
                 UpdateState::Downloading { .. } => self.download_hidden = true,
+                // The check continues, and its result is held or shows nothing.
+                UpdateState::Checking { manual: true } => {
+                    self.state = UpdateState::Checking { manual: false }
+                }
                 UpdateState::UpToDate { .. }
                 | UpdateState::CheckFailed { .. }
                 | UpdateState::LocalBuild
-                | UpdateState::Failed { .. } => self.state = self.rest(),
+                | UpdateState::Failed { .. } => self.settle(),
                 _ => {}
             }
         } else {
@@ -381,12 +408,9 @@ impl Flow {
                 | UpdateState::Failed { .. }
                 | UpdateState::Checking { manual: true },
             ) => {
-                if let UpdateState::Checking { .. } = self.state {
-                    // The check continues; its result shows nothing.
-                    self.state = UpdateState::Checking { manual: false };
-                } else {
-                    self.state = self.rest();
-                }
+                // After a cancel, the state is not Checking, so the result
+                // of the check has no effect.
+                self.settle();
                 vec![]
             }
             _ => vec![],
@@ -827,6 +851,109 @@ mod tests {
         assert_eq!(
             f.state(),
             &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+    }
+
+    /// A flow where the build NEW waits for a quit after "Later".
+    fn waiting_for_quit() -> Flow {
+        let mut f = ready();
+        f.step(Input::Choice(Choice::Later), facts(NINE));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+        f
+    }
+
+    #[test]
+    fn a_manual_check_that_fails_or_finds_nothing_keeps_the_install_at_quit() {
+        for result in [Err("offline".to_string()), Ok(None)] {
+            let mut f = waiting_for_quit();
+            f.step(Input::ManualCheck, facts(NINE));
+            assert_eq!(f.install_at_quit(), Some(NEW));
+            f.step(Input::Checked(result), facts(NINE));
+            assert!(f.window_visible());
+            assert_eq!(f.install_at_quit(), Some(NEW));
+            f.step(Input::Choice(Choice::Close), facts(NINE));
+            assert_eq!(
+                f.state(),
+                &UpdateState::WaitingForQuit {
+                    version: NEW.into()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn an_automatic_check_keeps_the_install_at_quit_while_it_runs() {
+        let mut f = waiting_for_quit();
+        f.step(Input::Timer, facts(NINE + 25 * HOUR));
+        assert_eq!(f.state(), &UpdateState::Checking { manual: false });
+        assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn a_cancelled_manual_check_shows_nothing_when_its_result_arrives() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
+        assert!(!f.window_visible());
+    }
+
+    #[test]
+    fn a_recording_start_closes_the_manual_check_window_and_holds_its_result() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert!(!f.window_visible());
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Held {
+                version: NEW.into()
+            }
+        );
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW));
+    }
+
+    #[test]
+    fn a_recording_that_starts_before_the_restart_holds_the_install() {
+        let mut f = ready();
+        assert_eq!(
+            f.step(Input::Choice(Choice::RelaunchNow), facts(NINE)),
+            vec![Effect::Restart]
+        );
+        // The restart claim failed, and the recording start arrives.
+        f.step(Input::Busy(true), busy(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::ReadyHeld {
+                version: NEW.into()
+            }
+        );
+        assert_eq!(f.install_at_quit(), Some(NEW));
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_recording_start_during_a_manual_check_shows_no_error_later() {
+        let mut f = waiting_for_quit();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        f.step(Input::Checked(Err("offline".into())), busy(NINE));
+        assert!(!f.window_visible());
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
                 version: NEW.into()
             }
         );

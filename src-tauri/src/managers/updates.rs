@@ -23,6 +23,7 @@ use tauri_specta::Event as _;
 use tokio::sync::mpsc;
 
 use crate::commands::build_info::{self, Track};
+use crate::managers::capture::CaptureManager;
 pub use flow::{Choice, UpdateState};
 use flow::{Delays, Effect, Facts, Flow, Input};
 
@@ -288,8 +289,18 @@ impl UpdateManager {
                 Effect::Download { version } => self.start_download(version),
                 Effect::SaveDelays => write_delays(&self.app, &delays),
                 // The `RunEvent::Exit` arm stops processing and installs
-                // (`install_at_exit`), then tauri starts the new build.
-                Effect::Restart => self.app.request_restart(),
+                // (`install_at_exit`), then tauri starts the new build. A
+                // recording can start after the busy check above, so the
+                // claim checks again. If the claim fails, the busy message
+                // from the recording start holds the build (KD6).
+                Effect::Restart => {
+                    if self.app.state::<Arc<CaptureManager>>().claim_restart() {
+                        self.app.request_restart();
+                    } else {
+                        log::info!("updates: a recording started, so the restart waits");
+                        self.send(Message::Busy);
+                    }
+                }
             }
         }
     }
