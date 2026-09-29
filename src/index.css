@@ -110,9 +110,34 @@ html {
   transition: width 240ms linear;
 }
 
+/* Work that the fill does not show: a soft highlight crosses the track.
+   It is quiet, and it shows only after Stop, never while recording. */
+.progress-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-accent) 45%, transparent), transparent);
+  animation: progress-sweep 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .progress-fill {
     transition: none;
+  }
+  /* The row's text says that work continues instead. */
+  .progress-active::after {
+    animation: none;
+    display: none;
   }
 }
 

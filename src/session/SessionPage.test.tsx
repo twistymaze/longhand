@@ -68,6 +68,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   current: null,
   windows_done: null,
   windows_total: null,
+  speakers: null,
   failed_stage: null,
   message: null,
   summary_problem: null,
@@ -114,7 +115,7 @@ const recordingCapture = (id: string, over: Partial<Capture> = {}) =>
   });
 
 function sessionsOf(entries: SessionEntry[]): Sessions {
-  return { entries, stages: {}, live: {}, version: {}, synced: {}, removed: {}, refresh: mock(async () => {}) };
+  return { entries, stages: {}, live: {}, speakers: {}, version: {}, synced: {}, removed: {}, refresh: mock(async () => {}) };
 }
 
 function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Record<string, CommandHandler> = {}) {
@@ -625,12 +626,85 @@ describe("SessionPage", () => {
     renderPage({ id: "p", sessions: sessionsOf([e]) });
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText("Transcribing")).toBeTruthy();
-    expect(screen.getByText("Telling speakers apart")).toBeTruthy();
+    expect(screen.getByText("Finding speakers")).toBeTruthy();
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
 
     await userEvent.setup().click(tab("My Notes"));
     const editor = await screen.findByRole("textbox", { name: "My Notes" });
     expect(editor.getAttribute("contenteditable")).toBe("true");
+  });
+
+  describe("the speaker meter", () => {
+    const running = { done: ["assemble"], current: "diarize" };
+    const progress = (attempt: string, percent: number | null, measuring: boolean) => ({ attempt, percent, measuring });
+    const meter = () => screen.getByRole("progressbar", { name: "Finding speakers" });
+
+    test("Finding speakers comes before Transcribing, with the saved share", async () => {
+      // Covers AE1.
+      const e = entry("p", { state: "processing", stage: "diarize" });
+      mockPage(e, { ...running, speakers: progress("a", 40, true) });
+      renderPage({ id: "p", sessions: sessionsOf([e]) });
+      const speakers = await screen.findByText("Finding speakers");
+      const transcribing = screen.getByText("Transcribing");
+      expect(speakers.compareDocumentPosition(transcribing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getByText("40%")).toBeTruthy();
+      expect(meter().getAttribute("aria-valuenow")).toBe("40");
+      // Until a live event arrives, the saved value shows as active work.
+      expect(meter().getAttribute("aria-valuetext")).toBe("40%, still working");
+    });
+
+    test("live events advance the whole-note value without a reset", async () => {
+      // Covers AE2.
+      const e = entry("p", { state: "processing", stage: "diarize" });
+      mockPage(e, { ...running, speakers: progress("a", 40, true) });
+      const page = renderPage({ id: "p", sessions: sessionsOf([e]) });
+      await screen.findByText("40%");
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), speakers: { p: progress("a", 62, true) } }));
+      expect(screen.getByText("62%")).toBeTruthy();
+      expect(meter().getAttribute("aria-valuetext")).toBe("62%");
+      expect(meter().className).not.toContain("progress-active");
+      // A percent that does not change for a while shows activity too (R4).
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 3100)));
+      expect(meter().getAttribute("aria-valuetext")).toBe("62%, still working");
+      expect(meter().className).toContain("progress-active");
+      // An event below the saved value does not move it back.
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), speakers: { p: progress("a", 12, true) } }));
+      expect(screen.getByText("40%")).toBeTruthy();
+    });
+
+    test("work with no fraction shows activity, not a new number", async () => {
+      // Covers AE3.
+      const e = entry("p", { state: "processing", stage: "diarize" });
+      mockPage(e, { ...running, speakers: progress("a", null, false) });
+      const page = renderPage({ id: "p", sessions: sessionsOf([e]) });
+      await screen.findByText("Finding speakers");
+      expect(meter().getAttribute("aria-valuenow")).toBeNull();
+      expect(meter().getAttribute("aria-valuetext")).toBe("In progress");
+      expect(meter().className).toContain("progress-active");
+      // The reduced-motion text is in the row.
+      expect(screen.getByText("Still working")).toBeTruthy();
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), speakers: { p: progress("a", 99, false) } }));
+      expect(screen.getByText("99%")).toBeTruthy();
+      expect(meter().className).toContain("progress-active");
+    });
+
+    test("the stage never shows 100%, and a done stage removes the meter", async () => {
+      // Covers AE4.
+      const e = entry("p", { state: "processing", stage: "transcribe" });
+      mockPage(e, { done: ["assemble", "diarize"], current: "transcribe", speakers: null });
+      renderPage({ id: "p", sessions: { ...sessionsOf([e]), speakers: { p: progress("a", 99, false) } } });
+      await screen.findByText("Transcribing");
+      expect(screen.queryByRole("progressbar", { name: "Finding speakers" })).toBeNull();
+      expect(screen.queryByText("100%")).toBeNull();
+    });
+
+    test("a failed stage clears the meter of its attempt", async () => {
+      const e = entry("f", { state: "processing_failed", stage: "diarize" });
+      mockPage(e, { ...running, failed_stage: "diarize", message: "boom", speakers: null });
+      renderPage({ id: "f", sessions: { ...sessionsOf([e]), speakers: { f: progress("a", 50, true) } } });
+      await screen.findByText("Retry");
+      expect(screen.queryByRole("progressbar", { name: "Finding speakers" })).toBeNull();
+    });
   });
 
   test("a failed session shows Retry on the page", async () => {

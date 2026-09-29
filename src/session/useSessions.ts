@@ -4,7 +4,7 @@
 // session again when that session's `version` moves.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type SessionEntry } from "../bindings";
+import { commands, events, type SessionEntry, type SpeakerProgressView } from "../bindings";
 
 export type Live = { stage: string; segment: number; done: number; total: number };
 
@@ -14,6 +14,8 @@ export type Sessions = {
   stages: Record<string, string>;
   /// The latest progress event per session.
   live: Record<string, Live>;
+  /// The latest speaker progress event per session.
+  speakers: Record<string, SpeakerProgressView>;
   version: Record<string, number>;
   /// Moves when a library change names the session: a sync changed its
   /// folder (KTD10). The notes tab reads the notes again on it.
@@ -42,6 +44,7 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
   const [entries, setEntries] = useState<SessionEntry[]>([]);
   const [stages, setStages] = useState<Record<string, string>>({});
   const [live, setLive] = useState<Record<string, Live>>({});
+  const [speakers, setSpeakers] = useState<Record<string, SpeakerProgressView>>({});
   const [version, setVersion] = useState<Record<string, number>>({});
   const [synced, setSynced] = useState<Record<string, number>>({});
   const [removed, setRemoved] = useState<Record<string, true>>({});
@@ -82,13 +85,21 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
           if (performance.now() - (lastBump.current[id] ?? 0) >= REREAD_MS) bump(id);
           return;
         }
+        if (update.kind === "speaker_progress") {
+          const { kind: _, ...progress } = update;
+          setSpeakers((s) => ({ ...s, [id]: progress }));
+          if (performance.now() - (lastBump.current[id] ?? 0) >= REREAD_MS) bump(id);
+          return;
+        }
         if (update.kind === "stage_started") {
           setStages((s) => ({ ...s, [id]: update.stage }));
-          setLive((l) => {
+          const forget = <T,>(l: Record<string, T>) => {
             const next = { ...l };
             delete next[id];
             return next;
-          });
+          };
+          setLive(forget);
+          setSpeakers(forget);
         }
         bump(id);
         void refresh();
@@ -115,5 +126,5 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
     };
   }, [refresh, bump]);
 
-  return { entries, loaded, loadError, listRevision, getListRevision, stages, live, version, synced, removed, refresh };
+  return { entries, loaded, loadError, listRevision, getListRevision, stages, live, speakers, version, synced, removed, refresh };
 }

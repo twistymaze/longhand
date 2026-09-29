@@ -2,12 +2,21 @@
 // Summary and Transcript tabs: each stage with its status, what the summary
 // stage sends and to whom, and the one action each exception needs. The
 // page reads the detail again whenever the session moves (AE4). The only
-// motion is a progress bar that fills. Regenerate Summary on a saved note
+// motion is a progress bar that fills, and a quiet sweep on the speaker bar
+// while its work cannot be measured. Regenerate Summary on a saved note
 // shows the summarize stage in the same form.
 
-import { useState } from "react";
-import { commands, type SessionDetail } from "../bindings";
-import { type StageRow, sentence, stageLabel, stageRows, stoppedAt } from "../processing/describe";
+import { useEffect, useState } from "react";
+import { commands, type SessionDetail, type SpeakerProgressView } from "../bindings";
+import {
+  type SpeakerMeter,
+  type StageRow,
+  sentence,
+  speakerMeter,
+  stageLabel,
+  stageRows,
+  stoppedAt,
+} from "../processing/describe";
 import { useFolderChange } from "../settings/OldNotesDialog";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
 import type { Live } from "./useSessions";
@@ -34,12 +43,49 @@ function StageIcon({ status }: { status: StageRow["status"] }) {
 }
 
 function progressOf(row: StageRow, detail: SessionDetail, live: Live | undefined): number | null {
-  if (row.status !== "running") return null;
+  if (row.status !== "running" || row.stage === "diarize") return null;
   if (row.stage === "transcribe" && detail.windows_total) {
     return (detail.windows_done ?? 0) / detail.windows_total;
   }
   if (live && live.stage === row.stage && live.total > 0) return live.done / live.total;
   return null;
+}
+
+/// A measured percent that has not changed for this long shows activity
+/// too, so a long step does not look stopped (R4).
+const UNCHANGED_MS = 3000;
+
+/// True when `percent` has not changed for `UNCHANGED_MS`.
+function useUnchanged(percent: number | null): boolean {
+  const [unchanged, setUnchanged] = useState(false);
+  useEffect(() => {
+    setUnchanged(false);
+    const timer = setTimeout(() => setUnchanged(true), UNCHANGED_MS);
+    return () => clearTimeout(timer);
+  }, [percent]);
+  return unchanged;
+}
+
+/// The speaker stage's percent and bar. The percent shows measured work
+/// only; activity shows work that it cannot measure (KTD3, KTD5).
+function SpeakerProgress({ meter }: { meter: SpeakerMeter }) {
+  const unchanged = useUnchanged(meter.percent);
+  const active = !meter.measuring || meter.percent === null || unchanged;
+  const label = stageLabel("diarize");
+  const valueText =
+    meter.percent === null ? "In progress" : active ? `${meter.percent}%, still working` : `${meter.percent}%`;
+  return (
+    <>
+      {active && <span className="hidden text-label-secondary motion-reduce:inline">Still working</span>}
+      {meter.percent !== null && <span className="text-label-secondary tabular-nums">{meter.percent}%</span>}
+      <ProgressBar
+        fraction={meter.percent === null ? null : meter.percent / 100}
+        label={label}
+        valueText={valueText}
+        active={active}
+      />
+    </>
+  );
 }
 
 function SummarizeDetail({ detail, sent }: { detail: SessionDetail; sent: boolean }) {
@@ -134,11 +180,14 @@ function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => vo
 export function ProcessingStatus({
   detail,
   live,
+  speakers,
   waitsForRecording,
   onChanged,
 }: {
   detail: SessionDetail;
   live: Live | undefined;
+  /// The latest speaker progress event.
+  speakers?: SpeakerProgressView;
   /// Another session records, and processing waits for it to stop.
   waitsForRecording: boolean;
   onChanged: () => void;
@@ -158,6 +207,7 @@ export function ProcessingStatus({
             row={row}
             detail={detail}
             fraction={progressOf(row, detail, live)}
+            meter={row.stage === "diarize" && row.status === "running" ? speakerMeter(detail, speakers) : null}
             sent={detail.done.includes("summarize")}
           />
         ))}
@@ -171,11 +221,13 @@ function StageLine({
   row,
   detail,
   fraction,
+  meter = null,
   sent,
 }: {
   row: StageRow;
   detail: SessionDetail;
   fraction: number | null;
+  meter?: SpeakerMeter | null;
   sent: boolean;
 }) {
   return (
@@ -194,6 +246,7 @@ function StageLine({
         ) : undefined
       }
     >
+      {meter && <SpeakerProgress meter={meter} />}
       {fraction !== null && (
         <>
           <span className="text-label-secondary tabular-nums">{Math.round(fraction * 100)}%</span>

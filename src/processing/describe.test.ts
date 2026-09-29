@@ -6,6 +6,7 @@ import {
   missingPreconditions,
   sentence,
   sessionTitle,
+  speakerMeter,
   stageRows,
   stoppedAt,
 } from "./describe";
@@ -16,6 +17,7 @@ const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   current: null,
   windows_done: null,
   windows_total: null,
+  speakers: null,
   failed_stage: null,
   message: null,
   summary_problem: null,
@@ -54,7 +56,47 @@ describe("stage rows", () => {
   });
 });
 
+describe("speaker meter", () => {
+  const running = (speakers: SessionDetail["speakers"]) => detail({ done: ["assemble"], current: "diarize", speakers });
+  const progress = (attempt: string, percent: number | null, measuring: boolean) => ({ attempt, percent, measuring });
+
+  test("a view opened mid-stage shows the saved share as active work until an event arrives", () => {
+    expect(speakerMeter(running(progress("a", 40, true)), undefined)).toEqual({ percent: 40, measuring: false });
+  });
+
+  test("a newer event of the same attempt advances the value", () => {
+    expect(speakerMeter(running(progress("a", 40, true)), progress("a", 55, true))).toEqual({ percent: 55, measuring: true });
+  });
+
+  test("an older event does not move the value back", () => {
+    expect(speakerMeter(running(progress("a", 60, true)), progress("a", 55, true))).toEqual({ percent: 60, measuring: false });
+  });
+
+  test("an event of an earlier attempt does not count", () => {
+    expect(speakerMeter(running(progress("b", 10, true)), progress("a", 80, true))).toEqual({ percent: 10, measuring: false });
+  });
+
+  test("work with no fraction keeps the value and shows activity", () => {
+    expect(speakerMeter(running(progress("a", 99, true)), progress("a", 99, false))).toEqual({ percent: 99, measuring: false });
+    expect(speakerMeter(running(null), progress("a", null, false))).toEqual({ percent: null, measuring: false });
+  });
+
+  test("a done, failed, or other stage has no meter", () => {
+    expect(speakerMeter(detail({ done: ["assemble", "diarize"], current: "diarize" }), progress("a", 99, false))).toBeNull();
+    expect(speakerMeter(detail({ current: "transcribe" }), undefined)).toBeNull();
+    const failed = running(progress("a", 50, true));
+    failed.entry = { ...failed.entry, state: "processing_failed" };
+    expect(speakerMeter(failed, progress("a", 50, true))).toBeNull();
+  });
+});
+
 describe("wording", () => {
+  test("the speaker stage finds speakers and does not name people", () => {
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "diarize", title: null, found_speakers: null, storage_unavailable: false };
+    expect(entryStatus(entry, null)).toBe("Finding speakers");
+    expect(stoppedAt("diarize")).toBe("Stopped while finding speakers");
+  });
+
   test("a blocked session says what it needs, not that it failed", () => {
     const status = entryStatus({ id: "s", started: "", duration_ms: 0, state: "blocked", stage: null, title: null, found_speakers: null, storage_unavailable: false }, null);
     expect(status).toBe("Needs the keychain");

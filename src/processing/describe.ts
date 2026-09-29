@@ -1,14 +1,14 @@
 // Plain-language wording for a session's lifecycle and stages, shared by the
 // Home and the processing view so each state reads the same everywhere.
 
-import type { Readiness, SessionDetail, SessionEntry } from "../bindings";
+import type { Readiness, SessionDetail, SessionEntry, SpeakerProgressView } from "../bindings";
 
 export const STAGES = ["assemble", "diarize", "transcribe", "join", "verify", "summarize", "save"] as const;
 export type StageName = (typeof STAGES)[number];
 
 const stageLabels: Record<StageName, string> = {
   assemble: "Preparing the audio",
-  diarize: "Telling speakers apart",
+  diarize: "Finding speakers",
   transcribe: "Transcribing",
   join: "Assembling the transcript",
   verify: "Checking the transcript",
@@ -99,6 +99,25 @@ export function stageRows(detail: SessionDetail): StageRow[] {
             ? "running"
             : "pending",
   }));
+}
+
+/// The speaker stage's meter: the measured whole-note percent, if any, and
+/// whether work runs that the percent does not show.
+export type SpeakerMeter = { percent: number | null; measuring: boolean };
+
+/// The speaker meter from the saved progress and the latest event. An event
+/// of another attempt does not count. The percent does not go back, and it
+/// reaches 100 only when the stage is done, which removes the meter (R5).
+export function speakerMeter(detail: SessionDetail, live: SpeakerProgressView | undefined): SpeakerMeter | null {
+  const running = detail.entry.state === "processing" && detail.current === "diarize" && !detail.done.includes("diarize");
+  if (!running) return null;
+  const saved = detail.speakers;
+  const current = live && (!saved || live.attempt === saved.attempt) ? live : undefined;
+  const percents = [saved?.percent, current?.percent].filter((p): p is number => p != null);
+  const percent = percents.length > 0 ? Math.min(99, Math.max(...percents)) : null;
+  // The newest source that reached this percent says whether it is measured.
+  const measuring = current && (current.percent ?? -1) >= (saved?.percent ?? -1) ? current.measuring : false;
+  return { percent, measuring };
 }
 
 /// "14:05": the local clock time of `iso`.

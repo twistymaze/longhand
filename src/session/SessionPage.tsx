@@ -424,6 +424,7 @@ export function SessionPage({
       <ProcessingStatus
         detail={detail}
         live={live}
+        speakers={sessions.speakers[id]}
         waitsForRecording={capture.status?.recording ?? false}
         onChanged={changed}
       />
