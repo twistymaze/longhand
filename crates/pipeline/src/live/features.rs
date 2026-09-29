@@ -178,6 +178,7 @@ fn window(
 /// Verify partial windows against the processing PCM and compute missing windows.
 /// Initial mono Assemble writes this PCM from capture, before Opus encoding.
 /// An archive decode or changed preprocessing must pass each PCM digest again.
+/// `progress` receives the fraction of the segment's samples that is done.
 pub fn complete(
     store: &SharedStore,
     id: &str,
@@ -185,6 +186,7 @@ pub fn complete(
     segment: &session_core::Segment,
     analyzer: &mut dyn SpeakerAnalyzer,
     control: &dyn crate::Control,
+    progress: &mut dyn FnMut(f32),
 ) -> Result<Option<Analysis>, StageError> {
     use diarize::AudioSource;
     if checkpoint::get::<Window>(store, id, Stage::Diarize, &window_key(segment.index, 0))?
@@ -236,6 +238,7 @@ pub fn complete(
         }
         step = saved.step;
         windows += 1;
+        progress((start + pcm.len()) as f32 / total as f32);
         if start + pcm.len() == total {
             break;
         }
@@ -253,6 +256,12 @@ pub fn complete(
         },
     )?;
     restore(store, id, dir, segment.index)
+}
+
+/// True when the features of `segment` are complete and [`restore`] reads
+/// them with no new analysis.
+pub fn saved(store: &SharedStore, id: &str, segment: u32) -> Result<bool, StageError> {
+    Ok(checkpoint::get::<Index>(store, id, Stage::Diarize, &key(segment))?.is_some())
 }
 
 /// Read the persisted features for final clustering; no native inference.

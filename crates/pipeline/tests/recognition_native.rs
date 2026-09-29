@@ -176,6 +176,8 @@ fn production_route_recording_excerpt() {
     )
     .unwrap();
     let started = std::time::Instant::now();
+    // Each speaker report with the seconds since the start.
+    let mut speaker_reports: Vec<(f64, pipeline::progress::SpeakerWork)> = Vec::new();
     let graph = pipeline::recognition::TaskGraph::resolve(&spec).unwrap();
     for stage in graph.stages.into_iter().filter(|s| {
         matches!(
@@ -186,7 +188,7 @@ fn production_route_recording_excerpt() {
                 | session_core::Stage::Verify
         )
     }) {
-        pipeline::recognition::execute(
+        pipeline::recognition::execute_with_speakers(
             &store,
             "route-test",
             &dir,
@@ -195,6 +197,7 @@ fn production_route_recording_excerpt() {
             &provider,
             stage,
             &pipeline::Unattended,
+            &mut |work| speaker_reports.push((started.elapsed().as_secs_f64(), work)),
             &mut |_| {},
         )
         .unwrap_or_else(|e| {
@@ -266,6 +269,37 @@ fn production_route_recording_excerpt() {
         started.elapsed().as_secs_f64(),
         result.coverage_limitations
     );
+    if !speaker_reports.is_empty() {
+        let measured: Vec<(f64, u8)> = speaker_reports
+            .iter()
+            .filter(|(_, work)| work.measuring)
+            .filter_map(|(at, work)| work.percent.map(|p| (*at, p)))
+            .collect();
+        let percents: Vec<u8> = speaker_reports
+            .iter()
+            .filter_map(|(_, work)| work.percent)
+            .collect();
+        // The longest time with no new measured value, to the last report.
+        let mut longest = 0.0f64;
+        let mut previous = speaker_reports[0].0;
+        for (at, _) in &measured {
+            longest = longest.max(at - previous);
+            previous = *at;
+        }
+        let last = speaker_reports.last().unwrap();
+        println!(
+            "speaker_reports={} measured_reports={} first_measured_s={:.1} longest_unmeasured_s={:.1} final_unmeasured_s={:.1} monotone={} max_percent={:?} last={:?}",
+            speaker_reports.len(),
+            measured.len(),
+            measured.first().map_or(-1.0, |(at, _)| *at),
+            longest,
+            last.0 - previous,
+            percents.windows(2).all(|pair| pair[0] <= pair[1]),
+            percents.iter().max(),
+            last.1
+        );
+        assert!(percents.iter().all(|p| *p < 100), "{percents:?}");
+    }
     if let Ok(path) = std::env::var("LONGHAND_ROUTE_OUTPUT") {
         std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     }
@@ -767,7 +801,7 @@ fn live_pyannote_features_are_reused_by_final_clustering() {
         None,
         &mut counted,
         &pipeline::Unattended,
-        &mut |_, _| {},
+        &mut pipeline::progress::SpeakerMeter::new(&mut |_| {}),
     )
     .unwrap();
     assert_eq!(

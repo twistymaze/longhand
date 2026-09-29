@@ -43,6 +43,8 @@ pub enum ProcessingStep {
         done: u32,
         total: u32,
     },
+    /// The speaker stage's progress over the whole note (KTD1).
+    SpeakerProgress(SpeakerProgressView),
     StageFailed {
         stage: String,
         message: String,
@@ -155,6 +157,29 @@ impl MoveProgress {
     }
 }
 
+/// The speaker stage's progress in one processing attempt. Only the stage's
+/// completion means 100%.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type)]
+pub struct SpeakerProgressView {
+    /// A view keeps the value of the current attempt only.
+    pub attempt: String,
+    /// The measured share of the whole note, 0 to 99. `None` before the
+    /// first measurement.
+    pub percent: Option<u32>,
+    /// False while the stage does work that it cannot measure.
+    pub measuring: bool,
+}
+
+impl From<pipeline::progress::SpeakerProgress> for SpeakerProgressView {
+    fn from(progress: pipeline::progress::SpeakerProgress) -> Self {
+        Self {
+            attempt: progress.attempt,
+            percent: progress.work.percent.map(u32::from),
+            measuring: progress.work.measuring,
+        }
+    }
+}
+
 /// The Move paused (R10).
 #[derive(Serialize, Clone, Debug, PartialEq, Eq, Type, tauri_specta::Event)]
 pub struct MovePaused {
@@ -224,6 +249,10 @@ impl From<RunnerEvent> for ProcessingUpdate {
                     total: total as u32,
                 },
             ),
+            RunnerEvent::SpeakerProgress {
+                session_id,
+                progress,
+            } => (session_id, ProcessingStep::SpeakerProgress(progress.into())),
             RunnerEvent::StageFailed {
                 session_id,
                 stage,
@@ -1265,6 +1294,53 @@ mod tests {
             endpoint_model: "gpt-4o".into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn speaker_progress_reaches_the_surface_with_its_attempt() {
+        let update = ProcessingUpdate::from(RunnerEvent::SpeakerProgress {
+            session_id: "s".into(),
+            progress: pipeline::progress::SpeakerProgress {
+                attempt: "a1".into(),
+                work: pipeline::progress::SpeakerWork {
+                    percent: Some(42),
+                    measuring: false,
+                },
+            },
+        });
+        assert_eq!(
+            serde_json::to_value(&update).unwrap(),
+            serde_json::json!({
+                "session_id": "s",
+                "update": {
+                    "kind": "speaker_progress",
+                    "attempt": "a1",
+                    "percent": 42,
+                    "measuring": false
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn transcription_progress_keeps_its_window_counts() {
+        let update = ProcessingUpdate::from(RunnerEvent::Progress {
+            session_id: "s".into(),
+            stage: session_core::Stage::Transcribe,
+            segment: 1,
+            done: 3,
+            total: 8,
+        });
+        assert_eq!(
+            serde_json::to_value(&update).unwrap()["update"],
+            serde_json::json!({
+                "kind": "progress",
+                "stage": "transcribe",
+                "segment": 1,
+                "done": 3,
+                "total": 8
+            })
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ use common::{queue_session, speech, store};
 use diarize::{Analysis, AudioSource, DiarizeError, DiarizeRequest, SpeakerAnalyzer};
 use models::recognition::{ExecutionSpec, ProcessingMode, RecognitionConfig, SpeakerSource};
 use pipeline::join::TRANSCRIPT_FILE;
+use pipeline::progress::{SpeakerProgress, SpeakerWork};
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::runner::Outcome;
 use pipeline::transcribe::{self, WindowPlan};
@@ -23,6 +24,8 @@ use pipeline::{
     SummaryEndpoint, checkpoint,
 };
 use session_core::{SessionState, Stage};
+
+type Hook = Box<dyn Fn(usize) + Send + Sync>;
 
 #[derive(Default)]
 struct Script {
@@ -40,6 +43,9 @@ struct Script {
     /// Resume this session through the store after the given number of calls.
     resume_after: Mutex<Option<(usize, SharedStore, String)>>,
     analyses: AtomicUsize,
+    /// Called with the ordinal (0-based) of each speaker analysis, halfway
+    /// through it.
+    on_analysis: Mutex<Option<Hook>>,
     /// Where summaries go; unset is an unconfigured endpoint.
     summary: Mutex<Option<Result<SummaryEndpoint, EndpointProblem>>>,
     /// Limits the summarize stage learned.
@@ -147,9 +153,19 @@ impl SpeakerAnalyzer for FakeAnalyzer {
         audio: &mut dyn AudioSource,
         request: &DiarizeRequest<'_>,
     ) -> Result<Analysis, DiarizeError> {
-        self.0.analyses.fetch_add(1, Ordering::SeqCst);
+        let ordinal = self.0.analyses.fetch_add(1, Ordering::SeqCst);
         if self.0.diarize_fails.load(Ordering::SeqCst) {
             return Err(DiarizeError::Format("segmentation exploded".into()));
+        }
+        if let Some(report) = request.on_progress {
+            report(0.5);
+        }
+        if let Some(hook) = self.0.on_analysis.lock().unwrap().as_ref() {
+            hook(ordinal);
+        }
+        // The real stack polls between windows.
+        if request.is_cancelled.is_some_and(|stop| stop()) {
+            return Err(DiarizeError::Format("stopped".into()));
         }
         if let Some(report) = request.on_progress {
             report(1.0);
@@ -886,14 +902,213 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     let parsed = session_core::folder::Transcript::parse(&transcript).unwrap();
     let found = r.store.lock().unwrap().found_speakers("s").unwrap();
     assert_eq!(found, pipeline::join::found_speakers(&parsed));
-    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+    assert!(!speaker_progress(&r).is_empty());
+}
+
+/// The speaker progress events, in order.
+fn speaker_progress(r: &Rig) -> Vec<SpeakerProgress> {
+    r.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            RunnerEvent::SpeakerProgress { progress, .. } => Some(progress.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Audio longer than one speaker analysis window.
+fn long_conversation() -> Vec<f32> {
+    [conversation(), conversation(), conversation()].concat()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn speaker_progress_covers_the_whole_note_and_stays_below_100() {
+    // Covers AE2, AE4.
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech()), (16_000, long_conversation())],
+    );
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+
+    let seen = speaker_progress(&r);
+    let attempt = &seen[0].attempt;
+    assert!(seen.iter().all(|p| &p.attempt == attempt), "{seen:?}");
+    // Active before the first measurement.
+    assert_eq!(
+        seen[0].work,
+        SpeakerWork {
+            percent: None,
+            measuring: false
+        }
+    );
+    let percents: Vec<u8> = seen.iter().filter_map(|p| p.work.percent).collect();
+    assert!(
+        percents.windows(2).all(|pair| pair[0] <= pair[1]),
+        "the value never goes back at a segment boundary: {percents:?}"
+    );
+    // Each half of each segment is a measured step.
+    let measured: Vec<u8> = seen
+        .iter()
+        .filter(|p| p.work.measuring)
+        .filter_map(|p| p.work.percent)
+        .collect();
+    assert!(measured.len() >= 4, "{measured:?}");
+    assert!(measured.iter().any(|p| (1..50).contains(p)), "{measured:?}");
+    assert!(
+        measured.iter().any(|p| (50..99).contains(p)),
+        "{measured:?}"
+    );
+    assert!(percents.iter().all(|p| *p < 100), "{percents:?}");
+    assert_eq!(
+        seen.last().unwrap().work,
+        SpeakerWork {
+            percent: Some(99),
+            measuring: false
+        },
+        "clustering and the writes are active work below 100"
+    );
+    // The old per-segment meter is gone.
+    assert!(!r.events.lock().unwrap().iter().any(|e| matches!(
         e,
         RunnerEvent::Progress {
             stage: Stage::Diarize,
-            done: 100,
             ..
         }
     )));
+    // A complete stage shows no meter.
+    assert_eq!(
+        pipeline::progress::snapshot(&r.store, "s")
+            .unwrap()
+            .speakers,
+        None
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_view_opened_during_the_speaker_stage_reads_its_progress() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, long_conversation()), (16_000, long_conversation())],
+    );
+    let read = Arc::new(Mutex::new(None));
+    let (store, sink) = (Arc::clone(&r.store), Arc::clone(&read));
+    *r.script.on_analysis.lock().unwrap() = Some(Box::new(move |ordinal| {
+        if ordinal == 1 {
+            *sink.lock().unwrap() = Some(pipeline::progress::snapshot(&store, "s").unwrap());
+        }
+    }));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+
+    let snapshot = read.lock().unwrap().take().unwrap();
+    assert_eq!(snapshot.current, Some(Stage::Diarize));
+    let speakers = snapshot.speakers.expect("the stage saved its progress");
+    assert_eq!(speakers.attempt, speaker_progress(&r)[0].attempt);
+    // The first segment is complete and the second is half done.
+    assert_eq!(speakers.work.percent, Some(75));
+    // A newer live update then advances it.
+    assert!(
+        speaker_progress(&r)
+            .iter()
+            .any(|p| p.work.percent > Some(75))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_attempt_replaces_speaker_progress_and_counts_saved_segments_first() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    let first = rig_with(Arc::clone(&store), root, Arc::default());
+    with_summaries(&first.script).await;
+    queue_session(
+        &first.store,
+        &first.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, long_conversation()), (16_000, long_conversation())],
+    );
+    let runner = Arc::clone(&first.runner);
+    *first.script.on_analysis.lock().unwrap() = Some(Box::new(move |ordinal| {
+        if ordinal == 1 {
+            runner.cancel("s");
+        }
+    }));
+    let (_, outcome) = first.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Cancelled);
+    let earlier = speaker_progress(&first)[0].attempt.clone();
+
+    // A new process: the old claim is reclaimed at launch.
+    let Rig { _root, .. } = first;
+    let second = rig_with(Arc::clone(&store), _root, Arc::default());
+    with_summaries(&second.script).await;
+    second
+        .runner
+        .reclaim(session_core::jobs::Liveness::OnlyInstance)
+        .unwrap();
+    let (_, outcome) = second.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    // Only the second segment is analysed again.
+    assert_eq!(second.script.analyses.load(Ordering::SeqCst), 1);
+    let seen = speaker_progress(&second);
+    assert!(seen.iter().all(|p| p.attempt != earlier), "{seen:?}");
+    // The saved first segment counts before the second one runs.
+    let first_measured = seen.iter().find(|p| p.work.percent.is_some()).unwrap();
+    assert_eq!(first_measured.work.percent, Some(50));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_speaker_stage_shows_no_meter_and_no_completion() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    // The speaker stage stops, and the view reads the store after it.
+    let store = Arc::clone(&r.store);
+    *r.script.on_analysis.lock().unwrap() = Some(Box::new(move |_| {
+        store
+            .lock()
+            .unwrap()
+            .apply(
+                "s",
+                &session_core::Event::UserResume {
+                    audio_intact: true,
+                    space_ok: true,
+                },
+            )
+            .unwrap();
+    }));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert!(
+        speaker_progress(&r)
+            .iter()
+            .all(|p| p.work.percent < Some(100))
+    );
+    assert_eq!(
+        pipeline::progress::snapshot(&r.store, "s")
+            .unwrap()
+            .speakers,
+        None
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

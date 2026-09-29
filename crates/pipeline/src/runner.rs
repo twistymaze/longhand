@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::diarize::Speakers;
 use crate::folder_rename::{self, FolderRename};
 use crate::live::{EngineAccess, EngineSlot};
+use crate::progress::{SpeakerMeter, SpeakerProgress, SpeakerWork};
 use crate::reprocess::{self, Guards, Readiness, Refusal};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
@@ -132,6 +133,12 @@ pub enum RunnerEvent {
         segment: u32,
         done: usize,
         total: usize,
+    },
+    /// The speaker stage's progress over the whole note (KTD1). A new
+    /// attempt replaces the progress of an earlier one.
+    SpeakerProgress {
+        session_id: String,
+        progress: crate::progress::SpeakerProgress,
     },
     StageFailed {
         session_id: String,
@@ -992,6 +999,12 @@ fn execute(
     control: &dyn Control,
 ) -> Result<(), StageError> {
     let dir = env.working_root.join(id);
+    let mut report_speakers = speaker_sink(env, id);
+    let mut speakers = SpeakerMeter::new(&mut report_speakers);
+    if stage == Stage::Diarize {
+        // The stage is active before it can measure (KTD3).
+        speakers.unmeasured();
+    }
     if matches!(
         stage,
         Stage::Diarize | Stage::Transcribe | Stage::Join | Stage::Verify
@@ -1006,6 +1019,7 @@ fn execute(
             env.engines.as_ref(),
             stage,
             control,
+            &mut speakers,
             &mut |p| {
                 (env.events)(RunnerEvent::Progress {
                     session_id: id.into(),
@@ -1033,7 +1047,7 @@ fn execute(
             let count = lock(&env.store)
                 .session(id)?
                 .and_then(|record| record.speaker_count);
-            let mut last = None;
+            speakers.plan(crate::diarize::units(segments), 0);
             crate::diarize::run(
                 &env.store,
                 id,
@@ -1042,19 +1056,7 @@ fn execute(
                 count,
                 analyzer.as_mut(),
                 control,
-                &mut |segment, fraction| {
-                    let percent = (fraction * 100.0) as usize;
-                    if last != Some((segment, percent)) {
-                        last = Some((segment, percent));
-                        (env.events)(RunnerEvent::Progress {
-                            session_id: id.to_string(),
-                            stage,
-                            segment,
-                            done: percent,
-                            total: 100,
-                        });
-                    }
-                },
+                &mut speakers,
             )
         }
         Stage::Transcribe => {
@@ -1146,6 +1148,36 @@ fn execute(
             });
             Ok(())
         }
+    }
+}
+
+/// Save and send the speaker progress of a new attempt. The first report
+/// replaces the progress of an earlier attempt in the store (KTD4).
+fn speaker_sink<'a>(env: &'a Environment, id: &'a str) -> impl FnMut(SpeakerWork) + 'a {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let attempt = format!(
+        "{}-{}",
+        now().timestamp_nanos_opt().unwrap_or_default(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    move |work| {
+        let progress = SpeakerProgress {
+            attempt: attempt.clone(),
+            work,
+        };
+        if let Err(e) = checkpoint::put(
+            &env.store,
+            id,
+            Stage::Diarize,
+            crate::progress::SPEAKER_KEY,
+            &progress,
+        ) {
+            log::warn!("could not save the speaker progress of {id}: {e}");
+        }
+        (env.events)(RunnerEvent::SpeakerProgress {
+            session_id: id.to_string(),
+            progress,
+        });
     }
 }
 
