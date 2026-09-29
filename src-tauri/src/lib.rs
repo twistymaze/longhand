@@ -36,6 +36,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_default_speaker_count,
             commands::settings::select_asr_model,
             commands::settings::set_live_transcript,
+            commands::settings::retry_recognition_downloads,
             commands::settings::list_microphones,
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,

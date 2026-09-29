@@ -1,11 +1,12 @@
 //! Model weights on this machine: where they live, which are present, and
 //! the background downloads that fetch them (KTD19, R28, R1c).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use models::download::{Event as DownloadProgress, partial_path};
+use models::recognition::{ArtifactSpec, ExecutionSpec, RecognitionConfig};
 use models::{CancellationToken, CatalogModel, Limits, ModelKind, Outcome};
 use serde::Serialize;
 use session_core::{SessionRecord, SessionState};
@@ -13,7 +14,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
-use crate::managers::settings::{self, Settings, SettingsChanged};
+use crate::managers::settings::{self, RecognitionChoice, RecognitionFailure, Settings};
 
 #[derive(Serialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -107,56 +108,114 @@ pub struct ModelDownloadEvent {
     pub update: DownloadUpdate,
 }
 
-/// What a pick of a recognition model does, after the settings change.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pick {
-    /// Start the download of the picked model.
-    pub download: bool,
-    /// Stop the download of a pending pick that this pick replaces.
-    pub cancel: Option<String>,
+/// The download key of an artifact: its id and its SHA-256, so that two
+/// snapshots of one id download apart.
+fn download_key(artifact: &ArtifactSpec) -> String {
+    format!("{}@{}", artifact.id, artifact.sha256)
 }
 
-/// Apply a pick of the recognition model `id` to `settings` (R5, KTD11).
-/// The pick is selected at once when it is downloaded, or when the selected
-/// model is not downloaded. Otherwise the selected model stays in use and the
-/// pick waits as the pending pick until its download is verified.
-pub fn apply_pick(settings: &mut Settings, id: &str, is_present: impl Fn(&str) -> bool) -> Pick {
-    settings.pending_recognition = None;
-    let cancel = settings.pending_asr_model.take().filter(|p| p != id);
-    let picked_present = is_present(id);
-    if id == settings.asr_model || picked_present || !is_present(&settings.asr_model) {
-        settings.asr_model = id.to_string();
-    } else {
-        settings.pending_asr_model = Some(id.to_string());
-    }
-    Pick {
-        download: !picked_present,
-        cancel,
-    }
+/// The download keys of the artifacts that `config` needs. Empty when the
+/// configuration does not resolve.
+fn needed_keys(config: Option<&RecognitionConfig>) -> HashSet<String> {
+    config
+        .and_then(|c| models::recognition::resolve(c).ok())
+        .map(|spec| spec.artifacts.iter().map(download_key).collect())
+        .unwrap_or_default()
 }
 
-/// Apply the outcome of a download of `id` to the pending pick. Returns
-/// whether the settings changed.
-pub fn settle_pending(settings: &mut Settings, id: &str, update: &DownloadUpdate) -> bool {
-    if settings.pending_asr_model.as_deref() != Some(id) {
-        return false;
-    }
-    match update {
-        DownloadUpdate::Completed => {
-            settings.asr_model = id.to_string();
-            settings.pending_asr_model = None;
-            true
-        }
-        DownloadUpdate::Failed { .. } | DownloadUpdate::Cancelled => {
-            settings.pending_asr_model = None;
-            true
-        }
-        DownloadUpdate::Progress { .. } | DownloadUpdate::Verifying => false,
-    }
+/// What one comparison of the chosen recognition configuration with the
+/// configuration in use does (R18, KTD14).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChoicePlan {
+    /// The files to download now.
+    pub download: Vec<ArtifactSpec>,
+    /// The keys of the downloads that the step started and that neither
+    /// configuration needs. These downloads stop.
+    pub stop: Vec<String>,
+    /// Every file of the chosen configuration is on disk: this becomes the
+    /// configuration in use.
+    pub apply: Option<RecognitionChoice>,
+    /// The files that the chosen configuration waits for.
+    pub waiting: Vec<ArtifactSpec>,
+    /// Why the chosen configuration cannot apply now.
+    pub failure: Option<RecognitionFailure>,
 }
+
+/// Compare the chosen configuration in `settings` with the configuration in
+/// use (R18, KTD14). `missing` gives the files of a resolved configuration
+/// that are not on disk. `started` holds the keys of the downloads that
+/// earlier steps started. `failure` is a failed download of this chosen
+/// configuration: while it is set, no download of it starts again.
+///
+/// A chosen configuration with a value that this version does not know
+/// keeps the configuration in use and starts no download.
+pub fn plan_choice(
+    settings: &Settings,
+    missing: impl Fn(&ExecutionSpec) -> Vec<ArtifactSpec>,
+    started: &HashSet<String>,
+    failure: Option<&RecognitionFailure>,
+) -> ChoicePlan {
+    let mut kept = needed_keys(Some(&settings.recognition_config()));
+    let mut plan = ChoicePlan::default();
+    if let Some(config) = settings.chosen_config()
+        && settings.chosen_recognition != settings.in_use()
+    {
+        match models::recognition::resolve(&config) {
+            Err(e) => {
+                plan.failure = Some(RecognitionFailure {
+                    model_id: config.asr_model.clone(),
+                    message: e.to_string(),
+                });
+            }
+            Ok(spec) => {
+                kept.extend(spec.artifacts.iter().map(download_key));
+                let missing = missing(&spec);
+                if missing.is_empty() {
+                    plan.apply = Some(settings.chosen_recognition.clone());
+                } else {
+                    match failure {
+                        Some(failure) => plan.failure = Some(failure.clone()),
+                        None => plan.download = missing.clone(),
+                    }
+                    plan.waiting = missing;
+                }
+            }
+        }
+    }
+    plan.stop = started
+        .iter()
+        .filter(|key| !kept.contains(*key))
+        .cloned()
+        .collect();
+    plan.stop.sort();
+    plan
+}
+
+/// The state of the downloads of the chosen configuration.
+#[derive(Debug, Default)]
+struct ChoiceState {
+    /// The chosen configuration of the last step.
+    chosen: Option<RecognitionChoice>,
+    /// The files that `chosen` waits for.
+    waiting: Vec<ArtifactSpec>,
+    /// The keys of the downloads that a step started and that did not
+    /// finish.
+    started: HashSet<String>,
+    /// The keys of the downloads that a step stopped and that did not end
+    /// yet.
+    stopped: HashSet<String>,
+    /// A failed download of `chosen`. It stays until Retry or until the
+    /// chosen configuration changes.
+    failure: Option<RecognitionFailure>,
+}
+
+/// The text of a download of the chosen configuration that the user
+/// stopped.
+const DOWNLOAD_STOPPED: &str = "The download was stopped.";
 
 /// Why the app cannot delete the model `id` now, or `None` when it can
-/// (R6, KTD12). `live_model` is the model of the live worker.
+/// (R6, KTD12). `live_model` is the model of the live worker. The models of
+/// the configuration in use and of the chosen configuration stay (R18).
 pub fn delete_refusal(
     id: &str,
     settings: &Settings,
@@ -166,22 +225,16 @@ pub fn delete_refusal(
     let Some(catalog_model) = models::model(id) else {
         return Some(format!("no model named '{id}'"));
     };
-    if settings.asr_model == id
-        || models::recognition::resolve(&settings.recognition_config())
-            .is_ok_and(|spec| spec.artifacts.iter().any(|artifact| artifact.id == id))
-    {
+    let needs = |config: Option<RecognitionConfig>| {
+        config
+            .and_then(|c| models::recognition::resolve(&c).ok())
+            .is_some_and(|spec| spec.artifacts.iter().any(|artifact| artifact.id == id))
+    };
+    if settings.asr_model == id || needs(Some(settings.recognition_config())) {
         return Some("This model is selected. Select another model first.".into());
     }
-    if settings
-        .pending_recognition
-        .as_ref()
-        .and_then(|c| models::recognition::resolve(c).ok())
-        .is_some_and(|spec| spec.artifacts.iter().any(|a| a.id == id))
-    {
-        return Some("This model is part of a pending configuration.".into());
-    }
-    if settings.pending_asr_model.as_deref() == Some(id) {
-        return Some("This model is downloading to become the selected model.".into());
+    if settings.chosen_recognition.asr_model == id || needs(settings.chosen_config()) {
+        return Some("The chosen transcription settings need this model.".into());
     }
     if live_model == Some(id) {
         return Some("The current recording uses this model.".into());
@@ -222,7 +275,7 @@ fn is_unfinished(session: &SessionRecord) -> bool {
 
 /// The supporting models on disk that no kept bundle contains (KTD7). The
 /// kept bundles are the bundles of the transcription models on disk, of the
-/// selected model, and of the pending model. The caller also applies
+/// model in use, and of the chosen model (R18). The caller also applies
 /// [`delete_refusal`] to each result, so that unfinished notes and the live
 /// model keep their files.
 pub fn unneeded_supporting_models(statuses: &[ModelStatus], settings: &Settings) -> Vec<String> {
@@ -232,13 +285,7 @@ pub fn unneeded_supporting_models(statuses: &[ModelStatus], settings: &Settings)
         .map(|s| s.id.as_str())
         .collect();
     kept_models.push(&settings.asr_model);
-    kept_models.extend(settings.pending_asr_model.as_deref());
-    kept_models.extend(
-        settings
-            .pending_recognition
-            .as_ref()
-            .map(|c| c.asr_model.as_str()),
-    );
+    kept_models.push(&settings.chosen_recognition.asr_model);
     let kept: Vec<String> = kept_models
         .into_iter()
         .flat_map(models::recognition::bundle)
@@ -287,6 +334,10 @@ pub struct ModelsManager {
     active: Mutex<HashMap<String, CancellationToken>>,
     /// The model that the live worker has loaded, when one runs (KTD12).
     live_model: Mutex<Option<String>>,
+    /// The downloads of the chosen recognition configuration (R18).
+    choice: Mutex<ChoiceState>,
+    /// One comparison of the chosen configuration at a time.
+    follow_lock: Mutex<()>,
 }
 
 impl ModelsManager {
@@ -299,11 +350,154 @@ impl ModelsManager {
             dir,
             active: Mutex::new(HashMap::new()),
             live_model: Mutex::new(None),
+            choice: Mutex::new(ChoiceState::default()),
+            follow_lock: Mutex::new(()),
         }
     }
 
     fn active(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
         self.active.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn choice(&self) -> std::sync::MutexGuard<'_, ChoiceState> {
+        self.choice.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The files of `spec` that are not on disk.
+    fn missing_artifacts(&self, spec: &ExecutionSpec) -> Vec<ArtifactSpec> {
+        spec.artifacts
+            .iter()
+            .filter(|a| self.artifact_path(a).is_none())
+            .cloned()
+            .collect()
+    }
+
+    /// Compare the chosen configuration in `settings` with the
+    /// configuration in use, and keep what the chosen configuration waits
+    /// for. A failed download stays failed for the same chosen
+    /// configuration. Returns the plan, and whether the files that it waits
+    /// for or the failure changed.
+    fn plan_choice_now(&self, settings: &Settings) -> (ChoicePlan, bool) {
+        let mut state = self.choice();
+        if state.chosen.as_ref() != Some(&settings.chosen_recognition) {
+            state.failure = None;
+        }
+        let plan = plan_choice(
+            settings,
+            |spec| self.missing_artifacts(spec),
+            &state.started,
+            state.failure.as_ref(),
+        );
+        let changed = state.waiting != plan.waiting || state.failure != plan.failure;
+        state.chosen = Some(settings.chosen_recognition.clone());
+        state.waiting = plan.waiting.clone();
+        state.failure = plan.failure.clone();
+        (plan, changed)
+    }
+
+    /// Keep the outcome of the download `key`. A download of a file that the
+    /// chosen configuration waits for that fails or stops makes the
+    /// failure. A download that a step stopped is not a failure. Returns
+    /// whether the failure changed.
+    fn note_outcome(&self, key: &str, artifact_id: &str, update: &DownloadUpdate) -> bool {
+        let mut state = self.choice();
+        state.started.remove(key);
+        let stopped_by_step = state.stopped.remove(key);
+        let message = match update {
+            DownloadUpdate::Failed { message } => message.clone(),
+            DownloadUpdate::Cancelled if !stopped_by_step => DOWNLOAD_STOPPED.to_string(),
+            _ => return false,
+        };
+        if !state.waiting.iter().any(|a| download_key(a) == key) {
+            return false;
+        }
+        state.failure = Some(RecognitionFailure {
+            model_id: artifact_id.to_string(),
+            message,
+        });
+        true
+    }
+
+    /// Forget the failed download, so that the next step starts it again
+    /// (R19).
+    pub fn retry_choice(&self) {
+        self.choice().failure = None;
+    }
+
+    /// Put the downloads that the chosen configuration in `settings` waits
+    /// for, and the failure, into `settings` (R19).
+    pub fn report_choice(&self, settings: &mut Settings) {
+        let state = self.choice();
+        if settings.chosen_recognition == settings.in_use()
+            || state.chosen.as_ref() != Some(&settings.chosen_recognition)
+        {
+            return;
+        }
+        settings.recognition.waiting_for = state.waiting.iter().map(|a| a.id.clone()).collect();
+        settings.recognition.failure = state.failure.clone();
+    }
+
+    /// Compare the chosen recognition configuration with the configuration
+    /// in use (R18, KTD14). This starts each download that the chosen
+    /// configuration needs, stops each download that an earlier step
+    /// started and that neither configuration needs, and makes the chosen
+    /// configuration the configuration in use when every file is on disk.
+    /// Then the surface gets `SettingsChanged`. Run it at launch, after
+    /// each change of the shared settings, and after each download.
+    pub fn follow_choice(self: &Arc<Self>, app: &AppHandle) {
+        let _one_at_a_time = self.follow_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut changed = false;
+        // A second pass stops the downloads of the configuration that was
+        // in use before an apply.
+        for _ in 0..2 {
+            let settings = settings::get_settings(app);
+            let (plan, plan_changed) = self.plan_choice_now(&settings);
+            changed |= plan_changed;
+            for key in &plan.stop {
+                log::info!("recognition: stop the download {key}, which no configuration needs");
+                {
+                    let mut state = self.choice();
+                    state.started.remove(key);
+                    state.stopped.insert(key.clone());
+                }
+                self.cancel_key(key);
+            }
+            if !plan.download.is_empty() {
+                match self.start_artifact_downloads(app, &plan.download) {
+                    Ok(keys) => self.choice().started.extend(keys),
+                    Err(e) => log::error!("could not start the chosen model downloads: {e}"),
+                }
+            }
+            let Some(choice) = plan.apply else {
+                break;
+            };
+            match settings::update_settings(app, |s| {
+                s.set_in_use(&choice);
+                Ok(())
+            }) {
+                Ok(_) => {
+                    log::info!(
+                        "recognition: the chosen configuration is in use ({})",
+                        choice.asr_model
+                    );
+                    changed = true;
+                }
+                Err(e) => {
+                    log::error!("could not use the chosen recognition configuration: {e}");
+                    break;
+                }
+            }
+        }
+        if changed {
+            settings::emit_settings_changed(app);
+        }
+    }
+
+    /// Stop the download with the key `key`, if it runs.
+    fn cancel_key(&self, key: &str) {
+        if let Some(token) = self.active().get(key) {
+            token.cancel();
+        }
     }
 
     /// Record the model that the live worker uses, or `None` when it stops.
@@ -470,14 +664,17 @@ impl ModelsManager {
             .into_iter()
             .filter(|a| !skip.contains(&a.id))
             .collect();
-        self.start_artifact_downloads(app, &artifacts)
+        self.start_artifact_downloads(app, &artifacts).map(drop)
     }
 
+    /// Download each of `artifacts` that is not on disk and not
+    /// downloading, one after another. Returns the keys of the downloads
+    /// that this call started.
     fn start_artifact_downloads(
         self: &Arc<Self>,
         app: &AppHandle,
         artifacts: &[models::recognition::ArtifactSpec],
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
         for artifact in artifacts {
             models::download::pinned_artifact_path(&self.dir, artifact)
                 .map_err(|e| e.to_string())?;
@@ -486,7 +683,7 @@ impl ModelsManager {
         {
             let mut active = self.active();
             for artifact in artifacts {
-                let key = format!("{}@{}", artifact.id, artifact.sha256);
+                let key = download_key(artifact);
                 if self.artifact_path(artifact).is_none() && !active.contains_key(&key) {
                     let token = CancellationToken::new();
                     active.insert(key.clone(), token.clone());
@@ -494,6 +691,7 @@ impl ModelsManager {
                 }
             }
         }
+        let keys = wanted.iter().map(|(key, _, _)| key.clone()).collect();
         let manager = Arc::clone(self);
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -528,15 +726,36 @@ impl ModelsManager {
                     },
                 };
                 manager.active().remove(&key);
-                if models::model(&artifact.id)
-                    .is_some_and(|m| m.sha256 == artifact.sha256 && m.revision == artifact.revision)
-                {
-                    settle_pending_pick(&app, &artifact.id, &update);
+                // The settings change before the download event, so a
+                // surface that reads the settings on the event sees the
+                // new configuration in use.
+                if manager.note_outcome(&key, &artifact.id, &update) {
+                    log::warn!(
+                        "recognition: a download of the chosen configuration did not finish: {}",
+                        artifact.id
+                    );
+                    settings::emit_settings_changed(&app);
+                }
+                match update {
+                    DownloadUpdate::Completed => {
+                        manager.follow_choice(&app);
+                        // A note that waits for this file can be processed
+                        // now.
+                        if let Some(processing) =
+                            app.try_state::<Arc<crate::managers::processing::ProcessingManager>>()
+                        {
+                            processing.wake();
+                        }
+                    }
+                    // The chosen configuration can need a stopped file
+                    // again. Then its download starts again.
+                    DownloadUpdate::Cancelled => manager.follow_choice(&app),
+                    _ => {}
                 }
                 emit(&app, &artifact.id, update);
             }
         });
-        Ok(())
+        Ok(keys)
     }
 
     pub fn statuses_for(
@@ -616,17 +835,7 @@ impl ModelsManager {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        self.start_artifact_downloads(app, &artifacts)
-    }
-
-    /// Stop the download of `id`, if one is in progress. The partial is
-    /// kept.
-    pub fn cancel(&self, id: &str) {
-        for (key, token) in self.active().iter() {
-            if key == id || key.starts_with(&format!("{id}@")) {
-                token.cancel();
-            }
-        }
+        self.start_artifact_downloads(app, &artifacts).map(drop)
     }
 
     /// Stop every download in flight. Partials are kept, so the next
@@ -635,56 +844,6 @@ impl ModelsManager {
         for token in self.active().values() {
             token.cancel();
         }
-    }
-}
-
-/// A download of the pending pick finished: select it, or clear it after a
-/// failure, and tell the surface. The settings change before the download
-/// event is emitted, so a surface that reads the settings on the event sees
-/// the new selection.
-fn settle_pending_pick(app: &AppHandle, id: &str, update: &DownloadUpdate) {
-    let current = settings::get_settings(app);
-    if current.pending_asr_model.as_deref() != Some(id) && current.pending_recognition.is_none() {
-        return;
-    }
-    let mut changed = false;
-    match settings::update_settings(app, |s| {
-        changed = settle_pending(s, id, update);
-        if let Some(config) = s.pending_recognition.clone() {
-            let spec = models::recognition::resolve(&config).map_err(|e| e.to_string())?;
-            if spec.artifacts.iter().any(|a| a.id == id) {
-                match update {
-                    DownloadUpdate::Completed => {
-                        if app
-                            .state::<Arc<ModelsManager>>()
-                            .missing_spec(&spec)
-                            .is_empty()
-                        {
-                            s.apply_recognition(&config);
-                            changed = true;
-                        }
-                    }
-                    DownloadUpdate::Failed { .. } | DownloadUpdate::Cancelled => {
-                        s.pending_recognition = None;
-                        changed = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
-    }) {
-        Ok(settings) if changed => {
-            log::info!(
-                "pending model '{id}' settled; selected model is '{}'",
-                settings.asr_model
-            );
-            if let Err(e) = (SettingsChanged { settings }).emit(app) {
-                log::warn!("failed to emit the settings change: {e}");
-            }
-        }
-        Ok(_) => {}
-        Err(e) => log::error!("could not settle the pending model '{id}': {e}"),
     }
 }
 
@@ -709,134 +868,278 @@ mod tests {
     const TDT_V3: &str = "parakeet-tdt-0.6b-v3-q80";
     const NEMOTRON_3_5: &str = "nemotron-3.5-asr-streaming-0.6b-q80";
 
-    fn whisper_selected() -> Settings {
-        Settings {
-            asr_model: WHISPER.into(),
+    /// Settings with `choice` chosen and in use.
+    fn using(choice: RecognitionChoice) -> Settings {
+        let mut settings = Settings {
+            chosen_recognition: choice.clone(),
             ..Settings::default()
+        };
+        settings.set_in_use(&choice);
+        settings
+    }
+
+    fn model_choice(asr_model: &str) -> RecognitionChoice {
+        RecognitionChoice {
+            asr_model: asr_model.into(),
+            ..RecognitionChoice::default()
         }
     }
 
-    fn only(present: &'static [&'static str]) -> impl Fn(&str) -> bool {
-        move |id| present.contains(&id)
+    fn whisper_selected() -> Settings {
+        using(model_choice(WHISPER))
     }
 
-    #[test]
-    fn a_pick_waits_for_its_download_while_the_selected_model_stays() {
-        // AE5: Whisper is selected and downloaded, Parakeet TDT v3 is not.
+    /// Whisper with pyannote is in use, and Parakeet TDT v3 with Sortformer
+    /// is chosen.
+    fn tdt_with_sortformer_chosen() -> Settings {
         let mut settings = whisper_selected();
-        let pick = apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
-        assert_eq!(
-            pick,
-            Pick {
-                download: true,
-                cancel: None
-            }
-        );
-        assert_eq!(settings.asr_model, WHISPER);
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V3));
-
-        // Progress and the outcome of another model change nothing.
-        assert!(!settle_pending(
-            &mut settings,
-            TDT_V3,
-            &DownloadUpdate::Verifying
-        ));
-        assert!(!settle_pending(
-            &mut settings,
-            NEMOTRON_3_5,
-            &DownloadUpdate::Completed
-        ));
-        assert_eq!(settings.asr_model, WHISPER);
-
-        assert!(settle_pending(
-            &mut settings,
-            TDT_V3,
-            &DownloadUpdate::Completed
-        ));
-        assert_eq!(settings.asr_model, TDT_V3);
-        assert_eq!(settings.pending_asr_model, None);
-    }
-
-    #[test]
-    fn a_pick_with_the_selected_model_absent_applies_at_once() {
-        let mut settings = whisper_selected();
-        let pick = apply_pick(&mut settings, TDT_V3, only(&[]));
-        assert!(pick.download);
-        assert_eq!(settings.asr_model, TDT_V3);
-        assert_eq!(settings.pending_asr_model, None);
-    }
-
-    #[test]
-    fn a_pick_of_a_downloaded_model_applies_at_once() {
-        let mut settings = whisper_selected();
-        let pick = apply_pick(&mut settings, TDT_V3, only(&[WHISPER, TDT_V3]));
-        assert!(!pick.download);
-        assert_eq!(settings.asr_model, TDT_V3);
-    }
-
-    #[test]
-    fn a_second_pick_replaces_the_pending_pick_and_cancels_its_download() {
-        let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
-        let pick = apply_pick(&mut settings, NEMOTRON_3_5, only(&[WHISPER]));
-        assert_eq!(
-            pick,
-            Pick {
-                download: true,
-                cancel: Some(TDT_V3.into())
-            }
-        );
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(NEMOTRON_3_5));
-        // The cancelled download does not clear the new pick.
-        assert!(!settle_pending(
-            &mut settings,
-            TDT_V3,
-            &DownloadUpdate::Cancelled
-        ));
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(NEMOTRON_3_5));
-    }
-
-    #[test]
-    fn a_pick_of_the_pending_model_again_keeps_its_download() {
-        let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
-        let pick = apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
-        assert_eq!(
-            pick,
-            Pick {
-                download: true,
-                cancel: None
-            }
-        );
-        assert_eq!(settings.pending_asr_model.as_deref(), Some(TDT_V3));
-    }
-
-    #[test]
-    fn a_pick_of_the_selected_model_clears_the_pending_pick() {
-        let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
-        let pick = apply_pick(&mut settings, WHISPER, only(&[WHISPER]));
-        assert_eq!(
-            pick,
-            Pick {
-                download: false,
-                cancel: Some(TDT_V3.into())
-            }
-        );
-        assert_eq!(settings.asr_model, WHISPER);
-        assert_eq!(settings.pending_asr_model, None);
-    }
-
-    #[test]
-    fn a_failed_download_clears_the_pending_pick() {
-        let mut settings = whisper_selected();
-        apply_pick(&mut settings, TDT_V3, only(&[WHISPER]));
-        let failed = DownloadUpdate::Failed {
-            message: "checksum".into(),
+        settings.chosen_recognition = RecognitionChoice {
+            asr_model: TDT_V3.into(),
+            live_transcript: false,
+            speaker_source: models::recognition::SpeakerSource::Sortformer,
+            ..RecognitionChoice::default()
         };
-        assert!(settle_pending(&mut settings, TDT_V3, &failed));
-        assert_eq!(settings.asr_model, WHISPER);
-        assert_eq!(settings.pending_asr_model, None);
+        settings
+    }
+
+    fn ids(artifacts: &[ArtifactSpec]) -> Vec<&str> {
+        artifacts.iter().map(|a| a.id.as_str()).collect()
+    }
+
+    /// Every file of a resolved configuration is missing.
+    fn nothing_on_disk(spec: &ExecutionSpec) -> Vec<ArtifactSpec> {
+        spec.artifacts.clone()
+    }
+
+    fn key_of(id: &str) -> String {
+        let m = models::model(id).unwrap();
+        format!("{}@{}", m.id, m.sha256)
+    }
+
+    #[test]
+    fn a_chosen_model_and_speaker_source_that_are_not_on_disk_start_both_downloads() {
+        // AE5: the configuration in use stays until both are verified.
+        let settings = tdt_with_sortformer_chosen();
+        let plan = plan_choice(&settings, nothing_on_disk, &HashSet::new(), None);
+        assert_eq!(ids(&plan.download), [TDT_V3, SORTFORMER]);
+        assert_eq!(ids(&plan.waiting), [TDT_V3, SORTFORMER]);
+        assert_eq!(plan.apply, None);
+        assert_eq!(plan.failure, None);
+        assert!(plan.stop.is_empty());
+        assert_eq!(settings.recognition_config().asr_model, WHISPER);
+
+        // One file is on disk: only the other one downloads.
+        let plan = plan_choice(
+            &settings,
+            |spec| {
+                spec.artifacts
+                    .iter()
+                    .filter(|a| a.id != TDT_V3)
+                    .cloned()
+                    .collect()
+            },
+            &HashSet::new(),
+            None,
+        );
+        assert_eq!(ids(&plan.download), [SORTFORMER]);
+        assert_eq!(plan.apply, None);
+    }
+
+    #[test]
+    fn when_the_last_file_is_on_disk_the_chosen_configuration_is_in_use() {
+        let settings = tdt_with_sortformer_chosen();
+        let plan = plan_choice(&settings, |_| Vec::new(), &HashSet::new(), None);
+        assert_eq!(plan.apply.as_ref(), Some(&settings.chosen_recognition));
+        assert!(plan.download.is_empty() && plan.waiting.is_empty());
+
+        // The apply changes the six values as one unit.
+        let mut after = settings.clone();
+        after.set_in_use(&plan.apply.unwrap());
+        assert_eq!(after.in_use(), settings.chosen_recognition);
+        assert!(!after.recognition.differs);
+        assert!(settings::shared_patch(&settings, &after).is_empty());
+    }
+
+    #[test]
+    fn a_launch_with_the_chosen_configuration_in_use_starts_nothing() {
+        // Nothing is on disk, as on a new install: the step starts no
+        // download, and the Settings window downloads the models.
+        let plan = plan_choice(&Settings::default(), nothing_on_disk, &HashSet::new(), None);
+        assert_eq!(plan, ChoicePlan::default());
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().into());
+        let (plan, changed) = manager.plan_choice_now(&Settings::default());
+        assert_eq!(plan, ChoicePlan::default());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn a_failed_download_keeps_the_configuration_in_use_until_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().into());
+        let settings = tdt_with_sortformer_chosen();
+        let (plan, changed) = manager.plan_choice_now(&settings);
+        assert!(changed);
+        assert_eq!(ids(&plan.download), [TDT_V3, SORTFORMER]);
+        manager
+            .choice()
+            .started
+            .extend(plan.download.iter().map(download_key));
+
+        let failed = DownloadUpdate::Failed {
+            message: "checksum mismatch".into(),
+        };
+        assert!(manager.note_outcome(&key_of(TDT_V3), TDT_V3, &failed));
+        let mut reported = settings.clone();
+        manager.report_choice(&mut reported);
+        assert_eq!(
+            reported.recognition.failure,
+            Some(RecognitionFailure {
+                model_id: TDT_V3.into(),
+                message: "checksum mismatch".into()
+            })
+        );
+        assert_eq!(reported.recognition.waiting_for, [TDT_V3, SORTFORMER]);
+        assert_eq!(reported.asr_model, WHISPER);
+
+        // A later step, for example after a file event from another
+        // computer, starts nothing and keeps the failure.
+        let (plan, changed) = manager.plan_choice_now(&settings);
+        assert!(!changed);
+        assert!(plan.download.is_empty());
+        assert_eq!(plan.apply, None);
+        assert_eq!(plan.failure.unwrap().model_id, TDT_V3);
+
+        // Retry starts the downloads again.
+        manager.retry_choice();
+        let (plan, _) = manager.plan_choice_now(&settings);
+        assert_eq!(ids(&plan.download), [TDT_V3, SORTFORMER]);
+        assert_eq!(plan.failure, None);
+    }
+
+    #[test]
+    fn a_stopped_download_of_the_chosen_configuration_is_a_failure_and_another_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().into());
+        manager.plan_choice_now(&tdt_with_sortformer_chosen());
+        // A file that the chosen configuration does not wait for.
+        assert!(!manager.note_outcome(&key_of(WHISPER), WHISPER, &DownloadUpdate::Cancelled));
+        assert!(!manager.note_outcome(&key_of(TDT_V3), TDT_V3, &DownloadUpdate::Completed));
+        // A download that a step stopped is not a failure, also when the
+        // chosen configuration needs the file again.
+        manager.choice().stopped.insert(key_of(TDT_V3));
+        assert!(!manager.note_outcome(&key_of(TDT_V3), TDT_V3, &DownloadUpdate::Cancelled));
+        assert_eq!(manager.choice().failure, None);
+        assert!(manager.note_outcome(&key_of(TDT_V3), TDT_V3, &DownloadUpdate::Cancelled));
+        assert_eq!(
+            manager.choice().failure.as_ref().unwrap().message,
+            DOWNLOAD_STOPPED
+        );
+    }
+
+    #[test]
+    fn a_failure_goes_when_the_chosen_configuration_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(dir.path().into());
+        let settings = tdt_with_sortformer_chosen();
+        manager.plan_choice_now(&settings);
+        manager.note_outcome(
+            &key_of(TDT_V3),
+            TDT_V3,
+            &DownloadUpdate::Failed {
+                message: "offline".into(),
+            },
+        );
+        let mut other = settings.clone();
+        other.chosen_recognition.asr_model = NEMOTRON_3_5.into();
+        let (plan, _) = manager.plan_choice_now(&other);
+        assert_eq!(plan.failure, None);
+        assert_eq!(ids(&plan.download), [NEMOTRON_3_5, SORTFORMER]);
+    }
+
+    #[test]
+    fn a_chosen_model_that_this_version_does_not_know_starts_no_download() {
+        use shared_settings::view::{self, Availability};
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert(
+            "asr_model".into(),
+            serde_json::json!("model-from-the-future"),
+        );
+        raw.insert("speaker_source".into(), serde_json::json!("sortformer"));
+        let cache = shared_settings::cache::Cache {
+            source: PathBuf::from("/vault"),
+            settings: raw,
+            prompts: Vec::new(),
+            active_prompt: None,
+        };
+        let shared = crate::managers::shared::SharedSnapshot {
+            view: view::cached(Some(&cache), Availability::Available),
+            ..Default::default()
+        };
+        let local = settings::LocalSettings {
+            asr_model: WHISPER.into(),
+            ..Default::default()
+        };
+        let settings = Settings::from_parts(local, &shared);
+        assert!(settings.recognition.chosen_not_known);
+        // The known values differ, and still the configuration in use stays.
+        assert!(settings.recognition.differs);
+        let plan = plan_choice(&settings, nothing_on_disk, &HashSet::new(), None);
+        assert_eq!(plan, ChoicePlan::default());
+    }
+
+    #[test]
+    fn a_change_of_choice_stops_a_download_that_no_configuration_needs() {
+        // TDT v3 and Sortformer download for the first choice. Then the
+        // user chooses Nemotron 3.5 with Sortformer: TDT v3 stops, and
+        // Sortformer continues.
+        let mut settings = tdt_with_sortformer_chosen();
+        let started: HashSet<String> = [key_of(TDT_V3), key_of(SORTFORMER)].into();
+        settings.chosen_recognition.asr_model = NEMOTRON_3_5.into();
+        let plan = plan_choice(&settings, nothing_on_disk, &started, None);
+        assert_eq!(plan.stop, [key_of(TDT_V3)]);
+        assert_eq!(ids(&plan.download), [NEMOTRON_3_5, SORTFORMER]);
+
+        // A download of a file of the configuration in use continues.
+        let started: HashSet<String> = [key_of(WHISPER), key_of(TDT_V3)].into();
+        let plan = plan_choice(&whisper_selected(), nothing_on_disk, &started, None);
+        assert_eq!(plan.stop, [key_of(TDT_V3)]);
+    }
+
+    /// A change from another computer arrives through the shared settings
+    /// manager's read (U5), and the step then starts the downloads.
+    #[test]
+    fn a_change_from_another_computer_starts_the_downloads() {
+        use shared_settings::file::SharedValue;
+        let folder = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let shared = crate::managers::shared::SharedSettingsManager::new(
+            cache.path().into(),
+            Some(folder.path().into()),
+        );
+        shared.join_at_launch();
+        let models_dir = tempfile::tempdir().unwrap();
+        let manager = ModelsManager::at(models_dir.path().into());
+        let settings = Settings::from_parts(settings::LocalSettings::default(), &shared.snapshot());
+        assert_eq!(manager.plan_choice_now(&settings).0, ChoicePlan::default());
+
+        // Computer A chooses Parakeet TDT v3 with Sortformer.
+        shared_settings::file::save_settings(
+            folder.path(),
+            &[
+                SharedValue::AsrModel(TDT_V3.into()),
+                SharedValue::SpeakerSource(models::recognition::SpeakerSource::Sortformer),
+            ],
+        )
+        .unwrap();
+        assert!(shared.reread());
+        let settings = Settings::from_parts(settings::LocalSettings::default(), &shared.snapshot());
+        assert_eq!(settings.chosen_recognition.asr_model, TDT_V3);
+        assert_eq!(settings.asr_model, models::DEFAULT_ASR_MODEL);
+        let (plan, changed) = manager.plan_choice_now(&settings);
+        assert!(changed);
+        assert_eq!(ids(&plan.download), [TDT_V3, SORTFORMER]);
+        assert_eq!(plan.apply, None);
     }
 
     fn note(model: &str, state: SessionState) -> SessionRecord {
@@ -863,10 +1166,7 @@ mod tests {
     #[test]
     fn delete_refuses_the_selected_model_and_allows_another() {
         // AE8.
-        let settings = Settings {
-            asr_model: PARAKEET.into(),
-            ..Settings::default()
-        };
+        let settings = using(model_choice(PARAKEET));
         assert!(delete_refusal(PARAKEET, &settings, None, &[]).is_some());
         assert_eq!(delete_refusal(WHISPER, &settings, None, &[]), None);
     }
@@ -893,12 +1193,12 @@ mod tests {
 
     #[test]
     fn delete_refuses_the_native_artifact_selected_by_the_live_route() {
-        let settings = Settings {
+        let settings = using(RecognitionChoice {
             asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
             live_transcript: true,
             speaker_source: models::recognition::SpeakerSource::Nemotron,
-            ..Settings::default()
-        };
+            ..RecognitionChoice::default()
+        });
         assert!(
             delete_refusal(
                 "nemo-nemotron-speech-streaming-en-0.6b-q80",
@@ -911,10 +1211,17 @@ mod tests {
     }
 
     #[test]
-    fn delete_refuses_the_pending_and_the_live_model() {
-        let mut settings = whisper_selected();
-        settings.pending_asr_model = Some(TDT_V3.into());
-        assert!(delete_refusal(TDT_V3, &settings, None, &[]).is_some());
+    fn delete_refuses_the_chosen_and_the_live_model() {
+        let settings = tdt_with_sortformer_chosen();
+        assert_eq!(
+            delete_refusal(TDT_V3, &settings, None, &[]).as_deref(),
+            Some("The chosen transcription settings need this model.")
+        );
+        // A speaker model of the chosen configuration stays too.
+        assert!(delete_refusal(SORTFORMER, &settings, None, &[]).is_some());
+        // The configuration in use keeps its models.
+        assert!(delete_refusal(WHISPER, &settings, None, &[]).is_some());
+        assert!(delete_refusal("pyannote-segmentation-3.0", &settings, None, &[]).is_some());
         assert!(delete_refusal(PARAKEET, &settings, Some(PARAKEET), &[]).is_some());
         assert_eq!(
             delete_refusal(PARAKEET, &settings, Some(NEMOTRON_3_5), &[]),
@@ -1009,8 +1316,10 @@ mod tests {
         let settings = whisper_selected();
         assert!(delete_refusal("pyannote-segmentation-3.0", &settings, None, &[]).is_some());
         assert!(delete_refusal("no-such-model", &settings, None, &[]).is_some());
-        let mut without_speakers = settings;
-        without_speakers.speaker_source = models::recognition::SpeakerSource::Off;
+        let without_speakers = using(RecognitionChoice {
+            speaker_source: models::recognition::SpeakerSource::Off,
+            ..model_choice(WHISPER)
+        });
         assert!(
             delete_refusal(
                 "pyannote-segmentation-3.0",
@@ -1093,14 +1402,11 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_and_pending_bundles_keep_their_files_without_the_model() {
-        // The selected model is not on disk (a failed download), and a
-        // pending model downloads: both bundles stay.
-        let settings = Settings {
-            asr_model: NEMOTRON_STREAMING.into(),
-            pending_asr_model: Some(PARAKEET.into()),
-            ..Settings::default()
-        };
+    fn the_bundles_in_use_and_chosen_keep_their_files_without_the_model() {
+        // The model in use is not on disk (a failed download), and the
+        // chosen model downloads: both bundles stay.
+        let mut settings = using(model_choice(NEMOTRON_STREAMING));
+        settings.chosen_recognition = model_choice(PARAKEET);
         let statuses = statuses_with(&settings, &[SORTFORMER, NEMO_COPY]);
         assert!(unneeded_supporting_models(&statuses, &settings).is_empty());
     }

@@ -6,7 +6,9 @@ import type {
   ExecutionSpec,
   DownloadUpdate,
   ModelStatus,
+  RecognitionChoice,
   RecognitionConfig,
+  RecognitionState,
   Settings,
 } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
@@ -48,14 +50,36 @@ const model = (id: string, name: string): ModelStatus => ({
   licence: { name: "MIT", url: "https://example.com", attribution: "Example" },
 });
 const models = [model(stream, "Parakeet"), model(offline, "Whisper")];
-const settings = {
+const inUse: RecognitionChoice = {
   asr_model: stream,
   speaker_source: "nemotron",
   live_transcript: true,
   speaker_processing_mode: "after_stop",
   default_speaker_count: null,
   recognition_language: null,
+};
+const settled: RecognitionState = { differs: false, chosen_not_known: false, waiting_for: [], failure: null };
+const settings = {
+  ...inUse,
+  chosen_recognition: inUse,
+  recognition: settled,
 } as Settings;
+
+/// The settings with `config` chosen and the configuration in use kept.
+function choosing(config: RecognitionConfig, state: Partial<RecognitionState> = {}): Settings {
+  return {
+    ...settings,
+    chosen_recognition: {
+      asr_model: config.asr_model,
+      speaker_source: config.speaker_source,
+      live_transcript: config.processing_mode === "during_recording",
+      speaker_processing_mode: config.speaker_processing_mode ?? "after_stop",
+      default_speaker_count: config.speaker_count,
+      recognition_language: config.language,
+    },
+    recognition: { ...settled, differs: true, ...state },
+  };
+}
 
 function TestModels(props: Omit<ComponentProps<typeof Models>, "defaults">) {
   const defaults = useRecognitionDefaultsSave(async () => {});
@@ -121,6 +145,15 @@ function open(
   catalog = models,
   live: Record<string, DownloadUpdate> = {},
 ) {
+  // A test that changes the values in use and keeps the base chosen
+  // configuration saved those values: they are chosen too.
+  if (initial.chosen_recognition === settings.chosen_recognition) {
+    const { asr_model, speaker_source, live_transcript, speaker_processing_mode, default_speaker_count, recognition_language } = initial;
+    initial = {
+      ...initial,
+      chosen_recognition: { asr_model, speaker_source, live_transcript, speaker_processing_mode, default_speaker_count, recognition_language },
+    };
+  }
   const tauri = mockTauri({
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
     set_recognition_defaults: () => initial,
@@ -442,6 +475,31 @@ test("installed artifacts show Models ready instead of a download size", async (
   expect(screen.queryByText(/Required download size/)).toBeNull();
 });
 
+test("a failed download of the chosen model shows its cause and Retry", async () => {
+  const failed = choosing(
+    { ...recognitionDefaults(settings), asr_model: offline, processing_mode: "after_stop" },
+    { waiting_for: [offline], failure: { model_id: offline, message: "the checksum does not match" } },
+  );
+  const { user, tauri, refreshes } = open({ retry_recognition_downloads: () => settings }, failed);
+  await ready();
+  const alert = screen.getByRole("alert");
+  expect(alert.textContent).toContain("Whisper could not download. The checksum does not match.");
+  expect(alert.textContent).toContain("New notes use Parakeet.");
+  expect(screen.queryByText(/Models are downloading for/)).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(tauri.calls.some((c) => c.cmd === "retry_recognition_downloads")).toBe(true);
+  await waitFor(() => expect(refreshes.count).toBeGreaterThan(0));
+});
+
+test("a chosen configuration from a newer version keeps the model in use", async () => {
+  open({}, { ...settings, recognition: { ...settled, differs: true, chosen_not_known: true } });
+  await ready();
+  expect(screen.getByText(/A newer version of Longhand changed these settings/).textContent).toContain(
+    "New notes on this computer use Parakeet.",
+  );
+  expect(screen.queryByText(/Models are downloading for/)).toBeNull();
+});
+
 test("completed model downloads clear the pending defaults notice", async () => {
   const pending: RecognitionConfig = {
     asr_model: offline,
@@ -451,7 +509,7 @@ test("completed model downloads clear the pending defaults notice", async () => 
     speaker_count: null,
     language: null,
   };
-  const pendingSettings = { ...settings, pending_recognition: pending };
+  const pendingSettings = choosing(pending, { waiting_for: [offline] });
   const downloading: ModelStatus[] = models.map((m) =>
     m.id === offline ? { ...m, state: { state: "downloading" } } : m,
   );
@@ -487,11 +545,9 @@ test("completed model downloads clear the pending defaults notice", async () => 
   expect(screen.getByRole("radio", { name: "Whisper" }).parentElement!.textContent).toContain("Downloading…");
 
   update({
-    ...settings,
-    asr_model: offline,
-    speaker_source: "nemotron",
-    live_transcript: false,
-    pending_recognition: null,
+    ...pendingSettings,
+    ...pendingSettings.chosen_recognition,
+    recognition: settled,
   }, models);
   expect(screen.getByText("Models ready")).toBeTruthy();
   expect(screen.queryByText(/Models are downloading for/)).toBeNull();
@@ -614,7 +670,7 @@ describe("a shared supporting file download", () => {
       resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
       set_recognition_defaults: () => settings,
     });
-    const pending = { ...settings, pending_recognition: { ...recognitionDefaults(settings), asr_model: stream } } as Settings;
+    const pending = choosing({ ...recognitionDefaults(settings), asr_model: stream });
     render(
       <TestModels
         models={bundled}
@@ -702,16 +758,9 @@ test("transcription saves remain ordered after switching panes", async () => {
     model_statuses: () => models,
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
     set_recognition_defaults: ({ config }) => {
-      const choice = config as RecognitionConfig;
-      saved = {
-        ...saved,
-        asr_model: choice.asr_model,
-        speaker_source: choice.speaker_source,
-        live_transcript: choice.processing_mode === "during_recording",
-        speaker_processing_mode: choice.speaker_processing_mode ?? "after_stop",
-        default_speaker_count: choice.speaker_count,
-        recognition_language: choice.language,
-      };
+      // The models are on disk, so the choice is in use at once.
+      const chosen = choosing(config as RecognitionConfig).chosen_recognition;
+      saved = { ...saved, ...chosen, chosen_recognition: chosen, recognition: settled };
       return ++saves === 1
         ? new Promise<Settings>((done) => { release = done; })
         : saved;

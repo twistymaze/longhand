@@ -164,8 +164,14 @@ pub struct LocalSettings {
     pub endpoint_base_url: Option<String>,
     pub endpoint_model: String,
     pub context_limit_tokens: Option<u32>,
-    pub pending_asr_model: Option<String>,
-    pub pending_recognition: Option<models::recognition::RecognitionConfig>,
+    /// The recognition configuration in use on this computer (R18, KTD14).
+    /// It is never written to the shared settings.
+    pub asr_model: String,
+    pub live_transcript: bool,
+    pub speaker_source: models::recognition::SpeakerSource,
+    pub speaker_processing_mode: models::recognition::ProcessingMode,
+    pub recognition_language: Option<String>,
+    pub default_speaker_count: Option<SpeakerCountSetting>,
     pub microphone: Option<MicrophoneChoice>,
     pub system_audio_default: bool,
     pub hide_from_dock: bool,
@@ -183,6 +189,173 @@ impl LocalSettings {
     pub fn storage_folder(&self) -> Option<PathBuf> {
         folder_path(&self.storage_folder)
     }
+
+    /// The recognition configuration in use on this computer.
+    pub fn in_use(&self) -> RecognitionChoice {
+        RecognitionChoice {
+            asr_model: self.asr_model.clone(),
+            live_transcript: self.live_transcript,
+            speaker_source: self.speaker_source,
+            speaker_processing_mode: self.speaker_processing_mode,
+            recognition_language: self.recognition_language.clone(),
+            default_speaker_count: self.default_speaker_count,
+        }
+    }
+}
+
+/// The six values of a recognition configuration, as the settings hold
+/// them (R18): the chosen configuration in the shared settings, or the
+/// configuration in use on this computer.
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct RecognitionChoice {
+    /// Catalog id of the transcription model (KTD6).
+    pub asr_model: String,
+    /// A streaming model transcribes during recording (R18, KD9).
+    pub live_transcript: bool,
+    pub speaker_source: models::recognition::SpeakerSource,
+    pub speaker_processing_mode: models::recognition::ProcessingMode,
+    pub recognition_language: Option<String>,
+    pub default_speaker_count: Option<SpeakerCountSetting>,
+}
+
+impl Default for RecognitionChoice {
+    fn default() -> Self {
+        Self {
+            asr_model: models::DEFAULT_ASR_MODEL.to_string(),
+            live_transcript: true,
+            speaker_source: Default::default(),
+            speaker_processing_mode: Default::default(),
+            recognition_language: None,
+            default_speaker_count: None,
+        }
+    }
+}
+
+impl RecognitionChoice {
+    /// The choice of a configuration that the Settings window sends.
+    pub fn from_config(config: &models::recognition::RecognitionConfig) -> Self {
+        use models::recognition::ProcessingMode;
+        Self {
+            asr_model: config.asr_model.clone(),
+            live_transcript: config.processing_mode == ProcessingMode::DuringRecording,
+            speaker_source: config.speaker_source,
+            speaker_processing_mode: config.speaker_processing_mode,
+            recognition_language: config.language.clone(),
+            default_speaker_count: config.speaker_count.map(Into::into),
+        }
+    }
+
+    /// The configuration that recognition resolves. Live transcript
+    /// applies only to a model that streams.
+    pub fn config(&self) -> models::recognition::RecognitionConfig {
+        use models::recognition::{ProcessingMode, RecognitionConfig};
+        let live_supported = models::model(&self.asr_model).is_some_and(|m| m.streaming);
+        RecognitionConfig {
+            asr_model: self.asr_model.clone(),
+            speaker_source: self.speaker_source,
+            processing_mode: if self.live_transcript && live_supported {
+                ProcessingMode::DuringRecording
+            } else {
+                ProcessingMode::AfterStop
+            },
+            speaker_count: self.default_speaker_count.map(Into::into),
+            language: self.recognition_language.clone(),
+            speaker_processing_mode: self.speaker_processing_mode,
+        }
+    }
+
+    /// The chosen configuration in the shared fields. A field that the
+    /// file does not have reads as its default. A field with a value that
+    /// this version does not know reads as the value of `in_use`, and the
+    /// second value is true (R17).
+    fn from_shared(
+        fields: &shared_settings::file::SharedFields,
+        in_use: &RecognitionChoice,
+    ) -> (Self, bool) {
+        let defaults = RecognitionChoice::default();
+        let mut not_known = false;
+        let choice = Self {
+            asr_model: pick(
+                &fields.asr_model,
+                defaults.asr_model,
+                in_use.asr_model.clone(),
+                &mut not_known,
+            ),
+            live_transcript: pick(
+                &fields.live_transcript,
+                defaults.live_transcript,
+                in_use.live_transcript,
+                &mut not_known,
+            ),
+            speaker_source: pick(
+                &fields.speaker_source,
+                defaults.speaker_source,
+                in_use.speaker_source,
+                &mut not_known,
+            ),
+            speaker_processing_mode: pick(
+                &fields.speaker_processing_mode,
+                defaults.speaker_processing_mode,
+                in_use.speaker_processing_mode,
+                &mut not_known,
+            ),
+            recognition_language: pick(
+                &fields.recognition_language,
+                defaults.recognition_language,
+                in_use.recognition_language.clone(),
+                &mut not_known,
+            ),
+            default_speaker_count: match &fields.default_speaker_count {
+                Field::Known(count) => count.map(SpeakerCountSetting::from),
+                Field::Absent => defaults.default_speaker_count,
+                Field::Unknown(_) => {
+                    not_known = true;
+                    in_use.default_speaker_count
+                }
+            },
+        };
+        (choice, not_known)
+    }
+}
+
+/// The value of `field`: its default when the file does not have it, and
+/// `current` when this version does not know its value.
+fn pick<T: Clone>(field: &Field<T>, default: T, current: T, not_known: &mut bool) -> T {
+    match field {
+        Field::Known(value) => value.clone(),
+        Field::Absent => default,
+        Field::Unknown(_) => {
+            *not_known = true;
+            current
+        }
+    }
+}
+
+/// A failed download of a file that the chosen configuration needs (R19).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct RecognitionFailure {
+    /// The catalog id of the file.
+    pub model_id: String,
+    /// The cause, as Settings shows it.
+    pub message: String,
+}
+
+/// The chosen recognition configuration compared with the configuration in
+/// use, for the Settings window (R18, R19).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecognitionState {
+    /// The chosen configuration differs from the configuration in use.
+    pub differs: bool,
+    /// The chosen configuration has a value that this version does not
+    /// know, for example a model from a newer version. The configuration in
+    /// use stays, and no download starts.
+    pub chosen_not_known: bool,
+    /// The catalog ids of the files that the chosen configuration waits
+    /// for. `ModelDownloadEvent` gives the progress of each.
+    pub waiting_for: Vec<String>,
+    /// A download of the chosen configuration failed. It stays failed
+    /// until the user selects Retry.
+    pub failure: Option<RecognitionFailure>,
 }
 
 fn folder_path(folder: &str) -> Option<PathBuf> {
@@ -216,23 +389,23 @@ pub struct Settings {
     pub endpoint_model: String,
     /// Overrides the probed context budget when set (KTD16).
     pub context_limit_tokens: Option<u32>,
-    /// A shared setting.
+    /// This field and the five after it are the recognition configuration
+    /// in use on this computer (R18, KTD14). Recording, processing and
+    /// Transcribe Again read them. They change to `chosen_recognition` as
+    /// one unit when every model that it needs is on disk.
     pub default_speaker_count: Option<SpeakerCountSetting>,
-    /// A shared setting. Catalog id of the recognition model (KTD6).
+    /// Catalog id of the recognition model (KTD6).
     pub asr_model: String,
-    /// A picked recognition model that is downloading. It becomes
-    /// `asr_model` when its download is verified (R5, KTD11).
-    pub pending_asr_model: Option<String>,
-    /// A shared setting. A streaming model transcribes during recording
-    /// (R18, KD9).
+    /// A streaming model transcribes during recording (R18, KD9).
     pub live_transcript: bool,
-    /// A shared setting.
     pub speaker_source: models::recognition::SpeakerSource,
-    /// A shared setting.
     pub speaker_processing_mode: models::recognition::ProcessingMode,
-    /// A shared setting.
     pub recognition_language: Option<String>,
-    pub pending_recognition: Option<models::recognition::RecognitionConfig>,
+    /// A shared setting. The chosen recognition configuration (R18).
+    pub chosen_recognition: RecognitionChoice,
+    /// The chosen configuration compared with the configuration in use,
+    /// and the downloads that it waits for (R19).
+    pub recognition: RecognitionState,
     /// The microphone a new note records from. `None` is "System default"
     /// (R1, KTD17).
     pub microphone: Option<MicrophoneChoice>,
@@ -376,12 +549,12 @@ impl Default for Settings {
             context_limit_tokens: None,
             default_speaker_count: None,
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
-            pending_asr_model: None,
             live_transcript: true,
             speaker_source: Default::default(),
             speaker_processing_mode: Default::default(),
             recognition_language: None,
-            pending_recognition: None,
+            chosen_recognition: RecognitionChoice::default(),
+            recognition: RecognitionState::default(),
             microphone: None,
             system_audio_default: false,
             hide_from_dock: false,
@@ -402,6 +575,9 @@ impl Settings {
     pub fn from_parts(local: LocalSettings, shared: &SharedSnapshot) -> Self {
         let defaults = Settings::default();
         let fields = &shared.view.fields;
+        let in_use = local.in_use();
+        let (chosen_recognition, chosen_not_known) =
+            RecognitionChoice::from_shared(fields, &in_use);
         Self {
             settings_schema_version: local.settings_schema_version,
             interface_zoom_percent: local.interface_zoom_percent,
@@ -411,23 +587,18 @@ impl Settings {
             endpoint_base_url: local.endpoint_base_url,
             endpoint_model: local.endpoint_model,
             context_limit_tokens: local.context_limit_tokens,
-            default_speaker_count: match &fields.default_speaker_count {
-                Field::Known(count) => count.map(SpeakerCountSetting::from),
-                Field::Absent | Field::Unknown(_) => defaults.default_speaker_count,
+            default_speaker_count: local.default_speaker_count,
+            asr_model: local.asr_model,
+            live_transcript: local.live_transcript,
+            speaker_source: local.speaker_source,
+            speaker_processing_mode: local.speaker_processing_mode,
+            recognition_language: local.recognition_language,
+            recognition: RecognitionState {
+                differs: chosen_recognition != in_use,
+                chosen_not_known,
+                ..RecognitionState::default()
             },
-            asr_model: known_or(&fields.asr_model, defaults.asr_model),
-            pending_asr_model: local.pending_asr_model,
-            live_transcript: known_or(&fields.live_transcript, defaults.live_transcript),
-            speaker_source: known_or(&fields.speaker_source, defaults.speaker_source),
-            speaker_processing_mode: known_or(
-                &fields.speaker_processing_mode,
-                defaults.speaker_processing_mode,
-            ),
-            recognition_language: known_or(
-                &fields.recognition_language,
-                defaults.recognition_language,
-            ),
-            pending_recognition: local.pending_recognition,
+            chosen_recognition,
             microphone: local.microphone,
             system_audio_default: local.system_audio_default,
             hide_from_dock: local.hide_from_dock,
@@ -468,8 +639,12 @@ impl Settings {
             endpoint_base_url: self.endpoint_base_url.clone(),
             endpoint_model: self.endpoint_model.clone(),
             context_limit_tokens: self.context_limit_tokens,
-            pending_asr_model: self.pending_asr_model.clone(),
-            pending_recognition: self.pending_recognition.clone(),
+            asr_model: self.asr_model.clone(),
+            live_transcript: self.live_transcript,
+            speaker_source: self.speaker_source,
+            speaker_processing_mode: self.speaker_processing_mode,
+            recognition_language: self.recognition_language.clone(),
+            default_speaker_count: self.default_speaker_count,
             microphone: self.microphone.clone(),
             system_audio_default: self.system_audio_default,
             hide_from_dock: self.hide_from_dock,
@@ -477,32 +652,32 @@ impl Settings {
         }
     }
 
-    pub fn recognition_config(&self) -> models::recognition::RecognitionConfig {
-        use models::recognition::{ProcessingMode, RecognitionConfig};
-        let live_supported = models::model(&self.asr_model).is_some_and(|m| m.streaming);
-        RecognitionConfig {
-            asr_model: self.asr_model.clone(),
-            speaker_source: self.speaker_source,
-            processing_mode: if self.live_transcript && live_supported {
-                ProcessingMode::DuringRecording
-            } else {
-                ProcessingMode::AfterStop
-            },
-            speaker_count: self.default_speaker_count.map(Into::into),
-            language: self.recognition_language.clone(),
-            speaker_processing_mode: self.speaker_processing_mode,
-        }
+    /// The recognition configuration in use on this computer.
+    pub fn in_use(&self) -> RecognitionChoice {
+        self.local().in_use()
     }
 
-    pub fn apply_recognition(&mut self, config: &models::recognition::RecognitionConfig) {
-        use models::recognition::ProcessingMode;
-        self.asr_model = config.asr_model.clone();
-        self.speaker_source = config.speaker_source;
-        self.speaker_processing_mode = config.speaker_processing_mode;
-        self.live_transcript = config.processing_mode == ProcessingMode::DuringRecording;
-        self.recognition_language = config.language.clone();
-        self.default_speaker_count = config.speaker_count.map(Into::into);
-        self.pending_recognition = None;
+    /// The configuration in use, as recognition resolves it.
+    pub fn recognition_config(&self) -> models::recognition::RecognitionConfig {
+        self.in_use().config()
+    }
+
+    /// The chosen configuration, as recognition resolves it. `None` when it
+    /// has a value that this version does not know.
+    pub fn chosen_config(&self) -> Option<models::recognition::RecognitionConfig> {
+        (!self.recognition.chosen_not_known).then(|| self.chosen_recognition.config())
+    }
+
+    /// Make `choice` the configuration in use. Only the models manager
+    /// calls this, when every model of the chosen configuration is on disk.
+    pub fn set_in_use(&mut self, choice: &RecognitionChoice) {
+        self.asr_model = choice.asr_model.clone();
+        self.live_transcript = choice.live_transcript;
+        self.speaker_source = choice.speaker_source;
+        self.speaker_processing_mode = choice.speaker_processing_mode;
+        self.recognition_language = choice.recognition_language.clone();
+        self.default_speaker_count = choice.default_speaker_count;
+        self.recognition.differs = self.chosen_recognition != *choice;
     }
 
     /// Choose the usual microphone, or `None` for "System default" (R1).
@@ -618,7 +793,8 @@ fn known_or<T: Clone>(field: &Field<T>, default: T) -> T {
 
 /// The shared settings that a change from `before` to `after` sets. Each
 /// save writes only these values (R15). The prompts are files of their own
-/// and have their own commands, so this ignores them.
+/// and have their own commands, so this ignores them. The recognition
+/// configuration in use is local, so this ignores it too (R18).
 pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
     let mut patch = Vec::new();
     if before.active_summary_prompt != after.active_summary_prompt {
@@ -626,28 +802,29 @@ pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
             after.active_summary_prompt.clone(),
         ));
     }
-    if before.default_speaker_count != after.default_speaker_count {
+    let (chosen_before, chosen) = (&before.chosen_recognition, &after.chosen_recognition);
+    if chosen_before.default_speaker_count != chosen.default_speaker_count {
         patch.push(SharedValue::DefaultSpeakerCount(
-            after.default_speaker_count.map(Into::into),
+            chosen.default_speaker_count.map(Into::into),
         ));
     }
-    if before.asr_model != after.asr_model {
-        patch.push(SharedValue::AsrModel(after.asr_model.clone()));
+    if chosen_before.asr_model != chosen.asr_model {
+        patch.push(SharedValue::AsrModel(chosen.asr_model.clone()));
     }
-    if before.live_transcript != after.live_transcript {
-        patch.push(SharedValue::LiveTranscript(after.live_transcript));
+    if chosen_before.live_transcript != chosen.live_transcript {
+        patch.push(SharedValue::LiveTranscript(chosen.live_transcript));
     }
-    if before.speaker_source != after.speaker_source {
-        patch.push(SharedValue::SpeakerSource(after.speaker_source));
+    if chosen_before.speaker_source != chosen.speaker_source {
+        patch.push(SharedValue::SpeakerSource(chosen.speaker_source));
     }
-    if before.speaker_processing_mode != after.speaker_processing_mode {
+    if chosen_before.speaker_processing_mode != chosen.speaker_processing_mode {
         patch.push(SharedValue::SpeakerProcessingMode(
-            after.speaker_processing_mode,
+            chosen.speaker_processing_mode,
         ));
     }
-    if before.recognition_language != after.recognition_language {
+    if chosen_before.recognition_language != chosen.recognition_language {
         patch.push(SharedValue::RecognitionLanguage(
-            after.recognition_language.clone(),
+            chosen.recognition_language.clone(),
         ));
     }
     if before.check_updates_automatically != after.check_updates_automatically {
@@ -666,6 +843,7 @@ fn topic_summary() -> summarize::Prompt {
 /// form differs from what would be written back, so the caller persists the
 /// migration once and then converges.
 pub fn settings_from_value(stored: &Value) -> (LocalSettings, bool) {
+    let original = stored;
     let mut stored = stored.clone();
     let rewritten = rewrite_stale_recognition(&mut stored) | rewrite_destinations(&mut stored);
     let (mut settings, mut updated) = match LocalSettings::deserialize(&stored) {
@@ -675,41 +853,34 @@ pub fn settings_from_value(stored: &Value) -> (LocalSettings, bool) {
             (salvage_settings(&stored), true)
         }
     };
-    if apply_settings_migrations(&mut settings, &stored) {
+    if apply_settings_migrations(&mut settings, original) {
         updated = true;
     }
     (settings, updated)
 }
 
-/// Rewrite the stored recognition values that the catalog no longer
-/// supports (R9, R10, KTD2), in the local fields. The rewrite runs before
-/// the parse, so the parse and the salvage see only valid values. Returns
-/// whether a value changed.
+/// Rewrite the stored recognition values in use that the catalog no longer
+/// supports (R9, R10, KTD2). The rewrite runs before the parse, so the
+/// parse and the salvage see only valid values. Returns whether a value
+/// changed.
 fn rewrite_stale_recognition(stored: &mut Value) -> bool {
-    use models::recognition::SpeakerCount;
     let Some(map) = stored.as_object_mut() else {
         return false;
     };
+    let speaker_count = map
+        .get("default_speaker_count")
+        .and_then(|v| serde_json::from_value::<SpeakerCountSetting>(v.clone()).ok());
     let mut changed = false;
-    // Nothing can download a model that is not in the catalog.
-    if map
-        .get("pending_asr_model")
-        .and_then(Value::as_str)
-        .is_some_and(|id| !is_catalog_asr_model(id))
+    if let Some(count) = speaker_count
+        && count.validate().is_err()
     {
-        map.remove("pending_asr_model");
+        map.remove("default_speaker_count");
         changed = true;
     }
-    if let Some(pending) = map
-        .get_mut("pending_recognition")
-        .and_then(Value::as_object_mut)
-    {
-        let speaker_count = pending
-            .get("speaker_count")
-            .and_then(|v| serde_json::from_value::<SpeakerCount>(v.clone()).ok());
-        changed |= rewrite_recognition_fields(pending, speaker_count);
-    }
-    changed
+    let speaker_count = speaker_count
+        .filter(|c| c.validate().is_ok())
+        .map(Into::into);
+    changed | rewrite_recognition_fields(map, speaker_count)
 }
 
 /// Part of the version 6 migration: the current destination becomes the
@@ -810,8 +981,20 @@ fn apply_settings_migrations(settings: &mut LocalSettings, stored: &Value) -> bo
     // rules for the shared fields apply in `legacy_shared` (R21). Version 6
     // moves the shared fields to the storage folder (R12, KTD7): this write
     // drops them from the local store, after `legacy_shared` put them into
-    // the cache.
+    // the cache. The recognition values that the store used become the
+    // configuration in use, with the same rules (R18).
     if stored_version < SHARED_SETTINGS_VERSION {
+        if let Some(legacy) = legacy_shared(stored) {
+            let fields = shared_settings::file::SharedFields::from_raw(&legacy.settings);
+            let (in_use, _) =
+                RecognitionChoice::from_shared(&fields, &RecognitionChoice::default());
+            settings.asr_model = in_use.asr_model;
+            settings.live_transcript = in_use.live_transcript;
+            settings.speaker_source = in_use.speaker_source;
+            settings.speaker_processing_mode = in_use.speaker_processing_mode;
+            settings.recognition_language = in_use.recognition_language;
+            settings.default_speaker_count = in_use.default_speaker_count;
+        }
         updated = true;
     }
     let zoom = crate::interface_zoom::normalize(settings.interface_zoom_percent);
@@ -998,7 +1181,19 @@ pub fn shared_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// The settings that the app uses now.
 pub fn get_settings(app: &AppHandle) -> Settings {
-    Settings::from_parts(get_local_settings(app), &shared_snapshot(app))
+    with_downloads(
+        app,
+        Settings::from_parts(get_local_settings(app), &shared_snapshot(app)),
+    )
+}
+
+/// `settings` with the downloads that the chosen recognition configuration
+/// waits for (R19).
+fn with_downloads(app: &AppHandle, mut settings: Settings) -> Settings {
+    if let Some(models) = app.try_state::<Arc<crate::managers::models::ModelsManager>>() {
+        models.report_choice(&mut settings);
+    }
+    settings
 }
 
 /// `local` with a storage folder: when it has none, the default folder
@@ -1130,7 +1325,10 @@ pub fn update_settings(
     if changed_local != local {
         write_settings(app, &changed_local)?;
     }
-    Ok(Settings::from_parts(changed_local, &shared))
+    Ok(with_downloads(
+        app,
+        Settings::from_parts(changed_local, &shared),
+    ))
 }
 
 /// Write and flush immediately: the store's autosave is debounced, and a
@@ -1233,14 +1431,18 @@ mod tests {
         let (settings, updated) = migrated(&stored);
         assert!(updated);
         // The install existed before the default changed, so it keeps the
-        // model it read before (KTD11).
-        assert_eq!(
-            settings,
-            Settings {
-                asr_model: PREVIOUS_DEFAULT_ASR_MODEL.to_string(),
-                ..Settings::default()
-            }
-        );
+        // model it read before (KTD11), as the chosen model and as the
+        // model in use.
+        let whisper = RecognitionChoice {
+            asr_model: PREVIOUS_DEFAULT_ASR_MODEL.to_string(),
+            ..RecognitionChoice::default()
+        };
+        let mut expected = Settings {
+            chosen_recognition: whisper.clone(),
+            ..Settings::default()
+        };
+        expected.set_in_use(&whisper);
+        assert_eq!(settings, expected);
         let written = serde_json::to_value(settings.local()).unwrap();
         assert!(written.get("probe_value").is_none());
         assert_eq!(
@@ -1254,7 +1456,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.asr_model, "parakeet-unified-en-0.6b-q80");
         assert!(settings.live_transcript);
-        assert_eq!(settings.pending_asr_model, None);
+        assert!(!settings.recognition.differs);
         assert_eq!(migrated(&json!({})).0, settings);
     }
 
@@ -1274,7 +1476,7 @@ mod tests {
         assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
         assert_eq!(settings.endpoint_model, "kept");
         assert!(settings.live_transcript);
-        assert_eq!(settings.pending_asr_model, None);
+        assert!(!settings.recognition.differs);
         let written = serde_json::to_value(settings.local()).unwrap();
         assert_eq!(settings_from_value(&written), (settings.local(), false));
     }
@@ -1343,9 +1545,27 @@ mod tests {
                 CURRENT_SETTINGS_SCHEMA_VERSION
             );
             let written = serde_json::to_value(&local).unwrap();
-            for key in LEGACY_SHARED_KEYS {
+            for key in [
+                shared_settings::file::KEY_ACTIVE_SUMMARY_PROMPT,
+                shared_settings::file::KEY_CHECK_UPDATES_AUTOMATICALLY,
+                LEGACY_SUMMARY_PROMPTS,
+            ] {
                 assert!(written.get(key).is_none(), "version {version}: {key}");
             }
+            // The recognition values that the store used are the
+            // configuration in use (R18).
+            assert_eq!(
+                local.in_use(),
+                RecognitionChoice {
+                    asr_model: "parakeet-tdt-0.6b-v3-q80".into(),
+                    live_transcript: false,
+                    speaker_source: models::recognition::SpeakerSource::Sortformer,
+                    speaker_processing_mode: models::recognition::ProcessingMode::DuringRecording,
+                    recognition_language: Some("de".into()),
+                    default_speaker_count: Some(SpeakerCountSetting::Exact { count: 3 }),
+                },
+                "version {version}"
+            );
 
             let legacy = legacy_shared(&stored).expect("an old store has shared values");
             let fields = shared_settings::file::SharedFields::from_raw(&legacy.settings);
@@ -1391,12 +1611,35 @@ mod tests {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "asr_model": "parakeet-tdt-0.6b-v3-q80",
+            "active_summary_prompt": PLAY_BY_PLAY_ID,
         });
         assert_eq!(legacy_shared(&stored), None);
-        // A shared key in a current store is not a local setting.
+        // A shared key in a current store is not a local setting. The model
+        // in a current store is the model in use.
         let (local, updated) = settings_from_value(&stored);
         assert!(!updated);
-        assert_eq!(local, LocalSettings::default());
+        assert_eq!(
+            local,
+            LocalSettings {
+                asr_model: "parakeet-tdt-0.6b-v3-q80".into(),
+                ..LocalSettings::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_current_store_with_no_configuration_in_use_uses_the_defaults() {
+        // A version 6 store of a development build has no configuration in
+        // use. The chosen configuration then applies when its models are on
+        // disk (R18).
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (local, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        assert_eq!(local.endpoint_model, "kept");
+        assert_eq!(local.in_use(), RecognitionChoice::default());
     }
 
     #[test]
@@ -1850,8 +2093,9 @@ mod tests {
         assert_eq!(after.local(), before.local());
 
         let mut after = before.clone();
-        after.live_transcript = false;
-        after.default_speaker_count = Some(SpeakerCountSetting::Range { min: 2, max: 4 });
+        after.chosen_recognition.live_transcript = false;
+        after.chosen_recognition.default_speaker_count =
+            Some(SpeakerCountSetting::Range { min: 2, max: 4 });
         after.check_updates_automatically = false;
         assert_eq!(
             shared_patch(&before, &after),
@@ -1872,8 +2116,7 @@ mod tests {
         use models::recognition::{ProcessingMode, RecognitionConfig, SpeakerSource};
         let before = Settings::default();
         let mut after = before.clone();
-        after.pending_recognition = Some(RecognitionConfig::default());
-        after.apply_recognition(&RecognitionConfig {
+        after.chosen_recognition = RecognitionChoice::from_config(&RecognitionConfig {
             asr_model: "whisper-large-v3-turbo-q5km".into(),
             speaker_source: SpeakerSource::Sortformer,
             processing_mode: ProcessingMode::AfterStop,
@@ -1894,12 +2137,38 @@ mod tests {
                 "recognition_language"
             ]
         );
-        // The pending choice is local, and the settle cleared it.
-        assert_eq!(after.pending_recognition, None);
+        // The chosen configuration is shared: the local store keeps the
+        // configuration in use.
+        assert_eq!(after.local(), before.local());
+    }
+
+    /// R18: the configuration in use stays on this computer. No change of
+    /// it is in a shared patch, and the local store keeps it.
+    #[test]
+    fn the_configuration_in_use_is_never_in_a_shared_patch() {
+        use models::recognition::{ProcessingMode, SpeakerSource};
+        let before = Settings::default();
+        let mut after = before.clone();
+        after.set_in_use(&RecognitionChoice {
+            asr_model: "whisper-large-v3-turbo-q5km".into(),
+            live_transcript: false,
+            speaker_source: SpeakerSource::Off,
+            speaker_processing_mode: ProcessingMode::AfterStop,
+            recognition_language: Some("de".into()),
+            default_speaker_count: Some(SpeakerCountSetting::Exact { count: 2 }),
+        });
+        assert!(shared_patch(&before, &after).is_empty());
+        assert!(after.recognition.differs);
+        let local = after.local();
+        assert_eq!(local.asr_model, "whisper-large-v3-turbo-q5km");
+        assert_eq!(local.in_use(), after.in_use());
+        // The local store keeps the configuration in use.
+        let written = serde_json::to_value(&local).unwrap();
+        assert_eq!(settings_from_value(&written), (local, false));
     }
 
     #[test]
-    fn a_shared_value_that_this_version_does_not_know_reads_as_the_default() {
+    fn a_shared_value_that_this_version_does_not_know_keeps_the_configuration_in_use() {
         use shared_settings::view::{self, Availability};
         let mut raw = shared_settings::file::default_settings();
         raw.insert("asr_model".into(), json!("model-from-the-future"));
@@ -1915,9 +2184,22 @@ mod tests {
             view: view::cached(Some(&cache), Availability::Available),
             ..SharedSnapshot::default()
         };
-        let settings = Settings::from_parts(LocalSettings::default(), &shared);
-        assert_eq!(settings.asr_model, models::DEFAULT_ASR_MODEL);
-        assert!(!settings.live_transcript);
+        let local = LocalSettings {
+            asr_model: "whisper-large-v3-turbo-q5km".into(),
+            ..LocalSettings::default()
+        };
+        let settings = Settings::from_parts(local, &shared);
+        // The unknown model reads as the model in use, and the known value
+        // is the chosen value (R17).
+        assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
+        assert_eq!(
+            settings.chosen_recognition.asr_model,
+            "whisper-large-v3-turbo-q5km"
+        );
+        assert!(!settings.chosen_recognition.live_transcript);
+        assert!(settings.live_transcript);
+        assert!(settings.recognition.chosen_not_known);
+        assert_eq!(settings.chosen_config(), None);
         assert!(settings.shared.newer_version);
         assert_eq!(
             settings.shared.unknown_values,
@@ -2256,7 +2538,7 @@ mod stale_recognition_tests {
     use serde_json::json;
 
     use super::*;
-    use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
+    use models::recognition::{ProcessingMode, SpeakerSource};
 
     const GRANITE: &str = "granite-speech-4.1-2b-plus-q5km";
 
@@ -2316,66 +2598,49 @@ mod stale_recognition_tests {
     }
 
     #[test]
-    fn a_pending_recognition_gets_the_same_rewrite() {
-        let pending = |asr_model: &str, speaker_source: &str, count: Option<u32>| {
-            json!({
-                "asr_model": asr_model,
-                "speaker_source": speaker_source,
-                "processing_mode": "after_stop",
-                "speaker_processing_mode": "after_stop",
-                "speaker_count": count.map(|count| json!({ "kind": "exact", "count": count })),
-                "language": "en",
-            })
-        };
+    fn a_configuration_in_use_in_a_current_store_gets_the_same_rewrite() {
         let (settings, updated) = settings_from_value(&current(json!({
-            "pending_recognition": pending(GRANITE, "integrated", None),
+            "asr_model": GRANITE,
+            "speaker_source": "integrated",
+            "recognition_language": "en",
         })));
         assert!(updated);
-        let config = settings.pending_recognition.unwrap();
-        assert_eq!(config.asr_model, models::DEFAULT_ASR_MODEL);
-        assert_eq!(config.speaker_source, SpeakerSource::Nemotron);
-        assert_eq!(config.processing_mode, ProcessingMode::AfterStop);
-        assert_eq!(config.language.as_deref(), Some("en"));
+        assert_eq!(settings.asr_model, models::DEFAULT_ASR_MODEL);
+        assert_eq!(settings.speaker_source, SpeakerSource::Nemotron);
+        assert_eq!(settings.recognition_language.as_deref(), Some("en"));
 
         let (settings, updated) = settings_from_value(&current(json!({
-            "pending_recognition": pending(models::DEFAULT_ASR_MODEL, "integrated", Some(9)),
+            "speaker_source": "integrated",
+            "default_speaker_count": { "kind": "exact", "count": 9 },
         })));
         assert!(updated);
-        let config = settings.pending_recognition.unwrap();
-        assert_eq!(config.speaker_source, SpeakerSource::Pyannote);
-        assert_eq!(config.speaker_count, Some(SpeakerCount::Exact { count: 9 }));
-    }
+        assert_eq!(settings.speaker_source, SpeakerSource::Pyannote);
+        assert_eq!(
+            settings.default_speaker_count,
+            Some(SpeakerCountSetting::Exact { count: 9 })
+        );
 
-    #[test]
-    fn a_pending_model_that_is_not_in_the_catalog_is_cleared() {
-        let (settings, updated) =
-            settings_from_value(&current(json!({ "pending_asr_model": GRANITE })));
+        // A count that is not valid is dropped.
+        let (settings, updated) = settings_from_value(&current(json!({
+            "default_speaker_count": { "kind": "exact", "count": 0 },
+        })));
         assert!(updated);
-        assert_eq!(settings.pending_asr_model, None);
+        assert_eq!(settings.default_speaker_count, None);
     }
 
     #[test]
     fn kept_values_are_not_changed_and_not_marked_updated() {
         let stored = current(json!({
-            "pending_asr_model": "parakeet-tdt-0.6b-v3-q80",
-            "pending_recognition": {
-                "asr_model": "parakeet-tdt-0.6b-v3-q80",
-                "speaker_source": "pyannote",
-                "processing_mode": "after_stop",
-                "speaker_processing_mode": "after_stop",
-                "speaker_count": null,
-                "language": null,
-            },
+            "asr_model": "parakeet-tdt-0.6b-v3-q80",
+            "speaker_source": "pyannote",
+            "default_speaker_count": { "kind": "range", "min": 2, "max": 4 },
         }));
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated);
+        assert_eq!(settings.asr_model, "parakeet-tdt-0.6b-v3-q80");
         assert_eq!(
-            settings.pending_asr_model.as_deref(),
-            Some("parakeet-tdt-0.6b-v3-q80")
-        );
-        assert_eq!(
-            settings.pending_recognition.unwrap().asr_model,
-            "parakeet-tdt-0.6b-v3-q80"
+            settings.default_speaker_count,
+            Some(SpeakerCountSetting::Range { min: 2, max: 4 })
         );
 
         let legacy = legacy_shared(&old(json!({
@@ -2403,7 +2668,6 @@ mod stale_recognition_tests {
             "endpoint_model": "llama3",
             "default_speaker_count": { "kind": "exact", "count": 3 },
             "asr_model": GRANITE,
-            "pending_asr_model": "cohere-transcribe",
             "live_transcript": false,
             "speaker_source": "integrated",
             "speaker_processing_mode": "after_stop",
@@ -2414,24 +2678,28 @@ mod stale_recognition_tests {
         }));
         let (settings, updated) = migrated(&stored);
         assert!(updated);
-        assert_eq!(
-            settings,
-            Settings {
-                interface_zoom_percent: 120,
-                endpoint_base_url: Some("http://localhost:11434/v1".into()),
-                endpoint_model: "llama3".into(),
-                default_speaker_count: Some(SpeakerCountSetting::Exact { count: 3 }),
-                asr_model: models::DEFAULT_ASR_MODEL.into(),
-                pending_asr_model: None,
-                live_transcript: false,
-                speaker_source: SpeakerSource::Nemotron,
-                speaker_processing_mode: ProcessingMode::AfterStop,
-                recognition_language: Some("de".into()),
-                system_audio_default: true,
-                storage_folder: "/vault/a".into(),
-                ..Settings::default()
-            }
-        );
+        let recognition = RecognitionChoice {
+            asr_model: models::DEFAULT_ASR_MODEL.into(),
+            live_transcript: false,
+            speaker_source: SpeakerSource::Nemotron,
+            speaker_processing_mode: ProcessingMode::AfterStop,
+            recognition_language: Some("de".into()),
+            default_speaker_count: Some(SpeakerCountSetting::Exact { count: 3 }),
+        };
+        let mut expected = Settings {
+            interface_zoom_percent: 120,
+            endpoint_base_url: Some("http://localhost:11434/v1".into()),
+            endpoint_model: "llama3".into(),
+            system_audio_default: true,
+            storage_folder: "/vault/a".into(),
+            chosen_recognition: recognition.clone(),
+            ..Settings::default()
+        };
+        expected.set_in_use(&recognition);
+        // The chosen configuration and the configuration in use are the
+        // same after the update, so nothing downloads (R18).
+        assert!(!expected.recognition.differs);
+        assert_eq!(settings, expected);
         let written = serde_json::to_value(settings.local()).unwrap();
         assert_eq!(settings_from_value(&written), (settings.local(), false));
     }

@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::managers::capture::CaptureManager;
-use crate::managers::models::{self as model_manager, ModelsManager};
+use crate::managers::models::ModelsManager;
 use crate::managers::processing::{MoveStatus, ProcessingManager};
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
@@ -114,24 +114,38 @@ pub fn set_context_limit(app: AppHandle, limit: Option<u32>) -> Result<Settings,
     })
 }
 
+/// Change the chosen recognition configuration with `change`, then compare
+/// it with the configuration in use (R18, KTD14). The configuration in use
+/// changes at once when its models are on disk; otherwise their downloads
+/// start.
+fn choose_recognition(
+    app: &AppHandle,
+    manager: &Arc<ModelsManager>,
+    change: impl FnOnce(&mut settings::RecognitionChoice),
+) -> Result<Settings, String> {
+    settings::update_settings(app, |s| {
+        change(&mut s.chosen_recognition);
+        Ok(())
+    })?;
+    manager.follow_choice(app);
+    Ok(settings::get_settings(app))
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub fn set_default_speaker_count(
     app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
     count: Option<SpeakerCountSetting>,
 ) -> Result<Settings, String> {
     if let Some(count) = &count {
         count.validate()?;
     }
-    settings::update_settings(&app, |s| {
-        s.default_speaker_count = count;
-        Ok(())
-    })
+    choose_recognition(&app, &manager, |c| c.default_speaker_count = count)
 }
 
-/// Pick the recognition model (R5, KD7). A pick that is not downloaded
-/// starts its download. While the selected model is downloaded, it stays in
-/// use until the pick's download is verified.
+/// Choose the recognition model (R5, R18). The model in use stays until
+/// every file of the chosen configuration is on disk.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn select_asr_model(
@@ -143,31 +157,33 @@ pub fn select_asr_model(
         Some(m) if m.kind == models::ModelKind::Asr => {}
         _ => return Err(format!("'{model_id}' is not a recognition model")),
     }
-    let mut pick = None;
-    let settings = settings::update_settings(&app, |s| {
-        pick = Some(model_manager::apply_pick(s, &model_id, |id| {
-            manager.is_present(id)
-        }));
-        Ok(())
-    })?;
-    let pick = pick.expect("the settings change ran");
-    if let Some(replaced) = pick.cancel {
-        manager.cancel(&replaced);
-    }
-    if pick.download {
-        manager.start_downloads(&app, vec![model_id])?;
-    }
-    Ok(settings)
+    choose_recognition(&app, &manager, |c| c.asr_model = model_id)
 }
 
 /// Turn the live transcript of streaming models on or off (R18, KD9).
 #[tauri::command(async)]
 #[specta::specta]
-pub fn set_live_transcript(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.live_transcript = enabled;
-        Ok(())
-    })
+pub fn set_live_transcript(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+    enabled: bool,
+) -> Result<Settings, String> {
+    choose_recognition(&app, &manager, |c| c.live_transcript = enabled)
+}
+
+/// Start the failed downloads of the chosen recognition configuration
+/// again (R19).
+#[tauri::command(async)]
+#[specta::specta]
+pub fn retry_recognition_downloads(
+    app: AppHandle,
+    manager: State<'_, Arc<ModelsManager>>,
+) -> Settings {
+    manager.retry_choice();
+    manager.follow_choice(&app);
+    // The failure is gone in every window.
+    settings::emit_settings_changed(&app);
+    settings::get_settings(&app)
 }
 
 /// One connected input, with cpal's stable ID (KTD1).
@@ -478,6 +494,11 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
         if moving {
             processing.start_move();
         }
+    }
+    // The shared settings of the new folder can choose another recognition
+    // configuration (R18).
+    if let Some(models) = app.try_state::<Arc<ModelsManager>>() {
+        models.follow_choice(app);
     }
     settings::emit_settings_changed(app);
     Ok(())
@@ -924,7 +945,8 @@ pub async fn change_interface_zoom(
         .map_err(|e| e.to_string())?
 }
 
-/// Keep the complete default until every new artifact is downloaded.
+/// Choose the complete recognition configuration (R18). The configuration
+/// in use stays until every file of the chosen configuration is on disk.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn set_recognition_defaults(
@@ -932,22 +954,11 @@ pub fn set_recognition_defaults(
     manager: State<'_, Arc<ModelsManager>>,
     config: models::recognition::RecognitionConfig,
 ) -> Result<Settings, String> {
-    let spec = models::recognition::resolve(&config).map_err(|e| e.to_string())?;
-    let missing = manager.missing_spec(&spec);
-    let result = settings::update_settings(&app, |s| {
-        s.pending_asr_model = None;
-        if missing.is_empty() {
-            s.apply_recognition(&config);
-        } else {
-            s.pending_recognition = Some(config.clone());
-        }
-        Ok(())
-    })?;
-    // The files of the selected choice download first, so that the pending
-    // pick settles on them. The rest of the bundle follows (KTD5).
-    if !missing.is_empty() {
-        manager.start_downloads(&app, missing.clone())?;
-    }
-    manager.start_bundle_downloads(&app, &config.asr_model, &missing)?;
+    models::recognition::resolve(&config).map_err(|e| e.to_string())?;
+    let choice = settings::RecognitionChoice::from_config(&config);
+    let result = choose_recognition(&app, &manager, |c| *c = choice)?;
+    // The files of the chosen configuration download first. The rest of
+    // the bundle follows (KTD5).
+    manager.start_bundle_downloads(&app, &config.asr_model, &[])?;
     Ok(result)
 }

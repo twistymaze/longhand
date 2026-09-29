@@ -9,7 +9,8 @@ async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
 /**
- * Keep the complete default until every new artifact is downloaded.
+ * Choose the complete recognition configuration (R18). The configuration
+ * in use stays until every file of the chosen configuration is on disk.
  */
 async setRecognitionDefaults(config: RecognitionConfig) : Promise<Result<Settings, string>> {
     try {
@@ -116,9 +117,8 @@ async setDefaultSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result
 }
 },
 /**
- * Pick the recognition model (R5, KD7). A pick that is not downloaded
- * starts its download. While the selected model is downloaded, it stays in
- * use until the pick's download is verified.
+ * Choose the recognition model (R5, R18). The model in use stays until
+ * every file of the chosen configuration is on disk.
  */
 async selectAsrModel(modelId: string) : Promise<Result<Settings, string>> {
     try {
@@ -138,6 +138,13 @@ async setLiveTranscript(enabled: boolean) : Promise<Result<Settings, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Start the failed downloads of the chosen recognition configuration
+ * again (R19).
+ */
+async retryRecognitionDownloads() : Promise<Settings> {
+    return await TAURI_INVOKE("retry_recognition_downloads");
 },
 /**
  * The connected inputs for the Microphone choice (R1). The device list can
@@ -1251,7 +1258,9 @@ system_audio: SystemAudioPermission; destination: DestinationStatus;
  */
 armed: boolean; shortcut: ShortcutStatus; 
 /**
- * Catalog ids of required weights not yet on disk.
+ * Catalog ids of the weights that the next note needs and that are
+ * not on disk yet. They do not block a recording: processing waits
+ * for them (KTD16).
  */
 missing_models: string[]; 
 /**
@@ -1259,7 +1268,58 @@ missing_models: string[];
  * processing use them (KTD3). A locked Keychain does not clear it.
  */
 endpoint_configured: boolean }
+/**
+ * The six values of a recognition configuration, as the settings hold
+ * them (R18): the chosen configuration in the shared settings, or the
+ * configuration in use on this computer.
+ */
+export type RecognitionChoice = { 
+/**
+ * Catalog id of the transcription model (KTD6).
+ */
+asr_model: string; 
+/**
+ * A streaming model transcribes during recording (R18, KD9).
+ */
+live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; default_speaker_count: SpeakerCountSetting | null }
 export type RecognitionConfig = { asr_model: string; speaker_source: SpeakerSource; processing_mode: ProcessingMode; speaker_processing_mode?: ProcessingMode; speaker_count: SpeakerCount | null; language: string | null }
+/**
+ * A failed download of a file that the chosen configuration needs (R19).
+ */
+export type RecognitionFailure = { 
+/**
+ * The catalog id of the file.
+ */
+model_id: string; 
+/**
+ * The cause, as Settings shows it.
+ */
+message: string }
+/**
+ * The chosen recognition configuration compared with the configuration in
+ * use, for the Settings window (R18, R19).
+ */
+export type RecognitionState = { 
+/**
+ * The chosen configuration differs from the configuration in use.
+ */
+differs: boolean; 
+/**
+ * The chosen configuration has a value that this version does not
+ * know, for example a model from a newer version. The configuration in
+ * use stays, and no download starts.
+ */
+chosen_not_known: boolean; 
+/**
+ * The catalog ids of the files that the chosen configuration waits
+ * for. `ModelDownloadEvent` gives the progress of each.
+ */
+waiting_for: string[]; 
+/**
+ * A download of the chosen configuration failed. It stays failed
+ * until the user selects Retry.
+ */
+failure: RecognitionFailure | null }
 /**
  * A session started, stopped, or resumed recording.
  */
@@ -1494,35 +1554,29 @@ endpoint_base_url: string | null; endpoint_model: string;
  */
 context_limit_tokens: number | null; 
 /**
- * A shared setting.
+ * This field and the five after it are the recognition configuration
+ * in use on this computer (R18, KTD14). Recording, processing and
+ * Transcribe Again read them. They change to `chosen_recognition` as
+ * one unit when every model that it needs is on disk.
  */
 default_speaker_count: SpeakerCountSetting | null; 
 /**
- * A shared setting. Catalog id of the recognition model (KTD6).
+ * Catalog id of the recognition model (KTD6).
  */
 asr_model: string; 
 /**
- * A picked recognition model that is downloading. It becomes
- * `asr_model` when its download is verified (R5, KTD11).
+ * A streaming model transcribes during recording (R18, KD9).
  */
-pending_asr_model: string | null; 
+live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; 
 /**
- * A shared setting. A streaming model transcribes during recording
- * (R18, KD9).
+ * A shared setting. The chosen recognition configuration (R18).
  */
-live_transcript: boolean; 
+chosen_recognition: RecognitionChoice; 
 /**
- * A shared setting.
+ * The chosen configuration compared with the configuration in use,
+ * and the downloads that it waits for (R19).
  */
-speaker_source: SpeakerSource; 
-/**
- * A shared setting.
- */
-speaker_processing_mode: ProcessingMode; 
-/**
- * A shared setting.
- */
-recognition_language: string | null; pending_recognition: RecognitionConfig | null; 
+recognition: RecognitionState; 
 /**
  * The microphone a new note records from. `None` is "System default"
  * (R1, KTD17).

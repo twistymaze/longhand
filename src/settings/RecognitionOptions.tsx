@@ -22,16 +22,19 @@ const timings: [ProcessingMode, string][] = [
   ["after_stop", "After Stop"],
 ];
 import { languageName } from "./languages";
+/// The chosen configuration, which the Settings window shows and changes.
+/// The configuration in use can differ while the chosen one downloads.
 export function recognitionDefaults(settings: Settings): RecognitionConfig {
+  const chosen = settings.chosen_recognition;
   return {
-    asr_model: settings.asr_model,
-    speaker_source: settings.speaker_source,
-    processing_mode: settings.live_transcript
+    asr_model: chosen.asr_model,
+    speaker_source: chosen.speaker_source,
+    processing_mode: chosen.live_transcript
       ? "during_recording"
       : "after_stop",
-    speaker_processing_mode: settings.speaker_processing_mode,
-    speaker_count: settings.default_speaker_count,
-    language: settings.recognition_language,
+    speaker_processing_mode: chosen.speaker_processing_mode,
+    speaker_count: chosen.default_speaker_count,
+    language: chosen.recognition_language,
   };
 }
 

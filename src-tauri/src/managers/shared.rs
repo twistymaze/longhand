@@ -671,8 +671,11 @@ mod tests {
         assert_eq!(prompt_files(folder.path()), ["Standup.md"]);
 
         let settings = settings_of(&manager);
-        assert_eq!(settings.asr_model, "parakeet-tdt-0.6b-v3-q80");
-        assert!(!settings.live_transcript);
+        assert_eq!(
+            settings.chosen_recognition.asr_model,
+            "parakeet-tdt-0.6b-v3-q80"
+        );
+        assert!(!settings.chosen_recognition.live_transcript);
         assert_eq!(names(&settings), ["Standup"]);
         assert_eq!(
             settings.active_summary_prompt_snapshot().text,
@@ -691,7 +694,10 @@ mod tests {
         manager.join_at_launch();
 
         let settings = settings_of(&manager);
-        assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
+        assert_eq!(
+            settings.chosen_recognition.asr_model,
+            "whisper-large-v3-turbo-q5km"
+        );
         assert_eq!(settings.active_summary_prompt, TOPIC_SUMMARY_ID);
         assert_eq!(names(&settings), ["Recap", "Standup"]);
         assert_eq!(
@@ -734,7 +740,10 @@ mod tests {
         manager.join_at_launch();
         assert!(available(&manager));
         assert_eq!(file_of(folder.path()), file::default_settings());
-        assert_eq!(settings_of(&manager).asr_model, models::DEFAULT_ASR_MODEL);
+        assert_eq!(
+            settings_of(&manager).chosen_recognition.asr_model,
+            models::DEFAULT_ASR_MODEL
+        );
     }
 
     #[test]
@@ -803,7 +812,10 @@ mod tests {
             read_only(ReadOnlyCause::FolderNotAvailable)
         );
         assert_eq!(names(&settings), ["Standup"]);
-        assert_eq!(settings.asr_model, "parakeet-tdt-0.6b-v3-q80");
+        assert_eq!(
+            settings.chosen_recognition.asr_model,
+            "parakeet-tdt-0.6b-v3-q80"
+        );
 
         let error = manager.create_prompt().unwrap_err();
         assert_eq!(error, ReadOnlyCause::FolderNotAvailable.message());
@@ -1033,7 +1045,10 @@ mod tests {
 
         assert!(manager.change_folder(Some(shared.path().to_path_buf())));
         let settings = settings_of(&manager);
-        assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
+        assert_eq!(
+            settings.chosen_recognition.asr_model,
+            "whisper-large-v3-turbo-q5km"
+        );
         assert_eq!(names(&settings), ["Recap", "Recap 2", "Standup"]);
         // The old folder keeps its copy (R21).
         assert_eq!(prompt_files(old.path()).len(), 2);
@@ -1158,7 +1173,7 @@ mod tests {
         let loaded = view::load(&started.root, started.cache.as_ref());
         manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
         assert!(!manager.finish_read(started, loaded));
-        assert!(!settings_of(&manager).live_transcript);
+        assert!(!settings_of(&manager).chosen_recognition.live_transcript);
     }
 
     #[test]

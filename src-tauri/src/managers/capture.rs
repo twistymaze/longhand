@@ -895,6 +895,39 @@ fn recognition_count(count: Option<SpeakerCount>) -> Option<models::recognition:
     })
 }
 
+/// The recognition that a new note records with (R18, KTD16). `in_use` is
+/// the configuration in use, and `chosen` the chosen configuration when
+/// this version knows it. `ready` says whether every file of a
+/// configuration is on disk.
+///
+/// The configuration in use applies when its files are on disk. With no
+/// previous model on disk, the note records with the chosen configuration
+/// and with nothing live: live transcript and live speaker analysis need
+/// the models during the recording. Processing then waits for the models.
+/// Recording never waits for a download.
+pub fn recording_spec(
+    in_use: models::recognition::RecognitionConfig,
+    chosen: Option<models::recognition::RecognitionConfig>,
+    ready: impl Fn(&models::recognition::ExecutionSpec) -> bool,
+) -> Result<models::recognition::ExecutionSpec, models::recognition::ResolveError> {
+    use models::recognition::{ProcessingMode, RecognitionConfig, resolve};
+    let resolved = resolve(&in_use);
+    if let Ok(spec) = &resolved
+        && ready(spec)
+    {
+        return resolved;
+    }
+    let after_stop = |mut config: RecognitionConfig| {
+        config.processing_mode = ProcessingMode::AfterStop;
+        config.speaker_processing_mode = ProcessingMode::AfterStop;
+        config
+    };
+    if let Some(spec) = chosen.and_then(|c| resolve(&after_stop(c)).ok()) {
+        return Ok(spec);
+    }
+    resolve(&after_stop(in_use))
+}
+
 pub fn recording_model(settings: &Settings) -> RecordingModel {
     let streams = models::model(&settings.asr_model).is_some_and(|m| m.streaming);
     RecordingModel {
@@ -1046,20 +1079,31 @@ impl CaptureManager {
             return Err(CaptureError::Restarting);
         }
         let settings = settings::get_settings(app);
-        let config = config.unwrap_or_else(|| {
-            let mut config = settings.recognition_config();
-            config.speaker_count = recognition_count(speaker_count);
-            config
-        });
-        let spec = models::recognition::resolve(&config)
+        let (in_use, chosen) = match config {
+            Some(config) => (config, None),
+            None => {
+                let count = recognition_count(speaker_count);
+                let with_count = |mut config: models::recognition::RecognitionConfig| {
+                    config.speaker_count = count;
+                    config
+                };
+                (
+                    with_count(settings.recognition_config()),
+                    settings.chosen_config().map(with_count),
+                )
+            }
+        };
+        let models = app.state::<Arc<ModelsManager>>();
+        let spec = recording_spec(in_use, chosen, |spec| models.missing_spec(spec).is_empty())
             .map_err(|e| CaptureError::Other(e.to_string()))?;
-        let missing = app.state::<Arc<ModelsManager>>().missing_spec(&spec);
+        let missing = models.missing_spec(&spec);
         if !missing.is_empty() {
-            return Err(CaptureError::Other(format!(
-                "Download the selected models before recording: {}",
+            log::info!(
+                "the note records before its models are on disk; processing waits for {}",
                 missing.join(", ")
-            )));
+            );
         }
+        let config = spec.config.clone();
         let snapshot =
             serde_json::to_value(&spec).map_err(|e| CaptureError::Other(e.to_string()))?;
         let speaker_count = config.speaker_count.map(|c| match c {
@@ -3041,6 +3085,89 @@ mod tests {
             live_transcript,
             ..Settings::default()
         }
+    }
+
+    /// AE5: a note that records before every download of the chosen
+    /// configuration is verified uses the whole configuration in use.
+    #[test]
+    fn a_note_records_with_the_configuration_in_use_while_the_chosen_one_downloads() {
+        use models::recognition::{ProcessingMode, SpeakerSource};
+        let mut settings = selected(PARAKEET, true);
+        settings.recognition_language = Some("en".into());
+        settings.chosen_recognition = crate::managers::settings::RecognitionChoice {
+            asr_model: "parakeet-tdt-0.6b-v3-q80".into(),
+            live_transcript: false,
+            speaker_source: SpeakerSource::Sortformer,
+            speaker_processing_mode: ProcessingMode::AfterStop,
+            recognition_language: None,
+            default_speaker_count: None,
+        };
+        let in_use_ready =
+            |spec: &models::recognition::ExecutionSpec| spec.config.asr_model == PARAKEET;
+        let spec = recording_spec(
+            settings.recognition_config(),
+            settings.chosen_config(),
+            in_use_ready,
+        )
+        .unwrap();
+        assert_eq!(spec.config, settings.recognition_config());
+        assert_eq!(spec.config.speaker_source, SpeakerSource::Pyannote);
+        assert_eq!(spec.config.language.as_deref(), Some("en"));
+        assert!(spec.enabled_live_transcription);
+    }
+
+    /// AE1, KTD16: with no model on disk, recording starts with the chosen
+    /// configuration and live transcript off, and processing waits.
+    #[test]
+    fn with_no_model_on_disk_a_note_records_with_the_chosen_configuration_and_no_live_mode() {
+        use models::recognition::{ProcessingMode, SpeakerSource};
+        let nothing = |_: &models::recognition::ExecutionSpec| false;
+        // A new install: the chosen configuration is the configuration in
+        // use, with live transcript on.
+        let settings = Settings::default();
+        let spec = recording_spec(
+            settings.recognition_config(),
+            settings.chosen_config(),
+            nothing,
+        )
+        .unwrap();
+        assert_eq!(spec.config.asr_model, models::DEFAULT_ASR_MODEL);
+        assert_eq!(spec.config.processing_mode, ProcessingMode::AfterStop);
+        assert!(!spec.enabled_live_transcription);
+        assert!(!spec.enabled_live_speaker_analysis);
+        assert!(!spec.artifacts.is_empty());
+
+        // Another computer chose a configuration with live speaker
+        // analysis: the note uses the chosen models with nothing live.
+        let mut settings = selected(WHISPER, false);
+        settings.chosen_recognition = crate::managers::settings::RecognitionChoice {
+            asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
+            live_transcript: true,
+            speaker_source: SpeakerSource::Sortformer,
+            speaker_processing_mode: ProcessingMode::DuringRecording,
+            recognition_language: None,
+            default_speaker_count: None,
+        };
+        let spec = recording_spec(
+            settings.recognition_config(),
+            settings.chosen_config(),
+            nothing,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.config.asr_model,
+            "nemotron-speech-streaming-en-0.6b-q80"
+        );
+        assert_eq!(spec.config.speaker_source, SpeakerSource::Sortformer);
+        assert!(!spec.enabled_live_transcription);
+        assert!(!spec.enabled_live_speaker_analysis);
+
+        // A chosen configuration that this version does not know gives the
+        // configuration in use, with nothing live.
+        let spec =
+            recording_spec(selected(PARAKEET, true).recognition_config(), None, nothing).unwrap();
+        assert_eq!(spec.config.asr_model, PARAKEET);
+        assert!(!spec.enabled_live_transcription);
     }
 
     #[test]

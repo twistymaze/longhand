@@ -743,6 +743,10 @@ impl ProcessingManager {
         {
             settings::emit_settings_changed(&self.app);
         }
+        // The chosen recognition configuration can differ from the one in
+        // use, for example after a change on another computer while this
+        // one was off (R18).
+        self.models.follow_choice(&self.app);
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
@@ -1097,6 +1101,11 @@ impl ProcessingManager {
                 {
                     log::info!("shared settings: another computer changed them");
                     settings::emit_settings_changed(&reader);
+                    // Another computer can choose another recognition
+                    // configuration: its downloads start (R18, AE5).
+                    if let Some(models) = reader.try_state::<Arc<ModelsManager>>() {
+                        models.follow_choice(&reader);
+                    }
                 }
             }),
             Box::new(move |changes| emit_library_changed(&events, changes)),

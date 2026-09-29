@@ -115,7 +115,9 @@ pub struct Readiness {
     /// not block a recording: the note waits to save (AE1).
     pub armed: bool,
     pub shortcut: ShortcutStatus,
-    /// Catalog ids of required weights not yet on disk.
+    /// Catalog ids of the weights that the next note needs and that are
+    /// not on disk yet. They do not block a recording: processing waits
+    /// for them (KTD16).
     pub missing_models: Vec<String>,
     /// A Base URL and a model are set, and the request gate lets summary
     /// processing use them (KTD3). A locked Keychain does not clear it.
@@ -156,8 +158,12 @@ pub async fn readiness(
         shortcut,
         destination,
         missing_models: models.missing_spec(
-            &models::recognition::resolve(&settings.recognition_config())
-                .map_err(|e| e.to_string())?,
+            &crate::managers::capture::recording_spec(
+                settings.recognition_config(),
+                settings.chosen_config(),
+                |spec| models.missing_spec(spec).is_empty(),
+            )
+            .map_err(|e| e.to_string())?,
         ),
         endpoint_configured,
     })

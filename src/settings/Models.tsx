@@ -78,11 +78,26 @@ export function Models({
       setBusy(false);
     }
   };
+  const modelName = (id: string) => models.find((m) => m.id === id)?.name ?? id;
   const active = Object.values(live).some(
     (v) => v.kind === "progress" || v.kind === "verifying",
   );
-  const pending = (m: ModelStatus) =>
-    settings.pending_recognition?.asr_model === m.id || settings.pending_asr_model === m.id;
+  const chosen = settings.chosen_recognition;
+  const waiting = settings.recognition.differs && !settings.recognition.chosen_not_known;
+  const failure = waiting ? settings.recognition.failure : null;
+  const pending = (m: ModelStatus) => waiting && !failure && chosen.asr_model === m.id;
+  const retry = async () => {
+    setBusy(true);
+    try {
+      await commands.retryRecognitionDownloads();
+      setError(null);
+      await actions.refresh();
+    } catch {
+      setError("Could not start the model download.");
+    } finally {
+      setBusy(false);
+    }
+  };
   const updatesOf = (m: ModelStatus) =>
     (owners.has(m.id) || pending(m) ? m.bundle : [m.id])
       .map((id) => live[id])
@@ -116,7 +131,7 @@ export function Models({
     return message && <p role="status" className="text-[0.85rem] text-accent">{message}</p>;
   };
   const modelAction = (m: ModelStatus) => {
-    const selected = m.id === settings.asr_model;
+    const selected = m.id === settings.asr_model || m.id === chosen.asr_model;
     const present = m.state.state === "present";
     const repair =
       !m.bundle_complete && (present || selected) && !downloading(m) && !pending(m) ? (
@@ -150,12 +165,27 @@ export function Models({
       <p className="text-[0.85rem] text-label-secondary">
         New notes use these choices.
       </p>
-      {settings.pending_recognition && (
+      {waiting && !failure && (
         <p role="status" className="px-4 pt-3">
-          Models are downloading for{" "}
-          {models.find((m) => m.id === settings.pending_recognition?.asr_model)
-            ?.name ?? settings.pending_recognition.asr_model}
-          . Current defaults stay until they are ready.
+          Models are downloading for {modelName(chosen.asr_model)}. New notes use{" "}
+          {modelName(settings.asr_model)} until they are ready.
+        </p>
+      )}
+      {failure && (
+        <div role="alert" className="flex items-center justify-between gap-3 px-4 pt-3">
+          <span className="text-negative">
+            {modelName(chosen.asr_model)} could not download. {sentence(failure.message)} New notes
+            use {modelName(settings.asr_model)}.
+          </span>
+          <Button disabled={busy} onClick={() => void retry()}>
+            Retry
+          </Button>
+        </div>
+      )}
+      {settings.recognition.chosen_not_known && (
+        <p role="status" className="px-4 pt-3 text-label-secondary">
+          A newer version of Longhand changed these settings. New notes on this computer use{" "}
+          {modelName(settings.asr_model)}.
         </p>
       )}
       {saving && (
