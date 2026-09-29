@@ -384,14 +384,19 @@ jobs:
     timeout-minutes: 120
     env:
       BUILDS_REPOSITORY: twistymaze/longhand-builds
-      KEYCHAIN: ${{ runner.temp }}/preview.keychain-db
-      APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
-      # rust-cache removes non-Cargo files from target during cache save.
-      LONGHAND_NEMO_CACHE: ${{ runner.temp }}/longhand-nemo
     steps:
-      # The start time bounds the commit time (KTD5).
-      - name: Record the job start
-        run: echo "JOB_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      # The start time bounds the commit time (KTD5). The job-level env
+      # cannot use the runner context, so this step sets the temporary
+      # paths. rust-cache removes non-Cargo files from target during cache
+      # save, so the NeMo cache is outside target.
+      - name: Record the job start and the temporary paths
+        run: |
+          {
+            echo "JOB_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "KEYCHAIN=$RUNNER_TEMP/preview.keychain-db"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8"
+            echo "LONGHAND_NEMO_CACHE=$RUNNER_TEMP/longhand-nemo"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
