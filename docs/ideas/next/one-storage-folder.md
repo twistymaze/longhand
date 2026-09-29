@@ -5,6 +5,7 @@ area: library-and-sharing
 added: 2026-09-28
 source: "the user, after the idea review of 2026-09-28"
 related: [shared-settings-in-storage, cross-machine-library]
+plan: docs/plans/2026-09-28-2343-feat-one-storage-folder-and-shared-settings-plan.md
 ---
 
 # One storage folder
