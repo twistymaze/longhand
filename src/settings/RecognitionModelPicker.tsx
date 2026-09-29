@@ -50,12 +50,14 @@ export function RecognitionModelPicker({
   onChange,
   modelAction,
   modelActivity,
+  disabled = false,
 }: {
   models: ModelStatus[];
   value: string;
   onChange: (id: string) => void;
   modelAction?: (model: ModelStatus) => ReactNode;
   modelActivity?: (model: ModelStatus) => ReactNode;
+  disabled?: boolean;
 }) {
   const groupId = useId();
   const choices = models
@@ -79,13 +81,14 @@ export function RecognitionModelPicker({
           return (
             <div
               key={m.id}
-              className={`rounded-lg ${selected ? "bg-accent/10" : "hover:bg-row-hover"}`}
+              className={`rounded-lg ${selected ? "bg-accent/10" : disabled ? "" : "hover:bg-row-hover"}`}
             >
               <button
                 id={`${groupId}-${index}`}
                 type="button"
                 role="radio"
                 aria-checked={selected}
+                disabled={disabled}
                 aria-label={m.name}
                 aria-describedby={`${groupId}-${index}-details`}
                 tabIndex={selected ? 0 : -1}
@@ -109,7 +112,7 @@ export function RecognitionModelPicker({
                   onChange(choices[next].id);
                   document.getElementById(`${groupId}-${next}`)?.focus();
                 }}
-                className="flex w-full min-w-0 cursor-default items-start gap-2.5 rounded-lg px-2.5 py-4 text-left outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-accent active:bg-fill-pressed"
+                className="flex w-full min-w-0 cursor-default items-start gap-2.5 rounded-lg px-2.5 py-4 text-left outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-accent active:bg-fill-pressed disabled:opacity-60"
               >
                 <span
                   aria-hidden

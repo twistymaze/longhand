@@ -5,6 +5,7 @@ import { sentence } from "../processing/describe";
 import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
+import { readOnlyReason } from "./shared";
 import { LoginItem } from "./LoginItem";
 import { Button, ErrorText, Group, Pane, Row, Status as StatusText, Switch } from "./ui";
 
@@ -181,7 +182,14 @@ export function StatusPane({
       </Group>
 
       {isMac() && (
-        <Group header="Updates" footer="Longhand asks before it installs a new version.">
+        <Group
+          header="Updates"
+          footer={
+            readOnlyReason(settings)
+              ? `${readOnlyReason(settings)} This setting can’t be changed now.`
+              : "Longhand asks before it installs a new version."
+          }
+        >
           <AutomaticUpdates settings={settings} onSettings={onSettings} />
         </Group>
       )}
@@ -199,12 +207,16 @@ function SettingSwitch({
   checked,
   set,
   onSettings,
+  disabled = false,
 }: {
   label: string;
   detail: string;
   checked: boolean;
   set: (enabled: boolean) => Promise<Result<Settings, string>>;
   onSettings: (s: Settings) => void;
+  /// The setting can't be changed now, for example a shared setting while
+  /// the storage folder is not available.
+  disabled?: boolean;
 }) {
   const [error, setError] = useState<string | null>(null);
   // The switch is off while a change is in progress, so a second click
@@ -226,7 +238,7 @@ function SettingSwitch({
   return (
     <>
       <Row label={label} detail={detail}>
-        <Switch label={label} checked={checked} disabled={pending} onChange={(v) => void change(v)} />
+        <Switch label={label} checked={checked} disabled={pending || disabled} onChange={(v) => void change(v)} />
       </Row>
       {error && <ErrorText>{error}</ErrorText>}
     </>
@@ -257,6 +269,7 @@ function AutomaticUpdates({ settings, onSettings }: { settings: Settings; onSett
       checked={settings.check_updates_automatically}
       set={commands.setCheckUpdatesAutomatically}
       onSettings={onSettings}
+      disabled={readOnlyReason(settings) !== null}
     />
   );
 }

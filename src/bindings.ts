@@ -326,6 +326,19 @@ async retryMove() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Open the storage folder in Finder, or in Explorer on Windows (R3,
+ * KTD17). The command opens the folder from Rust, so the Settings window
+ * gets no file path permission.
+ */
+async showStorageFolder() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("show_storage_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async credentialStatus(baseUrl: string) : Promise<Result<CredentialStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("credential_status", { baseUrl }) };

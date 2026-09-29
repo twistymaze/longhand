@@ -53,6 +53,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::change_storage_folder,
             commands::settings::move_status,
             commands::settings::retry_move,
+            commands::settings::show_storage_folder,
             commands::settings::credential_status,
             commands::settings::set_credential,
             commands::settings::delete_credential,

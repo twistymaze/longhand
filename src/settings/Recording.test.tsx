@@ -56,6 +56,7 @@ async function open({
   const state = { settings: settings(extra), microphones };
   const mock = mockTauri({
     get_settings: () => state.settings,
+    move_status: () => null,
     readiness: () => ({
       microphone_authorized: true,
       system_audio: "allowed",

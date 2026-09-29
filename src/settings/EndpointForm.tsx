@@ -8,6 +8,7 @@ import {
 } from "../bindings";
 import { ModelPicker } from "./ModelPicker";
 import { SummaryPrompts } from "./SummaryPrompts";
+import { readOnlyReason } from "./shared";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, type Tone, fieldClass } from "./ui";
 
 // A function, not a constant, so that a test can set the platform.
@@ -365,7 +366,7 @@ export function EndpointForm({
         {modelError && <ErrorText>{modelError}</ErrorText>}
       </Group>
 
-      <SummaryPrompts onSettings={onSettings} />
+      <SummaryPrompts onSettings={onSettings} readOnly={readOnlyReason(settings)} />
 
       <Group
         header="Context"

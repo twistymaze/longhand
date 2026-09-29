@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ComponentProps } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   ExecutionSpec,
@@ -63,7 +63,8 @@ const settings = {
   ...inUse,
   chosen_recognition: inUse,
   recognition: settled,
-} as Settings;
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+} as unknown as Settings;
 
 /// The settings with `config` chosen and the configuration in use kept.
 function choosing(config: RecognitionConfig, state: Partial<RecognitionState> = {}): Settings {
@@ -176,6 +177,9 @@ function open(
   );
   return { tauri, user: userEvent.setup(), rerender: view.rerender, refreshes };
 }
+/// The group that compares the chosen model with the model in use.
+const status = () => screen.getByRole("heading", { name: "Model change" }).closest("section") as HTMLElement;
+const inUseRow = () => within(status()).getByText("In use").closest(".settings-row") as HTMLElement;
 async function ready() {
   await waitFor(() =>
     expect(
@@ -482,11 +486,12 @@ test("a failed download of the chosen model shows its cause and Retry", async ()
   );
   const { user, tauri, refreshes } = open({ retry_recognition_downloads: () => settings }, failed);
   await ready();
-  const alert = screen.getByRole("alert");
-  expect(alert.textContent).toContain("Whisper could not download. The checksum does not match.");
-  expect(alert.textContent).toContain("New notes use Parakeet.");
-  expect(screen.queryByText(/Models are downloading for/)).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Retry" }));
+  const group = status();
+  expect(group.textContent).toContain("Whisper could not download");
+  expect(group.textContent).toContain("The checksum does not match.");
+  expect(inUseRow().textContent).toContain("Parakeet");
+  expect(group.querySelector('[role="progressbar"]')).toBeNull();
+  await user.click(within(group).getByRole("button", { name: "Retry" }));
   expect(tauri.calls.some((c) => c.cmd === "retry_recognition_downloads")).toBe(true);
   await waitFor(() => expect(refreshes.count).toBeGreaterThan(0));
 });
@@ -494,10 +499,89 @@ test("a failed download of the chosen model shows its cause and Retry", async ()
 test("a chosen configuration from a newer version keeps the model in use", async () => {
   open({}, { ...settings, recognition: { ...settled, differs: true, chosen_not_known: true } });
   await ready();
-  expect(screen.getByText(/A newer version of Longhand changed these settings/).textContent).toContain(
-    "New notes on this computer use Parakeet.",
+  expect(status().textContent).toContain("Chosen in a newer version of Longhand");
+  expect(inUseRow().textContent).toContain("Parakeet");
+  expect(status().querySelector('[role="progressbar"]')).toBeNull();
+});
+
+test("a chosen model that differs from the model in use shows both and the progress", async () => {
+  const waiting = choosing(
+    { ...recognitionDefaults(settings), asr_model: offline, processing_mode: "after_stop" },
+    { waiting_for: [offline, "segmentation"] },
   );
-  expect(screen.queryByText(/Models are downloading for/)).toBeNull();
+  open({}, waiting, models, {
+    [offline]: { kind: "progress", downloaded: 30_000_000, total: 100_000_000 },
+    segmentation: { kind: "progress", downloaded: 10_000_000, total: 100_000_000 },
+  });
+  await ready();
+  const chosenRow = within(status()).getByText("Whisper").closest(".settings-row")!;
+  expect(chosenRow.textContent).toContain("Downloading… 40 MB of 200 MB");
+  expect(chosenRow.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("20");
+  expect(inUseRow().textContent).toContain("Parakeet");
+  expect(inUseRow().textContent).toContain("New notes use this model until the download is done.");
+});
+
+test("a chosen model that waits with no progress yet says so", async () => {
+  const waiting = choosing(
+    { ...recognitionDefaults(settings), asr_model: offline, processing_mode: "after_stop" },
+    { waiting_for: [offline] },
+  );
+  open({}, waiting);
+  await ready();
+  expect(within(status()).getByText("Whisper").closest(".settings-row")!.textContent).toContain(
+    "Waiting to download…",
+  );
+});
+
+test("a choice from another computer shows in the model picker", async () => {
+  const { rerender } = open();
+  await ready();
+  expect(screen.getByRole("radio", { name: "Parakeet" }).getAttribute("aria-checked")).toBe("true");
+  const remote = choosing(
+    { ...recognitionDefaults(settings), asr_model: offline, processing_mode: "after_stop" },
+    { waiting_for: [offline] },
+  );
+  rerender(<TestModels models={models} live={{}} settings={remote} actions={{ cancel: () => {}, refresh: async () => {} }} />);
+  await waitFor(() => expect(screen.getByRole("radio", { name: "Whisper" }).getAttribute("aria-checked")).toBe("true"));
+});
+
+test("this computer's own choice does not read the choices again", async () => {
+  const saved = choosing({ ...recognitionDefaults(settings), asr_model: offline, processing_mode: "after_stop" });
+  const { user, rerender, tauri } = open({ set_recognition_defaults: () => saved });
+  await ready();
+  await user.click(screen.getByRole("radio", { name: "Whisper" }));
+  await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(true));
+  await ready();
+  const sent = tauri.calls.find((c) => c.cmd === "set_recognition_defaults")!.args.config as RecognitionConfig;
+  const resolves = tauri.calls.filter((c) => c.cmd === "resolve_recognition").length;
+  rerender(
+    <TestModels models={models} live={{}} settings={choosing(sent)} actions={{ cancel: () => {}, refresh: async () => {} }} />,
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  expect(tauri.calls.filter((c) => c.cmd === "resolve_recognition").length).toBe(resolves);
+  expect(screen.getByRole("radio", { name: "Whisper" }).getAttribute("aria-checked")).toBe("true");
+});
+
+test("a settled configuration shows no download status", async () => {
+  open();
+  await ready();
+  expect(screen.queryByRole("heading", { name: "Model change" })).toBeNull();
+});
+
+test("a read-only state makes the recognition choices read-only", async () => {
+  const readOnly = {
+    ...settings,
+    shared: { ...settings.shared, availability: { kind: "read_only", cause: "folder_not_available" } },
+  } as Settings;
+  open({}, readOnly);
+  await waitFor(() => expect(screen.queryByText("Checking compatible choices…")).toBeNull());
+  expect(screen.getByText("The storage folder is not available. Transcription choices can’t be changed now.")).toBeTruthy();
+  expect((screen.getByRole("radio", { name: "Whisper" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByLabelText("Transcription timing") as HTMLSelectElement).disabled).toBe(true);
+  expect((screen.getByLabelText("Speaker recognition") as HTMLSelectElement).disabled).toBe(true);
+  await userEvent.setup().click(screen.getByText("Advanced options"));
+  expect((screen.getByLabelText("Expected speakers") as HTMLSelectElement).disabled).toBe(true);
+  expect((screen.getByLabelText("Language") as HTMLSelectElement).disabled).toBe(true);
 });
 
 test("completed model downloads clear the pending defaults notice", async () => {
@@ -541,7 +625,7 @@ test("completed model downloads clear the pending defaults notice", async () => 
     />,
   );
   update(pendingSettings, downloading);
-  expect(screen.getByText(/Models are downloading for Whisper/)).toBeTruthy();
+  expect(status().textContent).toContain("Whisper");
   expect(screen.getByRole("radio", { name: "Whisper" }).parentElement!.textContent).toContain("Downloading…");
 
   update({
@@ -550,7 +634,7 @@ test("completed model downloads clear the pending defaults notice", async () => 
     recognition: settled,
   }, models);
   expect(screen.getByText("Models ready")).toBeTruthy();
-  expect(screen.queryByText(/Models are downloading for/)).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Model change" })).toBeNull();
   expect(screen.queryByText("Downloading required models…")).toBeNull();
   expect(screen.queryByText(/current defaults stay/i)).toBeNull();
 });

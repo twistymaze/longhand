@@ -3,13 +3,14 @@
 // holds settings only; the notes are in the main window.
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type DownloadUpdate, type Readiness } from "../bindings";
+import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
 import { EndpointForm } from "./EndpointForm";
 import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
 import { About } from "./About";
 import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
+import { readOnlyReason } from "./shared";
 import { type PaneId, StatusPane } from "./Status";
 import { ErrorText, type Tone } from "./ui";
 import { useAppSettings, useRecognitionDefaultsSave } from "./useAppSettings";
@@ -37,12 +38,12 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
 
 const order = sections.flatMap((s) => s.panes.map((p) => p.id));
 
-function paneTone(id: PaneId, readiness: Readiness): Tone | null {
+function paneTone(id: PaneId, readiness: Readiness, settings: Settings): Tone | null {
   switch (id) {
     case "status":
       return readiness.armed ? null : "caution";
     case "destination":
-      return readiness.destination.kind === "ready" ? null : "caution";
+      return readiness.destination.kind === "ready" && !readOnlyReason(settings) ? null : "caution";
     case "summarization":
       return readiness.endpoint_configured ? null : "neutral";
     case "recognition":
@@ -134,7 +135,7 @@ export function SettingsWindow() {
                 {section.label}
               </div>
               {section.panes.map((p) => {
-                const tone = paneTone(p.id, readiness);
+                const tone = paneTone(p.id, readiness, settings);
                 const selected = pane === p.id;
                 return (
                   <button

@@ -703,3 +703,113 @@ test("a pane change in the Settings window saves the prompt text and asks nothin
   expect(screen.getByRole("tab", { name: "Transcription" }).getAttribute("aria-selected")).toBe("true");
   await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]), { timeout: 500 });
 });
+
+describe("shared prompts", () => {
+  /// A backend whose prompts another computer can change: `remote` changes
+  /// the saved values, and then sends `settings-changed`.
+  function sharedBackend() {
+    const state = { active: "topic-summary", text: "Sync text" };
+    const list = () => ({
+      prompts: [
+        { id: "topic-summary", name: "Topic summary", text: "Topic text", built_in: true },
+        { id: "c1", name: "Team sync", text: state.text, built_in: false },
+      ],
+      active: state.active,
+      text_limit: 4000,
+    });
+    const tauri = backend({
+      summary_prompts: list,
+      set_summary_prompt_text: ({ text }) => {
+        state.text = text as string;
+        return baseSettings;
+      },
+    });
+    const remote = async (change: Partial<typeof state>) => {
+      Object.assign(state, change);
+      await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
+    };
+    return { tauri, remote };
+  }
+
+  const inUseRow = () =>
+    within(screen.getByRole("radiogroup", { name: "Summary prompts" })).getByText("In use").closest(".settings-row")
+      ?.textContent;
+
+  test("a change from another computer refreshes the prompt in use", async () => {
+    const { remote } = sharedBackend();
+    renderPrompts();
+    await waitFor(() => expect(inUseRow()).toContain("Topic summary"));
+    await remote({ active: "c1" });
+    await waitFor(() => expect(inUseRow()).toContain("Team sync"));
+  });
+
+  test("a change from another computer shows the new text when the editor has no unsaved text", async () => {
+    const { remote } = sharedBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    await remote({ text: "Text from the other computer" });
+    await waitFor(() => expect(textArea().value).toBe("Text from the other computer"));
+    expect(screen.queryByText(/changed on another computer/)).toBeNull();
+  });
+
+  test("a change from another computer to a prompt with unsaved text keeps the text and offers Reload", async () => {
+    const { tauri, remote } = sharedBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "My unsaved text" } });
+    await remote({ text: "Text from the other computer" });
+    expect(await screen.findByText("This prompt changed on another computer.")).toBeTruthy();
+    expect(textArea().value).toBe("My unsaved text");
+    // The unsaved text does not replace the text of the other computer.
+    await new Promise((r) => setTimeout(r, 1200));
+    fireEvent.blur(textArea());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(textCalls(tauri)).toEqual([]);
+    await user.click(button("Reload"));
+    expect(textArea().value).toBe("Text from the other computer");
+    expect(screen.queryByText("This prompt changed on another computer.")).toBeNull();
+    expect(textCalls(tauri)).toEqual([]);
+  });
+
+  test("Keep My Text saves the unsaved text over the change from another computer", async () => {
+    const { tauri, remote } = sharedBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "My unsaved text" } });
+    await remote({ text: "Text from the other computer" });
+    await user.click(await screen.findByRole("button", { name: "Keep My Text" }));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "My unsaved text" }]));
+    await waitFor(() => expect(screen.queryByText("This prompt changed on another computer.")).toBeNull());
+    expect(textArea().value).toBe("My unsaved text");
+  });
+
+  test("text typed after this computer's own save shows no notice", async () => {
+    const { tauri } = sharedBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    fireEvent.change(textArea(), { target: { value: "First" } });
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
+    fireEvent.change(textArea(), { target: { value: "First and more" } });
+    await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText(/changed on another computer/)).toBeNull();
+    expect(textArea().value).toBe("First and more");
+  });
+
+  test("a read-only state disables the prompt editor and the prompt in use", async () => {
+    sharedBackend();
+    mockWindows("settings");
+    render(<SummaryPrompts onSettings={() => {}} readOnly="The storage folder is not available." />);
+    await selectCustom(userEvent.setup());
+    expect(screen.getByText("The storage folder is not available. Prompts can’t be changed now.")).toBeTruthy();
+    expect(textArea().readOnly).toBe(true);
+    expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).disabled).toBe(true);
+    expect((button("New Prompt") as HTMLButtonElement).disabled).toBe(true);
+    expect((button("Use Team sync") as HTMLButtonElement).disabled).toBe(true);
+    expect((button("Duplicate") as HTMLButtonElement).disabled).toBe(true);
+    expect((button("Delete") as HTMLButtonElement).disabled).toBe(true);
+  });
+});

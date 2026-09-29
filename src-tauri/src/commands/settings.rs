@@ -512,6 +512,33 @@ pub fn move_status(processing: State<'_, Arc<ProcessingManager>>) -> Option<Move
     processing.move_status()
 }
 
+/// The cause that Show in Finder gives when the storage folder is not
+/// available.
+const STORAGE_NOT_AVAILABLE: &str = "The storage folder is not available.";
+
+/// The storage folder that Show in Finder opens, or the cause when it is
+/// not a folder on disk now.
+fn folder_to_show(folder: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(folder);
+    if folder.is_empty() || !path.is_dir() {
+        return Err(STORAGE_NOT_AVAILABLE.into());
+    }
+    Ok(path)
+}
+
+/// Open the storage folder in Finder, or in Explorer on Windows (R3,
+/// KTD17). The command opens the folder from Rust, so the Settings window
+/// gets no file path permission.
+#[tauri::command]
+#[specta::specta]
+pub fn show_storage_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let folder = folder_to_show(&settings::get_settings(&app).storage_folder)?;
+    app.opener()
+        .open_path(folder.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("The storage folder could not open: {e}"))
+}
+
 /// Continue a paused Move (R10, AE13).
 #[tauri::command]
 #[specta::specta]
@@ -724,6 +751,21 @@ mod tests {
             Err(crate::managers::processing::MOVE_OPEN.to_string())
         );
         assert_eq!(check_change(current, new, false), Ok(PathBuf::from(new)));
+    }
+
+    /// KTD17: Show in Finder opens only a storage folder that exists.
+    #[test]
+    fn show_in_finder_needs_a_storage_folder_that_is_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Notes");
+        let not_available = Err(STORAGE_NOT_AVAILABLE.to_string());
+        assert_eq!(folder_to_show(""), not_available);
+        assert_eq!(folder_to_show(folder.to_str().unwrap()), not_available);
+        std::fs::write(&folder, b"a file").unwrap();
+        assert_eq!(folder_to_show(folder.to_str().unwrap()), not_available);
+        std::fs::remove_file(&folder).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        assert_eq!(folder_to_show(folder.to_str().unwrap()), Ok(folder));
     }
 
     #[test]

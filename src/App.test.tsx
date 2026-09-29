@@ -5,6 +5,8 @@ import type { Readiness, RecordingStatus, SessionEntry, Settings } from "./bindi
 import App from "./App";
 import { mockTauri, shortcutStatuses } from "./test/tauri";
 
+const available: Settings["shared"] = { availability: { kind: "available" }, newer_version: false, unknown_values: [] };
+
 const readiness: Readiness = {
   microphone_authorized: true,
   system_audio: "allowed",
@@ -50,7 +52,7 @@ const recordingEntry: SessionEntry = {
 
 function mockApp(status: { current: RecordingStatus }, entries: { current: SessionEntry[] }) {
   return mockTauri({
-    get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
+    get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
     readiness: () => readiness,
     shortcut_status: () => shortcutStatuses,
     login_item_status: () => "disabled",
@@ -128,7 +130,7 @@ describe("App", () => {
     const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
     const entries = [saved("a", "Alpha"), saved("b", "Beta")];
     const tauri = mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       login_item_status: () => "disabled",
@@ -184,7 +186,7 @@ describe("App", () => {
     setURL("http://localhost/?window=settings");
     let fail = false;
     mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L" }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       login_item_status: () => "disabled",

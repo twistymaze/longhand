@@ -45,6 +45,7 @@ export function RecognitionOptions({
   onChanged,
   modelAction,
   modelActivity,
+  disabled = false,
 }: {
   models: ModelStatus[];
   initial: RecognitionConfig;
@@ -52,6 +53,9 @@ export function RecognitionOptions({
   onChanged?: (spec: ExecutionSpec) => void;
   modelAction?: (model: ModelStatus) => ReactNode;
   modelActivity?: (model: ModelStatus) => ReactNode;
+  /// The choices are read-only, for example while the storage folder is not
+  /// available (R16).
+  disabled?: boolean;
 }) {
   const [draft, setDraft] = useState(initial);
   const edited = useRef(false);
@@ -272,6 +276,7 @@ export function RecognitionOptions({
             models={models}
             modelAction={modelAction}
             modelActivity={modelActivity}
+            disabled={disabled}
             value={draft.asr_model}
             onChange={(asr_model) => {
               if (asr_model === draft.asr_model) return;
@@ -291,7 +296,7 @@ export function RecognitionOptions({
                 aria-label="Transcription timing"
                 className={fieldClass}
                 value={draft.processing_mode}
-                disabled={loading}
+                disabled={loading || disabled}
                 onChange={(e) => chooseMode("processing_mode", e.target.value)}
               >
                 {timings.map(([id, text]) => (
@@ -315,7 +320,7 @@ export function RecognitionOptions({
                     ? "off"
                     : draft.speaker_processing_mode
                 }
-                disabled={loading}
+                disabled={loading || disabled}
                 onChange={(e) =>
                   chooseMode("speaker_processing_mode", e.target.value)
                 }
@@ -360,7 +365,7 @@ export function RecognitionOptions({
                     aria-label="Speaker model override"
                     className={fieldClass}
                     value={engine ?? "automatic"}
-                    disabled={loading}
+                    disabled={loading || disabled}
                     onChange={(e) => {
                       invalidate();
                       setEngine(
@@ -393,6 +398,7 @@ export function RecognitionOptions({
                   <select
                     aria-label="Language"
                     className={fieldClass}
+                    disabled={disabled}
                     value={draft.language ?? ""}
                     onChange={(e) => {
                       invalidate();
@@ -418,6 +424,7 @@ export function RecognitionOptions({
                   <select
                     aria-label="Expected speakers"
                     className={fieldClass}
+                    disabled={disabled}
                     value={draft.speaker_count?.kind ?? "automatic"}
                     onChange={(e) => {
                       invalidate();
@@ -441,6 +448,7 @@ export function RecognitionOptions({
                   <input
                     aria-label="Exact speaker count"
                     className={fieldClass}
+                    disabled={disabled}
                     type="number"
                     min={1}
                     max={32}
@@ -466,6 +474,7 @@ export function RecognitionOptions({
                           field === "min" ? "Fewest speakers" : "Most speakers"
                         }
                         className={`${fieldClass} min-w-0 w-24`}
+                        disabled={disabled}
                         type="number"
                         min={1}
                         max={32}

@@ -46,8 +46,16 @@ const baseSettings: Settings = {
 
 /// The pane with the settings state that the Settings window holds. A
 /// successful setter replaces the settings, as a refresh does.
-function Harness({ readiness: r, onRefresh = async () => {} }: { readiness: Readiness; onRefresh?: () => Promise<void> }) {
-  const [settings, setSettings] = useState(baseSettings);
+function Harness({
+  readiness: r,
+  onRefresh = async () => {},
+  initial = baseSettings,
+}: {
+  readiness: Readiness;
+  onRefresh?: () => Promise<void>;
+  initial?: Settings;
+}) {
+  const [settings, setSettings] = useState(initial);
   return <StatusPane readiness={r} settings={settings} onSettings={setSettings} onRefresh={onRefresh} onNavigate={() => {}} />;
 }
 
@@ -298,6 +306,19 @@ describe("the Updates group on macOS", () => {
     await userEvent.setup().click(toggle);
     expect(await within(group()).findByText(/could not save settings/i)).toBeTruthy();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("the switch is read-only while the storage folder is not available", () => {
+    mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+    const readOnly: Settings = {
+      ...baseSettings,
+      shared: { ...baseSettings.shared, availability: { kind: "read_only", cause: "folder_not_available" } },
+    };
+    render(<Harness readiness={readiness} initial={readOnly} />);
+    const group = screen.getByRole("heading", { name: "Updates" }).closest("section") as HTMLElement;
+    const toggle = within(group).getByRole("switch", { name: "Check for updates automatically" }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(group.textContent).toContain("The storage folder is not available.");
   });
 });
 
