@@ -253,6 +253,22 @@ pub fn run() {
             if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
                 managers::updates::install_at_launch(&handle);
             }
+            // Read once before any other reader, so a first run writes the
+            // defaults and an old store migrates. The migration puts the old
+            // shared values into the cache (R21). The join with the storage
+            // folder runs on the launch thread, before the first library
+            // scan; until then the shared view comes from the cache.
+            let local = managers::settings::get_local_settings(&handle);
+            log::info!(
+                "settings loaded (schema version {})",
+                local.settings_schema_version
+            );
+            app.manage(std::sync::Arc::new(
+                managers::shared::SharedSettingsManager::new(
+                    managers::settings::shared_cache_dir(&handle)?,
+                    local.current_destination.map(std::path::PathBuf::from),
+                ),
+            ));
             let secrets = managers::secrets::SecretsManager::new(&handle);
             let secret_store = secrets.store();
             app.manage(secrets);
@@ -324,14 +340,6 @@ pub fn run() {
                     log::warn!("microphone not prepared at launch: {e}");
                 }
             });
-            // Read once at launch so a first run writes the defaults and an old
-            // store migrates before anything else reads it.
-            let settings = managers::settings::get_settings(&handle);
-            log::info!(
-                "settings loaded (schema version {})",
-                settings.settings_schema_version
-            );
-
             window::create_main_window(&handle)?;
             tray::create_tray(&handle)?;
             #[cfg(target_os = "macos")]

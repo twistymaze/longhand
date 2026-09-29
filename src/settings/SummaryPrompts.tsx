@@ -303,9 +303,11 @@ export function SummaryPrompts({
     setSelectedId(id);
   };
 
-  // A new prompt is the last one in the settings.
+  // A new prompt is the one that the list did not have before. The settings
+  // list the prompts by name, so a new prompt is not always the last one.
   const showNewest = (s: Settings) => {
-    const newest = s.summary_prompts[s.summary_prompts.length - 1];
+    const before = new Set(list?.prompts.map((p) => p.id));
+    const newest = s.summary_prompts.find((p) => !before.has(p.id));
     if (newest) show(newest.id);
   };
 

@@ -3025,6 +3025,7 @@ dependencies = [
  "session-save",
  "sfx",
  "sha2 0.10.9",
+ "shared-settings",
  "specta",
  "specta-typescript",
  "summarize",

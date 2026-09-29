@@ -14,7 +14,7 @@ use pipeline::{
 use secrets::{SecretError, SecretStore};
 use serde::Serialize;
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 
 use crate::managers::capture::CaptureManager;
@@ -597,6 +597,16 @@ impl ProcessingManager {
     }
 
     fn launch(&self) {
+        // Before the library scan: the shared settings of the storage folder
+        // apply, and a folder with no settings file gets this computer's
+        // shared settings (R21, KTD8).
+        if let Some(shared) = self
+            .app
+            .try_state::<Arc<crate::managers::shared::SharedSettingsManager>>()
+            && shared.join_at_launch()
+        {
+            settings::emit_settings_changed(&self.app);
+        }
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).

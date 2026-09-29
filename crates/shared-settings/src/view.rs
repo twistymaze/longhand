@@ -139,6 +139,13 @@ pub fn refresh(root: &Path, cache_dir: &Path) -> SharedView {
     loaded.view
 }
 
+/// The view from `cache`, or from the defaults when there is no cache,
+/// with `availability`. This reads no folder. The app uses it before the
+/// first read of the storage folder, and while no storage folder is set.
+pub fn cached(cache: Option<&Cache>, availability: Availability) -> SharedView {
+    from_cache(cache, availability).view
+}
+
 /// Write `cache` into `cache_dir`, when there is one.
 pub(crate) fn store(cache_dir: &Path, cache: Option<&Cache>) {
     if let Some(cache) = cache

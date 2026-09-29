@@ -1122,6 +1122,37 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  * What processing is doing, for the surface.
  */
 export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
+/**
+ * Why the shared settings are read-only.
+ */
+export type ReadOnlyCause = 
+/**
+ * No storage folder is set.
+ */
+"no_storage_folder" | 
+/**
+ * Longhand did not read the storage folder since launch.
+ */
+"not_read_yet" | 
+/**
+ * The storage folder does not exist, for example because its disk is
+ * not connected.
+ */
+"folder_not_available" | 
+/**
+ * The storage folder or its settings file cannot be read.
+ */
+"not_readable" | 
+/**
+ * The settings file is not one complete JSON object, for example
+ * because a sync delivered only a part of it (KTD3).
+ */
+"does_not_parse" | 
+/**
+ * The storage folder has no settings file, and Longhand did not write
+ * one into it.
+ */
+"no_settings_file"
 export type Readiness = { microphone_authorized: boolean; 
 /**
  * The system audio permission (R9). It does not change `armed`: the
@@ -1342,6 +1373,13 @@ found_speakers: number | null;
  * be read now (R16). Opening it and its actions wait.
  */
 storage_unavailable: boolean }
+/**
+ * The settings that the app uses: the local settings of this computer and
+ * the shared settings of the storage folder (KTD7). The local store holds
+ * only the local fields. Each shared field comes from the shared view; a
+ * value that this version does not know reads as the default here, and
+ * `shared.unknown_values` names it.
+ */
 export type Settings = { settings_schema_version: number; interface_zoom_percent: number; 
 /**
  * The chord that starts and stops a recording. `None` when the user
@@ -1372,9 +1410,13 @@ endpoint_base_url: string | null; endpoint_model: string;
 /**
  * Overrides the probed context budget when set (KTD16).
  */
-context_limit_tokens: number | null; default_speaker_count: SpeakerCountSetting | null; 
+context_limit_tokens: number | null; 
 /**
- * Catalog id of the recognition model (KTD6).
+ * A shared setting.
+ */
+default_speaker_count: SpeakerCountSetting | null; 
+/**
+ * A shared setting. Catalog id of the recognition model (KTD6).
  */
 asr_model: string; 
 /**
@@ -1383,9 +1425,22 @@ asr_model: string;
  */
 pending_asr_model: string | null; 
 /**
- * A streaming model transcribes during recording (R18, KD9).
+ * A shared setting. A streaming model transcribes during recording
+ * (R18, KD9).
  */
-live_transcript: boolean; speaker_source: SpeakerSource; speaker_processing_mode: ProcessingMode; recognition_language: string | null; pending_recognition: RecognitionConfig | null; 
+live_transcript: boolean; 
+/**
+ * A shared setting.
+ */
+speaker_source: SpeakerSource; 
+/**
+ * A shared setting.
+ */
+speaker_processing_mode: ProcessingMode; 
+/**
+ * A shared setting.
+ */
+recognition_language: string | null; pending_recognition: RecognitionConfig | null; 
 /**
  * The microphone a new note records from. `None` is "System default"
  * (R1, KTD17).
@@ -1401,9 +1456,9 @@ system_audio_default: boolean;
  */
 hide_from_dock: boolean; 
 /**
- * The app checks for a newer build of its track at launch, each hour
- * and at each wake (R9, R10). On by default. "Check for Updates…"
- * works when it is off (R11).
+ * A shared setting. The app checks for a newer build of its track at
+ * launch, each hour and at each wake (R9, R10). On by default. "Check
+ * for Updates…" works when it is off (R11).
  */
 check_updates_automatically: boolean; 
 /**
@@ -1412,19 +1467,43 @@ check_updates_automatically: boolean;
  */
 learned_context_limits: Partial<{ [key in string]: number }>; 
 /**
- * The custom summary prompts, in the order the user made them (KTD6).
+ * A shared setting. The custom summary prompts, in the order that
+ * Settings shows them (KTD6).
  */
 summary_prompts: SummaryPrompt[]; 
 /**
- * The id of the prompt that the next summary uses. An id that matches
- * no prompt resolves to the Topic summary.
+ * A shared setting. The id of the prompt that the next summary uses.
+ * An id that matches no prompt resolves to the Topic summary.
  */
-active_summary_prompt: string }
+active_summary_prompt: string; 
+/**
+ * Whether this computer can change the shared settings now, and the
+ * values that this version does not know (R16, R17).
+ */
+shared: SharedState }
 /**
  * The settings changed without a command from the surface, for example
  * when a picked model becomes the selected model after its download.
  */
 export type SettingsChanged = { settings: Settings }
+/**
+ * Whether this computer can change the shared settings now (R16).
+ */
+export type SharedAvailability = { kind: "available" } | 
+/**
+ * The shared settings come from the local cache, or from the defaults
+ * when there is no cache.
+ */
+{ kind: "read_only"; cause: ReadOnlyCause }
+/**
+ * The state of the shared settings, for the Settings window.
+ */
+export type SharedState = { availability: SharedAvailability; 
+/**
+ * The settings file comes from a newer version of Longhand, so it can
+ * hold settings that this version does not show.
+ */
+newer_version: boolean; unknown_values: UnknownSharedValue[] }
 /**
  * Which of the two shortcuts a command acts on.
  */
@@ -1527,6 +1606,15 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * A value in the shared settings file that this version does not know.
+ * Longhand keeps it in the file (R17).
+ */
+export type UnknownSharedValue = { key: string; 
+/**
+ * The value as JSON text.
+ */
+value: string }
 /**
  * What the update window shows, and what the manager does in the
  * background. A state with a view shows the update window.

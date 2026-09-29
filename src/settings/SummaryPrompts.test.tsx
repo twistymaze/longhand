@@ -32,6 +32,7 @@ const baseSettings: Settings = {
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
 };
 
 const readiness: Readiness = {
@@ -45,6 +46,7 @@ const readiness: Readiness = {
 };
 
 /// A fake of the prompt commands that keeps its own list, as the backend does.
+/// The backend lists the custom prompts by name.
 function backend(over: Record<string, CommandHandler> = {}) {
   const builtIns = [
     { id: "topic-summary", name: "Topic summary", text: "Topic text", built_in: true },
@@ -53,15 +55,16 @@ function backend(over: Record<string, CommandHandler> = {}) {
   let custom: SummaryPrompt[] = [{ id: "c1", name: "Team sync", text: "Sync text" }];
   let active = "topic-summary";
   let next = 2;
+  const byName = () => [...custom].sort((a, b) => a.name.localeCompare(b.name));
   const settings = (): Settings => ({
     ...baseSettings,
-    summary_prompts: custom.map((p) => ({ ...p })),
+    summary_prompts: byName().map((p) => ({ ...p })),
     active_summary_prompt: active,
   });
   const find = (id: unknown) => [...builtIns, ...custom].find((p) => p.id === id)!;
   return mockTauri({
     summary_prompts: () => ({
-      prompts: [...builtIns, ...custom.map((p) => ({ ...p, built_in: false }))],
+      prompts: [...builtIns, ...byName().map((p) => ({ ...p, built_in: false }))],
       active,
       text_limit: 4000,
     }),

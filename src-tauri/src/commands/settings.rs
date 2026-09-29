@@ -19,6 +19,7 @@ use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
     self, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
 };
+use crate::managers::shared::SharedSettingsManager;
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -112,7 +113,7 @@ pub fn set_context_limit(app: AppHandle, limit: Option<u32>) -> Result<Settings,
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_default_speaker_count(
     app: AppHandle,
@@ -130,7 +131,7 @@ pub fn set_default_speaker_count(
 /// Pick the recognition model (R5, KD7). A pick that is not downloaded
 /// starts its download. While the selected model is downloaded, it stays in
 /// use until the pick's download is verified.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn select_asr_model(
     app: AppHandle,
@@ -159,7 +160,7 @@ pub fn select_asr_model(
 }
 
 /// Turn the live transcript of streaming models on or off (R18, KD9).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_live_transcript(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
@@ -246,7 +247,7 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
 
 /// Choose whether the app checks for updates by itself (R10). The next
 /// scheduled check reads the new value.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
@@ -283,52 +284,80 @@ pub fn summary_prompts(app: AppHandle) -> SummaryPromptList {
     settings::get_settings(&app).summary_prompt_list()
 }
 
+// The prompt commands change the files of the storage folder through the
+// shared settings manager (R14). They run off the main thread, because a
+// read of a synced folder can wait for the sync service.
+
 /// Add a summary prompt named "New prompt" with the Topic summary text (R3).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn create_summary_prompt(app: AppHandle) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.create_summary_prompt();
-        Ok(())
-    })
+pub fn create_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+) -> Result<Settings, String> {
+    shared.create_prompt()?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Add a copy of a summary prompt, named "X copy" (R3).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn duplicate_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.duplicate_summary_prompt(&id).map(drop))
+pub fn duplicate_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+) -> Result<Settings, String> {
+    shared.duplicate_prompt(&id)?;
+    Ok(settings::get_settings(&app))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn rename_summary_prompt(app: AppHandle, id: String, name: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.rename_summary_prompt(&id, &name))
+pub fn rename_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+    name: String,
+) -> Result<Settings, String> {
+    shared.rename_prompt(&id, &name)?;
+    Ok(settings::get_settings(&app))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_summary_prompt_text(
     app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
     text: String,
 ) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.set_summary_prompt_text(&id, &text))
+    shared.set_prompt_text(&id, &text)?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Delete a custom summary prompt. The Topic summary becomes active when the
 /// deleted prompt was active (R4).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn delete_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.delete_summary_prompt(&id))
+pub fn delete_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+) -> Result<Settings, String> {
+    shared.delete_prompt(&id)?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Make a summary prompt the one that the next summary uses (R1).
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
-pub fn activate_summary_prompt(app: AppHandle, id: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.activate_summary_prompt(&id))
+pub fn activate_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+) -> Result<Settings, String> {
+    shared.activate_prompt(&id)?;
+    Ok(settings::get_settings(&app))
 }
 
 /// Pick a folder with the system dialog, make it current, and retain it as a
@@ -351,17 +380,25 @@ pub async fn choose_destination(app: AppHandle) -> Result<Option<Settings>, Stri
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
     let folder = path.to_string_lossy().into_owned();
-    let settings = settings::update_settings(&app, |s| {
+    settings::update_settings(&app, |s| {
         s.choose_destination(&folder);
         Ok(())
     })?;
-    destination_changed(&app);
-    Ok(Some(settings))
+    let joined = app.clone();
+    tauri::async_runtime::spawn_blocking(move || destination_changed(&joined, &folder))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(settings::get_settings(&app)))
 }
 
-/// Sessions waiting for a destination try the new one (R22b), and the
-/// library watches start again on the retained roots (KTD7).
-fn destination_changed(app: &AppHandle) {
+/// The shared settings of the new folder apply, and this computer's custom
+/// prompts merge into them (R21, R22). Sessions waiting for a destination
+/// try the new one (R22b), and the library watches start again on the
+/// retained roots (KTD7).
+fn destination_changed(app: &AppHandle, folder: &str) {
+    if let Some(shared) = app.try_state::<Arc<SharedSettingsManager>>() {
+        shared.change_folder(Some(std::path::PathBuf::from(folder)));
+    }
     if let Some(processing) = app.try_state::<std::sync::Arc<ProcessingManager>>() {
         processing.retry_awaiting();
         processing.roots_changed();
@@ -369,17 +406,18 @@ fn destination_changed(app: &AppHandle) {
 }
 
 /// Switch to a folder chosen earlier.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_current_destination(app: AppHandle, folder: String) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
         if !s.destination_roots.contains(&folder) {
             return Err("that folder has not been chosen as a destination".into());
         }
-        s.current_destination = Some(folder);
+        s.current_destination = Some(folder.clone());
         Ok(())
-    })
-    .inspect(|_| destination_changed(&app))
+    })?;
+    destination_changed(&app, &folder);
+    Ok(settings::get_settings(&app))
 }
 
 #[tauri::command]
@@ -772,7 +810,7 @@ pub async fn change_interface_zoom(
 }
 
 /// Keep the complete default until every new artifact is downloaded.
-#[tauri::command]
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_recognition_defaults(
     app: AppHandle,
