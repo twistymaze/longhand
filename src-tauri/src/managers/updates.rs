@@ -424,3 +424,10 @@ pub fn install_at_launch(app: &AppHandle) {
         Err(e) => log::error!("updates: cannot install {saved} at launch: {e}"),
     }
 }
+
+/// "Check for Updates…" in the app menu and the tray menu (R11, KTD11).
+pub fn check_for_updates(app: &AppHandle) {
+    if let Some(manager) = app.try_state::<Arc<UpdateManager>>() {
+        manager.check_now();
+    }
+}

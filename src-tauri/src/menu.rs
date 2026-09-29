@@ -1,6 +1,6 @@
-//! The macOS app menu (KTD3). The menu holds "Settings…" (⌘,) and the
-//! standard Edit submenu: without the Edit items, copy, paste and undo do
-//! not work in the app's text fields.
+//! The macOS app menu (KTD3). The menu holds "Check for Updates…",
+//! "Settings…" (⌘,) and the standard Edit submenu: without the Edit items,
+//! copy, paste and undo do not work in the app's text fields.
 
 use tauri::AppHandle;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -10,6 +10,7 @@ use crate::window::open_settings;
 /// The menu ID of the app menu's Settings item. The tray menu uses its own
 /// IDs, so a menu event handler never acts on the other menu's item.
 const SETTINGS: &str = "app-settings";
+const CHECK_FOR_UPDATES: &str = "app-check-updates";
 
 /// Set the app menu, and open Settings when the user selects its item.
 pub fn set_app_menu(app: &AppHandle) -> tauri::Result<()> {
@@ -20,6 +21,13 @@ pub fn set_app_menu(app: &AppHandle) -> tauri::Result<()> {
         true,
         &[
             &PredefinedMenuItem::about(app, Some(&format!("About {name}")), None)?,
+            &MenuItem::with_id(
+                app,
+                CHECK_FOR_UPDATES,
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, SETTINGS, "Settings…", true, Some("CmdOrCtrl+,"))?,
             &PredefinedMenuItem::separator(app)?,
@@ -55,10 +63,10 @@ pub fn set_app_menu(app: &AppHandle) -> tauri::Result<()> {
     )?;
     let menu = Menu::with_items(app, &[&app_submenu, &edit_submenu, &window_submenu])?;
     app.set_menu(menu)?;
-    app.on_menu_event(|app, event| {
-        if event.id.as_ref() == SETTINGS {
-            open_settings(app);
-        }
+    app.on_menu_event(|app, event| match event.id.as_ref() {
+        SETTINGS => open_settings(app),
+        CHECK_FOR_UPDATES => crate::managers::updates::check_for_updates(app),
+        _ => {}
     });
     Ok(())
 }

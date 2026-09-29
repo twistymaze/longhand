@@ -83,15 +83,19 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     app.manage(OpenItem(open.clone()));
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Longhand", true, Some("CmdOrCtrl+Q"))?;
-    let menu = Menu::with_items(
+    let menu = Menu::with_items(app, &[&open, &settings])?;
+    // The tray menu is always there, also when "Hide from Dock" hides the
+    // app menu (KTD11). Updates are macOS only.
+    #[cfg(target_os = "macos")]
+    menu.append(&MenuItem::with_id(
         app,
-        &[
-            &open,
-            &settings,
-            &PredefinedMenuItem::separator(app)?,
-            &quit,
-        ],
-    )?;
+        "check-updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&quit)?;
 
     let mut builder = TrayIconBuilder::with_id("main")
         .icon(Image::from_bytes(TRAY_ICON)?)
@@ -132,6 +136,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => open_longhand(app),
             "settings" => open_settings(app),
+            "check-updates" => crate::managers::updates::check_for_updates(app),
             "quit" => app.exit(0),
             _ => {}
         })
