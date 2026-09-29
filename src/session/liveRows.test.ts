@@ -347,6 +347,18 @@ describe("native rows and the post-Stop pass", () => {
     ]);
   });
 
+  test("native rows put no space before closing punctuation or after an opening bracket", () => {
+    const built = buildLiveRows(input({
+      native: [
+        native(0, 500, "Hello", id(0, 1)),
+        native(500, 600, ",", id(0, 1)),
+        native(700, 900, "(yes", id(0, 1)),
+        native(900, 1_000, ")", id(0, 1)),
+      ],
+    }));
+    expect(paragraphText(rows(built)[0].paragraphs[0])).toBe("Hello, (yes)");
+  });
+
   test("after Stop, a result epoch of the post-Stop pass changes no row and adds no divider (KTD13)", () => {
     const parts = [
       { segment: 0, part: 0, offset_ms: 0, words: spoken("Hello there.") },

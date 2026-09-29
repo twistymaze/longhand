@@ -1,16 +1,30 @@
-// The live transcript on the Transcript tab (R8, R10, U8). Saved parts show
-// as paragraphs. Native timed words are grouped into readable paragraphs,
-// with speaker labels when available and one notice for provisional results.
-// The view follows new text while it is at the bottom. A scroll up stops
-// the follow and shows "Scroll to bottom".
+// The live transcript on the Transcript tab (R8, R10, U8). The row builder
+// (`liveRows.ts`) groups the live text into speaker rows and paragraphs,
+// with a divider where the speaker labels restart. This view draws the rows
+// in the layout of the saved transcript, and shows one notice for
+// provisional results. The view follows new text while it is at the bottom.
+// A scroll up stops the follow and shows "Scroll to bottom". While the
+// reader is scrolled up, a change above keeps the first visible paragraph in
+// place (KTD14).
 //
 // Nothing here moves or blinks. The tab does not open by default during a
 // recording, and the text must not pull the user's attention back to the
-// screen (ux-redesign KD2).
+// screen (ux-redesign KD2, U7).
 
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLiveTranscript } from "./useLiveTranscript";
-import { recognitionParagraphs, recognitionRows } from "./liveRecognition";
+import { recognitionRows, speakerBlocks, type RecognitionView } from "./liveRecognition";
+import {
+  buildLiveRows,
+  paragraphText,
+  type LiveRowItem,
+  type LiveSpeakerRow,
+  type NativeRow,
+  type NumberMap,
+  type OpenPart,
+  type SpeakerBlock,
+} from "./liveRows";
+import { Marker } from "./Marker";
 
 /// Where the note is:
 /// - recording: the live worker can add text;
@@ -38,6 +52,42 @@ function line(mode: LiveMode, state: string | null, hasText: boolean): string | 
   return "Starting the live transcript…";
 }
 
+const isSpeakerRow = (item: LiveRowItem): item is LiveSpeakerRow => item.kind === "speaker";
+const rowText = (row: LiveSpeakerRow) => row.paragraphs.map(paragraphText).join("\n");
+
+/**
+ * True when a change moved, split or joined a speaker row that had a
+ * heading, or changed its number. New text at the end of a row, and a first
+ * heading on text that had none, are not changes of the labels.
+ */
+function labelsChanged(before: LiveRowItem[], after: LiveRowItem[]): boolean {
+  const next = new Map(after.filter(isSpeakerRow).map((row) => [row.key, row]));
+  return before.filter(isSpeakerRow).some((row) => {
+    if (row.number === null) return false;
+    const now = next.get(row.key);
+    return !now || now.number !== row.number || !rowText(now).startsWith(rowText(row));
+  });
+}
+
+/**
+ * The numbers of the collapsed speaker list. Each window counts from 1 in
+ * order of first speech, and a speaker keeps a number that a heading
+ * already showed. The list does not add numbers to the note's map.
+ */
+function listNumbers(blocks: SpeakerBlock[], numbers: NumberMap): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const block of blocks) {
+    const prefix = `${block.generation}:${block.epoch}:`;
+    let next = 1;
+    for (const [id, number] of numbers) if (id.startsWith(prefix)) next = Math.max(next, number + 1);
+    for (const turn of [...block.turns].sort((a, b) => a.start_sample - b.start_sample)) {
+      if (turn.speaker === null || out.has(turn.speaker)) continue;
+      out.set(turn.speaker, numbers.get(turn.speaker) ?? next++);
+    }
+  }
+  return out;
+}
+
 function DownArrow() {
   return (
     <svg aria-hidden viewBox="0 0 12 12" className="size-[11px]">
@@ -61,8 +111,76 @@ export function LiveTranscript({
   const live = useLiveTranscript(sessionId);
   const following = useRef(true);
   const [away, setAway] = useState(false);
-  const labels = useRef(new Map<string, number>());
-  useEffect(() => { labels.current.clear(); }, [sessionId]);
+  const rows = useRef<HTMLDivElement>(null);
+  /// The first visible paragraph and its offset from the top of the scroller.
+  const anchor = useRef<{ key: string; top: number } | null>(null);
+
+  const afterStop = mode === "processing" || mode === "loading";
+  const { blocks, native, items } = useMemo(() => {
+    const blocks = speakerBlocks(live.recognition);
+    const hasLiveText =
+      live.parts.some((p) => p.text.trim() !== "") || live.open.some((p) => (p.committed + p.tentative).trim() !== "");
+    // The original live stream stays complete while post-Stop recognition
+    // publishes partial replacements. The saved transcript replaces that
+    // stream after processing; showing both sources here would repeat the
+    // same speech.
+    const native: NativeRow[] = hasLiveText
+      ? []
+      : recognitionRows(live.recognition).map((row) => ({
+          generation: row.generation,
+          epoch: row.epoch,
+          start_sample: row.start_sample,
+          end_sample: row.end_sample,
+          text: row.text ?? "",
+          speaker: row.speaker,
+          text_final: row.text_final,
+          speaker_final: row.speaker_final,
+        }));
+    // A saved part with no word times shows its text under the speaker before it.
+    const untimed: OpenPart[] = live.parts
+      .filter((p) => p.words.length === 0 && p.text.trim() !== "")
+      .map((p) => ({ segment: p.segment, part: p.part, offset_ms: p.offset_ms, words: null, committed: p.text, tentative: "" }));
+    const items = buildLiveRows({
+      parts: live.parts.filter((p) => p.words.length > 0),
+      open: [...untimed, ...live.open],
+      native,
+      speakers: blocks,
+      numbers: live.numbers,
+      afterStop,
+    });
+    return { blocks, native, items };
+  }, [live, afterStop]);
+
+  // The screen-reader message plays when a speaker revision changes the rows
+  // that show (R7: a shown number does not change, so an unchanged row plays
+  // nothing).
+  const [announced, setAnnounced] = useState(0);
+  const shown = useRef<{ sessionId: string; recognition: RecognitionView; items: LiveRowItem[] } | null>(null);
+  useEffect(() => {
+    const before = shown.current;
+    shown.current = { sessionId, recognition: live.recognition, items };
+    if (!before || before.sessionId !== sessionId) {
+      setAnnounced(0);
+      return;
+    }
+    if (before.recognition !== live.recognition && labelsChanged(before.items, items)) setAnnounced((n) => n + 1);
+  }, [sessionId, live.recognition, items]);
+
+  /// Record the first visible paragraph (KTD14).
+  const record = useCallback(() => {
+    const el = scroller.current;
+    const box = rows.current;
+    anchor.current = null;
+    if (!el || !box) return;
+    const top = el.getBoundingClientRect().top;
+    for (const p of box.querySelectorAll<HTMLElement>("[data-key]")) {
+      const rect = p.getBoundingClientRect();
+      if (rect.bottom > top) {
+        anchor.current = { key: p.dataset.key!, top: rect.top - top };
+        return;
+      }
+    }
+  }, [scroller]);
 
   useEffect(() => {
     const el = scroller.current;
@@ -71,36 +189,39 @@ export function LiveTranscript({
       const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_SLACK_PX;
       following.current = atBottom;
       setAway(!atBottom);
+      record();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
-  }, [scroller]);
+  }, [scroller, record]);
 
   const toBottom = useCallback(() => {
     const el = scroller.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [scroller]);
 
-  // Before paint, so the new text never shows above the bottom first.
+  // Before paint, so the new text never shows above the bottom first, and a
+  // change above the visible area never moves the text that the reader sees.
   useLayoutEffect(() => {
+    const el = scroller.current;
     if (following.current) toBottom();
-  }, [live, toBottom]);
+    else if (el && anchor.current && rows.current) {
+      const { key, top } = anchor.current;
+      const p = [...rows.current.querySelectorAll<HTMLElement>("[data-key]")].find((n) => n.dataset.key === key);
+      if (p) {
+        const shift = p.getBoundingClientRect().top - el.getBoundingClientRect().top - top;
+        if (shift !== 0) el.scrollTop += shift;
+      }
+    }
+    record();
+  }, [live, items, toBottom, record, scroller]);
 
   if (!live.loaded) return null;
 
-  const parts = live.parts.filter((p) => p.text.trim() !== "");
-  const current = live.current && (live.current.committed + live.current.tentative).trim() !== "" ? live.current : null;
-  // The original live stream remains complete while post-Stop recognition
-  // publishes partial replacements. The saved transcript replaces that stream
-  // after processing; showing both sources here would repeat the same speech.
-  const nativeRows = parts.length > 0 || current !== null
-    ? []
-    : recognitionRows(live.recognition);
-  const paragraphs = recognitionParagraphs(nativeRows);
-  const provisionalText = nativeRows.some((row) => !row.text_final);
-  const provisionalSpeakers = nativeRows.some((row) => row.speaker && !row.speaker_final);
-  const speakerRows = Object.values(live.recognition.blocks).filter((b) => b.kind === "speakers").flatMap((b) => b.event.rows).sort((a, b) => a.start_sample - b.start_sample);
-  const hasText = parts.length > 0 || current !== null || nativeRows.length > 0 || speakerRows.length > 0;
+  const turns = blocks.some((b) => b.turns.length > 0);
+  const provisionalText = native.some((row) => !row.text_final);
+  const provisionalSpeakers = mode !== "loading" && items.some((item) => isSpeakerRow(item) && item.provisional);
+  const hasText = items.length > 0 || turns;
   const status = textAfterStop && mode === "recording" ? READY_AFTER_STOP : line(mode, live.state, hasText);
 
   if (!hasText) {
@@ -114,44 +235,57 @@ export function LiveTranscript({
     );
   }
 
-  const header = mode === "processing" || mode === "loading";
+  const header = afterStop;
   const statusLine = status && (
     <p role="status" className={`text-[0.85rem] text-label-secondary ${header ? "mb-4" : "mt-4 pl-[4.5rem]"}`}>
       {status}
     </p>
   );
+  const numbers = items.length === 0 && turns ? listNumbers([...blocks].sort((a, b) => a.epoch - b.epoch), live.numbers) : null;
 
   return (
-    <div>
+    <div ref={rows}>
       {live.recognition.error && <p role="alert" className="text-negative">{live.recognition.error}</p>}
-      {live.recognition.announcement && <p role="status" className="sr-only"><span key={live.recognition.announcementId}>{live.recognition.announcement}</span></p>}
-      {nativeRows.length === 0 && speakerRows.length > 0 && <details className="mb-4 text-[0.85rem] text-label-secondary"><summary>Speaker analysis so far</summary><p>Text and speaker labels can become ready at different times.</p>{speakerRows.map((row, index) => {
-        if (row.speaker && !labels.current.has(row.speaker)) labels.current.set(row.speaker, labels.current.size + 1);
-        return <p key={index}>Speaker {row.speaker ? labels.current.get(row.speaker) : "unknown"} · {Math.floor(row.start_sample / 16000)}–{Math.ceil(row.end_sample / 16000)} seconds{!row.speaker_final && " · Provisional label"}</p>;
-      })}</details>}
+      {announced > 0 && <p role="status" className="sr-only"><span key={announced}>Speaker labels updated.</span></p>}
+      {numbers && (
+        <details className="mb-4 text-[0.85rem] text-label-secondary">
+          <summary>Speaker analysis so far</summary>
+          <p>Text and speaker labels can become ready at different times.</p>
+          {[...blocks].sort((a, b) => a.epoch - b.epoch).map((block, i) => (
+            <div key={`${block.generation}:${block.epoch}`}>
+              {i > 0 && <p>Speaker labels restart</p>}
+              {[...block.turns].sort((a, b) => a.start_sample - b.start_sample).map((turn, j) => (
+                <p key={j}>
+                  Speaker {turn.speaker ? numbers.get(turn.speaker) : "unknown"} · {Math.floor(turn.start_sample / 16000)}–{Math.ceil(turn.end_sample / 16000)} seconds{!turn.speaker_final && " · Provisional label"}
+                </p>
+              ))}
+            </div>
+          ))}
+        </details>
+      )}
       {(provisionalText || provisionalSpeakers) && <p className="mb-3 text-[0.85rem] text-label-secondary">{[provisionalText && "Provisional text", provisionalSpeakers && "Speaker labels may change"].filter(Boolean).join(" · ")}</p>}
-      {paragraphs.map((row, index) => {
-        if (row.speaker && !labels.current.has(row.speaker)) labels.current.set(row.speaker, labels.current.size + 1);
-        return <div key={`${row.start_sample}-${row.end_sample}-${index}`} data-testid="live-part" className="py-1.5 leading-[1.55]">
-          {row.speaker && <span className="mr-3 text-[0.85rem] text-label-secondary">Speaker {labels.current.get(row.speaker)}</span>}
-          <span>{row.text}</span>
-        </div>;
-      })}
       {header && statusLine}
-      {parts.map((p) => (
-        <p key={`${p.segment}-${p.part}`} data-testid="live-part" className="py-1.5 pl-[4.5rem] leading-[1.55]">
-          {p.text}
-        </p>
-      ))}
-      {current && (
-        <p data-testid="live-part" className="py-1.5 pl-[4.5rem] leading-[1.55]">
-          <span>{current.committed}</span>
-          {current.tentative && (
-            <span data-tentative="true" className="text-label-secondary">
-              {current.tentative}
-            </span>
-          )}
-        </p>
+      {items.map((item, i) =>
+        item.kind === "divider" ? (
+          <Marker key={item.key} label="Speaker labels restart" />
+        ) : (
+          <section key={item.key} className={i > 0 ? "mt-5" : undefined}>
+            {item.number !== null && (
+              <h3 className="mb-1 pl-[4.5rem] text-[0.85rem] font-semibold text-label-secondary">Speaker {item.number}</h3>
+            )}
+            {item.paragraphs.map((paragraph) => (
+              <p key={paragraph.key} data-key={paragraph.key} data-testid="live-part" className="py-1 pl-[4.5rem] leading-[1.55]">
+                {paragraph.pieces.map((piece, j) =>
+                  piece.tentative ? (
+                    <span key={j} data-tentative="true" className="text-label-secondary">{piece.text}</span>
+                  ) : (
+                    <span key={j}>{piece.text}</span>
+                  ),
+                )}
+              </p>
+            ))}
+          </section>
+        ),
       )}
       {!header && statusLine}
       {away && (

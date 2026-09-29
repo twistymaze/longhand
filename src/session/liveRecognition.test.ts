@@ -58,7 +58,6 @@ describe("live recognition growth", () => {
     const next = applyRecognitionEvents({ ...emptyRecognition, blocks }, updates);
     expect(reads).toBeLessThan(10000);
     expect(recognitionRows(next)).toHaveLength(2000);
-    expect(next.announcementId).toBe(0);
   });
 
   test("speaker snapshots do not make a patch burst reread every stored word per event", () => {
@@ -78,10 +77,9 @@ describe("live recognition growth", () => {
     const rows = recognitionRows(next);
     expect(rows).toHaveLength(2000);
     expect(rows.every((row) => row.speaker === "snapshot label")).toBe(true);
-    expect(next.announcementId).toBe(0);
   });
 
-  test("batched patches preserve each revision, interim removal, scope, and announcement", () => {
+  test("batched patches preserve each revision, interim removal, and scope", () => {
     const updates: LiveRecognitionEvent[] = [
       event([], { phase: "interim_begin", key: "interim" }),
       event([row(0), row(10), row(20)], { phase: "interim_batch", key: "interim" }),
@@ -127,7 +125,6 @@ describe("live recognition growth", () => {
       Array.prototype.some = original;
     }
     expect(recognitionRows(result)).toHaveLength(1001);
-    expect(result.announcementId).toBe(0);
     expect(visits).toBeLessThan(10000);
   });
 
@@ -146,13 +143,10 @@ describe("live recognition growth", () => {
     expect(scopeReads).toBeLessThan(1000);
   });
 
-  test("corrections preserve timestamp matching with duplicate spans and scopes", () => {
+  test("rows with the same span in different scopes stay separate", () => {
     let view = applyRecognition(emptyRecognition, event([row(0, "one")]));
     view = applyRecognition(view, event([row(0, "two")], { epoch: 1 }));
-    expect(view.announcementId).toBe(1);
     view = applyRecognition(view, event([row(20)], { key: "new" }));
-    // The existing contract compares all rows with the same bounds, including other scopes.
-    expect(view.announcementId).toBe(2);
     expect(recognitionRows(view).map((r) => [r.start_sample, r.speaker, r.scope])).toEqual([
       [0, "one", '["g",0]'], [0, "two", '["g",1]'], [20, "one", '["g",0]'],
     ]);

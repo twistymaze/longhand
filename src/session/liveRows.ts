@@ -90,9 +90,15 @@ const lastChar = (text: string) => {
 };
 const firstChar = (text: string) => Array.from(text)[0] ?? "";
 
-/** True when a space goes between two pieces, as in `join::build`. */
+/**
+ * True when a space goes between two pieces, as in `join::build`. Live words
+ * carry their punctuation. Native rows can send punctuation as a row of its
+ * own, so no space goes before closing punctuation or after an opening bracket.
+ */
 function spaceBetween(left: string, right: string): boolean {
-  return left !== "" && !UNSPACED.test(lastChar(left)) && !UNSPACED.test(firstChar(right));
+  return left !== "" && right !== ""
+    && !UNSPACED.test(lastChar(left)) && !UNSPACED.test(firstChar(right))
+    && !/^[,.;:!?%)\]}]/u.test(right) && !/[([{]$/u.test(left);
 }
 
 /**
