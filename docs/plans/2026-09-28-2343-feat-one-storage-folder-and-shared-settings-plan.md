@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A person who uses Longhand on several computers sets up the summary prompts and the way of working one time. Every computer that uses the same storage folder then uses those settings. The library always has exactly one storage folder, and a new install records with no setup.
 - **Means:** A new crate reads and writes the shared settings and the prompt files in the storage folder's `.longhand/` folder, one field at a time (KTD1, KTD2). Move is a resumable per-note state machine that uses the Save copy steps again (KTD9).
-- **Product authority:** This Product Contract. The user confirmed the scope on 2026-09-28. It covers two ideas together: [one storage folder](../ideas/next/one-storage-folder.md) and [shared settings in the storage folder](../ideas/next/shared-settings-in-storage.md). The Requirements win on product behaviour, and the KTDs win on mechanism.
+- **Product authority:** This Product Contract. The user confirmed the scope on 2026-09-28. It covers two ideas together: [one storage folder](../ideas/done/one-storage-folder.md) and [shared settings in the storage folder](../ideas/done/shared-settings-in-storage.md). The Requirements win on product behaviour, and the KTDs win on mechanism.
 - **Open blockers:** None.
 - **Execution profile:** One branch and one PR, in a worktree made from `origin/main`. Commit per unit and push in batches. A manual test on two Macs with a notarized build is necessary (Verification Contract).
 - **Stop conditions:** Stop and ask if iCloud Drive does not deliver `.longhand/` to a second Mac, or renames it (R11). Stop and ask if a Move cannot keep one complete copy of a note at every step (R5).
@@ -451,7 +451,7 @@ flowchart TB
 - **Goal:** The terms and the lessons of this work are in the shared documents.
 - **Requirements:** R11, R14 (documented behaviour).
 - **Dependencies:** U9.
-- **Files:** `CONCEPTS.md`, a new entry in `docs/solutions/` for shared settings in a synced folder, `docs/ideas/next/one-storage-folder.md` and `docs/ideas/next/shared-settings-in-storage.md` (moved with `bun scripts/ideas.ts move` after the merge).
+- **Files:** `CONCEPTS.md`, a new entry in `docs/solutions/` for shared settings in a synced folder, `docs/ideas/done/one-storage-folder.md` and `docs/ideas/done/shared-settings-in-storage.md` (moved with `bun scripts/ideas.ts move` after the merge).
 - **Approach:** Add "storage folder", "shared settings", "chosen configuration", "configuration in use" and "Move" to `CONCEPTS.md`. The solution entry records the version-skew and conflict-copy rules.
 - **Test expectation:** none -- documents only.
 - **Verification:** the manual test in the Verification Contract passes.

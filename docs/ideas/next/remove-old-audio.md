@@ -21,6 +21,6 @@ The audio is the largest part of a note. A four-hour note makes a large file, an
   - Which date starts the delay: the date of the recording, or the date when the note was last opened or processed.
   - Remove the audio to the Trash or the Recycle Bin, or remove it permanently.
   - A way to keep the audio of one note, such as a "Keep audio" choice on the note.
-  - Is the setting shared ([shared settings in the storage folder](shared-settings-in-storage.md))? In a synced storage folder, which computer removes the audio: each computer only for the notes it recorded (the rule for automatic steps in the library), or any computer.
+  - Is the setting shared ([shared settings in the storage folder](../done/shared-settings-in-storage.md))? In a synced storage folder, which computer removes the audio: each computer only for the notes it recorded (the rule for automatic steps in the library), or any computer.
   - A note that is not finished (recording, processing, waiting for a folder) never loses its audio.
   - Show the space the setting will free before the user turns it on.

@@ -18,7 +18,7 @@ Some settings belong to the person, not to the computer. Keep them in a hidden L
 - **Local:** the settings that only make sense on one computer, such as the microphone and the path of the storage folder.
 
 ## Why
-One person with several computers shares one library ([one library across computers](../done/cross-machine-library.md)), but must set up the prompts and the models again on each computer, and keep them the same by hand.
+One person with several computers shares one library ([one library across computers](cross-machine-library.md)), but must set up the prompts and the models again on each computer, and keep them the same by hand.
 
 ## Notes / Current state
 - Today all settings are in one `settings.json` in the app data folder of each computer (`tauri-plugin-store`, `src-tauri/src/managers/settings.rs`). They are not in the SQLite store. The storage folder already has a hidden `.longhand/` folder at its root (`LONGHAND_FOLDER` in `crates/library/src/scan.rs`). It holds the library marker `.longhand/library`, which tells an available storage folder from one whose sync client removed its files. The library scan skips `.longhand/`, so the shared settings can go there.
