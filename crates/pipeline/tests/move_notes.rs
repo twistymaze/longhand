@@ -560,6 +560,52 @@ fn an_old_folder_with_no_marker_pauses_the_move() {
     assert_eq!(f.step("a"), Some(MoveStep::Pending));
 }
 
+/// The old folder goes away during a pass (a removed disk or a lost
+/// share). The notes that remain in it are not gone, so the Move pauses,
+/// keeps their rows, and drops none.
+#[test]
+fn an_old_folder_that_goes_away_during_a_pass_pauses_the_move() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        f.save_note("a", "Budget");
+        f.save_note("b", "Planning");
+        f.open();
+        let away = f.working.join("away");
+        let m = mover(&f, &fs);
+        let mut done = Vec::new();
+        let end = m
+            .pass(&mut |id, _| {
+                if done.is_empty() {
+                    std::fs::rename(&f.old, &away).unwrap();
+                }
+                done.push(id.to_owned());
+            })
+            .unwrap();
+        assert_eq!(
+            end,
+            PassEnd::Paused(MovePause::NotReachable {
+                folder: f.old.to_string_lossy().into_owned(),
+            }),
+            "cross-volume: {cross}"
+        );
+        assert_eq!(done.len(), 1, "cross-volume: {cross}");
+        let left = if done[0] == "a" { "b" } else { "a" };
+        assert!(f.store.lock().unwrap().move_journal().unwrap().is_some());
+        assert_eq!(
+            f.step(left),
+            Some(MoveStep::Pending),
+            "cross-volume: {cross}"
+        );
+        // The folder comes back, and Retry finishes the Move.
+        std::fs::rename(&away, &f.old).unwrap();
+        move_notes::retry(&f.store).unwrap();
+        finish(&m);
+        assert_moved(&f, "a");
+        assert_moved(&f, "b");
+    }
+}
+
 #[test]
 fn a_note_that_processes_when_the_move_starts_moves_after_processing() {
     for cross in [false, true] {

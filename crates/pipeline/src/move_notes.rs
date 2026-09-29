@@ -201,6 +201,19 @@ fn exists(path: &Path) -> bool {
     path.symlink_metadata().is_ok()
 }
 
+/// Pause the Move when the old folder is not reachable. A signed-out sync
+/// client, a removed disk or a lost share can remove the files and the
+/// marker: the sources then look gone, and are not. Each step checks this
+/// before it drops a note whose source is gone.
+fn check_old(old: &Path) -> Result<(), MoveError> {
+    if old.is_dir() && library::scan::marker(old).exists() {
+        return Ok(());
+    }
+    Err(MoveError::Paused(MovePause::NotReachable {
+        folder: old.to_string_lossy().into_owned(),
+    }))
+}
+
 /// The pause for an I/O error on `folder`.
 fn pause_for(e: &io::Error, folder: &Path) -> MoveError {
     let text = folder.to_string_lossy().into_owned();
@@ -339,13 +352,8 @@ impl Mover<'_> {
             return Ok(None);
         };
         let (old, new) = (journal.old_folder.clone(), journal.new_folder.clone());
-        let open = !lock(self.store).moving_notes()?.is_empty();
-        // A signed-out sync client can remove the files and the marker: the
-        // sources then look gone, and are not.
-        if open && (!old.is_dir() || !library::scan::marker(&old).exists()) {
-            return Err(MoveError::Paused(MovePause::NotReachable {
-                folder: old.to_string_lossy().into_owned(),
-            }));
+        if !lock(self.store).moving_notes()?.is_empty() {
+            check_old(&old)?;
         }
         if let Err(e) = session_save::check_destination(&new) {
             log::warn!("move: {e}");
@@ -603,6 +611,7 @@ impl Mover<'_> {
                     if exists(source) {
                         return Ok(Taken::Next(MoveStep::Pending));
                     }
+                    check_old(old)?;
                     return Ok(Taken::Dropped);
                 }
                 if let Some(stale) = replaces
@@ -635,7 +644,11 @@ impl Mover<'_> {
                     // The placed copy went away: the source is the copy.
                     return Ok(match source {
                         Some(source) if exists(source) => Taken::Next(MoveStep::Pending),
-                        _ => Taken::Dropped,
+                        Some(_) => {
+                            check_old(old)?;
+                            Taken::Dropped
+                        }
+                        None => Taken::Dropped,
                     });
                 }
                 if let Some(source) = source
@@ -701,6 +714,7 @@ impl Mover<'_> {
             if let Some(path) = find_placed(new, &name, id) {
                 return Ok(Taken::Next(MoveStep::Placed { source: None, path }));
             }
+            check_old(&journal.old_folder)?;
             return Ok(Taken::Dropped);
         }
         if record.state != SessionState::Saved {
