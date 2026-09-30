@@ -39,8 +39,8 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset};
 use pipeline::SharedStore;
 use pipeline::remove_audio::{
-    Eligibility, EligibilityInputs, Guard, NoteSync, Removal, RemoveAudioError, eligibility,
-    finish_removal, remove_audio, safe_audio_name,
+    Eligibility, EligibilityInputs, Guard, NoteSync, Removal, RemoveAudioError, StoreCheck,
+    eligibility, finish_removal, remove_audio, safe_audio_name,
 };
 use pipeline::remove_copies::{cleanup_due, remove_copies};
 use session_core::jobs::Claims;
@@ -206,6 +206,17 @@ fn pass_folder_guard(inputs: &PassInputs, record: &SessionRecord) -> Result<(), 
     Ok(())
 }
 
+/// The guard of each step in part 1 of a pass: the folder checks of the
+/// pass and the store checks of Remove Audio.
+fn part_one_guard<'a>(
+    inputs: &'a PassInputs,
+) -> Guard<impl FnOnce(&SessionRecord) -> Result<(), &'static str> + 'a, StoreCheck> {
+    Guard {
+        folder: move |record: &SessionRecord| pass_folder_guard(inputs, record),
+        store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
+    }
+}
+
 /// The store checks of a new removal in a pass, under the store lock: those
 /// of Remove Audio (no open Move), the setting is still known and on, and
 /// the note is eligible with the row that the step just brought up to date.
@@ -318,10 +329,7 @@ fn clean_note(inputs: &PassInputs, id: &str, home: &Path, cleaned: &mut Vec<Stri
         log::debug!("audio removal: {id} waits for a sync, so its old result copies stay for now");
         return;
     }
-    let guard = Guard {
-        folder: |record: &SessionRecord| pass_folder_guard(inputs, record),
-        store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
-    };
+    let guard = part_one_guard(inputs);
     match remove_copies(inputs.store, inputs.claims, id, guard) {
         Ok(cleanup) => {
             if !cleanup.deleted.is_empty() {
@@ -369,10 +377,7 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
             continue;
         }
         if marked_audio_present(inputs.store, id, home) {
-            let guard = Guard {
-                folder: |record: &SessionRecord| pass_folder_guard(inputs, record),
-                store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
-            };
+            let guard = part_one_guard(inputs);
             let result = finish_removal(
                 inputs.store,
                 inputs.claims,

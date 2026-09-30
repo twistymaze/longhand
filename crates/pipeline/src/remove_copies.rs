@@ -30,8 +30,8 @@ use session_core::recognition::ARTIFACT_FILE;
 use session_core::{Segment, SessionRecord, Store};
 
 use crate::remove_audio::{
-    FileDelete, Guard, RemoveAudioError, delete_claim, remove_recognition, remove_regular_file,
-    safe_audio_name, saved_row,
+    FileDelete, Guard, RemoveAudioError, delete_claim, home_dir, remove_recognition,
+    remove_regular_file, safe_audio_name, saved_row,
 };
 use crate::{SharedStore, lock};
 
@@ -136,10 +136,7 @@ where
     let Some(home) = checked.home_path else {
         return Err(RemoveAudioError::NoFolder);
     };
-    let home = match Path::new(&home).canonicalize() {
-        Ok(path) if path.is_dir() => path,
-        _ => return Err(RemoveAudioError::NoFolder),
-    };
+    let home = home_dir(Path::new(&home))?;
 
     let mut cleanup = Cleanup::default();
     let mut step = Step {

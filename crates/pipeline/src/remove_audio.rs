@@ -271,6 +271,15 @@ pub(crate) fn delete_claim(claims: &Claims, session_id: &str) -> Result<Claim, R
     claims.delete(session_id).map_err(RemoveAudioError::Busy)
 }
 
+/// The canonical path of the home folder `home`. A path that is not a
+/// folder gives [`RemoveAudioError::NoFolder`].
+pub(crate) fn home_dir(home: &Path) -> Result<PathBuf, RemoveAudioError> {
+    match home.canonicalize() {
+        Ok(path) if path.is_dir() => Ok(path),
+        _ => Err(RemoveAudioError::NoFolder),
+    }
+}
+
 fn run_step<F, S, R>(
     store: &SharedStore,
     claims: &Claims,
@@ -312,10 +321,7 @@ where
     };
     // The step never makes a home folder. The canonical path is the base of
     // the check that a name resolves inside the home folder.
-    let home = match home.canonicalize() {
-        Ok(path) if path.is_dir() => path,
-        _ => return Err(RemoveAudioError::NoFolder),
-    };
+    let home = home_dir(&home)?;
 
     let results: Vec<SegmentRemoval> = segments
         .iter()
