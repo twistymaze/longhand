@@ -122,7 +122,7 @@ The library also keeps every storage folder that the user has chosen (R25a of th
 - A shared summary endpoint, summary model or API key. Each computer keeps its own (R13).
 - A merge of settings other than custom prompts. The folder's values win (R21).
 - A summary prompt for each note type ([summary prompt by note type](../ideas/someday/summary-prompt-by-note-type.md)).
-- The removal of old audio ([remove the audio of old notes](../ideas/next/remove-old-audio.md)).
+- The removal of old audio ([remove the audio of old notes](../ideas/done/remove-old-audio.md)).
 
 ### Dependencies / Assumptions
 

@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** The audio of a saved note does not stay on disk longer than the user wants. By default, the audio goes 30 days after the note last recorded. The transcript, summary, notes and title stay.
 - **Means:** A removal marker beside each removed audio file, a pass that any computer runs, and an in-use marker that other computers respect (KTD1, KTD5, KTD4).
-- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Source idea: `docs/ideas/next/remove-old-audio.md`.
+- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Source idea: `docs/ideas/done/remove-old-audio.md`.
 - **Stop conditions:** Stop and ask when a change would delete audio that R8 or R10 protects, would remove audio while the shared settings cannot be read (KTD3), or would make a note with removed audio show as waiting for sync.
 - **Execution profile:** Implement with `ce-work` in a worktree from `origin/main`, one commit per unit, then one PR. Test microphone and Resume behavior only in a signed bundle.
 - **Open blockers:** None.
@@ -436,7 +436,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
 - **Dependencies:** U1 to U8.
 - **Files:**
   - `CONCEPTS.md`
-  - `docs/ideas/next/remove-old-audio.md`
+  - `docs/ideas/done/remove-old-audio.md`
 - **Approach:** Update the Audio removal entry with the marker, the in-use marker and the rule that no audio is removed while the shared settings cannot be read, and add the in-use marker to the Library entry. The idea moves to `done/` after the merge with `bun scripts/ideas.ts move`.
 - **Test expectation:** none -- docs only.
 - **Verification:** `bun scripts/ideas.ts check` passes.
