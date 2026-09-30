@@ -12,6 +12,7 @@ pub mod diarize;
 pub mod echo;
 pub mod folder_rename;
 pub mod follow;
+pub mod in_use;
 pub mod join;
 pub mod live;
 pub mod move_notes;

@@ -262,8 +262,8 @@ where
 
 /// The inputs of the eligibility check that do not come from the store.
 /// The removal pass (U6) and the count before a setting change (R17) give
-/// the same inputs. Later guards (the in-use marker, an open Move, the
-/// storage folder) add their fields here.
+/// the same inputs. Later guards (an open Move, the storage folder) add
+/// their fields here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EligibilityInputs {
     /// The time of the check.
@@ -272,6 +272,9 @@ pub struct EligibilityInputs {
     pub delay_days: u32,
     /// Other work holds a claim on the note ([`Claims::busy`]).
     pub claimed: bool,
+    /// The home folder has a fresh in-use marker, or cannot be read
+    /// ([`crate::in_use::in_use`], R10, KTD4).
+    pub in_use: bool,
 }
 
 /// The result of the eligibility check for one note.
@@ -283,6 +286,9 @@ pub enum Eligibility {
     NotSaved,
     /// Other work holds a claim on the note (KTD5).
     Claimed,
+    /// A run on this computer or another one resumes or processes the note
+    /// (R10, KTD4).
+    InUse,
     /// The note has no segment, so it has no last recording end (KTD7).
     NoRecording,
     /// Every segment of the note has the removed flag.
@@ -308,6 +314,9 @@ pub fn eligibility(
     }
     if inputs.claimed {
         return Ok(Eligibility::Claimed);
+    }
+    if inputs.in_use {
+        return Ok(Eligibility::InUse);
     }
     let segments = store.segments(session_id)?;
     let Some(end) = segments.iter().map(|s| s.wall_end).max() else {

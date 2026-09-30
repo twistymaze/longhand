@@ -811,15 +811,23 @@ const FOLDER_UNAVAILABLE: &str = "The storage folder for this note is unavailabl
 
 /// The checks of Remove Audio that the removal step does under the store
 /// lock, after its claim and its check that the note is saved.
-fn removal_guard(store: &session_core::Store, _record: &SessionRecord) -> Result<(), &'static str> {
+fn removal_guard(store: &session_core::Store, record: &SessionRecord) -> Result<(), &'static str> {
     // A Move changes the home folders of the notes (KTD11). When the
     // journal cannot be read, the guard also refuses.
     if !matches!(store.move_journal(), Ok(None)) {
         return Err(MOVE_OPEN_REASON);
     }
-    // IN-USE GUARD (U4): add the check for a fresh in-use marker of another
-    // computer here. It returns `Err("in use")`, which `removal_refusal`
-    // gives its text.
+    // A fresh in-use marker shows that a computer records into or processes
+    // the note (KTD4). A folder that cannot be read also refuses. A missing
+    // folder is not in use: the step then refuses it as unavailable.
+    if let Some(home) = record.home_path.as_deref() {
+        let now = chrono::Local::now().fixed_offset();
+        match pipeline::in_use::in_use(std::path::Path::new(home), now) {
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(true) | Err(_) => return Err("in use"),
+        }
+    }
     Ok(())
 }
 
@@ -986,6 +994,16 @@ mod remove_audio_tests {
             .unwrap();
         let message = refused(run_removal(&note.store, &Claims::default(), ID));
         assert!(message.contains("moving your notes"), "{message}");
+        assert!(note.home.join("audio/segment-01.opus").is_file());
+    }
+
+    #[test]
+    fn a_fresh_in_use_marker_of_another_computer_refuses_and_keeps_the_audio() {
+        let note = saved_note();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&note.home, "other-computer", now).unwrap());
+        let message = refused(run_removal(&note.store, &Claims::default(), ID));
+        assert!(message.contains("in use on another computer"), "{message}");
         assert!(note.home.join("audio/segment-01.opus").is_file());
     }
 

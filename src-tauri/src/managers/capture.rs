@@ -61,6 +61,7 @@ use crate::commands::readiness::SystemAudioPermission;
 use crate::managers::alerts::{self, AlertsManager};
 use crate::managers::live::{DeferredLive, LiveManager};
 use crate::managers::models::ModelsManager;
+use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, MicrophoneChoice, Settings};
 
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
@@ -1378,6 +1379,13 @@ impl CaptureManager {
         };
         if !matches!(state, SessionState::Capturing) {
             return Ok(state);
+        }
+        // A saved note that starts a Resume gets this run's in-use marker,
+        // so another computer does not remove its audio (KTD4 of the audio
+        // removal plan). The marker is written on the thread of the
+        // markers, not under the capture lock.
+        if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+            processing.in_use_changed();
         }
         self.record_model_at_resume(app, id);
         inner.supersede();

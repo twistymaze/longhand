@@ -530,6 +530,7 @@ fn inputs(now: &str, delay_days: u32) -> EligibilityInputs {
         now: time(now),
         delay_days,
         claimed: false,
+        in_use: false,
     }
 }
 
@@ -627,6 +628,11 @@ fn a_note_that_is_not_saved_or_claimed_is_not_eligible() {
     let mut claimed = inputs("2026-10-01T12:00:00-05:00", 30);
     claimed.claimed = true;
     assert_eq!(check(&note, &claimed), Eligibility::Claimed);
+
+    // R10, KTD4: a fresh in-use marker in the home folder.
+    let mut in_use = inputs("2026-10-01T12:00:00-05:00", 30);
+    in_use.in_use = true;
+    assert_eq!(check(&note, &in_use), Eligibility::InUse);
 }
 
 #[test]

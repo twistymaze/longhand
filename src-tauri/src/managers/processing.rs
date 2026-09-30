@@ -7,6 +7,7 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
+use pipeline::in_use::InUseKeeper;
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SummaryEndpoint,
@@ -678,6 +679,9 @@ pub struct ProcessingManager {
     library_status: Arc<library::status::LibraryStatus>,
     /// The Move of the notes to a new storage folder (KTD9).
     mover: MoveWorker,
+    /// The in-use markers of the saved notes that this run resumes or
+    /// processes (KTD4 of the audio removal plan).
+    in_use: Arc<InUseKeeper>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -719,6 +723,17 @@ impl ProcessingManager {
                 if let RunnerEvent::Saved { path, .. } = &event {
                     notify_saved(&events, path);
                 }
+                // The work on a note can end: its in-use marker goes at
+                // Saved, and a failed Transcribe Again run is Saved again.
+                if matches!(
+                    event,
+                    RunnerEvent::Saved { .. }
+                        | RunnerEvent::StageFailed { .. }
+                        | RunnerEvent::Cancelled { .. }
+                ) && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
+                {
+                    processing.in_use_changed();
+                }
                 if let Err(e) = ProcessingUpdate::from(event).emit(&events) {
                     log::warn!("could not emit a processing update: {e}");
                 }
@@ -740,7 +755,10 @@ impl ProcessingManager {
                 log::error!("launch recovery of folder renames failed: {e}");
             }
         }
+        // The run ID of the in-use markers is the claim owner of this run.
+        let in_use = InUseKeeper::new(capture.shared_store(), runner.owner());
         Self {
+            in_use,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -764,6 +782,11 @@ impl ProcessingManager {
     /// retry of notes that wait for a folder, the runner and the library
     /// watcher.
     pub fn start(self: &Arc<Self>) {
+        // The first refresh marks the saved notes that an earlier run left
+        // open (a Resume, the queue, a failure).
+        if let Err(e) = self.in_use.start() {
+            log::error!("could not start the in-use markers: {e}");
+        }
         let manager = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("launch".into())
@@ -1173,11 +1196,19 @@ impl ProcessingManager {
         }
         self.live.shutdown();
         self.runner.shutdown();
+        self.in_use.stop();
     }
 
     /// A session was queued or capture ended.
     pub fn wake(&self) {
         self.runner.wake();
+    }
+
+    /// A saved note started a Resume or entered the queue, or the work on
+    /// a note ended: refresh the in-use markers now. This does not wait
+    /// and takes no lock that a caller can hold.
+    pub fn in_use_changed(&self) {
+        self.in_use.wake();
     }
 
     /// Free the loaded engine when it holds `model`, before a delete of
@@ -1205,7 +1236,9 @@ impl ProcessingManager {
     }
 
     pub fn retry(&self, session_id: &str) -> Result<(), String> {
-        self.runner.retry(session_id).map_err(|e| e.to_string())
+        self.runner.retry(session_id).map_err(|e| e.to_string())?;
+        self.in_use_changed();
+        Ok(())
     }
 
     pub fn unblock(&self, session_id: &str) -> Result<(), String> {
@@ -1257,7 +1290,9 @@ impl ProcessingManager {
         self.runner
             .transcribe_again(session_id, &settings, model_id, &|spec| {
                 self.readiness(spec)
-            })
+            })?;
+        self.in_use_changed();
+        Ok(())
     }
 
     /// Whether the artifacts of `spec` are on disk, or downloading.

@@ -274,15 +274,17 @@ fn remove_marker(dir: &Path) -> io::Result<()> {
 }
 
 /// Whether the folders `a` and `b` hold the same files with the same
-/// bytes. The Move's marker does not count. Links are not followed, as
-/// the copy does not follow them.
+/// bytes. The Move's marker and the in-use markers do not count: another
+/// computer refreshes its in-use marker while the Move runs (KTD4 of the
+/// audio removal plan). Links are not followed, as the copy does not
+/// follow them.
 pub fn same_contents(a: &Path, b: &Path) -> io::Result<bool> {
     fn listing(dir: &Path, top: bool) -> io::Result<Vec<(std::ffi::OsString, bool)>> {
         let mut out = Vec::new();
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            if top && name == MARKER {
+            if top && (name == MARKER || crate::in_use::is_marker_name(&name.to_string_lossy())) {
                 continue;
             }
             let kind = entry.file_type()?;
