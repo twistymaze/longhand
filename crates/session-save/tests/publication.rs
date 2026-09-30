@@ -204,6 +204,28 @@ fn another_result_between_two_writes_is_a_conflict_and_nothing_is_written() {
 }
 
 #[test]
+fn another_result_during_the_writes_stops_the_next_write() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    publication.record(&local).unwrap();
+    let other_home = home.clone();
+    let mut written = Vec::new();
+    let outcome = publication
+        .publish_with(&home, &local, &mut |name| {
+            written.push(name.to_string());
+            // The other computer's `session.md` arrives after the first
+            // write.
+            let mut other = SessionDoc::read(&other_home)?;
+            other.transcript_fingerprint = Some(fingerprint(b"another computer's transcript"));
+            std::fs::write(other_home.join("session.md"), other.render())
+        })
+        .unwrap();
+    assert_eq!(outcome, Outcome::Conflict);
+    assert_eq!(written, [ARTIFACT_FILE]);
+    assert_eq!(read(&home, "transcript.md"), "old transcript");
+    assert_eq!(read(&home, "summary.md"), "old summary");
+}
+
+#[test]
 fn equal_result_fields_still_replace_a_hand_edited_file() {
     let (_root, home, local, _) = fixture(WriteSet::Result);
     // The run made the same transcript as the recorded one, and the user

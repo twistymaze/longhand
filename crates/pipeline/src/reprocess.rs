@@ -400,8 +400,12 @@ pub(crate) fn read_reusable(
         }
     }
     // A missing file, or a file with another checksum, has no timed text to
-    // use again: the run transcribes in full (KTD8).
-    let path = home.join(&reference.filename);
+    // use again: the run transcribes in full (KTD8). A synced `session.md`
+    // can name any path, so check the name before the file is opened.
+    if reference.filename != recognition::ARTIFACT_FILE {
+        return Ok(None);
+    }
+    let path = home.join(recognition::ARTIFACT_FILE);
     match recognition::file_digest(&path) {
         Ok(sha256) if sha256 == reference.sha256 => {}
         Ok(_) => return Ok(None),
@@ -558,6 +562,30 @@ mod tests {
         bytes.extend_from_slice(b"\n");
         std::fs::write(path, bytes).unwrap();
         assert!(!reuses(temp.path(), &config).unwrap(), "checksum mismatch");
+    }
+
+    #[test]
+    fn an_artifact_with_another_name_is_not_opened() {
+        // A synced `session.md` can name any path. Only
+        // `recognition.jsonl` in the note folder is read.
+        let config = RecognitionConfig {
+            speaker_source: SpeakerSource::Off,
+            ..Default::default()
+        };
+        let temp = saved(&config);
+        let home = temp.path();
+        let outside = home.join("..").join(format!(
+            "{}-artifact.jsonl",
+            home.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::copy(home.join(ARTIFACT_FILE), &outside).unwrap();
+        let mut doc = SessionDoc::read(home).unwrap();
+        doc.recognition_artifact.as_mut().unwrap().filename =
+            outside.to_string_lossy().into_owned();
+        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        let reused = reuses(home, &config);
+        std::fs::remove_file(&outside).unwrap();
+        assert!(!reused.unwrap());
     }
 
     #[test]

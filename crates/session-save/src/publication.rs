@@ -94,7 +94,9 @@ pub enum Outcome {
     Committed,
     /// The result fields of `session.md` equal neither the fields before
     /// the first write nor the staged fields: another computer published
-    /// a result. Nothing was written (KTD4).
+    /// a result. This computer writes nothing after it finds the conflict
+    /// (KTD4). The files it wrote before that stay, and the note waits for
+    /// a sync until the mismatch counts as a hand edit.
     Conflict,
 }
 
@@ -176,7 +178,10 @@ impl Publication {
     ) -> io::Result<Outcome> {
         let before = self.before.clone().compared(self.set);
         let after = ResultFields::of(&self.after).compared(self.set);
-        let now = ResultFields::of(&SessionDoc::read(home)?).compared(self.set);
+        let fields = || -> io::Result<ResultFields> {
+            Ok(ResultFields::of(&SessionDoc::read(home)?).compared(self.set))
+        };
+        let now = fields()?;
         if now == after && now != before {
             return Ok(Outcome::Committed);
         }
@@ -190,6 +195,12 @@ impl Publication {
             };
             if digest(&home.join(name))?.as_ref() == Some(&staged) {
                 continue;
+            }
+            // Another computer's `session.md` can arrive during the
+            // writes. Check before each write, so that at most the file in
+            // progress replaces a file of the other result.
+            if fields()? != before {
+                return Ok(Outcome::Conflict);
             }
             home_write::copy_atomic(home, name, &local.join(name))?;
             after_write(name)?;

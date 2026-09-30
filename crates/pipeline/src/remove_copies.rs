@@ -212,7 +212,7 @@ impl<R> Step<'_, R>
 where
     R: FnMut(&Path) -> io::Result<()>,
 {
-    /// Stop the step when the note folder or its Destination is not
+    /// Stop the step when the note folder or its storage folder is not
     /// reachable: a removed disk, a lost share or a signed-out sync client.
     fn reachable(&self) -> Result<(), RemoveAudioError> {
         let reachable = self.home.is_dir()
