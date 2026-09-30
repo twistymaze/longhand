@@ -4401,6 +4401,104 @@ async fn a_new_model_that_cannot_use_the_saved_text_runs_a_full_transcription() 
     assert_eq!(asr_model(&r), Some(other.asr_model));
 }
 
+/// "s" saved, then transcribed again: its folder has a `recognition.jsonl`
+/// that `session.md` refers to.
+async fn note_with_timed_text(r: &Rig) -> std::path::PathBuf {
+    let home = saved_note(r, Some("Kept title")).await;
+    confirm_again(r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(session_md(&home).recognition_artifact.is_some());
+    assert!(
+        home.join(session_core::recognition::ARTIFACT_FILE)
+            .is_file()
+    );
+    home
+}
+
+/// The folder of "s" has no result generation, and its `recognition.jsonl`
+/// is changed by `change`. The run then reads the file in the folder.
+async fn transcribe_again_with_artifact(change: impl FnOnce(&std::path::Path)) {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    edit_session_md(&home, |doc| doc.result_generation = None);
+    change(&home.join(session_core::recognition::ARTIFACT_FILE));
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    // A speaker-only change. The run uses saved timed text that it can use.
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "a full transcription"
+    );
+    assert!(session_md(&home).recognition_artifact.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_with_a_missing_recognition_artifact_runs_in_full() {
+    // KTD8, R11: the file that `session.md` refers to is gone.
+    transcribe_again_with_artifact(|path| std::fs::remove_file(path).unwrap()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_with_a_changed_recognition_artifact_runs_in_full() {
+    // KTD8: the file does not have the checksum that `session.md` records.
+    transcribe_again_with_artifact(|path| {
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes.extend_from_slice(b"\n");
+        std::fs::write(path, bytes).unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_no_recognition_artifact_regenerates_renames_and_saves_notes() {
+    // Covers AE4, R12. Audio removal deleted `recognition.jsonl`, and
+    // `session.md` still refers to it.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    std::fs::remove_file(home.join(session_core::recognition::ARTIFACT_FILE)).unwrap();
+    let summary = read(&home, "summary.md");
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert_ne!(read(&home, "summary.md"), summary);
+
+    // The rename also runs with no `recognition.jsonl` in the folder.
+    std::fs::remove_file(home.join(session_core::recognition::ARTIFACT_FILE)).ok();
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_fingerprints_match(&new);
+
+    let mut store = r.store.lock().unwrap();
+    assert!(pipeline::save::set_notes(&mut store, "s", "- later notes\n").unwrap());
+    drop(store);
+    assert!(read(&new, "notes.md").contains("later notes"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_after_a_hand_edit_of_the_transcript_writes_session_md() {
+    // R9: the edit makes the saved timed text unusable. The write does not
+    // fail on it.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    std::fs::write(home.join(TRANSCRIPT_FILE), "Hand edit\n").unwrap();
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_eq!(read(&new, TRANSCRIPT_FILE), "Hand edit\n");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_run_uses_the_speaker_count_of_the_note_and_not_the_settings_default() {
     // Covers AE2.

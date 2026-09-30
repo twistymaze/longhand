@@ -405,8 +405,17 @@ pub(crate) fn read_reusable(
         .map(|g| g.directory(home))
         .transpose()?
         .unwrap_or_else(|| home.to_path_buf());
+    // A missing file, or a file with another checksum, has no timed text to
+    // use again: the run transcribes in full (KTD8).
+    let path = dir.join(&reference.filename);
+    match recognition::file_digest(&path) {
+        Ok(sha256) if sha256 == reference.sha256 => {}
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
     let mut timed = true;
-    let header = recognition::read_artifact(&dir.join(&reference.filename), reference, |b| {
+    let header = recognition::read_artifact(&path, reference, |b| {
         timed &= b.timed_asr();
         visit(b);
         Ok(())
@@ -533,6 +542,39 @@ mod tests {
         assert!(reuses(temp.path(), &config).unwrap());
         std::fs::write(temp.path().join("transcript.md"), b"External edit").unwrap();
         assert!(reuses(temp.path(), &config).is_err());
+    }
+
+    /// Each `recognition.jsonl` in `home`: the file in the folder and the
+    /// file in each result generation.
+    fn artifact_copies(home: &Path) -> Vec<std::path::PathBuf> {
+        let mut copies = vec![home.join(ARTIFACT_FILE)];
+        if let Ok(entries) = std::fs::read_dir(home.join(session_core::generation::ROOT)) {
+            copies.extend(entries.map(|e| e.unwrap().path().join(ARTIFACT_FILE)));
+        }
+        copies.retain(|path| path.is_file());
+        assert!(!copies.is_empty());
+        copies
+    }
+
+    #[test]
+    fn a_missing_or_changed_artifact_is_not_reusable() {
+        // KTD8: the run then transcribes in full.
+        let config = RecognitionConfig {
+            speaker_source: SpeakerSource::Off,
+            ..Default::default()
+        };
+        let temp = saved(&config);
+        for path in artifact_copies(temp.path()) {
+            std::fs::remove_file(path).unwrap();
+        }
+        assert!(!reuses(temp.path(), &config).unwrap(), "missing");
+        let temp = saved(&config);
+        for path in artifact_copies(temp.path()) {
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes.extend_from_slice(b"\n");
+            std::fs::write(path, bytes).unwrap();
+        }
+        assert!(!reuses(temp.path(), &config).unwrap(), "checksum mismatch");
     }
 
     #[test]

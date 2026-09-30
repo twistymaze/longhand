@@ -718,23 +718,15 @@ pub fn session_doc(
     {
         doc.result_generation = previous.result_generation;
     }
+    // A missing `recognition.jsonl`, or one for another transcript, gives
+    // no reference: the note then has no timed text to use again (KTD8).
     let artifact = folder.join(session_core::recognition::ARTIFACT_FILE);
-    if artifact.exists()
+    if artifact.is_file()
         && session_core::generation::manifest(folder)
             .map_or(true, |doc| doc.recognition_artifact.is_some())
+        && let Some((reference, header)) = read_artifact_header(&artifact)?
+        && doc.transcript_fingerprint.as_ref() == Some(&header.transcript)
     {
-        let reference = session_core::recognition::ArtifactReference {
-            version: session_core::recognition::ARTIFACT_VERSION,
-            filename: session_core::recognition::ARTIFACT_FILE.into(),
-            sha256: session_core::recognition::file_digest(&artifact)?,
-        };
-        let header = session_core::recognition::read_artifact(&artifact, &reference, |_| Ok(()))
-            .map_err(|e| StageError::Failed(e.to_string()))?;
-        if doc.transcript_fingerprint.as_ref() != Some(&header.transcript) {
-            return Err(StageError::Failed(
-                "recognition artifact does not match the transcript".into(),
-            ));
-        }
         doc.recognition_artifact = Some(reference);
         let mut audio = std::collections::BTreeMap::new();
         for segment in segments {
@@ -760,6 +752,36 @@ pub fn session_doc(
         }
     }
     Ok(doc)
+}
+
+/// The reference to the `recognition.jsonl` at `path` and its header.
+/// `None` when the file is missing.
+fn read_artifact_header(
+    path: &Path,
+) -> Result<
+    Option<(
+        session_core::recognition::ArtifactReference,
+        session_core::recognition::ArtifactHeader,
+    )>,
+    StageError,
+> {
+    use session_core::recognition::{self as recognition, ArtifactError};
+    let missing = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+    let sha256 = match recognition::file_digest(path) {
+        Ok(sha256) => sha256,
+        Err(e) if missing(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let reference = recognition::ArtifactReference {
+        version: recognition::ARTIFACT_VERSION,
+        filename: recognition::ARTIFACT_FILE.into(),
+        sha256,
+    };
+    match recognition::read_artifact(path, &reference, |_| Ok(())) {
+        Ok(header) => Ok(Some((reference, header))),
+        Err(ArtifactError::Io(e)) if missing(&e) => Ok(None),
+        Err(e) => Err(StageError::Failed(e.to_string())),
+    }
 }
 
 /// Record the fingerprint of the `transcript.md` that this save wrote into
@@ -1158,9 +1180,11 @@ fn summarize_again(
             &serde_json::to_value(&local)?,
         )?;
         let previous = session_core::generation::manifest(&path)?;
+        // The regeneration keeps a `recognition.jsonl` that the folder has.
+        // After the audio removal deleted it, the note has none (R12).
         for name in [TRANSCRIPT_FILE, session_core::recognition::ARTIFACT_FILE] {
             if name == session_core::recognition::ARTIFACT_FILE
-                && previous.recognition_artifact.is_none()
+                && (previous.recognition_artifact.is_none() || !path.join(name).is_file())
             {
                 continue;
             }
