@@ -54,6 +54,32 @@ pub enum WaitingPart {
     Audio,
 }
 
+/// The audio of a note, from its folder (KTD9). The note page shows no
+/// mark for it. It gives the reason of an unavailable action only (R14).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioView {
+    /// Every segment has its audio file.
+    Present,
+    /// At least one segment has a removal marker. The audio does not come
+    /// back.
+    Removed,
+    /// At least one segment has no audio file yet: the sync can still
+    /// deliver it.
+    Waiting,
+}
+
+impl From<pipeline::save::AudioState> for AudioView {
+    fn from(state: pipeline::save::AudioState) -> Self {
+        use pipeline::save::AudioState;
+        match state {
+            AudioState::Present => Self::Present,
+            AudioState::Removed => Self::Removed,
+            AudioState::Waiting => Self::Waiting,
+        }
+    }
+}
+
 /// The parts that `waiting` names, in its order, each one time.
 fn waiting_parts(waiting: &[Waiting]) -> Vec<WaitingPart> {
     let mut parts = Vec::new();
@@ -116,6 +142,9 @@ pub struct SessionDetail {
     pub endpoint: Option<EndpointView>,
     pub audio_kept: bool,
     pub transcript_kept: bool,
+    /// The audio of the note (KTD9). Transcribe Again, Resume and Retry
+    /// read it for their reason.
+    pub audio: AudioView,
     /// The recognition model that the note recorded when it started
     /// (KTD2). `None` for a note that started before the update.
     pub asr_model: Option<String>,
@@ -249,7 +278,7 @@ pub fn session_detail(
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
-    let (record, segments, saving, audio_intact, again) = {
+    let (record, segments, saving, audio, again) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&session_id)
@@ -260,13 +289,13 @@ pub fn session_detail(
         // refuses a resume.
         let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &session_id).map_err(e)?;
-        let audio_intact = pipeline::save::audio_state(&store, &session_id).map_err(e)?
-            == pipeline::save::AudioState::Present;
+        let audio = pipeline::save::audio_state(&store, &session_id).map_err(e)?;
         let again = store
             .transcribe_again_marks(&session_id)
             .map_err(|e| e.to_string())?;
-        (record, segments, saving, audio_intact, again)
+        (record, segments, saving, audio, again)
     };
+    let audio_intact = audio == pipeline::save::AudioState::Present;
     let snapshot = pipeline::progress::snapshot(&shared, &session_id).map_err(e)?;
 
     let resumable = !saving
@@ -345,6 +374,7 @@ pub fn session_detail(
         endpoint,
         audio_kept,
         transcript_kept,
+        audio: audio.into(),
         asr_model: record.asr_model.clone(),
         live_transcript: record.live_transcript == Some(true),
         transcribe_again: again.model.is_some(),
@@ -735,6 +765,268 @@ pub async fn delete_session_permanently(
     session_id: String,
 ) -> Result<(), DeleteSessionError> {
     delete(&capture, &processing, session_id, Removal::Permanent).await
+}
+
+/// Why Remove Audio did not complete (R13).
+#[derive(Debug, Serialize, Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoveAudioFailure {
+    /// The removal did not start. Nothing changed.
+    Refused { message: String },
+    /// The removal started and did not complete for each segment. A
+    /// segment that has its marker counts as removed, and the next pass
+    /// deletes its file (KTD2).
+    Failed { message: String },
+}
+
+/// The reason that the guard gives while a Move runs or is paused.
+const MOVE_OPEN_REASON: &str = "move open";
+
+/// The text of a refusal of Remove Audio. `reason` is a state name, a
+/// claim name or a guard reason.
+fn removal_refusal(reason: &str) -> String {
+    match reason {
+        "capturing" => "This note is recording. Stop the recording before you remove its audio.",
+        "interrupted" => {
+            "This note’s recording was interrupted. Stop it before you remove its audio."
+        }
+        "queued" | "processing" | "blocked" => {
+            "This note is being processed. You can remove its audio when processing is done."
+        }
+        "regenerating" => {
+            "This note’s summary is being made again. You can remove its audio when that is done."
+        }
+        "moving" | MOVE_OPEN_REASON => {
+            "Longhand is moving your notes. You can remove the audio when the move is done."
+        }
+        "deleting" => "This note is being deleted.",
+        "in use" => "This note is in use on another computer. Try again later.",
+        _ => "You can remove the audio of this note only after it is saved.",
+    }
+    .to_string()
+}
+
+/// The text of a note whose storage folder is unavailable (R16).
+const FOLDER_UNAVAILABLE: &str = "The storage folder for this note is unavailable.";
+
+/// The checks of Remove Audio that the removal step does under the store
+/// lock, after its claim and its check that the note is saved.
+fn removal_guard(store: &session_core::Store, _record: &SessionRecord) -> Result<(), &'static str> {
+    // A Move changes the home folders of the notes (KTD11). When the
+    // journal cannot be read, the guard also refuses.
+    if !matches!(store.move_journal(), Ok(None)) {
+        return Err(MOVE_OPEN_REASON);
+    }
+    // IN-USE GUARD (U4): add the check for a fresh in-use marker of another
+    // computer here. It returns `Err("in use")`, which `removal_refusal`
+    // gives its text.
+    Ok(())
+}
+
+/// Remove the audio of the note `session_id` with the checks of Remove
+/// Audio. The setting of audio removal has no effect here (R13).
+fn run_removal(
+    store: &pipeline::SharedStore,
+    claims: &session_core::jobs::Claims,
+    session_id: &str,
+) -> Result<(), RemoveAudioFailure> {
+    use pipeline::remove_audio::RemoveAudioError;
+    let removal = pipeline::remove_audio::remove_audio(store, claims, session_id, removal_guard)
+        .map_err(|e| match e {
+            RemoveAudioError::Busy(reason) => RemoveAudioFailure::Refused {
+                message: removal_refusal(reason),
+            },
+            RemoveAudioError::NoFolder => RemoveAudioFailure::Refused {
+                message: FOLDER_UNAVAILABLE.to_string(),
+            },
+            RemoveAudioError::Failed(message) => RemoveAudioFailure::Failed {
+                message: format!("Could not remove the audio of this note: {message}"),
+            },
+        })?;
+    if removal.complete() {
+        log::info!("removed the audio of session {session_id}");
+        return Ok(());
+    }
+    for segment in &removal.segments {
+        log::warn!(
+            "the audio {} of session {session_id} was not removed: {:?}",
+            segment.audio_file,
+            segment.outcome
+        );
+    }
+    Err(RemoveAudioFailure::Failed {
+        message: "Some of the audio of this note could not be removed.".to_string(),
+    })
+}
+
+/// Remove the audio of a saved note now, whether the setting of audio
+/// removal is on or off (R13). The transcript, summary and notes stay.
+/// Refused while the note is busy, while a Move runs or is paused, or while
+/// its storage folder is unavailable.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_audio(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<(), RemoveAudioFailure> {
+    let store = capture.shared_store();
+    let home = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .session(&session_id)
+            .map_err(|e| RemoveAudioFailure::Failed {
+                message: e.to_string(),
+            })?
+            .and_then(|r| r.home_path)
+    };
+    if processing
+        .library_status()
+        .storage_unavailable(&session_id, home.as_deref().map(Path::new))
+    {
+        return Err(RemoveAudioFailure::Refused {
+            message: FOLDER_UNAVAILABLE.to_string(),
+        });
+    }
+    let claims = processing.claims();
+    // A folder on a network volume can be slow.
+    tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &session_id))
+        .await
+        .map_err(|e| RemoveAudioFailure::Failed {
+            message: e.to_string(),
+        })?
+}
+
+#[cfg(test)]
+mod remove_audio_tests {
+    use super::*;
+    use session_core::folder::{SessionDoc, fingerprint};
+    use session_core::jobs::{Adoption, Claims};
+
+    const ID: &str = "20260901-0900-abcd";
+
+    struct Note {
+        _root: tempfile::TempDir,
+        home: PathBuf,
+        store: pipeline::SharedStore,
+    }
+
+    /// A saved note folder with the audio file of its one segment, and its
+    /// row in the store.
+    fn saved_note() -> Note {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap().join("Planning");
+        std::fs::create_dir_all(home.join("audio")).unwrap();
+        let end = chrono::DateTime::parse_from_rfc3339("2026-09-01T09:01:00-05:00").unwrap();
+        let segments = [session_core::Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: end - chrono::TimeDelta::minutes(1),
+            wall_end: end,
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        }];
+        let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
+        let summary = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";
+        let mut doc = SessionDoc::new(ID, None, &segments).unwrap();
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+        doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
+        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        std::fs::write(home.join("transcript.md"), transcript).unwrap();
+        std::fs::write(home.join("summary.md"), summary).unwrap();
+        std::fs::write(home.join("notes.md"), "My notes\n").unwrap();
+        std::fs::write(home.join("audio/segment-01.opus"), b"opus").unwrap();
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        let adoption = Adoption::from_doc(
+            &doc,
+            "My notes\n".into(),
+            home.to_string_lossy().into_owned(),
+            Some(fingerprint(transcript.as_bytes())),
+        );
+        assert!(store.adopt(&adoption).unwrap());
+        Note {
+            _root: root,
+            home,
+            store: Arc::new(std::sync::Mutex::new(store)),
+        }
+    }
+
+    fn refused(result: Result<(), RemoveAudioFailure>) -> String {
+        match result {
+            Err(RemoveAudioFailure::Refused { message }) => message,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // Covers AE8: the command reads no setting, so it removes the audio
+    // whether the setting is on or off.
+    #[test]
+    fn remove_audio_removes_the_audio_and_keeps_the_documents() {
+        let note = saved_note();
+        run_removal(&note.store, &Claims::default(), ID).unwrap();
+        assert!(!note.home.join("audio/segment-01.opus").exists());
+        for name in ["session.md", "transcript.md", "summary.md", "notes.md"] {
+            assert!(note.home.join(name).is_file(), "{name}");
+        }
+        let store = note.store.lock().unwrap();
+        assert_eq!(
+            pipeline::save::audio_state(&store, ID).unwrap(),
+            pipeline::save::AudioState::Removed
+        );
+    }
+
+    #[test]
+    fn an_open_move_refuses_with_a_reason_and_keeps_the_audio() {
+        let note = saved_note();
+        note.store
+            .lock()
+            .unwrap()
+            .open_move(Path::new("/old"), Path::new("/new"))
+            .unwrap();
+        let message = refused(run_removal(&note.store, &Claims::default(), ID));
+        assert!(message.contains("moving your notes"), "{message}");
+        assert!(note.home.join("audio/segment-01.opus").is_file());
+    }
+
+    #[test]
+    fn a_busy_note_refuses_with_a_reason_and_keeps_the_audio() {
+        let note = saved_note();
+        let claims = Claims::default();
+        let _claim = claims.regenerate(ID).unwrap();
+        let message = refused(run_removal(&note.store, &claims, ID));
+        assert!(message.contains("summary"), "{message}");
+        assert!(note.home.join("audio/segment-01.opus").is_file());
+    }
+
+    #[test]
+    fn a_missing_folder_refuses_as_an_unavailable_storage_folder() {
+        let note = saved_note();
+        std::fs::remove_dir_all(&note.home).unwrap();
+        let message = refused(run_removal(&note.store, &Claims::default(), ID));
+        assert_eq!(message, FOLDER_UNAVAILABLE);
+        assert!(!note.home.exists(), "the step makes no folder");
+    }
+
+    #[test]
+    fn each_refusal_says_why_in_plain_words() {
+        for (reason, word) in [
+            ("capturing", "recording"),
+            ("interrupted", "interrupted"),
+            ("queued", "processed"),
+            ("processing", "processed"),
+            ("regenerating", "summary"),
+            ("moving", "moving"),
+            (MOVE_OPEN_REASON, "moving"),
+            ("deleting", "deleted"),
+            ("in use", "another computer"),
+            ("processing_failed", "saved"),
+            ("awaiting_destination", "saved"),
+        ] {
+            let message = removal_refusal(reason);
+            assert!(message.contains(word), "{reason}: {message}");
+        }
+    }
 }
 
 #[cfg(test)]

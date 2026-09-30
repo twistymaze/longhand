@@ -29,6 +29,7 @@ import { LevelBars } from "./LevelBars";
 import { NotesTab } from "./NotesTab";
 import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { RecordingBar } from "./RecordingBar";
+import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
 import { copyText, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
@@ -283,6 +284,9 @@ export function SessionPage({
   const heldReason = unavailable
     ? "The storage folder for this note is unavailable."
     : "Wait until the note finishes syncing.";
+  // The note shows no mark for removed audio. The fact shows only as the
+  // reason of an action that needs the audio (R14).
+  const removed = detail?.audio === "removed";
   const [draft, setDraft] = useState<string | null>(null);
   const others = (detail?.conflict_files ?? []).filter((name) => name !== draft);
 
@@ -340,12 +344,24 @@ export function SessionPage({
 
   const again = useTranscribeAgain({
     sessionId: id,
-    available: phase === "saved" && !heldForAudio && !regenerating,
+    available: phase === "saved" && !heldForAudio && !regenerating && !removed,
     onQueued: () => {
       setNotice(null);
       changed();
     },
     onFailed: (refusal) => setNotice({ tone: "negative", text: refusal.message, settings: refusal.in_settings }),
+  });
+
+  const removal = useRemoveAudio({
+    sessionId: id,
+    onRemoved: () => {
+      setNotice(null);
+      changed();
+    },
+    onFailed: (text) => {
+      setNotice({ tone: "negative", text });
+      changed();
+    },
   });
 
   // The inputs are read each time the menu opens, because a microphone can
@@ -387,8 +403,8 @@ export function SessionPage({
   if (phase === "processing" || phase === "saved") {
     items.push({
       label: "Resume Recording",
-      disabled: !detail?.resumable || heldForAudio,
-      reason: heldForAudio ? heldReason : "This note can’t be resumed.",
+      disabled: !detail?.resumable || heldForAudio || removed,
+      reason: removed ? REMOVED_REASON : heldForAudio ? heldReason : "This note can’t be resumed.",
       onSelect: resume,
     });
   }
@@ -401,8 +417,8 @@ export function SessionPage({
     });
     items.push({
       label: "Transcribe Again…",
-      disabled: regenerating || heldForAudio,
-      reason: heldForAudio ? heldReason : "Wait until the summary is ready.",
+      disabled: regenerating || heldForAudio || removed,
+      reason: removed ? REMOVED_REASON : heldForAudio ? heldReason : "Wait until the summary is ready.",
       onSelect: again.ask,
     });
   }
@@ -412,6 +428,22 @@ export function SessionPage({
       disabled: unavailable,
       reason: heldReason,
       onSelect: () => title.current?.edit(),
+    });
+  }
+  // Audio that waits for the sync can be removed: the removal marks each
+  // segment, so the audio does not come back (R13, KTD9).
+  if (phase === "saved" && !deleted) {
+    items.push({
+      label: "Remove Audio…",
+      disabled: !detail || removed || unavailable || regenerating,
+      reason: removed
+        ? REMOVED_REASON
+        : unavailable
+          ? heldReason
+          : regenerating
+            ? "Wait until the summary is ready."
+            : undefined,
+      onSelect: removal.ask,
     });
   }
   if (entry && !open && canDelete(entry.state)) {
@@ -634,6 +666,7 @@ export function SessionPage({
       )}
       {deletion.dialog}
       {again.dialog}
+      {removal.dialog}
     </div>
   );
 }

@@ -77,6 +77,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   endpoint: null,
   audio_kept: true,
   transcript_kept: true,
+  audio: "present",
   asr_model: null,
   live_transcript: false,
   transcribe_again: false,
@@ -1158,6 +1159,131 @@ describe("SessionPage", () => {
       await act(async () => {});
       await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
       expect(screen.queryByRole("menuitem", { name: "Transcribe Again…" })).toBeNull();
+    });
+  });
+
+  describe("Remove Audio", () => {
+    const removedReason = "The audio of this note was removed.";
+
+    async function openMenu(e: SessionEntry, over: Partial<SessionDetail>, extra: Record<string, CommandHandler> = {}) {
+      const tauri = mockPage(e, over, extra);
+      const sessions = sessionsOf([e]);
+      renderPage({ id: e.id, sessions });
+      await act(async () => {});
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      return { tauri, sessions, user };
+    }
+
+    const item = (name: string) => screen.getByRole("menuitem", { name });
+
+    // Covers AE8. The page sends no setting: the command removes the audio
+    // whether the setting is on or off.
+    test("one destructive confirmation removes the audio, and then Transcribe Again is unavailable", async () => {
+      const e = entry("s", { title: "Budget review" });
+      let audio: SessionDetail["audio"] = "present";
+      const tauri = mockTauri({
+        load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
+        session_detail: () => detail(e, { audio, resumable: audio === "present" }),
+        session_document: () => doc,
+        remove_audio: () => {
+          audio = "removed";
+          return null;
+        },
+      });
+      const sessions = sessionsOf([e]);
+      renderPage({ id: "s", sessions });
+      await act(async () => {});
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(item("Remove Audio…"));
+      const dialog = screen.getByRole("alertdialog", { name: "Remove the audio of this note?" });
+      expect(dialog.textContent).toContain("The transcript, summary and notes stay.");
+      expect(dialog.textContent).toContain("You can’t undo this.");
+      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+      await user.click(within(dialog).getByRole("button", { name: "Remove Audio" }));
+      expect(tauri.calls.filter((c) => c.cmd === "remove_audio").map((c) => c.args)).toEqual([{ sessionId: "s" }]);
+      await act(async () => {});
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(sessions.refresh).toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      for (const name of ["Transcribe Again…", "Resume Recording", "Remove Audio…"]) {
+        expect(item(name).hasAttribute("disabled")).toBe(true);
+        expect(item(name).getAttribute("title")).toBe(removedReason);
+      }
+    });
+
+    test("Cancel and Escape close the dialog and remove nothing", async () => {
+      const { tauri, user } = await openMenu(entry("s"), {}, { remove_audio: () => null });
+      await user.click(item("Remove Audio…"));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(item("Remove Audio…"));
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(tauri.calls.some((c) => c.cmd === "remove_audio")).toBe(false);
+    });
+
+    test("a refused removal closes the dialog and shows the reason", async () => {
+      const message = "This note is in use on another computer. Try again later.";
+      const { user } = await openMenu(entry("s"), {}, {
+        remove_audio: () => {
+          throw { kind: "refused", message };
+        },
+      });
+      await user.click(item("Remove Audio…"));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove Audio" }));
+      expect(await screen.findByText(message)).toBeTruthy();
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    // Covers AE6.
+    test("a note with removed audio shows no mark, and its menu gives the removed reason", async () => {
+      const e = entry("s");
+      mockPage(e, { audio: "removed", resumable: false });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      await act(async () => {});
+      expect(screen.queryByText(/audio/i)).toBeNull();
+      expect(screen.queryAllByRole("status")).toEqual([]);
+      await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+      for (const name of ["Transcribe Again…", "Resume Recording"]) {
+        expect(item(name).hasAttribute("disabled")).toBe(true);
+        expect(item(name).getAttribute("title")).toBe(removedReason);
+      }
+      expect(item("Regenerate Summary").hasAttribute("disabled")).toBe(false);
+      expect(item("Delete…").hasAttribute("disabled")).toBe(false);
+    });
+
+    test("a note whose audio waits for the sync keeps the syncing reason and can remove its audio", async () => {
+      await openMenu(entry("s"), { audio: "waiting", waiting: ["audio"], resumable: true });
+      for (const name of ["Transcribe Again…", "Resume Recording"]) {
+        expect(item(name).getAttribute("title")).toBe("Wait until the note finishes syncing.");
+      }
+      expect(item("Remove Audio…").hasAttribute("disabled")).toBe(false);
+    });
+
+    test("a note in an unavailable storage folder can't remove its audio", async () => {
+      await openMenu(entry("s", { storage_unavailable: true }), {});
+      expect(item("Remove Audio…").hasAttribute("disabled")).toBe(true);
+      expect(item("Remove Audio…").getAttribute("title")).toBe("The storage folder for this note is unavailable.");
+    });
+
+    test("a note that processes has no Remove Audio", async () => {
+      await openMenu(entry("p", { state: "processing" }), {});
+      expect(screen.queryByRole("menuitem", { name: "Remove Audio…" })).toBeNull();
+    });
+
+    test("Retry of a failed note whose audio was removed is unavailable and gives the removed reason", async () => {
+      const e = entry("f", { state: "processing_failed", stage: "transcribe" });
+      const tauri = mockPage(e, { failed_stage: "transcribe", audio: "removed" }, { retry_session: () => null });
+      renderPage({ id: "f", sessions: sessionsOf([e]) });
+      const retry = await screen.findByRole("button", { name: "Retry" });
+      expect(retry.hasAttribute("disabled")).toBe(true);
+      expect(screen.getByText(removedReason)).toBeTruthy();
+      await userEvent.setup().click(retry);
+      expect(tauri.calls.some((c) => c.cmd === "retry_session")).toBe(false);
     });
   });
 

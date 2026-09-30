@@ -4879,7 +4879,7 @@ async fn transcribe_again_is_refused_while_a_regeneration_runs_a_capture_is_acti
     );
 }
 
-// Covers KTD2, KTD9 (U2). U7 gives the removed audio its own reason.
+// Covers KTD2, KTD9 (U2) and R14 (U7): removed audio has its own reason.
 #[tokio::test(flavor = "multi_thread")]
 async fn transcribe_again_is_refused_when_a_marker_removes_the_audio_that_is_still_present() {
     let r = rig().await;
@@ -4897,7 +4897,7 @@ async fn transcribe_again_is_refused_when_a_marker_removes_the_audio_that_is_sti
         session_core::folder::AudioState::Removed
     );
     let expected = refusal(
-        "The note's folder does not have all of its audio, so it can't be transcribed again.",
+        "The audio of this note was removed, so it can't be transcribed again.",
         false,
     );
     assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);

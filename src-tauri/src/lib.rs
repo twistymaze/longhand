@@ -95,6 +95,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::live_transcript,
             commands::session::delete_session,
             commands::session::delete_session_permanently,
+            commands::session::remove_audio,
             commands::window::open_settings,
             commands::window::close_settings_window,
             commands::window::open_licences,
