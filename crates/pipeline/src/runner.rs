@@ -866,6 +866,33 @@ impl Runner {
         let Some(home) = home else {
             return;
         };
+        self.drop_removed_old_audio_at(id, &home);
+    }
+
+    /// Do `drop_removed_old_audio` for each note that failed processing.
+    /// Call it after each library reconcile: the reconcile does not report
+    /// a note that failed processing as changed, so a sync that delivers
+    /// a removal marker for it is not visible in the changes.
+    pub fn drop_removed_old_audio_of_failed(&self) {
+        let failed: Vec<(String, String)> = {
+            let store = lock(&self.env.store);
+            match store.sessions_in("processing_failed") {
+                Ok(records) => records
+                    .into_iter()
+                    .filter_map(|record| record.home_path.map(|home| (record.id, home)))
+                    .collect(),
+                Err(e) => {
+                    log::warn!("could not list the notes that failed processing: {e}");
+                    return;
+                }
+            }
+        };
+        for (id, home) in failed {
+            self.drop_removed_old_audio_at(&id, &home);
+        }
+    }
+
+    fn drop_removed_old_audio_at(&self, id: &str, home: &str) {
         let working = self.env.working_root.join(id);
         match crate::old_audio::drop_removed(&working, std::path::Path::new(&home)) {
             Ok(dropped) if !dropped.is_empty() => {

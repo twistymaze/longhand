@@ -838,9 +838,10 @@ impl ProcessingManager {
                     changes.changed.len(),
                     changes.removed.len()
                 );
-                for id in &changes.changed {
-                    self.runner.drop_removed_old_audio(id);
-                }
+                // A sync can deliver a removal marker for a resumed note
+                // that failed processing. The reconcile does not report
+                // such a note as changed (KTD8).
+                self.runner.drop_removed_old_audio_of_failed();
                 if !changes.is_empty() {
                     emit_library_changed(&self.app, changes.into());
                 }
@@ -1160,10 +1161,9 @@ impl ProcessingManager {
                     changes.removed.dedup();
                 }
                 // A sync can deliver a removal marker for a resumed note
-                // that failed processing (KTD8).
-                for id in &changes.changed {
-                    runner.drop_removed_old_audio(id);
-                }
+                // that failed processing. The reconcile does not report
+                // such a note as changed (KTD8).
+                runner.drop_removed_old_audio_of_failed();
                 Ok(changes)
             }),
             // On the watcher thread, never the main thread: a read can

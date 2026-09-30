@@ -6604,3 +6604,43 @@ async fn a_failed_resumed_note_deletes_the_copy_of_its_marked_old_audio_only() {
         "the new audio went"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sync_marker_for_a_failed_resumed_note_deletes_its_old_audio_copy() {
+    // The library reconcile does not report a note that failed processing
+    // as changed, so a removal that a sync delivers after the failure goes
+    // through the list of all notes that failed processing (KTD8).
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech()), (16_000, speech())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    resume_saved_with_copy(&r, "s");
+    record_resumed_segment(&r, "s", &speech());
+    *r.script.fail_on.lock().unwrap() = Some(calls(&r));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    let working = r.root.join("s");
+    assert!(working.join("audio/segment-01.opus").is_file());
+    // A sync delivers the removal from another computer after the failure.
+    remove_on_other_computer(&folder, "audio/segment-01.opus");
+    r.runner.drop_removed_old_audio_of_failed();
+    assert!(
+        !working.join("audio/segment-01.opus").exists(),
+        "the marked copy stayed"
+    );
+    assert!(
+        working.join("audio/segment-02.opus").is_file(),
+        "the unmarked copy went"
+    );
+    assert!(
+        working.join("audio/segment-03.opus").is_file(),
+        "the new audio went"
+    );
+}
