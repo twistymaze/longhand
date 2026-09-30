@@ -23,7 +23,7 @@ execution: code
 
 ## Product Contract
 
-Product Contract preservation: changed R3 (research found more kinds of unfinished work), R7 (limited to a build that holds the instance lock) and AE2 (limited to databases that record their migrations); added R11 (backup retention) and AE6 (storage folder offline); Problem Frame corrected (the panic site); Outstanding Questions resolved into the Planning Contract.
+Product Contract preservation: changed R3 (research found more kinds of unfinished work), R7 (limited to a build that holds the instance lock) and AE2 (limited to databases that record their migrations); added R11 (backup retention; it also keeps a backup made after a failed check) and AE6 (storage folder offline); Problem Frame corrected (the panic site); Outstanding Questions resolved into the Planning Contract.
 
 ### Summary
 
@@ -66,7 +66,7 @@ The problem occurs each time the user tests a plan build and then goes back to m
 **Records**
 
 - R10. Each rebuild writes a log line with the old and new database versions and the path of the backup.
-- R11. The build keeps every backup made after the user chose Rebuild over unfinished work. Of the backups made with no alert, it keeps the newest 3.
+- R11. The build keeps every backup made after the user chose Rebuild in an alert (R6 or R7). Of the backups made with no alert, it keeps the newest 3.
 
 ### Acceptance Examples
 
@@ -103,7 +103,7 @@ The problem occurs each time the user tests a plan build and then goes back to m
 
 ### Key Technical Decisions
 
-- KTD1. **The check is a read-only inspection in `session-core`.** A new module takes the app data folder and returns one of Own, NotOwn (with the unfinished work it found) or Unreadable. It opens `longhand.db` with `SQLITE_OPEN_READ_ONLY`, not `immutable=1`, because `immutable` ignores the WAL. A missing or zero-byte `longhand.db` is Own and opens nothing. It never calls `Store::open`, which writes pragmas and migrates. It closes its connection before it returns. Governs R1, R3, R7.
+- KTD1. **The check is a read-only inspection in `session-core`.** A new module takes the app data folder and returns one of Own, NotOwn (with the unfinished work it found) or Unreadable. It opens `longhand.db` with `SQLITE_OPEN_READ_ONLY`, not `immutable=1`, because `immutable` ignores the WAL. A missing or zero-byte `longhand.db` is Own and opens nothing. It never calls `Store::open`, which writes pragmas and migrates. It closes its connection before it returns. SQLite can create `longhand.db-shm` even for a read-only open, so the inspection notes whether that file existed before the open and deletes it after the close if the inspection created it. Thus Quit changes no file. Governs R1, R3, R7, R8.
 - KTD2. **Each database records the hash of each migration that it applied.** A table `applied_migrations(version, sha256)` holds one row per applied migration. `Store::init` inserts the missing rows for `1..=user_version` after `to_latest`, with this build's hashes. The hash is SHA-256 of the migration SQL with comments and whitespace removed, so a comment edit does not count as a divergence. A missing row is trusted; only a row whose hash differs is a divergence. So a crash between a migration and its row is safe, and no migration hook is needed. The SQL of each migration comes from one list in `schema.rs` that both `migrations()` and the hash function read. The table needs no migration file, so the database version does not change, and builds from before the fix ignore the table. Governs R1.
 - KTD3. **Unfinished work is read from columns and files that every schema version has.** The inspection counts:
   1. sessions where `json_extract(state, '$.state')` is not `saved` or `discarded` (an unknown future state counts as unfinished);
@@ -112,9 +112,9 @@ The problem occurs each time the user tests a plan build and then goes back to m
   4. files `sessions/*/publication.json` and folders `sessions/.longhand-summary-*`.
 
   A table or column that does not exist counts as zero, after a check of `sqlite_master` or `pragma table_info`. Any SQLite error other than a missing table makes the result Unreadable. Governs R3, R6, R7.
-- KTD4. **The rebuild renames; it never copies.** The backup folder is `database-backups/<UTC time>/` in the app data folder, so every rename stays on one volume and needs no free space. The order is `sessions/`, then `longhand.db-shm`, then `longhand.db-wal`, then `longhand.db` last. The backup folder gets an "incomplete" flag before the first rename, and the flag is removed after the last rename. A rename that fails moves the entries that already moved back into the app data folder, in reverse order. At launch, before anything else, each backup folder that still has the flag (a crash during a move) has its entries moved back the same way, and the folder is removed. So the inspection always sees the database with its WAL and working folder, and one backup never splits across two folders. Before the inspection, a `-wal` or `-shm` file with no `longhand.db` moves into a new backup folder, so SQLite never applies a stale WAL to a new database. A failed rename retries for about 2 s (Windows sharing violations), then the move is undone and startup fails (R9). A marker file in the backup folder records whether the user chose Rebuild over unfinished work; retention (R11) reads it. Governs R4, R10, R11.
+- KTD4. **The rebuild renames; it never copies.** The backup folder is `database-backups/<UTC time>/` in the app data folder, so every rename stays on one volume and needs no free space. The order is `sessions/`, then `longhand.db-shm`, then `longhand.db-wal`, then `longhand.db` last. The backup folder gets an "incomplete" flag before the first rename, and the flag is removed after the last rename. A rename that fails moves the entries that already moved back into the app data folder, in reverse order. At launch, before anything else, each backup folder that still has the flag (a crash during a move) has its entries moved back the same way, and the folder is removed. So the inspection always sees the database with its WAL and working folder, and one backup never splits across two folders. Before the inspection, a `-wal` or `-shm` file with no `longhand.db` moves into a new backup folder, so SQLite never applies a stale WAL to a new database. A failed rename retries for about 2 s (Windows sharing violations), then the move is undone and startup fails (R9). A marker file in the backup folder records whether the user chose Rebuild in an alert (R6 or R7); retention (R11) reads it. Governs R4, R10, R11.
 - KTD5. **The check runs in `setup`, after `take_instance_lock` and `updates::install_at_launch`, before `CaptureManager::new`.** An update that installs at launch restarts into a newer build before any alert shows. No earlier startup step opens the database. The rebuild runs only with `Liveness::OnlyInstance`; NotOwn or Unreadable with any other liveness is a startup failure (R9). Governs R2, R7, R9.
-- KTD6. **Alerts use `rfd::MessageDialog` on the main thread.** `setup` runs on the main thread, where `rfd` shows `NSAlert` (and a message box on Windows). `src-tauri/Cargo.toml` adds `rfd` at the version that `Cargo.lock` already has, so no new crate enters the build. `tauri-plugin-dialog` is not usable here: its blocking API must not run on the main thread, and after a `setup` error there is no app. Quit is the default button and the Escape action. Governs R6, R7, R9.
+- KTD6. **Alerts use `rfd::MessageDialog` on the main thread.** `setup` runs on the main thread, where `rfd` shows `NSAlert` (and a message box on Windows). `src-tauri/Cargo.toml` adds `rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }`, the same declaration as `tauri-plugin-dialog`, so no new crate enters `Cargo.lock`. `tauri-plugin-dialog` is not usable here: its blocking API must not run on the main thread, and after a `setup` error there is no app. Quit is the default button and the Escape action. Governs R6, R7, R9.
 - KTD7. **`setup` never returns an error.** The body of the `setup` closure moves into a function that returns a `Result`. On an error, the closure logs it, flushes the logger, shows the R9 alert and exits with code 1. The `.build(...).expect(...)` in `run` gets the same treatment. The next step in the alert is "Open Longhand again. If the problem continues, send the log file:" followed by the log file path. Governs R9.
 
 ### High-Level Technical Design
@@ -210,7 +210,8 @@ flowchart TB
 - An unknown future state value counts as unfinished.
 - A database whose schema has no `move_journal` table is inspected without an error.
 - A file that is not a SQLite database is Unreadable.
-- The inspection changes no file: `longhand.db` and `-wal` have the same bytes after it (a `-shm` file may appear).
+- The inspection changes no file: `longhand.db` and `-wal` have the same bytes after it, and no `-shm` file is left when none existed before.
+- An existing `-shm` file is not deleted by the inspection.
 - A database in WAL mode with committed rows only in `-wal` reports those rows.
 
 **Verification:** The inspection gives the right result for every case above and never changes the database.
@@ -231,7 +232,7 @@ flowchart TB
 **Approach:**
 1. A function undoes each backup folder that still has the "incomplete" flag (KTD4).
 2. A function moves an orphan `-wal` or `-shm` (no `longhand.db`) into a new backup folder.
-3. A function makes `database-backups/<UTC time>/`, writes the marker (unfinished work kept or not) and the "incomplete" flag, renames in the KTD4 order, then removes the flag. It returns the backup path.
+3. A function makes `database-backups/<UTC time>/`, writes the marker (the user chose Rebuild in an alert, or not) and the "incomplete" flag, renames in the KTD4 order, then removes the flag. It returns the backup path.
 4. Retry a failed rename for about 2 s, then undo the renames that succeeded and return the error.
 4. A retention function deletes automatic backups beyond the newest 3 and never touches a marked one.
 
@@ -289,7 +290,7 @@ flowchart TB
 | `cargo test -p session-core` | U1, U2, U3; AE2 and AE4 |
 | `cargo test -p longhand` (unit tests in `src-tauri`) | U4 decision function and alert text |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Lint gate |
-| `scripts/check-windows.sh` | The `rfd` and rename code builds for Windows |
+| Windows CI job on the PR (`.github/workflows/ci.yml`, `windows-latest`) | The `rfd` and rename code builds, and the session-core tests pass, on Windows. `scripts/check-windows.sh` excludes `longhand` and `session-core`, so it does not prove this. |
 | `scripts/check-licences.sh` | The direct `rfd` dependency adds no new licence |
 | Manual test in a signed bundle (below) | AE1, AE3, AE5 on a real app data folder |
 
@@ -298,7 +299,7 @@ Run the scoped crate tests per unit, and one full workspace test run and clippy 
 **Manual test** (per `docs/development-workflow.md#manual-tests`). Quit the preview build, then copy `~/Library/Application Support/net.ewal.longhand` aside before each step:
 1. Set `PRAGMA user_version` of `longhand.db` to 99 with all notes saved. Start the signed build. Expect no alert, every saved note in the list, and a backup in `database-backups/`.
 2. Set it to 99 again, with one note queued. Expect the alert naming one note. Quit leaves the files unchanged; Rebuild starts with the note gone from the list.
-3. Make the app data folder read-only. Expect the R9 alert and no crash report.
+3. Make the app data folder read-only. Expect the R9 alert and no crash report, and expect the error in `~/Library/Logs/net.ewal.longhand/Longhand.log`.
 4. Restore the copied app data folder.
 
 ## Definition of Done
