@@ -1,6 +1,7 @@
 // Settings > Storage (R3, R4, R6, R10, R16): the one storage folder, Show
-// in Finder, Change, and the Move of the notes to a new folder. Change is
-// not available while a Move runs or is paused (KTD11).
+// in Finder, Change, the Move of the notes to a new folder, and the removal
+// of old audio. Change is not available while a Move runs or is paused
+// (KTD11).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -11,6 +12,7 @@ import {
   type MoveState,
   type Settings,
 } from "../bindings";
+import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
 import { readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes } from "./ui";
@@ -218,6 +220,7 @@ export function DestinationPicker({
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
+      <AudioRemoval settings={settings} onSettings={onSettings} />
       {dialog}
     </Pane>
   );

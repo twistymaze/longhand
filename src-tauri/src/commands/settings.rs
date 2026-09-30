@@ -287,21 +287,63 @@ pub fn set_audio_removal(
     removal: settings::AudioRemovalSetting,
 ) -> Result<Settings, String> {
     removal.validate()?;
-    let delay = |app: &AppHandle| {
-        app.try_state::<Arc<SharedSettingsManager>>()
-            .and_then(|shared| shared.snapshot().audio_removal_days())
-    };
-    let before = delay(&app);
+    let before = shared_removal_delay(&app);
     let updated = settings::update_settings(&app, |s| {
         s.audio_removal = removal;
         Ok(())
     })?;
-    if audio_removal::removes_more(before, delay(&app))
+    if audio_removal::removes_more(before, shared_removal_delay(&app))
         && let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>()
     {
         pass.run_now();
     }
     Ok(updated)
+}
+
+/// The delay of the audio removal setting in the shared settings now, or
+/// `None` when the setting is off, is not known, or the shared settings are
+/// not available (KTD3).
+fn shared_removal_delay(app: &AppHandle) -> Option<u32> {
+    app.try_state::<Arc<SharedSettingsManager>>()
+        .and_then(|shared| shared.snapshot().audio_removal_days())
+}
+
+/// The delay to count with for the change from `before` to `proposed`, or
+/// `None` when the change does not remove more audio at once (R17): the
+/// change turns the setting off, keeps the delay, or makes it longer.
+fn count_delay(before: Option<u32>, proposed: settings::AudioRemovalSetting) -> Option<u32> {
+    let settings::AudioRemovalSetting::AfterDays { days } = proposed else {
+        return None;
+    };
+    audio_removal::removes_more(before, Some(days)).then_some(days)
+}
+
+/// How many notes a pass would remove the audio of now if the setting
+/// changed to `removal` (R17, KTD11). The count is 0 when the change does
+/// not remove more audio at once. The count uses the same per-note check as
+/// the pass and reads file metadata only. The pass checks each note again
+/// after the confirmation. A number of days outside the range is refused.
+#[tauri::command]
+#[specta::specta]
+pub async fn audio_removal_count(
+    app: AppHandle,
+    removal: settings::AudioRemovalSetting,
+) -> Result<u32, String> {
+    removal.validate()?;
+    let Some(days) = count_delay(shared_removal_delay(&app), removal) else {
+        return Ok(0);
+    };
+    let Some(pass) = app
+        .try_state::<Arc<AudioRemovalManager>>()
+        .map(|pass| Arc::clone(&pass))
+    else {
+        return Ok(0);
+    };
+    // The count reads folders that can be on a slow volume.
+    let count = tauri::async_runtime::spawn_blocking(move || pass.count_eligible(days))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// Choose whether the app has no Dock icon while no window is visible
@@ -771,6 +813,20 @@ mod tests {
     use summarize::ModelList;
 
     const LOCAL: &str = "http://localhost:11434/v1";
+
+    /// R17: only a change that removes more audio at once gets a count.
+    #[test]
+    fn the_count_uses_the_new_delay_only_when_the_change_removes_more() {
+        use settings::AudioRemovalSetting::{AfterDays, Off};
+        // A shorter delay, and the setting on again.
+        assert_eq!(count_delay(Some(90), AfterDays { days: 30 }), Some(30));
+        assert_eq!(count_delay(None, AfterDays { days: 30 }), Some(30));
+        // A longer delay, the same delay, and the setting off.
+        assert_eq!(count_delay(Some(30), AfterDays { days: 90 }), None);
+        assert_eq!(count_delay(Some(30), AfterDays { days: 30 }), None);
+        assert_eq!(count_delay(Some(30), Off), None);
+        assert_eq!(count_delay(None, Off), None);
+    }
 
     /// KTD11: Change is not available while a Move runs or is paused.
     #[test]

@@ -442,10 +442,6 @@ impl AudioRemovalManager {
     /// How many notes a pass with the delay `delay_days` would remove the
     /// audio of now ([`count_eligible`]). This reads folders: call it off
     /// the main thread.
-    #[expect(
-        dead_code,
-        reason = "the Settings > Storage confirmation (U8) is the caller"
-    )]
     pub fn count_eligible(&self, delay_days: u32) -> usize {
         self.with_inputs(|inputs| count_eligible(inputs, delay_days))
     }

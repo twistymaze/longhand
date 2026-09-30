@@ -210,6 +210,21 @@ async setAudioRemoval(removal: AudioRemovalSetting) : Promise<Result<Settings, s
 }
 },
 /**
+ * How many notes a pass would remove the audio of now if the setting
+ * changed to `removal` (R17, KTD11). The count is 0 when the change does
+ * not remove more audio at once. The count uses the same per-note check as
+ * the pass and reads file metadata only. The pass checks each note again
+ * after the confirmation. A number of days outside the range is refused.
+ */
+async audioRemovalCount(removal: AudioRemovalSetting) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("audio_removal_count", { removal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app has no Dock icon while no window is visible
  * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
  * the next close of the last visible window, which reads the new value
