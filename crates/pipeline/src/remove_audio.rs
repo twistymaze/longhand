@@ -21,10 +21,6 @@ use session_save::home_write;
 
 use crate::{SharedStore, StageError, lock};
 
-/// The documents of a note folder. A segment audio name that is one of
-/// them is not audio, and the step does not delete it.
-const DOCUMENTS: [&str; 4] = ["session.md", "transcript.md", "summary.md", "notes.md"];
-
 /// What the step did to the audio of one segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentOutcome {
@@ -104,7 +100,9 @@ pub fn safe_audio_name(audio_file: &str) -> bool {
     if audio_file.is_empty() || audio_file.ends_with('/') || audio_file.ends_with('\\') {
         return false;
     }
-    if DOCUMENTS.contains(&audio_file) {
+    // A document of the note folder is not audio: the step does not
+    // delete it.
+    if library::conflict::DOCUMENTS.contains(&audio_file) {
         return false;
     }
     let path = Path::new(audio_file);

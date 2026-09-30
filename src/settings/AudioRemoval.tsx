@@ -6,14 +6,12 @@
 import { useState } from "react";
 import { type AudioRemovalSetting, commands, type Settings } from "../bindings";
 import { readOnlyReason } from "./shared";
-import { CommitField, ErrorText, Group, Row, Switch, useConfirm } from "./ui";
+import { CommitField, ErrorText, Group, Row, Switch, notes, useConfirm } from "./ui";
 
 export const MIN_DAYS = 1;
 export const MAX_DAYS = 3650;
 /// The delay that the switch uses when the pane knows no other delay.
 const DEFAULT_DAYS = 30;
-
-const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
 
 /// The whole number of days in `text`, or null when it is not a whole
 /// number from MIN_DAYS to MAX_DAYS.

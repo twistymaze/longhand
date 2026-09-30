@@ -782,6 +782,9 @@ pub enum RemoveAudioFailure {
 /// The reason that the guard gives while a Move runs or is paused.
 const MOVE_OPEN_REASON: &str = "move open";
 
+/// The reason that the guard gives while another computer uses the note.
+const IN_USE_REASON: &str = "in use";
+
 /// The text of a refusal of Remove Audio. `reason` is a state name, a
 /// claim name or a guard reason.
 fn removal_refusal(reason: &str) -> String {
@@ -800,7 +803,7 @@ fn removal_refusal(reason: &str) -> String {
             "Longhand is moving your notes. You can remove the audio when the move is done."
         }
         "deleting" => "This note is being deleted.",
-        "in use" => "This note is in use on another computer. Try again later.",
+        IN_USE_REASON => "This note is in use on another computer. Try again later.",
         _ => "You can remove the audio of this note only after it is saved.",
     }
     .to_string()
@@ -834,7 +837,7 @@ pub(crate) fn removal_checks(
         match pipeline::in_use::in_use(std::path::Path::new(home), now) {
             Ok(false) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Ok(true) | Err(_) => return Err("in use"),
+            Ok(true) | Err(_) => return Err(IN_USE_REASON),
         }
     }
     Ok(())
@@ -1046,7 +1049,7 @@ mod remove_audio_tests {
             ("moving", "moving"),
             (MOVE_OPEN_REASON, "moving"),
             ("deleting", "deleted"),
-            ("in use", "another computer"),
+            (IN_USE_REASON, "another computer"),
             ("processing_failed", "saved"),
             ("awaiting_destination", "saved"),
         ] {

@@ -208,6 +208,9 @@ export function Tag({ children, accent }: { children: ReactNode; accent?: boolea
   );
 }
 
+/// A count of notes in words, such as "1 note" or "3 notes".
+export const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
+
 export function formatBytes(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;

@@ -15,7 +15,7 @@ import {
 import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
 import { readOnlyReason } from "./shared";
-import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes } from "./ui";
+import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes, notes } from "./ui";
 
 export function describeDestination(status: DestinationStatus): { tone: Tone; text: string } {
   switch (status.kind) {
@@ -41,8 +41,6 @@ const isMac = () => navigator.userAgent.includes("Mac");
 /// The Move as the pane shows it. `folder` is the new folder, or null
 /// until the pane reads it.
 type Move = { folder: string | null; moved: number; total: number; state: MoveState; cause: MovePauseCause | null };
-
-const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
 
 /// The open Move, from `move_status` when the pane opens and from the Move
 /// events after that. `finished` is the result of the last Move that ended
