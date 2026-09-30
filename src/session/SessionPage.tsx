@@ -40,9 +40,10 @@ import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
 
-// Summary is first, because a reader who returns to a note wants the
-// summary. A recording has no summary yet, so its page leaves that tab out.
-const tabs: { value: Tab; label: string }[] = [
+type TabItem = { value: Tab; label: string };
+
+// Summary is first, because a reader who returns to a note wants the summary.
+const tabs: TabItem[] = [
   { value: "summary", label: "Summary" },
   { value: "notes", label: "My Notes" },
   { value: "transcript", label: "Transcript" },
@@ -74,14 +75,14 @@ function listOf(items: string[]): string {
 
 /// A segmented control. The segments have one width, so the control keeps
 /// its shape when the level bars show on Transcript. The arrow keys move
-/// through `tabs`, the tabs that show.
+/// through `items`, the tabs that show.
 function Tabs({
-  tabs,
+  items,
   tab,
   onTab,
   meter,
 }: {
-  tabs: { value: Tab; label: string }[];
+  items: TabItem[];
   tab: Tab;
   onTab: (t: Tab) => void;
   meter: ReactNode;
@@ -94,13 +95,13 @@ function Tabs({
       onKeyDown={(e) => {
         if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
         e.preventDefault();
-        const at = tabs.findIndex((t) => t.value === tab);
-        const next = tabs[(at + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+        const at = items.findIndex((t) => t.value === tab);
+        const next = items[(at + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
         onTab(next.value);
         e.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.value}"]`)?.focus();
       }}
     >
-      {tabs.map((t) => (
+      {items.map((t) => (
         <button
           key={t.value}
           type="button"
@@ -123,7 +124,7 @@ function Tabs({
   );
 }
 
-/// What Summary and Transcript say while the note records (R13).
+/// The one line that shows in place of a tab body, for a note that is no longer in the list.
 function AfterStop({ children }: { children: string }) {
   return (
     <p className="mx-auto max-w-[24rem] pt-16 text-center leading-relaxed text-label-secondary">{children}</p>
@@ -205,7 +206,7 @@ export function SessionPage({
   const open = capture.status?.session_id === id || entry?.state === "capturing";
   const phase: Phase = open ? "recording" : !entry ? "missing" : entry.state === "saved" ? "saved" : "processing";
 
-  const [chosen, setTab] = useState<Tab>(phase === "recording" ? "notes" : "summary");
+  const [chosen, setChosen] = useState<Tab>(phase === "recording" ? "notes" : "summary");
   // A recording has no summary yet, so its page has no Summary tab. A
   // hidden tab is never the shown one, even in the render before the phase
   // effect below moves the page.
@@ -233,10 +234,10 @@ export function SessionPage({
     const before = previous.current;
     previous.current = phase;
     if (before === phase) return;
-    if (phase === "recording") setTab("notes");
-    else if (before === "recording") setTab("summary");
+    if (phase === "recording") setChosen("notes");
+    else if (before === "recording") setChosen("summary");
     else if (phase === "saved" && before === "processing" && !notesPanel.current?.contains(document.activeElement)) {
-      setTab("summary");
+      setChosen("summary");
     }
   }, [phase]);
 
@@ -306,7 +307,7 @@ export function SessionPage({
     setNotice(null);
     // The status shows on Summary, so the page moves there, as it does
     // after Stop.
-    setTab("summary");
+    setChosen("summary");
     // A rejected call must also end the status, or the tab shows it with
     // no end.
     void (async () => {
@@ -544,9 +545,9 @@ export function SessionPage({
           </button>
         </div>
         <Tabs
-          tabs={visibleTabs}
+          items={visibleTabs}
           tab={tab}
-          onTab={setTab}
+          onTab={setChosen}
           meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
         />
         <div data-tauri-drag-region className="flex items-center justify-end gap-1">
