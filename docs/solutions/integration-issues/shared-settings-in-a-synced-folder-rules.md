@@ -43,6 +43,8 @@ These rules come from building this feature. Each rule guards against a fault th
 
 7. **Accepted risk: a save made before another computer's change has synced can undo that change.** Computer A saves before the change of computer B arrives. A then writes a whole file that lacks the change of B, and the sync service can make A's file the winner. Rule 2 does not prevent this, because A's copy of the other fields is old. Only a person's edits write this file, so the risk needs edits on two computers within the sync delay. The user chose to accept it over one settings file for each computer (plan R15, AE12 and the Risks table). Do not add a per-computer file or a "not yet synced" wait without a new decision.
 
+8. **The last change wins, and conflicts belong to the sync service.** When computers change or copy settings, the last file that the sync service keeps applies to every computer. Longhand does not try to predict what the sync service will do: no "has this synced yet" guesses, no field that one path copies and another path leaves out, and no special handling for one setting. Every shared setting follows the same default and copy rules, including a setting whose value deletes data, such as audio removal. The rules above still apply: a file that cannot be read is not overwritten (rule 4), and only the exact name counts (rule 5). The user set this rule on 2026-09-30, during the plan for removing old audio (`docs/plans/2026-09-30-0357-feat-remove-old-audio-plan.md`).
+
 ## Also
 
 - Reads have no timeout. An online-only iCloud file can block a read. Run every read off the main thread. Do not hold the manager lock during a read (`reread` takes the lock only to start and to finish).

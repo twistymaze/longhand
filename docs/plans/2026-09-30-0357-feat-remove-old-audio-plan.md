@@ -15,7 +15,7 @@ execution: code
 - **Objective:** The audio of a saved note does not stay on disk longer than the user wants. By default, the audio goes 30 days after the note last recorded. The transcript, summary, notes and title stay.
 - **Means:** A removal marker beside each removed audio file, a pass that any computer runs, and an in-use marker that other computers respect (KTD1, KTD5, KTD4).
 - **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Source idea: `docs/ideas/next/remove-old-audio.md`.
-- **Stop conditions:** Stop and ask when a change would delete audio that R8 or R10 protects, would weaken the unsynced-settings guard (KTD3), or would make a note with removed audio show as waiting for sync.
+- **Stop conditions:** Stop and ask when a change would delete audio that R8 or R10 protects, would remove audio while the shared settings cannot be read (KTD3), or would make a note with removed audio show as waiting for sync.
 - **Execution profile:** Implement with `ce-work` in a worktree from `origin/main`, one commit per unit, then one PR. Test microphone and Resume behavior only in a signed bundle.
 - **Open blockers:** None.
 
@@ -33,7 +33,7 @@ The audio is the largest part of a note, and the storage folder grows with each 
 
 ### Key Decisions
 
-- **On by default, 30 days.** The app is private by default; the user can keep audio longer or always. Governs R1, R2, R18. (session-settled: user-directed — chosen over off by default: the default must be the private choice.) A computer that has not read the shared settings never applies the default, because it cannot tell a value that was never written from one that has not synced yet (user-approved at planning).
+- **On by default, 30 days.** The app is private by default; the user can keep audio longer or always. Governs R1, R2, R18. (session-settled: user-directed — chosen over off by default: the default must be the private choice.) The setting is copied and defaulted like every other shared setting; a sync conflict between two computers' settings files is the sync service's to resolve (session-settled: user-directed — chosen over special handling that kept this one value out of a copied file: the app does not try to anticipate the sync service).
 - **Permanent delete, not the Trash.** Audio in the Trash is not gone. Governs R6. (session-settled: user-directed — chosen over the Trash and over a user choice: privacy wins over undo.)
 - **Any computer removes old audio.** Old audio goes away even when the computer that recorded the note is off or no longer used. This is an exception to the library rule that an automatic step changes a home folder only for work that this computer recorded, so R10 guards it and R16 gives the result when the guard cannot see the other computer. Governs R9, R10, R16. (session-settled: user-directed — chosen over only the recording computer and over a local setting.)
 - **The delay starts at the last recording.** Audio lives a known number of days after it was made. Opening a note or running Transcribe Again does not reset it. Governs R4. (session-settled: user-approved — chosen over last opened and last processed.)
@@ -45,7 +45,7 @@ The audio is the largest part of a note, and the storage folder grows with each 
 **The setting**
 
 - R1. The audio removal setting is a shared setting. It holds a delay in whole days, or off.
-- R2. A new storage folder gets the setting on with a delay of 30 days. A computer that creates the shared settings for a storage folder with no notes writes that value. When the shared settings of a storage folder hold no value, or cannot be read, no audio is removed automatically, and Settings shows the setting as off.
+- R2. The default of the setting is on with a delay of 30 days, and the setting follows the same default and copy rules as every other shared setting. While the shared settings cannot be read, no audio is removed automatically.
 - R3. The user sets the delay or turns the setting off in Settings > Storage.
 
 **Which audio goes, and when**
@@ -86,7 +86,7 @@ The audio is the largest part of a note, and the storage folder grows with each 
 - AE6. **Covers R14.** Given a note whose audio was removed, the note page and Home look the same as for a note with audio. When the user opens the note's menu, Transcribe Again is unavailable and says that the note's audio was removed.
 - AE7. **Covers R17.** Given a delay of 90 days and notes that are 40 days old, when the user sets the delay to 30 days, a confirmation appears before any audio goes. If the user cancels, the delay stays at 90 days.
 - AE8. **Covers R13.** Given the setting is off, when the user chooses Remove Audio on a note and confirms, the note's audio is gone at once.
-- AE10. **Covers R2.** Given computers A and B share a storage folder with notes, and the user turned the setting off on A, when B starts for the first time before the sync delivers the shared settings, B removes no audio.
+- AE10. **Covers R2.** Given the `settings.json` of the storage folder exists but does not parse (a half-synced file), Longhand removes no audio until it reads the file.
 
 ### Scope Boundaries
 
@@ -123,7 +123,7 @@ The audio is the largest part of a note, and the storage folder grows with each 
 - `CONCEPTS.md` — Library (the rule for automatic steps), Shared settings, Transcribe Again.
 
 
-**Product Contract preservation:** changed: R2 — the default comes from the computer that creates the shared settings of a new storage folder, and a storage folder with no value removes nothing automatically (confirmed by the user at the planning scope check; resolves the review's deferred unsynced-settings finding). AE10 added. Other requirements unchanged.
+**Product Contract preservation:** changed: R2 — the setting follows the same default and copy rules as every other shared setting, and no audio is removed while the shared settings cannot be read (user decision after plan review; the sync race is an accepted risk). AE10 added. Other requirements unchanged.
 
 ---
 
@@ -133,7 +133,7 @@ The audio is the largest part of a note, and the storage folder grows with each 
 
 - KTD1. **A removal marker file beside each removed audio file records the removal.** The marker for `audio/segment-01.opus` is a file with a fixed name derived from it (for example `audio/segment-01.opus.removed`) and fixed content. A field in `session.md` does not work: a save on another computer rewrites `session.md` from its own store and keeps only named fields (`crates/pipeline/src/folder_rename.rs` `write_document`, `crates/pipeline/src/save.rs` `session_doc`). A marker is only ever created, never rewritten, so two computers that write it at once make the same file. The marker name has no leading dot, because the folder watcher skips dot names (`src-tauri/src/managers/library.rs` `should_skip_path`). Governs R15, R16.
 - KTD2. **A marker makes the segment's audio removed, whether the file is present or not.** Removal writes the marker first, then deletes the file. A crash between the two leaves a marker and a file: the next pass deletes the file, and Resume, Transcribe Again and Retry already refuse. Each pass finishes the delete of every marked segment whether the setting is on or off; the setting controls only the writing of new markers. When a partial sync delivers the marker before the delete, the receiving computer also deletes the file. This follows the step-then-record rule in `docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`, with the record first because the marker is what makes the state recognizable from disk alone. Governs R5, R13, R15.
-- KTD3. **Automatic removal needs a known value from readable shared settings.** The new shared field joins `crates/shared-settings/src/file.rs` like the other fields (`KEY_*`, `Field<T>`, `SharedValue`). Its encoding distinguishes absent, off and a number of days (1 to 3650), and an unknown value is `Unknown`. `default_settings()` leaves the key out. When the join (`crates/shared-settings/src/join.rs`) creates a missing `settings.json`, the audio removal value follows one rule. In a storage folder that holds note folders, the new file has no value, including when the join fills it from this computer's cache. In a storage folder with no note folders, a known value in the cache is kept as it is (the user's choice survives a change of folder), and otherwise the value is 30 days. The pass runs only when the shared view is `Available` and the field is known. It never uses `settings::get_settings` defaults, because `from_parts` maps absent and unknown values to defaults. This follows rule 4 of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`. Governs R1, R2.
+- KTD3. **The setting is an ordinary shared field, and automatic removal needs readable shared settings.** The new field joins `crates/shared-settings/src/file.rs` like the other fields (`KEY_*`, `Field<T>`, `SharedValue`), with 30 days in `default_settings()`. The join (`crates/shared-settings/src/join.rs`) needs no change: it copies this computer's settings, or the defaults, into a missing `settings.json` as it does for every field. Its encoding distinguishes off and a number of days (1 to 3650), and an unknown value is `Unknown`. The pass runs only when the shared view is `Available`, and it removes nothing for an `Unknown` value, because a value this build cannot read is not a delay (rule 4 of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`). An absent key in a readable file means the default, as for every other field. Conflicts between two computers' files are the sync service's to resolve (rule 8 of the same doc). Governs R1, R2.
 - KTD4. **An in-use marker in the home folder guards other computers.** While this computer resumes a saved note, or queues or processes it (Transcribe Again, Retry, processing after Resume), it keeps its own hidden file in the home folder, named for its run ID (for example `.longhand-in-use-<run ID>`). The file holds the run ID and the time of its last refresh. It is refreshed every 2 minutes, and the run removes only its own file at Saved or Discard. Removal waits while any in-use file of the note is fresh. Another computer treats a marker as fresh when the time inside the file is less than 30 minutes old, with a margin for a clock difference. A dot name keeps the watcher from refreshing on each heartbeat. The write never creates a missing folder, so a renamed note is not recreated. This is this computer's own work in the home folder, so it keeps to the library rule for automatic steps. Governs R10.
 - KTD5. **One removal pass, which any computer runs, re-checks every guard for each note immediately before it deletes.** The guards: the note is Saved and has no claim, no Move is open, the storage folder is available, the in-use marker is not fresh, the setting is still known and on, and the last recording end plus the delay is in the past. The pass takes the same kind of claim as Delete Note (`session_core::jobs::delete_session`). It checks the guards per note, not once per pass (`docs/solutions/logic-errors/move-dropped-notes-when-old-folder-went-away.md`). It reads capture state before it takes the store lock (`docs/solutions/logic-errors/runner-store-lock-before-suspended-check-deadlocks.md`). Governs R5, R8, R9, R10, R11.
 - KTD6. **The pass runs at launch, on a timer, and after a settings change.** At launch it runs after the library scan and only in the single running instance (`src-tauri/src/managers/processing.rs` launch order). The timer follows the updates timer pattern (`src-tauri/src/managers/updates.rs`, `interval_at` plus work on `spawn_blocking`) with a 15-minute period, so a wake from sleep gets a pass within one period. The pass also runs at once after a confirmed change that shortens the delay or turns the setting on (R17), and after the shared settings change on disk. A change from another computer needs no confirmation. Governs R11, R17.
@@ -185,7 +185,7 @@ flowchart TB
 ### Risks
 
 - **A local clock far ahead deletes early.** A computer whose clock is wrong by weeks removes audio early. No guard is planned; the delay counts from the recording computer's `wall_end`, and a wrong clock on either side moves the removal.
-- **An unsynced folder looks new (accepted).** A computer that joins a synced storage folder before any of its files arrive sees no notes and writes the 30-day default. If that file wins over the other computer's file in the sync, old audio that the user chose to keep is removed. The user accepted this risk at plan review.
+- **A settings file from another computer can win the sync (accepted).** A computer that joins a synced storage folder before its `settings.json` arrives copies its own settings, or the defaults, into the folder. If that file wins over another computer's file, its audio removal value applies to every computer, and old audio that the user chose to keep can be removed. The user accepted this risk: the last change wins, and sync conflicts are the sync service's responsibility (rule 8 of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`).
 - **An offline Resume is invisible.** R16 and KTD8 make the result well defined, but the old audio of that note is removed.
 - **A long open Move blocks removal.** The pass waits until the Move ends. This is acceptable because a Move can pause for days only when a folder is unavailable.
 
@@ -204,7 +204,6 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
 - **Dependencies:** None.
 - **Files:**
   - `crates/shared-settings/src/file.rs`
-  - `crates/shared-settings/src/join.rs`
   - `crates/shared-settings/tests/file.rs`
   - `crates/shared-settings/tests/join.rs`
   - `crates/shared-settings/tests/two_computers.rs`
@@ -215,19 +214,19 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - `src/bindings.ts` (regenerated)
 - **Approach:**
   1. Add the field with its `KEY_*`, `Field<T>`, `SharedValue` and `unknown_values` entries.
-  2. Keep it out of `default_settings()`. In the join, apply the KTD3 rule for a missing `settings.json` on both the default path and the cache path.
-  3. Expose the field in `Settings` with its known state, so that absent and unknown show as off (R2), and add a setter command like `set_check_updates_automatically`.
-  4. Give the pass one accessor that returns a delay only when the view is `Available` and the field is known.
+  2. Add 30 days to `default_settings()`. The join needs no change.
+  3. Expose the field in `Settings` like `check_updates_automatically`, and add a setter command like `set_check_updates_automatically`.
+  4. Give the pass one accessor that returns a delay only when the view is `Available` and the value is not `Unknown`.
 - **Patterns to follow:** `check_updates_automatically` in `src-tauri/src/managers/settings.rs` and `src-tauri/src/commands/settings.rs`. The Prevention section of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`.
 - **Test scenarios:**
-  - A join in an empty storage folder writes `settings.json` with the 30-day value.
-  - A join in a storage folder that has note folders and no `settings.json` writes no audio removal value, with no cache and with a cache that holds a 7-day delay.
-  - A change of folder to an empty folder with a cache that holds off writes off, not 30 days; a later Move of 40-day-old notes into it removes nothing.
-  - Covers AE10. A second computer whose shared settings are `Missing` or `NotAvailable` gets no delay from the accessor.
-  - A file with the key absent, with `Unknown` content, or with a newer `schema_version` gives no delay, and a read writes nothing.
+  - A join with no cache writes `settings.json` with the 30-day value.
+  - A change of folder with a cache that holds off writes off into the new folder.
+  - Covers AE10. A `settings.json` that does not parse gives no delay from the accessor, and a read writes nothing.
+  - A readable file with the key absent gives the 30-day delay.
+  - A file with `Unknown` content for the key gives no delay.
   - A save of another shared field keeps the audio removal value, and a save of this field keeps unknown fields.
   - Values 1 and 3650 parse, and 0, negative and 3651 are `Unknown`.
-- **Verification:** The accessor returns a delay only for a readable file with a known value, and the join writes the value only for an empty storage folder.
+- **Verification:** The field behaves like every other shared field, and the accessor returns no delay while the shared settings cannot be read or the value is unknown.
 
 ### U2. Removal markers and the audio state
 
@@ -426,7 +425,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - A change from 30 to 90 days saves with no confirmation.
   - Turning the setting on with no eligible notes saves with no confirmation.
   - Read-only shared settings disable the control and show the existing reason.
-  - An absent value shows the setting as off.
+  - An absent value in a readable file shows the default, on at 30 days.
 - **Verification:** No change that removes audio at once saves without a confirmation.
 
 ### U9. Glossary and idea
@@ -437,7 +436,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
 - **Files:**
   - `CONCEPTS.md`
   - `docs/ideas/next/remove-old-audio.md`
-- **Approach:** Update the Audio removal entry with the marker, the in-use marker and the unsynced-settings rule, and add the in-use marker to the Library entry. The idea moves to `done/` after the merge with `bun scripts/ideas.ts move`.
+- **Approach:** Update the Audio removal entry with the marker, the in-use marker and the rule that no audio is removed while the shared settings cannot be read, and add the in-use marker to the Library entry. The idea moves to `done/` after the merge with `bun scripts/ideas.ts move`.
 - **Test expectation:** none -- docs only.
 - **Verification:** `bun scripts/ideas.ts check` passes.
 
