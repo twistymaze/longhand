@@ -2,6 +2,7 @@
 //! session timeline, the SQLite job store, and the session
 //! folder's markdown. Pure Rust; nothing here depends on Tauri.
 
+pub mod backup;
 pub mod folder;
 pub mod inspect;
 pub mod jobs;
