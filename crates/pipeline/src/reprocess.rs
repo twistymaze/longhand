@@ -489,7 +489,6 @@ mod tests {
         doc.recognition_audio = Some(Default::default());
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), b"Summary").unwrap();
-        doc.result_generation = Some(session_save::result::stage(home, home).unwrap());
         std::fs::write(home.join("session.md"), doc.render()).unwrap();
         temp
     }
@@ -534,9 +533,6 @@ mod tests {
             ..Default::default()
         };
         let temp = saved(&config);
-        assert!(reuses(temp.path(), &config).unwrap());
-        // The old result copies do not count.
-        std::fs::remove_dir_all(temp.path().join(".longhand-results")).unwrap();
         assert!(reuses(temp.path(), &config).unwrap());
         // A hand edit or a missing transcript makes the timed text unusable
         // (R9): the run transcribes in full.

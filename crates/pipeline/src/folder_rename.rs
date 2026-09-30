@@ -369,7 +369,6 @@ pub(crate) fn write_document(
 ) -> Result<(), StageError> {
     let mut doc = session_doc(record, segments, folder)?;
     if let Some(previous) = read_document(folder) {
-        doc.result_generation = previous.result_generation;
         doc.recognition_artifact = previous.recognition_artifact;
         doc.recognition_snapshot = previous.recognition_snapshot;
         doc.recognition_audio = previous.recognition_audio;
