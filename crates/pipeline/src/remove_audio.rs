@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{self, REMOVAL_MARKER_TEXT};
-use session_core::jobs::Claims;
+use session_core::jobs::{Claim, Claims};
 use session_core::recognition::ARTIFACT_FILE;
 use session_core::{SessionRecord, SessionState, Store, StoreError};
 use session_save::home_write;
@@ -248,7 +248,10 @@ enum Scope {
 }
 
 /// The row of `session_id`. The note must be saved.
-fn saved_row(store: &Store, session_id: &str) -> Result<SessionRecord, RemoveAudioError> {
+pub(crate) fn saved_row(
+    store: &Store,
+    session_id: &str,
+) -> Result<SessionRecord, RemoveAudioError> {
     let record = store
         .session(session_id)?
         .ok_or_else(|| RemoveAudioError::Failed(format!("no session {session_id}")))?;
@@ -256,6 +259,16 @@ fn saved_row(store: &Store, session_id: &str) -> Result<SessionRecord, RemoveAud
         return Err(RemoveAudioError::Busy(record.state.name()));
     }
     Ok(record)
+}
+
+/// Take the delete claim of `session_id`, as Delete Note does.
+pub(crate) fn delete_claim(claims: &Claims, session_id: &str) -> Result<Claim, RemoveAudioError> {
+    // A second delete claim is not refused by `Claims::delete`, so a
+    // running Delete Note is checked first.
+    if claims.is_regenerating_or_deleting(session_id) && !claims.is_regenerating(session_id) {
+        return Err(RemoveAudioError::Busy("deleting"));
+    }
+    claims.delete(session_id).map_err(RemoveAudioError::Busy)
 }
 
 fn run_step<F, S, R>(
@@ -272,14 +285,9 @@ where
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
     R: FnMut(&Path) -> io::Result<()>,
 {
-    // A second delete claim is not refused by `Claims::delete`, so a
-    // running Delete Note is checked first.
-    if claims.is_regenerating_or_deleting(session_id) && !claims.is_regenerating(session_id) {
-        return Err(RemoveAudioError::Busy("deleting"));
-    }
     // The claim comes before the home folder is read, as in
     // `session_core::jobs::delete_session`.
-    let _claim = claims.delete(session_id).map_err(RemoveAudioError::Busy)?;
+    let _claim = delete_claim(claims, session_id)?;
 
     // The folder check reads files, so it runs with no store lock.
     let checked = saved_row(&lock(store), session_id)?;
@@ -337,7 +345,9 @@ where
         });
     if complete {
         match sync {
-            NoteSync::Synced => remove_recognition(&home, &mut remove),
+            NoteSync::Synced => {
+                remove_recognition(&home, &mut remove);
+            }
             // A later pass deletes it.
             NoteSync::Waiting => log::debug!(
                 "audio removal: {session_id} waits for a sync, so {ARTIFACT_FILE} stays for now"
@@ -363,28 +373,57 @@ where
     })
 }
 
+/// What a delete of one file with a fixed name did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileDelete {
+    Deleted,
+    /// No entry has the name.
+    Missing,
+    /// The entry is not a regular file, or the delete failed. The entry
+    /// stays, and the delete logs it.
+    Kept,
+}
+
 /// Delete `recognition.jsonl` in the canonical home folder `home` with
 /// `remove` when it is a regular file (R11). A folder or a link with that
 /// name stays, and the step logs it. The check reads metadata only, so an
 /// online-only file is not downloaded (R12). A failed delete does not
 /// change the result of the removal.
-fn remove_recognition<R>(home: &Path, remove: &mut R)
+pub(crate) fn remove_recognition<R>(home: &Path, remove: &mut R) -> FileDelete
 where
     R: FnMut(&Path) -> io::Result<()>,
 {
-    let path = home.join(ARTIFACT_FILE);
+    remove_regular_file(&home.join(ARTIFACT_FILE), remove)
+}
+
+/// Delete `path` with `remove` when it is a regular file. A folder or a
+/// link with that name stays, and the delete logs it. The check reads
+/// metadata only (R12).
+pub(crate) fn remove_regular_file<R>(path: &Path, remove: &mut R) -> FileDelete
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
     match path.symlink_metadata() {
-        Ok(meta) if meta.is_file() => match remove(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => log::warn!("audio removal: cannot delete {}: {e}", path.display()),
+        Ok(meta) if meta.is_file() => match remove(path) {
+            Ok(()) => FileDelete::Deleted,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => FileDelete::Missing,
+            Err(e) => {
+                log::warn!("audio removal: cannot delete {}: {e}", path.display());
+                FileDelete::Kept
+            }
         },
-        Ok(_) => log::warn!(
-            "audio removal: {} is not a regular file, so it stays",
-            path.display()
-        ),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => log::warn!("audio removal: cannot read {}: {e}", path.display()),
+        Ok(_) => {
+            log::warn!(
+                "audio removal: {} is not a regular file, so it stays",
+                path.display()
+            );
+            FileDelete::Kept
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => FileDelete::Missing,
+        Err(e) => {
+            log::warn!("audio removal: cannot read {}: {e}", path.display());
+            FileDelete::Kept
+        }
     }
 }
 
