@@ -81,8 +81,12 @@ export function TranscriptTab({
   transcriptMarkdown: string;
 }) {
   const end = useRef<HTMLDivElement>(null);
-  // Once, when the tab opens: a later change must not move the reader.
-  useLayoutEffect(() => end.current?.scrollIntoView({ block: "end" }), []);
+  // Once, when the tab opens: a later change must not move the reader. The
+  // effect returns nothing: Chromium returns a Promise from scrollIntoView,
+  // and React would call that value as the cleanup.
+  useLayoutEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, []);
 
   const header = [speakerCount(foundSpeakers), formatClock(durationMs)].filter(Boolean).join(" · ");
 

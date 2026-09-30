@@ -104,6 +104,25 @@ describe("TranscriptTab", () => {
     expect(last.compareDocumentPosition(shown[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(shown[0].nextElementSibling).toBeNull();
   });
+
+  // Chromium returns a Promise from scrollIntoView. React must not get that
+  // value as the cleanup of the scroll effect, or the page throws and goes
+  // blank when the tab closes.
+  test("the tab closes with no error when scrollIntoView returns a Promise", () => {
+    const original = HTMLElement.prototype.scrollIntoView;
+    let scrolled = 0;
+    HTMLElement.prototype.scrollIntoView = function () {
+      scrolled += 1;
+      return Promise.resolve() as unknown as void;
+    };
+    try {
+      const view = renderTab([turn(0, 1, "Hello.")]);
+      expect(scrolled).toBe(1);
+      expect(() => view.unmount()).not.toThrow();
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+    }
+  });
 });
 
 describe("formatClock", () => {
