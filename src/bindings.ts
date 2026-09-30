@@ -194,6 +194,20 @@ async setCheckUpdatesAutomatically(enabled: boolean) : Promise<Result<Settings, 
 }
 },
 /**
+ * Choose when the audio of a saved note goes, or turn automatic removal
+ * off (R1, R3). The value goes into the shared settings file, so it
+ * applies on every computer that uses the storage folder. A number of
+ * days outside the range is refused and changes nothing.
+ */
+async setAudioRemoval(removal: AudioRemovalSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_audio_removal", { removal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app has no Dock icon while no window is visible
  * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
  * the next close of the last visible window, which reads the new value
@@ -867,6 +881,16 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
+/**
+ * A shared setting: when Longhand removes the audio of a saved note (R1,
+ * R3). The file form is [`AudioRemoval`]; this is the form of the
+ * Settings window.
+ */
+export type AudioRemovalSetting = { kind: "off" } | 
+/**
+ * The audio goes this many whole days after the note last recorded.
+ */
+{ kind: "after_days"; days: number }
 export type BuildInfo = { 
 /**
  * The full version, for example `0.1.0-preview.20260928143012`.
@@ -1656,6 +1680,15 @@ hide_from_dock: boolean;
  * for Updates…" works when it is off (R11).
  */
 check_updates_automatically: boolean; 
+/**
+ * A shared setting. When the audio of a saved note goes (R1, R2). On
+ * by default, with a delay of 30 days. A value that this version does
+ * not know shows as the default here and in `shared.unknown_values`.
+ * The removal pass does not read this field: it reads
+ * `SharedSnapshot::audio_removal_days`, which gives no delay for such a
+ * value or while the shared settings are read-only.
+ */
+audio_removal: AudioRemovalSetting; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).

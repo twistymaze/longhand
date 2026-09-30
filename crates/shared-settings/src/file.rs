@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// The hidden folder in the storage folder that holds Longhand's own
@@ -36,6 +37,15 @@ pub const KEY_SPEAKER_SOURCE: &str = "speaker_source";
 pub const KEY_SPEAKER_PROCESSING_MODE: &str = "speaker_processing_mode";
 pub const KEY_RECOGNITION_LANGUAGE: &str = "recognition_language";
 pub const KEY_CHECK_UPDATES_AUTOMATICALLY: &str = "check_updates_automatically";
+pub const KEY_AUDIO_REMOVAL: &str = "audio_removal";
+
+/// The delay of a new storage folder: the audio of a saved note goes 30
+/// days after the note last recorded (R2).
+pub const DEFAULT_AUDIO_REMOVAL_DAYS: u32 = 30;
+/// The shortest delay that the setting holds.
+pub const AUDIO_REMOVAL_MIN_DAYS: u32 = 1;
+/// The longest delay that the setting holds: about ten years.
+pub const AUDIO_REMOVAL_MAX_DAYS: u32 = 3650;
 
 /// The hidden Longhand folder of the storage folder `root`.
 pub fn longhand_folder(root: &Path) -> PathBuf {
@@ -69,6 +79,83 @@ impl<T> Field<T> {
     }
 }
 
+/// When Longhand removes the audio of a saved note (R1).
+///
+/// The file holds the string `"off"`, or the delay as a JSON integer of
+/// whole days from [`AUDIO_REMOVAL_MIN_DAYS`] to [`AUDIO_REMOVAL_MAX_DAYS`]:
+/// `"audio_removal": 30`. The two forms have different JSON types, so off
+/// and a number of days cannot be confused. Every other value parses as
+/// [`Field::Unknown`]: a number outside the range, a fraction, `null`, a
+/// boolean, a number in a string, or another word. An unknown value is
+/// not a delay, so no audio goes for it (KTD3). A newer build that changes
+/// the meaning of the delay must use a new key, because an older build
+/// reads each integer here as whole days after the last recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AudioRemovalJson", into = "AudioRemovalJson")]
+pub enum AudioRemoval {
+    Off,
+    /// The audio goes this many whole days after the note last recorded.
+    AfterDays(u32),
+}
+
+impl AudioRemoval {
+    /// The delay in whole days, or `None` when the setting is off.
+    pub fn days(self) -> Option<u32> {
+        match self {
+            AudioRemoval::Off => None,
+            AudioRemoval::AfterDays(days) => Some(days),
+        }
+    }
+
+    /// Whether this build can hold the value. A number of days outside
+    /// the range is not valid.
+    pub fn valid(self) -> bool {
+        match self {
+            AudioRemoval::Off => true,
+            AudioRemoval::AfterDays(days) => {
+                (AUDIO_REMOVAL_MIN_DAYS..=AUDIO_REMOVAL_MAX_DAYS).contains(&days)
+            }
+        }
+    }
+}
+
+impl Default for AudioRemoval {
+    fn default() -> Self {
+        AudioRemoval::AfterDays(DEFAULT_AUDIO_REMOVAL_DAYS)
+    }
+}
+
+/// The JSON form of [`AudioRemoval`]: an integer, or a word.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum AudioRemovalJson {
+    Days(u32),
+    Word(String),
+}
+
+const AUDIO_REMOVAL_OFF: &str = "off";
+
+impl TryFrom<AudioRemovalJson> for AudioRemoval {
+    type Error = String;
+
+    fn try_from(json: AudioRemovalJson) -> Result<Self, Self::Error> {
+        match json {
+            AudioRemovalJson::Days(days) => Ok(AudioRemoval::AfterDays(days)),
+            AudioRemovalJson::Word(word) if word == AUDIO_REMOVAL_OFF => Ok(AudioRemoval::Off),
+            AudioRemovalJson::Word(word) => Err(format!("unknown audio removal value {word:?}")),
+        }
+    }
+}
+
+impl From<AudioRemoval> for AudioRemovalJson {
+    fn from(removal: AudioRemoval) -> Self {
+        match removal {
+            AudioRemoval::Off => AudioRemovalJson::Word(AUDIO_REMOVAL_OFF.to_string()),
+            AudioRemoval::AfterDays(days) => AudioRemovalJson::Days(days),
+        }
+    }
+}
+
 /// The typed view of the shared settings file (R12, R18). The custom
 /// prompts are files of their own (see [`crate::prompts`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +175,9 @@ pub struct SharedFields {
     /// `Known(None)` is "detect the language".
     pub recognition_language: Field<Option<String>>,
     pub check_updates_automatically: Field<bool>,
+    /// When the audio of a saved note goes. An absent field is the
+    /// default, 30 days (KTD3).
+    pub audio_removal: Field<AudioRemoval>,
 }
 
 impl SharedFields {
@@ -107,6 +197,9 @@ impl SharedFields {
             speaker_processing_mode: parse(raw, KEY_SPEAKER_PROCESSING_MODE, |_| true),
             recognition_language: parse(raw, KEY_RECOGNITION_LANGUAGE, |_| true),
             check_updates_automatically: parse(raw, KEY_CHECK_UPDATES_AUTOMATICALLY, |_| true),
+            audio_removal: parse(raw, KEY_AUDIO_REMOVAL, |removal: &AudioRemoval| {
+                removal.valid()
+            }),
         }
     }
 
@@ -149,6 +242,7 @@ impl SharedFields {
                 KEY_CHECK_UPDATES_AUTOMATICALLY,
                 unknown(&self.check_updates_automatically),
             ),
+            (KEY_AUDIO_REMOVAL, unknown(&self.audio_removal)),
         ]
         .into_iter()
         .filter_map(|(key, value)| Some((key, value?)))
@@ -195,6 +289,7 @@ pub enum SharedValue {
     SpeakerProcessingMode(ProcessingMode),
     RecognitionLanguage(Option<String>),
     CheckUpdatesAutomatically(bool),
+    AudioRemoval(AudioRemoval),
 }
 
 impl SharedValue {
@@ -209,6 +304,7 @@ impl SharedValue {
             SharedValue::SpeakerProcessingMode(_) => KEY_SPEAKER_PROCESSING_MODE,
             SharedValue::RecognitionLanguage(_) => KEY_RECOGNITION_LANGUAGE,
             SharedValue::CheckUpdatesAutomatically(_) => KEY_CHECK_UPDATES_AUTOMATICALLY,
+            SharedValue::AudioRemoval(_) => KEY_AUDIO_REMOVAL,
         }
     }
 
@@ -223,6 +319,7 @@ impl SharedValue {
             SharedValue::SpeakerProcessingMode(mode) => serde_json::to_value(mode),
             SharedValue::RecognitionLanguage(language) => serde_json::to_value(language),
             SharedValue::CheckUpdatesAutomatically(on) => serde_json::to_value(on),
+            SharedValue::AudioRemoval(removal) => serde_json::to_value(removal),
         };
         value.expect("a shared setting serializes")
     }
@@ -398,6 +495,7 @@ pub fn default_settings() -> Map<String, Value> {
         SharedValue::SpeakerProcessingMode(ProcessingMode::default()),
         SharedValue::RecognitionLanguage(None),
         SharedValue::CheckUpdatesAutomatically(true),
+        SharedValue::AudioRemoval(AudioRemoval::default()),
     ];
     apply_patch(&Map::new(), &defaults)
 }

@@ -8,7 +8,7 @@ use std::path::Path;
 use serde_json::json;
 use shared_settings::cache::read_cache;
 use shared_settings::file::{
-    Field, SharedValue, apply_patch, default_settings, save_settings, settings_path,
+    AudioRemoval, Field, SharedValue, apply_patch, default_settings, save_settings, settings_path,
 };
 use shared_settings::join::{JoinKind, Joined, join_folder};
 use shared_settings::prompts::{create_prompt, render_prompt_file, set_prompt_text};
@@ -274,4 +274,49 @@ fn a_partial_settings_file_makes_the_settings_read_only_until_it_is_complete() {
     assert_eq!(on_b.fields.live_transcript, Field::Known(true));
     fs::write(settings_path(folder.path()), &complete).unwrap();
     assert!(b.refresh(folder.path()).writable());
+}
+
+#[test]
+fn a_change_of_audio_removal_on_a_applies_on_b() {
+    // R1: one value applies on every computer.
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::SameFolder);
+    assert_eq!(b.refresh(folder.path()).audio_removal_days(), Some(30));
+
+    a.save(
+        folder.path(),
+        &[SharedValue::AudioRemoval(AudioRemoval::AfterDays(90))],
+    );
+    assert_eq!(b.refresh(folder.path()).audio_removal_days(), Some(90));
+
+    a.save(
+        folder.path(),
+        &[SharedValue::AudioRemoval(AudioRemoval::Off)],
+    );
+    let on_b = b.refresh(folder.path());
+    assert_eq!(on_b.fields.audio_removal, Field::Known(AudioRemoval::Off));
+    assert_eq!(on_b.audio_removal_days(), None);
+}
+
+#[test]
+fn a_partial_settings_file_gives_no_audio_removal_delay_until_it_is_complete() {
+    // AE10: B keeps its cache for display, but removes no audio.
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::ChangeOfFolder);
+    let complete = fs::read(settings_path(folder.path())).unwrap();
+    let partial = &complete[..complete.len() / 3];
+    fs::write(settings_path(folder.path()), partial).unwrap();
+    let on_b = b.refresh(folder.path());
+    assert_eq!(
+        on_b.fields.audio_removal,
+        Field::Known(AudioRemoval::AfterDays(30))
+    );
+    assert_eq!(on_b.audio_removal_days(), None);
+    assert_eq!(fs::read(settings_path(folder.path())).unwrap(), partial);
+    fs::write(settings_path(folder.path()), &complete).unwrap();
+    assert_eq!(b.refresh(folder.path()).audio_removal_days(), Some(30));
 }

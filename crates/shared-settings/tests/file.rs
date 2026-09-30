@@ -8,9 +8,11 @@ use std::path::Path;
 use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
 use serde_json::{Value, json};
 use shared_settings::file::{
-    Field, FileRead, SCHEMA_VERSION, SETTINGS_FILE, SaveError, SharedValue, Unavailable,
-    read_settings, save_settings,
+    AUDIO_REMOVAL_MAX_DAYS, AudioRemoval, DEFAULT_AUDIO_REMOVAL_DAYS, Field, FileRead,
+    SCHEMA_VERSION, SETTINGS_FILE, SaveError, SharedValue, Unavailable, read_settings,
+    save_settings,
 };
+use shared_settings::view::load;
 
 fn folder() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -47,7 +49,8 @@ fn full() -> Value {
         "speaker_source": "sortformer",
         "speaker_processing_mode": "during_recording",
         "recognition_language": "de",
-        "check_updates_automatically": false
+        "check_updates_automatically": false,
+        "audio_removal": 90
     })
 }
 
@@ -87,6 +90,10 @@ fn a_full_file_parses_every_field_as_known() {
     );
     assert_eq!(fields.recognition_language, Field::Known(Some("de".into())));
     assert_eq!(fields.check_updates_automatically, Field::Known(false));
+    assert_eq!(
+        fields.audio_removal,
+        Field::Known(AudioRemoval::AfterDays(90))
+    );
     assert_eq!(fields.schema_version, Some(1));
     assert!(!fields.newer_schema());
 }
@@ -330,6 +337,7 @@ fn every_value_of_a_patch_is_written_under_its_own_key() {
             SharedValue::SpeakerProcessingMode(ProcessingMode::AfterStop),
             SharedValue::RecognitionLanguage(Some("fr".into())),
             SharedValue::CheckUpdatesAutomatically(false),
+            SharedValue::AudioRemoval(AudioRemoval::Off),
         ],
     )
     .unwrap();
@@ -344,7 +352,8 @@ fn every_value_of_a_patch_is_written_under_its_own_key() {
             "speaker_source": "off",
             "speaker_processing_mode": "after_stop",
             "recognition_language": "fr",
-            "check_updates_automatically": false
+            "check_updates_automatically": false,
+            "audio_removal": "off"
         })
     );
 }
@@ -373,5 +382,207 @@ fn the_defaults_parse_as_known_values() {
     );
     assert_eq!(fields.recognition_language, Field::Known(None));
     assert_eq!(fields.check_updates_automatically, Field::Known(true));
+    assert_eq!(
+        fields.audio_removal,
+        Field::Known(AudioRemoval::AfterDays(DEFAULT_AUDIO_REMOVAL_DAYS))
+    );
+    assert_eq!(DEFAULT_AUDIO_REMOVAL_DAYS, 30);
     assert_eq!(fields.schema_version, Some(SCHEMA_VERSION));
+}
+
+// The audio removal setting (U1 of the plan for removing old audio: R1,
+// R2, AE10, KTD3).
+
+/// The number of days after which the shared view of `root` removes audio.
+/// `None` is "no automatic removal". This reads the folder and writes
+/// nothing.
+fn delay_days(root: &Path) -> Option<u32> {
+    load(root, None).view.audio_removal_days()
+}
+
+#[test]
+fn a_number_of_days_and_off_parse_as_known_and_give_the_delay() {
+    let root = folder();
+    write_raw(root.path(), &json!({"audio_removal": 45}));
+    assert_eq!(
+        parsed(root.path()).fields.audio_removal,
+        Field::Known(AudioRemoval::AfterDays(45))
+    );
+    assert_eq!(delay_days(root.path()), Some(45));
+
+    write_raw(root.path(), &json!({"audio_removal": "off"}));
+    assert_eq!(
+        parsed(root.path()).fields.audio_removal,
+        Field::Known(AudioRemoval::Off)
+    );
+    assert_eq!(delay_days(root.path()), None);
+}
+
+#[test]
+fn the_first_and_the_last_day_of_the_range_parse() {
+    let root = folder();
+    for days in [1, AUDIO_REMOVAL_MAX_DAYS] {
+        write_raw(root.path(), &json!({"audio_removal": days}));
+        assert_eq!(
+            parsed(root.path()).fields.audio_removal,
+            Field::Known(AudioRemoval::AfterDays(days))
+        );
+        assert_eq!(delay_days(root.path()), Some(days));
+    }
+    assert_eq!(AUDIO_REMOVAL_MAX_DAYS, 3650);
+}
+
+#[test]
+fn a_value_outside_the_range_or_of_another_form_is_unknown_and_gives_no_delay() {
+    let root = folder();
+    for value in [
+        json!(0),
+        json!(-1),
+        json!(3651),
+        json!(1.5),
+        json!("30"),
+        json!("never"),
+        json!("Off"),
+        json!(null),
+        json!(true),
+        json!({"days": 30}),
+    ] {
+        write_raw(root.path(), &json!({"audio_removal": value}));
+        assert_eq!(
+            parsed(root.path()).fields.audio_removal,
+            Field::Unknown(value.clone()),
+            "{value}"
+        );
+        assert_eq!(delay_days(root.path()), None, "{value}");
+    }
+}
+
+#[test]
+fn an_unknown_audio_removal_value_shows_in_the_unknown_values() {
+    let root = folder();
+    write_raw(root.path(), &json!({"audio_removal": 0}));
+    let fields = parsed(root.path()).fields;
+    assert_eq!(
+        fields.unknown_values(),
+        vec![(shared_settings::file::KEY_AUDIO_REMOVAL, &json!(0))]
+    );
+}
+
+#[test]
+fn a_readable_file_with_no_audio_removal_key_gives_the_default_delay() {
+    // KTD3: an absent key in a readable file means the default.
+    let root = folder();
+    write_raw(root.path(), &json!({"schema_version": 1}));
+    assert_eq!(parsed(root.path()).fields.audio_removal, Field::Absent);
+    assert_eq!(delay_days(root.path()), Some(DEFAULT_AUDIO_REMOVAL_DAYS));
+}
+
+#[test]
+fn a_file_from_a_newer_build_still_gives_its_delay() {
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"schema_version": 9, "audio_removal": 12, "future_field": 1}),
+    );
+    assert_eq!(delay_days(root.path()), Some(12));
+}
+
+#[test]
+fn a_settings_file_that_does_not_parse_gives_no_delay_and_the_read_writes_nothing() {
+    // AE10: a half-synced file.
+    let root = folder();
+    let mut value = full();
+    value["audio_removal"] = json!(5);
+    let text = serde_json::to_string_pretty(&value).unwrap();
+    let half = &text[..text.len() / 2];
+    let path = root.path().join(".longhand").join(SETTINGS_FILE);
+    fs::write(&path, half).unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    for _ in 0..3 {
+        assert_eq!(delay_days(root.path()), None);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), half);
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    let names: Vec<_> = fs::read_dir(root.path().join(".longhand"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, vec![SETTINGS_FILE]);
+}
+
+#[test]
+fn a_cache_with_a_delay_gives_no_delay_while_the_file_does_not_parse() {
+    // R2: the cache is only for display. No audio goes while the shared
+    // settings cannot be read.
+    let root = folder();
+    write_raw(root.path(), &json!({"audio_removal": 7}));
+    let cache = load(root.path(), None)
+        .cache
+        .expect("a first load gives a cache");
+    fs::write(
+        root.path().join(".longhand").join(SETTINGS_FILE),
+        "{\"audio",
+    )
+    .unwrap();
+    let view = load(root.path(), Some(&cache)).view;
+    assert_eq!(
+        view.fields.audio_removal,
+        Field::Known(AudioRemoval::AfterDays(7))
+    );
+    assert_eq!(view.audio_removal_days(), None);
+}
+
+#[test]
+fn a_folder_with_no_settings_file_or_no_folder_gives_no_delay() {
+    let root = tempfile::tempdir().unwrap();
+    assert_eq!(delay_days(root.path()), None);
+    assert!(!root.path().join(".longhand").exists());
+    let gone = root.path().join("gone");
+    assert_eq!(delay_days(&gone), None);
+    assert!(!gone.exists());
+}
+
+#[test]
+fn a_conflict_copy_with_another_delay_has_no_effect() {
+    let root = folder();
+    write_raw(root.path(), &json!({"audio_removal": 90}));
+    fs::write(
+        root.path().join(".longhand").join("settings 2.json"),
+        serde_json::to_vec(&json!({"audio_removal": 1})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(delay_days(root.path()), Some(90));
+}
+
+#[test]
+fn a_save_of_another_field_keeps_the_audio_removal_value() {
+    let root = folder();
+    for value in [json!("off"), json!(12), json!(0)] {
+        write_raw(
+            root.path(),
+            &json!({"schema_version": 1, "audio_removal": value}),
+        );
+        save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).unwrap();
+        assert_eq!(on_disk(root.path())["audio_removal"], value);
+    }
+}
+
+#[test]
+fn a_save_of_audio_removal_keeps_every_other_field_and_unknown_fields() {
+    let root = folder();
+    let mut value = full();
+    value["future_field"] = json!({"nested": true});
+    value["asr_model"] = json!("model-from-the-future");
+    write_raw(root.path(), &value);
+    save_settings(
+        root.path(),
+        &[SharedValue::AudioRemoval(AudioRemoval::AfterDays(3650))],
+    )
+    .unwrap();
+    let mut expected = value;
+    expected["audio_removal"] = json!(3650);
+    assert_eq!(on_disk(root.path()), expected);
+    save_settings(root.path(), &[SharedValue::AudioRemoval(AudioRemoval::Off)]).unwrap();
+    expected["audio_removal"] = json!("off");
+    assert_eq!(on_disk(root.path()), expected);
 }

@@ -273,6 +273,23 @@ pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<
     })
 }
 
+/// Choose when the audio of a saved note goes, or turn automatic removal
+/// off (R1, R3). The value goes into the shared settings file, so it
+/// applies on every computer that uses the storage folder. A number of
+/// days outside the range is refused and changes nothing.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn set_audio_removal(
+    app: AppHandle,
+    removal: settings::AudioRemovalSetting,
+) -> Result<Settings, String> {
+    removal.validate()?;
+    settings::update_settings(&app, |s| {
+        s.audio_removal = removal;
+        Ok(())
+    })
+}
+
 /// Choose whether the app has no Dock icon while no window is visible
 /// (R2, R4). Off applies at once: the Dock icon comes back. On applies at
 /// the next close of the last visible window, which reads the new value
