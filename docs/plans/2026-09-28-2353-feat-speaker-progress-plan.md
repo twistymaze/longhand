@@ -57,7 +57,7 @@ The speaker stage can take a long time after Stop. Today it shows a dot while Tr
 
 ### Sources / Research
 
-- `docs/ideas/next/processing-status-clarity.md` records the idea and the earlier decision to keep stage order.
+- `docs/ideas/done/processing-status-clarity.md` records the idea and the earlier decision to keep stage order.
 - `CONCEPTS.md` defines speaker recognition as anonymous labels, not identification of named people.
 - `src/session/ProcessingStatus.tsx` renders a bar when the running stage reports a total; `src/processing/describe.ts` owns the stage label.
 - `crates/pipeline/src/runner.rs` reports a percentage for one speaker-analysis segment, while `crates/pipeline/src/diarize.rs` performs final speaker work after segment analysis. Planning must account for both when meeting R2-R5.
