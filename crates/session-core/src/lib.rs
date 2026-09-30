@@ -3,6 +3,7 @@
 //! folder's markdown. Pure Rust; nothing here depends on Tauri.
 
 pub mod folder;
+pub mod inspect;
 pub mod jobs;
 pub mod lock;
 pub mod recognition;
