@@ -838,6 +838,9 @@ impl ProcessingManager {
                     changes.changed.len(),
                     changes.removed.len()
                 );
+                for id in &changes.changed {
+                    self.runner.drop_removed_old_audio(id);
+                }
                 if !changes.is_empty() {
                     emit_library_changed(&self.app, changes.into());
                 }
@@ -1139,6 +1142,7 @@ impl ProcessingManager {
         let app = self.app.clone();
         let reader = self.app.clone();
         let audio_removal = Arc::clone(&self.audio_removal);
+        let runner = Arc::clone(&self.runner);
         let started = LibraryWatcher::start(
             self.roots(),
             self.storage_folder(),
@@ -1154,6 +1158,11 @@ impl ProcessingManager {
                     changes.removed.extend(removed);
                     changes.removed.sort();
                     changes.removed.dedup();
+                }
+                // A sync can deliver a removal marker for a resumed note
+                // that failed processing (KTD8).
+                for id in &changes.changed {
+                    runner.drop_removed_old_audio(id);
                 }
                 Ok(changes)
             }),
