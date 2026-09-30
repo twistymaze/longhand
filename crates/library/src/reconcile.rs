@@ -32,13 +32,18 @@ use session_core::jobs::busy;
 use session_core::{Adoption, Segment, SessionRecord, Store, StoreError};
 
 use crate::refresh::{self, FolderContents, RefreshError};
-use crate::scan::{self, Known, LibraryScan, NoteFolder, READ_TIMEOUT, ScanOptions};
+use crate::scan::{self, DocumentState, Known, LibraryScan, NoteFolder, ScanOptions};
 use crate::status::LibraryStatus;
 
 /// How long a row stays after its folder is gone from an available
 /// Destination (R10). A sync can deliver a rename as a removed folder and
 /// then a new one (AE4).
 pub const DELETE_WAIT: Duration = Duration::from_secs(30);
+
+/// How long `transcript.md` or `summary.md` can differ from `session.md`,
+/// or be missing, before the note counts as a hand edit (R8, KTD7). A sync
+/// of one note usually finishes in a few seconds.
+pub const HAND_EDIT_WAIT: Duration = Duration::from_secs(60);
 
 /// The note folders that a scan read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +60,16 @@ impl Coverage {
         match self {
             Coverage::Full => true,
             Coverage::Folders(folders) => folders.contains(home),
+        }
+    }
+
+    /// Whether `scan`, with this coverage, read the note folder `folder`.
+    pub(crate) fn read(&self, scan: &LibraryScan, folder: &Path) -> bool {
+        match self {
+            Coverage::Full => folder
+                .parent()
+                .is_some_and(|root| scan.roots.iter().any(|r| r.root == root)),
+            Coverage::Folders(_) => self.covers(folder),
         }
     }
 }
@@ -89,12 +104,62 @@ impl Changes {
     }
 }
 
-/// Applies scans to the store, and keeps the pending deletes between two
-/// scans. The pending deletes stay in memory only (KTD8).
+/// What a scan found for the result documents of a note that do not match
+/// `session.md`. When a scan finds another value, the wait starts again
+/// (KTD7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MismatchKey {
+    recorded_transcript: Option<String>,
+    recorded_summary: Option<String>,
+    transcript: DocumentState,
+    transcript_fingerprint: Option<String>,
+    summary: DocumentState,
+    summary_fingerprint: Option<String>,
+}
+
+impl MismatchKey {
+    /// `None` when both result documents of `note` match.
+    fn of(note: &NoteFolder) -> Option<Self> {
+        if note.transcript == DocumentState::Matches && note.summary == DocumentState::Matches {
+            return None;
+        }
+        Some(Self {
+            recorded_transcript: note.doc.transcript_fingerprint.clone(),
+            recorded_summary: note.doc.summary_fingerprint.clone(),
+            transcript: note.transcript,
+            transcript_fingerprint: note.transcript_fingerprint.clone(),
+            summary: note.summary,
+            summary_fingerprint: note.summary_fingerprint.clone(),
+        })
+    }
+
+    /// Whether a document differs or is missing. Only such a document can
+    /// become a hand edit: a document that cannot be read waits (R8).
+    fn can_expire(&self) -> bool {
+        let expires = |state| matches!(state, DocumentState::Differs | DocumentState::Missing);
+        expires(self.transcript) || expires(self.summary)
+    }
+}
+
+/// A note whose result documents do not match `session.md`.
+#[derive(Debug, Clone)]
+struct Mismatch {
+    key: MismatchKey,
+    /// When a scan first found `key`.
+    since: Instant,
+    folder: PathBuf,
+    /// A scan found the mismatch at or after its deadline.
+    expired: bool,
+}
+
+/// Applies scans to the store, and keeps the pending deletes and the
+/// mismatches between two scans. They stay in memory only (KTD7, KTD8).
 #[derive(Debug, Clone)]
 pub struct Reconciler {
     /// When each pending delete started.
     pending: HashMap<String, Instant>,
+    /// The notes whose result documents do not match `session.md`, by id.
+    mismatches: HashMap<String, Mismatch>,
     read_timeout: Duration,
     /// What the scans of [`Reconciler::run`] found (KTD10).
     status: Arc<LibraryStatus>,
@@ -102,11 +167,7 @@ pub struct Reconciler {
 
 impl Default for Reconciler {
     fn default() -> Self {
-        Self {
-            pending: HashMap::new(),
-            read_timeout: READ_TIMEOUT,
-            status: Arc::default(),
-        }
+        Self::new(&ScanOptions::default())
     }
 }
 
@@ -115,6 +176,7 @@ impl Reconciler {
     pub fn new(options: &ScanOptions) -> Self {
         Self {
             pending: HashMap::new(),
+            mismatches: HashMap::new(),
             read_timeout: options.read_timeout,
             status: Arc::default(),
         }
@@ -136,13 +198,18 @@ impl Reconciler {
         self.pending.contains_key(id)
     }
 
-    /// The earliest time at which a pending delete can complete. A
-    /// reconcile at or after this time, with a new scan, forgets that row.
+    /// The earliest time at which a pending delete can complete, or at
+    /// which the wait for the sync of a note ends. A reconcile at or after
+    /// this time, with a new scan, forgets that row or reports that note as
+    /// a hand edit (KTD7).
     pub fn next_due(&self) -> Option<Instant> {
-        self.pending
+        let deletes = self.pending.values().map(|since| *since + DELETE_WAIT);
+        let hand_edits = self
+            .mismatches
             .values()
-            .min()
-            .map(|since| *since + DELETE_WAIT)
+            .filter(|mismatch| !mismatch.expired && mismatch.key.can_expire())
+            .map(|mismatch| mismatch.since + HAND_EDIT_WAIT);
+        deletes.chain(hand_edits).min()
     }
 
     /// Scan `target` without the store lock, then apply the scan to the
@@ -154,6 +221,17 @@ impl Reconciler {
         store: &Mutex<Store>,
         target: &Target,
         claimed: &dyn Fn(&str) -> bool,
+    ) -> Result<Changes, StoreError> {
+        self.run_at(store, target, claimed, Instant::now())
+    }
+
+    /// [`Reconciler::run`] with `now` as the time of the scan.
+    pub fn run_at(
+        &mut self,
+        store: &Mutex<Store>,
+        target: &Target,
+        claimed: &dyn Fn(&str) -> bool,
+        now: Instant,
     ) -> Result<Changes, StoreError> {
         let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
         let known = Known::from_records(&lock().sessions()?);
@@ -176,18 +254,12 @@ impl Reconciler {
         // A cloud file can take seconds to read: the lock is free meanwhile.
         let rereads = self.read_again(stale);
         let mut store = lock();
-        let mut changes = self.apply(
-            &mut store,
-            &result,
-            &coverage,
-            Instant::now(),
-            claimed,
-            &rereads,
-        )?;
+        let mut changes = self.apply(&mut store, &result, &coverage, now, claimed, &rereads)?;
         let moving: HashSet<String> = store.moving_notes()?.into_iter().collect();
+        let hand_edits = self.track_mismatches(&result, &coverage, now);
         let noted = self
             .status
-            .apply(&result, &coverage, &store.sessions()?, &moving);
+            .apply(&result, &coverage, &store.sessions()?, &moving, &hand_edits);
         // A file that changed in a note folder can leave the row as it is,
         // for example a new summary.md. The note is reported as changed, so
         // an open note page reads its documents again.
@@ -209,6 +281,54 @@ impl Reconciler {
         changes.changed.sort();
         changes.changed.dedup();
         Ok(changes)
+    }
+
+    /// Record the mismatches that `scan` found at `now` (KTD7). A note
+    /// whose documents match, or that the scan read and did not find, has
+    /// no mismatch. Returns the notes whose mismatch started at least
+    /// [`HAND_EDIT_WAIT`] ago: they are hand edits.
+    fn track_mismatches(
+        &mut self,
+        scan: &LibraryScan,
+        coverage: &Coverage,
+        now: Instant,
+    ) -> HashSet<String> {
+        let found: HashSet<&str> = scan
+            .notes
+            .iter()
+            .map(|note| note.doc.session_id.as_str())
+            .collect();
+        self.mismatches.retain(|id, mismatch| {
+            found.contains(id.as_str()) || !coverage.read(scan, &mismatch.folder)
+        });
+        let mut hand_edits = HashSet::new();
+        for note in &scan.notes {
+            let id = &note.doc.session_id;
+            let Some(key) = MismatchKey::of(note) else {
+                self.mismatches.remove(id);
+                continue;
+            };
+            let mismatch = self
+                .mismatches
+                .entry(id.clone())
+                .or_insert_with(|| Mismatch {
+                    key: key.clone(),
+                    since: now,
+                    folder: note.path.clone(),
+                    expired: false,
+                });
+            if mismatch.key != key {
+                mismatch.key = key;
+                mismatch.since = now;
+                mismatch.expired = false;
+            }
+            mismatch.folder = note.path.clone();
+            if now.saturating_duration_since(mismatch.since) >= HAND_EDIT_WAIT {
+                mismatch.expired = true;
+                hand_edits.insert(id.clone());
+            }
+        }
+        hand_edits
     }
 
     /// Apply `scan` to `store`. `now` is the time of the scan. `claimed`
@@ -311,9 +431,6 @@ impl Reconciler {
         for note in &scan.notes {
             let id = &note.doc.session_id;
             self.pending.remove(id);
-            if note.doc.result_generation.is_some() && !note.waiting.is_empty() {
-                continue;
-            }
             let updated = match records.get(id) {
                 None => adopt(store, note)?,
                 Some(_) if intents.contains(id) => false,
@@ -321,13 +438,6 @@ impl Reconciler {
             };
             if updated {
                 changed.push(id.clone());
-            }
-            if note.doc.result_generation.is_some() && store.session(id)?.is_some() {
-                store.set_result_state(
-                    id,
-                    "verified-manifest",
-                    &serde_json::to_value(&note.doc)?,
-                )?;
             }
         }
 

@@ -5,7 +5,10 @@
 //!
 //! 1. It finishes the delete of each segment that has its removal marker
 //!    and still has its audio file, whether the setting is on or off. It
-//!    writes no marker in this part.
+//!    writes no marker in this part. Then it deletes the old result copies
+//!    of the note and `recognition.jsonl` of a note with no audio left, as
+//!    [`pipeline::remove_copies`] describes (R13, KTD9 of the result copies
+//!    plan). It skips a note that waits for a sync.
 //! 2. While the setting is known and on (KTD3), it removes the audio of each
 //!    saved note whose last recording end plus the delay is in the past.
 //!
@@ -36,9 +39,10 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset};
 use pipeline::SharedStore;
 use pipeline::remove_audio::{
-    Eligibility, EligibilityInputs, Guard, Removal, RemoveAudioError, eligibility, finish_removal,
-    remove_audio, safe_audio_name,
+    Eligibility, EligibilityInputs, Guard, NoteSync, Removal, RemoveAudioError, StoreCheck,
+    eligibility, finish_removal, remove_audio, safe_audio_name,
 };
+use pipeline::remove_copies::{cleanup_due, remove_copies};
 use session_core::jobs::Claims;
 use session_core::{SessionRecord, SessionState, Store, folder};
 use tauri::{AppHandle, Manager};
@@ -73,6 +77,9 @@ pub struct PassInputs<'a> {
     /// home folder: its Destination is available and its `session.md` can
     /// be read.
     pub note_readable: &'a dyn Fn(&str, &Path) -> bool,
+    /// Whether the note with this id waits for a sync ([`note_sync`]).
+    /// It controls only the delete of `recognition.jsonl` (KTD8).
+    pub note_sync: &'a dyn Fn(&str) -> NoteSync,
     /// The delay of the setting in whole days, or `None` when the setting
     /// is off, is not known, or the shared settings are not available
     /// (KTD3). The pass reads it again before each note.
@@ -107,6 +114,8 @@ pub struct PassReport {
     pub finished: Vec<String>,
     /// The notes whose audio the pass removed (part 2).
     pub removed: Vec<String>,
+    /// The notes whose old result copies the pass deleted (part 1).
+    pub cleaned: Vec<String>,
     /// The notes whose row changed.
     pub changed: Vec<String>,
 }
@@ -152,6 +161,18 @@ fn saved_notes(store: &SharedStore) -> Result<Vec<(String, PathBuf)>, String> {
     Ok(notes)
 }
 
+/// Whether the note `id` waits for a sync: the latest scan found that its
+/// `transcript.md` or `summary.md` does not match `session.md` (R7). The
+/// removal pass and Remove Audio use it for the delete of
+/// `recognition.jsonl` only (KTD8).
+pub(crate) fn note_sync(status: &library::status::LibraryStatus, id: &str) -> NoteSync {
+    if status.note(id).result_waits() {
+        NoteSync::Waiting
+    } else {
+        NoteSync::Synced
+    }
+}
+
 /// Whether a segment of the note has its removal marker and still has its
 /// audio file. This reads metadata only.
 fn marked_audio_present(store: &SharedStore, id: &str, home: &Path) -> bool {
@@ -183,6 +204,17 @@ fn pass_folder_guard(inputs: &PassInputs, record: &SessionRecord) -> Result<(), 
         return Err(UNAVAILABLE);
     }
     Ok(())
+}
+
+/// The guard of each step in part 1 of a pass: the folder checks of the
+/// pass and the store checks of Remove Audio.
+fn part_one_guard<'a>(
+    inputs: &'a PassInputs,
+) -> Guard<impl FnOnce(&SessionRecord) -> Result<(), &'static str> + 'a, StoreCheck> {
+    Guard {
+        folder: move |record: &SessionRecord| pass_folder_guard(inputs, record),
+        store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
+    }
 }
 
 /// The store checks of a new removal in a pass, under the store lock: those
@@ -279,6 +311,44 @@ fn record_step(
     }
 }
 
+/// Delete the old result copies of the note `id` (R13, KTD9 of the result
+/// copies plan). The cleanup uses the guards of part 1, and it skips a note
+/// that waits for a sync. A later pass tries again.
+fn clean_note(inputs: &PassInputs, id: &str, home: &Path, cleaned: &mut Vec<String>) {
+    let segments = match lock(inputs.store).segments(id) {
+        Ok(segments) => segments,
+        Err(e) => {
+            log::warn!("audio removal: cannot read the segments of {id}: {e}");
+            return;
+        }
+    };
+    if !cleanup_due(home, &segments) {
+        return;
+    }
+    if (inputs.note_sync)(id) == NoteSync::Waiting {
+        log::debug!("audio removal: {id} waits for a sync, so its old result copies stay for now");
+        return;
+    }
+    let guard = part_one_guard(inputs);
+    match remove_copies(inputs.store, inputs.claims, id, guard) {
+        Ok(cleanup) => {
+            if !cleanup.deleted.is_empty() {
+                log::info!("audio removal: deleted the old result copies of {id}");
+                cleaned.push(id.to_string());
+            }
+        }
+        Err(RemoveAudioError::Busy(reason)) => {
+            log::debug!("audio removal: the cleanup skipped {id}: {reason}");
+        }
+        Err(RemoveAudioError::NoFolder) => {
+            log::debug!("audio removal: the cleanup skipped {id}: its folder is not available");
+        }
+        Err(RemoveAudioError::Failed(message)) => {
+            log::warn!("audio removal: the cleanup of {id} failed: {message}");
+        }
+    }
+}
+
 /// One removal pass (KTD5). See the module documentation.
 pub fn run_pass(inputs: &PassInputs) -> PassReport {
     let mut report = PassReport::default();
@@ -296,29 +366,34 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
 
     // Part 1: a marker makes the audio removed, whether the setting is on
     // or off. Delete each marked audio file that is still there (KTD2).
+    // Then delete the old result copies of the note (KTD9 of the result
+    // copies plan).
     for (id, home) in &notes {
         if let Some(end) = stop_reason(inputs) {
             report.end = end;
             return report;
         }
-        if !marked_audio_present(inputs.store, id, home) || !note_available(inputs, id, home) {
+        if !note_available(inputs, id, home) || inputs.claims.busy(id) {
             continue;
         }
-        if inputs.claims.busy(id) {
-            continue;
+        if marked_audio_present(inputs.store, id, home) {
+            let guard = part_one_guard(inputs);
+            let result = finish_removal(
+                inputs.store,
+                inputs.claims,
+                id,
+                guard,
+                (inputs.note_sync)(id),
+            );
+            record_step(
+                inputs,
+                id,
+                result,
+                &mut report.finished,
+                &mut report.changed,
+            );
         }
-        let guard = Guard {
-            folder: |record: &SessionRecord| pass_folder_guard(inputs, record),
-            store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
-        };
-        let result = finish_removal(inputs.store, inputs.claims, id, guard);
-        record_step(
-            inputs,
-            id,
-            result,
-            &mut report.finished,
-            &mut report.changed,
-        );
+        clean_note(inputs, id, home, &mut report.cleaned);
     }
 
     // Part 2: new markers, only while the setting is known and on (KTD3).
@@ -340,7 +415,13 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
                 new_removal_store_checks(inputs, store, record)
             },
         };
-        let result = remove_audio(inputs.store, inputs.claims, id, guard);
+        let result = remove_audio(
+            inputs.store,
+            inputs.claims,
+            id,
+            guard,
+            (inputs.note_sync)(id),
+        );
         record_step(inputs, id, result, &mut report.removed, &mut report.changed);
     }
     report
@@ -477,6 +558,7 @@ impl AudioRemovalManager {
         };
         let note_readable =
             |id: &str, home: &Path| !self.status.storage_unavailable(id, Some(home));
+        let sync = |id: &str| note_sync(&self.status, id);
         let now = || chrono::Local::now().fixed_offset();
         let row_changed = |id: &str| {
             let changes = LibraryChanged {
@@ -492,6 +574,7 @@ impl AudioRemovalManager {
             claims: &self.claims,
             storage: storage.as_deref(),
             note_readable: &note_readable,
+            note_sync: &sync,
             delay_days: &delay_days,
             now: &now,
             row_changed: &row_changed,
@@ -516,6 +599,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use chrono::TimeDelta;
+    use pipeline::remove_copies::{RESULTS_FOLDER, TRANSITION_FILE};
     use session_core::folder::{REMOVAL_MARKER_TEXT, SessionDoc, fingerprint, removal_marker};
     use session_core::jobs::Adoption;
     use session_core::{Event, Segment, Stage};
@@ -606,6 +690,8 @@ mod tests {
         library: &'a Library,
         delay: Cell<Option<u32>>,
         readable: Cell<bool>,
+        /// The status of the library that [`Env::scan`] gives.
+        status: Arc<library::status::LibraryStatus>,
         changed: RefCell<Vec<String>>,
         /// Called after each row change, to change the world during a pass.
         after_change: Box<dyn Fn(&Env)>,
@@ -617,6 +703,7 @@ mod tests {
                 library,
                 delay: Cell::new(delay),
                 readable: Cell::new(true),
+                status: Arc::default(),
                 changed: RefCell::default(),
                 after_change: Box::new(|_| {}),
             }
@@ -632,6 +719,7 @@ mod tests {
                 );
                 self.readable.get()
             };
+            let sync = |id: &str| note_sync(&self.status, id);
             let delay_days = || self.delay.get();
             let row_changed = |id: &str| {
                 self.changed.borrow_mut().push(id.to_string());
@@ -642,6 +730,7 @@ mod tests {
                 claims: &self.library.claims,
                 storage: Some(&self.library.root),
                 note_readable: &note_readable,
+                note_sync: &sync,
                 delay_days: &delay_days,
                 now: &now,
                 row_changed: &row_changed,
@@ -652,6 +741,97 @@ mod tests {
         fn pass(&self) -> PassReport {
             self.run(run_pass)
         }
+
+        /// Scan the storage folder into the status, as the library worker
+        /// does.
+        fn scan(&self) {
+            library::reconcile::Reconciler::default()
+                .with_status(Arc::clone(&self.status))
+                .run(
+                    &self.library.store,
+                    &library::reconcile::Target::Full(vec![self.library.root.clone()]),
+                    &|_| false,
+                )
+                .unwrap();
+        }
+    }
+
+    fn has_recognition(home: &Path) -> bool {
+        home.join(session_core::recognition::ARTIFACT_FILE)
+            .symlink_metadata()
+            .is_ok()
+    }
+
+    fn write_recognition(home: &Path) {
+        std::fs::write(
+            home.join(session_core::recognition::ARTIFACT_FILE),
+            b"{\"version\":1}\n",
+        )
+        .unwrap();
+    }
+
+    // Covers R11: the pass deletes `recognition.jsonl` with the last audio,
+    // and does not write `session.md`.
+    #[test]
+    fn a_pass_deletes_recognition_jsonl_with_the_last_audio() {
+        let library = library();
+        let home = library.saved_note("20260831-0900-aaaa", "Planning", 31);
+        write_recognition(&home);
+        let before = documents(&home);
+        let env = Env::new(&library, Some(30));
+        env.scan();
+
+        let report = env.pass();
+
+        assert_eq!(report.removed, vec!["20260831-0900-aaaa"]);
+        assert!(!has_audio(&home));
+        assert!(!has_recognition(&home));
+        assert_eq!(documents(&home), before);
+    }
+
+    // KTD8: a note that waits for a sync loses its audio. Only the delete
+    // of `recognition.jsonl` waits.
+    #[test]
+    fn a_note_that_waits_for_a_sync_loses_its_audio_and_keeps_recognition_jsonl() {
+        let library = library();
+        let id = "20260831-0900-aaaa";
+        let home = library.saved_note(id, "Planning", 31);
+        write_recognition(&home);
+        // The new transcript.md arrives before its session.md.
+        std::fs::write(
+            home.join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: Hello again.\n",
+        )
+        .unwrap();
+        let env = Env::new(&library, Some(30));
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Waiting);
+
+        let report = env.pass();
+
+        assert_eq!(report.removed, vec![id]);
+        assert!(!has_audio(&home));
+        assert!(has_marker(&home));
+        assert!(has_recognition(&home));
+    }
+
+    #[test]
+    fn only_a_transcript_or_a_summary_that_waits_holds_the_recognition_delete() {
+        let library = library();
+        let id = "20260831-0900-aaaa";
+        let home = library.saved_note(id, "Planning", 31);
+        let env = Env::new(&library, Some(30));
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Synced);
+
+        // A notes.md that differs does not hold the delete.
+        std::fs::write(home.join("notes.md"), "Other notes\n").unwrap();
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Synced);
+
+        std::fs::write(home.join("summary.md"), "Another summary\n").unwrap();
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Waiting);
     }
 
     fn has_audio(home: &Path) -> bool {
@@ -929,16 +1109,180 @@ mod tests {
     #[test]
     fn a_second_pass_changes_nothing() {
         let library = library();
-        library.saved_note("20260822-0900-aaaa", "Planning", 40);
+        let home = library.saved_note("20260822-0900-aaaa", "Planning", 40);
+        write_copies(&home);
         let env = Env::new(&library, Some(30));
         env.pass();
         env.changed.borrow_mut().clear();
+        let before = documents(&home);
 
         let report = env.pass();
 
         assert!(report.removed.is_empty());
         assert!(report.finished.is_empty());
+        assert!(report.cleaned.is_empty());
         assert!(env.changed.borrow().is_empty());
+        assert_eq!(documents(&home), before);
+    }
+
+    // ------------------------------------------ the cleanup of result copies
+
+    /// Write the result copies and the transition file that an older build
+    /// left in `home`.
+    fn write_copies(home: &Path) {
+        let generation = home.join(RESULTS_FOLDER).join("committed-1");
+        std::fs::create_dir_all(&generation).unwrap();
+        std::fs::write(generation.join("transcript.md"), "old transcript").unwrap();
+        std::fs::write(generation.join("summary.md"), "old summary").unwrap();
+        std::fs::write(home.join(TRANSITION_FILE), b"{}").unwrap();
+    }
+
+    fn has_copies(home: &Path) -> bool {
+        home.join(RESULTS_FOLDER).symlink_metadata().is_ok()
+            || home.join(TRANSITION_FILE).symlink_metadata().is_ok()
+    }
+
+    // Covers AE5: the first pass deletes the copies and the transition
+    // files, whether the setting is on or off, and the documents stay.
+    #[test]
+    fn ae5_a_pass_deletes_the_copies_and_the_documents_stay() {
+        for delay in [None, Some(30)] {
+            let library = library();
+            let old = library.saved_note("20260822-0900-aaaa", "Old", 40);
+            let recent = library.saved_note("20260926-0900-bbbb", "Recent", 5);
+            write_copies(&old);
+            write_copies(&recent);
+            let before = [documents(&old), documents(&recent)];
+            let env = Env::new(&library, delay);
+            env.scan();
+
+            let report = env.pass();
+
+            assert!(!has_copies(&old), "{delay:?}");
+            assert!(!has_copies(&recent), "{delay:?}");
+            assert_eq!([documents(&old), documents(&recent)], before);
+            assert_eq!(
+                report.cleaned,
+                vec!["20260822-0900-aaaa", "20260926-0900-bbbb"]
+            );
+            // The recent note keeps its audio.
+            assert!(has_audio(&recent));
+        }
+    }
+
+    // R14: the copies can hold the only result of the note.
+    #[test]
+    fn a_note_with_no_transcript_keeps_its_copies() {
+        let library = library();
+        let home = library.saved_note("20260926-0900-aaaa", "Planning", 5);
+        write_copies(&home);
+        std::fs::remove_file(home.join("transcript.md")).unwrap();
+        let env = Env::new(&library, None);
+
+        let report = env.pass();
+
+        assert!(home.join(RESULTS_FOLDER).is_dir());
+        assert!(home.join(TRANSITION_FILE).is_file());
+        assert!(report.cleaned.is_empty());
+    }
+
+    #[test]
+    fn a_note_that_another_computer_uses_keeps_its_copies() {
+        let library = library();
+        let home = library.saved_note("20260926-0900-aaaa", "Planning", 5);
+        write_copies(&home);
+        assert!(pipeline::in_use::write_marker(&home, "computer-a", now()).unwrap());
+        let env = Env::new(&library, None);
+
+        let report = env.pass();
+
+        assert!(has_copies(&home));
+        assert!(report.cleaned.is_empty());
+    }
+
+    #[test]
+    fn a_note_with_a_claim_keeps_its_copies() {
+        let library = library();
+        let home = library.saved_note("20260926-0900-aaaa", "Planning", 5);
+        write_copies(&home);
+        let _claim = library.claims.regenerate("20260926-0900-aaaa").unwrap();
+        let env = Env::new(&library, None);
+
+        env.pass();
+
+        assert!(has_copies(&home));
+    }
+
+    #[test]
+    fn a_note_that_waits_for_a_sync_keeps_its_copies_until_a_later_pass() {
+        let library = library();
+        let id = "20260926-0900-aaaa";
+        let home = library.saved_note(id, "Planning", 5);
+        write_copies(&home);
+        let transcript = std::fs::read(home.join("transcript.md")).unwrap();
+        // The new transcript.md arrives before its session.md.
+        std::fs::write(home.join("transcript.md"), "# Transcript\n\nNew.\n").unwrap();
+        let env = Env::new(&library, None);
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Waiting);
+
+        let report = env.pass();
+
+        assert!(has_copies(&home));
+        assert!(report.cleaned.is_empty());
+
+        // The sync ends, and the next pass deletes the copies.
+        std::fs::write(home.join("transcript.md"), transcript).unwrap();
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Synced);
+        let report = env.pass();
+        assert!(!has_copies(&home));
+        assert_eq!(report.cleaned, vec![id]);
+    }
+
+    // KTD8: an older build removed the audio and left `recognition.jsonl`.
+    #[test]
+    fn a_note_whose_audio_is_already_removed_loses_recognition_jsonl() {
+        let library = library();
+        let home = library.saved_note("20260822-0900-aaaa", "Planning", 40);
+        std::fs::write(home.join(removal_marker(AUDIO)), REMOVAL_MARKER_TEXT).unwrap();
+        std::fs::remove_file(home.join(AUDIO)).unwrap();
+        write_recognition(&home);
+        let before = documents(&home);
+        let env = Env::new(&library, None);
+
+        let report = env.pass();
+
+        assert!(!has_recognition(&home));
+        assert_eq!(documents(&home), before);
+        assert_eq!(report.cleaned, vec!["20260822-0900-aaaa"]);
+    }
+
+    #[test]
+    fn a_storage_folder_that_goes_away_during_a_pass_keeps_the_later_copies() {
+        let library = library();
+        // The first note has a marked audio file. Its delete changes the
+        // row, and the storage folder then goes away.
+        let first = library.saved_note("20260822-0900-aaaa", "First", 40);
+        std::fs::write(first.join(removal_marker(AUDIO)), REMOVAL_MARKER_TEXT).unwrap();
+        write_copies(&first);
+        let second = library.saved_note("20260822-0900-bbbb", "Second", 40);
+        write_copies(&second);
+        let mut env = Env::new(&library, None);
+        env.after_change = Box::new(|env| {
+            let marker = library::scan::marker(&env.library.root);
+            if marker.exists() {
+                std::fs::remove_file(marker).unwrap();
+            }
+        });
+
+        let report = env.pass();
+
+        assert_eq!(report.end, PassEnd::StorageUnavailable);
+        assert_eq!(report.finished, vec!["20260822-0900-aaaa"]);
+        assert!(report.cleaned.is_empty());
+        assert!(has_copies(&first));
+        assert!(has_copies(&second));
     }
 
     #[test]

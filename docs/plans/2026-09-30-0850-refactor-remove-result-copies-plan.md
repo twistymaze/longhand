@@ -326,6 +326,21 @@ In `Waiting` the note shows the files and the actions of R7 are held. In `HandEd
 - **Test expectation:** none -- documentation only.
 - **Verification:** `CONCEPTS.md` has no mention of result generations as current behavior.
 
+### U9. Make every test pass in any time zone
+
+- **Goal:** No test depends on the time zone of the computer that runs it, so no test needs an extra run at UTC.
+- **Requirements:** None of R1–R14; the user added this unit on 2026-09-30.
+- **Dependencies:** U5 (so that its tests are included).
+- **Files:** The test files that fail in the sweep below, found at run time; production code only when a test shows a real time-zone defect.
+- **Approach:**
+  1. Find the tests: run the workspace suite once with `TZ=UTC` and once with `TZ=Asia/Kathmandu` (+05:45). This sweep is done once, in this unit only; no later gate runs the suite in more than one zone.
+  2. For each test that fails in one of these zones and passes in the local zone, fix the test: compare parsed times or fixed offsets, never formatted time text or the local zone.
+  3. When a failure shows a real defect in production code, fix the code and add a test for it.
+  4. Code that depends on the time zone gets tests that set the zone themselves (fixed offsets as inputs), so one normal run covers every zone.
+- **Test scenarios:**
+  - Each fixed test passes in the local zone, `TZ=UTC` and `TZ=Asia/Kathmandu`.
+- **Verification:** The workspace suite passes in all three zones.
+
 ---
 
 ## Verification Contract
@@ -333,7 +348,8 @@ In `Waiting` the note shows the files and the actions of R7 are held. In `HandEd
 | Gate | Command or check | When |
 |---|---|---|
 | Format and lint | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets` | Each unit |
-| Rust tests | `cargo test --workspace --features nemo-runtime/test-helper` (run time tests also with `TZ=UTC`) | Each unit |
+| Rust tests | New and related tests of the changed crates | Each unit |
+| Rust tests, broad | `cargo test --workspace --features nemo-runtime/test-helper` | Once, before the push for the PR |
 | Frontend | `bun run typecheck`, `bun test ./src/` | U5, and before the PR |
 | Repo checks | `scripts/check-windows.sh`, `scripts/check-licences.sh`, `scripts/check-provenance.sh` | Before the PR |
 | Manual test | Signed bundle on two computers with one synced storage folder (see `docs/development-workflow.md#manual-tests`): AE1, AE2, AE5, and a Remove Audio for AE4 | After U7 |

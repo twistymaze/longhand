@@ -113,7 +113,7 @@ fn old_audio_gone(store: &SharedStore, id: &str, dir: &Path) -> Result<bool, Sta
         return Ok(false);
     };
     let home = Path::new(&home);
-    let Ok(doc) = session_core::generation::manifest(home) else {
+    let Ok(doc) = session_core::folder::SessionDoc::read(home) else {
         return Ok(false);
     };
     Ok(doc.timeline_segments().iter().any(|segment| {
@@ -150,7 +150,7 @@ fn candidate(
         return Ok(None);
     }
     let manifest = file_digest(&home.join("session.md"))?;
-    let doc = session_core::generation::manifest(home)?;
+    let doc = session_core::folder::SessionDoc::read(home)?;
     let old = doc.timeline_segments();
     if old.is_empty()
         || old.len() > segments.len()
@@ -170,12 +170,10 @@ fn candidate(
     if audio.len() != old.len() || !same_audio(dir, home, &old, audio)? {
         return Ok(None);
     }
-    let artifact_dir = doc
-        .result_generation
-        .as_ref()
-        .map(|g| g.directory(home))
-        .transpose()?
-        .unwrap_or_else(|| home.to_path_buf());
+    // With no transcript, the saved text cannot be checked against it.
+    let Some(transcript) = crate::summarize::transcript_bytes(home)? else {
+        return Ok(None);
+    };
     let mut result = RouteResult {
         route,
         coverage: vec![],
@@ -183,15 +181,11 @@ fn candidate(
         speakers: vec![],
         coverage_limitations: vec![],
     };
-    let header = read_artifact(
-        &artifact_dir.join(&reference.filename),
-        reference,
-        |block| {
-            result.rows.extend(block.rows);
-            result.speakers.extend(block.speakers);
-            Ok(())
-        },
-    )
+    let header = read_artifact(&home.join(&reference.filename), reference, |block| {
+        result.rows.extend(block.rows);
+        result.speakers.extend(block.speakers);
+        Ok(())
+    })
     .map_err(|e| failed(e.to_string()))?;
     let generation: Option<String> =
         checkpoint::get(store, id, Stage::Transcribe, "recognition-generation-v1")?;
@@ -212,11 +206,7 @@ fn candidate(
     if generation.as_ref() != Some(&header.generation)
         || header.snapshot != serde_json::to_value(spec)?
         || header.fingerprints != expected
-        || digest(&session_core::generation::read(
-            home,
-            &doc,
-            "transcript.md",
-        )?) != header.transcript
+        || digest(&transcript) != header.transcript
         || !same_coverage
     {
         return Ok(None);
@@ -541,6 +531,23 @@ mod tests {
         assert_eq!(prefix.result.speakers[0].speaker.scope.epoch, 10);
     }
     #[test]
+    fn saved_prefix_reads_the_note_files_when_session_md_names_old_copies() {
+        let case = Case::new();
+        // An older build named result copies that are not in the folder.
+        let path = case.temp.path().join("session.md");
+        let text = std::fs::read_to_string(&path).unwrap().replacen(
+            "---\n",
+            "---\nresult_generation:\n  id: committed-1\n  files:\n    transcript.md: a\n    summary.md: b\n",
+            1,
+        );
+        std::fs::write(&path, text).unwrap();
+        assert!(case.read().unwrap().is_some());
+        // A missing transcript makes the saved text unusable.
+        std::fs::remove_file(case.temp.path().join("transcript.md")).unwrap();
+        assert!(case.read().unwrap().is_none());
+    }
+
+    #[test]
     fn saved_prefix_accepts_only_its_committed_publication_on_save_retry() {
         let case = Case::new();
         let prefix = case.read().unwrap().unwrap();
@@ -550,7 +557,7 @@ mod tests {
             case.read().is_err(),
             "an unrelated full parent is not our publication"
         );
-        let doc = session_core::generation::manifest(case.temp.path()).unwrap();
+        let doc = session_core::folder::SessionDoc::read(case.temp.path()).unwrap();
         checkpoint::put(
             &case.store,
             "s",

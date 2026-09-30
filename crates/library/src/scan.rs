@@ -153,6 +153,19 @@ pub enum Waiting {
     Audio(String),
 }
 
+/// What the scan found for `transcript.md` or `summary.md`, compared with
+/// the fingerprint that `session.md` records (R6, R8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DocumentState {
+    /// The file has the recorded fingerprint, or `session.md` records none.
+    Matches,
+    /// The file has another fingerprint.
+    Differs,
+    Missing,
+    /// The file exists, but the read failed or did not finish in time.
+    Unreadable,
+}
+
 /// One note: the real folder of one note id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteFolder {
@@ -160,6 +173,11 @@ pub struct NoteFolder {
     pub path: PathBuf,
     pub doc: SessionDoc,
     pub waiting: Vec<Waiting>,
+    /// The state of `transcript.md`. A state other than
+    /// [`DocumentState::Matches`] puts [`Waiting::Transcript`] in `waiting`.
+    pub transcript: DocumentState,
+    /// The state of `summary.md`, as for `transcript`.
+    pub summary: DocumentState,
     /// The audio files, as `session.md` names them, of the segments whose
     /// removal marker is in the folder (KTD1 of the audio removal plan).
     /// Such a segment does not wait for its audio, also when the file is
@@ -402,6 +420,8 @@ struct Found {
     created: Option<SystemTime>,
     doc: SessionDoc,
     waiting: Vec<Waiting>,
+    transcript: DocumentState,
+    summary: DocumentState,
     removed_audio: Vec<String>,
     transcript_fingerprint: Option<String>,
     summary_fingerprint: Option<String>,
@@ -431,36 +451,23 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
     };
 
     let mut waiting = Vec::new();
-    let result_dir = doc
-        .result_generation
-        .as_ref()
-        .and_then(|g| g.directory(dir).ok());
-    let result_dir = result_dir.as_deref().unwrap_or(dir);
-    let transcript = document_state(
-        result_dir,
+    let (transcript, transcript_fingerprint) = document_state(
+        dir,
         "transcript.md",
         doc.transcript_fingerprint.as_deref(),
         options,
     );
-    if !transcript.current {
+    if transcript != DocumentState::Matches {
         waiting.push(Waiting::Transcript);
     }
-    let summary = document_state(
-        result_dir,
+    let (summary, summary_fingerprint) = document_state(
+        dir,
         "summary.md",
         doc.summary_fingerprint.as_deref(),
         options,
     );
-    if !summary.current {
+    if summary != DocumentState::Matches {
         waiting.push(Waiting::Summary);
-    }
-    if doc
-        .result_generation
-        .as_ref()
-        .is_some_and(|g| g.verify(dir).is_err())
-        && waiting.is_empty()
-    {
-        waiting.push(Waiting::Transcript);
     }
     let notes = read_notes(dir, options.read_timeout);
     if notes.is_none() {
@@ -500,9 +507,11 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
             .and_then(|m| m.created().or_else(|_| m.modified()).ok()),
         doc,
         waiting,
+        transcript,
+        summary,
         removed_audio,
-        transcript_fingerprint: transcript.fingerprint,
-        summary_fingerprint: summary.fingerprint,
+        transcript_fingerprint,
+        summary_fingerprint,
         notes,
         conflict_copies,
     }))
@@ -517,30 +526,26 @@ pub(crate) fn read_notes(dir: &Path, timeout: Duration) -> Option<String> {
     }
 }
 
-struct DocumentState {
-    /// The file exists and, when `session.md` records a fingerprint, has it.
-    current: bool,
-    fingerprint: Option<String>,
-}
-
+/// The state of the document `name` in `dir`, and its fingerprint when the
+/// scan read it.
 fn document_state(
     dir: &Path,
     name: &str,
     expected: Option<&str>,
     options: &ScanOptions,
-) -> DocumentState {
+) -> (DocumentState, Option<String>) {
     match read_timed(dir.join(name), options.read_timeout) {
         Read::Bytes(bytes) => {
             let actual = fingerprint(&bytes);
-            DocumentState {
-                current: expected.is_none_or(|expected| expected == actual),
-                fingerprint: Some(actual),
-            }
+            let state = if expected.is_none_or(|expected| expected == actual) {
+                DocumentState::Matches
+            } else {
+                DocumentState::Differs
+            };
+            (state, Some(actual))
         }
-        Read::Missing | Read::Failed(_) => DocumentState {
-            current: false,
-            fingerprint: None,
-        },
+        Read::Missing => (DocumentState::Missing, None),
+        Read::Failed(_) => (DocumentState::Unreadable, None),
     }
 }
 
@@ -612,6 +617,8 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
                 path: real.path,
                 doc: real.doc,
                 waiting: real.waiting,
+                transcript: real.transcript,
+                summary: real.summary,
                 removed_audio: real.removed_audio,
                 transcript_fingerprint: real.transcript_fingerprint,
                 summary_fingerprint: real.summary_fingerprint,

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use session_core::SessionRecord;
 
 use crate::reconcile::Coverage;
-use crate::scan::{LibraryScan, RootState, Waiting};
+use crate::scan::{DocumentState, LibraryScan, NoteFolder, RootState, Waiting};
 
 /// What the latest scan found about one note folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,6 +24,33 @@ pub struct NoteStatus {
     /// `session.md` exists but cannot be read (KTD5): the note waits as if
     /// its Destination were unavailable.
     pub unreadable: bool,
+}
+
+impl NoteStatus {
+    /// Whether the transcript or the summary waits for the sync (R7). The
+    /// actions that read or replace the result do not start then.
+    pub fn result_waits(&self) -> bool {
+        self.waiting
+            .iter()
+            .any(|part| matches!(part, Waiting::Transcript | Waiting::Summary))
+    }
+}
+
+/// The parts that `note` waits for. After the wait for the sync ends
+/// (`hand_edit`), a result document that differs or is missing is a hand
+/// edit and does not wait. A document that cannot be read still waits
+/// (R8).
+fn waiting(note: &NoteFolder, hand_edit: bool) -> Vec<Waiting> {
+    let expired = |state: DocumentState| hand_edit && state != DocumentState::Unreadable;
+    note.waiting
+        .iter()
+        .filter(|part| match part {
+            Waiting::Transcript => !expired(note.transcript),
+            Waiting::Summary => !expired(note.summary),
+            Waiting::Notes | Waiting::Audio(_) => true,
+        })
+        .cloned()
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -68,7 +95,8 @@ impl LibraryStatus {
     /// Apply a scan. `records` are the rows after the reconcile of the
     /// scan. `moving` holds the notes that the Move has not finished
     /// (KTD10): such a note can be in the old and the new folder, and that
-    /// other folder is not another version (R6). Returns the ids whose
+    /// other folder is not another version (R6). `hand_edits` holds the
+    /// notes whose wait for the sync ended (KTD7). Returns the ids whose
     /// status changed, sorted.
     pub fn apply(
         &self,
@@ -76,6 +104,7 @@ impl LibraryStatus {
         coverage: &Coverage,
         records: &[SessionRecord],
         moving: &HashSet<String>,
+        hand_edits: &HashSet<String>,
     ) -> Vec<String> {
         let mut inner = self.lock();
         let mut changed = HashSet::new();
@@ -112,7 +141,7 @@ impl LibraryStatus {
                 &note.duplicate_folders
             };
             let status = NoteStatus {
-                waiting: note.waiting.clone(),
+                waiting: waiting(note, hand_edits.contains(&note.doc.session_id)),
                 other_versions: note
                     .conflict_copies
                     .iter()
@@ -135,14 +164,8 @@ impl LibraryStatus {
 
         // A folder that the scan read and that gave no note has nothing to
         // show now.
-        let read = |path: &Path| match coverage {
-            Coverage::Full => path
-                .parent()
-                .is_some_and(|root| scan.roots.iter().any(|r| r.root == root)),
-            Coverage::Folders(_) => coverage.covers(path),
-        };
         inner.notes.retain(|id, (path, _)| {
-            let keep = found.contains_key(id) || !read(path);
+            let keep = found.contains_key(id) || !coverage.read(scan, path);
             if !keep {
                 changed.insert(id.clone());
             }

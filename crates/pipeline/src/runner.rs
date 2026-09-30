@@ -747,7 +747,7 @@ impl Runner {
                                     .env
                                     .working_root
                                     .join(id)
-                                    .join(session_save::result::JOURNAL)
+                                    .join(session_save::publication::RECORD)
                                     .exists())) =>
                 {
                     return self.fail_transcribe_again(id, stage, message);

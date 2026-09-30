@@ -1677,14 +1677,8 @@ async fn regenerating_rewrites_the_summary_without_transcribing_again() {
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
-    assert!(
-        names.iter().all(|n| !n.starts_with('.')
-            || matches!(
-                n.as_str(),
-                ".longhand-results" | ".longhand-result-transition.json"
-            )),
-        "{names:?}"
-    );
+    // No result copies and no transition file (R1).
+    assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2424,7 +2418,6 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
     assert_eq!(
         names,
         [
-            ".longhand-results",
             "audio",
             "notes.md",
             "session.md",
@@ -2509,12 +2502,7 @@ async fn a_document_set_after_the_save_rewrites_the_saved_file_whole() {
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
-    assert!(
-        names
-            .iter()
-            .all(|n| !n.starts_with('.') || n == ".longhand-results"),
-        "{names:?}"
-    );
+    assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
@@ -3208,14 +3196,7 @@ async fn a_resumed_completed_session_updates_its_folder_in_place() {
         .unwrap()
         .chain(std::fs::read_dir(folder.join("audio")).unwrap())
         .flatten()
-        .filter(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            name.starts_with('.')
-                && !matches!(
-                    name.as_str(),
-                    ".longhand-results" | ".longhand-result-transition.json"
-                )
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
         .collect();
     assert!(hidden.is_empty(), "{hidden:?}");
 
@@ -3803,6 +3784,27 @@ async fn a_title_change_that_keeps_the_folder_name_rewrites_session_md() {
     assert_eq!(document_title(&folder).as_deref(), Some("Budget review?"));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_change_that_keeps_the_folder_name_keeps_the_recorded_fingerprints() {
+    // KTD6: only the publication and the accept of a hand edit set the
+    // fingerprints. A rename does not read them from the files.
+    let r = rig().await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    let before = session_md(&folder);
+    std::fs::write(folder.join(TRANSCRIPT_FILE), "Hand edit\n").unwrap();
+    std::fs::write(folder.join("summary.md"), "Hand edit\n").unwrap();
+
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review?").unwrap(),
+        FolderRename::Unchanged
+    );
+    let doc = session_md(&folder);
+    assert_eq!(doc.title.as_deref(), Some("Budget review?"));
+    assert_eq!(doc.transcript_fingerprint, before.transcript_fingerprint);
+    assert_eq!(doc.summary_fingerprint, before.summary_fingerprint);
+    assert_eq!(doc.recognition_artifact, before.recognition_artifact);
+}
+
 // ------------------------------------------------- notes and titles (U5)
 
 use session_core::{Title, TitleSource};
@@ -4329,7 +4331,6 @@ async fn a_legacy_note_is_transcribed_again_in_full_with_no_consent_and_promotes
         Some(serde_json::to_value(snapshot).unwrap())
     );
     assert!(doc.recognition_artifact.is_some());
-    assert!(doc.result_generation.is_some());
     assert!(doc.recognition_audio.is_some());
     let calls = r.script.calls.load(Ordering::SeqCst);
     let loads = r.script.loads.lock().unwrap().len();
@@ -4367,11 +4368,11 @@ async fn a_legacy_note_is_transcribed_again_in_full_with_no_consent_and_promotes
         summary,
         "reuse refreshes the summary"
     );
-    let before = session_md(&home).result_generation;
+    let before = session_md(&home).summary_fingerprint;
     r.runner.regenerate_summary("s").await.unwrap();
     let doc = session_md(&home);
     assert!(doc.recognition_artifact.is_some());
-    assert_ne!(doc.result_generation, before);
+    assert_ne!(doc.summary_fingerprint, before);
     assert_eq!(doc.title.as_deref(), Some("Kept title"));
 }
 
@@ -4399,6 +4400,250 @@ async fn a_new_model_that_cannot_use_the_saved_text_runs_a_full_transcription() 
     assert!(called.iter().all(|m| *m == other.asr_model), "{called:?}");
     assert_ne!(read(&home, TRANSCRIPT_FILE), transcript);
     assert_eq!(asr_model(&r), Some(other.asr_model));
+}
+
+/// "s" saved, then transcribed again: its folder has a `recognition.jsonl`
+/// that `session.md` refers to.
+async fn note_with_timed_text(r: &Rig) -> std::path::PathBuf {
+    let home = saved_note(r, Some("Kept title")).await;
+    confirm_again(r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(session_md(&home).recognition_artifact.is_some());
+    assert!(
+        home.join(session_core::recognition::ARTIFACT_FILE)
+            .is_file()
+    );
+    home
+}
+
+/// The `recognition.jsonl` of "s" is changed by `change`. The run then
+/// reads the file in the folder.
+async fn transcribe_again_with_artifact(change: impl FnOnce(&std::path::Path)) {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    change(&home.join(session_core::recognition::ARTIFACT_FILE));
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    // A speaker-only change. The run uses saved timed text that it can use.
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "a full transcription"
+    );
+    assert!(session_md(&home).recognition_artifact.is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_with_a_missing_recognition_artifact_runs_in_full() {
+    // KTD8, R11: the file that `session.md` refers to is gone.
+    transcribe_again_with_artifact(|path| std::fs::remove_file(path).unwrap()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_with_a_changed_recognition_artifact_runs_in_full() {
+    // KTD8: the file does not have the checksum that `session.md` records.
+    transcribe_again_with_artifact(|path| {
+        let mut bytes = std::fs::read(path).unwrap();
+        bytes.extend_from_slice(b"\n");
+        std::fs::write(path, bytes).unwrap();
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_no_recognition_artifact_regenerates_renames_and_saves_notes() {
+    // Covers AE4, R12. Audio removal deleted `recognition.jsonl`, and
+    // `session.md` still refers to it.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    std::fs::remove_file(home.join(session_core::recognition::ARTIFACT_FILE)).unwrap();
+    let summary = read(&home, "summary.md");
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert_ne!(read(&home, "summary.md"), summary);
+
+    // The rename also runs with no `recognition.jsonl` in the folder.
+    std::fs::remove_file(home.join(session_core::recognition::ARTIFACT_FILE)).ok();
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_fingerprints_match(&new);
+
+    let mut store = r.store.lock().unwrap();
+    assert!(pipeline::save::set_notes(&mut store, "s", "- later notes\n").unwrap());
+    drop(store);
+    assert!(read(&new, "notes.md").contains("later notes"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_whose_audio_is_removed_has_no_recognition_jsonl_and_regenerates_and_renames() {
+    // Covers AE4, R11, R12, through the removal step.
+    use pipeline::remove_audio::{NoteSync, no_guard, remove_audio};
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    let artifact = session_core::recognition::ARTIFACT_FILE;
+    let written = std::fs::read(home.join("session.md")).unwrap();
+
+    let removal = remove_audio(
+        &r.store,
+        r.runner.claims(),
+        "s",
+        no_guard(),
+        NoteSync::Synced,
+    )
+    .unwrap();
+    assert!(removal.complete());
+    assert!(!home.join(artifact).exists());
+    assert_eq!(std::fs::read(home.join("session.md")).unwrap(), written);
+
+    let summary = read(&home, "summary.md");
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert_ne!(read(&home, "summary.md"), summary);
+    assert!(session_md(&home).recognition_artifact.is_none());
+    assert!(!home.join(artifact).exists());
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_fingerprints_match(&new);
+    assert!(!new.join(artifact).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_during_a_regeneration_on_another_computer_brings_no_recognition_jsonl_back() {
+    // KTD5: the regeneration never writes `recognition.jsonl`, and its
+    // `session.md` drops the reference to a file that is gone.
+    let r = rig().await;
+    let _first = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    let artifact = home.join(session_core::recognition::ARTIFACT_FILE);
+    // Another computer removes the audio during the summary call.
+    let removed = artifact.clone();
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let _ = std::fs::remove_file(&removed);
+        (200, http::completion("The new summary."))
+    }));
+    let _second = summaries_from(&r, reply, None).await;
+
+    r.runner.regenerate_summary("s").await.unwrap();
+
+    assert!(read(&home, "summary.md").contains("The new summary."));
+    let doc = session_md(&home);
+    assert!(doc.recognition_artifact.is_none());
+    assert!(doc.recognition_audio.is_none());
+    assert!(!artifact.exists());
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_after_a_hand_edit_of_the_transcript_writes_session_md() {
+    // R9: the edit makes the saved timed text unusable. The write does not
+    // fail on it.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    let before = session_md(&home);
+    std::fs::write(home.join(TRANSCRIPT_FILE), "Hand edit\n").unwrap();
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_eq!(read(&new, TRANSCRIPT_FILE), "Hand edit\n");
+    // KTD6: the rename keeps the recorded fingerprint.
+    assert_eq!(
+        session_md(&new).transcript_fingerprint,
+        before.transcript_fingerprint
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_edit_of_the_transcript_is_summarized_and_transcribe_again_replaces_it() {
+    // Covers AE2, R8, R9: after the wait for the sync ends, Regenerate
+    // Summary reads the edited transcript, and Transcribe Again runs in full.
+    let r = rig().await;
+    let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&bodies);
+    let reply = http::Reply::With(Arc::new(move |body: &str| {
+        seen.lock().unwrap().push(body.to_string());
+        (200, http::completion("A summary."))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    let home = note_with_timed_text(&r).await;
+    let edit = "# Transcript\n\n- [00:00:01] Speaker 1: A hand edit of the text.\n";
+    std::fs::write(home.join(TRANSCRIPT_FILE), edit).unwrap();
+    bodies.lock().unwrap().clear();
+
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert!(
+        bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|body| body.contains("A hand edit of the text.")),
+        "the summary call has the edited transcript"
+    );
+    // The accept of the edit records its fingerprint and drops the timed
+    // text.
+    assert_eq!(read(&home, TRANSCRIPT_FILE), edit);
+    assert_fingerprints_match(&home);
+    assert!(session_md(&home).recognition_artifact.is_none());
+
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "a full transcription"
+    );
+    assert_ne!(read(&home, TRANSCRIPT_FILE), edit);
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_makes_a_missing_summary() {
+    // R8: a missing `summary.md` counts after the wait, so the action can
+    // make it again.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    std::fs::remove_file(home.join("summary.md")).unwrap();
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert!(read(&home, "summary.md").contains("Summary number"));
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_with_no_transcript_refuses() {
+    // R8: with no `transcript.md` there is nothing to summarize.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    std::fs::remove_file(home.join(TRANSCRIPT_FILE)).unwrap();
+    let summary = read(&home, "summary.md");
+    let written = std::fs::read(home.join("session.md")).unwrap();
+
+    let error = r.runner.regenerate_summary("s").await.unwrap_err();
+    assert_eq!(error.to_string(), "The transcript is missing.");
+    assert_eq!(read(&home, "summary.md"), summary);
+    assert_eq!(std::fs::read(home.join("session.md")).unwrap(), written);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4990,14 +5235,15 @@ async fn a_resumed_transcribe_again_that_then_fails_is_a_normal_failure_that_kee
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_can_retry() {
+async fn a_replacement_with_an_unwritable_summary_rolls_forward_on_retry() {
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let folder = saved_note(&r, None).await;
     let transcript = read(&folder, TRANSCRIPT_FILE);
     let summary = read(&folder, "summary.md");
     confirm_again(&r).unwrap();
-    // A directory at summary.md must not permit a partial result write.
+    // A directory at summary.md stops the publication after the write of
+    // `transcript.md`.
     std::fs::remove_file(folder.join("summary.md")).unwrap();
     std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
     let (_, outcome) = r.runner.run_next().await.unwrap();
@@ -5011,8 +5257,15 @@ async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_
         ),
         "{outcome:?}"
     );
+    // The publication rolls forward only (KTD3): the new transcript stays.
     let replaced = read(&folder, TRANSCRIPT_FILE);
-    assert_eq!(replaced, transcript, "the previous transcript stays usable");
+    assert_ne!(replaced, transcript);
+    assert!(
+        r.root
+            .join("s")
+            .join(session_save::publication::RECORD)
+            .exists()
+    );
     assert!(
         !r.events
             .lock()
@@ -5044,7 +5297,8 @@ async fn a_replacement_with_an_unwritable_summary_keeps_the_previous_result_and_
         "no window ran again"
     );
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
-    assert_ne!(read(&folder, TRANSCRIPT_FILE), replaced);
+    assert_eq!(read(&folder, TRANSCRIPT_FILE), replaced);
+    assert_fingerprints_match(&folder);
     assert!(summary_is_complete(&folder));
     assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
     assert_eq!(marks(&r), Default::default());
@@ -5922,18 +6176,14 @@ async fn a_regeneration_keeps_a_user_title_that_another_computer_wrote_during_it
         a.runner.regenerate_summary("s").await.is_err(),
         "metadata used by the summary changed"
     );
-    let staged: std::path::PathBuf = serde_json::from_value(
+    // The check runs before the staging: no staging and no record stay.
+    assert!(
         a.store
             .lock()
             .unwrap()
             .result_state("s", "summary-publication")
             .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        staged.starts_with(&a.root),
-        "summary recovery uses persistent owner storage"
+            .is_none()
     );
     assert_eq!(
         title_of(&a),
@@ -6122,18 +6372,18 @@ async fn processing_power_releases_after_failure_and_cancellation() {
     }
 }
 
-fn staged_summary(
-    r: &Rig,
-    home: &std::path::Path,
-) -> (std::path::PathBuf, session_save::result::Publication) {
-    let local = r.root.join("summary-recovery");
+/// A regeneration of "s" in `home` that wrote its record and stopped
+/// after `stop` writes, as a crash does: 0 before `summary.md`, 1 after
+/// `summary.md`, 2 after `session.md`. Returns the local staging.
+fn stopped_summary(r: &Rig, home: &std::path::Path, stop: usize) -> std::path::PathBuf {
+    use session_save::publication::{Publication, WriteSet};
+    let local = r.root.join(".longhand-summary-stopped");
     std::fs::create_dir_all(&local).unwrap();
-    std::fs::copy(home.join(TRANSCRIPT_FILE), local.join(TRANSCRIPT_FILE)).unwrap();
     std::fs::write(local.join("summary.md"), "replacement summary").unwrap();
-    let doc = session_md(home);
-    let expected =
-        session_core::folder::fingerprint(&std::fs::read(home.join("session.md")).unwrap());
-    let publication = session_save::result::prepare(home, &local, &local, doc, &expected).unwrap();
+    let mut doc = session_md(home);
+    doc.summary_fingerprint = Some(session_core::folder::fingerprint(b"replacement summary"));
+    let publication = Publication::new(home, doc, WriteSet::Summary).unwrap();
+    publication.record(&local).unwrap();
     r.store
         .lock()
         .unwrap()
@@ -6143,47 +6393,103 @@ fn staged_summary(
             &serde_json::to_value(&local).unwrap(),
         )
         .unwrap();
-    (local, publication)
+    if stop > 0 {
+        let mut written = 0;
+        let stopped = publication.publish_with(home, &local, &mut |_| {
+            written += 1;
+            if written == stop {
+                Err(std::io::Error::other("crash"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(stopped.is_err());
+    }
+    local
+}
+
+fn summary_publication(r: &Rig) -> Option<serde_json::Value> {
+    r.store
+        .lock()
+        .unwrap()
+        .result_state("s", "summary-publication")
+        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn publication_recovery_does_not_rollback_a_possible_live_instance() {
+async fn a_regeneration_stopped_at_each_boundary_rolls_forward_at_the_next_launch() {
+    for stop in 0..=2 {
+        let r = rig().await;
+        let home = saved_note(&r, None).await;
+        let local = stopped_summary(&r, &home, stop);
+        let (summary, session) = (read(&home, "summary.md"), read(&home, "session.md"));
+        // An instance that can still be alive may own the publication.
+        r.runner
+            .reclaim(session_core::jobs::Liveness::Unknown {
+                now: chrono::Utc::now().fixed_offset(),
+            })
+            .unwrap();
+        assert_eq!(read(&home, "summary.md"), summary, "stop {stop}");
+        assert_eq!(read(&home, "session.md"), session, "stop {stop}");
+        assert!(local.join(session_save::publication::RECORD).exists());
+
+        r.runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap();
+        assert_eq!(
+            read(&home, "summary.md"),
+            "replacement summary",
+            "stop {stop}"
+        );
+        assert_fingerprints_match(&home);
+        assert!(!local.exists(), "stop {stop}: the staging is gone");
+        assert!(summary_publication(&r).is_none(), "stop {stop}");
+        assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_first_finishes_the_publication_that_an_earlier_one_left() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let local = stopped_summary(&r, &home, 1);
+    r.runner.regenerate_summary("s").await.unwrap();
+    let folder = saved_folder(&r, "s");
+    assert!(read(&folder, "summary.md").contains("Summary number"));
+    assert_fingerprints_match(&folder);
+    assert!(!local.exists());
+    assert!(summary_publication(&r).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_recovery_after_another_result_drops_the_staging() {
+    // KTD4: the last change wins.
     let r = rig().await;
     let home = saved_note(&r, None).await;
-    let previous = read(&home, "summary.md");
-    let (local, publication) = staged_summary(&r, &home);
-    while read(&home, "summary.md") != "replacement summary" {
-        publication.step().unwrap();
-    }
-    let before = read(&home, "session.md");
-    r.runner
-        .reclaim(session_core::jobs::Liveness::Unknown {
-            now: chrono::Utc::now().fixed_offset(),
-        })
-        .unwrap();
-    assert_eq!(read(&home, "summary.md"), "replacement summary");
-    assert_eq!(read(&home, "session.md"), before);
-    assert!(local.join(session_save::result::JOURNAL).exists());
+    let local = stopped_summary(&r, &home, 1);
+    edit_session_md(&home, |doc| {
+        doc.transcript_fingerprint = Some(session_core::folder::fingerprint(b"other"));
+    });
+    let other = read(&home, "session.md");
     r.runner
         .reclaim(session_core::jobs::Liveness::OnlyInstance)
         .unwrap();
-    assert_eq!(read(&home, "summary.md"), previous);
-    assert!(
-        r.store
-            .lock()
-            .unwrap()
-            .result_state("s", "summary-publication")
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(read(&home, "session.md"), other);
+    assert!(!local.exists());
+    assert!(summary_publication(&r).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn publication_recovery_error_does_not_prevent_stale_job_reclaim() {
     let r = rig().await;
     let home = saved_note(&r, None).await;
-    let (local, _) = staged_summary(&r, &home);
-    std::fs::write(local.join(session_save::result::JOURNAL), "invalid json").unwrap();
+    let local = stopped_summary(&r, &home, 0);
+    std::fs::write(
+        local.join(session_save::publication::RECORD),
+        "invalid json",
+    )
+    .unwrap();
     queue_session(
         &r.store,
         &r.root,
@@ -6203,7 +6509,7 @@ async fn publication_recovery_error_does_not_prevent_stale_job_reclaim() {
             .unwrap(),
         vec!["other"]
     );
-    assert!(local.join(session_save::result::JOURNAL).exists());
+    assert!(local.join(session_save::publication::RECORD).exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -6238,8 +6544,15 @@ async fn publication_notes_change_keeps_previous_result_and_retry_summarizes_cur
             ..
         }
     ));
+    // R5: the check runs before the record, so nothing was written.
     assert_eq!(read(&home, TRANSCRIPT_FILE), transcript);
     assert_eq!(read(&home, "summary.md"), summary);
+    assert!(
+        !r.root
+            .join("s")
+            .join(session_save::publication::RECORD)
+            .exists()
+    );
     let calls = r.script.calls.load(Ordering::SeqCst);
     r.runner.retry("s").unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
@@ -6256,86 +6569,77 @@ async fn publication_notes_change_keeps_previous_result_and_retry_summarizes_cur
     assert_eq!(read(&home, "notes.md"), "Updated notes for retry");
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn publication_incoming_transition_is_not_accepted_as_an_external_edit() {
+async fn a_regeneration_writes_only_summary_md_and_session_md() {
+    // KTD5: the other files keep their inodes, so nothing rewrote them.
+    use std::os::unix::fs::MetadataExt;
     let r = rig().await;
-    let home = saved_note(&r, None).await;
-    let (local, publication) = staged_summary(&r, &home);
-    // Model a synchronized transcript that arrives before its manifest.
-    let mut transition: session_core::generation::Transition = serde_json::from_slice(
-        &std::fs::read(home.join(session_core::generation::TRANSITION)).unwrap(),
-    )
-    .unwrap();
-    let bytes = b"Incoming transcript\n";
-    transition.files.insert(
-        TRANSCRIPT_FILE.into(),
-        (
-            publication.previous.files.get(TRANSCRIPT_FILE).cloned(),
-            session_core::folder::fingerprint(bytes),
-        ),
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    let inode = |name: &str| std::fs::metadata(home.join(name)).unwrap().ino();
+    let kept = [
+        TRANSCRIPT_FILE,
+        session_core::recognition::ARTIFACT_FILE,
+        "notes.md",
+    ];
+    let before: Vec<u64> = kept.iter().map(|name| inode(name)).collect();
+    let written = [inode("summary.md"), inode("session.md")];
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(saved_folder(&r, "s"), home);
+    assert_eq!(
+        kept.iter().map(|name| inode(name)).collect::<Vec<_>>(),
+        before
     );
-    std::fs::write(
-        home.join(session_core::generation::TRANSITION),
-        serde_json::to_vec(&transition).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(home.join(TRANSCRIPT_FILE), bytes).unwrap();
-    r.store
-        .lock()
-        .unwrap()
-        .clear_result_state("s", "summary-publication")
-        .unwrap();
-    let manifest = read(&home, "session.md");
-    assert!(r.runner.regenerate_summary("s").await.is_err());
-    assert_eq!(read(&home, "session.md"), manifest);
-    assert!(local.join(session_save::result::JOURNAL).exists());
+    assert_ne!(inode("summary.md"), written[0]);
+    assert_ne!(inode("session.md"), written[1]);
+    assert!(session_md(&home).recognition_artifact.is_some());
+    assert_fingerprints_match(&home);
 }
 
-struct InterruptPublication {
+/// At the first check after the summary call: a cancel, or a `notes.md`
+/// edit in the note folder.
+struct AfterSummaryCall {
+    called: Arc<AtomicBool>,
     home: std::path::PathBuf,
-    previous: String,
     cancel: bool,
-    interrupted: AtomicBool,
+    done: AtomicBool,
 }
 
-impl pipeline::Control for InterruptPublication {
+impl pipeline::Control for AfterSummaryCall {
     fn proceed(&self) -> Result<(), pipeline::StageError> {
-        if read(&self.home, "summary.md") != self.previous
-            && !self.interrupted.swap(true, Ordering::SeqCst)
-        {
-            std::fs::write(
-                self.home.join("notes.md"),
-                "Notes edited during publication\n",
-            )
-            .unwrap();
+        if self.called.load(Ordering::SeqCst) && !self.done.swap(true, Ordering::SeqCst) {
             if self.cancel {
                 return Err(pipeline::StageError::Cancelled);
             }
+            std::fs::write(self.home.join("notes.md"), "Notes edited during the call\n").unwrap();
         }
         Ok(())
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn publication_step_error_and_cancel_restore_previous_files_and_allow_retry() {
-    for cancel in [false, true] {
+async fn a_regeneration_stopped_before_its_record_changes_nothing_and_keeps_the_notes() {
+    for cancel in [true, false] {
         let r = rig().await;
         let home = saved_note(&r, Some("Kept title")).await;
-        let previous = read(&home, "summary.md");
-        let manifest = read(&home, "session.md");
+        let (summary, session) = (read(&home, "summary.md"), read(&home, "session.md"));
+        let called = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&called);
         summaries_from(
             &r,
-            http::Reply::With(Arc::new(|_| {
+            http::Reply::With(Arc::new(move |_| {
+                seen.store(true, Ordering::SeqCst);
                 (200, http::completion("Replacement summary."))
             })),
             None,
         )
         .await;
-        let control = InterruptPublication {
+        let control = AfterSummaryCall {
+            called,
             home: home.clone(),
-            previous: previous.clone(),
             cancel,
-            interrupted: AtomicBool::new(false),
+            done: AtomicBool::new(false),
         };
         let store = Arc::clone(&r.store);
         let root = r.root.clone();
@@ -6349,7 +6653,7 @@ async fn publication_step_error_and_cancel_restore_previous_files_and_allow_retr
             .as_ref()
             .unwrap()
             .clone();
-        let failed = tokio::task::spawn_blocking(move || {
+        let regenerated = tokio::task::spawn_blocking(move || {
             pipeline::save::regenerate_summary(
                 &store,
                 "s",
@@ -6363,26 +6667,175 @@ async fn publication_step_error_and_cancel_restore_previous_files_and_allow_retr
         })
         .await
         .unwrap();
-        assert!(failed.is_err());
-        assert_eq!(read(&home, "summary.md"), previous);
-        // A legacy note can gain an immutable generation before cancellation.
-        let before = session_core::folder::SessionDoc::parse(&manifest).unwrap();
-        assert_eq!(
-            session_md(&home).transcript_fingerprint,
-            before.transcript_fingerprint
-        );
-        assert_eq!(read(&home, "notes.md"), "Notes edited during publication\n");
-        assert!(
-            r.store
-                .lock()
-                .unwrap()
-                .result_state("s", "summary-publication")
-                .unwrap()
-                .is_none()
-        );
-        r.runner.regenerate_summary("s").await.unwrap();
-        assert!(read(&home, "summary.md").contains("Replacement summary."));
+        let staging: Vec<_> = std::fs::read_dir(&r.root)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".longhand-summary-")
+            })
+            .collect();
+        assert!(staging.is_empty(), "cancel {cancel}: {staging:?}");
+        assert!(summary_publication(&r).is_none());
+        if cancel {
+            // R3: a run that stops before its record changes no file.
+            assert!(regenerated.is_err());
+            assert_eq!(read(&home, "summary.md"), summary);
+            assert_eq!(read(&home, "session.md"), session);
+            r.runner.regenerate_summary("s").await.unwrap();
+            assert!(read(&home, "summary.md").contains("Replacement summary."));
+        } else {
+            // R5: the publication does not write `notes.md`.
+            regenerated.unwrap();
+            assert!(read(&home, "summary.md").contains("Replacement summary."));
+            assert_eq!(read(&home, "notes.md"), "Notes edited during the call\n");
+        }
     }
+}
+
+/// What changes the note between a stopped publication and its rerun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Between {
+    Nothing,
+    Notes,
+    Title,
+    OtherResult,
+}
+
+/// Covers AE3. A Transcribe Again with another model stops after it wrote
+/// `transcript.md` and before it wrote `summary.md`, as a crash there
+/// does: the write of `summary.md` fails. `between` then changes the note,
+/// and the retry reruns the publication. Returns the rig, the folder, the
+/// previous `summary.md`, and the outcome of the rerun.
+async fn rerun_after_the_transcript(
+    between: Between,
+) -> (Rig, std::path::PathBuf, String, Outcome) {
+    let r = rig().await;
+    let home = saved_note(&r, Some("Kept title")).await;
+    let (transcript, summary) = (read(&home, TRANSCRIPT_FILE), read(&home, "summary.md"));
+    let session = read(&home, "session.md");
+    let at = home.clone();
+    let blocked = AtomicBool::new(false);
+    summaries_from(
+        &r,
+        http::Reply::With(Arc::new(move |_| {
+            // A folder with the name of `summary.md` makes its write fail.
+            if !blocked.swap(true, Ordering::SeqCst) {
+                std::fs::remove_file(at.join("summary.md")).unwrap();
+                std::fs::create_dir(at.join("summary.md")).unwrap();
+            }
+            (200, http::completion("The summary after the stop."))
+        })),
+        None,
+    )
+    .await;
+    let other = RecognitionConfig {
+        asr_model: "parakeet-tdt-0.6b-v3-q80".into(),
+        ..settings()
+    };
+    again_with(&r, &other).unwrap();
+    assert!(
+        matches!(
+            r.runner.run_next().await.unwrap().1,
+            Outcome::Failed {
+                stage: Stage::Save,
+                ..
+            }
+        ),
+        "the write of summary.md fails"
+    );
+    // The publication rolls forward only: the new transcript stays.
+    assert_ne!(read(&home, TRANSCRIPT_FILE), transcript);
+    assert_eq!(read(&home, "session.md"), session);
+    std::fs::remove_dir(home.join("summary.md")).unwrap();
+    std::fs::write(home.join("summary.md"), &summary).unwrap();
+
+    match between {
+        Between::Nothing => {}
+        Between::Notes => std::fs::write(
+            home.join("notes.md"),
+            session_core::folder::render_notes("Notes from another computer"),
+        )
+        .unwrap(),
+        Between::Title => edit_session_md(&home, |doc| {
+            doc.title = Some("Renamed elsewhere".into());
+            doc.title_source = Some(TitleSource::User);
+        }),
+        Between::OtherResult => edit_session_md(&home, |doc| {
+            doc.transcript_fingerprint = Some(session_core::folder::fingerprint(b"other"));
+        }),
+    }
+    r.runner.retry("s").unwrap();
+    let outcome = r.runner.run_next().await.unwrap().1;
+    (r, home, summary, outcome)
+}
+
+/// The rerun wrote the whole staged result: the folder is complete, with
+/// no result copies, and the working copy is gone.
+fn assert_published(r: &Rig, previous_summary: &str) -> std::path::PathBuf {
+    let folder = saved_folder(r, "s");
+    let summary = read(&folder, "summary.md");
+    assert_ne!(summary, previous_summary);
+    assert!(summary.contains("The summary after the stop."), "{summary}");
+    assert_fingerprints_match(&folder);
+    let hidden: Vec<String> = std::fs::read_dir(&folder)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(hidden.is_empty(), "{hidden:?}");
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+    folder
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_after_the_transcript_write_finishes_from_the_staged_result() {
+    let (r, _, summary, outcome) = rerun_after_the_transcript(Between::Nothing).await;
+    assert_eq!(outcome, Outcome::Finished);
+    assert_published(&r, &summary);
+    assert_eq!(asr_model(&r).as_deref(), Some("parakeet-tdt-0.6b-v3-q80"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_after_a_notes_edit_still_finishes_and_keeps_the_notes() {
+    // KTD3: the notes check runs once, before the first write.
+    let (r, _, summary, outcome) = rerun_after_the_transcript(Between::Notes).await;
+    assert_eq!(outcome, Outcome::Finished);
+    let folder = assert_published(&r, &summary);
+    assert!(read(&folder, "notes.md").contains("Notes from another computer"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_after_a_title_change_finishes_and_keeps_the_title() {
+    // KTD2: a title is not a result field.
+    let (r, _, summary, outcome) = rerun_after_the_transcript(Between::Title).await;
+    assert_eq!(outcome, Outcome::Finished);
+    let folder = assert_published(&r, &summary);
+    assert_eq!(
+        session_md(&folder).title.as_deref(),
+        Some("Renamed elsewhere")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rerun_after_another_result_drops_this_result_and_writes_nothing() {
+    // KTD4: the last change wins.
+    let (r, home, summary, outcome) = rerun_after_the_transcript(Between::OtherResult).await;
+    let other = read(&home, "session.md");
+    assert!(
+        matches!(
+            &outcome,
+            Outcome::Failed { stage: Stage::Save, message }
+                if message == "This note changed on another computer. Longhand kept that version."
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    assert_eq!(read(&home, "session.md"), other);
+    assert_eq!(read(&home, "summary.md"), summary);
+    assert!(!r.root.join("s").exists(), "the staging is gone");
 }
 
 /// A note that records while the storage folder changes saves to the new

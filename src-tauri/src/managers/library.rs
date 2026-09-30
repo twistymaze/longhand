@@ -112,17 +112,15 @@ fn is_shared_path(relative: &Path) -> bool {
 /// Whether the watcher ignores a change at `path`, whose path in its
 /// Destination is `relative`. As anarlog's `should_skip_path` (`path.rs`):
 /// `.DS_Store`, tempfile's `.tmp` names and the `.tmp` extension. Also
-/// names in `relative` that start with a dot, except immutable result
-/// generations. Their delivery must refresh open notes. Audio files are
-/// not skipped: a note waits for its audio (R6). Removal markers are not
-/// skipped: a marker makes a note complete (R15). Their names have no
-/// leading dot for this reason (KTD1).
+/// every name in `relative` that starts with a dot: Longhand's staging,
+/// rename and temporary folders, the library marker and the old result
+/// copies. Audio files are not skipped: a note waits for its audio (R6).
+/// Removal markers are not skipped: a marker makes a note complete (R15).
+/// Their names have no leading dot for this reason (KTD1).
 pub fn should_skip_path(relative: &Path, path: &Path) -> bool {
     is_temporary(path)
         || relative.components().any(|c| match c {
-            Component::Normal(name) => {
-                name.to_string_lossy().starts_with('.') && name != ".longhand-results"
-            }
+            Component::Normal(name) => name.to_string_lossy().starts_with('.'),
             _ => false,
         })
 }
@@ -548,14 +546,6 @@ impl Drop for LibraryWatcher {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn immutable_result_delivery_triggers_a_refresh() {
-        let relative = std::path::Path::new("note/.longhand-results/generation-1/summary.md");
-        assert!(!super::should_skip_path(
-            relative,
-            &std::path::Path::new("/library").join(relative)
-        ));
-    }
     use super::*;
     use notify::event::{CreateKind, DataChange, Flag, MetadataKind};
     use notify_debouncer_full::DebouncedEvent;
@@ -669,6 +659,10 @@ mod tests {
         assert!(skip(".staging-A1/transcript.md"));
         assert!(skip(".rename-A1"));
         assert!(skip("Planning/.notes.md.partial"));
+        // Old result copies are not note files: their change is not a
+        // change of the note.
+        assert!(skip("Planning/.longhand-results/generation-1/summary.md"));
+        assert!(skip("Planning/.longhand-result-transition.json"));
         assert!(!skip("Planning"));
         assert!(!skip("Planning/session.md"));
         assert!(!skip("Planning/notes (1).md"));
@@ -678,6 +672,25 @@ mod tests {
         // change (R15).
         let marker = session_core::folder::removal_marker("audio/segment-01.opus");
         assert!(!skip(&format!("Planning/{marker}")));
+    }
+
+    #[test]
+    fn a_change_of_old_result_copies_marks_no_note_folder() {
+        let w = watched("/var/notes");
+        let b = batch(
+            &w,
+            vec![
+                event(
+                    EventKind::Create(CreateKind::File),
+                    &["/var/notes/Planning/.longhand-results/generation-1/summary.md"],
+                ),
+                event(
+                    data(),
+                    &["/var/notes/Planning/.longhand-result-transition.json"],
+                ),
+            ],
+        );
+        assert_eq!(b, Batch::default());
     }
 
     #[test]

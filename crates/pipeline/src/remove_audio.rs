@@ -10,13 +10,18 @@
 //! folder (R7, KTD10). The delete does not
 //! move the file to the Trash (R6), and it opens no audio file, so an
 //! online-only file is not downloaded (R12, KTD11).
+//!
+//! When the audio of each segment is removed, the step also deletes the
+//! note's `recognition.jsonl`, unless the note waits for a sync (KTD8 of the
+//! result copies plan). It does not write `session.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{self, REMOVAL_MARKER_TEXT};
-use session_core::jobs::Claims;
+use session_core::jobs::{Claim, Claims};
+use session_core::recognition::ARTIFACT_FILE;
 use session_core::{SessionRecord, SessionState, Store, StoreError};
 use session_save::home_write;
 
@@ -145,6 +150,15 @@ pub fn no_guard() -> Guard<FolderCheck, StoreCheck> {
     }
 }
 
+/// Whether the note waits for a sync: its `transcript.md` or `summary.md`
+/// does not match `session.md` (R7). This controls only the delete of
+/// `recognition.jsonl` (KTD8). The removal of the audio does not wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteSync {
+    Synced,
+    Waiting,
+}
+
 /// Remove the audio of the saved note `session_id`: [`remove_audio_with`]
 /// with a permanent delete.
 pub fn remove_audio<F, S>(
@@ -152,12 +166,13 @@ pub fn remove_audio<F, S>(
     claims: &Claims,
     session_id: &str,
     guard: Guard<F, S>,
+    sync: NoteSync,
 ) -> Result<Removal, RemoveAudioError>
 where
     F: FnOnce(&SessionRecord) -> Result<(), &'static str>,
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
 {
-    remove_audio_with(store, claims, session_id, guard, |path| {
+    remove_audio_with(store, claims, session_id, guard, sync, |path| {
         std::fs::remove_file(path)
     })
 }
@@ -172,13 +187,16 @@ where
 /// to date from the home folder, as other writers do. It checks that the
 /// note is saved and that its home folder did not change, and calls the
 /// store check of `guard`. The step does not hold the store lock while it
-/// writes markers and deletes files. At the end it sets the removed flag of
-/// each segment that has its marker.
+/// writes markers and deletes files. When the audio of each segment is
+/// removed, it also deletes `recognition.jsonl` with `remove`, unless
+/// `sync` is [`NoteSync::Waiting`] (KTD8). At the end it sets the removed
+/// flag of each segment that has its marker.
 pub fn remove_audio_with<F, S, R>(
     store: &SharedStore,
     claims: &Claims,
     session_id: &str,
     guard: Guard<F, S>,
+    sync: NoteSync,
     remove: R,
 ) -> Result<Removal, RemoveAudioError>
 where
@@ -186,21 +204,23 @@ where
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
     R: FnMut(&Path) -> io::Result<()>,
 {
-    run_step(store, claims, session_id, guard, remove, Scope::Every)
+    run_step(store, claims, session_id, guard, sync, remove, Scope::Every)
 }
 
 /// Finish the removal of the audio of the saved note `session_id` (KTD2):
 /// delete the audio file of each segment that has its removal marker. The
 /// step writes no marker, so a segment with no marker keeps its audio. The
 /// removal pass does this whether the setting is on or off. The claim, the
-/// check that the note is saved, `guard`, the name check and the flags are
-/// the same as in [`remove_audio_with`]. The result has an entry only for
-/// each segment that has its marker.
+/// check that the note is saved, `guard`, the name check, the delete of
+/// `recognition.jsonl` and the flags are the same as in
+/// [`remove_audio_with`]. The result has an entry only for each segment
+/// that has its marker.
 pub fn finish_removal<F, S>(
     store: &SharedStore,
     claims: &Claims,
     session_id: &str,
     guard: Guard<F, S>,
+    sync: NoteSync,
 ) -> Result<Removal, RemoveAudioError>
 where
     F: FnOnce(&SessionRecord) -> Result<(), &'static str>,
@@ -211,6 +231,7 @@ where
         claims,
         session_id,
         guard,
+        sync,
         |path| std::fs::remove_file(path),
         Scope::Marked,
     )
@@ -227,7 +248,10 @@ enum Scope {
 }
 
 /// The row of `session_id`. The note must be saved.
-fn saved_row(store: &Store, session_id: &str) -> Result<SessionRecord, RemoveAudioError> {
+pub(crate) fn saved_row(
+    store: &Store,
+    session_id: &str,
+) -> Result<SessionRecord, RemoveAudioError> {
     let record = store
         .session(session_id)?
         .ok_or_else(|| RemoveAudioError::Failed(format!("no session {session_id}")))?;
@@ -237,11 +261,31 @@ fn saved_row(store: &Store, session_id: &str) -> Result<SessionRecord, RemoveAud
     Ok(record)
 }
 
+/// Take the delete claim of `session_id`, as Delete Note does.
+pub(crate) fn delete_claim(claims: &Claims, session_id: &str) -> Result<Claim, RemoveAudioError> {
+    // A second delete claim is not refused by `Claims::delete`, so a
+    // running Delete Note is checked first.
+    if claims.is_regenerating_or_deleting(session_id) && !claims.is_regenerating(session_id) {
+        return Err(RemoveAudioError::Busy("deleting"));
+    }
+    claims.delete(session_id).map_err(RemoveAudioError::Busy)
+}
+
+/// The canonical path of the home folder `home`. A path that is not a
+/// folder gives [`RemoveAudioError::NoFolder`].
+pub(crate) fn home_dir(home: &Path) -> Result<PathBuf, RemoveAudioError> {
+    match home.canonicalize() {
+        Ok(path) if path.is_dir() => Ok(path),
+        _ => Err(RemoveAudioError::NoFolder),
+    }
+}
+
 fn run_step<F, S, R>(
     store: &SharedStore,
     claims: &Claims,
     session_id: &str,
     guard: Guard<F, S>,
+    sync: NoteSync,
     mut remove: R,
     scope: Scope,
 ) -> Result<Removal, RemoveAudioError>
@@ -250,14 +294,9 @@ where
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
     R: FnMut(&Path) -> io::Result<()>,
 {
-    // A second delete claim is not refused by `Claims::delete`, so a
-    // running Delete Note is checked first.
-    if claims.is_regenerating_or_deleting(session_id) && !claims.is_regenerating(session_id) {
-        return Err(RemoveAudioError::Busy("deleting"));
-    }
     // The claim comes before the home folder is read, as in
     // `session_core::jobs::delete_session`.
-    let _claim = claims.delete(session_id).map_err(RemoveAudioError::Busy)?;
+    let _claim = delete_claim(claims, session_id)?;
 
     // The folder check reads files, so it runs with no store lock.
     let checked = saved_row(&lock(store), session_id)?;
@@ -282,10 +321,7 @@ where
     };
     // The step never makes a home folder. The canonical path is the base of
     // the check that a name resolves inside the home folder.
-    let home = match home.canonicalize() {
-        Ok(path) if path.is_dir() => path,
-        _ => return Err(RemoveAudioError::NoFolder),
-    };
+    let home = home_dir(&home)?;
 
     let results: Vec<SegmentRemoval> = segments
         .iter()
@@ -303,6 +339,28 @@ where
         })
         .collect();
 
+    // The removal is complete when the audio of each segment of the note is
+    // removed. `recognition.jsonl` has no use without the audio (KTD8).
+    let complete = !segments.is_empty()
+        && results.len() == segments.len()
+        && results.iter().all(|r| {
+            matches!(
+                r.outcome,
+                SegmentOutcome::Removed | SegmentOutcome::AlreadyRemoved
+            )
+        });
+    if complete {
+        match sync {
+            NoteSync::Synced => {
+                remove_recognition(&home, &mut remove);
+            }
+            // A later pass deletes it.
+            NoteSync::Waiting => log::debug!(
+                "audio removal: {session_id} waits for a sync, so {ARTIFACT_FILE} stays for now"
+            ),
+        }
+    }
+
     let store = lock(store);
     let mut flags = store.removed_audio(session_id)?;
     flags.extend(
@@ -319,6 +377,60 @@ where
         segments: results,
         row_changed: refreshed.changed || flags_changed,
     })
+}
+
+/// What a delete of one file with a fixed name did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileDelete {
+    Deleted,
+    /// No entry has the name.
+    Missing,
+    /// The entry is not a regular file, or the delete failed. The entry
+    /// stays, and the delete logs it.
+    Kept,
+}
+
+/// Delete `recognition.jsonl` in the canonical home folder `home` with
+/// `remove` when it is a regular file (R11). A folder or a link with that
+/// name stays, and the step logs it. The check reads metadata only, so an
+/// online-only file is not downloaded (R12). A failed delete does not
+/// change the result of the removal.
+pub(crate) fn remove_recognition<R>(home: &Path, remove: &mut R) -> FileDelete
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    remove_regular_file(&home.join(ARTIFACT_FILE), remove)
+}
+
+/// Delete `path` with `remove` when it is a regular file. A folder or a
+/// link with that name stays, and the delete logs it. The check reads
+/// metadata only (R12).
+pub(crate) fn remove_regular_file<R>(path: &Path, remove: &mut R) -> FileDelete
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    match path.symlink_metadata() {
+        Ok(meta) if meta.is_file() => match remove(path) {
+            Ok(()) => FileDelete::Deleted,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => FileDelete::Missing,
+            Err(e) => {
+                log::warn!("audio removal: cannot delete {}: {e}", path.display());
+                FileDelete::Kept
+            }
+        },
+        Ok(_) => {
+            log::warn!(
+                "audio removal: {} is not a regular file, so it stays",
+                path.display()
+            );
+            FileDelete::Kept
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => FileDelete::Missing,
+        Err(e) => {
+            log::warn!("audio removal: cannot read {}: {e}", path.display());
+            FileDelete::Kept
+        }
+    }
 }
 
 /// Write the marker of `audio` if it is missing, then delete the audio file

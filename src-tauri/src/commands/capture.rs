@@ -65,6 +65,8 @@ pub async fn resume_recording(
     processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
 ) -> Result<String, String> {
+    // Resume replaces the result of the note (KTD11).
+    crate::managers::processing::refuse_while_syncing(processing.library_status(), &session_id)?;
     let manager = Arc::clone(&manager);
     let id = session_id.clone();
     let state = blocking(move || {

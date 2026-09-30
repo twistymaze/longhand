@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use library::scan::{
-    Known, LibraryScan, RootState, ScanOptions, Unavailable, Waiting, scan, scan_folders,
+    DocumentState, Known, LibraryScan, RootState, ScanOptions, Unavailable, Waiting, scan,
+    scan_folders,
 };
 use session_core::Segment;
 use session_core::folder::{SessionDoc, fingerprint};
@@ -84,31 +85,41 @@ fn a_complete_folder_lists_with_nothing_waiting() {
 }
 
 #[test]
-fn a_generation_waits_for_immutable_files_even_when_canonical_files_arrived() {
+fn a_note_with_old_result_copies_reads_only_its_note_files() {
     let root = marked_root();
     let dir = note(root.path(), "Planning", "A1");
-    let manifest = doc("A1").render().replacen(
+    // An older build named a copy of the result in `session.md`. The scan
+    // reads the note files and ignores the copies.
+    let session = doc("A1").render().replacen(
         "---\n",
         &format!("---\nresult_generation:\n  id: committed-1\n  files:\n    transcript.md: {}\n    summary.md: {}\n",
-            fingerprint(TRANSCRIPT.as_bytes()), fingerprint(SUMMARY.as_bytes())),
+            fingerprint(b"other transcript"), fingerprint(b"other summary")),
         1,
     );
-    fs::write(dir.join("session.md"), manifest).unwrap();
+    fs::write(dir.join("session.md"), session).unwrap();
     let result = run(root.path(), &Known::default());
-    assert!(result.notes[0].waiting.contains(&Waiting::Transcript));
+    assert!(
+        result.notes[0].waiting.is_empty(),
+        "{:?}",
+        result.notes[0].waiting
+    );
+
     fs::create_dir_all(dir.join(".longhand-results/committed-1")).unwrap();
     fs::write(
         dir.join(".longhand-results/committed-1/transcript.md"),
-        TRANSCRIPT,
-    )
-    .unwrap();
-    fs::write(
-        dir.join(".longhand-results/committed-1/summary.md"),
-        SUMMARY,
+        "other transcript",
     )
     .unwrap();
     let result = run(root.path(), &Known::default());
-    assert!(result.notes[0].waiting.is_empty());
+    assert!(
+        result.notes[0].waiting.is_empty(),
+        "{:?}",
+        result.notes[0].waiting
+    );
+    assert_eq!(
+        result.notes[0].transcript_fingerprint.as_deref(),
+        Some(fingerprint(TRANSCRIPT.as_bytes()).as_str())
+    );
 }
 
 // Covers AE7.
@@ -147,6 +158,33 @@ fn a_transcript_with_another_fingerprint_is_waiting() {
     fs::write(dir.join("transcript.md"), "# Transcript\n\nOther text.\n").unwrap();
     fs::write(dir.join("summary.md"), "another summary").unwrap();
     let result = run(root.path(), &Known::default());
+    assert_eq!(
+        result.notes[0].waiting,
+        vec![Waiting::Transcript, Waiting::Summary]
+    );
+}
+
+// Covers R8: the reconciler tells a file that differs or is missing from
+// one that cannot be read.
+#[test]
+fn the_scan_reports_the_state_of_each_result_document() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].transcript, DocumentState::Matches);
+    assert_eq!(result.notes[0].summary, DocumentState::Matches);
+
+    fs::write(dir.join("transcript.md"), "# Transcript\n\nOther text.\n").unwrap();
+    fs::remove_file(dir.join("summary.md")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].transcript, DocumentState::Differs);
+    assert_eq!(result.notes[0].summary, DocumentState::Missing);
+
+    // A folder in place of the file: the read fails.
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    fs::create_dir(dir.join("transcript.md")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].transcript, DocumentState::Unreadable);
     assert_eq!(
         result.notes[0].waiting,
         vec![Waiting::Transcript, Waiting::Summary]

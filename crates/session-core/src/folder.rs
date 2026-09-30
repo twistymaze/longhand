@@ -126,8 +126,6 @@ pub struct SessionDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recognition_artifact: Option<crate::recognition::ArtifactReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_generation: Option<crate::generation::Generation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recognition_audio: Option<std::collections::BTreeMap<String, String>>,
     /// The number of speakers that processing found (R3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,7 +201,6 @@ impl SessionDoc {
             asr_model: None,
             recognition_snapshot: None,
             recognition_artifact: None,
-            result_generation: None,
             recognition_audio: None,
             found_speakers: None,
             transcript_fingerprint: None,
@@ -283,6 +280,12 @@ impl SessionDoc {
     pub fn parse(text: &str) -> Result<Self, FolderError> {
         let (yaml, _) = split_frontmatter("session.md", text)?;
         serde_yaml::from_str(yaml).map_err(yaml_error("session.md"))
+    }
+
+    /// Read and parse the `session.md` in the note folder `folder`.
+    pub fn read(folder: &Path) -> std::io::Result<Self> {
+        Self::parse(&std::fs::read_to_string(folder.join("session.md"))?)
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 

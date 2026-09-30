@@ -399,20 +399,30 @@ pub(crate) fn read_reusable(
             return Ok(None);
         }
     }
-    let dir = doc
-        .result_generation
-        .as_ref()
-        .map(|g| g.directory(home))
-        .transpose()?
-        .unwrap_or_else(|| home.to_path_buf());
+    // A missing file, or a file with another checksum, has no timed text to
+    // use again: the run transcribes in full (KTD8). A synced `session.md`
+    // can name any path, so check the name before the file is opened.
+    if reference.filename != recognition::ARTIFACT_FILE {
+        return Ok(None);
+    }
+    let path = home.join(recognition::ARTIFACT_FILE);
+    match recognition::file_digest(&path) {
+        Ok(sha256) if sha256 == reference.sha256 => {}
+        Ok(_) => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
     let mut timed = true;
-    let header = recognition::read_artifact(&dir.join(&reference.filename), reference, |b| {
+    let header = recognition::read_artifact(&path, reference, |b| {
         timed &= b.timed_asr();
         visit(b);
         Ok(())
     })
     .map_err(|e| StageError::Failed(e.to_string()))?;
-    let transcript = session_core::generation::read(home, doc, "transcript.md")?;
+    // With no transcript, the timed text cannot be checked against it.
+    let Some(transcript) = crate::summarize::transcript_bytes(home)? else {
+        return Ok(None);
+    };
     let next = durable::spec_fingerprints(header.fingerprints.audio.clone(), spec)?;
     Ok((timed && header.reuse(&next, &transcript) != Reuse::TranscribeAgain).then_some(header))
 }
@@ -483,7 +493,6 @@ mod tests {
         doc.recognition_audio = Some(Default::default());
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), b"Summary").unwrap();
-        doc.result_generation = Some(session_save::result::stage(home, home).unwrap());
         std::fs::write(home.join("session.md"), doc.render()).unwrap();
         temp
     }
@@ -491,7 +500,7 @@ mod tests {
     /// Whether a run with `config` uses the saved timed text in `home` again.
     fn reuses(home: &Path, config: &RecognitionConfig) -> Result<bool, StageError> {
         let spec = models::recognition::resolve(config).unwrap();
-        let doc = session_core::generation::manifest(home)?;
+        let doc = SessionDoc::read(home)?;
         Ok(read_reusable(home, &doc, &spec, |_| {})?.is_some())
     }
 
@@ -522,17 +531,61 @@ mod tests {
     }
 
     #[test]
-    fn reusable_text_comes_from_the_verified_generation() {
+    fn reusable_text_comes_from_the_note_files() {
         let config = RecognitionConfig {
             speaker_source: SpeakerSource::Off,
             ..Default::default()
         };
         let temp = saved(&config);
         assert!(reuses(temp.path(), &config).unwrap());
-        std::fs::remove_file(temp.path().join("transcript.md")).unwrap();
-        assert!(reuses(temp.path(), &config).unwrap());
+        // A hand edit or a missing transcript makes the timed text unusable
+        // (R9): the run transcribes in full.
         std::fs::write(temp.path().join("transcript.md"), b"External edit").unwrap();
-        assert!(reuses(temp.path(), &config).is_err());
+        assert!(!reuses(temp.path(), &config).unwrap(), "edited");
+        std::fs::remove_file(temp.path().join("transcript.md")).unwrap();
+        assert!(!reuses(temp.path(), &config).unwrap(), "missing");
+    }
+
+    #[test]
+    fn a_missing_or_changed_artifact_is_not_reusable() {
+        // KTD8: the run then transcribes in full.
+        let config = RecognitionConfig {
+            speaker_source: SpeakerSource::Off,
+            ..Default::default()
+        };
+        let temp = saved(&config);
+        std::fs::remove_file(temp.path().join(ARTIFACT_FILE)).unwrap();
+        assert!(!reuses(temp.path(), &config).unwrap(), "missing");
+        let temp = saved(&config);
+        let path = temp.path().join(ARTIFACT_FILE);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"\n");
+        std::fs::write(path, bytes).unwrap();
+        assert!(!reuses(temp.path(), &config).unwrap(), "checksum mismatch");
+    }
+
+    #[test]
+    fn an_artifact_with_another_name_is_not_opened() {
+        // A synced `session.md` can name any path. Only
+        // `recognition.jsonl` in the note folder is read.
+        let config = RecognitionConfig {
+            speaker_source: SpeakerSource::Off,
+            ..Default::default()
+        };
+        let temp = saved(&config);
+        let home = temp.path();
+        let outside = home.join("..").join(format!(
+            "{}-artifact.jsonl",
+            home.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::copy(home.join(ARTIFACT_FILE), &outside).unwrap();
+        let mut doc = SessionDoc::read(home).unwrap();
+        doc.recognition_artifact.as_mut().unwrap().filename =
+            outside.to_string_lossy().into_owned();
+        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        let reused = reuses(home, &config);
+        std::fs::remove_file(&outside).unwrap();
+        assert!(!reused.unwrap());
     }
 
     #[test]

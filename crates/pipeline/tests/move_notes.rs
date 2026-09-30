@@ -749,6 +749,34 @@ fn a_rename_during_the_move_names_the_moved_folder() {
     );
 }
 
+/// A rename during the Move that keeps the folder name rewrites
+/// `session.md` after the Move. The fingerprints stay equal to the files
+/// (KTD6).
+#[test]
+fn a_moved_note_whose_files_match_keeps_fingerprints_equal_to_the_files() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let renamed =
+        pipeline::folder_rename::rename_session(&f.store, "a", "Budget?", &|_| false, &RealFs)
+            .unwrap();
+    assert_eq!(renamed, pipeline::folder_rename::FolderRename::Later);
+    let m = mover(&f, &fs);
+    finish(&m);
+    let home = assert_moved(&f, "a");
+    let doc = SessionDoc::read(&home).unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Budget?"));
+    let of = |name: &str| {
+        std::fs::read(home.join(name))
+            .ok()
+            .map(|bytes| session_core::folder::fingerprint(&bytes))
+    };
+    assert!(doc.transcript_fingerprint.is_some());
+    assert_eq!(doc.transcript_fingerprint, of("transcript.md"));
+    assert_eq!(doc.summary_fingerprint, of("summary.md"));
+}
+
 #[test]
 fn a_source_that_another_computer_moved_away_leaves_the_move() {
     for cross in [false, true] {

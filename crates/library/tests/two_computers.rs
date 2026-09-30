@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset};
-use library::reconcile::{Changes, Coverage, DELETE_WAIT, Reconciler, Target};
+use library::reconcile::{Changes, Coverage, DELETE_WAIT, HAND_EDIT_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
 use library::scan::{Known, ScanOptions, Waiting, scan};
 use library::status::NoteStatus;
@@ -587,50 +587,16 @@ fn a_new_transcript_from_b_clears_as_recognition_results_for_that_note() {
     }
     assert_eq!(a.sync(&root, now), Changes::default());
 
-    // B runs Transcribe Again with another model and saves.
+    // B runs Transcribe Again with another model and saves. The sync
+    // delivers transcript.md and session.md together.
     let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n";
     fs::write(folder.join("transcript.md"), transcript).unwrap();
-    let generation = session_save::result::stage(&folder, &folder).unwrap();
-    let generation_path = generation.directory(&folder).unwrap();
-    let withheld = root.parent().unwrap().join("withheld-generation");
-    fs::rename(&generation_path, &withheld).unwrap();
-    let previous_fingerprint = a
-        .store
-        .lock()
-        .unwrap()
-        .transcript_fingerprint("n1")
-        .unwrap();
     edit_doc(&folder, |doc| {
         doc.asr_model = Some("tdt".into());
         doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
-        doc.result_generation = Some(generation);
     });
-    a.sync(&root, now);
-    assert_eq!(
-        a.store
-            .lock()
-            .unwrap()
-            .transcript_fingerprint("n1")
-            .unwrap(),
-        previous_fingerprint
-    );
-    let previous = a
-        .store
-        .lock()
-        .unwrap()
-        .result_state("n1", "verified-manifest")
-        .unwrap()
-        .unwrap();
-    let previous = serde_json::from_value(previous).unwrap();
-    assert!(session_core::generation::resolve(&folder, Some(&previous)).is_ok());
-    let mut newcomer = computer();
-    newcomer.sync(&root, now);
-    assert!(
-        newcomer.record("n1").is_none(),
-        "a new receiver waits for all hashes"
-    );
-    fs::rename(&withheld, &generation_path).unwrap();
     assert_eq!(a.sync(&root, now), changed(&["n1"]));
+    assert!(a.reconciler.status().note("n1").waiting.is_empty());
 
     let s = a.store.lock().unwrap();
     for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
@@ -646,6 +612,297 @@ fn a_new_transcript_from_b_clears_as_recognition_results_for_that_note() {
         Some("tdt")
     );
     assert!(other.is_dir());
+}
+
+// Covers AE1 (R6, R7).
+#[test]
+fn a_new_session_md_with_the_old_summary_waits_until_the_summary_arrives() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
+
+    // A saved a new transcript and summary. The first sync batch delivers
+    // transcript.md and session.md, but not summary.md.
+    let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n";
+    let summary = "# Summary\n\nA new summary.\n";
+    fs::write(folder.join("transcript.md"), transcript).unwrap();
+    edit_doc(&folder, |doc| {
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+        doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
+    });
+    assert_eq!(b.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(b.reconciler.status().note("n1").waiting, [Waiting::Summary]);
+    // B follows the new transcript.
+    assert_eq!(
+        b.store
+            .lock()
+            .unwrap()
+            .transcript_fingerprint("n1")
+            .unwrap(),
+        Some(fingerprint(transcript.as_bytes()))
+    );
+
+    // The second batch delivers summary.md. The wait clears, and the scan
+    // reports the note, so an open note page reads it again.
+    fs::write(folder.join("summary.md"), summary).unwrap();
+    assert_eq!(b.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+}
+
+impl Computer {
+    /// A full scan of `root` at `now` (KTD7).
+    fn sync_at(&mut self, root: &Path, now: Instant) -> Changes {
+        let target = Target::Full(vec![root.to_path_buf()]);
+        self.reconciler
+            .run_at(&self.store, &target, &never_claimed, now)
+            .unwrap()
+    }
+
+    fn waiting(&self, id: &str) -> Vec<Waiting> {
+        self.reconciler.status().note(id).waiting
+    }
+}
+
+const HAND_EDIT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: A hand edit.\n";
+
+// Covers AE2 (R8), KTD7.
+#[test]
+fn a_hand_edit_of_the_transcript_waits_for_a_minute_and_then_is_a_hand_edit() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+    // The worker scans again at the deadline.
+    assert_eq!(b.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+
+    let almost = start + HAND_EDIT_WAIT - Duration::from_secs(1);
+    b.sync_at(&root, almost);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+
+    // At the deadline the note is a hand edit: it does not wait, and the
+    // scan reports it, so the note page releases the actions.
+    let changes = b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert!(changes.changed.contains(&"n1".to_string()), "{changes:?}");
+    assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(b.reconciler.next_due(), None);
+    b.sync_at(&root, start + HAND_EDIT_WAIT * 2);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers KTD7: a new change restarts the clock.
+#[test]
+fn a_second_change_during_the_wait_restarts_the_clock() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    b.sync_at(&root, start);
+    let later = start + HAND_EDIT_WAIT / 2;
+    fs::write(folder.join("summary.md"), "# Summary\n\nEdited.\n").unwrap();
+    b.sync_at(&root, later);
+    assert_eq!(b.reconciler.next_due(), Some(later + HAND_EDIT_WAIT));
+
+    b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript, Waiting::Summary]);
+    b.sync_at(&root, later + HAND_EDIT_WAIT);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers R8: a file that exists but cannot be read is never a hand edit.
+#[test]
+fn a_document_that_cannot_be_read_never_expires() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    // A folder in place of the file: the read fails.
+    fs::remove_file(folder.join("summary.md")).unwrap();
+    fs::create_dir(folder.join("summary.md")).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+    assert_eq!(b.reconciler.next_due(), None);
+    b.sync_at(&root, start + HAND_EDIT_WAIT * 10);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+}
+
+// Covers R8: a missing file expires, so that an action can make it again.
+#[test]
+fn a_missing_summary_expires_and_a_summary_that_arrives_clears_the_wait() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let summary = fs::read(folder.join("summary.md")).unwrap();
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::remove_file(folder.join("summary.md")).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+    // The file arrives before the deadline: the note does not wait.
+    fs::write(folder.join("summary.md"), &summary).unwrap();
+    b.sync_at(&root, start + Duration::from_secs(5));
+    assert!(b.waiting("n1").is_empty());
+    assert_eq!(b.reconciler.next_due(), None);
+
+    let later = start + Duration::from_secs(10);
+    fs::remove_file(folder.join("summary.md")).unwrap();
+    b.sync_at(&root, later);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+    b.sync_at(&root, later + HAND_EDIT_WAIT);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers R8: a missing transcript also expires. Regenerate Summary then
+// refuses with "The transcript is missing." (pipeline tests).
+#[test]
+fn a_missing_transcript_expires_after_the_wait() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::remove_file(folder.join("transcript.md")).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+    assert_eq!(b.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+    b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers R7: the scan and the adoption do not refuse a note for a
+// mismatch.
+#[test]
+fn a_new_transcript_with_the_old_session_md_waits_and_is_still_adopted() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "- bring snacks\n");
+
+    // The sync delivers the new transcript.md of A before its session.md.
+    fs::write(
+        folder.join("transcript.md"),
+        "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n",
+    )
+    .unwrap();
+    assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(b.state("n1"), SessionState::Saved);
+    assert_eq!(b.home("n1"), folder);
+    assert_eq!(b.notes("n1"), "- bring snacks\n");
+    assert_eq!(
+        b.reconciler.status().note("n1").waiting,
+        [Waiting::Transcript]
+    );
+}
+
+// Covers R6, R7, KTD6.
+#[test]
+fn a_rename_on_b_during_a_sync_keeps_the_old_fingerprints_and_the_note_waits() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    b.sync_roots(&[&root]);
+    let written = SessionDoc::read(&folder).unwrap();
+
+    // The sync delivers the new transcript.md of A before its session.md.
+    fs::write(
+        folder.join("transcript.md"),
+        "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n",
+    )
+    .unwrap();
+    b.sync_roots(&[&root]);
+    let rename = |title: &str| {
+        pipeline::folder_rename::rename_session(
+            &b.store,
+            "n1",
+            title,
+            &never_claimed,
+            &session_save::RealFs,
+        )
+        .unwrap()
+    };
+
+    // A title that keeps the folder name, then one that renames it.
+    assert_eq!(
+        rename("Planning?"),
+        pipeline::folder_rename::FolderRename::Unchanged
+    );
+    let doc = SessionDoc::read(&folder).unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Planning?"));
+    assert_eq!(doc.transcript_fingerprint, written.transcript_fingerprint);
+    assert_eq!(doc.summary_fingerprint, written.summary_fingerprint);
+
+    let pipeline::folder_rename::FolderRename::Moved(moved) = rename("Budget") else {
+        panic!("the folder did not move");
+    };
+    let doc = SessionDoc::read(&moved).unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Budget"));
+    assert_eq!(doc.transcript_fingerprint, written.transcript_fingerprint);
+    assert_eq!(doc.summary_fingerprint, written.summary_fingerprint);
+    b.sync_roots(&[&root]);
+    assert_eq!(
+        b.reconciler.status().note("n1").waiting,
+        [Waiting::Transcript]
+    );
+}
+
+// Covers KTD10.
+#[test]
+fn a_refresh_promotes_the_result_snapshot_only_when_both_documents_match() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    b.sync_roots(&[&root]);
+    let before = b.store.lock().unwrap().recognition_snapshot("n1").unwrap();
+
+    // A Transcribe Again on A wrote a new session.md with a new snapshot.
+    // Its transcript.md has not arrived.
+    let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n";
+    let snapshot = serde_json::json!({ "model": "tdt" });
+    edit_doc(&folder, |doc| {
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+        doc.recognition_snapshot = Some(snapshot.clone());
+    });
+    let refresh = |b: &Computer| {
+        refresh::refresh(
+            &mut b.store.lock().unwrap(),
+            "n1",
+            &folder,
+            options().read_timeout,
+        )
+        .unwrap()
+    };
+    refresh(&b);
+    assert_eq!(
+        b.store.lock().unwrap().recognition_snapshot("n1").unwrap(),
+        before
+    );
+
+    fs::write(folder.join("transcript.md"), transcript).unwrap();
+    refresh(&b);
+    assert_eq!(
+        b.store.lock().unwrap().recognition_snapshot("n1").unwrap(),
+        Some(snapshot)
+    );
 }
 
 // Covers KTD3: a writer inside its own run.
@@ -831,10 +1088,8 @@ fn a_targeted_scan_reports_a_note_whose_summary_alone_changed() {
     // The sync delivers summary.md and session.md together.
     let summary = "# Summary\n\nA new summary.\n";
     fs::write(folder.join("summary.md"), summary).unwrap();
-    let generation = session_save::result::stage(&folder, &folder).unwrap();
     edit_doc(&folder, |doc| {
         doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
-        doc.result_generation = Some(generation);
     });
     assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
     assert!(a.reconciler.status().note("n1").waiting.is_empty());

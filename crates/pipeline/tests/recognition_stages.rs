@@ -751,6 +751,58 @@ fn changed_archive_cannot_reuse_a_stale_processing_file() {
 }
 
 #[test]
+fn a_missing_or_stale_recognition_artifact_gives_no_reference() {
+    // KTD8: a save does not fail on a `recognition.jsonl` that it cannot
+    // use. It leaves the reference out.
+    use session_core::recognition::ARTIFACT_FILE;
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let dir = temp.path().join("route");
+    for stage in [Stage::Transcribe, Stage::Join] {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            &spec,
+            &provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap();
+    }
+    let record = store.lock().unwrap().session("route").unwrap().unwrap();
+    let doc = || pipeline::save::session_doc(&record, &segments, &dir).unwrap();
+    assert!(doc().recognition_artifact.is_some());
+    assert!(doc().recognition_audio.is_some());
+
+    // R9: a hand edit of `transcript.md` makes the timed text unusable.
+    let transcript = std::fs::read(dir.join("transcript.md")).unwrap();
+    std::fs::write(dir.join("transcript.md"), "Hand edit").unwrap();
+    let edited = doc();
+    assert!(edited.recognition_artifact.is_none());
+    assert!(edited.recognition_audio.is_none());
+    std::fs::write(dir.join("transcript.md"), transcript).unwrap();
+    assert!(doc().recognition_artifact.is_some());
+
+    // R11: the file is gone after the audio removal.
+    std::fs::remove_file(dir.join(ARTIFACT_FILE)).unwrap();
+    let missing = doc();
+    assert!(missing.recognition_artifact.is_none());
+    assert!(missing.recognition_audio.is_none());
+
+    // A folder with the name of the file is not a recognition artifact.
+    std::fs::create_dir(dir.join(ARTIFACT_FILE)).unwrap();
+    assert!(doc().recognition_artifact.is_none());
+}
+
+#[test]
 fn portable_reuse_requires_unchanged_transcript_and_suitable_timing() {
     use session_core::recognition::{ARTIFACT_FILE, Reuse, read_artifact, write_artifact};
     let (temp, store, spec, segments) = setup(SpeakerSource::Nemotron);
@@ -1386,7 +1438,7 @@ fn completed_nemo_resume(separate: bool) {
         .promote_result_snapshot("route", Some(&serde_json::to_value(&case.spec).unwrap()))
         .unwrap();
     // This synthetic native result uses the same neutral saved-artifact contract.
-    let mut doc = session_core::generation::manifest(&case.home).unwrap();
+    let mut doc = session_core::folder::SessionDoc::read(&case.home).unwrap();
     let mut blocks = vec![];
     if separate {
         case.original.speakers.clear();

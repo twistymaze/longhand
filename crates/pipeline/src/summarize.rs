@@ -126,35 +126,29 @@ pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
     turns_of(folder, &read_transcript(folder)?)
 }
 
+/// The bytes of the `transcript.md` in `folder`, or `None` when the file
+/// is not there. The read has a timeout: a synced folder can hold a file
+/// that does not download.
+pub(crate) fn transcript_bytes(folder: &Path) -> Result<Option<Vec<u8>>, StageError> {
+    let path = folder.join(TRANSCRIPT_FILE);
+    match read_timed(path.clone(), READ_TIMEOUT) {
+        Read::Bytes(bytes) => Ok(Some(bytes)),
+        Read::Missing => Ok(None),
+        Read::Failed(why) => Err(StageError::Failed(format!(
+            "the storage folder is not available: the transcript {} cannot be read: {why}",
+            path.display()
+        ))),
+    }
+}
+
 /// The text of the `transcript.md` in `folder`.
 fn read_transcript(folder: &Path) -> Result<String, StageError> {
-    if let Ok(doc) = session_core::generation::manifest(folder)
-        && doc.result_generation.is_some()
-    {
-        return String::from_utf8(session_core::generation::read(
-            folder,
-            &doc,
-            TRANSCRIPT_FILE,
-        )?)
-        .map_err(|e| StageError::Failed(e.to_string()));
-    }
     let path = folder.join(TRANSCRIPT_FILE);
-    // The read has a timeout: a synced folder can hold a file that does
-    // not download.
-    let bytes = match read_timed(path.clone(), READ_TIMEOUT) {
-        Read::Bytes(bytes) => bytes,
-        Read::Missing => {
-            return Err(StageError::Failed(format!(
-                "the transcript {} is not there",
-                path.display()
-            )));
-        }
-        Read::Failed(why) => {
-            return Err(StageError::Failed(format!(
-                "the storage folder is not available: the transcript {} cannot be read: {why}",
-                path.display()
-            )));
-        }
+    let Some(bytes) = transcript_bytes(folder)? else {
+        return Err(StageError::Failed(format!(
+            "the transcript {} is not there",
+            path.display()
+        )));
     };
     String::from_utf8(bytes).map_err(|e| {
         StageError::Failed(format!(
@@ -799,7 +793,20 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_title;
+    use super::{clean_title, read_transcript};
+
+    #[test]
+    fn the_transcript_is_read_from_the_note_files_only() {
+        let folder = tempfile::tempdir().unwrap();
+        // An older build named result copies that are not in the folder.
+        std::fs::write(
+            folder.path().join("session.md"),
+            "---\nsession_id: s\nstarted: 2026-09-22T14:00:00+00:00\nresult_generation:\n  id: committed-1\n  files:\n    transcript.md: a\n    summary.md: b\nsegments: []\n---\n",
+        )
+        .unwrap();
+        std::fs::write(folder.path().join("transcript.md"), "# Transcript\n").unwrap();
+        assert_eq!(read_transcript(folder.path()).unwrap(), "# Transcript\n");
+    }
 
     #[test]
     fn a_reply_is_cleaned_to_a_plain_title() {
