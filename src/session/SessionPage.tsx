@@ -3,6 +3,8 @@
 // - recording: My Notes, with the recording bar below (R11, R12);
 // - processing: the stages on Summary and Transcript (R14);
 // - saved: the summary, the transcript and the notes (R15).
+// The tabs read Summary, My Notes, Transcript. Summary shows from Stop, so
+// a recording has only My Notes and Transcript.
 // The toolbar has Back, the tabs, Copy for the open tab (R17) and the
 // "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
@@ -38,12 +40,12 @@ import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
 
-// The tabs follow the order things happen: notes during the recording,
-// then the transcript, then the summary.
+// Summary is first, because a reader who returns to a note wants the
+// summary. A recording has no summary yet, so its page leaves that tab out.
 const tabs: { value: Tab; label: string }[] = [
+  { value: "summary", label: "Summary" },
   { value: "notes", label: "My Notes" },
   { value: "transcript", label: "Transcript" },
-  { value: "summary", label: "Summary" },
 ];
 
 type Phase = "recording" | "processing" | "saved" | "missing";
@@ -71,8 +73,19 @@ function listOf(items: string[]): string {
 }
 
 /// A segmented control. The segments have one width, so the control keeps
-/// its shape when the level bars show on Transcript.
-function Tabs({ tab, onTab, meter }: { tab: Tab; onTab: (t: Tab) => void; meter: ReactNode }) {
+/// its shape when the level bars show on Transcript. The arrow keys move
+/// through `tabs`, the tabs that show.
+function Tabs({
+  tabs,
+  tab,
+  onTab,
+  meter,
+}: {
+  tabs: { value: Tab; label: string }[];
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  meter: ReactNode;
+}) {
   return (
     <div
       role="tablist"
@@ -192,7 +205,12 @@ export function SessionPage({
   const open = capture.status?.session_id === id || entry?.state === "capturing";
   const phase: Phase = open ? "recording" : !entry ? "missing" : entry.state === "saved" ? "saved" : "processing";
 
-  const [tab, setTab] = useState<Tab>(phase === "recording" ? "notes" : "summary");
+  const [chosen, setTab] = useState<Tab>(phase === "recording" ? "notes" : "summary");
+  // A recording has no summary yet, so its page has no Summary tab. A
+  // hidden tab is never the shown one, even in the render before the phase
+  // effect below moves the page.
+  const visibleTabs = phase === "recording" ? tabs.filter((t) => t.value !== "summary") : tabs;
+  const tab = visibleTabs.some((t) => t.value === chosen) ? chosen : "notes";
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [doc, setDoc] = useState<SessionDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -435,11 +453,7 @@ export function SessionPage({
     if (deleted) return null;
     if (phase === "missing") return <AfterStop>This note is no longer in the list.</AfterStop>;
     if (phase === "recording") {
-      return which === "summary" ? (
-        <AfterStop>The summary is written after you stop recording.</AfterStop>
-      ) : !detail ? null : (
-        liveView(capture.status?.recording ? "recording" : "interrupted")
-      );
+      return !detail ? null : liveView(capture.status?.recording ? "recording" : "interrupted");
     }
     if (phase === "processing") {
       // The live text stays until the saved transcript is ready. A note
@@ -530,6 +544,7 @@ export function SessionPage({
           </button>
         </div>
         <Tabs
+          tabs={visibleTabs}
           tab={tab}
           onTab={setTab}
           meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}

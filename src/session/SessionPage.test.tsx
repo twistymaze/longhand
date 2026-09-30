@@ -176,20 +176,82 @@ describe("SessionPage", () => {
     expect(selected()).toBe("true");
   });
 
-  test("the tabs follow the order things happen: My Notes, Transcript, Summary", () => {
+  const tabNames = () => screen.getAllByRole("tab").map((t) => t.textContent);
+
+  test("the tabs read Summary, My Notes, Transcript, because a returning reader wants the summary first", () => {
     const e = entry("s");
     mockPage(e);
     renderPage({ id: "s", sessions: sessionsOf([e]) });
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["My Notes", "Transcript", "Summary"]);
+    expect(tabNames()).toEqual(["Summary", "My Notes", "Transcript"]);
+    expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
   });
 
-  test("Stop moves the page to Summary, which shows the processing", async () => {
+  test("while the note records, Summary does not show", () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    expect(tabNames()).toEqual(["My Notes", "Transcript"]);
+    expect(screen.queryByRole("tab", { name: "Summary" })).toBeNull();
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("Stop shows Summary and moves the page to it, where the processing shows", async () => {
     const e = entry("rec", { state: "capturing" });
     mockPage(e);
     const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
     expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
     view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing", stage: "transcribe" }]));
+    expect(tabNames()).toEqual(["Summary", "My Notes", "Transcript"]);
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("Resume Recording hides Summary and moves the page to My Notes, and Stop shows it again", async () => {
+    const e = entry("s");
+    mockPage(e);
+    const view = renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+    view.rerenderWith(recordingCapture("s"), sessionsOf([{ ...e, state: "capturing" }]));
+    expect(tabNames()).toEqual(["My Notes", "Transcript"]);
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+    view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing", stage: "transcribe" }]));
+    expect(tabNames()).toEqual(["Summary", "My Notes", "Transcript"]);
+    expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("the arrow keys move through the tabs that show and wrap at the ends", async () => {
+    const e = entry("s");
+    mockPage(e);
+    const user = userEvent.setup();
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    const selected = () => screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")?.textContent;
+    tab("Summary").focus();
+    await user.keyboard("{ArrowRight}");
+    expect(selected()).toBe("My Notes");
+    expect(document.activeElement).toBe(tab("My Notes"));
+    await user.keyboard("{ArrowRight}");
+    expect(selected()).toBe("Transcript");
+    await user.keyboard("{ArrowRight}");
+    expect(selected()).toBe("Summary");
+    await user.keyboard("{ArrowLeft}");
+    expect(selected()).toBe("Transcript");
+  });
+
+  test("while recording, the arrow keys cycle only My Notes and Transcript", async () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    const user = userEvent.setup();
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    // The editor takes focus when it loads. Wait for it, then move focus to the tab.
+    await screen.findByRole("textbox", { name: "My Notes" });
+    tab("My Notes").focus();
+    await user.keyboard("{ArrowRight}");
+    expect(tab("Transcript").getAttribute("aria-selected")).toBe("true");
+    await user.keyboard("{ArrowRight}");
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+    // Showing My Notes gives the editor focus again, so move focus back to the tab.
+    tab("My Notes").focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(tab("Transcript").getAttribute("aria-selected")).toBe("true");
   });
 
   test("while recording, the Transcript tab shows bars that follow the input level", () => {
@@ -609,15 +671,14 @@ describe("SessionPage", () => {
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true);
   });
 
-  test("while recording, Transcript and Summary say what comes after Stop", async () => {
+  test("while recording, Transcript says what comes after Stop, and no text promises a summary", async () => {
     const e = entry("rec", { state: "capturing" });
     mockPage(e);
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
     const user = userEvent.setup();
     await user.click(tab("Transcript"));
     expect(screen.getByText(/transcript is ready after you stop recording/)).toBeTruthy();
-    await user.click(tab("Summary"));
-    expect(screen.getByText(/summary is written after you stop recording/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/summary is written after you stop recording/);
   });
 
   test("during processing, Summary shows the stage rows and My Notes stays editable", async () => {
