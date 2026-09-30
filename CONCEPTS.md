@@ -31,6 +31,11 @@ A staging folder is removed at launch only when its session is recorded as compl
 ### Home folder
 The folder that Save put a session into. A session keeps its home folder for life. A rename of the session changes the folder's name, not the folder: the session still has one home folder. When a saved session is resumed, recorded into and processed again, the app updates its home folder in place (it adds new audio next to the old audio and replaces the documents). It does not save a second copy.
 
+### Publication
+The step that writes a new result of a saved note into its home folder. The result is complete in local staging first. Then the publication writes the result files and writes `session.md` last. A small record on this computer, which never syncs, lets a publication that a crash stopped roll forward at the next launch. Only the computer that started a publication finishes it.
+
+Before each write, the publication checks whether another computer published a result for the note. If it did, this computer drops its unfinished result and writes nothing more: the last change wins. A publication changes only the result fields of `session.md`, so a title change or a rename is not a conflict.
+
 ### Title
 The name of a session, shown on Home, on the session page and in the home folder's name. Processing proposes it. The user can rename it at any time, and a title the user set is never replaced automatically. A session with no title yet shows its start time.
 
