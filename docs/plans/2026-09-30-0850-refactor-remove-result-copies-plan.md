@@ -333,9 +333,10 @@ In `Waiting` the note shows the files and the actions of R7 are held. In `HandEd
 - **Dependencies:** U5 (so that its tests are included).
 - **Files:** The test files that fail in the sweep below, found at run time; production code only when a test shows a real time-zone defect.
 - **Approach:**
-  1. Run the workspace suite once with `TZ=UTC` and once with `TZ=Asia/Kathmandu` (+05:45).
+  1. Find the tests: run the workspace suite once with `TZ=UTC` and once with `TZ=Asia/Kathmandu` (+05:45). This sweep is done once, in this unit only; no later gate runs the suite in more than one zone.
   2. For each test that fails in one of these zones and passes in the local zone, fix the test: compare parsed times or fixed offsets, never formatted time text or the local zone.
   3. When a failure shows a real defect in production code, fix the code and add a test for it.
+  4. Code that depends on the time zone gets tests that set the zone themselves (fixed offsets as inputs), so one normal run covers every zone.
 - **Test scenarios:**
   - Each fixed test passes in the local zone, `TZ=UTC` and `TZ=Asia/Kathmandu`.
 - **Verification:** The workspace suite passes in all three zones.
