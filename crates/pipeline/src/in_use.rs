@@ -239,17 +239,26 @@ impl InUseKeeper {
     /// One refresh at `now`: write the marker of each open note, and
     /// remove the marker of each note whose work ended.
     pub fn refresh(&self, now: DateTime<FixedOffset>) {
-        let open: BTreeMap<String, PathBuf> = match lock(&self.store).sessions() {
-            Ok(rows) => rows
-                .into_iter()
-                .filter(|r| !r.state.is_final())
-                .filter_map(|r| Some((r.id, PathBuf::from(r.home_path?))))
-                .collect(),
+        // The home folder of each row, and the IDs of the open notes. The
+        // store lock is released before the keeper touches a folder.
+        let rows = match lock(&self.store).sessions() {
+            Ok(rows) => rows,
             Err(e) => {
                 log::warn!("in-use: could not read the notes: {e}");
                 return;
             }
         };
+        let mut homes: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut open: BTreeMap<String, PathBuf> = BTreeMap::new();
+        for row in rows {
+            let Some(home) = row.home_path.map(PathBuf::from) else {
+                continue;
+            };
+            if !row.state.is_final() {
+                open.insert(row.id.clone(), home.clone());
+            }
+            homes.insert(row.id, home);
+        }
         let written = std::mem::take(&mut self.state().written);
         let mut kept = BTreeMap::new();
         for (id, old) in written {
@@ -260,7 +269,15 @@ impl InUseKeeper {
                     self.remove(&id, &old);
                 }
                 None => {
-                    if self.remove(&id, &old) {
+                    // Save can rename the folder when it ends the work, so
+                    // the marker can be in the current home folder and not
+                    // at the recorded path.
+                    let removed_old = self.remove(&id, &old);
+                    let removed = match homes.get(&id) {
+                        Some(current) if *current != old => self.remove(&id, current),
+                        _ => removed_old,
+                    };
+                    if removed {
                         log::info!("in-use: removed the marker of {id}");
                     } else {
                         // The next refresh tries again.

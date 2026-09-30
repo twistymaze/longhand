@@ -605,6 +605,37 @@ fn a_refresh_does_not_make_a_home_folder_that_a_rename_moved() {
 }
 
 #[test]
+fn the_keeper_removes_the_marker_after_save_renames_the_folder() {
+    // A Resume or Transcribe Again gives a new title: Save applies Saved
+    // and renames the home folder. The marker moves with the folder.
+    let note = saved_note();
+    let keeper = InUseKeeper::new(note.store.clone(), RUN_A);
+    open(&note);
+    keeper.refresh(now());
+    assert_eq!(markers(&note.home), vec![marker_name(RUN_A)]);
+    let renamed = note.root.join("New title");
+    fs::rename(&note.home, &renamed).unwrap();
+    {
+        let mut store = note.store.lock().unwrap();
+        store
+            .apply(
+                ID,
+                &Event::UserStop {
+                    at: now(),
+                    retained_audio: true,
+                },
+            )
+            .unwrap();
+        store.apply(ID, &Event::Dequeued).unwrap();
+        store.apply(ID, &Event::Saved).unwrap();
+        store.set_home_path(ID, &renamed.to_string_lossy()).unwrap();
+    }
+    keeper.refresh(now());
+    assert!(markers(&renamed).is_empty());
+    assert!(!in_use(&renamed, now()).unwrap());
+}
+
+#[test]
 fn the_keeper_thread_writes_at_once_when_woken_and_stops() {
     let note = saved_note();
     let keeper = InUseKeeper::new(note.store.clone(), RUN_A);
