@@ -340,3 +340,130 @@ fn migration_fourteen_keeps_existing_segments_with_their_audio() {
         .unwrap();
     assert_eq!(flags, 2);
 }
+
+// ------------------------------------------------ applied migration hashes
+
+/// The rows of `applied_migrations`, in version order.
+fn applied_rows(path: &std::path::Path) -> Vec<(i64, String)> {
+    let conn = Connection::open(path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT version, sha256 FROM applied_migrations ORDER BY version")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The rows that a database with all of this build's migrations must have.
+fn build_rows() -> Vec<(i64, String)> {
+    session_core::schema::migration_hashes()
+        .into_iter()
+        .enumerate()
+        .map(|(i, hash)| (i as i64 + 1, hash))
+        .collect()
+}
+
+fn user_version(path: &std::path::Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_new_database_records_each_migration_with_the_build_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    drop(Store::open(&path).unwrap());
+    let rows = applied_rows(&path);
+    assert_eq!(rows.len(), session_core::schema::MIGRATION_SQL.len());
+    assert_eq!(rows, build_rows());
+}
+
+#[test]
+fn a_database_with_no_table_gets_its_rows_and_keeps_its_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, 14)
+            .unwrap();
+        add_session(&conn, "s1");
+    }
+    let store = Store::open(&path).unwrap();
+    assert!(store.session("s1").unwrap().is_some());
+    drop(store);
+    assert_eq!(applied_rows(&path), build_rows()[..14].to_vec());
+    assert_eq!(user_version(&path), 14);
+}
+
+#[test]
+fn two_opens_give_the_same_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    drop(Store::open(&path).unwrap());
+    let first = applied_rows(&path);
+    drop(Store::open(&path).unwrap());
+    assert_eq!(applied_rows(&path), first);
+}
+
+#[test]
+fn a_comment_or_whitespace_change_gives_the_same_hash() {
+    use session_core::schema::migration_hash;
+    let sql = "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);\n\
+               ALTER TABLE t ADD COLUMN x TEXT;";
+    let commented = "-- A new table.\n\
+                     CREATE TABLE t (\n    id INTEGER PRIMARY KEY, -- the key\n    name TEXT\n);\n\n\
+                     /* A block\n   comment. */\n\
+                     ALTER TABLE t ADD COLUMN x TEXT;\n";
+    let spaced =
+        "  CREATE\tTABLE t(id INTEGER PRIMARY KEY,name TEXT);ALTER TABLE t ADD COLUMN x TEXT;";
+    assert_eq!(migration_hash(sql), migration_hash(commented));
+    assert_eq!(migration_hash(sql), migration_hash(spaced));
+}
+
+#[test]
+fn a_changed_statement_gives_a_different_hash() {
+    use session_core::schema::migration_hash;
+    assert_ne!(
+        migration_hash("ALTER TABLE t ADD COLUMN x TEXT;"),
+        migration_hash("ALTER TABLE t ADD COLUMN y TEXT;")
+    );
+}
+
+/// Covers AE4. A later build adds a migration: the database migrates to the
+/// new version, keeps its rows, and records a row for the new version.
+#[test]
+fn an_added_migration_records_its_hash() {
+    use session_core::schema;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    drop(Store::open(&path).unwrap());
+    add_session(&Connection::open(&path).unwrap(), "s1");
+
+    let extra = "ALTER TABLE sessions ADD COLUMN later_column TEXT;";
+    let mut steps = schema::migration_steps();
+    steps.push(M::up(extra));
+    let mut hashes = schema::migration_hashes();
+    hashes.push(schema::migration_hash(extra));
+    let mut conn = Connection::open(&path).unwrap();
+    Migrations::new(steps).to_latest(&mut conn).unwrap();
+    schema::record_applied_migrations(&conn, &hashes).unwrap();
+    drop(conn);
+
+    let n = schema::MIGRATION_SQL.len();
+    let rows = applied_rows(&path);
+    assert_eq!(rows.len(), n + 1);
+    assert_eq!(rows[..n].to_vec(), build_rows());
+    assert_eq!(rows[n], (n as i64 + 1, schema::migration_hash(extra)));
+    assert_eq!(user_version(&path), n as i64 + 1);
+    let count: i64 = Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM sessions WHERE id = 's1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+}

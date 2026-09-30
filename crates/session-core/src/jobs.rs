@@ -319,6 +319,7 @@ impl Store {
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         crate::schema::migrations().to_latest(&mut conn)?;
+        crate::schema::record_applied_migrations(&conn, &crate::schema::migration_hashes())?;
         Ok(Self { conn })
     }
 
