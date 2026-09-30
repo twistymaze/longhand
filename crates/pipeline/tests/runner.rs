@@ -3784,6 +3784,27 @@ async fn a_title_change_that_keeps_the_folder_name_rewrites_session_md() {
     assert_eq!(document_title(&folder).as_deref(), Some("Budget review?"));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_change_that_keeps_the_folder_name_keeps_the_recorded_fingerprints() {
+    // KTD6: only the publication and the accept of a hand edit set the
+    // fingerprints. A rename does not read them from the files.
+    let r = rig().await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    let before = session_md(&folder);
+    std::fs::write(folder.join(TRANSCRIPT_FILE), "Hand edit\n").unwrap();
+    std::fs::write(folder.join("summary.md"), "Hand edit\n").unwrap();
+
+    assert_eq!(
+        r.runner.rename_session("s", "Budget review?").unwrap(),
+        FolderRename::Unchanged
+    );
+    let doc = session_md(&folder);
+    assert_eq!(doc.title.as_deref(), Some("Budget review?"));
+    assert_eq!(doc.transcript_fingerprint, before.transcript_fingerprint);
+    assert_eq!(doc.summary_fingerprint, before.summary_fingerprint);
+    assert_eq!(doc.recognition_artifact, before.recognition_artifact);
+}
+
 // ------------------------------------------------- notes and titles (U5)
 
 use session_core::{Title, TitleSource};
@@ -4463,12 +4484,76 @@ async fn a_note_with_no_recognition_artifact_regenerates_renames_and_saves_notes
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_note_whose_audio_is_removed_has_no_recognition_jsonl_and_regenerates_and_renames() {
+    // Covers AE4, R11, R12, through the removal step.
+    use pipeline::remove_audio::{NoteSync, no_guard, remove_audio};
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    let artifact = session_core::recognition::ARTIFACT_FILE;
+    let written = std::fs::read(home.join("session.md")).unwrap();
+
+    let removal = remove_audio(
+        &r.store,
+        r.runner.claims(),
+        "s",
+        no_guard(),
+        NoteSync::Synced,
+    )
+    .unwrap();
+    assert!(removal.complete());
+    assert!(!home.join(artifact).exists());
+    assert_eq!(std::fs::read(home.join("session.md")).unwrap(), written);
+
+    let summary = read(&home, "summary.md");
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert_ne!(read(&home, "summary.md"), summary);
+    assert!(session_md(&home).recognition_artifact.is_none());
+    assert!(!home.join(artifact).exists());
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_fingerprints_match(&new);
+    assert!(!new.join(artifact).exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_during_a_regeneration_on_another_computer_brings_no_recognition_jsonl_back() {
+    // KTD5: the regeneration never writes `recognition.jsonl`, and its
+    // `session.md` drops the reference to a file that is gone.
+    let r = rig().await;
+    let _first = numbered_summaries(&r).await;
+    let home = note_with_timed_text(&r).await;
+    let artifact = home.join(session_core::recognition::ARTIFACT_FILE);
+    // Another computer removes the audio during the summary call.
+    let removed = artifact.clone();
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let _ = std::fs::remove_file(&removed);
+        (200, http::completion("The new summary."))
+    }));
+    let _second = summaries_from(&r, reply, None).await;
+
+    r.runner.regenerate_summary("s").await.unwrap();
+
+    assert!(read(&home, "summary.md").contains("The new summary."));
+    let doc = session_md(&home);
+    assert!(doc.recognition_artifact.is_none());
+    assert!(doc.recognition_audio.is_none());
+    assert!(!artifact.exists());
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rename_after_a_hand_edit_of_the_transcript_writes_session_md() {
     // R9: the edit makes the saved timed text unusable. The write does not
     // fail on it.
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let home = note_with_timed_text(&r).await;
+    let before = session_md(&home);
     std::fs::write(home.join(TRANSCRIPT_FILE), "Hand edit\n").unwrap();
 
     let renamed = r.runner.rename_session("s", "Budget review").unwrap();
@@ -4476,6 +4561,11 @@ async fn a_rename_after_a_hand_edit_of_the_transcript_writes_session_md() {
     assert_eq!(renamed, FolderRename::Moved(new.clone()));
     assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
     assert_eq!(read(&new, TRANSCRIPT_FILE), "Hand edit\n");
+    // KTD6: the rename keeps the recorded fingerprint.
+    assert_eq!(
+        session_md(&new).transcript_fingerprint,
+        before.transcript_fingerprint
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

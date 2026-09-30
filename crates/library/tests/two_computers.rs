@@ -676,6 +676,58 @@ fn a_new_transcript_with_the_old_session_md_waits_and_is_still_adopted() {
     );
 }
 
+// Covers R6, R7, KTD6.
+#[test]
+fn a_rename_on_b_during_a_sync_keeps_the_old_fingerprints_and_the_note_waits() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    b.sync_roots(&[&root]);
+    let written = SessionDoc::read(&folder).unwrap();
+
+    // The sync delivers the new transcript.md of A before its session.md.
+    fs::write(
+        folder.join("transcript.md"),
+        "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n",
+    )
+    .unwrap();
+    b.sync_roots(&[&root]);
+    let rename = |title: &str| {
+        pipeline::folder_rename::rename_session(
+            &b.store,
+            "n1",
+            title,
+            &never_claimed,
+            &session_save::RealFs,
+        )
+        .unwrap()
+    };
+
+    // A title that keeps the folder name, then one that renames it.
+    assert_eq!(
+        rename("Planning?"),
+        pipeline::folder_rename::FolderRename::Unchanged
+    );
+    let doc = SessionDoc::read(&folder).unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Planning?"));
+    assert_eq!(doc.transcript_fingerprint, written.transcript_fingerprint);
+    assert_eq!(doc.summary_fingerprint, written.summary_fingerprint);
+
+    let pipeline::folder_rename::FolderRename::Moved(moved) = rename("Budget") else {
+        panic!("the folder did not move");
+    };
+    let doc = SessionDoc::read(&moved).unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Budget"));
+    assert_eq!(doc.transcript_fingerprint, written.transcript_fingerprint);
+    assert_eq!(doc.summary_fingerprint, written.summary_fingerprint);
+    b.sync_roots(&[&root]);
+    assert_eq!(
+        b.reconciler.status().note("n1").waiting,
+        [Waiting::Transcript]
+    );
+}
+
 // Covers KTD10.
 #[test]
 fn a_refresh_promotes_the_result_snapshot_only_when_both_documents_match() {

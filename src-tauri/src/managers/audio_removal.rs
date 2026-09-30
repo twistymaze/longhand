@@ -36,8 +36,8 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset};
 use pipeline::SharedStore;
 use pipeline::remove_audio::{
-    Eligibility, EligibilityInputs, Guard, Removal, RemoveAudioError, eligibility, finish_removal,
-    remove_audio, safe_audio_name,
+    Eligibility, EligibilityInputs, Guard, NoteSync, Removal, RemoveAudioError, eligibility,
+    finish_removal, remove_audio, safe_audio_name,
 };
 use session_core::jobs::Claims;
 use session_core::{SessionRecord, SessionState, Store, folder};
@@ -73,6 +73,9 @@ pub struct PassInputs<'a> {
     /// home folder: its Destination is available and its `session.md` can
     /// be read.
     pub note_readable: &'a dyn Fn(&str, &Path) -> bool,
+    /// Whether the note with this id waits for a sync ([`note_sync`]).
+    /// It controls only the delete of `recognition.jsonl` (KTD8).
+    pub note_sync: &'a dyn Fn(&str) -> NoteSync,
     /// The delay of the setting in whole days, or `None` when the setting
     /// is off, is not known, or the shared settings are not available
     /// (KTD3). The pass reads it again before each note.
@@ -150,6 +153,24 @@ fn saved_notes(store: &SharedStore) -> Result<Vec<(String, PathBuf)>, String> {
         .collect();
     notes.sort();
     Ok(notes)
+}
+
+/// Whether the note `id` waits for a sync: the latest scan found that its
+/// `transcript.md` or `summary.md` does not match `session.md` (R7). The
+/// removal pass and Remove Audio use it for the delete of
+/// `recognition.jsonl` only (KTD8).
+pub(crate) fn note_sync(status: &library::status::LibraryStatus, id: &str) -> NoteSync {
+    let waiting = status.note(id).waiting.iter().any(|part| {
+        matches!(
+            part,
+            library::scan::Waiting::Transcript | library::scan::Waiting::Summary
+        )
+    });
+    if waiting {
+        NoteSync::Waiting
+    } else {
+        NoteSync::Synced
+    }
 }
 
 /// Whether a segment of the note has its removal marker and still has its
@@ -311,7 +332,13 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
             folder: |record: &SessionRecord| pass_folder_guard(inputs, record),
             store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
         };
-        let result = finish_removal(inputs.store, inputs.claims, id, guard);
+        let result = finish_removal(
+            inputs.store,
+            inputs.claims,
+            id,
+            guard,
+            (inputs.note_sync)(id),
+        );
         record_step(
             inputs,
             id,
@@ -340,7 +367,13 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
                 new_removal_store_checks(inputs, store, record)
             },
         };
-        let result = remove_audio(inputs.store, inputs.claims, id, guard);
+        let result = remove_audio(
+            inputs.store,
+            inputs.claims,
+            id,
+            guard,
+            (inputs.note_sync)(id),
+        );
         record_step(inputs, id, result, &mut report.removed, &mut report.changed);
     }
     report
@@ -477,6 +510,7 @@ impl AudioRemovalManager {
         };
         let note_readable =
             |id: &str, home: &Path| !self.status.storage_unavailable(id, Some(home));
+        let sync = |id: &str| note_sync(&self.status, id);
         let now = || chrono::Local::now().fixed_offset();
         let row_changed = |id: &str| {
             let changes = LibraryChanged {
@@ -492,6 +526,7 @@ impl AudioRemovalManager {
             claims: &self.claims,
             storage: storage.as_deref(),
             note_readable: &note_readable,
+            note_sync: &sync,
             delay_days: &delay_days,
             now: &now,
             row_changed: &row_changed,
@@ -606,6 +641,8 @@ mod tests {
         library: &'a Library,
         delay: Cell<Option<u32>>,
         readable: Cell<bool>,
+        /// The status of the library that [`Env::scan`] gives.
+        status: Arc<library::status::LibraryStatus>,
         changed: RefCell<Vec<String>>,
         /// Called after each row change, to change the world during a pass.
         after_change: Box<dyn Fn(&Env)>,
@@ -617,6 +654,7 @@ mod tests {
                 library,
                 delay: Cell::new(delay),
                 readable: Cell::new(true),
+                status: Arc::default(),
                 changed: RefCell::default(),
                 after_change: Box::new(|_| {}),
             }
@@ -632,6 +670,7 @@ mod tests {
                 );
                 self.readable.get()
             };
+            let sync = |id: &str| note_sync(&self.status, id);
             let delay_days = || self.delay.get();
             let row_changed = |id: &str| {
                 self.changed.borrow_mut().push(id.to_string());
@@ -642,6 +681,7 @@ mod tests {
                 claims: &self.library.claims,
                 storage: Some(&self.library.root),
                 note_readable: &note_readable,
+                note_sync: &sync,
                 delay_days: &delay_days,
                 now: &now,
                 row_changed: &row_changed,
@@ -652,6 +692,97 @@ mod tests {
         fn pass(&self) -> PassReport {
             self.run(run_pass)
         }
+
+        /// Scan the storage folder into the status, as the library worker
+        /// does.
+        fn scan(&self) {
+            library::reconcile::Reconciler::default()
+                .with_status(Arc::clone(&self.status))
+                .run(
+                    &self.library.store,
+                    &library::reconcile::Target::Full(vec![self.library.root.clone()]),
+                    &|_| false,
+                )
+                .unwrap();
+        }
+    }
+
+    fn has_recognition(home: &Path) -> bool {
+        home.join(session_core::recognition::ARTIFACT_FILE)
+            .symlink_metadata()
+            .is_ok()
+    }
+
+    fn write_recognition(home: &Path) {
+        std::fs::write(
+            home.join(session_core::recognition::ARTIFACT_FILE),
+            b"{\"version\":1}\n",
+        )
+        .unwrap();
+    }
+
+    // Covers R11: the pass deletes `recognition.jsonl` with the last audio,
+    // and does not write `session.md`.
+    #[test]
+    fn a_pass_deletes_recognition_jsonl_with_the_last_audio() {
+        let library = library();
+        let home = library.saved_note("20260831-0900-aaaa", "Planning", 31);
+        write_recognition(&home);
+        let before = documents(&home);
+        let env = Env::new(&library, Some(30));
+        env.scan();
+
+        let report = env.pass();
+
+        assert_eq!(report.removed, vec!["20260831-0900-aaaa"]);
+        assert!(!has_audio(&home));
+        assert!(!has_recognition(&home));
+        assert_eq!(documents(&home), before);
+    }
+
+    // KTD8: a note that waits for a sync loses its audio. Only the delete
+    // of `recognition.jsonl` waits.
+    #[test]
+    fn a_note_that_waits_for_a_sync_loses_its_audio_and_keeps_recognition_jsonl() {
+        let library = library();
+        let id = "20260831-0900-aaaa";
+        let home = library.saved_note(id, "Planning", 31);
+        write_recognition(&home);
+        // The new transcript.md arrives before its session.md.
+        std::fs::write(
+            home.join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: Hello again.\n",
+        )
+        .unwrap();
+        let env = Env::new(&library, Some(30));
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Waiting);
+
+        let report = env.pass();
+
+        assert_eq!(report.removed, vec![id]);
+        assert!(!has_audio(&home));
+        assert!(has_marker(&home));
+        assert!(has_recognition(&home));
+    }
+
+    #[test]
+    fn only_a_transcript_or_a_summary_that_waits_holds_the_recognition_delete() {
+        let library = library();
+        let id = "20260831-0900-aaaa";
+        let home = library.saved_note(id, "Planning", 31);
+        let env = Env::new(&library, Some(30));
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Synced);
+
+        // A notes.md that differs does not hold the delete.
+        std::fs::write(home.join("notes.md"), "Other notes\n").unwrap();
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Synced);
+
+        std::fs::write(home.join("summary.md"), "Another summary\n").unwrap();
+        env.scan();
+        assert_eq!(note_sync(&env.status, id), NoteSync::Waiting);
     }
 
     fn has_audio(home: &Path) -> bool {

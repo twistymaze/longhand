@@ -339,14 +339,14 @@ fn read_document(folder: &Path) -> Option<SessionDoc> {
         .and_then(|text| SessionDoc::parse(&text).ok())
 }
 
-/// Rewrite `session.md` in `folder` when it is not what the stored record
-/// and the folder's files give: for example a new title or title source,
-/// or a fingerprint that an earlier write left out of date.
+/// Rewrite `session.md` in `folder` when the stored record gives a
+/// different document, for example a new title or title source. The
+/// result fields stay as `session.md` records them (KTD6).
 fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path) {
     let Some(written) = read_document(folder) else {
         return;
     };
-    let result = match session_doc(record, segments, folder) {
+    let result = match document(record, segments, folder, Some(written.clone())) {
         Ok(doc) if doc == written => Ok(()),
         Ok(doc) => home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())
             .map_err(StageError::from),
@@ -360,23 +360,38 @@ fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path)
     }
 }
 
-/// Write `session.md` in `folder` from the stored record, with the
-/// fingerprints of the folder's `transcript.md` and `summary.md`.
+/// Write `session.md` in `folder` from the stored record. The result
+/// fields stay as the present `session.md` records them (KTD6).
 pub(crate) fn write_document(
     record: &SessionRecord,
     segments: &[Segment],
     folder: &Path,
 ) -> Result<(), StageError> {
+    let doc = document(record, segments, folder, read_document(folder))?;
+    home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())?;
+    Ok(())
+}
+
+/// The `session.md` that the stored record gives, with the result fields
+/// of `previous`. Only the publication and the accept of a hand edit set
+/// the result fingerprints (KTD6). A rename or a Move on a computer that
+/// receives a sync thus does not record the fingerprints of files that
+/// are only partly synced.
+fn document(
+    record: &SessionRecord,
+    segments: &[Segment],
+    folder: &Path,
+    previous: Option<SessionDoc>,
+) -> Result<SessionDoc, StageError> {
     let mut doc = session_doc(record, segments, folder)?;
-    if let Some(previous) = read_document(folder) {
+    if let Some(previous) = previous {
         doc.recognition_artifact = previous.recognition_artifact;
         doc.recognition_snapshot = previous.recognition_snapshot;
         doc.recognition_audio = previous.recognition_audio;
         doc.transcript_fingerprint = previous.transcript_fingerprint;
         doc.summary_fingerprint = previous.summary_fingerprint;
     }
-    home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())?;
-    Ok(())
+    Ok(doc)
 }
 
 fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {

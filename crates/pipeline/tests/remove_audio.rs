@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use pipeline::SharedStore;
 use pipeline::remove_audio::{
-    Eligibility, EligibilityInputs, FolderCheck, Guard, RemoveAudioError, SegmentOutcome,
+    Eligibility, EligibilityInputs, FolderCheck, Guard, NoteSync, RemoveAudioError, SegmentOutcome,
     StoreCheck, eligibility, finish_removal, no_guard, remove_audio, remove_audio_with,
     safe_audio_name,
 };
 use session_core::Segment;
 use session_core::folder::{REMOVAL_MARKER_TEXT, SessionDoc, fingerprint, removal_marker};
 use session_core::jobs::{Adoption, Claims};
+use session_core::recognition::ARTIFACT_FILE;
 
 const ID: &str = "20260901-0900-abcd";
 const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
@@ -103,7 +104,7 @@ fn saved_note(segments: &[Segment]) -> Note {
 }
 
 fn run(note: &Note) -> pipeline::remove_audio::Removal {
-    remove_audio(&note.store, &note.claims, ID, no_guard()).unwrap()
+    remove_audio(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced).unwrap()
 }
 
 fn outcomes(removal: &pipeline::remove_audio::Removal) -> Vec<SegmentOutcome> {
@@ -133,6 +134,11 @@ fn contents(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     out
 }
 
+/// Write a `recognition.jsonl` into the home folder, as a save does.
+fn with_recognition(home: &Path) {
+    fs::write(home.join(ARTIFACT_FILE), b"{\"version\":1}\n").unwrap();
+}
+
 fn documents(home: &Path) -> Vec<Vec<u8>> {
     ["session.md", "transcript.md", "summary.md", "notes.md"]
         .iter()
@@ -144,12 +150,17 @@ fn documents(home: &Path) -> Vec<Vec<u8>> {
 
 #[test]
 fn ae1_a_saved_note_loses_all_audio_and_keeps_its_documents() {
-    // Covers AE1, R5, R6.
+    // Covers AE1, AE4, R5, R6, R11.
     let segments = three_segments();
     let note = saved_note(&segments);
+    with_recognition(&note.home);
     let before = documents(&note.home);
 
     let removal = run(&note);
+
+    // The last audio goes, so `recognition.jsonl` goes too. `session.md`
+    // does not change.
+    assert!(!note.home.join(ARTIFACT_FILE).exists());
 
     assert_eq!(outcomes(&removal), vec![SegmentOutcome::Removed; 3]);
     assert!(removal.row_changed);
@@ -273,13 +284,20 @@ fn a_failed_delete_leaves_the_marker_and_the_next_run_finishes() {
     let note = saved_note(&three_segments()[..2]);
     let failing = note.home.join(audio(1));
 
-    let removal = remove_audio_with(&note.store, &note.claims, ID, no_guard(), |path| {
-        if path == failing {
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-        } else {
-            fs::remove_file(path)
-        }
-    })
+    let removal = remove_audio_with(
+        &note.store,
+        &note.claims,
+        ID,
+        no_guard(),
+        NoteSync::Synced,
+        |path| {
+            if path == failing {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                fs::remove_file(path)
+            }
+        },
+    )
     .unwrap();
 
     assert_eq!(removal.segments[0].outcome, SegmentOutcome::Removed);
@@ -588,7 +606,7 @@ fn a_note_that_is_not_saved_keeps_its_audio() {
     );
     let before = contents(dir.path());
 
-    let result = remove_audio(&store, &Claims::default(), ID, no_guard());
+    let result = remove_audio(&store, &Claims::default(), ID, no_guard(), NoteSync::Synced);
 
     assert!(matches!(result, Err(RemoveAudioError::Busy("capturing"))));
     assert_eq!(contents(dir.path()), before);
@@ -600,7 +618,7 @@ fn a_note_with_a_claim_keeps_its_audio() {
     let _claim = note.claims.regenerate(ID).unwrap();
     let before = contents(&note.home);
 
-    let result = remove_audio(&note.store, &note.claims, ID, no_guard());
+    let result = remove_audio(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced);
 
     assert!(matches!(
         result,
@@ -631,8 +649,20 @@ fn a_guard_that_refuses_keeps_the_audio_and_releases_the_claim() {
     let before = contents(&note.home);
 
     let results = [
-        remove_audio(&note.store, &note.claims, ID, refuse_folder()),
-        remove_audio(&note.store, &note.claims, ID, refuse_store()),
+        remove_audio(
+            &note.store,
+            &note.claims,
+            ID,
+            refuse_folder(),
+            NoteSync::Synced,
+        ),
+        remove_audio(
+            &note.store,
+            &note.claims,
+            ID,
+            refuse_store(),
+            NoteSync::Synced,
+        ),
     ];
 
     for result in results {
@@ -650,7 +680,7 @@ fn the_store_reason_comes_before_the_folder_reason() {
         store: |_: &session_core::Store, _: &session_core::SessionRecord| Err("move open"),
     };
 
-    let result = remove_audio(&note.store, &note.claims, ID, guard);
+    let result = remove_audio(&note.store, &note.claims, ID, guard, NoteSync::Synced);
 
     assert!(matches!(result, Err(RemoveAudioError::Busy("move open"))));
 }
@@ -675,7 +705,7 @@ fn the_folder_check_runs_with_no_store_lock() {
         },
     };
 
-    let removal = remove_audio(&note.store, &note.claims, ID, guard).unwrap();
+    let removal = remove_audio(&note.store, &note.claims, ID, guard, NoteSync::Synced).unwrap();
 
     assert!(folder_ran.get());
     assert!(removal.complete());
@@ -687,17 +717,24 @@ fn the_step_writes_the_marker_before_the_delete_and_holds_a_claim() {
     let note = saved_note(&three_segments()[..1]);
     let claims = note.claims.clone();
     let home = note.home.clone();
-    let removal = remove_audio_with(&note.store, &note.claims, ID, no_guard(), |path| {
-        assert_eq!(
-            fs::read_to_string(marker(&home, &audio(0))).unwrap(),
-            REMOVAL_MARKER_TEXT
-        );
-        // A summary regeneration and a Move cannot start.
-        assert!(claims.busy(ID));
-        assert!(claims.regenerate(ID).is_none());
-        assert!(claims.moving(ID).is_none());
-        fs::remove_file(path)
-    })
+    let removal = remove_audio_with(
+        &note.store,
+        &note.claims,
+        ID,
+        no_guard(),
+        NoteSync::Synced,
+        |path| {
+            assert_eq!(
+                fs::read_to_string(marker(&home, &audio(0))).unwrap(),
+                REMOVAL_MARKER_TEXT
+            );
+            // A summary regeneration and a Move cannot start.
+            assert!(claims.busy(ID));
+            assert!(claims.regenerate(ID).is_none());
+            assert!(claims.moving(ID).is_none());
+            fs::remove_file(path)
+        },
+    )
     .unwrap();
     assert!(removal.complete());
     assert!(!note.claims.busy(ID));
@@ -708,7 +745,7 @@ fn a_missing_home_folder_is_not_created() {
     let note = saved_note(&three_segments());
     fs::remove_dir_all(&note.home).unwrap();
 
-    let result = remove_audio(&note.store, &note.claims, ID, no_guard());
+    let result = remove_audio(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced);
 
     assert!(matches!(result, Err(RemoveAudioError::NoFolder)));
     assert!(!note.home.exists());
@@ -718,8 +755,190 @@ fn a_missing_home_folder_is_not_created() {
 #[test]
 fn an_unknown_note_is_an_error() {
     let store = common::store();
-    let result = remove_audio(&store, &Claims::default(), "no-such-note", no_guard());
+    let result = remove_audio(
+        &store,
+        &Claims::default(),
+        "no-such-note",
+        no_guard(),
+        NoteSync::Synced,
+    );
     assert!(matches!(result, Err(RemoveAudioError::Failed(_))));
+}
+
+// ------------------------------------------------------- recognition.jsonl
+
+#[test]
+fn a_note_that_waits_for_a_sync_loses_its_audio_and_keeps_recognition_jsonl() {
+    // KTD8: only the delete of `recognition.jsonl` waits.
+    let segments = three_segments();
+    let note = saved_note(&segments);
+    with_recognition(&note.home);
+
+    let removal =
+        remove_audio(&note.store, &note.claims, ID, no_guard(), NoteSync::Waiting).unwrap();
+
+    assert!(removal.complete());
+    for segment in &segments {
+        assert!(!note.home.join(&segment.audio_file).exists());
+    }
+    assert!(note.home.join(ARTIFACT_FILE).is_file());
+
+    // A later run, when the note no longer waits, deletes the file.
+    let removal = run(&note);
+    assert_eq!(outcomes(&removal), vec![SegmentOutcome::AlreadyRemoved; 3]);
+    assert!(!note.home.join(ARTIFACT_FILE).exists());
+}
+
+#[test]
+fn a_removal_that_is_not_complete_keeps_recognition_jsonl() {
+    let note = saved_note(&three_segments()[..2]);
+    with_recognition(&note.home);
+    let failing = note.home.join(audio(1));
+
+    let removal = remove_audio_with(
+        &note.store,
+        &note.claims,
+        ID,
+        no_guard(),
+        NoteSync::Synced,
+        |path| {
+            if path == failing {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                fs::remove_file(path)
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(!removal.complete());
+    assert!(note.home.join(ARTIFACT_FILE).is_file());
+
+    let removal = run(&note);
+    assert!(removal.complete());
+    assert!(!note.home.join(ARTIFACT_FILE).exists());
+}
+
+#[test]
+fn a_note_with_an_unsafe_audio_name_keeps_recognition_jsonl() {
+    let segments = vec![
+        segment(0, "2026-09-01T09:01:00-05:00", &audio(0)),
+        segment(1, "2026-09-01T09:02:00-05:00", "Session.md"),
+    ];
+    let note = saved_note(&segments);
+    with_recognition(&note.home);
+
+    let removal = run(&note);
+
+    assert_eq!(
+        outcomes(&removal),
+        vec![SegmentOutcome::Removed, SegmentOutcome::UnsafeName]
+    );
+    assert!(note.home.join(ARTIFACT_FILE).is_file());
+}
+
+#[test]
+fn a_failed_delete_of_recognition_jsonl_keeps_the_removal_complete() {
+    let note = saved_note(&three_segments()[..1]);
+    with_recognition(&note.home);
+    let artifact = note.home.join(ARTIFACT_FILE);
+
+    let removal = remove_audio_with(
+        &note.store,
+        &note.claims,
+        ID,
+        no_guard(),
+        NoteSync::Synced,
+        |path| {
+            if path == artifact {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                fs::remove_file(path)
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(removal.complete());
+    assert!(!note.home.join(audio(0)).exists());
+    assert!(artifact.is_file());
+}
+
+#[test]
+fn a_run_after_a_crash_before_the_recognition_delete_deletes_it() {
+    // The audio of each segment is gone and `recognition.jsonl` stays.
+    let segments = three_segments();
+    let note = saved_note(&segments);
+    with_recognition(&note.home);
+    for segment in &segments {
+        fs::write(marker(&note.home, &segment.audio_file), REMOVAL_MARKER_TEXT).unwrap();
+        fs::remove_file(note.home.join(&segment.audio_file)).unwrap();
+    }
+
+    let removal = run(&note);
+
+    assert_eq!(outcomes(&removal), vec![SegmentOutcome::AlreadyRemoved; 3]);
+    assert!(!note.home.join(ARTIFACT_FILE).exists());
+}
+
+#[test]
+fn a_recognition_jsonl_that_is_a_folder_is_not_deleted() {
+    let note = saved_note(&three_segments()[..1]);
+    fs::create_dir(note.home.join(ARTIFACT_FILE)).unwrap();
+    fs::write(note.home.join(ARTIFACT_FILE).join("inside"), b"keep").unwrap();
+
+    let removal = run(&note);
+
+    assert!(removal.complete());
+    assert_eq!(
+        fs::read(note.home.join(ARTIFACT_FILE).join("inside")).unwrap(),
+        b"keep"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_recognition_jsonl_that_is_a_link_is_not_deleted() {
+    let note = saved_note(&three_segments()[..1]);
+    let target = note.root.join("elsewhere.jsonl");
+    fs::write(&target, b"keep").unwrap();
+    std::os::unix::fs::symlink(&target, note.home.join(ARTIFACT_FILE)).unwrap();
+
+    let removal = run(&note);
+
+    assert!(removal.complete());
+    assert!(
+        note.home
+            .join(ARTIFACT_FILE)
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"keep");
+}
+
+#[test]
+fn finish_deletes_recognition_jsonl_only_when_every_segment_is_removed() {
+    let segments = three_segments();
+    let note = saved_note(&segments);
+    with_recognition(&note.home);
+    fs::write(marker(&note.home, &audio(1)), REMOVAL_MARKER_TEXT).unwrap();
+
+    finish_removal(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced).unwrap();
+    assert!(note.home.join(ARTIFACT_FILE).is_file());
+
+    // A crash between the markers and the deletes: finish completes the
+    // removal of each segment.
+    for segment in &segments {
+        fs::write(marker(&note.home, &segment.audio_file), REMOVAL_MARKER_TEXT).unwrap();
+    }
+    fs::write(note.home.join(audio(1)), b"opus").unwrap();
+    let removal =
+        finish_removal(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced).unwrap();
+    assert!(removal.complete());
+    assert_eq!(removal.segments.len(), 3);
+    assert!(!note.home.join(ARTIFACT_FILE).exists());
 }
 
 // ------------------------------------------------------- finish the removal
@@ -733,7 +952,8 @@ fn finish_deletes_only_the_audio_of_marked_segments_and_writes_no_marker() {
     fs::write(marker(&note.home, &audio(1)), REMOVAL_MARKER_TEXT).unwrap();
     let before = documents(&note.home);
 
-    let removal = finish_removal(&note.store, &note.claims, ID, no_guard()).unwrap();
+    let removal =
+        finish_removal(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced).unwrap();
 
     assert_eq!(removal.segments.len(), 1);
     assert_eq!(removal.segments[0].audio_file, audio(1));
@@ -753,7 +973,8 @@ fn finish_on_a_note_with_no_marker_changes_nothing() {
     let note = saved_note(&three_segments());
     let folder = contents(&note.home);
 
-    let removal = finish_removal(&note.store, &note.claims, ID, no_guard()).unwrap();
+    let removal =
+        finish_removal(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced).unwrap();
 
     assert!(removal.segments.is_empty());
     assert!(!removal.row_changed);
@@ -767,15 +988,27 @@ fn finish_keeps_the_audio_of_a_busy_note_or_a_refused_guard() {
     fs::write(marker(&note.home, &audio(0)), REMOVAL_MARKER_TEXT).unwrap();
     {
         let _claim = note.claims.regenerate(ID).unwrap();
-        let result = finish_removal(&note.store, &note.claims, ID, no_guard());
+        let result = finish_removal(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced);
         assert!(matches!(
             result,
             Err(RemoveAudioError::Busy("regenerating"))
         ));
     }
     let results = [
-        finish_removal(&note.store, &note.claims, ID, refuse_folder()),
-        finish_removal(&note.store, &note.claims, ID, refuse_store()),
+        finish_removal(
+            &note.store,
+            &note.claims,
+            ID,
+            refuse_folder(),
+            NoteSync::Synced,
+        ),
+        finish_removal(
+            &note.store,
+            &note.claims,
+            ID,
+            refuse_store(),
+            NoteSync::Synced,
+        ),
     ];
     for result in results {
         assert!(matches!(result, Err(RemoveAudioError::Busy("in use"))));
@@ -798,7 +1031,8 @@ fn finish_deletes_no_document_that_a_marker_names() {
     fs::write(note.home.join("notes (1).md"), b"other notes").unwrap();
     let before = documents(&note.home);
 
-    let removal = finish_removal(&note.store, &note.claims, ID, no_guard()).unwrap();
+    let removal =
+        finish_removal(&note.store, &note.claims, ID, no_guard(), NoteSync::Synced).unwrap();
 
     assert!(removal.segments.is_empty());
     assert_eq!(documents(&note.home), before);

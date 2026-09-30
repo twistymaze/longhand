@@ -863,25 +863,28 @@ pub(crate) fn removal_folder_checks(
 }
 
 /// Remove the audio of the note `session_id` with the checks of Remove
-/// Audio. The setting of audio removal has no effect here (R13).
+/// Audio. The setting of audio removal has no effect here (R13). `sync`
+/// controls only the delete of `recognition.jsonl` (KTD8).
 fn run_removal(
     store: &pipeline::SharedStore,
     claims: &session_core::jobs::Claims,
     session_id: &str,
+    sync: pipeline::remove_audio::NoteSync,
 ) -> Result<(), RemoveAudioFailure> {
     use pipeline::remove_audio::RemoveAudioError;
-    let removal = pipeline::remove_audio::remove_audio(store, claims, session_id, removal_guard())
-        .map_err(|e| match e {
-            RemoveAudioError::Busy(reason) => RemoveAudioFailure::Refused {
-                message: removal_refusal(reason),
-            },
-            RemoveAudioError::NoFolder => RemoveAudioFailure::Refused {
-                message: FOLDER_UNAVAILABLE.to_string(),
-            },
-            RemoveAudioError::Failed(message) => RemoveAudioFailure::Failed {
-                message: format!("Could not remove the audio of this note: {message}"),
-            },
-        })?;
+    let removal =
+        pipeline::remove_audio::remove_audio(store, claims, session_id, removal_guard(), sync)
+            .map_err(|e| match e {
+                RemoveAudioError::Busy(reason) => RemoveAudioFailure::Refused {
+                    message: removal_refusal(reason),
+                },
+                RemoveAudioError::NoFolder => RemoveAudioFailure::Refused {
+                    message: FOLDER_UNAVAILABLE.to_string(),
+                },
+                RemoveAudioError::Failed(message) => RemoveAudioFailure::Failed {
+                    message: format!("Could not remove the audio of this note: {message}"),
+                },
+            })?;
     if removal.complete() {
         log::info!("removed the audio of session {session_id}");
         return Ok(());
@@ -927,9 +930,10 @@ pub async fn remove_audio(
             message: FOLDER_UNAVAILABLE.to_string(),
         });
     }
+    let sync = crate::managers::audio_removal::note_sync(processing.library_status(), &session_id);
     let claims = processing.claims();
     // A folder on a network volume can be slow.
-    tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &session_id))
+    tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &session_id, sync))
         .await
         .map_err(|e| RemoveAudioFailure::Failed {
             message: e.to_string(),
@@ -939,8 +943,10 @@ pub async fn remove_audio(
 #[cfg(test)]
 mod remove_audio_tests {
     use super::*;
+    use pipeline::remove_audio::NoteSync;
     use session_core::folder::{SessionDoc, fingerprint};
     use session_core::jobs::{Adoption, Claims};
+    use session_core::recognition::ARTIFACT_FILE;
 
     const ID: &str = "20260901-0900-abcd";
 
@@ -1003,7 +1009,7 @@ mod remove_audio_tests {
     #[test]
     fn remove_audio_removes_the_audio_and_keeps_the_documents() {
         let note = saved_note();
-        run_removal(&note.store, &Claims::default(), ID).unwrap();
+        run_removal(&note.store, &Claims::default(), ID, NoteSync::Synced).unwrap();
         assert!(!note.home.join("audio/segment-01.opus").exists());
         for name in ["session.md", "transcript.md", "summary.md", "notes.md"] {
             assert!(note.home.join(name).is_file(), "{name}");
@@ -1015,6 +1021,24 @@ mod remove_audio_tests {
         );
     }
 
+    // Covers R11, KTD8: Remove Audio deletes `recognition.jsonl` with the
+    // audio, except while the note waits for a sync.
+    #[test]
+    fn remove_audio_deletes_recognition_jsonl_unless_the_note_waits_for_a_sync() {
+        for (sync, stays) in [(NoteSync::Synced, false), (NoteSync::Waiting, true)] {
+            let note = saved_note();
+            std::fs::write(note.home.join(ARTIFACT_FILE), b"{\"version\":1}\n").unwrap();
+            let written = std::fs::read(note.home.join("session.md")).unwrap();
+            run_removal(&note.store, &Claims::default(), ID, sync).unwrap();
+            assert!(!note.home.join("audio/segment-01.opus").exists());
+            assert_eq!(note.home.join(ARTIFACT_FILE).exists(), stays, "{sync:?}");
+            assert_eq!(
+                std::fs::read(note.home.join("session.md")).unwrap(),
+                written
+            );
+        }
+    }
+
     #[test]
     fn an_open_move_refuses_with_a_reason_and_keeps_the_audio() {
         let note = saved_note();
@@ -1023,7 +1047,12 @@ mod remove_audio_tests {
             .unwrap()
             .open_move(Path::new("/old"), Path::new("/new"))
             .unwrap();
-        let message = refused(run_removal(&note.store, &Claims::default(), ID));
+        let message = refused(run_removal(
+            &note.store,
+            &Claims::default(),
+            ID,
+            NoteSync::Synced,
+        ));
         assert!(message.contains("moving your notes"), "{message}");
         assert!(note.home.join("audio/segment-01.opus").is_file());
     }
@@ -1033,7 +1062,12 @@ mod remove_audio_tests {
         let note = saved_note();
         let now = chrono::Local::now().fixed_offset();
         assert!(pipeline::in_use::write_marker(&note.home, "other-computer", now).unwrap());
-        let message = refused(run_removal(&note.store, &Claims::default(), ID));
+        let message = refused(run_removal(
+            &note.store,
+            &Claims::default(),
+            ID,
+            NoteSync::Synced,
+        ));
         assert!(message.contains("in use on another computer"), "{message}");
         assert!(note.home.join("audio/segment-01.opus").is_file());
     }
@@ -1043,7 +1077,7 @@ mod remove_audio_tests {
         let note = saved_note();
         let claims = Claims::default();
         let _claim = claims.regenerate(ID).unwrap();
-        let message = refused(run_removal(&note.store, &claims, ID));
+        let message = refused(run_removal(&note.store, &claims, ID, NoteSync::Synced));
         assert!(message.contains("summary"), "{message}");
         assert!(note.home.join("audio/segment-01.opus").is_file());
     }
@@ -1052,7 +1086,12 @@ mod remove_audio_tests {
     fn a_missing_folder_refuses_as_an_unavailable_storage_folder() {
         let note = saved_note();
         std::fs::remove_dir_all(&note.home).unwrap();
-        let message = refused(run_removal(&note.store, &Claims::default(), ID));
+        let message = refused(run_removal(
+            &note.store,
+            &Claims::default(),
+            ID,
+            NoteSync::Synced,
+        ));
         assert_eq!(message, FOLDER_UNAVAILABLE);
         assert!(!note.home.exists(), "the step makes no folder");
     }
