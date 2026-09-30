@@ -420,6 +420,7 @@ struct RowState {
     notes: String,
     segments: Vec<Segment>,
     stereo_from: Option<u32>,
+    removed_audio: Vec<String>,
     transcript_fingerprint: Option<String>,
     rename_intent: bool,
     claimed: bool,
@@ -435,6 +436,7 @@ impl RowState {
             notes: store.notes(id)?,
             segments: store.segments(id)?,
             stereo_from: store.stereo_from(id)?,
+            removed_audio: store.removed_audio(id)?,
             transcript_fingerprint: store.transcript_fingerprint(id)?,
             rename_intent: store.rename_intent(id)?.is_some(),
             claimed,
@@ -497,12 +499,15 @@ fn follow(
 /// Adopt a note that has no row (KTD1). A note whose `notes.md` has not
 /// arrived starts with empty notes, and a later refresh reads them.
 fn adopt(store: &mut Store, note: &NoteFolder) -> Result<bool, StoreError> {
-    let adoption = Adoption::from_doc(
-        &note.doc,
-        note.notes.clone().unwrap_or_default(),
-        note.path.to_string_lossy().into_owned(),
-        note.transcript_fingerprint.clone(),
-    );
+    let adoption = Adoption {
+        removed_audio: note.removed_audio.clone(),
+        ..Adoption::from_doc(
+            &note.doc,
+            note.notes.clone().unwrap_or_default(),
+            note.path.to_string_lossy().into_owned(),
+            note.transcript_fingerprint.clone(),
+        )
+    };
     let adopted = store.adopt(&adoption)?;
     if adopted {
         log::info!(

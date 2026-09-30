@@ -13,6 +13,7 @@ use chrono::{DateTime, FixedOffset};
 
 use library::refresh::Scope;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
+pub use session_core::folder::AudioState;
 use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
@@ -107,15 +108,23 @@ pub fn recover_summary_publications(store: &SharedStore) -> Result<(), StageErro
     Ok(())
 }
 
-/// Whether a completed session's folder still holds every segment's audio,
-/// which is what resuming it needs (R6d). False for a session that has not
-/// completed.
-pub fn home_intact(store: &Store, session_id: &str) -> Result<bool, StageError> {
+/// The audio of a completed session, from its folder (KTD9 of the audio
+/// removal plan). Resume and Transcribe Again need
+/// [`AudioState::Present`] (R6d). A session that has not completed, or has
+/// no segment, has no audio in a folder: its state is
+/// [`AudioState::Waiting`].
+pub fn audio_state(store: &Store, session_id: &str) -> Result<AudioState, StageError> {
     let Some(home) = home_path(store, session_id)? else {
-        return Ok(false);
+        return Ok(AudioState::Waiting);
     };
     let segments = store.segments(session_id)?;
-    Ok(!segments.is_empty() && segments.iter().all(|s| home.join(&s.audio_file).is_file()))
+    if segments.is_empty() {
+        return Ok(AudioState::Waiting);
+    }
+    Ok(folder::audio_state(
+        &home,
+        segments.iter().map(|s| s.audio_file.as_str()),
+    ))
 }
 
 /// Record why summarization failed; the session is saved with a stub.
@@ -535,7 +544,11 @@ fn update_home(
 }
 
 /// Copy each segment's audio that `home` does not hold yet from the working
-/// copy. The old audio is never rewritten.
+/// copy. The old audio is never rewritten. Only the segments that the
+/// Resume recorded are copied: the audio of a segment that the note had
+/// when the Resume started, or that has a removal marker, is never put
+/// back, in any order in which a sync delivers a removal (KTD8 of the
+/// audio removal plan).
 fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), StageError> {
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
@@ -543,9 +556,13 @@ fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), St
             home.display()
         )));
     }
+    let old = crate::old_audio::old_segments(working)?.unwrap_or_default();
     for segment in segments {
         let target = home.join(&segment.audio_file);
-        if target.exists() {
+        if target.exists()
+            || old.iter().any(|o| o.audio_file == segment.audio_file)
+            || folder::audio_removed(home, &segment.audio_file)
+        {
             continue;
         }
         let (Some(dir), Some(name)) =

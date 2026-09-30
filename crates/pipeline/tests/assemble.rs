@@ -245,6 +245,98 @@ fn a_resumed_sessions_segment_is_decoded_back_from_its_completed_folder() {
     assert!(!dir.join(&segment.audio_file).exists(), "no second archive");
 }
 
+/// A saved note "s4" with one assembled segment, resumed: its archive is in
+/// the home folder, its working directory is gone, and the Resume listed
+/// the segment for its copy (KTD8 of the audio removal plan).
+fn resumed_with_list(
+    root: &std::path::Path,
+) -> (
+    pipeline::SharedStore,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    session_core::Segment,
+) {
+    let dir = root.join("s4");
+    let segment = write_segment(&dir, 0, 0, 48_000, &tone(48_000, 5.0), false);
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s4", at(0), None).unwrap();
+        s.put_segment("s4", &segment).unwrap();
+    }
+    let slice = std::slice::from_ref(&segment);
+    assemble::run(&store, "s4", &dir, slice, None, &Unattended).unwrap();
+    let home = root.join("folder");
+    std::fs::create_dir_all(home.join("audio")).unwrap();
+    std::fs::rename(
+        dir.join(&segment.audio_file),
+        home.join(&segment.audio_file),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    pipeline::old_audio::begin(&dir, slice).unwrap();
+    (store, dir, home, segment)
+}
+
+#[test]
+fn an_old_segment_is_decoded_from_its_copy_after_its_home_file_goes() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, dir, home, segment) = resumed_with_list(root.path());
+    let archive = std::fs::read(home.join(&segment.audio_file)).unwrap();
+    let copy_home = home.clone();
+    pipeline::old_audio::copy(&dir, &move || Some(copy_home.clone())).unwrap();
+    // Another computer removes the audio: the marker, then the delete.
+    std::fs::write(
+        home.join(session_core::folder::removal_marker(&segment.audio_file)),
+        session_core::folder::REMOVAL_MARKER_TEXT,
+    )
+    .unwrap();
+    std::fs::remove_file(home.join(&segment.audio_file)).unwrap();
+
+    let slice = std::slice::from_ref(&segment);
+    let done = assemble::run(&store, "s4", &dir, slice, Some(&home), &Unattended).unwrap();
+    let (_, decoded) = read_proc(&dir.join(proc_file(&segment.audio_file)));
+    assert_eq!(done[0].proc_samples, decoded.len() as u64);
+    assert_eq!(
+        std::fs::read(dir.join(&segment.audio_file)).unwrap(),
+        archive
+    );
+    assert!(!home.join(&segment.audio_file).exists());
+}
+
+#[test]
+fn assembly_makes_the_copy_that_the_resume_did_not_complete() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, dir, home, segment) = resumed_with_list(root.path());
+    let archive = std::fs::read(home.join(&segment.audio_file)).unwrap();
+    let slice = std::slice::from_ref(&segment);
+    assemble::run(&store, "s4", &dir, slice, Some(&home), &Unattended).unwrap();
+    assert_eq!(
+        std::fs::read(dir.join(&segment.audio_file)).unwrap(),
+        archive
+    );
+    assert_eq!(
+        pipeline::old_audio::old_segments(&dir).unwrap().unwrap()[0].state,
+        pipeline::old_audio::CopyState::Copied
+    );
+}
+
+#[test]
+fn an_old_segment_removed_before_its_copy_fails_assembly_with_the_removal() {
+    let root = tempfile::tempdir().unwrap();
+    let (store, dir, home, segment) = resumed_with_list(root.path());
+    std::fs::write(
+        home.join(session_core::folder::removal_marker(&segment.audio_file)),
+        session_core::folder::REMOVAL_MARKER_TEXT,
+    )
+    .unwrap();
+    std::fs::remove_file(home.join(&segment.audio_file)).unwrap();
+    let slice = std::slice::from_ref(&segment);
+    let error = assemble::run(&store, "s4", &dir, slice, Some(&home), &Unattended).unwrap_err();
+    assert!(error.to_string().contains("was removed"), "{error}");
+    assert!(!dir.join(&segment.audio_file).exists(), "no copy is kept");
+}
+
 // ------------------------------------------------------------ stereo (U9)
 
 mod stereo {

@@ -1303,7 +1303,84 @@ fn adoption(id: &str, home: &str) -> session_core::Adoption {
         found_speakers: Some(3),
         home_path: home.to_string(),
         transcript_fingerprint: Some("abc123".to_string()),
+        removed_audio: Vec::new(),
     }
+}
+
+// ---------------------------------------------------------------- removed audio (U2)
+
+#[test]
+fn a_new_segment_has_its_audio() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    assert!(store.removed_audio("s1").unwrap().is_empty());
+}
+
+#[test]
+fn the_removed_flags_follow_the_given_audio_files_and_report_a_change() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.adopt(&adoption("s1", "/notes/Budget")).unwrap();
+    let one = "audio/segment-01.opus".to_string();
+    let two = "audio/segment-02.opus".to_string();
+    assert!(
+        store
+            .set_removed_audio("s1", std::slice::from_ref(&one))
+            .unwrap()
+    );
+    assert_eq!(store.removed_audio("s1").unwrap(), vec![one.clone()]);
+    // The same flags again change nothing.
+    assert!(
+        !store
+            .set_removed_audio("s1", std::slice::from_ref(&one))
+            .unwrap()
+    );
+    assert!(
+        store
+            .set_removed_audio("s1", &[two.clone(), one.clone()])
+            .unwrap()
+    );
+    assert_eq!(store.removed_audio("s1").unwrap(), vec![one, two]);
+    // An audio file that no segment names sets no flag.
+    assert!(
+        store
+            .set_removed_audio("s1", &["audio/other.opus".to_string()])
+            .unwrap()
+    );
+    assert!(store.removed_audio("s1").unwrap().is_empty());
+}
+
+#[test]
+fn a_segment_written_again_keeps_its_removed_flag() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.adopt(&adoption("s1", "/notes/Budget")).unwrap();
+    let one = "audio/segment-01.opus".to_string();
+    store
+        .set_removed_audio("s1", std::slice::from_ref(&one))
+        .unwrap();
+    let mut longer = segment(0, 0);
+    longer.duration_ms = 90_000;
+    store.put_segment("s1", &longer).unwrap();
+    assert_eq!(store.segments("s1").unwrap()[0].duration_ms, 90_000);
+    assert_eq!(store.removed_audio("s1").unwrap(), vec![one]);
+}
+
+#[test]
+fn an_adopted_note_keeps_the_removed_flags_of_its_folder() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut note = adoption("s1", "/notes/Budget");
+    note.removed_audio = vec!["audio/segment-02.opus".to_string()];
+    store.adopt(&note).unwrap();
+    assert_eq!(
+        store.removed_audio("s1").unwrap(),
+        vec!["audio/segment-02.opus".to_string()]
+    );
+}
+
+#[test]
+fn the_removed_audio_of_an_unknown_note_is_an_error() {
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.set_removed_audio("nope", &[]).is_err());
 }
 
 #[test]
@@ -1425,6 +1502,8 @@ fn an_adoption_from_session_md_takes_its_fields() {
     assert_eq!(note.notes, "- agenda\n");
     assert_eq!(note.home_path, "/notes/Budget");
     assert_eq!(note.transcript_fingerprint.as_deref(), Some("abc123"));
+    // `session.md` records no removal: the scan reads the markers.
+    assert!(note.removed_audio.is_empty());
 }
 
 #[test]

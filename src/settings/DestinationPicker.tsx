@@ -1,6 +1,7 @@
 // Settings > Storage (R3, R4, R6, R10, R16): the one storage folder, Show
-// in Finder, Change, and the Move of the notes to a new folder. Change is
-// not available while a Move runs or is paused (KTD11).
+// in Finder, Change, the Move of the notes to a new folder, and the removal
+// of old audio. Change is not available while a Move runs or is paused
+// (KTD11).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -11,9 +12,10 @@ import {
   type MoveState,
   type Settings,
 } from "../bindings";
+import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
 import { readOnlyReason } from "./shared";
-import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes } from "./ui";
+import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes, notes } from "./ui";
 
 export function describeDestination(status: DestinationStatus): { tone: Tone; text: string } {
   switch (status.kind) {
@@ -39,8 +41,6 @@ const isMac = () => navigator.userAgent.includes("Mac");
 /// The Move as the pane shows it. `folder` is the new folder, or null
 /// until the pane reads it.
 type Move = { folder: string | null; moved: number; total: number; state: MoveState; cause: MovePauseCause | null };
-
-const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
 
 /// The open Move, from `move_status` when the pane opens and from the Move
 /// events after that. `finished` is the result of the last Move that ended
@@ -218,6 +218,7 @@ export function DestinationPicker({
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
+      <AudioRemoval settings={settings} onSettings={onSettings} />
       {dialog}
     </Pane>
   );

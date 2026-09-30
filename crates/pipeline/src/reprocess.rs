@@ -91,7 +91,11 @@ pub enum Cause {
     SettingsChanged,
     Regenerating,
     Recording,
+    /// At least one segment has no audio file and no removal marker: the
+    /// sync can still deliver it.
     MissingAudio,
+    /// At least one segment has a removal marker (R14, KTD9).
+    RemovedAudio,
     AlreadyQueued,
     NotSaved,
 }
@@ -155,6 +159,10 @@ impl From<Cause> for Refusal {
                 "The note's folder does not have all of its audio, so it can't be transcribed \
                  again."
                     .into(),
+                false,
+            ),
+            Cause::RemovedAudio => (
+                "The audio of this note was removed, so it can't be transcribed again.".into(),
                 false,
             ),
             Cause::AlreadyQueued => (
@@ -314,8 +322,12 @@ fn resolve_run(
             .into(),
         );
     }
-    if !save::home_intact(store, session_id)? {
-        return Err(Cause::MissingAudio.into());
+    // Removed audio does not come back, so its reason differs from the
+    // reason for audio that the sync can still deliver (R14).
+    match save::audio_state(store, session_id)? {
+        save::AudioState::Present => {}
+        save::AudioState::Removed => return Err(Cause::RemovedAudio.into()),
+        save::AudioState::Waiting => return Err(Cause::MissingAudio.into()),
     }
     let config = RecognitionConfig {
         processing_mode: ProcessingMode::AfterStop,

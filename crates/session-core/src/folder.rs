@@ -3,6 +3,11 @@
 //! Each file renders from the session's data and parses back, so the session
 //! can be rebuilt from its folder alone (R25). Positions are rendered as
 //! `hh:mm:ss`, so a round trip is exact to the second.
+//!
+//! A removal marker beside a segment audio file records that the audio of
+//! the segment was removed (KTD1 of the audio removal plan).
+
+use std::path::Path;
 
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
@@ -279,6 +284,64 @@ impl SessionDoc {
         let (yaml, _) = split_frontmatter("session.md", text)?;
         serde_yaml::from_str(yaml).map_err(yaml_error("session.md"))
     }
+}
+
+// ---------------------------------------------------------------- removal markers
+
+/// The end of the name of a removal marker: the marker of
+/// `audio/segment-01.opus` is `audio/segment-01.opus.removed` (KTD1).
+/// The name has no leading dot, because the folder watcher skips such
+/// names.
+pub const REMOVAL_MARKER_SUFFIX: &str = ".removed";
+
+/// The content of each removal marker. The content is fixed, so two
+/// computers that write one marker at the same time make the same file.
+/// A reader does not open a marker: a marker with any content counts.
+pub const REMOVAL_MARKER_TEXT: &str = "Longhand removed the audio of this segment.\n";
+
+/// The path of the removal marker of the segment audio file `audio`, in
+/// the same form as `audio`: relative to the note folder.
+pub fn removal_marker(audio: &str) -> String {
+    format!("{audio}{REMOVAL_MARKER_SUFFIX}")
+}
+
+/// Whether the note folder `dir` has the removal marker of the segment
+/// audio file `audio`. This reads metadata only and opens no file, so an
+/// online-only file is not downloaded (R12 of the library plan). An error
+/// counts as no marker.
+pub fn audio_removed(dir: &Path, audio: &str) -> bool {
+    dir.join(removal_marker(audio))
+        .try_exists()
+        .unwrap_or(false)
+}
+
+/// The audio of a note, from its folder alone (KTD9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioState {
+    /// Every segment has its audio file and no removal marker.
+    Present,
+    /// At least one segment has a removal marker. Its audio file can still
+    /// be on disk (KTD2). A marked segment does not get its audio back, so
+    /// this state wins over [`AudioState::Waiting`].
+    Removed,
+    /// At least one segment has no audio file and no removal marker: the
+    /// sync can still deliver the file or its marker.
+    Waiting,
+}
+
+/// The [`AudioState`] of the note folder `dir` whose segments have the
+/// audio files `audio`. This reads metadata only and opens no file.
+pub fn audio_state<'a>(dir: &Path, audio: impl IntoIterator<Item = &'a str>) -> AudioState {
+    let mut state = AudioState::Present;
+    for audio in audio {
+        if audio_removed(dir, audio) {
+            return AudioState::Removed;
+        }
+        if !dir.join(audio).is_file() {
+            state = AudioState::Waiting;
+        }
+    }
+    state
 }
 
 // ---------------------------------------------------------------- transcript.md

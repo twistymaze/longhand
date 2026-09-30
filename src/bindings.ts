@@ -194,6 +194,37 @@ async setCheckUpdatesAutomatically(enabled: boolean) : Promise<Result<Settings, 
 }
 },
 /**
+ * Choose when the audio of a saved note goes, or turn automatic removal
+ * off (R1, R3). The value goes into the shared settings file, so it
+ * applies on every computer that uses the storage folder. A number of
+ * days outside the range is refused and changes nothing. After a saved
+ * change that turns the setting on or shortens the delay, a removal pass
+ * starts (R17, KTD6). The Settings window asks for the confirmation first.
+ */
+async setAudioRemoval(removal: AudioRemovalSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_audio_removal", { removal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * How many notes a pass would remove the audio of now if the setting
+ * changed to `removal` (R17, KTD11). The count is 0 when the change does
+ * not remove more audio at once. The count uses the same per-note check as
+ * the pass and reads file metadata only. The pass checks each note again
+ * after the confirmation. A number of days outside the range is refused.
+ */
+async audioRemovalCount(removal: AudioRemovalSetting) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("audio_removal_count", { removal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app has no Dock icon while no window is visible
  * (R2, R4). Off applies at once: the Dock icon comes back. On applies at
  * the next close of the last visible window, which reads the new value
@@ -755,6 +786,20 @@ async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteS
 }
 },
 /**
+ * Remove the audio of a saved note now, whether the setting of audio
+ * removal is on or off (R13). The transcript, summary and notes stay.
+ * Refused while the note is busy, while a Move runs or is paused, or while
+ * its storage folder is unavailable.
+ */
+async removeAudio(sessionId: string) : Promise<Result<null, RemoveAudioFailure>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_audio", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Show the Settings window, and build it first when it is not open. Async
  * because a synchronous command that builds a window deadlocks on Windows.
  */
@@ -867,6 +912,35 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
+/**
+ * A shared setting: when Longhand removes the audio of a saved note (R1,
+ * R3). The file form is [`AudioRemoval`]; this is the form of the
+ * Settings window.
+ */
+export type AudioRemovalSetting = { kind: "off" } | 
+/**
+ * The audio goes this many whole days after the note last recorded.
+ */
+{ kind: "after_days"; days: number }
+/**
+ * The audio of a note, from its folder (KTD9). The note page shows no
+ * mark for it. It gives the reason of an unavailable action only (R14).
+ */
+export type AudioView = 
+/**
+ * Every segment has its audio file.
+ */
+"present" | 
+/**
+ * At least one segment has a removal marker. The audio does not come
+ * back.
+ */
+"removed" | 
+/**
+ * At least one segment has no audio file yet: the sync can still
+ * deliver it.
+ */
+"waiting"
 export type BuildInfo = { 
 /**
  * The full version, for example `0.1.0-preview.20260928143012`.
@@ -1471,6 +1545,20 @@ system_audio_other_output: boolean;
  * the note hears the user twice.
  */
 system_audio_mic_copy: boolean }
+/**
+ * Why Remove Audio did not complete (R13).
+ */
+export type RemoveAudioFailure = 
+/**
+ * The removal did not start. Nothing changed.
+ */
+{ kind: "refused"; message: string } | 
+/**
+ * The removal started and did not complete for each segment. A
+ * segment that has its marker counts as removed, and the next pass
+ * deletes its file (KTD2).
+ */
+{ kind: "failed"; message: string }
 export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**
@@ -1505,6 +1593,11 @@ resumable: boolean; home_path: string | null;
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
 endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean; 
+/**
+ * The audio of the note (KTD9). Transcribe Again, Resume and Retry
+ * read it for their reason.
+ */
+audio: AudioView; 
 /**
  * The recognition model that the note recorded when it started
  * (KTD2). `None` for a note that started before the update.
@@ -1656,6 +1749,15 @@ hide_from_dock: boolean;
  * for Updates…" works when it is off (R11).
  */
 check_updates_automatically: boolean; 
+/**
+ * A shared setting. When the audio of a saved note goes (R1, R2). On
+ * by default, with a delay of 30 days. A value that this version does
+ * not know shows as the default here and in `shared.unknown_values`.
+ * The removal pass does not read this field: it reads
+ * `SharedSnapshot::audio_removal_days`, which gives no delay for such a
+ * value or while the shared settings are read-only.
+ */
+audio_removal: AudioRemovalSetting; 
 /**
  * Context limits endpoints have shown by rejecting longer prompts,
  * keyed by [`learned_limit_key`] (KTD16).

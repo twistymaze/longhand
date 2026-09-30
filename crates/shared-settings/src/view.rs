@@ -13,7 +13,9 @@ use serde_json::{Map, Value};
 use summarize::prompts::Prompt;
 
 use crate::cache::{Cache, read_cache, write_cache};
-use crate::file::{Field, FileRead, SharedFields, Unavailable, default_settings, read_settings};
+use crate::file::{
+    AudioRemoval, Field, FileRead, SharedFields, Unavailable, default_settings, read_settings,
+};
 use crate::prompts::{PromptScan, scan_prompts};
 
 /// Whether this computer can change the shared settings now.
@@ -71,6 +73,24 @@ impl SharedView {
     /// settings are read-only in every other case (R16).
     pub fn writable(&self) -> bool {
         self.availability == Availability::Available
+    }
+
+    /// The delay in whole days after which the removal pass removes the
+    /// audio of a saved note. `None` means that no audio goes
+    /// automatically: the setting is off, it has a value that this build
+    /// does not know, or the view does not come from a settings file that
+    /// parsed (R2, AE10, KTD3). A view from the cache or from the defaults
+    /// is only for display. An absent field in a file that parsed is the
+    /// default.
+    pub fn audio_removal_days(&self) -> Option<u32> {
+        if self.availability != Availability::Available {
+            return None;
+        }
+        match &self.fields.audio_removal {
+            Field::Absent => AudioRemoval::default().days(),
+            Field::Known(removal) => removal.days(),
+            Field::Unknown(_) => None,
+        }
     }
 }
 

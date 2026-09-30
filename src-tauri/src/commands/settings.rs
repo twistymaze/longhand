@@ -13,6 +13,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::audio_removal::{self, AudioRemovalManager};
 use crate::managers::capture::CaptureManager;
 use crate::managers::models::ModelsManager;
 use crate::managers::processing::{MoveStatus, ProcessingManager};
@@ -271,6 +272,112 @@ pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<
         s.check_updates_automatically = enabled;
         Ok(())
     })
+}
+
+/// Choose when the audio of a saved note goes, or turn automatic removal
+/// off (R1, R3). The value goes into the shared settings file, so it
+/// applies on every computer that uses the storage folder. A number of
+/// days outside the range is refused and changes nothing. After a saved
+/// change that turns the setting on or shortens the delay, a removal pass
+/// starts (R17, KTD6). The Settings window asks for the confirmation first.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn set_audio_removal(
+    app: AppHandle,
+    removal: settings::AudioRemovalSetting,
+) -> Result<Settings, String> {
+    removal.validate()?;
+    // The comparison starts from the file, not from the cache: the cache can
+    // be older than a change that another computer made.
+    let before = read_removal_delay(&app);
+    let updated = settings::update_settings(&app, |s| {
+        s.audio_removal = removal;
+        Ok(())
+    })?;
+    if audio_removal::removes_more(before, shared_removal_delay(&app))
+        && let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>()
+    {
+        pass.run_now();
+    }
+    Ok(updated)
+}
+
+/// The delay of the audio removal setting in the shared settings now, or
+/// `None` when the setting is off, is not known, or the shared settings are
+/// not available (KTD3).
+fn shared_removal_delay(app: &AppHandle) -> Option<u32> {
+    app.try_state::<Arc<SharedSettingsManager>>()
+        .and_then(|shared| shared.snapshot().audio_removal_days())
+}
+
+/// The delay of the audio removal setting after a read of the shared
+/// settings file, as [`shared_removal_delay`] gives it. The read only
+/// updates this computer's cache and writes nothing (rule 1). When the file
+/// has a change from another computer, the app does what the folder watcher
+/// does for that change. The read can wait for an online-only file, so call
+/// this off the main thread.
+fn read_removal_delay(app: &AppHandle) -> Option<u32> {
+    let shared = app.try_state::<Arc<SharedSettingsManager>>()?;
+    let (changed, days) = reread_removal_delay(&shared);
+    if changed {
+        log::info!("shared settings: another computer changed them");
+        settings::emit_settings_changed(app);
+        if let Some(models) = app.try_state::<Arc<ModelsManager>>() {
+            models.follow_choice(app);
+        }
+        // The change can turn the audio removal on or shorten its delay. It
+        // needs no confirmation (KTD6).
+        if let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>() {
+            pass.run_now();
+        }
+    }
+    days
+}
+
+/// Read the shared settings file into the cache of `shared`. Returns
+/// whether the read changed the shared settings, and the delay of the audio
+/// removal setting after the read.
+fn reread_removal_delay(shared: &SharedSettingsManager) -> (bool, Option<u32>) {
+    let changed = shared.reread();
+    (changed, shared.snapshot().audio_removal_days())
+}
+
+/// The delay to count with for the change from `before` to `proposed`, or
+/// `None` when the change does not remove more audio at once (R17): the
+/// change turns the setting off, keeps the delay, or makes it longer.
+fn count_delay(before: Option<u32>, proposed: settings::AudioRemovalSetting) -> Option<u32> {
+    let settings::AudioRemovalSetting::AfterDays { days } = proposed else {
+        return None;
+    };
+    audio_removal::removes_more(before, Some(days)).then_some(days)
+}
+
+/// How many notes a pass would remove the audio of now if the setting
+/// changed to `removal` (R17, KTD11). The count is 0 when the change does
+/// not remove more audio at once. The count uses the same per-note check as
+/// the pass and reads file metadata only. The pass checks each note again
+/// after the confirmation. A number of days outside the range is refused.
+#[tauri::command]
+#[specta::specta]
+pub async fn audio_removal_count(
+    app: AppHandle,
+    removal: settings::AudioRemovalSetting,
+) -> Result<u32, String> {
+    removal.validate()?;
+    // The count reads the shared settings file and folders that can be on a
+    // slow volume. The count starts from the file, not from the cache: the
+    // cache can be older than a change that another computer made, and the
+    // save compares with the file.
+    let count = tauri::async_runtime::spawn_blocking(move || {
+        let Some(days) = count_delay(read_removal_delay(&app), removal) else {
+            return 0;
+        };
+        app.try_state::<Arc<AudioRemovalManager>>()
+            .map_or(0, |pass| pass.count_eligible(days))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// Choose whether the app has no Dock icon while no window is visible
@@ -740,6 +847,51 @@ mod tests {
     use summarize::ModelList;
 
     const LOCAL: &str = "http://localhost:11434/v1";
+
+    /// R17: only a change that removes more audio at once gets a count.
+    #[test]
+    fn the_count_uses_the_new_delay_only_when_the_change_removes_more() {
+        use settings::AudioRemovalSetting::{AfterDays, Off};
+        // A shorter delay, and the setting on again.
+        assert_eq!(count_delay(Some(90), AfterDays { days: 30 }), Some(30));
+        assert_eq!(count_delay(None, AfterDays { days: 30 }), Some(30));
+        // A longer delay, the same delay, and the setting off.
+        assert_eq!(count_delay(Some(30), AfterDays { days: 90 }), None);
+        assert_eq!(count_delay(Some(30), AfterDays { days: 30 }), None);
+        assert_eq!(count_delay(Some(30), Off), None);
+        assert_eq!(count_delay(None, Off), None);
+    }
+
+    /// R17: the count starts from the file, not from an older cache. The
+    /// cache of computer A says 30 days, but computer B changed the file to
+    /// 90 days. A change to 60 days then shortens the delay and gets a
+    /// count.
+    #[test]
+    fn the_count_starts_from_the_file_when_the_cache_is_older() {
+        use shared_settings::file::{AudioRemoval, SharedValue, settings_path};
+        let folder = tempfile::tempdir().unwrap();
+        let (cache_a, cache_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = Some(folder.path().to_path_buf());
+        let a = SharedSettingsManager::new(cache_a.path().to_path_buf(), root.clone());
+        a.join_at_launch();
+        let b = SharedSettingsManager::new(cache_b.path().to_path_buf(), root);
+        b.join_at_launch();
+        b.save(&[SharedValue::AudioRemoval(AudioRemoval::AfterDays(90))])
+            .unwrap();
+        assert_eq!(a.snapshot().audio_removal_days(), Some(30));
+        let proposed = settings::AudioRemovalSetting::AfterDays { days: 60 };
+        assert_eq!(
+            count_delay(a.snapshot().audio_removal_days(), proposed),
+            None
+        );
+
+        let file = std::fs::read(settings_path(folder.path())).unwrap();
+        assert_eq!(reread_removal_delay(&a), (true, Some(90)));
+        assert_eq!(count_delay(Some(90), proposed), Some(60));
+        // The read wrote nothing (rule 1), and a second read has no change.
+        assert_eq!(std::fs::read(settings_path(folder.path())).unwrap(), file);
+        assert_eq!(reread_removal_delay(&a), (false, Some(90)));
+    }
 
     /// KTD11: Change is not available while a Move runs or is paused.
     #[test]

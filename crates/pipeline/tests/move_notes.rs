@@ -907,3 +907,25 @@ fn same_contents_compares_every_file_but_the_marker() {
     std::fs::write(b.join("extra.md"), "e").unwrap();
     assert!(!move_notes::same_contents(&a, &b).unwrap());
 }
+
+#[test]
+fn same_contents_does_not_count_the_in_use_markers() {
+    // Another computer refreshes its in-use marker every 2 minutes (KTD4
+    // of the audio removal plan). A refresh between the copy and the final
+    // check does not make the Move copy the note again.
+    use pipeline::in_use::{marker_name, write_marker};
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+    for d in [&a, &b] {
+        std::fs::create_dir_all(d.join("audio")).unwrap();
+        std::fs::write(d.join("notes.md"), "n").unwrap();
+    }
+    let now = chrono::Local::now().fixed_offset();
+    write_marker(&a, "run-a", now).unwrap();
+    write_marker(&b, "run-a", now + chrono::TimeDelta::minutes(2)).unwrap();
+    write_marker(&a, "run-b", now).unwrap();
+    assert!(move_notes::same_contents(&a, &b).unwrap());
+    // Only at the top of the note folder.
+    std::fs::write(a.join("audio").join(marker_name("run-c")), "x").unwrap();
+    assert!(!move_notes::same_contents(&a, &b).unwrap());
+}

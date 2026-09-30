@@ -29,7 +29,8 @@ pub struct Recovered {
 }
 
 /// Recover every session left Capturing. Run at launch, before any writer
-/// starts, while nothing in this process is recording.
+/// starts, while nothing in this process is recording. Then delete the old
+/// audio copies that ended sessions left ([`crate::old_audio::sweep`]).
 pub fn recover_crashed(
     store: &SharedStore,
     working_root: &Path,
@@ -52,6 +53,9 @@ pub fn recover_crashed(
             state,
         });
     }
+    // A session that ended while Longhand was stopped keeps no copy of its
+    // old audio (KTD8 of the audio removal plan).
+    crate::old_audio::sweep(store, working_root)?;
     Ok(recovered)
 }
 

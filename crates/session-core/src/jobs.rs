@@ -133,6 +133,10 @@ pub struct Adoption {
     /// `transcript.md` that the scan read (KTD12). `None` when the folder
     /// has no `transcript.md`.
     pub transcript_fingerprint: Option<String>,
+    /// The audio files of the segments whose folder has a removal marker
+    /// (KTD9 of the audio removal plan). `session.md` does not record them,
+    /// so [`Adoption::from_doc`] gives none, and the scan adds them.
+    pub removed_audio: Vec<String>,
 }
 
 impl Adoption {
@@ -157,6 +161,7 @@ impl Adoption {
             found_speakers: doc.found_speakers,
             home_path,
             transcript_fingerprint,
+            removed_audio: Vec::new(),
         }
     }
 }
@@ -709,6 +714,7 @@ impl Store {
         for segment in &note.segments {
             insert_segment(&tx, &note.id, segment)?;
         }
+        update_removed_audio(&tx, &note.id, &note.removed_audio)?;
         tx.commit()?;
         Ok(true)
     }
@@ -999,6 +1005,26 @@ impl Store {
             });
         }
         Ok(out)
+    }
+
+    /// The audio files of the note's segments whose audio was removed: the
+    /// folder has their removal markers (KTD9 of the audio removal plan).
+    /// Sorted.
+    pub fn removed_audio(&self, session_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT audio_file FROM segments
+             WHERE session_id = ?1 AND audio_removed = 1 ORDER BY audio_file",
+        )?;
+        let rows = stmt.query_map([session_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Set the removed flag of each segment of the note whose audio file is
+    /// in `audio`, and clear it for the others. The flags then match the
+    /// removal markers of the note folder. Returns whether a flag changed.
+    pub fn set_removed_audio(&self, session_id: &str, audio: &[String]) -> Result<bool> {
+        self.require(session_id)?;
+        Ok(update_removed_audio(&self.conn, session_id, audio)? > 0)
     }
 
     /// The index of the note's first stereo segment: the stereo mark
@@ -1610,11 +1636,17 @@ fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
     )?)
 }
 
+/// Write `segment`. A segment that the row already has keeps its removed
+/// flag: only the scan, the refresh and the adopt set it.
 fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO segments
+        "INSERT INTO segments
          (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT (session_id, idx) DO UPDATE SET
+           offset_ms = excluded.offset_ms, duration_ms = excluded.duration_ms,
+           wall_start = excluded.wall_start, wall_end = excluded.wall_end,
+           audio_file = excluded.audio_file, channels = excluded.channels",
         params![
             session_id,
             segment.index,
@@ -1627,6 +1659,18 @@ fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Res
         ],
     )?;
     Ok(())
+}
+
+/// Set the removed flag of each segment of `session_id` whose audio file is
+/// in `audio`, and clear it for the others. Returns the number of segments
+/// whose flag changed.
+fn update_removed_audio(conn: &Connection, session_id: &str, audio: &[String]) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE segments SET audio_removed = (audio_file IN (SELECT value FROM json_each(?2)))
+         WHERE session_id = ?1
+           AND audio_removed != (audio_file IN (SELECT value FROM json_each(?2)))",
+        params![session_id, serde_json::to_string(audio)?],
+    )?)
 }
 
 /// The text of `source` in the `title_source` column.

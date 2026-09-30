@@ -181,7 +181,7 @@ export function Switch({
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors duration-150 select-none ${
+      className={`relative h-[18px] w-[32px] shrink-0 rounded-full transition-colors duration-150 select-none ${
         checked ? "bg-accent" : "bg-fill-pressed"
       } outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
     >
@@ -207,6 +207,9 @@ export function Tag({ children, accent }: { children: ReactNode; accent?: boolea
     </span>
   );
 }
+
+/// A count of notes in words, such as "1 note" or "3 notes".
+export const notes = (n: number) => `${n} ${n === 1 ? "note" : "notes"}`;
 
 export function formatBytes(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;

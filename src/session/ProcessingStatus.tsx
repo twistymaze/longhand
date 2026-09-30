@@ -19,6 +19,7 @@ import {
 } from "../processing/describe";
 import { useFolderChange } from "../settings/OldNotesDialog";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
+import { REMOVED_REASON } from "./RemoveAudio";
 import type { Live } from "./useSessions";
 
 function StageIcon({ status }: { status: StageRow["status"] }) {
@@ -117,18 +118,22 @@ function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => vo
   switch (detail.entry.state) {
     case "processing_failed": {
       const kept = [detail.audio_kept && "audio", detail.transcript_kept && "transcript"].filter(Boolean);
+      // Removed audio does not come back, so Retry cannot run (R14).
+      const removed = detail.audio === "removed";
       return (
         <Group
           footer={
-            kept.length > 0 &&
-            `The ${kept.join(" and ")} ${kept.length > 1 ? "are" : "is"} kept. Retry continues from where processing stopped.`
+            removed
+              ? REMOVED_REASON
+              : kept.length > 0 &&
+                `The ${kept.join(" and ")} ${kept.length > 1 ? "are" : "is"} kept. Retry continues from where processing stopped.`
           }
         >
           <Row
             label={<Status tone="negative">{stoppedAt(detail.failed_stage)}</Status>}
             detail={detail.message && sentence(detail.message)}
           >
-            <Button prominent onClick={() => run(() => commands.retrySession(id))}>
+            <Button prominent disabled={removed} onClick={() => run(() => commands.retrySession(id))}>
               Retry
             </Button>
           </Row>

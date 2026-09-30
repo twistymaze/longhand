@@ -7,6 +7,7 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
+use pipeline::in_use::InUseKeeper;
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SummaryEndpoint,
@@ -17,6 +18,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 
+use crate::managers::audio_removal::AudioRemovalManager;
 use crate::managers::capture::CaptureManager;
 use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
@@ -678,6 +680,12 @@ pub struct ProcessingManager {
     library_status: Arc<library::status::LibraryStatus>,
     /// The Move of the notes to a new storage folder (KTD9).
     mover: MoveWorker,
+    /// The in-use markers of the saved notes that this run resumes or
+    /// processes (KTD4 of the audio removal plan).
+    in_use: Arc<InUseKeeper>,
+    /// The passes that remove the audio of old notes (U6 of the audio
+    /// removal plan).
+    audio_removal: Arc<AudioRemovalManager>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -719,6 +727,17 @@ impl ProcessingManager {
                 if let RunnerEvent::Saved { path, .. } = &event {
                     notify_saved(&events, path);
                 }
+                // The work on a note can end: its in-use marker goes at
+                // Saved, and a failed Transcribe Again run is Saved again.
+                if matches!(
+                    event,
+                    RunnerEvent::Saved { .. }
+                        | RunnerEvent::StageFailed { .. }
+                        | RunnerEvent::Cancelled { .. }
+                ) && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
+                {
+                    processing.in_use_changed();
+                }
                 if let Err(e) = ProcessingUpdate::from(event).emit(&events) {
                     log::warn!("could not emit a processing update: {e}");
                 }
@@ -740,7 +759,18 @@ impl ProcessingManager {
                 log::error!("launch recovery of folder renames failed: {e}");
             }
         }
+        // The run ID of the in-use markers is the claim owner of this run.
+        let in_use = InUseKeeper::new(capture.shared_store(), runner.owner());
+        let library_status: Arc<library::status::LibraryStatus> = Arc::default();
+        let audio_removal = AudioRemovalManager::new(
+            app,
+            capture.shared_store(),
+            runner.claims().clone(),
+            Arc::clone(&library_status),
+        );
         Self {
+            in_use,
+            audio_removal,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -748,9 +778,14 @@ impl ProcessingManager {
             store: capture.shared_store(),
             liveness,
             library: std::sync::Mutex::default(),
-            library_status: Arc::default(),
+            library_status,
             mover: MoveWorker::default(),
         }
+    }
+
+    /// The passes that remove the audio of old notes.
+    pub fn audio_removal(&self) -> &Arc<AudioRemovalManager> {
+        &self.audio_removal
     }
 
     /// What the latest library scans found about each note.
@@ -764,6 +799,11 @@ impl ProcessingManager {
     /// retry of notes that wait for a folder, the runner and the library
     /// watcher.
     pub fn start(self: &Arc<Self>) {
+        // The first refresh marks the saved notes that an earlier run left
+        // open (a Resume, the queue, a failure).
+        if let Err(e) = self.in_use.start() {
+            log::error!("could not start the in-use markers: {e}");
+        }
         let manager = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("launch".into())
@@ -798,6 +838,10 @@ impl ProcessingManager {
                     changes.changed.len(),
                     changes.removed.len()
                 );
+                // A sync can deliver a removal marker for a resumed note
+                // that failed processing. The reconcile does not report
+                // such a note as changed (KTD8).
+                self.runner.drop_removed_old_audio_of_failed();
                 if !changes.is_empty() {
                     emit_library_changed(&self.app, changes.into());
                 }
@@ -813,6 +857,13 @@ impl ProcessingManager {
                 log::error!("launch reconcile of folder names failed: {e}");
             }
         }
+        // After the library scan, so the rows and the removed flags come
+        // from the folders. The pass at launch runs only with the instance
+        // lock held. The timer passes run in each case (KTD6).
+        self.audio_removal.start(matches!(
+            self.liveness,
+            session_core::jobs::Liveness::OnlyInstance
+        ));
         let woken = Arc::downgrade(&self.runner);
         self.live
             .attach(self.runner.live_workers().with_idle(move || {
@@ -1091,6 +1142,8 @@ impl ProcessingManager {
         let events = self.app.clone();
         let app = self.app.clone();
         let reader = self.app.clone();
+        let audio_removal = Arc::clone(&self.audio_removal);
+        let runner = Arc::clone(&self.runner);
         let started = LibraryWatcher::start(
             self.roots(),
             self.storage_folder(),
@@ -1107,6 +1160,10 @@ impl ProcessingManager {
                     changes.removed.sort();
                     changes.removed.dedup();
                 }
+                // A sync can deliver a removal marker for a resumed note
+                // that failed processing. The reconcile does not report
+                // such a note as changed (KTD8).
+                runner.drop_removed_old_audio_of_failed();
                 Ok(changes)
             }),
             // On the watcher thread, never the main thread: a read can
@@ -1122,6 +1179,9 @@ impl ProcessingManager {
                     if let Some(models) = reader.try_state::<Arc<ModelsManager>>() {
                         models.follow_choice(&reader);
                     }
+                    // The change can turn the audio removal on or shorten
+                    // its delay. It needs no confirmation (KTD6).
+                    audio_removal.run_now();
                 }
             }),
             Box::new(move |changes| emit_library_changed(&events, changes)),
@@ -1171,13 +1231,22 @@ impl ProcessingManager {
             state.stopped = true;
             self.mover.signal.notify_all();
         }
+        self.audio_removal.stop();
         self.live.shutdown();
         self.runner.shutdown();
+        self.in_use.stop();
     }
 
     /// A session was queued or capture ended.
     pub fn wake(&self) {
         self.runner.wake();
+    }
+
+    /// A saved note started a Resume or entered the queue, or the work on
+    /// a note ended: refresh the in-use markers now. This does not wait
+    /// and takes no lock that a caller can hold.
+    pub fn in_use_changed(&self) {
+        self.in_use.wake();
     }
 
     /// Free the loaded engine when it holds `model`, before a delete of
@@ -1205,7 +1274,9 @@ impl ProcessingManager {
     }
 
     pub fn retry(&self, session_id: &str) -> Result<(), String> {
-        self.runner.retry(session_id).map_err(|e| e.to_string())
+        self.runner.retry(session_id).map_err(|e| e.to_string())?;
+        self.in_use_changed();
+        Ok(())
     }
 
     pub fn unblock(&self, session_id: &str) -> Result<(), String> {
@@ -1257,7 +1328,9 @@ impl ProcessingManager {
         self.runner
             .transcribe_again(session_id, &settings, model_id, &|spec| {
                 self.readiness(spec)
-            })
+            })?;
+        self.in_use_changed();
+        Ok(())
     }
 
     /// Whether the artifacts of `spec` are on disk, or downloading.

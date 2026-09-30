@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use shared_settings::file::{Field, SharedValue, is_catalog_asr_model};
+use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
 use summarize::prompts::TOPIC_SUMMARY_ID;
@@ -99,6 +99,58 @@ impl From<models::recognition::SpeakerCount> for SpeakerCountSetting {
         match count {
             SpeakerCount::Exact { count } => Self::Exact { count },
             SpeakerCount::Range { min, max } => Self::Range { min, max },
+        }
+    }
+}
+
+/// A shared setting: when Longhand removes the audio of a saved note (R1,
+/// R3). The file form is [`AudioRemoval`]; this is the form of the
+/// Settings window.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AudioRemovalSetting {
+    Off,
+    /// The audio goes this many whole days after the note last recorded.
+    AfterDays {
+        days: u32,
+    },
+}
+
+impl AudioRemovalSetting {
+    /// Refuse a number of days that the shared settings file cannot hold.
+    pub fn validate(&self) -> Result<(), String> {
+        if AudioRemoval::from(*self).valid() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Choose from {} to {} days.",
+                shared_settings::file::AUDIO_REMOVAL_MIN_DAYS,
+                shared_settings::file::AUDIO_REMOVAL_MAX_DAYS
+            ))
+        }
+    }
+}
+
+impl Default for AudioRemovalSetting {
+    fn default() -> Self {
+        AudioRemoval::default().into()
+    }
+}
+
+impl From<AudioRemovalSetting> for AudioRemoval {
+    fn from(setting: AudioRemovalSetting) -> Self {
+        match setting {
+            AudioRemovalSetting::Off => AudioRemoval::Off,
+            AudioRemovalSetting::AfterDays { days } => AudioRemoval::AfterDays(days),
+        }
+    }
+}
+
+impl From<AudioRemoval> for AudioRemovalSetting {
+    fn from(removal: AudioRemoval) -> Self {
+        match removal {
+            AudioRemoval::Off => AudioRemovalSetting::Off,
+            AudioRemoval::AfterDays(days) => AudioRemovalSetting::AfterDays { days },
         }
     }
 }
@@ -428,6 +480,13 @@ pub struct Settings {
     /// launch, each hour and at each wake (R9, R10). On by default. "Check
     /// for Updates…" works when it is off (R11).
     pub check_updates_automatically: bool,
+    /// A shared setting. When the audio of a saved note goes (R1, R2). On
+    /// by default, with a delay of 30 days. A value that this version does
+    /// not know shows as the default here and in `shared.unknown_values`.
+    /// The removal pass does not read this field: it reads
+    /// `SharedSnapshot::audio_removal_days`, which gives no delay for such a
+    /// value or while the shared settings are read-only.
+    pub audio_removal: AudioRemovalSetting,
     /// Context limits endpoints have shown by rejecting longer prompts,
     /// keyed by [`learned_limit_key`] (KTD16).
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
@@ -569,6 +628,7 @@ impl Default for Settings {
             system_audio_default: false,
             hide_from_dock: false,
             check_updates_automatically: true,
+            audio_removal: AudioRemovalSetting::default(),
             learned_context_limits: Default::default(),
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
@@ -616,6 +676,7 @@ impl Settings {
                 &fields.check_updates_automatically,
                 defaults.check_updates_automatically,
             ),
+            audio_removal: known_or(&fields.audio_removal, AudioRemoval::default()).into(),
             learned_context_limits: local.learned_context_limits,
             summary_prompts: shared
                 .view
@@ -837,6 +898,9 @@ pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
         patch.push(SharedValue::CheckUpdatesAutomatically(
             after.check_updates_automatically,
         ));
+    }
+    if before.audio_removal != after.audio_removal {
+        patch.push(SharedValue::AudioRemoval(after.audio_removal.into()));
     }
     patch
 }
@@ -2091,6 +2155,7 @@ mod tests {
         after.chosen_recognition.default_speaker_count =
             Some(SpeakerCountSetting::Range { min: 2, max: 4 });
         after.check_updates_automatically = false;
+        after.audio_removal = AudioRemovalSetting::Off;
         assert_eq!(
             shared_patch(&before, &after),
             [
@@ -2100,9 +2165,62 @@ mod tests {
                 })),
                 SharedValue::LiveTranscript(false),
                 SharedValue::CheckUpdatesAutomatically(false),
+                SharedValue::AudioRemoval(AudioRemoval::Off),
             ]
         );
         assert_eq!(after.local(), before.local());
+    }
+
+    #[test]
+    fn the_audio_removal_setting_is_shared_and_its_range_is_checked() {
+        // R1, R2, R3: on by default with 30 days, and only in the shared
+        // settings file.
+        let before = Settings::default();
+        assert_eq!(
+            before.audio_removal,
+            AudioRemovalSetting::AfterDays { days: 30 }
+        );
+        let mut after = before.clone();
+        after.audio_removal = AudioRemovalSetting::AfterDays { days: 3650 };
+        assert_eq!(
+            shared_patch(&before, &after),
+            [SharedValue::AudioRemoval(AudioRemoval::AfterDays(3650))]
+        );
+        assert_eq!(after.local(), before.local());
+        for days in [1, 3650] {
+            assert!(AudioRemovalSetting::AfterDays { days }.validate().is_ok());
+        }
+        for days in [0, 3651] {
+            assert!(AudioRemovalSetting::AfterDays { days }.validate().is_err());
+        }
+        assert!(AudioRemovalSetting::Off.validate().is_ok());
+    }
+
+    #[test]
+    fn an_unknown_audio_removal_value_shows_as_the_default_and_as_unknown() {
+        use shared_settings::view::{self, Availability};
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert("audio_removal".into(), json!("never"));
+        let cache = shared_settings::cache::Cache {
+            source: PathBuf::from("/Volumes/Notes"),
+            settings: raw,
+            prompts: Vec::new(),
+            active_prompt: None,
+        };
+        let shared = SharedSnapshot {
+            view: view::cached(Some(&cache), Availability::Available),
+            availability: crate::managers::shared::SharedAvailability::Available,
+        };
+        let settings = Settings::from_parts(LocalSettings::default(), &shared);
+        assert_eq!(settings.audio_removal, AudioRemovalSetting::default());
+        assert!(
+            settings
+                .shared
+                .unknown_values
+                .iter()
+                .any(|v| v.key == "audio_removal" && v.value == "\"never\"")
+        );
+        assert_eq!(shared.audio_removal_days(), None);
     }
 
     #[test]

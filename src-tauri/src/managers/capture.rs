@@ -61,6 +61,7 @@ use crate::commands::readiness::SystemAudioPermission;
 use crate::managers::alerts::{self, AlertsManager};
 use crate::managers::live::{DeferredLive, LiveManager};
 use crate::managers::models::ModelsManager;
+use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, MicrophoneChoice, Settings};
 
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
@@ -1353,7 +1354,11 @@ impl CaptureManager {
             if !completed && pipeline::save::begun(&store, id).map_err(other)? {
                 return Err(CaptureError::Save);
             }
-            let audio_intact = pipeline::save::home_intact(&store, id).map_err(other)?;
+            // Removed audio refuses as missing audio does (KTD9 of the audio
+            // removal plan).
+            let audio_intact = pipeline::save::audio_state(&store, id).map_err(other)?
+                == pipeline::save::AudioState::Present;
+            let old_segments = store.segments(id)?;
             let state = store.apply(
                 id,
                 &Event::UserResume {
@@ -1361,6 +1366,17 @@ impl CaptureManager {
                     audio_intact,
                 },
             )?;
+            // The old segments of a saved note are listed for their copy
+            // into the working location (KTD8 of the audio removal plan).
+            // The list reads no audio, so the recording does not wait for
+            // an online-only file. With no list, processing reads the home
+            // folder and save adds no old audio, as before.
+            if completed
+                && matches!(state, SessionState::Capturing)
+                && let Err(e) = pipeline::old_audio::begin(&self.session_dir(id), &old_segments)
+            {
+                log::warn!("could not list the old audio of {id} for its copy: {e}");
+            }
             // A note with no recognition results on this computer takes
             // the text of its recorded segments from `transcript.md`, and
             // only the new segment is transcribed (KD3, KTD12).
@@ -1375,6 +1391,13 @@ impl CaptureManager {
         };
         if !matches!(state, SessionState::Capturing) {
             return Ok(state);
+        }
+        // A saved note that starts a Resume gets this run's in-use marker,
+        // so another computer does not remove its audio (KTD4 of the audio
+        // removal plan). The marker is written on the thread of the
+        // markers, not under the capture lock.
+        if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+            processing.in_use_changed();
         }
         self.record_model_at_resume(app, id);
         inner.supersede();
@@ -1442,10 +1465,36 @@ impl CaptureManager {
         inner.active = Some(active);
         inner.clock = Some(Clock::new(id, timeline, epoch));
         log::info!("session {id} resumed as segment {index} at {offset} ms");
+        self.copy_old_audio(id);
         self.watch_capture(app, &mut inner, id);
         app.state::<Arc<AlertsManager>>().clear(id);
         changed(app, Some(id));
         Ok(state)
+    }
+
+    /// Copy the old audio of the resumed note `id` into its working
+    /// location on a background thread, while it records (KTD8 of the audio
+    /// removal plan). The read can wait for an online-only file; the
+    /// recording does not wait for it. A note with no list of old audio
+    /// has nothing to copy.
+    fn copy_old_audio(&self, id: &str) {
+        let working = self.session_dir(id);
+        if !working.join(pipeline::old_audio::LIST_FILE).is_file() {
+            return;
+        }
+        let store = Arc::clone(&self.store);
+        let session_id = id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name("old-audio-copy".into())
+            .spawn(
+                move || match pipeline::old_audio::copy_for(&store, &session_id, &working) {
+                    Ok(()) => log::info!("the old audio copy of {session_id} ended"),
+                    Err(e) => log::warn!("the old audio copy of {session_id} failed: {e}"),
+                },
+            );
+        if let Err(e) = spawned {
+            log::warn!("could not start the old audio copy of {id}: {e}");
+        }
     }
 
     /// The session a note typed now belongs to: the one recording, or the

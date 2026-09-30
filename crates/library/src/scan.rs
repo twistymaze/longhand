@@ -5,8 +5,9 @@
 //! The scan lists the top-level folders of a Destination and reads only
 //! the documents of each one. It never opens audio: it only asks whether
 //! each segment's audio file exists, so an online-only audio file is not
-//! downloaded (R12). Each read has a timeout, so a file that does not
-//! download does not stop the scan.
+//! downloaded (R12). It also asks whether each segment's removal marker
+//! exists, and does not open it. Each read has a timeout, so a file that
+//! does not download does not stop the scan.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
@@ -15,7 +16,7 @@ use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 use session_core::SessionRecord;
-use session_core::folder::{SessionDoc, fingerprint};
+use session_core::folder::{self, SessionDoc, fingerprint};
 
 use crate::conflict;
 
@@ -159,6 +160,11 @@ pub struct NoteFolder {
     pub path: PathBuf,
     pub doc: SessionDoc,
     pub waiting: Vec<Waiting>,
+    /// The audio files, as `session.md` names them, of the segments whose
+    /// removal marker is in the folder (KTD1 of the audio removal plan).
+    /// Such a segment does not wait for its audio, also when the file is
+    /// gone (R15).
+    pub removed_audio: Vec<String>,
     /// The fingerprint of `transcript.md`, when the scan read it.
     pub transcript_fingerprint: Option<String>,
     /// The fingerprint of `summary.md`, when the scan read it.
@@ -396,6 +402,7 @@ struct Found {
     created: Option<SystemTime>,
     doc: SessionDoc,
     waiting: Vec<Waiting>,
+    removed_audio: Vec<String>,
     transcript_fingerprint: Option<String>,
     summary_fingerprint: Option<String>,
     notes: Option<String>,
@@ -459,9 +466,11 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
     if notes.is_none() {
         waiting.push(Waiting::Notes);
     }
-    // Only the metadata: the audio is never opened (R12).
+    // Only the metadata: the audio is never opened (R12). A segment with a
+    // removal marker does not wait for its audio (R15).
+    let removed_audio = removed_audio(dir, &doc);
     for segment in &doc.segments {
-        if !exists(&dir.join(&segment.audio)) {
+        if !removed_audio.contains(&segment.audio) && !exists(&dir.join(&segment.audio)) {
             waiting.push(Waiting::Audio(segment.audio.clone()));
         }
     }
@@ -491,6 +500,7 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
             .and_then(|m| m.created().or_else(|_| m.modified()).ok()),
         doc,
         waiting,
+        removed_audio,
         transcript_fingerprint: transcript.fingerprint,
         summary_fingerprint: summary.fingerprint,
         notes,
@@ -532,6 +542,20 @@ fn document_state(
             fingerprint: None,
         },
     }
+}
+
+/// The audio files of the segments of `doc` whose removal marker is in the
+/// note folder `dir`, sorted. This reads metadata only and opens no file.
+pub(crate) fn removed_audio(dir: &Path, doc: &SessionDoc) -> Vec<String> {
+    let mut removed: Vec<String> = doc
+        .segments
+        .iter()
+        .filter(|segment| folder::audio_removed(dir, &segment.audio))
+        .map(|segment| segment.audio.clone())
+        .collect();
+    removed.sort();
+    removed.dedup();
+    removed
 }
 
 /// Whether `path` exists. This reads metadata only and opens no file.
@@ -588,6 +612,7 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
                 path: real.path,
                 doc: real.doc,
                 waiting: real.waiting,
+                removed_audio: real.removed_audio,
                 transcript_fingerprint: real.transcript_fingerprint,
                 summary_fingerprint: real.summary_fingerprint,
                 notes: real.notes,

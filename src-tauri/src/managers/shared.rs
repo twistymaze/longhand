@@ -133,6 +133,19 @@ impl Default for SharedSnapshot {
 }
 
 impl SharedSnapshot {
+    /// The delay in whole days for the automatic removal of old audio, or
+    /// `None` when no audio goes automatically (R2, KTD3). This is the only
+    /// value that the removal pass reads. It is `None` unless the view comes
+    /// from the settings file of the storage folder and this build knows the
+    /// value: while the view comes from the cache or the defaults, no audio
+    /// goes.
+    pub fn audio_removal_days(&self) -> Option<u32> {
+        if self.availability != SharedAvailability::Available {
+            return None;
+        }
+        self.view.audio_removal_days()
+    }
+
     pub fn state(&self) -> SharedState {
         let fields = &self.view.fields;
         SharedState {
@@ -583,7 +596,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::managers::settings::{self, LocalSettings, Settings};
+    use crate::managers::settings::{self, AudioRemovalSetting, LocalSettings, Settings};
 
     /// One computer: its local cache folder.
     struct Computer {
@@ -882,6 +895,63 @@ mod tests {
             b"{\"asr_model\": \"par"
         );
         assert!(prompt_files(folder.path()).is_empty());
+    }
+
+    #[test]
+    fn the_audio_removal_delay_is_known_only_while_the_shared_settings_are_available() {
+        // R2, AE10, KTD3.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        // Before the first read, the view comes from the defaults.
+        assert_eq!(
+            settings_of(&manager).audio_removal,
+            AudioRemovalSetting::default()
+        );
+        assert_eq!(manager.snapshot().audio_removal_days(), None);
+        manager.join_at_launch();
+        assert_eq!(manager.snapshot().audio_removal_days(), Some(30));
+        manager
+            .save(&[SharedValue::AudioRemoval(file::AudioRemoval::AfterDays(90))])
+            .unwrap();
+        assert_eq!(manager.snapshot().audio_removal_days(), Some(90));
+        assert_eq!(
+            settings_of(&manager).audio_removal,
+            AudioRemovalSetting::AfterDays { days: 90 }
+        );
+
+        // A half-synced file: the cache still shows 90 days, but no audio
+        // goes, and the read writes nothing.
+        std::fs::write(file::settings_path(folder.path()), b"{\"audio_rem").unwrap();
+        manager.reread();
+        assert_eq!(
+            manager.snapshot().availability,
+            read_only(ReadOnlyCause::DoesNotParse)
+        );
+        assert_eq!(
+            settings_of(&manager).audio_removal,
+            AudioRemovalSetting::AfterDays { days: 90 }
+        );
+        assert_eq!(manager.snapshot().audio_removal_days(), None);
+        assert_eq!(
+            std::fs::read(file::settings_path(folder.path())).unwrap(),
+            b"{\"audio_rem"
+        );
+
+        // A value that this build does not know is not a delay.
+        std::fs::write(
+            file::settings_path(folder.path()),
+            br#"{"schema_version": 1, "audio_removal": 0}"#,
+        )
+        .unwrap();
+        manager.reread();
+        assert!(available(&manager));
+        assert_eq!(manager.snapshot().audio_removal_days(), None);
+
+        // With no storage folder, the cache gives no delay.
+        let no_folder = computer.manager(None);
+        assert!(!no_folder.join_at_launch());
+        assert_eq!(no_folder.snapshot().audio_removal_days(), None);
     }
 
     #[test]

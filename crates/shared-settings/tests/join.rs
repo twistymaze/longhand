@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use shared_settings::cache::{Cache, read_cache, write_cache};
-use shared_settings::file::{Field, SharedValue, Unavailable, apply_patch, default_settings};
+use shared_settings::file::{
+    AudioRemoval, Field, SharedValue, Unavailable, apply_patch, default_settings,
+};
 use shared_settings::join::{JoinKind, join};
 use shared_settings::prompts::{create_prompt, render_prompt_file, scan_prompts};
 use shared_settings::view::{ActivePrompt, Availability, load};
@@ -644,4 +646,58 @@ fn refresh_and_join_folder_keep_the_cache_in_the_cache_folder() {
         names(&read_cache(cache_dir.path()).unwrap().prompts),
         vec!["Recap", "Standup"]
     );
+}
+
+#[test]
+fn a_join_with_no_cache_writes_the_default_audio_removal_delay() {
+    // R2: a new storage folder gets 30 days, with no confirmation (R18).
+    let root = tempfile::tempdir().unwrap();
+    let joined = join(root.path(), None, JoinKind::SameFolder).unwrap();
+    assert!(joined.written.settings_file);
+    assert_eq!(settings_on_disk(root.path())["audio_removal"], json!(30));
+    assert_eq!(joined.view.audio_removal_days(), Some(30));
+}
+
+#[test]
+fn a_change_of_folder_with_a_cache_that_holds_off_writes_off_into_the_new_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = Cache {
+        settings: apply_patch(
+            &default_settings(),
+            &[SharedValue::AudioRemoval(AudioRemoval::Off)],
+        ),
+        ..cache_of_b(old.path(), Vec::new())
+    };
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(joined.written.settings_file);
+    assert_eq!(settings_on_disk(root.path())["audio_removal"], json!("off"));
+    assert_eq!(
+        joined.view.fields.audio_removal,
+        Field::Known(AudioRemoval::Off)
+    );
+    assert_eq!(joined.view.audio_removal_days(), None);
+}
+
+#[test]
+fn a_change_of_folder_keeps_the_audio_removal_value_of_a_folder_with_settings() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join(".longhand")).unwrap();
+    fs::write(
+        root.path().join(".longhand").join("settings.json"),
+        serde_json::to_vec(&json!({"schema_version": 1, "audio_removal": 200})).unwrap(),
+    )
+    .unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = Cache {
+        settings: apply_patch(
+            &default_settings(),
+            &[SharedValue::AudioRemoval(AudioRemoval::Off)],
+        ),
+        ..cache_of_b(old.path(), Vec::new())
+    };
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!joined.written.settings_file);
+    assert_eq!(settings_on_disk(root.path())["audio_removal"], json!(200));
+    assert_eq!(joined.view.audio_removal_days(), Some(200));
 }

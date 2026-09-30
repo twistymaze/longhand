@@ -41,6 +41,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
             commands::settings::set_check_updates_automatically,
+            commands::settings::set_audio_removal,
+            commands::settings::audio_removal_count,
             commands::settings::set_hide_from_dock,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
@@ -94,6 +96,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::live_transcript,
             commands::session::delete_session,
             commands::session::delete_session_permanently,
+            commands::session::remove_audio,
             commands::window::open_settings,
             commands::window::close_settings_window,
             commands::window::open_licences,
@@ -330,6 +333,9 @@ pub fn run() {
                 secret_store,
                 liveness,
             ));
+            // The settings commands start a removal pass after a change
+            // (R17), and the count before a change reads it.
+            app.manage(std::sync::Arc::clone(processing.audio_removal()));
             processing.start();
             let working = std::sync::Arc::clone(&processing);
             app.manage(processing);
