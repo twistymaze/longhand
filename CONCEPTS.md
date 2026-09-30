@@ -39,13 +39,16 @@ The name of a session, shown on Home, on the session page and in the home folder
 ### Library
 Every saved session in the storage folder. After a change of storage folder, the library forgets the sessions of the old folder and leaves their folders on disk. Several computers of one person can share a storage folder through a sync service (OneDrive, Google Drive, Dropbox, iCloud). Each computer lists the whole library, including the sessions that other computers recorded. The home folders are the authority: each computer keeps its store in step with them through a library scan at launch and a folder watcher while Longhand runs.
 
-A computer that only receives a sync changes no home folder. An automatic step, such as a launch reconcile, writes into a home folder only for work that this computer started and recorded. A partial sync can make the files of one home folder disagree for a time, so the shared files cannot tell which computer made a change.
+A computer that only receives a sync changes no home folder. An automatic step, such as a launch reconcile, writes into a home folder only for work that this computer started and recorded. Audio removal is the one exception. A partial sync can make the files of one home folder disagree for a time, so the shared files cannot tell which computer made a change.
 
 ### Adopt
 The step that makes a Saved row in this computer's store from a home folder that another computer saved. The row is built from `session.md` and `notes.md`. Its opposite, forget, removes a row from the store and does not touch any folder: a computer forgets a session when its home folder is deleted from an available storage folder.
 
 ### Move
 The step that copies every saved session from the old storage folder to a new one, when the user changes the storage folder and chooses Move. Move works on one note at a time and records each step. A crash, a full disk or an unavailable folder pauses it, and it continues from what is on disk after a launch or a Retry. A note leaves the Move without a copy only when its source is gone from an old folder that is still available; when the whole old folder goes away, even in the middle of a Move, the Move pauses. At every step, one complete copy of each note exists. The other choice, Leave them, changes the storage folder and leaves the old notes where they are; the library then forgets them. The user cannot change the storage folder while a Move is open.
+
+### Audio removal
+The step that permanently deletes all audio of a saved note and keeps its transcript, summary, notes and title. A shared setting, on by default at 30 days, removes the audio that many days after the note last recorded; the Remove Audio action on one note removes it at once. Any computer that uses the storage folder can remove old audio, but never from a note that another computer records into or processes. A note with no audio cannot use Transcribe Again or Resume.
 
 ### Conflict copy
 A second copy of a session's file that a sync service makes when two computers change the file before either change syncs, for example `notes (1).md`. Longhand does not merge conflict copies. It shows a notice that names them. When a notes save finds that `notes.md` changed since the notes were loaded, Longhand keeps `notes.md` and saves the edit as its own conflict copy, `notes (Longhand conflict YYYY-MM-DD HHMM).md`.

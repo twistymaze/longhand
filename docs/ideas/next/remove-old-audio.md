@@ -1,16 +1,17 @@
 ---
 title: Remove the audio of old notes
-description: "An optional setting removes only the audio of a note after a delay, such as 30 days, to control the growth of disk use; off by default"
+description: "A setting removes only the audio of a note after a delay, 30 days by default, for privacy and to control the growth of disk use; on by default"
 area: library-and-sharing
 added: 2026-09-28
 source: "the user, during the shared-settings brainstorm of 2026-09-28"
 related: [one-storage-folder, shared-settings-in-storage]
+plan: docs/plans/2026-09-30-0357-feat-remove-old-audio-plan.md
 ---
 
 # Remove the audio of old notes
 
 ## Idea
-A setting removes the audio of each note that is older than a delay that the user sets, for example 30 days. The transcript, the summary, the notes and the title stay. The setting is off by default, and the user sets the delay.
+A setting removes the audio of each note that is older than a delay that the user sets, for example 30 days. The transcript, the summary, the notes and the title stay. The setting is on by default with a delay of 30 days. The user can set another delay or turn it off.
 
 ## Why
 The audio is the largest part of a note. A four-hour note makes a large file, and the storage folder grows with each note. After some weeks the user seldom needs the audio, because the transcript is the system of record.
