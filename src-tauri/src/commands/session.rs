@@ -13,7 +13,7 @@ use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
 
-use library::scan::Waiting;
+use library::scan::{READ_TIMEOUT, Read, Waiting, read_timed};
 use library::status::LibraryStatus;
 
 use crate::managers::capture::CaptureManager;
@@ -541,27 +541,33 @@ pub fn session_document(
             .and_then(|r| r.home_path)
             .ok_or_else(|| "this note has not finished processing yet".to_string())?
     };
-    let folder = Path::new(&home);
-    let previous: Option<SessionDoc> = {
-        let store = capture.shared_store();
-        let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store
-            .result_state(&session_id, "verified-manifest")
-            .map_err(|e| e.to_string())?
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|e| e.to_string())?
+    read_document(Path::new(&home))
+}
+
+/// The documents of the note folder `folder`, as they are on disk. While
+/// the sync delivers the files, a document can differ from its fingerprint
+/// in `session.md`. The note then shows the file that is there, with no
+/// error (R6). Each read stops after [`READ_TIMEOUT`].
+fn read_document(folder: &Path) -> Result<SessionDocument, String> {
+    let read = |name: &str| match read_timed(folder.join(name), READ_TIMEOUT) {
+        Read::Bytes(bytes) => Ok(bytes),
+        Read::Missing => Err(format!("{name} is not in {}", folder.display())),
+        Read::Failed(why) => Err(format!(
+            "could not read {name} in {}: {why}",
+            folder.display()
+        )),
     };
-    let result =
-        session_core::generation::resolve(folder, previous.as_ref()).map_err(|e| e.to_string())?;
-    let doc = result.doc;
-    let transcript_markdown = String::from_utf8(result.transcript).map_err(|e| e.to_string())?;
+    let text = |name: &str| {
+        read(name).and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
+    };
+    let doc = SessionDoc::parse(&text(pipeline::save::SESSION_FILE)?).map_err(|e| e.to_string())?;
+    let transcript_markdown = text(pipeline::join::TRANSCRIPT_FILE)?;
     let transcript = Transcript::parse(&transcript_markdown).map_err(|e| e.to_string())?;
     Ok(SessionDocument {
         has_speakers: transcript.has_speakers,
         lines: doc_lines(&doc, transcript),
         transcript_markdown,
-        summary: String::from_utf8(result.summary)
+        summary: text(pipeline::summarize::SUMMARY_FILE)
             .ok()
             .and_then(|text| Summary::parse(&text).ok())
             .map(summary_view),
@@ -1201,6 +1207,39 @@ mod tests {
         assert_eq!(named.prompt.as_deref(), Some("Team sync"));
         assert_eq!(named.host.as_deref(), Some("api.example.com"));
         assert!(summary_view(complete(None)).prompt.is_none());
+    }
+
+    // Covers AE1 (R6).
+    #[test]
+    fn a_document_that_waits_for_the_sync_shows_the_files_as_they_are() {
+        use session_core::folder::fingerprint;
+        let folder = tempfile::tempdir().unwrap();
+        let text = "---\nsession_id: s\nstarted: 2026-09-22T14:00:00+00:00\nsegments:\n- index: 0\n  wall_start: 2026-09-22T14:00:00+00:00\n  wall_end: 2026-09-22T14:10:00+00:00\n  offset_ms: 0\n  duration_ms: 600000\n  audio: audio/segment-01.opus\n---\n";
+        let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the plan.\n";
+        let old_summary = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nThe old summary.\n";
+        // The new session.md and transcript.md arrived. The new summary.md
+        // did not, and an older build named copies that did not arrive.
+        let mut doc = SessionDoc::parse(text).unwrap();
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+        doc.summary_fingerprint = Some(fingerprint(b"# Summary\n\nThe new summary.\n"));
+        let session = doc.render().replacen(
+            "---\n",
+            &format!(
+                "---\nresult_generation:\n  id: committed-1\n  files:\n    transcript.md: {}\n    summary.md: {}\n",
+                fingerprint(transcript.as_bytes()),
+                fingerprint(b"# Summary\n\nThe new summary.\n"),
+            ),
+            1,
+        );
+        std::fs::write(folder.path().join("session.md"), session).unwrap();
+        std::fs::write(folder.path().join("transcript.md"), transcript).unwrap();
+        std::fs::write(folder.path().join("summary.md"), old_summary).unwrap();
+
+        let document = read_document(folder.path()).unwrap();
+        assert_eq!(document.transcript_markdown, transcript);
+        let summary = document.summary.unwrap();
+        assert!(summary.stub);
+        assert_eq!(summary.body.trim(), "The old summary.");
     }
 }
 

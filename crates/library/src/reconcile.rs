@@ -311,9 +311,6 @@ impl Reconciler {
         for note in &scan.notes {
             let id = &note.doc.session_id;
             self.pending.remove(id);
-            if note.doc.result_generation.is_some() && !note.waiting.is_empty() {
-                continue;
-            }
             let updated = match records.get(id) {
                 None => adopt(store, note)?,
                 Some(_) if intents.contains(id) => false,
@@ -321,13 +318,6 @@ impl Reconciler {
             };
             if updated {
                 changed.push(id.clone());
-            }
-            if note.doc.result_generation.is_some() && store.session(id)?.is_some() {
-                store.set_result_state(
-                    id,
-                    "verified-manifest",
-                    &serde_json::to_value(&note.doc)?,
-                )?;
             }
         }
 

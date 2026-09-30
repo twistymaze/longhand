@@ -399,15 +399,9 @@ pub(crate) fn read_reusable(
             return Ok(None);
         }
     }
-    let dir = doc
-        .result_generation
-        .as_ref()
-        .map(|g| g.directory(home))
-        .transpose()?
-        .unwrap_or_else(|| home.to_path_buf());
     // A missing file, or a file with another checksum, has no timed text to
     // use again: the run transcribes in full (KTD8).
-    let path = dir.join(&reference.filename);
+    let path = home.join(&reference.filename);
     match recognition::file_digest(&path) {
         Ok(sha256) if sha256 == reference.sha256 => {}
         Ok(_) => return Ok(None),
@@ -421,7 +415,10 @@ pub(crate) fn read_reusable(
         Ok(())
     })
     .map_err(|e| StageError::Failed(e.to_string()))?;
-    let transcript = session_core::generation::read(home, doc, "transcript.md")?;
+    // With no transcript, the timed text cannot be checked against it.
+    let Some(transcript) = crate::summarize::transcript_bytes(home)? else {
+        return Ok(None);
+    };
     let next = durable::spec_fingerprints(header.fingerprints.audio.clone(), spec)?;
     Ok((timed && header.reuse(&next, &transcript) != Reuse::TranscribeAgain).then_some(header))
 }
@@ -500,7 +497,7 @@ mod tests {
     /// Whether a run with `config` uses the saved timed text in `home` again.
     fn reuses(home: &Path, config: &RecognitionConfig) -> Result<bool, StageError> {
         let spec = models::recognition::resolve(config).unwrap();
-        let doc = session_core::generation::manifest(home)?;
+        let doc = SessionDoc::read(home)?;
         Ok(read_reusable(home, &doc, &spec, |_| {})?.is_some())
     }
 
@@ -531,29 +528,22 @@ mod tests {
     }
 
     #[test]
-    fn reusable_text_comes_from_the_verified_generation() {
+    fn reusable_text_comes_from_the_note_files() {
         let config = RecognitionConfig {
             speaker_source: SpeakerSource::Off,
             ..Default::default()
         };
         let temp = saved(&config);
         assert!(reuses(temp.path(), &config).unwrap());
-        std::fs::remove_file(temp.path().join("transcript.md")).unwrap();
+        // The old result copies do not count.
+        std::fs::remove_dir_all(temp.path().join(".longhand-results")).unwrap();
         assert!(reuses(temp.path(), &config).unwrap());
+        // A hand edit or a missing transcript makes the timed text unusable
+        // (R9): the run transcribes in full.
         std::fs::write(temp.path().join("transcript.md"), b"External edit").unwrap();
-        assert!(reuses(temp.path(), &config).is_err());
-    }
-
-    /// Each `recognition.jsonl` in `home`: the file in the folder and the
-    /// file in each result generation.
-    fn artifact_copies(home: &Path) -> Vec<std::path::PathBuf> {
-        let mut copies = vec![home.join(ARTIFACT_FILE)];
-        if let Ok(entries) = std::fs::read_dir(home.join(session_core::generation::ROOT)) {
-            copies.extend(entries.map(|e| e.unwrap().path().join(ARTIFACT_FILE)));
-        }
-        copies.retain(|path| path.is_file());
-        assert!(!copies.is_empty());
-        copies
+        assert!(!reuses(temp.path(), &config).unwrap(), "edited");
+        std::fs::remove_file(temp.path().join("transcript.md")).unwrap();
+        assert!(!reuses(temp.path(), &config).unwrap(), "missing");
     }
 
     #[test]
@@ -564,16 +554,13 @@ mod tests {
             ..Default::default()
         };
         let temp = saved(&config);
-        for path in artifact_copies(temp.path()) {
-            std::fs::remove_file(path).unwrap();
-        }
+        std::fs::remove_file(temp.path().join(ARTIFACT_FILE)).unwrap();
         assert!(!reuses(temp.path(), &config).unwrap(), "missing");
         let temp = saved(&config);
-        for path in artifact_copies(temp.path()) {
-            let mut bytes = std::fs::read(&path).unwrap();
-            bytes.extend_from_slice(b"\n");
-            std::fs::write(path, bytes).unwrap();
-        }
+        let path = temp.path().join(ARTIFACT_FILE);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"\n");
+        std::fs::write(path, bytes).unwrap();
         assert!(!reuses(temp.path(), &config).unwrap(), "checksum mismatch");
     }
 

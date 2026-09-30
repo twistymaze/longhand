@@ -284,6 +284,12 @@ impl SessionDoc {
         let (yaml, _) = split_frontmatter("session.md", text)?;
         serde_yaml::from_str(yaml).map_err(yaml_error("session.md"))
     }
+
+    /// Read and parse the `session.md` in the note folder `folder`.
+    pub fn read(folder: &Path) -> std::io::Result<Self> {
+        Self::parse(&std::fs::read_to_string(folder.join("session.md"))?)
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
 }
 
 // ---------------------------------------------------------------- removal markers

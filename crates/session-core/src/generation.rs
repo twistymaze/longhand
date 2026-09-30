@@ -62,9 +62,9 @@ impl Generation {
     }
 }
 
+/// The parsed `session.md` in `home`. See [`SessionDoc::read`].
 pub fn manifest(home: &Path) -> io::Result<SessionDoc> {
-    SessionDoc::parse(&std::fs::read_to_string(home.join("session.md"))?)
-        .map_err(|e| invalid(&e.to_string()))
+    SessionDoc::read(home)
 }
 
 pub struct Resolved {

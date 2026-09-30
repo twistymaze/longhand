@@ -1438,7 +1438,7 @@ fn completed_nemo_resume(separate: bool) {
         .promote_result_snapshot("route", Some(&serde_json::to_value(&case.spec).unwrap()))
         .unwrap();
     // This synthetic native result uses the same neutral saved-artifact contract.
-    let mut doc = session_core::generation::manifest(&case.home).unwrap();
+    let mut doc = session_core::folder::SessionDoc::read(&case.home).unwrap();
     let mut blocks = vec![];
     if separate {
         case.original.speakers.clear();

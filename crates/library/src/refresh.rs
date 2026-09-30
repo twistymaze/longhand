@@ -1,16 +1,21 @@
 //! The refresh step (KTD3): bring one row up to date from its note folder.
 //!
 //! The folder is the authority for a saved note on every computer (KD4).
-//! The refresh reads `session.md`, `notes.md` and the fingerprint of
-//! `transcript.md`, and asks whether each segment's removal marker exists.
-//! It updates the title, title source, recognition model, speakers found,
-//! speaker count, segments, removed flags and notes of the row. It never
-//! writes to the folder. It is idempotent: a row that already matches its
-//! folder changes nothing.
+//! The refresh reads `session.md`, `notes.md` and the fingerprints of
+//! `transcript.md` and `summary.md`, and asks whether each segment's
+//! removal marker exists. It updates the title, title source, recognition
+//! model, speakers found, speaker count, segments, removed flags and notes
+//! of the row. It never writes to the folder. It is idempotent: a row that
+//! already matches its folder changes nothing.
 //!
 //! A `transcript.md` with another fingerprint than the one the row stores
 //! was written by another computer. The refresh then removes this
 //! computer's stored recognition results for the note (KTD12, R18).
+//!
+//! The row takes the result snapshot of `session.md` only when both
+//! documents have the fingerprints that `session.md` records (KTD10 of the
+//! result copies plan). While the sync delivers the documents, the row
+//! keeps its snapshot.
 //!
 //! The refresh does not check claims: the library reconcile calls it only
 //! for a Saved row that no stage has claimed, and a writer calls it on the
@@ -35,6 +40,9 @@ pub struct FolderContents {
     /// The fingerprint of `transcript.md`. `None` while the sync has not
     /// delivered it.
     pub transcript_fingerprint: Option<String>,
+    /// The fingerprint of `summary.md`. `None` while the sync has not
+    /// delivered it.
+    pub summary_fingerprint: Option<String>,
     /// The audio files of the segments whose removal marker is in the
     /// folder, sorted (KTD9 of the audio removal plan).
     pub removed_audio: Vec<String>,
@@ -60,29 +68,16 @@ impl FolderContents {
                     reason,
                 })?,
         };
-        let transcript_path = doc
-            .result_generation
-            .as_ref()
-            .and_then(|g| g.directory(folder).ok())
-            .unwrap_or_else(|| folder.to_path_buf())
-            .join("transcript.md");
-        if let Some(generation) = &doc.result_generation {
-            generation
-                .verify(folder)
-                .map_err(|e| RefreshError::Unreadable {
-                    folder: folder.to_path_buf(),
-                    reason: e.to_string(),
-                })?;
-        }
-        let transcript_fingerprint = match read_timed(transcript_path, timeout) {
+        let document_fingerprint = |name: &str| match read_timed(folder.join(name), timeout) {
             Read::Bytes(bytes) => Some(fingerprint(&bytes)),
             Read::Missing | Read::Failed(_) => None,
         };
         Ok(Self {
             removed_audio: removed_audio(folder, &doc),
-            doc,
             notes: read_notes(folder, timeout),
-            transcript_fingerprint,
+            transcript_fingerprint: document_fingerprint("transcript.md"),
+            summary_fingerprint: document_fingerprint("summary.md"),
+            doc,
         })
     }
 
@@ -92,8 +87,24 @@ impl FolderContents {
             doc: note.doc.clone(),
             notes: note.notes.clone(),
             transcript_fingerprint: note.transcript_fingerprint.clone(),
+            summary_fingerprint: note.summary_fingerprint.clone(),
             removed_audio: note.removed_audio.clone(),
         }
+    }
+
+    /// Whether `transcript.md` and `summary.md` exist and have the
+    /// fingerprints that `session.md` records. A `session.md` that records
+    /// no fingerprint accepts any file, as the scan does.
+    fn result_matches(&self) -> bool {
+        let matches = |recorded: &Option<String>, actual: &Option<String>| {
+            actual
+                .as_ref()
+                .is_some_and(|actual| recorded.as_ref().is_none_or(|r| r == actual))
+        };
+        matches(
+            &self.doc.transcript_fingerprint,
+            &self.transcript_fingerprint,
+        ) && matches(&self.doc.summary_fingerprint, &self.summary_fingerprint)
     }
 }
 
@@ -181,12 +192,9 @@ pub fn apply_scoped(
             found: contents.doc.session_id.clone(),
         });
     }
-    if scope == Scope::All && contents.doc.result_generation.is_some() {
-        store.set_result_state(
-            id,
-            "verified-manifest",
-            &serde_json::to_value(&contents.doc).map_err(StoreError::from)?,
-        )?;
+    // While the note waits for the sync, the speaker data of a new
+    // `session.md` must not join an old transcript (KTD10).
+    if scope == Scope::All && contents.result_matches() {
         store.promote_result_snapshot(id, contents.doc.recognition_snapshot.as_ref())?;
     }
     let updates = match (scope, updates(store, id, contents)?) {
