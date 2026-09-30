@@ -13,6 +13,7 @@ use chrono::{DateTime, FixedOffset};
 
 use library::refresh::Scope;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
+pub use session_core::folder::AudioState;
 use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
@@ -107,15 +108,23 @@ pub fn recover_summary_publications(store: &SharedStore) -> Result<(), StageErro
     Ok(())
 }
 
-/// Whether a completed session's folder still holds every segment's audio,
-/// which is what resuming it needs (R6d). False for a session that has not
-/// completed.
-pub fn home_intact(store: &Store, session_id: &str) -> Result<bool, StageError> {
+/// The audio of a completed session, from its folder (KTD9 of the audio
+/// removal plan). Resume and Transcribe Again need
+/// [`AudioState::Present`] (R6d). A session that has not completed, or has
+/// no segment, has no audio in a folder: its state is
+/// [`AudioState::Waiting`].
+pub fn audio_state(store: &Store, session_id: &str) -> Result<AudioState, StageError> {
     let Some(home) = home_path(store, session_id)? else {
-        return Ok(false);
+        return Ok(AudioState::Waiting);
     };
     let segments = store.segments(session_id)?;
-    Ok(!segments.is_empty() && segments.iter().all(|s| home.join(&s.audio_file).is_file()))
+    if segments.is_empty() {
+        return Ok(AudioState::Waiting);
+    }
+    Ok(folder::audio_state(
+        &home,
+        segments.iter().map(|s| s.audio_file.as_str()),
+    ))
 }
 
 /// Record why summarization failed; the session is saved with a stub.

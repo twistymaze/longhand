@@ -2,8 +2,9 @@
 //!
 //! The folder is the authority for a saved note on every computer (KD4).
 //! The refresh reads `session.md`, `notes.md` and the fingerprint of
-//! `transcript.md`, and updates the title, title source, recognition model,
-//! speakers found, speaker count, segments and notes of the row. It never
+//! `transcript.md`, and asks whether each segment's removal marker exists.
+//! It updates the title, title source, recognition model, speakers found,
+//! speaker count, segments, removed flags and notes of the row. It never
 //! writes to the folder. It is idempotent: a row that already matches its
 //! folder changes nothing.
 //!
@@ -21,7 +22,7 @@ use std::time::Duration;
 use session_core::folder::{SessionDoc, fingerprint};
 use session_core::{Segment, SpeakerCount, Store, StoreError, Title, TitleSource};
 
-use crate::scan::{NoteFolder, Read, read_notes, read_timed};
+use crate::scan::{NoteFolder, Read, read_notes, read_timed, removed_audio};
 
 /// What the refresh reads from a note folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,9 @@ pub struct FolderContents {
     /// The fingerprint of `transcript.md`. `None` while the sync has not
     /// delivered it.
     pub transcript_fingerprint: Option<String>,
+    /// The audio files of the segments whose removal marker is in the
+    /// folder, sorted (KTD9 of the audio removal plan).
+    pub removed_audio: Vec<String>,
 }
 
 impl FolderContents {
@@ -75,6 +79,7 @@ impl FolderContents {
             Read::Missing | Read::Failed(_) => None,
         };
         Ok(Self {
+            removed_audio: removed_audio(folder, &doc),
             doc,
             notes: read_notes(folder, timeout),
             transcript_fingerprint,
@@ -87,6 +92,7 @@ impl FolderContents {
             doc: note.doc.clone(),
             notes: note.notes.clone(),
             transcript_fingerprint: note.transcript_fingerprint.clone(),
+            removed_audio: note.removed_audio.clone(),
         }
     }
 }
@@ -228,6 +234,9 @@ struct Updates {
     found_speakers: Option<u32>,
     segments: Vec<Segment>,
     stereo_from: Option<u32>,
+    /// The removed flags of the segments, when the folder's removal
+    /// markers differ from them.
+    removed_audio: Option<Vec<String>>,
     notes: Option<String>,
     transcript: Option<TranscriptChange>,
 }
@@ -245,6 +254,7 @@ impl Updates {
             || self.found_speakers.is_some()
             || !self.segments.is_empty()
             || self.stereo_from.is_some()
+            || self.removed_audio.is_some()
             || self.notes.is_some()
             || matches!(self.transcript, Some(TranscriptChange::Replace(_)))
     }
@@ -289,6 +299,11 @@ fn updates(store: &Store, id: &str, contents: &FolderContents) -> Result<Updates
         && store.stereo_from(id)?.is_none()
     {
         updates.stereo_from = Some(index);
+    }
+    // The flags follow the folder's removal markers, so the row changes
+    // when a marker arrives, and an open note page reads the note again.
+    if contents.removed_audio != store.removed_audio(id)? {
+        updates.removed_audio = Some(contents.removed_audio.clone());
     }
 
     if let Some(notes) = &contents.notes
@@ -348,6 +363,10 @@ fn write(store: &mut Store, id: &str, updates: Updates) -> Result<Refresh, Store
     }
     if let Some(index) = updates.stereo_from {
         store.mark_stereo_from(id, index)?;
+    }
+    // After the segments, so that a new segment gets its flag.
+    if let Some(audio) = &updates.removed_audio {
+        store.set_removed_audio(id, audio)?;
     }
     if let Some(notes) = &updates.notes {
         store.set_notes(id, notes)?;

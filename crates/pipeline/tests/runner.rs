@@ -4879,6 +4879,32 @@ async fn transcribe_again_is_refused_while_a_regeneration_runs_a_capture_is_acti
     );
 }
 
+// Covers KTD2, KTD9 (U2). U7 gives the removed audio its own reason.
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_is_refused_when_a_marker_removes_the_audio_that_is_still_present() {
+    let r = rig().await;
+    let folder = saved_note(&r, None).await;
+    std::fs::write(
+        folder.join(session_core::folder::removal_marker(
+            "audio/segment-01.opus",
+        )),
+        session_core::folder::REMOVAL_MARKER_TEXT,
+    )
+    .unwrap();
+    assert!(folder.join("audio/segment-01.opus").is_file());
+    assert_eq!(
+        pipeline::save::audio_state(&r.store.lock().unwrap(), "s").unwrap(),
+        session_core::folder::AudioState::Removed
+    );
+    let expected = refusal(
+        "The note's folder does not have all of its audio, so it can't be transcribed again.",
+        false,
+    );
+    assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);
+    assert_eq!(confirm_again(&r).unwrap_err(), expected);
+    assert_not_queued(&r);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transcribe_again_that_waits_for_its_model_lets_other_notes_go_first() {
     // R17, KTD13. The model goes away after the confirmation.
@@ -5437,7 +5463,10 @@ fn resume_from_folder(r: &Rig, id: &str, audio: &[f32]) {
         let mut s = r.store.lock().unwrap();
         pipeline::follow::follow_folder(&mut s, id, false).unwrap();
         let home = s.session(id).unwrap().unwrap().home_path.unwrap();
-        assert!(pipeline::save::home_intact(&s, id).unwrap());
+        assert_eq!(
+            pipeline::save::audio_state(&s, id).unwrap(),
+            session_core::folder::AudioState::Present
+        );
         s.apply(
             id,
             &session_core::Event::UserResume {

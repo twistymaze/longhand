@@ -292,3 +292,51 @@ fn migration_seven_keeps_saved_notes_and_gives_them_no_transcript_fingerprint() 
         assert_eq!(store.transcript_fingerprint(id).unwrap(), None);
     }
 }
+
+/// A database as the summary prompt work left it: migrations 0001 to 0013
+/// applied.
+fn version_thirteen(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 13)
+        .unwrap();
+    conn
+}
+
+#[test]
+fn migration_fourteen_keeps_existing_segments_with_their_audio() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_thirteen(&path);
+        add_session(&conn, "s1");
+        for (idx, audio) in [(0, "audio/segment-01.opus"), (1, "audio/segment-02.opus")] {
+            conn.execute(
+                "INSERT INTO segments
+                 (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file,
+                  channels)
+                 VALUES ('s1', ?1, ?2, 60000, '2026-09-22T10:00:00-05:00',
+                         '2026-09-22T10:01:00-05:00', ?3, 2)",
+                params![idx, idx * 120_000, audio],
+            )
+            .unwrap();
+        }
+    }
+    let store = Store::open(&path).unwrap();
+    let segments = store.segments("s1").unwrap();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[1].audio_file, "audio/segment-02.opus");
+    assert_eq!(segments[1].channels, 2);
+    // No segment from before the migration has its audio removed.
+    assert!(store.removed_audio("s1").unwrap().is_empty());
+    drop(store);
+    let conn = Connection::open(&path).unwrap();
+    let flags: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM segments WHERE audio_removed = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(flags, 2);
+}

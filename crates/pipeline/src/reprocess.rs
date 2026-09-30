@@ -314,7 +314,9 @@ fn resolve_run(
             .into(),
         );
     }
-    if !save::home_intact(store, session_id)? {
+    // Removed audio refuses as missing audio does. U7 of the audio removal
+    // plan gives it its own reason.
+    if save::audio_state(store, session_id)? != save::AudioState::Present {
         return Err(Cause::MissingAudio.into());
     }
     let config = RecognitionConfig {

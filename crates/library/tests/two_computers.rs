@@ -13,7 +13,7 @@ use library::refresh::{self, Refresh};
 use library::scan::{Known, ScanOptions, Waiting, scan};
 use library::status::NoteStatus;
 use pipeline::SharedStore;
-use session_core::folder::{SessionDoc, fingerprint};
+use session_core::folder::{AudioState, SessionDoc, fingerprint};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
 
 const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n";
@@ -967,4 +967,148 @@ fn a_scan_of_one_root_keeps_the_pending_deletes_of_another() {
     assert!(a.reconciler.is_pending("n1"));
     a.sync_roots(&[&other]);
     assert!(a.reconciler.is_pending("n1"), "a scan of another root");
+}
+
+// ---------------------------------------------------------------- removed audio (U2)
+
+const AUDIO: &str = "audio/segment-01.opus";
+
+impl Computer {
+    fn removed_audio(&self, id: &str) -> Vec<String> {
+        self.store.lock().unwrap().removed_audio(id).unwrap()
+    }
+
+    fn audio_state(&self, id: &str) -> AudioState {
+        pipeline::save::audio_state(&self.store.lock().unwrap(), id).unwrap()
+    }
+}
+
+/// The removal marker of `audio` arrives in the note folder `folder`.
+fn deliver_marker(folder: &Path, audio: &str) {
+    fs::write(
+        folder.join(session_core::folder::removal_marker(audio)),
+        session_core::folder::REMOVAL_MARKER_TEXT,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_saved_note_has_its_audio_present() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+    assert_eq!(a.audio_state("n1"), AudioState::Present);
+    assert_eq!(b.audio_state("n1"), AudioState::Present);
+    assert!(a.removed_audio("n1").is_empty());
+}
+
+// Covers AE5, R15.
+#[test]
+fn a_removal_whose_delete_arrives_before_its_marker_waits_then_completes() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+
+    // B removed the audio. The sync delivers the delete first.
+    fs::remove_file(folder.join(AUDIO)).unwrap();
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(
+        a.reconciler.status().note("n1").waiting,
+        [Waiting::Audio(AUDIO.into())]
+    );
+    assert_eq!(a.audio_state("n1"), AudioState::Waiting);
+    assert!(a.removed_audio("n1").is_empty());
+
+    // The marker arrives: the note is complete, and the watcher's scan
+    // reports it.
+    deliver_marker(&folder, AUDIO);
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(a.removed_audio("n1"), [AUDIO]);
+    assert_eq!(a.audio_state("n1"), AudioState::Removed);
+    assert_eq!(a.sync_roots(&[&root]), Changes::default());
+}
+
+// Covers R15.
+#[test]
+fn a_removal_whose_marker_arrives_before_its_delete_is_removed_at_once() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+
+    deliver_marker(&folder, AUDIO);
+    // A full scan reports only the notes whose row or status changed: the
+    // removed flag in the row makes the report, so an open note page reads
+    // the note again.
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(a.removed_audio("n1"), [AUDIO]);
+    assert_eq!(a.audio_state("n1"), AudioState::Removed);
+
+    fs::remove_file(folder.join(AUDIO)).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), Changes::default());
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(a.removed_audio("n1"), [AUDIO]);
+    assert_eq!(a.audio_state("n1"), AudioState::Removed);
+}
+
+#[test]
+fn a_note_adopted_after_its_audio_was_removed_is_complete_and_removed() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    deliver_marker(&folder, AUDIO);
+    fs::remove_file(folder.join(AUDIO)).unwrap();
+
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(a.state("n1"), SessionState::Saved);
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(a.removed_audio("n1"), [AUDIO]);
+    assert_eq!(a.audio_state("n1"), AudioState::Removed);
+}
+
+#[test]
+fn a_refresh_sets_the_removed_flag_from_the_folder() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+
+    deliver_marker(&folder, AUDIO);
+    let refreshed = {
+        let mut s = a.store.lock().unwrap();
+        refresh::refresh(&mut s, "n1", &folder, Duration::from_secs(2)).unwrap()
+    };
+    assert!(refreshed.changed);
+    assert_eq!(a.removed_audio("n1"), [AUDIO]);
+    let again = {
+        let mut s = a.store.lock().unwrap();
+        refresh::refresh(&mut s, "n1", &folder, Duration::from_secs(2)).unwrap()
+    };
+    assert_eq!(again, Refresh::default());
+}
+
+// Covers R16.
+#[test]
+fn the_recording_computer_also_sees_its_own_note_as_removed() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_roots(&[&root]);
+    // A removes the audio of the note that B recorded. B scans.
+    deliver_marker(&folder, AUDIO);
+    fs::remove_file(folder.join(AUDIO)).unwrap();
+    let mut b = b;
+    assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(b.removed_audio("n1"), [AUDIO]);
+    assert_eq!(b.audio_state("n1"), AudioState::Removed);
 }

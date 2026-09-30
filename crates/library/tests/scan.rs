@@ -568,3 +568,130 @@ fn a_targeted_scan_of_a_root_without_its_marker_gives_no_scan() {
     let missing = root.path().join("missing");
     assert!(scan_folders(&missing, &HashSet::new(), &Known::default(), &options()).is_none());
 }
+
+// ---------------------------------------------------------------- removed audio (U2)
+
+const AUDIO: &str = "audio/segment-01.opus";
+const SECOND: &str = "audio/segment-02.opus";
+
+/// Write the removal marker of `audio` in the note folder `dir`.
+fn mark(dir: &Path, audio: &str) {
+    fs::write(
+        dir.join(session_core::folder::removal_marker(audio)),
+        session_core::folder::REMOVAL_MARKER_TEXT,
+    )
+    .unwrap();
+}
+
+/// Add a second segment, with its audio, to the note in `dir`.
+fn add_second_segment(dir: &Path) {
+    let path = dir.join("session.md");
+    let mut doc = SessionDoc::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut second = doc.segments[0].clone();
+    second.index = 1;
+    second.offset_ms = 120_000;
+    second.audio = SECOND.into();
+    doc.segments.push(second);
+    fs::write(&path, doc.render()).unwrap();
+    fs::write(dir.join(SECOND), b"opus").unwrap();
+}
+
+// Covers R15.
+#[test]
+fn a_marker_and_no_audio_scans_as_complete_with_the_segment_removed() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    mark(&dir, AUDIO);
+    fs::remove_file(dir.join(AUDIO)).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert!(
+        result.notes[0].waiting.is_empty(),
+        "{:?}",
+        result.notes[0].waiting
+    );
+    assert_eq!(result.notes[0].removed_audio, [AUDIO]);
+}
+
+// Covers KTD2.
+#[test]
+fn a_marker_with_the_audio_still_present_scans_as_removed() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    mark(&dir, AUDIO);
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].waiting.is_empty());
+    assert_eq!(result.notes[0].removed_audio, [AUDIO]);
+}
+
+#[test]
+fn a_missing_audio_file_with_no_marker_still_waits() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    fs::remove_file(dir.join(AUDIO)).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].waiting, [Waiting::Audio(AUDIO.into())]);
+    assert!(result.notes[0].removed_audio.is_empty());
+}
+
+#[test]
+fn a_complete_folder_has_no_removed_audio() {
+    let root = marked_root();
+    note(root.path(), "Planning", "A1");
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].removed_audio.is_empty());
+}
+
+#[test]
+fn only_the_marked_segment_stops_waiting() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    add_second_segment(&dir);
+    mark(&dir, AUDIO);
+    fs::remove_file(dir.join(AUDIO)).unwrap();
+    fs::remove_file(dir.join(SECOND)).unwrap();
+    let result = run(root.path(), &Known::default());
+    // The sync has not delivered the second marker yet.
+    assert_eq!(result.notes[0].waiting, [Waiting::Audio(SECOND.into())]);
+    assert_eq!(result.notes[0].removed_audio, [AUDIO]);
+}
+
+#[test]
+fn a_marker_is_not_a_conflict_copy() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    mark(&dir, AUDIO);
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].conflict_copies.is_empty());
+}
+
+#[test]
+fn a_targeted_scan_reports_the_removed_audio() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    mark(&dir, AUDIO);
+    fs::remove_file(dir.join(AUDIO)).unwrap();
+    let (result, _) = scan_folders(
+        root.path(),
+        &folders(&[&dir]),
+        &Known::default(),
+        &options(),
+    )
+    .unwrap();
+    assert!(result.notes[0].waiting.is_empty());
+    assert_eq!(result.notes[0].removed_audio, [AUDIO]);
+}
+
+#[cfg(unix)]
+#[test]
+fn no_removal_marker_is_opened() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    fs::remove_file(dir.join(AUDIO)).unwrap();
+    // An open of a FIFO with no writer blocks, so a scan that opens the
+    // marker does not finish.
+    fifo(&dir.join(session_core::folder::removal_marker(AUDIO)));
+    let path = root.path().to_path_buf();
+    let result = within(move || scan(&[path], &Known::default(), &options()));
+    assert!(result.notes[0].waiting.is_empty());
+    assert_eq!(result.notes[0].removed_audio, [AUDIO]);
+}

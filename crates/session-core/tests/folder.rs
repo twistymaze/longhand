@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
-    SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine, fingerprint, format_position,
-    render_notes,
+    AudioState, REMOVAL_MARKER_TEXT, SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine,
+    audio_removed, audio_state, fingerprint, format_position, removal_marker, render_notes,
 };
 use session_core::{Segment, SpeakerCount, Timeline};
 
@@ -330,4 +330,88 @@ fn speaker_recognition_off_is_not_reported_as_failure() {
     assert!(!rendered.contains("failed"));
     assert_eq!(Transcript::parse(&rendered).unwrap(), transcript);
     assert!(transcript.render().contains("failed"));
+}
+
+// ---------------------------------------------------------------- removal markers (U2)
+
+/// A note folder with the audio files `present` and removal markers for
+/// the audio files `marked`.
+fn audio_folder(present: &[&str], marked: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("audio")).unwrap();
+    for audio in present {
+        std::fs::write(dir.path().join(audio), b"opus").unwrap();
+    }
+    for audio in marked {
+        std::fs::write(dir.path().join(removal_marker(audio)), REMOVAL_MARKER_TEXT).unwrap();
+    }
+    dir
+}
+
+const ONE: &str = "audio/segment-01.opus";
+const TWO: &str = "audio/segment-02.opus";
+
+#[test]
+fn the_removal_marker_is_beside_its_audio_file_and_has_no_leading_dot() {
+    assert_eq!(removal_marker(ONE), "audio/segment-01.opus.removed");
+    let marker = removal_marker(ONE);
+    let name = std::path::Path::new(&marker)
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(!name.starts_with('.'));
+    assert!(!name.ends_with(".tmp"));
+}
+
+#[test]
+fn a_segment_with_a_marker_is_removed_with_or_without_its_audio() {
+    let gone = audio_folder(&[], &[ONE]);
+    assert!(audio_removed(gone.path(), ONE));
+    let kept = audio_folder(&[ONE], &[ONE]);
+    assert!(audio_removed(kept.path(), ONE));
+    let plain = audio_folder(&[ONE], &[]);
+    assert!(!audio_removed(plain.path(), ONE));
+}
+
+#[test]
+fn a_marker_with_any_content_counts() {
+    let dir = audio_folder(&[], &[]);
+    std::fs::write(dir.path().join(removal_marker(ONE)), b"").unwrap();
+    assert!(audio_removed(dir.path(), ONE));
+}
+
+#[test]
+fn every_audio_file_present_and_no_marker_is_present() {
+    let dir = audio_folder(&[ONE, TWO], &[]);
+    assert_eq!(audio_state(dir.path(), [ONE, TWO]), AudioState::Present);
+}
+
+#[test]
+fn a_marker_with_the_audio_still_present_is_removed() {
+    let dir = audio_folder(&[ONE, TWO], &[ONE]);
+    assert_eq!(audio_state(dir.path(), [ONE, TWO]), AudioState::Removed);
+}
+
+#[test]
+fn a_missing_audio_file_with_no_marker_is_waiting() {
+    let dir = audio_folder(&[ONE], &[]);
+    assert_eq!(audio_state(dir.path(), [ONE, TWO]), AudioState::Waiting);
+}
+
+#[test]
+fn a_marked_segment_wins_over_a_missing_unmarked_segment() {
+    let dir = audio_folder(&[], &[ONE]);
+    assert_eq!(audio_state(dir.path(), [ONE, TWO]), AudioState::Removed);
+    let dir = audio_folder(&[], &[TWO]);
+    assert_eq!(audio_state(dir.path(), [ONE, TWO]), AudioState::Removed);
+}
+
+#[test]
+fn a_folder_that_does_not_exist_is_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        audio_state(&dir.path().join("gone"), [ONE]),
+        AudioState::Waiting
+    );
 }

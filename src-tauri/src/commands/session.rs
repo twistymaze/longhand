@@ -260,7 +260,8 @@ pub fn session_detail(
         // refuses a resume.
         let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &session_id).map_err(e)?;
-        let audio_intact = pipeline::save::home_intact(&store, &session_id).map_err(e)?;
+        let audio_intact = pipeline::save::audio_state(&store, &session_id).map_err(e)?
+            == pipeline::save::AudioState::Present;
         let again = store
             .transcribe_again_marks(&session_id)
             .map_err(|e| e.to_string())?;

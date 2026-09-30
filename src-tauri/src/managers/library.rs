@@ -114,7 +114,9 @@ fn is_shared_path(relative: &Path) -> bool {
 /// `.DS_Store`, tempfile's `.tmp` names and the `.tmp` extension. Also
 /// names in `relative` that start with a dot, except immutable result
 /// generations. Their delivery must refresh open notes. Audio files are
-/// not skipped: a note waits for its audio (R6).
+/// not skipped: a note waits for its audio (R6). Removal markers are not
+/// skipped: a marker makes a note complete (R15). Their names have no
+/// leading dot for this reason (KTD1).
 pub fn should_skip_path(relative: &Path, path: &Path) -> bool {
     is_temporary(path)
         || relative.components().any(|c| match c {
@@ -672,6 +674,28 @@ mod tests {
         assert!(!skip("Planning/notes (1).md"));
         assert!(!skip("Planning/audio/segment-01.opus"));
         assert!(!skip("Planning/audio/segment-01.wav"));
+        // A removal marker makes a note complete, so its delivery is a
+        // change (R15).
+        let marker = session_core::folder::removal_marker("audio/segment-01.opus");
+        assert!(!skip(&format!("Planning/{marker}")));
+    }
+
+    #[test]
+    fn a_removal_marker_event_marks_its_note_folder() {
+        let w = watched("/var/notes");
+        let marker = session_core::folder::removal_marker("audio/segment-01.opus");
+        let b = batch(
+            &w,
+            vec![event(
+                EventKind::Create(CreateKind::File),
+                &[&format!("/private/var/notes/Planning/{marker}")],
+            )],
+        );
+        assert!(b.full.is_empty());
+        assert_eq!(
+            folders(&b, "/var/notes"),
+            BTreeSet::from([PathBuf::from("/var/notes/Planning")])
+        );
     }
 
     #[test]

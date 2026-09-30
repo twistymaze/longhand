@@ -1353,7 +1353,10 @@ impl CaptureManager {
             if !completed && pipeline::save::begun(&store, id).map_err(other)? {
                 return Err(CaptureError::Save);
             }
-            let audio_intact = pipeline::save::home_intact(&store, id).map_err(other)?;
+            // Removed audio refuses as missing audio does (KTD9 of the audio
+            // removal plan).
+            let audio_intact = pipeline::save::audio_state(&store, id).map_err(other)?
+                == pipeline::save::AudioState::Present;
             let state = store.apply(
                 id,
                 &Event::UserResume {
