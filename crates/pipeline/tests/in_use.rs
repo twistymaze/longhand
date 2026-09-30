@@ -84,7 +84,11 @@ fn a_written_marker_is_fresh_and_holds_the_run_and_the_time() {
     let path = home.join(marker_name(RUN_A));
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains(RUN_A), "{text}");
-    assert!(text.contains(&at.to_rfc3339()), "{text}");
+    // Compare the time, not its text: at UTC the file says "Z" and not
+    // "+00:00".
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let written = chrono::DateTime::parse_from_rfc3339(json["refreshed_at"].as_str().unwrap());
+    assert_eq!(written.unwrap(), at, "{text}");
     assert!(marker_fresh(&path, at));
     assert!(in_use(&home, at).unwrap());
     // Only the marker: no temporary file stays.
