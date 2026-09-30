@@ -852,6 +852,18 @@ describe("SessionPage", () => {
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
   });
 
+  test("a session that completes while the user types in My Notes stays on My Notes", async () => {
+    const p = entry("p", { state: "processing" });
+    mockPage(p);
+    const view = renderPage({ id: "p", sessions: sessionsOf([p]) });
+    await userEvent.setup().click(tab("My Notes"));
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    editor.focus();
+    expect(editor.contains(document.activeElement)).toBe(true);
+    view.rerenderWith(captureOf(), sessionsOf([{ ...p, state: "saved" }]));
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+  });
+
   test("Copy writes the open tab's markdown: the transcript file, or the notes", async () => {
     const e = entry("s", { title: "Budget review" });
     mockTauri({
