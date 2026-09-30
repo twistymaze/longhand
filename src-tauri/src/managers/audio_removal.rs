@@ -13,7 +13,8 @@
 //! and has no claim, no Move is open, the storage folder and the note's
 //! folder are available, no in-use marker of the note is fresh, the setting
 //! is still known and on, and the delay has passed. The removal step checks
-//! them once more under the store lock, after it takes its claim. The pass
+//! them once more after it takes its claim: the folder checks with no store
+//! lock, then the store checks under the store lock. The pass
 //! stops when the storage folder is not available or a Move is open, and it
 //! stops writing new markers when the setting stops being known and on.
 //!
@@ -35,7 +36,7 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset};
 use pipeline::SharedStore;
 use pipeline::remove_audio::{
-    Eligibility, EligibilityInputs, Removal, RemoveAudioError, eligibility, finish_removal,
+    Eligibility, EligibilityInputs, Guard, Removal, RemoveAudioError, eligibility, finish_removal,
     remove_audio, safe_audio_name,
 };
 use session_core::jobs::Claims;
@@ -43,7 +44,7 @@ use session_core::{SessionRecord, SessionState, Store, folder};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
-use crate::commands::session::removal_checks;
+use crate::commands::session::{removal_folder_checks, removal_store_checks};
 use crate::managers::library::LibraryChanged;
 use crate::managers::settings;
 use crate::managers::shared::SharedSettingsManager;
@@ -168,15 +169,11 @@ fn marked_audio_present(store: &SharedStore, id: &str, home: &Path) -> bool {
     })
 }
 
-/// The checks that every removal in a pass does under the store lock, after
-/// the claim: those of Remove Audio (no open Move, no fresh in-use marker),
-/// and the storage folder and the note's folder are available.
-fn pass_guard(
-    inputs: &PassInputs,
-    store: &Store,
-    record: &SessionRecord,
-) -> Result<(), &'static str> {
-    removal_checks(store, record, (inputs.now)())?;
+/// The folder checks that every removal in a pass does after the claim,
+/// with no store lock: that of Remove Audio (no fresh in-use marker), and
+/// the storage folder and the note's folder are available.
+fn pass_folder_guard(inputs: &PassInputs, record: &SessionRecord) -> Result<(), &'static str> {
+    removal_folder_checks(record, (inputs.now)())?;
     let available = inputs.storage.is_some_and(root_reachable)
         && record
             .home_path
@@ -188,19 +185,20 @@ fn pass_guard(
     Ok(())
 }
 
-/// The checks of [`pass_guard`], and the setting is still known and on, and
+/// The store checks of a new removal in a pass, under the store lock: those
+/// of Remove Audio (no open Move), the setting is still known and on, and
 /// the note is eligible with the row that the step just brought up to date.
-fn new_removal_guard(
+fn new_removal_store_checks(
     inputs: &PassInputs,
     store: &Store,
     record: &SessionRecord,
 ) -> Result<(), &'static str> {
-    pass_guard(inputs, store, record)?;
+    removal_store_checks(store)?;
     let Some(delay_days) = (inputs.delay_days)() else {
         return Err(SETTING_OFF);
     };
-    // The step holds its own claim, and `pass_guard` checked the in-use
-    // markers.
+    // The step holds its own claim, and `pass_folder_guard` checks the
+    // in-use markers.
     let check = EligibilityInputs {
         now: (inputs.now)(),
         delay_days,
@@ -309,9 +307,11 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
         if inputs.claims.busy(id) {
             continue;
         }
-        let result = finish_removal(inputs.store, inputs.claims, id, |store, record| {
-            pass_guard(inputs, store, record)
-        });
+        let guard = Guard {
+            folder: |record: &SessionRecord| pass_folder_guard(inputs, record),
+            store: |store: &Store, _: &SessionRecord| removal_store_checks(store),
+        };
+        let result = finish_removal(inputs.store, inputs.claims, id, guard);
         record_step(
             inputs,
             id,
@@ -334,9 +334,13 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
         if !eligible_now(inputs, id, home, delay_days) {
             continue;
         }
-        let result = remove_audio(inputs.store, inputs.claims, id, |store, record| {
-            new_removal_guard(inputs, store, record)
-        });
+        let guard = Guard {
+            folder: |record: &SessionRecord| pass_folder_guard(inputs, record),
+            store: |store: &Store, record: &SessionRecord| {
+                new_removal_store_checks(inputs, store, record)
+            },
+        };
+        let result = remove_audio(inputs.store, inputs.claims, id, guard);
         record_step(inputs, id, result, &mut report.removed, &mut report.changed);
     }
     report
@@ -619,7 +623,15 @@ mod tests {
         }
 
         fn run<T>(&self, run: impl FnOnce(&PassInputs) -> T) -> T {
-            let note_readable = |_: &str, _: &Path| self.readable.get();
+            // The folder checks run with no store lock, so a slow folder
+            // does not stop the other users of the store.
+            let note_readable = |_: &str, _: &Path| {
+                assert!(
+                    self.library.store.try_lock().is_ok(),
+                    "a folder check runs under the store lock"
+                );
+                self.readable.get()
+            };
             let delay_days = || self.delay.get();
             let row_changed = |id: &str| {
                 self.changed.borrow_mut().push(id.to_string());

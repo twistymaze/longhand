@@ -812,24 +812,37 @@ fn removal_refusal(reason: &str) -> String {
 /// The text of a note whose storage folder is unavailable (R16).
 const FOLDER_UNAVAILABLE: &str = "The storage folder for this note is unavailable.";
 
-/// The checks of Remove Audio that the removal step does under the store
-/// lock, after its claim and its check that the note is saved.
-fn removal_guard(store: &session_core::Store, record: &SessionRecord) -> Result<(), &'static str> {
-    removal_checks(store, record, chrono::Local::now().fixed_offset())
+/// The checks of Remove Audio that the removal step does after its claim
+/// and its check that the note is saved. The folder check runs with no
+/// store lock, and the store check runs under the store lock.
+fn removal_guard() -> pipeline::remove_audio::Guard<
+    pipeline::remove_audio::FolderCheck,
+    pipeline::remove_audio::StoreCheck,
+> {
+    pipeline::remove_audio::Guard {
+        folder: |record| removal_folder_checks(record, chrono::Local::now().fixed_offset()),
+        store: |store, _| removal_store_checks(store),
+    }
 }
 
-/// The checks of [`removal_guard`] at the time `now`. The removal pass uses
-/// them too (KTD5).
-pub(crate) fn removal_checks(
-    store: &session_core::Store,
-    record: &SessionRecord,
-    now: chrono::DateTime<chrono::FixedOffset>,
-) -> Result<(), &'static str> {
+/// The store checks of Remove Audio. The removal pass uses them too (KTD5).
+/// The caller holds the store lock.
+pub(crate) fn removal_store_checks(store: &session_core::Store) -> Result<(), &'static str> {
     // A Move changes the home folders of the notes (KTD11). When the
     // journal cannot be read, the guard also refuses.
     if !matches!(store.move_journal(), Ok(None)) {
         return Err(MOVE_OPEN_REASON);
     }
+    Ok(())
+}
+
+/// The folder checks of Remove Audio at the time `now`. The removal pass
+/// uses them too (KTD5). They read the home folder, so the caller holds no
+/// store lock.
+pub(crate) fn removal_folder_checks(
+    record: &SessionRecord,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<(), &'static str> {
     // A fresh in-use marker shows that a computer records into or processes
     // the note (KTD4). A folder that cannot be read also refuses. A missing
     // folder is not in use: the step then refuses it as unavailable.
@@ -851,7 +864,7 @@ fn run_removal(
     session_id: &str,
 ) -> Result<(), RemoveAudioFailure> {
     use pipeline::remove_audio::RemoveAudioError;
-    let removal = pipeline::remove_audio::remove_audio(store, claims, session_id, removal_guard)
+    let removal = pipeline::remove_audio::remove_audio(store, claims, session_id, removal_guard())
         .map_err(|e| match e {
             RemoveAudioError::Busy(reason) => RemoveAudioFailure::Refused {
                 message: removal_refusal(reason),
