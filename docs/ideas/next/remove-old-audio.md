@@ -25,3 +25,4 @@ The audio is the largest part of a note. A four-hour note makes a large file, an
   - Is the setting shared ([shared settings in the storage folder](../done/shared-settings-in-storage.md))? In a synced storage folder, which computer removes the audio: each computer only for the notes it recorded (the rule for automatic steps in the library), or any computer.
   - A note that is not finished (recording, processing, waiting for a folder) never loses its audio.
   - Show the space the setting will free before the user turns it on.
+- Follow-up (found during the work): a removal that another computer makes before a Resume has copied the old audio fails the Resume. See the Risks of the plan.
