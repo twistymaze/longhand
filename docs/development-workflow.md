@@ -78,5 +78,11 @@ After approval:
 1. Confirm that the branch head is in `origin/main`.
 2. Archive or remove the worktree with the host's managed tool.
 3. Return to the main checkout on `main` and pull `main`.
-4. Run `ce-compound` for the work that the PR shipped.
-5. Commit the resulting docs on `main` and push them. Commit only this session's files by path, and run `git pull --rebase origin main` before the push.
+4. Delete the local branch of the PR. If `git branch -d` refuses because the merge rewrote the commits, confirm that `gh pr view <number> -R twistymaze/longhand` shows `MERGED`, then use `git branch -D`.
+5. Run `git fetch --prune origin`. GitHub deletes the head branch when the PR merges. If `git branch -r` still shows it, delete it with `git push origin --delete <branch>`.
+6. Remove the subagent worktrees of this work, in `.claude/worktrees/agent-*`. Subagents that run with worktree isolation create them, and the managed tool of the session does not remove them. For each one, confirm that `git status --short` shows no changes and that its commits are in `main`: `git cherry main <branch>` shows only `-` lines, or the files of the commit are in `main` in a later form. Then run `git worktree remove <path>` and delete its branch. If a subagent worktree has changes or commits that are not in `main`, keep it and tell the user.
+7. Run `ce-compound` for the work that the PR shipped.
+8. Commit the resulting docs on `main` and push them. Commit only this session's files by path, and run `git pull --rebase origin main` before the push.
+9. Make sure that nothing is left. `git worktree list` shows only the main checkout and the worktrees of open work. `git branch` and `git branch -r` show only `main` and the branches of open PRs. Report each remaining item and its reason.
+
+The Claude Code auto mode classifier blocks `git branch -D` and `git push origin --delete`. If it blocks a step, do not try another way. Give the user the exact commands and continue with the other steps.
