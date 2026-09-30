@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset};
-use library::reconcile::{Changes, Coverage, DELETE_WAIT, Reconciler, Target};
+use library::reconcile::{Changes, Coverage, DELETE_WAIT, HAND_EDIT_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
 use library::scan::{Known, ScanOptions, Waiting, scan};
 use library::status::NoteStatus;
@@ -649,6 +649,142 @@ fn a_new_session_md_with_the_old_summary_waits_until_the_summary_arrives() {
     fs::write(folder.join("summary.md"), summary).unwrap();
     assert_eq!(b.sync_folders(&root, &[&folder]), changed(&["n1"]));
     assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+}
+
+impl Computer {
+    /// A full scan of `root` at `now` (KTD7).
+    fn sync_at(&mut self, root: &Path, now: Instant) -> Changes {
+        let target = Target::Full(vec![root.to_path_buf()]);
+        self.reconciler
+            .run_at(&self.store, &target, &never_claimed, now)
+            .unwrap()
+    }
+
+    fn waiting(&self, id: &str) -> Vec<Waiting> {
+        self.reconciler.status().note(id).waiting
+    }
+}
+
+const HAND_EDIT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: A hand edit.\n";
+
+// Covers AE2 (R8), KTD7.
+#[test]
+fn a_hand_edit_of_the_transcript_waits_for_a_minute_and_then_is_a_hand_edit() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+    // The worker scans again at the deadline.
+    assert_eq!(b.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+
+    let almost = start + HAND_EDIT_WAIT - Duration::from_secs(1);
+    b.sync_at(&root, almost);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+
+    // At the deadline the note is a hand edit: it does not wait, and the
+    // scan reports it, so the note page releases the actions.
+    let changes = b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert!(changes.changed.contains(&"n1".to_string()), "{changes:?}");
+    assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(b.reconciler.next_due(), None);
+    b.sync_at(&root, start + HAND_EDIT_WAIT * 2);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers KTD7: a new change restarts the clock.
+#[test]
+fn a_second_change_during_the_wait_restarts_the_clock() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    b.sync_at(&root, start);
+    let later = start + HAND_EDIT_WAIT / 2;
+    fs::write(folder.join("summary.md"), "# Summary\n\nEdited.\n").unwrap();
+    b.sync_at(&root, later);
+    assert_eq!(b.reconciler.next_due(), Some(later + HAND_EDIT_WAIT));
+
+    b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript, Waiting::Summary]);
+    b.sync_at(&root, later + HAND_EDIT_WAIT);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers R8: a file that exists but cannot be read is never a hand edit.
+#[test]
+fn a_document_that_cannot_be_read_never_expires() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    // A folder in place of the file: the read fails.
+    fs::remove_file(folder.join("summary.md")).unwrap();
+    fs::create_dir(folder.join("summary.md")).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+    assert_eq!(b.reconciler.next_due(), None);
+    b.sync_at(&root, start + HAND_EDIT_WAIT * 10);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+}
+
+// Covers R8: a missing file expires, so that an action can make it again.
+#[test]
+fn a_missing_summary_expires_and_a_summary_that_arrives_clears_the_wait() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let summary = fs::read(folder.join("summary.md")).unwrap();
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::remove_file(folder.join("summary.md")).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+    // The file arrives before the deadline: the note does not wait.
+    fs::write(folder.join("summary.md"), &summary).unwrap();
+    b.sync_at(&root, start + Duration::from_secs(5));
+    assert!(b.waiting("n1").is_empty());
+    assert_eq!(b.reconciler.next_due(), None);
+
+    let later = start + Duration::from_secs(10);
+    fs::remove_file(folder.join("summary.md")).unwrap();
+    b.sync_at(&root, later);
+    assert_eq!(b.waiting("n1"), [Waiting::Summary]);
+    b.sync_at(&root, later + HAND_EDIT_WAIT);
+    assert!(b.waiting("n1").is_empty());
+}
+
+// Covers R8: a missing transcript also expires. Regenerate Summary then
+// refuses with "The transcript is missing." (pipeline tests).
+#[test]
+fn a_missing_transcript_expires_after_the_wait() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::remove_file(folder.join("transcript.md")).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+    assert_eq!(b.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+    b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert!(b.waiting("n1").is_empty());
 }
 
 // Covers R7: the scan and the adoption do not refuse a note for a

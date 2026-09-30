@@ -1097,8 +1097,15 @@ fn summarize_again(
     // Regenerate Summary explicitly accepts the current transcript text.
     // An external edit removes the reusable recognition reference.
     let mut current = SessionDoc::read(&home)?;
-    let canonical = std::fs::read(home.join(TRANSCRIPT_FILE))
-        .map_err(|e| unreadable(&home.join(TRANSCRIPT_FILE), &e.to_string()))?;
+    // A missing transcript counts as a hand edit after the wait for the
+    // sync (R8), but there is nothing to summarize.
+    let canonical = std::fs::read(home.join(TRANSCRIPT_FILE)).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            StageError::Failed("The transcript is missing.".into())
+        } else {
+            unreadable(&home.join(TRANSCRIPT_FILE), &e.to_string())
+        }
+    })?;
     let current_hash = folder::fingerprint(&canonical);
     if current.transcript_fingerprint.as_ref() != Some(&current_hash) {
         current.transcript_fingerprint = Some(current_hash.clone());

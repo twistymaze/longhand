@@ -160,13 +160,7 @@ fn saved_notes(store: &SharedStore) -> Result<Vec<(String, PathBuf)>, String> {
 /// removal pass and Remove Audio use it for the delete of
 /// `recognition.jsonl` only (KTD8).
 pub(crate) fn note_sync(status: &library::status::LibraryStatus, id: &str) -> NoteSync {
-    let waiting = status.note(id).waiting.iter().any(|part| {
-        matches!(
-            part,
-            library::scan::Waiting::Transcript | library::scan::Waiting::Summary
-        )
-    });
-    if waiting {
+    if status.note(id).result_waits() {
         NoteSync::Waiting
     } else {
         NoteSync::Synced

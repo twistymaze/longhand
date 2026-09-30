@@ -1314,6 +1314,7 @@ impl ProcessingManager {
     /// recognition settings (KTD1, KTD2). Returns the transcription model
     /// of the run.
     pub fn check_transcribe_again(&self, session_id: &str) -> Result<String, Refusal> {
+        self.refuse_while_syncing(session_id)?;
         let settings = settings::get_settings(&self.app).recognition_config();
         self.runner
             .check_transcribe_again(session_id, &settings, &|spec| self.readiness(spec))
@@ -1324,6 +1325,7 @@ impl ProcessingManager {
     /// settings (R15, KTD2). `model_id` is the model that the user
     /// confirmed.
     pub fn transcribe_again(&self, session_id: &str, model_id: &str) -> Result<(), Refusal> {
+        self.refuse_while_syncing(session_id)?;
         let settings = settings::get_settings(&self.app).recognition_config();
         self.runner
             .transcribe_again(session_id, &settings, model_id, &|spec| {
@@ -1331,6 +1333,15 @@ impl ProcessingManager {
             })?;
         self.in_use_changed();
         Ok(())
+    }
+
+    /// [`refuse_while_syncing`] with the status of the latest scans, as a
+    /// Transcribe Again refusal.
+    fn refuse_while_syncing(&self, session_id: &str) -> Result<(), Refusal> {
+        refuse_while_syncing(&self.library_status, session_id).map_err(|message| Refusal {
+            message,
+            in_settings: false,
+        })
     }
 
     /// Whether the artifacts of `spec` are on disk, or downloading.
@@ -1349,11 +1360,30 @@ impl ProcessingManager {
 
     /// Summarize a saved session again, replacing its `summary.md` (AE17).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
+        refuse_while_syncing(&self.library_status, session_id)?;
         self.runner
             .regenerate_summary(session_id)
             .await
             .map(|path| path.to_string_lossy().into_owned())
             .map_err(|e| e.to_string())
+    }
+}
+
+/// The text of an action that waits for the sync of the note (R7). The note
+/// page shows the same text.
+pub(crate) const WAIT_FOR_SYNC: &str = "Wait until the note finishes syncing.";
+
+/// Refuse an action that reads or replaces the result of the note `id`
+/// (Transcribe Again, Regenerate Summary, Resume) while its transcript or
+/// summary waits for the sync (R7, KTD11).
+pub(crate) fn refuse_while_syncing(
+    status: &library::status::LibraryStatus,
+    id: &str,
+) -> Result<(), String> {
+    if status.note(id).result_waits() {
+        Err(WAIT_FOR_SYNC.to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -1538,5 +1568,83 @@ mod tests {
             })
         });
         assert_eq!(failed, Err(EndpointProblem::Unconfigured("broken".into())));
+    }
+
+    /// A saved note in a new storage folder, adopted by a scan at `now`.
+    /// Returns the storage folder, the note folder, the store and the
+    /// reconciler with its status.
+    fn scanned_note(
+        now: std::time::Instant,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        pipeline::SharedStore,
+        library::reconcile::Reconciler,
+    ) {
+        use session_core::folder::{SessionDoc, fingerprint};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(library::scan::write_marker(&root));
+        let home = root.join("2026-09-25 0900 Planning");
+        std::fs::create_dir_all(home.join("audio")).unwrap();
+        let start = chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let segment = session_core::Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: start,
+            wall_end: start + chrono::TimeDelta::minutes(1),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        };
+        let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
+        let summary = "# Summary\n\nHello.\n";
+        let mut doc = SessionDoc::new("A1", None, &[segment]).unwrap();
+        doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+        doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
+        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        std::fs::write(home.join("transcript.md"), transcript).unwrap();
+        std::fs::write(home.join("summary.md"), summary).unwrap();
+        std::fs::write(home.join("notes.md"), "My notes\n").unwrap();
+        std::fs::write(home.join("audio/segment-01.opus"), b"opus").unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        let mut reconciler = library::reconcile::Reconciler::default();
+        reconciler
+            .run_at(
+                &store,
+                &library::reconcile::Target::Full(vec![root]),
+                &|_| false,
+                now,
+            )
+            .unwrap();
+        (dir, home, store, reconciler)
+    }
+
+    // Covers R7, R8, KTD11: the actions wait while the result waits for the
+    // sync, and run after the wait ends.
+    #[test]
+    fn an_action_on_a_note_that_waits_for_the_sync_is_refused_until_the_wait_ends() {
+        use library::reconcile::{HAND_EDIT_WAIT, Target};
+        let start = std::time::Instant::now();
+        let (dir, home, store, mut reconciler) = scanned_note(start);
+        let status = Arc::clone(reconciler.status());
+        assert_eq!(refuse_while_syncing(&status, "A1"), Ok(()));
+
+        std::fs::write(home.join("summary.md"), "# Summary\n\nEdited.\n").unwrap();
+        let target = Target::Full(vec![dir.path().canonicalize().unwrap()]);
+        reconciler
+            .run_at(&store, &target, &|_| false, start)
+            .unwrap();
+        assert_eq!(
+            refuse_while_syncing(&status, "A1"),
+            Err("Wait until the note finishes syncing.".to_string())
+        );
+
+        reconciler
+            .run_at(&store, &target, &|_| false, start + HAND_EDIT_WAIT)
+            .unwrap();
+        assert_eq!(refuse_while_syncing(&status, "A1"), Ok(()));
     }
 }

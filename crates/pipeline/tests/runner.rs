@@ -4569,6 +4569,84 @@ async fn a_rename_after_a_hand_edit_of_the_transcript_writes_session_md() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_hand_edit_of_the_transcript_is_summarized_and_transcribe_again_replaces_it() {
+    // Covers AE2, R8, R9: after the wait for the sync ends, Regenerate
+    // Summary reads the edited transcript, and Transcribe Again runs in full.
+    let r = rig().await;
+    let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&bodies);
+    let reply = http::Reply::With(Arc::new(move |body: &str| {
+        seen.lock().unwrap().push(body.to_string());
+        (200, http::completion("A summary."))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    let home = note_with_timed_text(&r).await;
+    let edit = "# Transcript\n\n- [00:00:01] Speaker 1: A hand edit of the text.\n";
+    std::fs::write(home.join(TRANSCRIPT_FILE), edit).unwrap();
+    bodies.lock().unwrap().clear();
+
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert!(
+        bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|body| body.contains("A hand edit of the text.")),
+        "the summary call has the edited transcript"
+    );
+    // The accept of the edit records its fingerprint and drops the timed
+    // text.
+    assert_eq!(read(&home, TRANSCRIPT_FILE), edit);
+    assert_fingerprints_match(&home);
+    assert!(session_md(&home).recognition_artifact.is_none());
+
+    let calls = r.script.calls.load(Ordering::SeqCst);
+    let config = RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..settings()
+    };
+    again_with(&r, &config).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "a full transcription"
+    );
+    assert_ne!(read(&home, TRANSCRIPT_FILE), edit);
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_makes_a_missing_summary() {
+    // R8: a missing `summary.md` counts after the wait, so the action can
+    // make it again.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    std::fs::remove_file(home.join("summary.md")).unwrap();
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert!(read(&home, "summary.md").contains("Summary number"));
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_with_no_transcript_refuses() {
+    // R8: with no `transcript.md` there is nothing to summarize.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    std::fs::remove_file(home.join(TRANSCRIPT_FILE)).unwrap();
+    let summary = read(&home, "summary.md");
+    let written = std::fs::read(home.join("session.md")).unwrap();
+
+    let error = r.runner.regenerate_summary("s").await.unwrap_err();
+    assert_eq!(error.to_string(), "The transcript is missing.");
+    assert_eq!(read(&home, "summary.md"), summary);
+    assert_eq!(std::fs::read(home.join("session.md")).unwrap(), written);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_run_uses_the_speaker_count_of_the_note_and_not_the_settings_default() {
     // Covers AE2.
     use session_core::SpeakerCount;

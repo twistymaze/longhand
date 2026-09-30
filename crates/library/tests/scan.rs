@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use library::scan::{
-    Known, LibraryScan, RootState, ScanOptions, Unavailable, Waiting, scan, scan_folders,
+    DocumentState, Known, LibraryScan, RootState, ScanOptions, Unavailable, Waiting, scan,
+    scan_folders,
 };
 use session_core::Segment;
 use session_core::folder::{SessionDoc, fingerprint};
@@ -157,6 +158,33 @@ fn a_transcript_with_another_fingerprint_is_waiting() {
     fs::write(dir.join("transcript.md"), "# Transcript\n\nOther text.\n").unwrap();
     fs::write(dir.join("summary.md"), "another summary").unwrap();
     let result = run(root.path(), &Known::default());
+    assert_eq!(
+        result.notes[0].waiting,
+        vec![Waiting::Transcript, Waiting::Summary]
+    );
+}
+
+// Covers R8: the reconciler tells a file that differs or is missing from
+// one that cannot be read.
+#[test]
+fn the_scan_reports_the_state_of_each_result_document() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "A1");
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].transcript, DocumentState::Matches);
+    assert_eq!(result.notes[0].summary, DocumentState::Matches);
+
+    fs::write(dir.join("transcript.md"), "# Transcript\n\nOther text.\n").unwrap();
+    fs::remove_file(dir.join("summary.md")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].transcript, DocumentState::Differs);
+    assert_eq!(result.notes[0].summary, DocumentState::Missing);
+
+    // A folder in place of the file: the read fails.
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    fs::create_dir(dir.join("transcript.md")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].transcript, DocumentState::Unreadable);
     assert_eq!(
         result.notes[0].waiting,
         vec![Waiting::Transcript, Waiting::Summary]
