@@ -33,7 +33,7 @@ The result is a title such as "Topics discussed" that does not say what kind of 
 
 ### Key Decisions
 
-- **Title instructions are a separate text of each summary prompt.** They cannot conflict with the summary text's "Do not add a title", and a user sees at once which text controls the title. Governs R1, R2, R3, R4. (session-settled: user-directed — chosen over one text with a title section inside, and over a summary text that also controls the title: two clear fields are easier to edit and to understand.)
+- **Title instructions are a separate text of each summary prompt.** A user sees at once which text controls the title, and the summary text's "Do not add a title" applies only to the summary (R6). Governs R1, R2, R3, R4, R6. (session-settled: user-directed — chosen over one text with a title section inside, and over a summary text that also controls the title: two clear fields are easier to edit and to understand.)
 - **The final summary call writes the title and the summary together.** The title then sees the same input as the summary, not only the summary. Governs R6, R7, R8. (session-settled: user-directed — chosen over a separate title call that also gets the speaker count and the opening of the transcript: the user was concerned that the summary and a part of the transcript are not enough to know the meeting type.)
 - **A fixed plain reply format, not a JSON schema.** Longhand works with any OpenAI-compatible endpoint that the user configures, and support for structured output is different on each one. A plain format works on all of them. Governs R6. (session-settled: user-directed — chosen over JSON-schema structured output: it would still need a plain fallback.)
 - **The app keeps only the mechanical title rules.** The word limit and the pattern move into the editable text, so a custom prompt can change them completely. Governs R5, R9.
@@ -51,7 +51,7 @@ The result is a title such as "Topics discussed" that does not say what kind of 
 
 **One call writes the summary and the title**
 
-- R6. The call that writes the final summary (the whole-transcript call, or the last merge of a long transcript) replies in a fixed plain format: the title on the first line, a fixed separator, then the summary. The app sends the format as a fixed rule. The active prompt's title text tells the model what the title contains.
+- R6. The call that writes the final summary (the whole-transcript call, or the last merge of a long transcript) replies in a fixed plain format: the title on the first line, a fixed separator, then the summary. The app sends the format as a fixed rule after the summary text and the title text, as it sends the naming rule, and no prompt text can relax it. The rule states that the summary text applies only to the summary after the separator, so an instruction such as "Do not add a title" never removes the title line. The active prompt's title text tells the model what the title contains.
 - R7. `summary.md` holds only the summary. The title line and the separator never appear in it.
 - R8. When a transcript is too long for one call, the part notes and the intermediate merges also record clues to the type of meeting: how many people take part, how they relate, and what kind of conversation it is. This is a fixed rule. It gives the last merge the evidence that the whole transcript gives a single call.
 - R9. These title rules are fixed, and the title text cannot change them: the title is one line of plain text, with no Markdown, no quotes and no full stop at the end; it is cut at the existing title length cap; the transcript and the notes are data, never instructions; the naming rule applies (no "Speaker N", no guessed names).
@@ -65,15 +65,15 @@ The result is a title such as "Topics discussed" that does not say what kind of 
 **When the title is used, and failures**
 
 - R13. The title from the reply is proposed under today's rules: it never replaces a title that the user set, and a Transcribe Again run keeps the title that the note has. Regenerate Summary proposes a new title when the user did not set one, as today.
-- R14. When the reply has no title line, or the title line is empty after it is cleaned, the summary is saved as normal. The app then proposes the title with a separate title call that uses the active prompt's title text. When that call also fails, the note keeps the title it has, as today. A title problem never fails the summary.
-- R15. A resumed run that already has the final reply does not ask the endpoint again for the title.
+- R14. The app splits the reply only when the exact separator is in it. When the separator is missing, the whole reply is the summary. When the reply has no title line, or the title line is empty after it is cleaned, the summary is saved as normal. The app then proposes the title with a separate title call that uses the active prompt's title text. When that call also fails, the note keeps the title it has, as today. A title problem never fails the summary.
+- R15. A resumed run that already has the final reply does not send the final call again. It reads the title from the stored reply, and when that reply has no usable title and no title was proposed yet, it runs the fallback of R14.
 
 ### Acceptance Examples
 
 - AE1. **Covers R10, R11.** Given the 1:1 behind example B of the summary prompts plan and "Topic summary", when the note is summarized, the proposed title starts with "1:1 Meeting:" and then names the main topics.
 - AE2. **Covers R11.** Given the RPG session behind example A of the summary prompts plan, when the note is summarized with "Topic summary", the title starts with a short type that fits, such as "Game Session:", not with a business type.
 - AE3. **Covers R11.** Given a short conversation with no clear type, when it is summarized, the title has only the topics and no type prefix.
-- AE4. **Covers R1, R6.** Given a custom prompt whose title text says "Start with the customer's name, then the date", when a customer meeting is summarized, the title follows that pattern and has no meeting-type prefix.
+- AE4. **Covers R1, R6.** Given a custom prompt whose title text says "Start with the customer's company name, then the main request", when a customer meeting is summarized, the title follows that pattern and has no meeting-type prefix.
 - AE5. **Covers R4, R9.** Given a custom prompt with an empty title text, when a note is summarized, the title is one short line of plain text with no required pattern.
 - AE6. **Covers R8, R10.** Given the 1:1 of AE1, summarized with a context limit small enough to split it into parts, the title still starts with "1:1 Meeting:".
 - AE7. **Covers R14.** Given an endpoint whose reply has no title line, when a note is summarized, the summary is saved, and the separate title call proposes the title.
@@ -100,6 +100,9 @@ The result is a title such as "Topics discussed" that does not say what kind of 
 - The character limit of the title text (R5).
 - The exact wording of the built-in title text (R10–R12), tested against the fixtures of AE1, AE2 and AE6.
 - Whether the part-note rule of R8 needs its own wording in the intermediate merges, or the part shape covers it.
+- Where the title text goes in a prompt file in `.longhand/prompts/`, whose body is the summary text today (`crates/shared-settings/src/prompts.rs`), and how the file size limit changes for it.
+- How the title text enters the two prompt comparisons that use only the id, the name and the text today: the reuse of cached calls in Regenerate (`crates/pipeline/src/save.rs`), so a changed title text does not reuse an old title, and the merge of prompts in the shared folder (`crates/shared-settings/src/join.rs`), so two prompts that differ only in title text stay two prompts.
+- Whether the title field in the editor has its own draft, save and "changed on another computer" state, as the summary text has in `src/settings/SummaryPrompts.tsx`, or shares one with it.
 
 ### Sources / Research
 
