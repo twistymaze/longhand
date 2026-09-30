@@ -6411,3 +6411,196 @@ async fn a_note_that_records_during_a_change_of_folder_saves_to_the_new_folder()
         destination_entries(&r)
     );
 }
+
+// ---------------------------------------- old audio copy (U5 of the audio removal plan)
+
+/// Resume the saved note `id` as capture does (KTD8 of the audio removal
+/// plan): list its old segments and copy their audio into the working
+/// location. The caller then records one more segment.
+fn resume_saved_with_copy(r: &Rig, id: &str) {
+    let segments = {
+        let mut s = r.store.lock().unwrap();
+        let segments = s.segments(id).unwrap();
+        s.apply(
+            id,
+            &session_core::Event::UserResume {
+                space_ok: true,
+                audio_intact: true,
+            },
+        )
+        .unwrap();
+        segments
+    };
+    let working = r.root.join(id);
+    pipeline::old_audio::begin(&working, &segments).unwrap();
+    pipeline::old_audio::copy_for(&r.store, id, &working).unwrap();
+}
+
+/// Another computer removes the audio of `audio` from `folder`: the removal
+/// marker first, then the delete (KTD2).
+fn remove_on_other_computer(folder: &std::path::Path, audio: &str) {
+    write_marker(folder, audio);
+    std::fs::remove_file(folder.join(audio)).unwrap();
+}
+
+fn write_marker(folder: &std::path::Path, audio: &str) {
+    std::fs::write(
+        folder.join(session_core::folder::removal_marker(audio)),
+        session_core::folder::REMOVAL_MARKER_TEXT,
+    )
+    .unwrap();
+}
+
+fn audio_state_of(r: &Rig, id: &str) -> session_core::folder::AudioState {
+    pipeline::save::audio_state(&r.store.lock().unwrap(), id).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_note_whose_old_audio_goes_during_recording_saves_only_its_new_audio() {
+    // Covers AE9. The note has a recognition artifact, so the saved-prefix
+    // check runs.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(session_md(&folder).recognition_artifact.is_some());
+    let turns = |folder: &std::path::Path| -> Vec<String> {
+        read(folder, TRANSCRIPT_FILE)
+            .lines()
+            .filter(|line| line.starts_with("- ["))
+            .map(str::to_string)
+            .collect()
+    };
+    let old_turns = turns(&folder);
+    assert!(!old_turns.is_empty());
+
+    resume_saved_with_copy(&r, "s");
+    remove_on_other_computer(&folder, "audio/segment-01.opus");
+    let before = calls(&r);
+    record_resumed_segment(&r, "s", &speech());
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert!(
+        !folder.join("audio/segment-01.opus").exists(),
+        "old audio came back"
+    );
+    assert!(
+        folder.join("audio/segment-02.opus").is_file(),
+        "the new audio"
+    );
+    assert_eq!(
+        audio_state_of(&r, "s"),
+        session_core::folder::AudioState::Removed
+    );
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+    assert_eq!(session_md(&folder).timeline_segments().len(), 2);
+    let new_turns = turns(&folder);
+    assert_eq!(
+        new_turns[..old_turns.len()],
+        old_turns[..],
+        "the saved text"
+    );
+    assert!(new_turns.len() > old_turns.len(), "the new text");
+    // The saved prefix read the copy: only the new audio was recognized.
+    assert_eq!(calls(&r) - before, windows_of(&r, 1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_with_the_old_audio_copy_and_no_removal_saves_all_old_and_new_audio() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech()), (16_000, speech())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    let files = ["audio/segment-01.opus", "audio/segment-02.opus"];
+    let old: Vec<Vec<u8>> = files
+        .iter()
+        .map(|f| std::fs::read(folder.join(f)).unwrap())
+        .collect();
+
+    resume_saved_with_copy(&r, "s");
+    for (file, bytes) in files.iter().zip(&old) {
+        assert_eq!(&std::fs::read(r.root.join("s").join(file)).unwrap(), bytes);
+    }
+    record_resumed_segment(&r, "s", &speech());
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    for (file, bytes) in files.iter().zip(&old) {
+        assert_eq!(&std::fs::read(folder.join(file)).unwrap(), bytes, "{file}");
+    }
+    assert!(folder.join("audio/segment-03.opus").is_file());
+    assert_eq!(
+        audio_state_of(&r, "s"),
+        session_core::folder::AudioState::Present
+    );
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_file_deleted_before_its_marker_syncs_is_not_put_back_by_the_save() {
+    let r = rig().await;
+    let folder = saved_note(&r, None).await;
+    resume_saved_with_copy(&r, "s");
+    // The sync delivers the delete of the other computer first.
+    std::fs::remove_file(folder.join("audio/segment-01.opus")).unwrap();
+    record_resumed_segment(&r, "s", &speech());
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    assert!(
+        !folder.join("audio/segment-01.opus").exists(),
+        "old audio came back"
+    );
+    assert!(folder.join("audio/segment-02.opus").is_file());
+    // The marker comes after the save.
+    write_marker(&folder, "audio/segment-01.opus");
+    assert_eq!(
+        audio_state_of(&r, "s"),
+        session_core::folder::AudioState::Removed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_resumed_note_deletes_the_copy_of_its_marked_old_audio_only() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech()), (16_000, speech())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    resume_saved_with_copy(&r, "s");
+    record_resumed_segment(&r, "s", &speech());
+    remove_on_other_computer(&folder, "audio/segment-01.opus");
+    *r.script.fail_on.lock().unwrap() = Some(calls(&r));
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    let working = r.root.join("s");
+    assert!(
+        !working.join("audio/segment-01.opus").exists(),
+        "the marked copy stayed"
+    );
+    assert!(
+        working.join("audio/segment-02.opus").is_file(),
+        "the unmarked copy went"
+    );
+    assert!(
+        working.join("audio/segment-03.opus").is_file(),
+        "the new audio went"
+    );
+}

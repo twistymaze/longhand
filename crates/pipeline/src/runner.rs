@@ -830,6 +830,7 @@ impl Runner {
                     if let Err(e) = lock(&self.env.store).apply(id, &Event::StageFailed(stage)) {
                         log::warn!("could not record the failure of {id}: {e}");
                     }
+                    self.drop_removed_old_audio(id);
                     emit(RunnerEvent::StageFailed {
                         session_id: id.to_string(),
                         stage,
@@ -844,6 +845,37 @@ impl Runner {
             session_id: id.to_string(),
         });
         Outcome::Finished
+    }
+
+    /// For a resumed note that failed processing: delete the copy of each
+    /// old segment whose home file has a removal marker (KTD8 of the audio
+    /// removal plan). Call it again when a sync delivers a removal marker
+    /// for a note that failed processing.
+    pub fn drop_removed_old_audio(&self, id: &str) {
+        let home = {
+            let store = lock(&self.env.store);
+            match store.session(id) {
+                Ok(Some(record))
+                    if matches!(record.state, SessionState::ProcessingFailed { .. }) =>
+                {
+                    record.home_path
+                }
+                _ => None,
+            }
+        };
+        let Some(home) = home else {
+            return;
+        };
+        let working = self.env.working_root.join(id);
+        match crate::old_audio::drop_removed(&working, std::path::Path::new(&home)) {
+            Ok(dropped) if !dropped.is_empty() => {
+                log::info!(
+                    "deleted the old audio copy of {dropped:?} of {id}: its audio was removed"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("could not delete the removed old audio copy of {id}: {e}"),
+        }
     }
 
     /// Return a failed Transcribe Again run to Saved with its previous

@@ -544,7 +544,11 @@ fn update_home(
 }
 
 /// Copy each segment's audio that `home` does not hold yet from the working
-/// copy. The old audio is never rewritten.
+/// copy. The old audio is never rewritten. Only the segments that the
+/// Resume recorded are copied: the audio of a segment that the note had
+/// when the Resume started, or that has a removal marker, is never put
+/// back, in any order in which a sync delivers a removal (KTD8 of the
+/// audio removal plan).
 fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), StageError> {
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
@@ -552,9 +556,13 @@ fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), St
             home.display()
         )));
     }
+    let old = crate::old_audio::old_segments(working)?.unwrap_or_default();
     for segment in segments {
         let target = home.join(&segment.audio_file);
-        if target.exists() {
+        if target.exists()
+            || old.iter().any(|o| o.audio_file == segment.audio_file)
+            || folder::audio_removed(home, &segment.audio_file)
+        {
             continue;
         }
         let (Some(dir), Some(name)) =

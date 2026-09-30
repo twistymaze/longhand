@@ -16,6 +16,7 @@ pub mod in_use;
 pub mod join;
 pub mod live;
 pub mod move_notes;
+pub mod old_audio;
 mod opus_ms;
 pub mod progress;
 pub mod recognition;

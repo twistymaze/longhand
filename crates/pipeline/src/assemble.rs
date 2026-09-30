@@ -113,6 +113,21 @@ pub fn run(
         segments,
         recorder::storage::available_space(session_dir),
     )?;
+    // A resumed saved note reads its old segments from their copy in the
+    // working location (KTD8 of the audio removal plan). A copy that the
+    // Resume did not complete is made now.
+    let old = match home {
+        Some(home) => {
+            crate::old_audio::copy(session_dir, &|| Some(home.to_path_buf()))?;
+            crate::old_audio::old_segments(session_dir)?.unwrap_or_default()
+        }
+        None => Vec::new(),
+    };
+    let old_state = |segment: &Segment| {
+        old.iter()
+            .find(|o| o.audio_file == segment.audio_file)
+            .map(|o| o.state)
+    };
     let mut out = Vec::new();
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
@@ -133,9 +148,11 @@ pub fn run(
             out.push(done);
             continue;
         }
-        let local_archive = if exact
-            && checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
-                .is_some()
+        let copied = old_state(segment) == Some(crate::old_audio::CopyState::Copied);
+        let local_archive = if copied
+            || exact
+                && checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
+                    .is_some()
         {
             Some(session_dir.join(&segment.audio_file)).filter(|p| p.is_file())
         } else {
@@ -168,6 +185,15 @@ pub fn run(
             );
             out.push(assembled.segment);
             continue;
+        }
+        if let Some(home) = home
+            && old_state(segment) == Some(crate::old_audio::CopyState::Removed)
+        {
+            return Err(StageError::Failed(format!(
+                "the audio of segment {} was removed from {} before Longhand copied it for the Resume",
+                segment.index + 1,
+                home.display()
+            )));
         }
         if let Some(home) = home
             && !recorder::list_chunks(&recovery)?

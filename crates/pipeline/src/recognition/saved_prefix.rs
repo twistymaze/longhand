@@ -46,6 +46,12 @@ pub(super) fn read(
         previous = None;
     }
     let candidate = candidate(store, id, dir, segments, spec);
+    // Audio that was removed from the home folder with no copy in the
+    // working location is not a change of the saved note: no prefix is
+    // reused, and no error occurs (KTD8 of the audio removal plan).
+    if !matches!(candidate, Ok(Some(_))) && old_audio_gone(store, id, dir)? {
+        return Ok(None);
+    }
     // Save can commit the replacement manifest before the process records Done.
     // Accept only our exact joined artifact as that completed publication.
     if let Ok(Some(prefix)) = &candidate
@@ -68,6 +74,53 @@ pub(super) fn read(
         // Old notes without a usable artifact retain the ordinary recognition path.
         (None, Err(_)) => Ok(None),
     }
+}
+
+/// Whether each saved segment's audio has the digest that the saved note
+/// records. Processing reads the copy in the working location when there
+/// is one (KTD8 of the audio removal plan), so the check reads it too. A
+/// segment with no copy whose home file has a removal marker or is missing
+/// does not match: no prefix is reused, and no error occurs.
+fn same_audio(
+    dir: &Path,
+    home: &Path,
+    old: &[Segment],
+    audio: &std::collections::BTreeMap<String, String>,
+) -> Result<bool, StageError> {
+    for segment in old {
+        let local = dir.join(&segment.audio_file);
+        let source = if local.is_file() {
+            local
+        } else if session_core::folder::audio_removed(home, &segment.audio_file)
+            || !home.join(&segment.audio_file).is_file()
+        {
+            return Ok(false);
+        } else {
+            home.join(&segment.audio_file)
+        };
+        if audio.get(&segment.audio_file) != Some(&file_digest(&source)?) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether a saved segment of the note has no audio that processing can
+/// read: no copy in the working location, and a removal marker or no file
+/// in the home folder (R16 of the audio removal plan).
+fn old_audio_gone(store: &SharedStore, id: &str, dir: &Path) -> Result<bool, StageError> {
+    let Some(home) = lock(store).session(id)?.and_then(|record| record.home_path) else {
+        return Ok(false);
+    };
+    let home = Path::new(&home);
+    let Ok(doc) = session_core::generation::manifest(home) else {
+        return Ok(false);
+    };
+    Ok(doc.timeline_segments().iter().any(|segment| {
+        !dir.join(&segment.audio_file).is_file()
+            && (session_core::folder::audio_removed(home, &segment.audio_file)
+                || !home.join(&segment.audio_file).is_file())
+    }))
 }
 
 pub(super) fn retain(store: &SharedStore, id: &str, prefix: &Prefix) -> Result<(), StageError> {
@@ -114,19 +167,8 @@ fn candidate(
     let (Some(reference), Some(audio)) = (&doc.recognition_artifact, &doc.recognition_audio) else {
         return Ok(None);
     };
-    if audio.len() != old.len() {
+    if audio.len() != old.len() || !same_audio(dir, home, &old, audio)? {
         return Ok(None);
-    }
-    for segment in &old {
-        let expected = audio.get(&segment.audio_file);
-        if expected != Some(&file_digest(&home.join(&segment.audio_file))?) {
-            return Ok(None);
-        }
-        // Assemble can prefer a local archive. It must represent the same source.
-        let local = dir.join(&segment.audio_file);
-        if local.exists() && expected != Some(&file_digest(&local)?) {
-            return Ok(None);
-        }
     }
     let artifact_dir = doc
         .result_generation
@@ -186,10 +228,8 @@ fn candidate(
         return Ok(None);
     }
     // Check the source again after reading output; publication repeats this proof.
-    for segment in &old {
-        if audio.get(&segment.audio_file) != Some(&file_digest(&home.join(&segment.audio_file))?) {
-            return Ok(None);
-        }
+    if !same_audio(dir, home, &old, audio)? {
+        return Ok(None);
     }
     Ok(Some(Prefix {
         count: old.len(),
@@ -384,6 +424,39 @@ mod tests {
                 &self.spec,
             )
         }
+    }
+
+    #[test]
+    fn saved_prefix_reads_the_old_audio_copy_after_the_home_file_goes() {
+        // KTD8 of the audio removal plan: the working location holds the
+        // copy of the old audio and its processing file.
+        let case = Case::new();
+        let work = tempfile::tempdir().unwrap();
+        let old = &case.segments[0].audio_file;
+        for name in [old.clone(), crate::proc_file(old)] {
+            let target = work.path().join(&name);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(case.temp.path().join(&name), target).unwrap();
+        }
+        let read = || read(&case.store, "s", work.path(), &case.segments, &case.spec);
+        assert!(read().unwrap().is_some());
+
+        // Another computer removes the old audio from the home folder.
+        let home = case.temp.path();
+        std::fs::write(
+            home.join(session_core::folder::removal_marker(old)),
+            session_core::folder::REMOVAL_MARKER_TEXT,
+        )
+        .unwrap();
+        std::fs::remove_file(home.join(old)).unwrap();
+        let prefix = read().unwrap().expect("the copy gives the prefix");
+        retain(&case.store, "s", &prefix).unwrap();
+        assert!(read().unwrap().is_some());
+
+        // With no copy, no prefix is reused and no error occurs, also after
+        // an attempt used the prefix.
+        std::fs::remove_file(work.path().join(old)).unwrap();
+        assert!(read().unwrap().is_none());
     }
 
     #[test]
