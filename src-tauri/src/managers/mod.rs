@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod audio_removal;
 pub mod capture;
 pub mod destination;
 pub mod library;

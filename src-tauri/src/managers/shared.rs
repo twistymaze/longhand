@@ -139,10 +139,6 @@ impl SharedSnapshot {
     /// from the settings file of the storage folder and this build knows the
     /// value: while the view comes from the cache or the defaults, no audio
     /// goes.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the removal pass (U6) is the caller")
-    )]
     pub fn audio_removal_days(&self) -> Option<u32> {
         if self.availability != SharedAvailability::Available {
             return None;

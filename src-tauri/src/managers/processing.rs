@@ -18,6 +18,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 
+use crate::managers::audio_removal::AudioRemovalManager;
 use crate::managers::capture::CaptureManager;
 use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
@@ -682,6 +683,9 @@ pub struct ProcessingManager {
     /// The in-use markers of the saved notes that this run resumes or
     /// processes (KTD4 of the audio removal plan).
     in_use: Arc<InUseKeeper>,
+    /// The passes that remove the audio of old notes (U6 of the audio
+    /// removal plan).
+    audio_removal: Arc<AudioRemovalManager>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -757,8 +761,16 @@ impl ProcessingManager {
         }
         // The run ID of the in-use markers is the claim owner of this run.
         let in_use = InUseKeeper::new(capture.shared_store(), runner.owner());
+        let library_status: Arc<library::status::LibraryStatus> = Arc::default();
+        let audio_removal = AudioRemovalManager::new(
+            app,
+            capture.shared_store(),
+            runner.claims().clone(),
+            Arc::clone(&library_status),
+        );
         Self {
             in_use,
+            audio_removal,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -766,9 +778,14 @@ impl ProcessingManager {
             store: capture.shared_store(),
             liveness,
             library: std::sync::Mutex::default(),
-            library_status: Arc::default(),
+            library_status,
             mover: MoveWorker::default(),
         }
+    }
+
+    /// The passes that remove the audio of old notes.
+    pub fn audio_removal(&self) -> &Arc<AudioRemovalManager> {
+        &self.audio_removal
     }
 
     /// What the latest library scans found about each note.
@@ -836,6 +853,13 @@ impl ProcessingManager {
                 log::error!("launch reconcile of folder names failed: {e}");
             }
         }
+        // After the library scan, so the rows and the removed flags come
+        // from the folders. The pass at launch runs only with the instance
+        // lock held. The timer passes run in each case (KTD6).
+        self.audio_removal.start(matches!(
+            self.liveness,
+            session_core::jobs::Liveness::OnlyInstance
+        ));
         let woken = Arc::downgrade(&self.runner);
         self.live
             .attach(self.runner.live_workers().with_idle(move || {
@@ -1114,6 +1138,7 @@ impl ProcessingManager {
         let events = self.app.clone();
         let app = self.app.clone();
         let reader = self.app.clone();
+        let audio_removal = Arc::clone(&self.audio_removal);
         let started = LibraryWatcher::start(
             self.roots(),
             self.storage_folder(),
@@ -1145,6 +1170,9 @@ impl ProcessingManager {
                     if let Some(models) = reader.try_state::<Arc<ModelsManager>>() {
                         models.follow_choice(&reader);
                     }
+                    // The change can turn the audio removal on or shorten
+                    // its delay. It needs no confirmation (KTD6).
+                    audio_removal.run_now();
                 }
             }),
             Box::new(move |changes| emit_library_changed(&events, changes)),
@@ -1194,6 +1222,7 @@ impl ProcessingManager {
             state.stopped = true;
             self.mover.signal.notify_all();
         }
+        self.audio_removal.stop();
         self.live.shutdown();
         self.runner.shutdown();
         self.in_use.stop();

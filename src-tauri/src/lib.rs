@@ -332,6 +332,9 @@ pub fn run() {
                 secret_store,
                 liveness,
             ));
+            // The settings commands start a removal pass after a change
+            // (R17), and the count before a change reads it.
+            app.manage(std::sync::Arc::clone(processing.audio_removal()));
             processing.start();
             let working = std::sync::Arc::clone(&processing);
             app.manage(processing);

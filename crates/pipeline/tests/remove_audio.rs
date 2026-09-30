@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use pipeline::SharedStore;
 use pipeline::remove_audio::{
-    Eligibility, EligibilityInputs, RemoveAudioError, SegmentOutcome, eligibility, remove_audio,
-    remove_audio_with, safe_audio_name,
+    Eligibility, EligibilityInputs, RemoveAudioError, SegmentOutcome, eligibility, finish_removal,
+    remove_audio, remove_audio_with, safe_audio_name,
 };
 use session_core::Segment;
 use session_core::folder::{REMOVAL_MARKER_TEXT, SessionDoc, fingerprint, removal_marker};
@@ -521,6 +521,62 @@ fn an_unknown_note_is_an_error() {
     let store = common::store();
     let result = remove_audio(&store, &Claims::default(), "no-such-note", allow);
     assert!(matches!(result, Err(RemoveAudioError::Failed(_))));
+}
+
+// ------------------------------------------------------- finish the removal
+
+#[test]
+fn finish_deletes_only_the_audio_of_marked_segments_and_writes_no_marker() {
+    // KTD2: the setting is off, and one segment has its marker and its
+    // file. The other segments keep their audio and get no marker.
+    let segments = three_segments();
+    let note = saved_note(&segments);
+    fs::write(marker(&note.home, &audio(1)), REMOVAL_MARKER_TEXT).unwrap();
+    let before = documents(&note.home);
+
+    let removal = finish_removal(&note.store, &note.claims, ID, allow).unwrap();
+
+    assert_eq!(removal.segments.len(), 1);
+    assert_eq!(removal.segments[0].audio_file, audio(1));
+    assert_eq!(removal.segments[0].outcome, SegmentOutcome::Removed);
+    assert!(removal.row_changed);
+    assert!(!note.home.join(audio(1)).exists());
+    for i in [0, 2] {
+        assert!(note.home.join(audio(i)).is_file());
+        assert!(!marker(&note.home, &audio(i)).exists());
+    }
+    assert_eq!(documents(&note.home), before);
+    assert_eq!(flags(&note), vec![audio(1)]);
+}
+
+#[test]
+fn finish_on_a_note_with_no_marker_changes_nothing() {
+    let note = saved_note(&three_segments());
+    let folder = contents(&note.home);
+
+    let removal = finish_removal(&note.store, &note.claims, ID, allow).unwrap();
+
+    assert!(removal.segments.is_empty());
+    assert!(!removal.row_changed);
+    assert_eq!(contents(&note.home), folder);
+    assert!(flags(&note).is_empty());
+}
+
+#[test]
+fn finish_keeps_the_audio_of_a_busy_note_or_a_refused_guard() {
+    let note = saved_note(&three_segments()[..1]);
+    fs::write(marker(&note.home, &audio(0)), REMOVAL_MARKER_TEXT).unwrap();
+    {
+        let _claim = note.claims.regenerate(ID).unwrap();
+        let result = finish_removal(&note.store, &note.claims, ID, allow);
+        assert!(matches!(
+            result,
+            Err(RemoveAudioError::Busy("regenerating"))
+        ));
+    }
+    let result = finish_removal(&note.store, &note.claims, ID, |_, _| Err("in use"));
+    assert!(matches!(result, Err(RemoveAudioError::Busy("in use"))));
+    assert!(note.home.join(audio(0)).is_file());
 }
 
 // ---------------------------------------------------------------- eligibility

@@ -197,7 +197,9 @@ async setCheckUpdatesAutomatically(enabled: boolean) : Promise<Result<Settings, 
  * Choose when the audio of a saved note goes, or turn automatic removal
  * off (R1, R3). The value goes into the shared settings file, so it
  * applies on every computer that uses the storage folder. A number of
- * days outside the range is refused and changes nothing.
+ * days outside the range is refused and changes nothing. After a saved
+ * change that turns the setting on or shortens the delay, a removal pass
+ * starts (R17, KTD6). The Settings window asks for the confirmation first.
  */
 async setAudioRemoval(removal: AudioRemovalSetting) : Promise<Result<Settings, string>> {
     try {

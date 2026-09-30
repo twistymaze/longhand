@@ -146,7 +146,58 @@ pub fn remove_audio_with<G, R>(
     claims: &Claims,
     session_id: &str,
     guard: G,
+    remove: R,
+) -> Result<Removal, RemoveAudioError>
+where
+    G: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    run_step(store, claims, session_id, guard, remove, Scope::Every)
+}
+
+/// Finish the removal of the audio of the saved note `session_id` (KTD2):
+/// delete the audio file of each segment that has its removal marker. The
+/// step writes no marker, so a segment with no marker keeps its audio. The
+/// removal pass does this whether the setting is on or off. The claim, the
+/// check that the note is saved, `guard`, the name check and the flags are
+/// the same as in [`remove_audio_with`]. The result has an entry only for
+/// each segment that has its marker.
+pub fn finish_removal<G>(
+    store: &SharedStore,
+    claims: &Claims,
+    session_id: &str,
+    guard: G,
+) -> Result<Removal, RemoveAudioError>
+where
+    G: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
+{
+    run_step(
+        store,
+        claims,
+        session_id,
+        guard,
+        |path| std::fs::remove_file(path),
+        Scope::Marked,
+    )
+}
+
+/// The segments that the step works on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Each segment: write the marker if it is missing, then delete the
+    /// audio file.
+    Every,
+    /// Only each segment that has its marker: delete the audio file.
+    Marked,
+}
+
+fn run_step<G, R>(
+    store: &SharedStore,
+    claims: &Claims,
+    session_id: &str,
+    guard: G,
     mut remove: R,
+    scope: Scope,
 ) -> Result<Removal, RemoveAudioError>
 where
     G: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
@@ -185,6 +236,14 @@ where
 
     let results: Vec<SegmentRemoval> = segments
         .iter()
+        .filter(|segment| match scope {
+            Scope::Every => true,
+            // A name that is not safe is not read, not even for a marker.
+            Scope::Marked => {
+                safe_audio_name(&segment.audio_file)
+                    && folder::audio_removed(&home, &segment.audio_file)
+            }
+        })
         .map(|segment| SegmentRemoval {
             audio_file: segment.audio_file.clone(),
             outcome: remove_segment(&home, &segment.audio_file, &mut remove),

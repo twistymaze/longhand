@@ -812,6 +812,16 @@ const FOLDER_UNAVAILABLE: &str = "The storage folder for this note is unavailabl
 /// The checks of Remove Audio that the removal step does under the store
 /// lock, after its claim and its check that the note is saved.
 fn removal_guard(store: &session_core::Store, record: &SessionRecord) -> Result<(), &'static str> {
+    removal_checks(store, record, chrono::Local::now().fixed_offset())
+}
+
+/// The checks of [`removal_guard`] at the time `now`. The removal pass uses
+/// them too (KTD5).
+pub(crate) fn removal_checks(
+    store: &session_core::Store,
+    record: &SessionRecord,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<(), &'static str> {
     // A Move changes the home folders of the notes (KTD11). When the
     // journal cannot be read, the guard also refuses.
     if !matches!(store.move_journal(), Ok(None)) {
@@ -821,7 +831,6 @@ fn removal_guard(store: &session_core::Store, record: &SessionRecord) -> Result<
     // the note (KTD4). A folder that cannot be read also refuses. A missing
     // folder is not in use: the step then refuses it as unavailable.
     if let Some(home) = record.home_path.as_deref() {
-        let now = chrono::Local::now().fixed_offset();
         match pipeline::in_use::in_use(std::path::Path::new(home), now) {
             Ok(false) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

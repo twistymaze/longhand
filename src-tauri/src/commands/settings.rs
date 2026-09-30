@@ -13,6 +13,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::audio_removal::{self, AudioRemovalManager};
 use crate::managers::capture::CaptureManager;
 use crate::managers::models::ModelsManager;
 use crate::managers::processing::{MoveStatus, ProcessingManager};
@@ -276,7 +277,9 @@ pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<
 /// Choose when the audio of a saved note goes, or turn automatic removal
 /// off (R1, R3). The value goes into the shared settings file, so it
 /// applies on every computer that uses the storage folder. A number of
-/// days outside the range is refused and changes nothing.
+/// days outside the range is refused and changes nothing. After a saved
+/// change that turns the setting on or shortens the delay, a removal pass
+/// starts (R17, KTD6). The Settings window asks for the confirmation first.
 #[tauri::command(async)]
 #[specta::specta]
 pub fn set_audio_removal(
@@ -284,10 +287,21 @@ pub fn set_audio_removal(
     removal: settings::AudioRemovalSetting,
 ) -> Result<Settings, String> {
     removal.validate()?;
-    settings::update_settings(&app, |s| {
+    let delay = |app: &AppHandle| {
+        app.try_state::<Arc<SharedSettingsManager>>()
+            .and_then(|shared| shared.snapshot().audio_removal_days())
+    };
+    let before = delay(&app);
+    let updated = settings::update_settings(&app, |s| {
         s.audio_removal = removal;
         Ok(())
-    })
+    })?;
+    if audio_removal::removes_more(before, delay(&app))
+        && let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>()
+    {
+        pass.run_now();
+    }
+    Ok(updated)
 }
 
 /// Choose whether the app has no Dock icon while no window is visible
