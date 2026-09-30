@@ -43,7 +43,7 @@ The copies exist so that a computer that receives a half-synced update keeps sho
 - **Remove `recognition.jsonl` with the audio.** Governs R11, R12. (session-settled: user-directed — chosen over keeping it: it has no use without the audio and keeps a copy of the transcript text.)
 - **Any computer does the cleanup.** The new code no longer reads the copies, and nobody else has installs to migrate. Governs R13.
 
-Product Contract preservation: changed: R2, R7, R8, R9, R11, R13 — clarifications from planning research, confirmed by the user in the plan scoping synthesis of 2026-09-30 (write order and write set per action; a missing or unreadable file under the one-minute rule; only a `transcript.md` edit makes the timed text unusable; the removal deletes the file only; the cleanup repeats on each pass). The deferred planning questions are resolved in KTD1, KTD4, KTD7 and KTD8.
+Product Contract preservation: changed: R2, R7, R8, R9, R11, R13 — clarifications from planning research and document review, confirmed by the user on 2026-09-30 (write order and write set per action; a missing or unreadable file under the one-minute rule; only a `transcript.md` edit makes the timed text unusable; the removal deletes the file only; the cleanup repeats on each pass). The deferred planning questions are resolved in KTD1, KTD4, KTD7 and KTD8.
 
 ### Requirements
 
@@ -65,12 +65,12 @@ Product Contract preservation: changed: R2, R7, R8, R9, R11, R13 — clarificati
 
 **recognition.jsonl and audio removal**
 
-- R11. When audio removal removes the last audio of a note, it also deletes `recognition.jsonl` from the note folder. It does not rewrite `session.md`; a later save ignores a reference in `session.md` to a missing `recognition.jsonl`.
+- R11. When audio removal removes the last audio of a note, it also deletes a regular `recognition.jsonl` file from the note folder. A folder or link with that name stays and is logged. It does not rewrite `session.md`; a later save ignores a reference in `session.md` to a missing `recognition.jsonl`.
 - R12. Summary regeneration, title and rename writes, and notes saves keep working for a note without `recognition.jsonl`.
 
 **Cleanup of existing copies**
 
-- R13. Longhand deletes existing `.longhand-results/` folders and `.longhand-result-transition.json` files in the note folders of the storage folder, and deletes `recognition.jsonl` from notes whose audio is already removed. It does this without a prompt, and again on each later pass so that copies that arrive later by sync are also deleted. It does not touch a note that another computer uses (the in-use marker rules of the audio removal plan) or a note that waits for a sync.
+- R13. Longhand deletes existing `.longhand-results/` folders and `.longhand-result-transition.json` files in the note folders that this computer's library holds, and deletes `recognition.jsonl` from notes whose audio is already removed. It does this without a prompt, and again on each later pass so that copies that arrive later by sync are also deleted. It does not touch a note that another computer uses (the in-use marker rules of the audio removal plan) or a note that waits for a sync.
 - R14. The cleanup never deletes `transcript.md`, `summary.md`, `notes.md`, `session.md` or audio. If a note has a result only in its copies (no current `transcript.md` or `summary.md`), the cleanup leaves that note's copies in place and logs it.
 
 ### Acceptance Examples
@@ -207,7 +207,7 @@ In `Waiting` the note shows the files and the actions of R7 are held. In `HandEd
   - A new `transcript.md` with the old `session.md` gives `Waiting::Transcript` and adoption still makes the row.
   - A refresh while the note waits keeps the row's snapshot; a refresh with matching files promotes it.
   - A `.longhand-results` folder change raises no watcher event.
-- **Verification:** No reader in the workspace names `.longhand-results`; the scan and the note page work on notes with and without old copies.
+- **Verification:** No reader in the workspace names `.longhand-results` (the U7 cleanup is the one exception); the scan and the note page work on notes with and without old copies.
 
 ### U3. Publish results with no copies
 
@@ -290,7 +290,7 @@ In `Waiting` the note shows the files and the actions of R7 are held. In `HandEd
   - A `recognition.jsonl` that is a folder or a link is not deleted.
   - A note that waits for a sync keeps `recognition.jsonl` until a later pass.
   - A removal during a Regenerate Summary on another computer: the regeneration's `session.md` has no recognition reference and no `recognition.jsonl` comes back (KTD5).
-- **Verification:** No note with all audio removed keeps `recognition.jsonl` after a pass.
+- **Verification:** No note with all audio removed keeps a regular `recognition.jsonl` file after a pass.
 
 ### U7. Clean up the existing copies
 
@@ -343,6 +343,6 @@ In `Waiting` the note shows the files and the actions of R7 are held. In `HandEd
 ## Definition of Done
 
 - Every unit's verification holds and all gates in the Verification Contract pass.
-- No workspace code reads or writes `.longhand-results`, `.longhand-result-transition.json`, `result_generation` or the `verified-manifest` key.
+- No workspace code reads or writes `.longhand-results`, `.longhand-result-transition.json`, `result_generation` or the `verified-manifest` key, except the U7 cleanup, which only checks and deletes the two folder names.
 - AE1–AE5 each have an automated test, and the manual two-computer test passed.
 - Code from abandoned approaches is removed from the diff.
