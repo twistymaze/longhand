@@ -134,14 +134,14 @@ The audio is the largest part of a note, and the storage folder grows with each 
 - KTD1. **A removal marker file beside each removed audio file records the removal.** The marker for `audio/segment-01.opus` is a file with a fixed name derived from it (for example `audio/segment-01.opus.removed`) and fixed content. A field in `session.md` does not work: a save on another computer rewrites `session.md` from its own store and keeps only named fields (`crates/pipeline/src/folder_rename.rs` `write_document`, `crates/pipeline/src/save.rs` `session_doc`). A marker is only ever created, never rewritten, so two computers that write it at once make the same file. The marker name has no leading dot, because the folder watcher skips dot names (`src-tauri/src/managers/library.rs` `should_skip_path`). Governs R15, R16.
 - KTD2. **A marker makes the segment's audio removed, whether the file is present or not.** Removal writes the marker first, then deletes the file. A crash between the two leaves a marker and a file: the next pass deletes the file, and Resume, Transcribe Again and Retry already refuse. Each pass finishes the delete of every marked segment whether the setting is on or off; the setting controls only the writing of new markers. When a partial sync delivers the marker before the delete, the receiving computer also deletes the file. This follows the step-then-record rule in `docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`, with the record first because the marker is what makes the state recognizable from disk alone. Governs R5, R13, R15.
 - KTD3. **Automatic removal needs a known value from readable shared settings.** The new shared field joins `crates/shared-settings/src/file.rs` like the other fields (`KEY_*`, `Field<T>`, `SharedValue`). Its encoding distinguishes absent, off and a number of days (1 to 3650), and an unknown value is `Unknown`. `default_settings()` leaves the key out. When the join (`crates/shared-settings/src/join.rs`) creates a missing `settings.json`, the audio removal value follows one rule. In a storage folder that holds note folders, the new file has no value, including when the join fills it from this computer's cache. In a storage folder with no note folders, a known value in the cache is kept as it is (the user's choice survives a change of folder), and otherwise the value is 30 days. The pass runs only when the shared view is `Available` and the field is known. It never uses `settings::get_settings` defaults, because `from_parts` maps absent and unknown values to defaults. This follows rule 4 of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`. Governs R1, R2.
-- KTD4. **An in-use marker in the home folder guards other computers.** While this computer resumes a saved note, or queues or processes it (Transcribe Again, Retry, processing after Resume), it keeps a hidden file in the home folder, for example `.longhand-in-use`. The file holds this computer's run ID and the time of its last refresh. It is refreshed every 2 minutes and removed at Saved or Discard. Another computer treats the marker as fresh when the time inside the file is less than 30 minutes old, with a margin for a clock difference. A dot name keeps the watcher from refreshing on each heartbeat. The write never creates a missing folder, so a renamed note is not recreated. This is this computer's own work in the home folder, so it keeps to the library rule for automatic steps. Governs R10.
+- KTD4. **An in-use marker in the home folder guards other computers.** While this computer resumes a saved note, or queues or processes it (Transcribe Again, Retry, processing after Resume), it keeps its own hidden file in the home folder, named for its run ID (for example `.longhand-in-use-<run ID>`). The file holds the run ID and the time of its last refresh. It is refreshed every 2 minutes, and the run removes only its own file at Saved or Discard. Removal waits while any in-use file of the note is fresh. Another computer treats a marker as fresh when the time inside the file is less than 30 minutes old, with a margin for a clock difference. A dot name keeps the watcher from refreshing on each heartbeat. The write never creates a missing folder, so a renamed note is not recreated. This is this computer's own work in the home folder, so it keeps to the library rule for automatic steps. Governs R10.
 - KTD5. **One removal pass, which any computer runs, re-checks every guard for each note immediately before it deletes.** The guards: the note is Saved and has no claim, no Move is open, the storage folder is available, the in-use marker is not fresh, the setting is still known and on, and the last recording end plus the delay is in the past. The pass takes the same kind of claim as Delete Note (`session_core::jobs::delete_session`). It checks the guards per note, not once per pass (`docs/solutions/logic-errors/move-dropped-notes-when-old-folder-went-away.md`). It reads capture state before it takes the store lock (`docs/solutions/logic-errors/runner-store-lock-before-suspended-check-deadlocks.md`). Governs R5, R8, R9, R10, R11.
 - KTD6. **The pass runs at launch, on a timer, and after a settings change.** At launch it runs after the library scan and only in the single running instance (`src-tauri/src/managers/processing.rs` launch order). The timer follows the updates timer pattern (`src-tauri/src/managers/updates.rs`, `interval_at` plus work on `spawn_blocking`) with a 15-minute period, so a wake from sleep gets a pass within one period. The pass also runs at once after a confirmed change that shortens the delay or turns the setting on (R17), and after the shared settings change on disk. A change from another computer needs no confirmation. Governs R11, R17.
 - KTD7. **The last recording end is the latest segment `wall_end`.** No Stop time is stored on its own. The latest `wall_end` in the store's segments (the same data as `session.md` `segments`) is the Stop of the last recording. A note with no segments is never eligible. `wall_end` comes from the recording computer's clock. Governs R4.
-- KTD8. **Resume of a saved note copies the old audio into the working folder while recording runs.** Recording starts at once, and the copy runs beside it and uses the existing wait for an online-only file. Assemble, speaker processing and the saved-prefix check then read the old segments from the working copy, not from the home folder (`crates/pipeline/src/assemble.rs`, `crates/pipeline/src/diarize.rs`, `crates/pipeline/src/recognition/saved_prefix.rs`). A missing or marked home file makes the saved-prefix check find no reusable prefix, not an error. At save, `add_audio` (`crates/pipeline/src/save.rs`) copies only the segments that this Resume recorded, never a segment that existed when the Resume started, so the recording computer never puts old audio back in any sync order. When the copy finds a marker or a missing file, those old segments take the R16 result and their partial copy is deleted. Resume refuses with the "audio removed" reason only when a marker is present when the Resume starts. Every end path deletes the working copy: Saved, Discard, a Resume with no new audio, and launch recovery of a session that is Saved or gone. Governs R16. (Inherits the settled result of the Resume race: user-directed — chosen over the recording computer putting the old audio back.)
+- KTD8. **Resume of a saved note copies the old audio into the working folder while recording runs.** Recording starts at once, and the copy runs beside it and uses the existing wait for an online-only file. Assemble, speaker processing and the saved-prefix check then read the old segments from the working copy, not from the home folder (`crates/pipeline/src/assemble.rs`, `crates/pipeline/src/diarize.rs`, `crates/pipeline/src/recognition/saved_prefix.rs`). A missing or marked home file makes the saved-prefix check find no reusable prefix, not an error. At save, `add_audio` (`crates/pipeline/src/save.rs`) copies only the segments that this Resume recorded, never a segment that existed when the Resume started, so the recording computer never puts old audio back in any sync order. When the copy finds a marker or a missing file, those old segments take the R16 result and their partial copy is deleted. Resume refuses with the "audio removed" reason only when a marker is present when the Resume starts. Every end path deletes the working copy: Saved, Discard, a Resume with no new audio, and launch recovery of a session that is Saved or gone. A resumed note in ProcessingFailed also deletes the copy of each old segment whose home segment has a marker, because Retry is then unavailable. An active or interrupted session keeps its copy until it ends (R8). Governs R16. (Inherits the settled result of the Resume race: user-directed — chosen over the recording computer putting the old audio back.)
 - KTD9. **A note's audio state has three values: present, removed, or waiting.** `home_intact` (`crates/pipeline/src/save.rs`) becomes an audio state that the scan, `session_detail`, Transcribe Again, Resume and Retry share. Removed wins over waiting: a segment with a marker cannot come back. The scan (`crates/library/src/scan.rs` `read_folder`) adds no `Waiting::Audio` for a segment with a marker. The store gets a per-segment removed flag in a new migration, so the watcher's row diff refreshes an open note page (`docs/solutions/logic-errors/synced-summary-did-not-refresh-open-note.md`). Governs R14, R15.
 - KTD10. **Removal deletes only a plain relative name inside the home folder.** The pass refuses a segment audio name that is absolute, contains `..`, or resolves outside the home folder, and writes no marker for it. The same check applies to Remove Audio. Governs R7.
-- KTD11. **The pass never opens audio.** Eligibility uses the store and file metadata only, and a delete of an online-only file removes the cloud item without a download. The count for the R17 confirmation uses the store only. Governs R12, R17.
+- KTD11. **The pass never opens audio.** Eligibility uses the store and file metadata only, and a delete of an online-only file removes the cloud item without a download. The count for the R17 confirmation uses the same per-note eligibility check as the pass (KTD5), with metadata only, and the check runs again after the confirmation. Governs R12, R17.
 
 ### High-Level Technical Design
 
@@ -185,6 +185,7 @@ flowchart TB
 ### Risks
 
 - **A local clock far ahead deletes early.** A computer whose clock is wrong by weeks removes audio early. No guard is planned; the delay counts from the recording computer's `wall_end`, and a wrong clock on either side moves the removal.
+- **An unsynced folder looks new (accepted).** A computer that joins a synced storage folder before any of its files arrive sees no notes and writes the 30-day default. If that file wins over the other computer's file in the sync, old audio that the user chose to keep is removed. The user accepted this risk at plan review.
 - **An offline Resume is invisible.** R16 and KTD8 make the result well defined, but the old audio of that note is removed.
 - **A long open Move blocks removal.** The pass waits until the Move ends. This is acceptable because a Move can pause for days only when a folder is unavailable.
 
@@ -286,7 +287,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - A delete that fails (permission) leaves the marker, reports the failure, and the next run finishes.
   - Covers AE2. The eligibility check uses the latest segment end: a note resumed on 20 September is not eligible on 1 October with a 30-day delay.
   - A note with no segments is never eligible.
-- **Verification:** After the step, every segment of the note has a marker and no audio file, from any partial start state.
+- **Verification:** After the step, every segment with a safe name inside the home folder has a marker and no audio file, from any partial start state, and a segment with an unsafe name is unchanged.
 
 ### U4. In-use marker
 
@@ -299,7 +300,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - `src-tauri/src/managers/processing.rs` (queue and runner)
   - `crates/pipeline/tests/in_use.rs` (new)
 - **Approach:**
-  1. Write the marker when a saved note starts a Resume or enters the queue, refresh it every 2 minutes while the work is open, and remove it at Saved or Discard.
+  1. Write this run's own marker when a saved note starts a Resume or enters the queue, refresh it every 2 minutes while the work is open, and remove only this run's marker at Saved or Discard.
   2. Read freshness from the time inside the file, with a 30-minute limit and a clock margin.
   3. Never create a missing home folder when the marker is written.
 - **Patterns to follow:** The heartbeat in `crates/session-core/src/jobs.rs` (`claim_owner`, 10-second heartbeat) for the refresh loop.
@@ -309,6 +310,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - A marker whose time is in the future within the margin counts as fresh.
   - A marker that does not parse counts as fresh until its file time is older than 30 minutes.
   - The marker is removed after the save, and after a Discard.
+  - Two computers work on one note at once. When the first finishes and removes its marker, the second one's fresh marker still makes the eligibility check skip the note.
   - A home folder that a rename moved is not recreated by a refresh.
 - **Verification:** A saved note that this computer resumes or processes always has a fresh marker until the work ends.
 
@@ -331,7 +333,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   1. At Resume of a saved note, refuse with the removed reason when a marker is present. Otherwise start recording at once, and copy each old segment's audio into the working folder on a background task. A marker or a missing file during the copy gives those segments the R16 result and deletes their partial copy.
   2. Let assemble, speaker processing and the saved-prefix check read old segments from the working copy.
   3. In `add_audio`, copy only the segments that this Resume recorded.
-  4. Delete the working copy on every end path, and at launch for a session that is Saved or gone.
+  4. Delete the working copy on every end path, at launch for a session that is Saved or gone, and for the marked old segments of a resumed note in ProcessingFailed (KTD8).
   5. Verify that segment indexes only increase after a Resume (Assumptions).
 - **Patterns to follow:** The working folder handling in `crates/pipeline/src/save.rs` (removal after Saved) and `crates/pipeline/src/recover.rs`.
 - **Test scenarios:**
@@ -342,7 +344,9 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - A Discard of a resumed note deletes the old audio copy.
   - A crash during a resumed recording, then launch recovery, leaves no old audio copy after the note is saved or discarded.
   - A normal Resume with no removal saves all old and new audio as today.
-- **Verification:** No path leaves a copy of removed audio in Longhand's own storage, and no Resume race ends in failed processing.
+  - A resumed note that fails processing after its old home segments get markers deletes its copy of those segments, and keeps the copy of unmarked ones.
+  - An interrupted resumed session keeps its copy until it is saved or discarded.
+- **Verification:** When a session ends (Saved, Discard, or ProcessingFailed with marked segments), no copy of removed audio stays in Longhand's own storage, and no Resume race ends in failed processing.
 
 ### U6. Automatic pass
 
@@ -413,7 +417,7 @@ U1 and U2 come first. U3 needs U2. U4 needs U2 and U3. U5 needs U2, U3 and U4. U
   - `src/bindings.ts` (regenerated)
 - **Approach:**
   1. Add a group in the Storage pane with the setting on or off and the delay in days, disabled when the shared settings are read-only.
-  2. Before a change that shortens the delay or turns the setting on, ask the command how many notes it would remove now. Show the confirmation only when the count is not zero.
+  2. Before a change that shortens the delay or turns the setting on, ask the command how many notes it would remove now, using the shared eligibility check (KTD11). Show the confirmation only when the count is not zero.
   3. On confirm, save and trigger the pass (U6). On cancel, keep the old value.
 - **Execution note:** Invoke `apple-design` before the UI work.
 - **Patterns to follow:** `Row`, `Switch` and `CommitField` in `src/settings/ui.tsx`, `useConfirm` in `src/settings/ui.tsx`, and `readOnlyReason` in `src/settings/shared.ts`.
@@ -462,7 +466,7 @@ Tests that write marker and in-use files use temporary folders only. No test rea
 - Every unit's Verification holds, and every gate in the Verification Contract passes locally and in CI.
 - Every Acceptance Example (AE1 to AE10) has a passing test that names it.
 - Partial-sync tests cover both delivery orders for the removal marker and the audio delete.
-- No path leaves a copy of removed audio in Longhand's own storage.
+- When a session ends, no copy of removed audio stays in Longhand's own storage (U5 Verification).
 - The manual two-computer test in a signed bundle is done and its result is in the PR.
 - Code from abandoned attempts is removed from the diff.
 - `CONCEPTS.md` matches the built behavior.
