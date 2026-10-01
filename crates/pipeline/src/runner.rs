@@ -615,14 +615,8 @@ impl Runner {
     /// so a delete or a Move of the note is not refused. A delete, a Move
     /// or a regeneration stops the job and deletes the request instead.
     async fn title_job(&self, session_id: &str) -> TitleJob {
-        let due = title_due(&lock(&self.env.store), &self.claims, session_id);
-        match due {
-            TitleDue::Yes => {}
-            TitleDue::No => return TitleJob::Skipped,
-            TitleDue::Dropped => {
-                drop_title_request(&lock(&self.env.store), session_id);
-                return TitleJob::Skipped;
-            }
+        if let Some(job) = title_gate(&lock(&self.env.store), &self.claims, session_id) {
+            return job;
         }
         let Ok(_permit) = self.permit.clone().acquire_owned().await else {
             return TitleJob::Skipped;
@@ -1463,12 +1457,26 @@ fn title_due(store: &session_core::Store, claims: &Claims, session_id: &str) -> 
     ) {
         return TitleDue::Dropped;
     }
-    match store.checkpoints(session_id, Stage::Summarize) {
-        Ok(keys) if keys.iter().any(|(key, _)| key == summarize::TITLE_REQUEST) => TitleDue::Yes,
-        Ok(_) => TitleDue::No,
+    match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE_REQUEST) {
+        Ok(Some(_)) => TitleDue::Yes,
+        Ok(None) => TitleDue::No,
         Err(e) => {
             log::warn!("could not read the title request of {session_id}: {e}");
             TitleDue::No
+        }
+    }
+}
+
+/// `None` when the title job of `session_id` can send its request now.
+/// Otherwise the result of the job, after the request is deleted when the
+/// note dropped it. The caller holds the store lock.
+fn title_gate(store: &session_core::Store, claims: &Claims, session_id: &str) -> Option<TitleJob> {
+    match title_due(store, claims, session_id) {
+        TitleDue::Yes => None,
+        TitleDue::No => Some(TitleJob::Skipped),
+        TitleDue::Dropped => {
+            drop_title_request(store, session_id);
+            Some(TitleJob::Skipped)
         }
     }
 }
@@ -1491,13 +1499,8 @@ fn send_title(
     control: &TitleControl,
 ) -> TitleJob {
     // The job can wait long for the permit.
-    match title_due(&lock(&env.store), claims, session_id) {
-        TitleDue::Yes => {}
-        TitleDue::No => return TitleJob::Skipped,
-        TitleDue::Dropped => {
-            drop_title_request(&lock(&env.store), session_id);
-            return TitleJob::Skipped;
-        }
+    if let Some(job) = title_gate(&lock(&env.store), claims, session_id) {
+        return job;
     }
     let kept = |why: &str| {
         log::warn!("proposing a title for {session_id} failed: {why}; the note keeps its title");
@@ -1537,13 +1540,8 @@ fn send_title(
     // The title changes as a rename does: it waits while the Move holds
     // the note, and the folder takes the name under the same lock.
     let mut guard = crate::move_notes::lock_unheld(&env.store, claims, session_id);
-    match title_due(&guard, claims, session_id) {
-        TitleDue::Yes => {}
-        TitleDue::No => return TitleJob::Skipped,
-        TitleDue::Dropped => {
-            drop_title_request(&guard, session_id);
-            return TitleJob::Skipped;
-        }
+    if let Some(job) = title_gate(&guard, claims, session_id) {
+        return job;
     }
     let proposed = if title.is_empty() {
         Ok(None)

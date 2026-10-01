@@ -63,20 +63,8 @@ pub fn rename_locked(
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    let claimed = claimed(session_id);
-    crate::follow::follow_folder(guard, session_id, claimed)?;
-    guard.set_title(session_id, title, TitleSource::User)?;
-    // Recorded before the move, so a crash before the reconcile ends leaves
-    // the rename to the next launch.
-    guard.set_rename_owed(session_id, true)?;
-    let renamed = reconcile(guard, session_id, claimed, true, fs)?;
-    // A folder that moves later, or that keeps its name because the move
-    // failed, gets the title in its `session.md` now. Otherwise the next
-    // library refresh reads the old title and puts it back in the row.
-    if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
-        write_title(guard, session_id);
-    }
-    Ok(renamed)
+    let renamed = retitle_locked(guard, session_id, title, TitleSource::User, claimed, fs)?;
+    Ok(renamed.expect("a user title always replaces the stored title"))
 }
 
 /// The title job's proposal (KTD13, R13): bring the row up to date from
@@ -91,13 +79,31 @@ pub fn propose_locked(
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<Option<FolderRename>, StageError> {
+    retitle_locked(guard, session_id, title, TitleSource::Proposed, claimed, fs)
+}
+
+/// Bring the row up to date from its folder (KTD3), store `title` with
+/// `source`, then run the reconcile. `None` when the row keeps its title.
+fn retitle_locked(
+    guard: &mut Store,
+    session_id: &str,
+    title: &str,
+    source: TitleSource,
+    claimed: &dyn Fn(&str) -> bool,
+    fs: &dyn Fs,
+) -> Result<Option<FolderRename>, StageError> {
     let claimed = claimed(session_id);
     crate::follow::follow_folder(guard, session_id, claimed)?;
-    if !guard.set_title(session_id, title, TitleSource::Proposed)? {
+    if !guard.set_title(session_id, title, source)? {
         return Ok(None);
     }
+    // Recorded before the move, so a crash before the reconcile ends leaves
+    // the rename to the next launch.
     guard.set_rename_owed(session_id, true)?;
     let renamed = reconcile(guard, session_id, claimed, true, fs)?;
+    // A folder that moves later, or that keeps its name because the move
+    // failed, gets the title in its `session.md` now. Otherwise the next
+    // library refresh reads the old title and puts it back in the row.
     if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
         write_title(guard, session_id);
     }
