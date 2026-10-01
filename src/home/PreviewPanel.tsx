@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { commands, type SessionEntry } from "../bindings";
 import { entryStatus, entryTone, formatDuration, startedAt } from "../processing/describe";
 import { firstParagraph } from "../session/markdown";
+import { remoteLabels } from "../session/SessionMenu";
 import { folderName, Status } from "../settings/ui";
 import { rowTitle } from "./group";
 
@@ -33,6 +34,8 @@ export function PreviewPanel({
 }) {
   const id = entry.id;
   const saved = entry.state === "saved";
+  // A saved note with no recorded time never recorded (R15).
+  const hasAudio = !saved || entry.duration_ms > 0;
   // A rename can move the folder, and a save gives the summary, so a new
   // title or a new state reads the session again.
   const key = `${id}\n${entry.title ?? ""}\n${entry.state}\n${revision}`;
@@ -73,15 +76,18 @@ export function PreviewPanel({
         {rowTitle(entry, now)}
       </h2>
       <p className="mt-1 text-[0.85rem] text-label-secondary">{startedAt(entry.started)}</p>
-      {!saved && (
+      {(!saved || entry.remote) && (
         <p className="mt-3 text-[0.85rem]">
-          <Status tone={tone}>{entryStatus(entry, stage)}</Status>
+          <Status tone={tone}>{entry.remote ? remoteLabels[entry.remote] : entryStatus(entry, stage)}</Status>
         </p>
       )}
 
       {shown?.error && <p role="status" className="mt-3 text-negative">Could not read this note.</p>}
-      {saved && !shown && <p role="status" className="mt-3 text-label-secondary">Loading summary…</p>}
-      {saved && shown && !shown.error && !shown.overview && <p className="mt-3 text-label-secondary">No summary yet.</p>}
+      {saved && hasAudio && !shown && <p role="status" className="mt-3 text-label-secondary">Loading summary…</p>}
+      {/* A note with no audio has no summary to wait for (R14). */}
+      {saved && hasAudio && shown && !shown.error && !shown.overview && (
+        <p className="mt-3 text-label-secondary">No summary yet.</p>
+      )}
       {shown?.overview && (
         <div className="mt-5">
           <h3 className="mb-1.5 text-[0.72rem] font-semibold tracking-[0.06em] text-label-tertiary uppercase">
@@ -92,7 +98,7 @@ export function PreviewPanel({
       )}
 
       <dl className="mt-5 divide-y divide-separator overflow-hidden rounded-[10px] bg-group text-[0.85rem] shadow-[0_0_0_0.5px_var(--separator)]">
-        <Detail label="Duration" value={formatDuration(entry.duration_ms)} />
+        {hasAudio && <Detail label="Duration" value={formatDuration(entry.duration_ms)} />}
         {entry.found_speakers !== null && <Detail label="Speakers" value={String(entry.found_speakers)} />}
         {shown?.folder && <Detail label="Folder" value={folderName(shown.folder)} title={shown.folder} />}
       </dl>

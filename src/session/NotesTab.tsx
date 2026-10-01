@@ -19,7 +19,6 @@ import { folderName } from "../settings/ui";
 
 /// A sync reloads the notes only after this long with no input.
 export const RELOAD_AFTER_INPUT_MS = 2000;
-
 export function NotesTab({
   sessionId,
   autoFocus,
@@ -27,6 +26,7 @@ export function NotesTab({
   synced = 0,
   onMarkdown,
   onConflict,
+  onNewNote,
 }: {
   sessionId: string;
   autoFocus: boolean;
@@ -40,6 +40,9 @@ export function NotesTab({
   /// A save found that another computer changed notes.md. `draft` is the
   /// name of the file that holds the edit.
   onConflict?: (draft: string) => void;
+  /// Another computer removed this note, and the save put the text into
+  /// the new note `id` (R24). Later saves go to that note.
+  onNewNote?: (id: string) => void;
 }) {
   // `generation` gives the editor a new key for each document that is read
   // again, since the editor reads its document at mount only.
@@ -51,6 +54,11 @@ export function NotesTab({
   onMarkdownRef.current = onMarkdown;
   const onConflictRef = useRef(onConflict);
   onConflictRef.current = onConflict;
+  const onNewNoteRef = useRef(onNewNote);
+  onNewNoteRef.current = onNewNote;
+  // The note that holds the text of each note that another computer
+  // removed (R24).
+  const moved = useRef(new Map<string, string>());
 
   // One save at a time, so that an older document never replaces a newer
   // one. While a save runs, only the latest document waits. Each document
@@ -183,15 +191,21 @@ export function NotesTab({
       s.next = { id, markdown: text, loaded };
       return;
     }
+    const target = moved.current.get(id) ?? id;
     s.busy = true;
     const loadedFingerprint = loaded !== undefined ? loaded : id === current.current ? fingerprint.current : null;
-    void commands.saveSessionNotes(id, text, loadedFingerprint).then((r) => {
+    void commands.saveSessionNotes(target, text, loadedFingerprint).then((r) => {
       s.busy = false;
       let next = s.next;
       s.next = null;
+      if (r.status === "ok" && r.data.kind === "new_note") moved.current.set(id, r.data.session_id);
       if (id === current.current) {
         setError(r.status === "error" ? r.error : null);
         if (r.status === "ok" && r.data.kind === "saved") fingerprint.current = r.data.fingerprint;
+        if (r.status === "ok" && r.data.kind === "new_note") {
+          fingerprint.current = r.data.fingerprint;
+          onNewNoteRef.current?.(r.data.session_id);
+        }
         if (r.status === "ok" && r.data.kind === "conflict") {
           // The file keeps the other computer's text: the editor shows it
           // when the edit stops. Until then, later edits wait, and the

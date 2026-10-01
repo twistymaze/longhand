@@ -76,10 +76,23 @@ type ButtonProps = {
   /// A red button, for the action that deletes.
   destructive?: boolean;
   ref?: Ref<HTMLButtonElement>;
+  /// The button is one part of a split button: the main part ("start") or
+  /// the menu part ("end"). The two parts touch and share one outline.
+  joined?: "start" | "end";
+  /// The accessible name, for a button that shows only an icon.
+  label?: string;
+  /// The button opens a menu, which is open when this is true.
+  expanded?: boolean;
+};
+
+const shapes = {
+  none: "rounded-[7px] px-3",
+  start: "rounded-l-[7px] pr-2.5 pl-3",
+  end: "rounded-r-[7px] px-1.5",
 };
 
 // Pressed state is instant: feedback belongs to pointer-down, not release.
-export function Button({ children, onClick, disabled, prominent, destructive, ref }: ButtonProps) {
+export function Button({ children, onClick, disabled, prominent, destructive, ref, joined, label, expanded }: ButtonProps) {
   const tone = destructive
     ? "bg-negative text-white shadow-[0_1px_1.5px_rgb(0_0_0/0.14)] active:opacity-80"
     : prominent
@@ -89,7 +102,10 @@ export function Button({ children, onClick, disabled, prominent, destructive, re
     <button
       ref={ref}
       type="button"
-      className={`rounded-[7px] px-3 py-[3px] font-medium whitespace-nowrap select-none ${tone} outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
+      aria-label={label}
+      aria-haspopup={expanded === undefined ? undefined : "menu"}
+      aria-expanded={expanded}
+      className={`${shapes[joined ?? "none"]} py-[3px] font-medium whitespace-nowrap select-none ${tone} outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40`}
       onClick={onClick}
       disabled={disabled}
     >

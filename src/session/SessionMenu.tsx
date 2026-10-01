@@ -3,6 +3,7 @@
 // close at once, with no motion: they are used many times a day.
 
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import type { RemoteView } from "../bindings";
 import { CheckIcon, ChevronIcon } from "../settings/icons";
 
 export type MenuItem = {
@@ -27,6 +28,21 @@ export type MenuItem = {
 export function canDelete(state: string): boolean {
   return !["capturing", "interrupted", "queued", "processing"].includes(state);
 }
+
+/// The status of a note that another computer works on (R20, R23). The
+/// marker of another computer cannot tell a recording from processing, so
+/// one label says both.
+export const remoteLabels: Record<RemoteView, string> = {
+  in_use: "Recording or processing on another computer",
+  not_finished: "Not finished on another computer",
+};
+
+/// Why an action that needs the audio waits, for a note that another
+/// computer works on (R21, R23).
+export const remoteReasons: Record<RemoteView, string> = {
+  in_use: "Wait until the other computer is done with this note.",
+  not_finished: "Another computer did not finish this note.",
+};
 
 const itemClass =
   "flex w-full items-center gap-1 rounded-[4px] px-2.5 py-[3px] text-left text-label enabled:hover:bg-accent enabled:hover:text-white focus-visible:bg-accent focus-visible:text-white focus-visible:outline-none disabled:text-label-tertiary";

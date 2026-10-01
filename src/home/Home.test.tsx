@@ -53,6 +53,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   summary_not_updated: null,
   waiting: [],
   conflict_files: [],
+  not_saved_yet: null,
 });
 
 const document = (body: string): SessionDocument => ({
@@ -111,7 +112,7 @@ describe("Home", () => {
     expect(
       screen.queryByRole("button", { name: "Choices for next note…" }),
     ).toBeNull();
-    expect(screen.getByRole("button", { name: "New Note" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Record New Note" })).toBeTruthy();
   });
   test("with no sessions, shows the line that names the shortcut and says it starts a new note", () => {
     mockTauri();
@@ -164,7 +165,7 @@ describe("Home", () => {
     expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
     await userEvent
       .setup()
-      .click(screen.getByRole("button", { name: "New Note" }));
+      .click(screen.getByRole("button", { name: "Record New Note" }));
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
       record: true,
       config: null,
@@ -739,7 +740,7 @@ test("final deletion removes the sidebar and focuses New Note", async () => {
   expect(screen.queryByRole("region", { name: "Preview" })).toBeNull();
   await waitFor(() =>
     expect(globalThis.document.activeElement).toBe(
-      screen.getByRole("button", { name: "New Note" }),
+      screen.getByRole("button", { name: "Record New Note" }),
     ),
   );
 });
@@ -826,7 +827,7 @@ test("a background refresh does not move focus from New Note", async () => {
   previewMocks();
   const entries = [entry("a", { title: "Alpha" })];
   const view = render(home(entries, { readiness: ready }));
-  const button = screen.getByRole("button", { name: "New Note" });
+  const button = screen.getByRole("button", { name: "Record New Note" });
   button.focus();
   view.rerender(
     home([...entries, entry("b", { title: "Beta" })], { readiness: ready }),
@@ -859,7 +860,7 @@ test("page arrow navigation leaves controls, modified keys, and hidden Home alon
   ];
   const view = render(home(entries, { readiness: ready }));
   const user = userEvent.setup();
-  screen.getByRole("button", { name: "New Note" }).focus();
+  screen.getByRole("button", { name: "Record New Note" }).focus();
   await user.keyboard("{ArrowDown}");
   expect(row("Alpha").getAttribute("aria-selected")).toBe("true");
   await user.click(screen.getByRole("heading", { name: "Notes" }));
@@ -1031,4 +1032,81 @@ test("a changed note or state never retains the previous summary", async () => {
   view.rerender(home([{ ...note, state: "processing" }]));
   expect(screen.queryByText("Alpha summary.")).toBeNull();
   expect(screen.queryByText("Loading summary…")).toBeNull();
+});
+
+describe("Home: notes with no audio and other computers", () => {
+  // R9.
+  test("with the default that does not record, New Note opens a note without recording", async () => {
+    const tauri = mockTauri({ start_recording: () => "n" });
+    const started: string[] = [];
+    let changed = 0;
+    render(
+      home([], {
+        readiness: ready,
+        newNoteRecords: false,
+        onStarted: (id) => started.push(id),
+        onChanged: () => changed++,
+      }),
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "New Note" }));
+    expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
+      record: false,
+      config: null,
+    });
+    expect(started).toEqual(["n"]);
+    expect(changed).toBeGreaterThan(0);
+  });
+
+  // R7, AE8.
+  test("while the storage folder is unavailable, New Note is unavailable and says why", () => {
+    mockTauri();
+    render(
+      home([], {
+        readiness: { ...ready, can_start_note: false, note_start_refusal: "The storage folder is not available." },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Record New Note" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "New Note Options" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("The storage folder is not available.")).toBeTruthy();
+  });
+
+  // R15.
+  test("a row of a note with no audio shows its title or start time and no length", () => {
+    mockTauri();
+    renderHome({
+      entries: [
+        entry("a", { duration_ms: 0, found_speakers: null }),
+        entry("b", { title: "Agenda", duration_ms: 0, found_speakers: null }),
+      ],
+    });
+    const untitled = row(sessionTitle(entry("a").started, now));
+    expect(untitled.textContent).not.toMatch(/minute|min\b|Ready/);
+    const titled = row("Agenda");
+    expect(titled.textContent).not.toMatch(/minute|min\b|Ready/);
+  });
+
+  // R20, R21.
+  test("a note in use on another computer says so, and its Delete waits", async () => {
+    mockTauri();
+    renderHome({ entries: [entry("a", { title: "Planning", remote: "in_use" })] });
+    expect(within(row("Planning")).getByText("Recording or processing on another computer")).toBeTruthy();
+    await userEvent.setup().click(within(row("Planning")).getByRole("button", { name: "Actions" }));
+    const del = screen.getByRole("menuitem", { name: "Delete…" });
+    expect(del.hasAttribute("disabled")).toBe(true);
+    expect(del.getAttribute("title")).toBe("Wait until the other computer is done with this note.");
+  });
+
+  // R23.
+  test("a note that another computer did not finish says so, and Delete asks with the recording named", async () => {
+    const tauri = mockTauri({ delete_session: () => null });
+    renderHome({ entries: [entry("a", { title: "Planning", remote: "not_finished", duration_ms: 0 })] });
+    expect(within(row("Planning")).getByText("Not finished on another computer")).toBeTruthy();
+    const user = userEvent.setup();
+    await user.click(within(row("Planning")).getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toContain("The recording that another computer did not save is lost.");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(tauri.calls.some((c) => c.cmd === "delete_session")).toBe(true);
+  });
 });

@@ -383,6 +383,11 @@ pub struct SessionDetail {
     /// The file or folder names of other versions of the note, which the
     /// user resolves in Finder (R15).
     pub conflict_files: Vec<String>,
+    /// Why the first write of the note's home folder waits, while it
+    /// tries again: the storage folder is not available, for example
+    /// (KTD4). The page shows "Not saved yet". `None` when the write is
+    /// done or has no problem.
+    pub not_saved_yet: Option<String>,
 }
 
 #[derive(Serialize, Type)]
@@ -596,6 +601,7 @@ pub fn session_detail(
         summary_not_updated: again.summary_error,
         waiting: waiting_parts(&note.waiting),
         conflict_files: file_names(&note.other_versions),
+        not_saved_yet: processing.early_homes().problem(&session_id),
     })
 }
 

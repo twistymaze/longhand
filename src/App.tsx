@@ -110,6 +110,10 @@ function MainWindow() {
           sessions={sessions}
           readiness={readiness}
           onBack={back}
+          onOpenNote={(id) => {
+            setRequested(id);
+            void sessions.refresh();
+          }}
         />
       )}
       <div hidden={view.kind === "session"} className="h-full">
@@ -127,7 +131,10 @@ function MainWindow() {
           chord={
             !settings ? "the shortcut" : settings.shortcut ? formatChord(settings.shortcut, isMac) : null
           }
+          newNoteRecords={settings?.new_note_records ?? true}
           onOpen={(id) => setView({ kind: "session", id })}
+          // A note that does not record opens when the list knows it.
+          onStarted={setRequested}
           onChanged={() => void sessions.refresh()}
         />
       </div>

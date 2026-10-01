@@ -1787,7 +1787,14 @@ waiting: WaitingPart[];
  * The file or folder names of other versions of the note, which the
  * user resolves in Finder (R15).
  */
-conflict_files: string[] }
+conflict_files: string[]; 
+/**
+ * Why the first write of the note's home folder waits, while it
+ * tries again: the storage folder is not available, for example
+ * (KTD4). The page shows "Not saved yet". `None` when the write is
+ * done or has no problem.
+ */
+not_saved_yet: string | null }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).

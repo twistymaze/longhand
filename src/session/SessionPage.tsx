@@ -4,9 +4,10 @@
 // - processing: the stages on Summary and Transcript (R14);
 // - saved: the summary, the transcript and the notes (R15).
 // The tabs read Summary, My Notes, Transcript. Summary shows from Stop, so
-// a recording has only My Notes and Transcript.
-// The toolbar has Back, the tabs, Copy for the open tab (R17) and the
-// "…" menu. The tabs change at
+// a recording has only My Notes and Transcript. A note that never recorded
+// has only My Notes, and no tabs (R14).
+// The toolbar has Back, the tabs, Record or Resume (R11), Copy for the
+// open tab (R17) and the "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
@@ -31,7 +32,7 @@ import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { RecordingBar } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
 import { copyText, tabMarkdown } from "./copy";
-import { canDelete, type MenuItem, SessionMenu } from "./SessionMenu";
+import { canDelete, type MenuItem, remoteLabels, remoteReasons, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
@@ -188,12 +189,16 @@ export function SessionPage({
   sessions,
   readiness,
   onBack,
+  onOpenNote,
 }: {
   id: string;
   capture: Capture;
   sessions: Sessions;
   readiness: Readiness | null;
   onBack: () => void;
+  /// Open the page of another note: the new note that holds the text of
+  /// this note after another computer removed it (R24).
+  onOpenNote?: (id: string) => void;
 }) {
   const entry = sessions.entries.find((e) => e.id === id);
   // A note that a sync deleted keeps its title and date on the page.
@@ -208,12 +213,21 @@ export function SessionPage({
   const phase: Phase = open ? "recording" : !entry ? "missing" : entry.state === "saved" ? "saved" : "processing";
 
   const [chosen, setChosen] = useState<Tab>(phase === "recording" ? "notes" : "summary");
+  const [detail, setDetail] = useState<SessionDetail | null>(null);
+  // A saved note that never recorded has no transcript and no summary, so
+  // its page shows only My Notes (R14). Until the detail loads, the list's
+  // recorded time tells.
+  const noAudio =
+    phase === "saved" && (detail?.record ? detail.record.kind === "record" : entry?.duration_ms === 0);
   // A recording has no summary yet, so its page has no Summary tab. A
   // hidden tab is never the shown one, even in the render before the phase
   // effect below moves the page.
-  const visibleTabs = phase === "recording" ? tabs.filter((t) => t.value !== "summary") : tabs;
+  const visibleTabs = noAudio
+    ? tabs.filter((t) => t.value === "notes")
+    : phase === "recording"
+      ? tabs.filter((t) => t.value !== "summary")
+      : tabs;
   const tab = visibleTabs.some((t) => t.value === chosen) ? chosen : "notes";
-  const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [doc, setDoc] = useState<SessionDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -271,8 +285,8 @@ export function SessionPage({
   // A sync can change the saved documents, so a new version reads them
   // again (KTD10).
   useEffect(() => {
-    if (phase === "saved") void loadDocument();
-  }, [phase, loadDocument, version]);
+    if (phase === "saved" && !noAudio) void loadDocument();
+  }, [phase, noAudio, loadDocument, version]);
 
   // The note's actions and notes edits wait while a document waits for the
   // sync or the storage folder is unavailable (R6, R16). Audio that waits
@@ -295,12 +309,32 @@ export function SessionPage({
     void sessions.refresh();
   };
 
-  const resume = () =>
-    void commands.resumeRecording(id).then((r) => {
+  // The one recording button: Record into a note with no audio, or Resume
+  // a note with audio (R11). The detail gives its availability and reason
+  // (R12). It has no motion and no ornament (R13).
+  const recordButton = phase === "recording" ? null : (detail?.record ?? null);
+  const [recordBusy, setRecordBusy] = useState(false);
+  const record = async () => {
+    if (!recordButton) return;
+    setRecordBusy(true);
+    try {
+      const r =
+        recordButton.kind === "record" ? await commands.recordNote(id) : await commands.resumeRecording(id);
       setNotice(r.status === "error" ? { tone: "negative", text: sentence(r.error) } : null);
-      void capture.refresh();
-      changed();
-    });
+    } finally {
+      setRecordBusy(false);
+    }
+    void capture.refresh();
+    changed();
+  };
+
+  // Another computer works on the note (R20, R21, R23). Its notes stay
+  // editable; the actions that need the audio wait.
+  const remote = entry?.remote ?? detail?.entry.remote ?? null;
+  const remoteReason = remote ? remoteReasons[remote] : null;
+
+  // Another computer removed this note, and its text is in a new note (R24).
+  const [newNote, setNewNote] = useState<string | null>(null);
 
   // The progress event of an earlier run stays in `sessions.live`. Only an
   // event that arrives after this run starts shows as its progress.
@@ -400,25 +434,21 @@ export function SessionPage({
       });
     }
   }
-  if (phase === "processing" || phase === "saved") {
-    items.push({
-      label: "Resume Recording",
-      disabled: !detail?.resumable || heldForAudio || removed,
-      reason: removed ? REMOVED_REASON : heldForAudio ? heldReason : "This note can’t be resumed.",
-      onSelect: resume,
-    });
-  }
-  if (phase === "saved") {
+  if (phase === "saved" && !noAudio) {
     items.push({
       label: "Regenerate Summary",
-      disabled: regenerating || held,
-      reason: held ? heldReason : undefined,
+      disabled: regenerating || held || remote !== null,
+      reason: held ? heldReason : (remoteReason ?? undefined),
       onSelect: regenerate,
     });
     items.push({
       label: "Transcribe Again…",
-      disabled: regenerating || heldForAudio || removed,
-      reason: removed ? REMOVED_REASON : heldForAudio ? heldReason : "Wait until the summary is ready.",
+      disabled: regenerating || heldForAudio || removed || remote !== null,
+      reason: removed
+        ? REMOVED_REASON
+        : heldForAudio
+          ? heldReason
+          : (remoteReason ?? "Wait until the summary is ready."),
       onSelect: again.ask,
     });
   }
@@ -432,25 +462,27 @@ export function SessionPage({
   }
   // Audio that waits for the sync can be removed: the removal marks each
   // segment, so the audio does not come back (R13, KTD9).
-  if (phase === "saved" && !deleted) {
+  if (phase === "saved" && !deleted && !noAudio) {
     items.push({
       label: "Remove Audio…",
-      disabled: !detail || removed || unavailable || regenerating,
+      disabled: !detail || removed || unavailable || regenerating || remote !== null,
       reason: removed
         ? REMOVED_REASON
         : unavailable
           ? heldReason
           : regenerating
             ? "Wait until the summary is ready."
-            : undefined,
+            : (remoteReason ?? undefined),
       onSelect: removal.ask,
     });
   }
+  // A note that another computer did not finish can go, after a
+  // confirmation that names its recording (R23).
   if (entry && !open && canDelete(entry.state)) {
     items.push({
       label: "Delete…",
-      disabled: unavailable,
-      reason: heldReason,
+      disabled: unavailable || remote === "in_use",
+      reason: unavailable ? heldReason : (remoteReason ?? undefined),
       onSelect: () => deletion.ask(entry),
     });
   }
@@ -548,6 +580,7 @@ export function SessionPage({
   const syncLines: string[] = [];
   if (deleted) syncLines.push("This note was deleted.");
   else {
+    if (remote) syncLines.push(`${remoteLabels[remote]}.`);
     if (unavailable) syncLines.push("The storage folder for this note is unavailable.");
     else if (waiting.length > 0) syncLines.push(`Waiting for the ${listOf(waiting.map(partName))} to sync.`);
     if (draft) syncLines.push(`The notes changed on another computer. Your edit is in ${draft}.`);
@@ -576,13 +609,27 @@ export function SessionPage({
             Back
           </button>
         </div>
-        <Tabs
-          items={visibleTabs}
-          tab={tab}
-          onTab={setChosen}
-          meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
-        />
+        {/* A note with only My Notes needs no tabs. */}
+        {visibleTabs.length > 1 ? (
+          <Tabs
+            items={visibleTabs}
+            tab={tab}
+            onTab={setChosen}
+            meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
+          />
+        ) : (
+          <div />
+        )}
         <div data-tauri-drag-region className="flex items-center justify-end gap-1">
+          {recordButton && !deleted && (
+            // A disabled button gets no pointer events, so the reason is on
+            // the element around it.
+            <span title={recordButton.available ? undefined : (recordButton.reason ?? undefined)} className="mr-1 inline-flex">
+              <Button disabled={!recordButton.available || recordBusy} onClick={() => void record()}>
+                {recordButton.kind === "record" ? "Record" : "Resume"}
+              </Button>
+            </span>
+          )}
           <button
             type="button"
             disabled={copyable === null}
@@ -618,6 +665,22 @@ export function SessionPage({
               {line}
             </p>
           ))}
+          {/* The first write of the note's folder waits (KTD4). The notes
+              stay on this computer until it is done. The reason is a
+              tooltip, so the line stays quiet. */}
+          {!open && !deleted && detail?.not_saved_yet && (
+            <p role="status" title={sentence(detail.not_saved_yet)} className="mt-1 text-[0.85rem] text-label-secondary">
+              Not saved yet.
+            </p>
+          )}
+          {newNote && (
+            <div className="mt-2 flex items-center gap-2.5">
+              <p role="status" className="min-w-0 text-[0.85rem] text-caution">
+                Another computer removed this note. Your notes are saved in a new note.
+              </p>
+              <Button onClick={() => onOpenNote?.(newNote)}>Open New Note</Button>
+            </div>
+          )}
           {notice && (
             <div className="mt-2 flex items-center gap-2.5">
               <p
@@ -653,6 +716,10 @@ export function SessionPage({
             synced={sessions.synced[id] ?? 0}
             onMarkdown={setNotes}
             onConflict={setDraft}
+            onNewNote={(next) => {
+              setNewNote(next);
+              void sessions.refresh();
+            }}
           />
         </div>
       </main>
