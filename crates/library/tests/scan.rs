@@ -14,11 +14,11 @@ use session_core::folder::{SessionDoc, fingerprint};
 const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
 const SUMMARY: &str = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";
 
+/// The options of the app, with its read time limit. A shorter limit fails
+/// a read of a new file on a busy Windows runner, where the antivirus scans
+/// the file when it is first opened.
 fn options() -> ScanOptions {
-    ScanOptions {
-        read_timeout: Duration::from_millis(300),
-        ..ScanOptions::default()
-    }
+    ScanOptions::default()
 }
 
 fn doc(id: &str) -> SessionDoc {
@@ -527,7 +527,12 @@ fn a_session_md_read_that_blocks_times_out_as_unreadable() {
     // does not download does.
     fifo(&dir.join("session.md"));
     let path = root.path().to_path_buf();
-    let result = within(move || scan(&[path], &Known::default(), &options()));
+    // A short limit, so the read times out before `within` fails the test.
+    let options = ScanOptions {
+        read_timeout: Duration::from_millis(300),
+        ..ScanOptions::default()
+    };
+    let result = within(move || scan(&[path], &Known::default(), &options));
     assert!(result.notes.is_empty());
     assert_eq!(result.unreadable.len(), 1);
     assert_eq!(result.unreadable[0].path, dir);
