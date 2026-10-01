@@ -19,11 +19,11 @@ use session_save::in_use_marker::FRESH_FOR;
 
 const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n";
 
+/// The options of the app, with its read time limit. A shorter limit fails
+/// a read of a new file on a busy Windows runner, where the antivirus scans
+/// the file when it is first opened.
 fn options() -> ScanOptions {
-    ScanOptions {
-        read_timeout: Duration::from_secs(2),
-        ..ScanOptions::default()
-    }
+    ScanOptions::default()
 }
 
 fn started() -> DateTime<FixedOffset> {
