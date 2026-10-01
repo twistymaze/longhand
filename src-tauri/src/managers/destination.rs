@@ -41,6 +41,22 @@ pub enum DestinationStatus {
     },
 }
 
+/// Why a new note cannot start, with or without a recording, as New Note
+/// shows it (R7).
+pub const NOTE_CANNOT_START: &str = "The storage folder is not available, so a new note can’t start. Connect its disk or choose another folder in Settings.";
+
+/// Why a new note cannot start while the storage folder has `status`
+/// (R7), or `None` when it can. A folder with little free space takes a
+/// note: the save waits for space.
+pub fn note_start_refusal(status: &DestinationStatus) -> Option<&'static str> {
+    match status {
+        DestinationStatus::Ready { .. } | DestinationStatus::LowSpace { .. } => None,
+        DestinationStatus::Missing { .. }
+        | DestinationStatus::NotADirectory { .. }
+        | DestinationStatus::NotWritable { .. } => Some(NOTE_CANNOT_START),
+    }
+}
+
 /// The status of the storage folder `folder`. An empty path is missing:
 /// the launch sets a storage folder before any reader asks.
 pub fn status(folder: &str) -> DestinationStatus {
@@ -154,6 +170,41 @@ mod tests {
 
     /// The bundle identifier in `tauri.conf.json`.
     const APP_IDENTIFIER: &str = "net.ewal.longhand";
+
+    // Covers AE8 (R7): no new note starts while the storage folder is not
+    // available, with or without a recording.
+    #[test]
+    fn a_new_note_starts_only_while_the_storage_folder_is_available() {
+        let path = String::from("/notes");
+        let refused = [
+            DestinationStatus::Missing { path: path.clone() },
+            DestinationStatus::NotADirectory { path: path.clone() },
+            DestinationStatus::NotWritable {
+                path: path.clone(),
+                message: "denied".into(),
+            },
+        ];
+        for status in &refused {
+            assert_eq!(
+                note_start_refusal(status),
+                Some(NOTE_CANNOT_START),
+                "{status:?}"
+            );
+        }
+        assert_eq!(note_start_refusal(&status("")), Some(NOTE_CANNOT_START));
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            note_start_refusal(&status(dir.path().to_str().unwrap())),
+            None
+        );
+        let low = DestinationStatus::LowSpace {
+            path,
+            free_bytes: 1,
+            floor_bytes: FREE_SPACE_FLOOR_BYTES,
+        };
+        assert_eq!(note_start_refusal(&low), None);
+        assert!(NOTE_CANNOT_START.contains("note"));
+    }
 
     #[test]
     fn no_storage_folder_is_missing() {

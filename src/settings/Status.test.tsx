@@ -14,7 +14,7 @@ const readiness: Readiness = {
   armed: true,
   shortcut: shortcutStatuses.recording,
   missing_models: [],
-  endpoint_configured: true,
+  endpoint_configured: true, can_start_note: true, note_start_refusal: null,
 };
 
 const baseSettings: Settings = {

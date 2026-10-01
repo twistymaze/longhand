@@ -22,6 +22,7 @@ const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   message: null,
   summary_problem: null,
   resumable: false,
+  record: null,
   home_path: null,
   endpoint: null,
   audio_kept: true,
@@ -137,7 +138,7 @@ describe("missingPreconditions", () => {
     armed: true,
     shortcut: { chord: "Super+KeyR", registered: true, error: null },
     missing_models: [],
-    endpoint_configured: true,
+    endpoint_configured: true, can_start_note: true, note_start_refusal: null,
     ...over,
   });
 

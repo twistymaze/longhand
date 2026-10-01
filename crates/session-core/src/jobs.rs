@@ -56,9 +56,11 @@ pub struct SessionRecord {
     /// as [`TranscribeAgainMarks::model`]. The run uses this model, not
     /// `asr_model` (KTD14).
     pub transcribe_again_model: Option<String>,
-    /// The time the note opened, for a note that opened with no recording
-    /// (R16, migration 0016). The note keeps it when it records later.
-    /// `None` for a note that recorded at once: see [`SessionRecord::start`].
+    /// The time the note opened (R16, migration 0016), for a note that this
+    /// computer started with or without a recording. The note keeps it when
+    /// it records later. `None` for a note from before migration 0016, a
+    /// note from another computer that has segments, and a row from
+    /// [`Store::create_session`]: see [`SessionRecord::start`].
     pub started_at: Option<DateTime<FixedOffset>>,
 }
 
@@ -381,6 +383,7 @@ impl Store {
             &CaptureChoice::default(),
             None,
             None,
+            false,
         )
     }
 
@@ -394,13 +397,17 @@ impl Store {
         capture: &CaptureChoice,
         snapshot: Option<&serde_json::Value>,
         prompt: Option<&PromptSnapshot>,
+        opened: bool,
     ) -> Result<()> {
+        // `opened`: `created_at` is the time the note opened, and the note
+        // keeps it as its start time (R16).
         self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
                mic_id, mic_label, system_audio, recognition_snapshot,
                prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
-               prompt_snapshot_title_text, started_here)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1)",
+               prompt_snapshot_title_text, started_here, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1,
+               CASE WHEN ?15 THEN ?2 END)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -418,6 +425,7 @@ impl Store {
                 prompt.map(|p| p.name.as_str()),
                 prompt.map(|p| p.text.as_str()),
                 prompt.map_or("", |p| p.title_text.as_str()),
+                opened,
             ],
         )?;
         Ok(())
@@ -511,6 +519,7 @@ impl Store {
             capture,
             snapshot,
             prompt,
+            true,
         )?;
         Ok(stopped)
     }

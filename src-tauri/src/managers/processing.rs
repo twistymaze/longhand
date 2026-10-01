@@ -837,6 +837,11 @@ impl ProcessingManager {
         &self.early_homes
     }
 
+    /// The run ID of this run, which names its in-use markers.
+    pub fn run_id(&self) -> &str {
+        self.in_use.run_id()
+    }
+
     /// What the latest library scans found about each note.
     pub fn library_status(&self) -> &library::status::LibraryStatus {
         &self.library_status

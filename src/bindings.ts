@@ -508,15 +508,22 @@ async openSystemAudioSettings() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async startRecording(config: RecognitionConfig | null) : Promise<Result<string, string>> {
+/**
+ * Start a new note (R7, KTD2). With `record`, the note records at once;
+ * without it, the note opens with no recording, and a recording that runs
+ * continues. Refused while the storage folder is not available, for both
+ * choices. `config` applies to a recording start only. Returns the id of
+ * the new note.
+ */
+async startRecording(record: boolean, config: RecognitionConfig | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_recording", { config }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_recording", { record, config }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async stopRecording() : Promise<Result<string, string>> {
+async stopRecording() : Promise<Result<StopOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("stop_recording") };
 } catch (e) {
@@ -527,6 +534,22 @@ async stopRecording() : Promise<Result<string, string>> {
 async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resume_recording", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Record into a note with no audio (R11, KTD2), from the note page or the
+ * recording shortcut. Refused with the reason that the note page shows
+ * (R12, R21, R23): the note records or is processed on another computer,
+ * another computer did not finish its recording, its storage folder is
+ * unavailable, or it waits for a sync. A note with audio uses
+ * [`resume_recording`].
+ */
+async recordNote(sessionId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("record_note", { sessionId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -722,9 +745,11 @@ async loadSessionNotes(sessionId: string) : Promise<Result<LoadedNotes, string>>
 /**
  * Replace a session's notes document. The editor sends the whole
  * document; on a saved session the home folder's `notes.md` follows (R20).
- * The write runs off the main thread, since it can reach a synced folder.
- * `loaded_fingerprint` is the fingerprint that [`load_session_notes`] gave
- * for the document that the editor changed; `None` skips the check.
+ * When another computer removed the folder of a note with no audio, the
+ * text goes into a new note (R24). The write runs off the main thread,
+ * since it can reach a synced folder. `loaded_fingerprint` is the
+ * fingerprint that [`load_session_notes`] gave for the document that the
+ * editor changed; `None` skips the check.
  */
 async saveSessionNotes(sessionId: string, markdown: string, loadedFingerprint: string | null) : Promise<Result<NotesSaveResult, string>> {
     try {
@@ -1299,7 +1324,15 @@ export type NotesSaveResult =
  * file keeps that text, and the edit is in the draft file `draft`
  * beside it. The editor loads the notes again.
  */
-{ kind: "conflict"; draft: string }
+{ kind: "conflict"; draft: string } | 
+/**
+ * Another computer removed the folder of this note with no audio
+ * (R24). The text is in the new note `session_id`, with no audio, and
+ * the old note is gone from Longhand. The page tells the user and
+ * opens the new note. `fingerprint` is the fingerprint of the saved
+ * document.
+ */
+{ kind: "new_note"; session_id: string; fingerprint: string }
 /**
  * What a change of storage folder does with the notes in the old folder
  * (R4).
@@ -1396,7 +1429,16 @@ system_audio: SystemAudioPermission; destination: DestinationStatus;
  * R13). A storage folder that is not available now is shown, and does
  * not block a recording: the note waits to save (AE1).
  */
-armed: boolean; shortcut: ShortcutStatus; 
+armed: boolean; 
+/**
+ * A new note can start, with or without a recording: the storage
+ * folder is available (R7). It does not change `armed`.
+ */
+can_start_note: boolean; 
+/**
+ * Why a new note cannot start, while `can_start_note` is false.
+ */
+note_start_refusal: string | null; shortcut: ShortcutStatus; 
 /**
  * Catalog ids of the weights that the next note needs and that are
  * not on disk yet. They do not block a recording: processing waits
@@ -1460,6 +1502,30 @@ waiting_for: string[];
  * until the user selects Retry.
  */
 failure: RecognitionFailure | null }
+/**
+ * The recording button of the note page (R11, R12).
+ */
+export type RecordButton = { kind: RecordKind; 
+/**
+ * Record or Resume can start now.
+ */
+available: boolean; 
+/**
+ * Why the button is unavailable. `None` while it is available.
+ */
+reason: string | null }
+/**
+ * What the one recording button of the note page does (R11).
+ */
+export type RecordKind = 
+/**
+ * "Record": the note has no audio. The button calls `record_note`.
+ */
+"record" | 
+/**
+ * "Resume": the note has audio. The button calls `resume_recording`.
+ */
+"resume"
 /**
  * A session started, stopped, or resumed recording.
  */
@@ -1615,7 +1681,14 @@ summary_problem: string | null;
 /**
  * The state machine allows Resume now (R6a).
  */
-resumable: boolean; home_path: string | null; 
+resumable: boolean; 
+/**
+ * The recording button of the note page: Record or Resume, whether it
+ * is available, and why not (R11, R12). `None` while the note records
+ * or is interrupted. The work of another computer is in
+ * `entry.remote`.
+ */
+record: RecordButton | null; home_path: string | null; 
 /**
  * Where the summary goes, and what is sent: the transcript and notes (R30).
  */
@@ -1893,6 +1966,26 @@ percent: number | null;
  */
 measuring: boolean }
 export type SpeakerSource = "off" | "pyannote" | "sortformer" | "nemotron"
+/**
+ * What a Stop did to the note (R19).
+ */
+export type StopOutcome = 
+/**
+ * The note kept audio and waits for processing.
+ */
+{ kind: "recorded"; session_id: string } | 
+/**
+ * No segment was kept: every segment was under a second. The note
+ * stays as a note with no audio, because it existed before this
+ * recording or its notes have text.
+ */
+{ kind: "notes_only"; session_id: string } | 
+/**
+ * No segment was kept, the note started with this recording, and its
+ * notes have no text. The note is a note with no audio now; the check
+ * of empty notes removes it when the user leaves it (U6).
+ */
+{ kind: "empty_note"; session_id: string }
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.

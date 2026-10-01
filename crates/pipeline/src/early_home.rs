@@ -525,24 +525,47 @@ pub fn home_deleted(store: &SharedStore, id: &str) -> Result<bool, StageError> {
             None => return Ok(false),
         }
     };
-    if exists(&home) {
-        return Ok(false);
+    Ok(locate(store, id, &home)? == Location::Gone)
+}
+
+/// Where the folder of a note is, from [`locate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Location {
+    /// The folder is at its home path.
+    There,
+    /// The folder is at another name in the storage folder. The row now
+    /// has that home path.
+    Moved,
+    /// The storage folder is there and every note folder in it can be
+    /// read, and no folder in it holds the note.
+    Gone,
+    /// The storage folder is not available, or a note folder in it cannot
+    /// be read: this computer cannot tell where the note is.
+    Unknown,
+}
+
+/// Find the folder of the note `id`, whose home path is `home`. A folder
+/// that holds the note at another name becomes the home path. This scans
+/// the storage folder with no store lock held.
+pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Location, StageError> {
+    if exists(home) {
+        return Ok(Location::There);
     }
     let Some(root) = home.parent().map(Path::to_path_buf) else {
-        return Ok(false);
+        return Ok(Location::Unknown);
     };
     // With the known rows, a storage folder with no library marker and no
     // note counts as not available (an empty mount point), not as empty.
     let known = Known::from_records(&lock(store).sessions()?);
     let found = scan::scan(std::slice::from_ref(&root), &known, &ScanOptions::default());
     if !found.is_available(&root) || !found.unreadable.is_empty() {
-        return Ok(false);
+        return Ok(Location::Unknown);
     }
     if let Some(note) = found.notes.iter().find(|note| note.doc.session_id == id) {
         lock(store).set_home_path(id, &note.path.to_string_lossy())?;
-        return Ok(false);
+        return Ok(Location::Moved);
     }
-    Ok(true)
+    Ok(Location::Gone)
 }
 
 // ------------------------------------------------------------ the jobs

@@ -75,6 +75,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::start_recording,
             commands::capture::stop_recording,
             commands::capture::resume_recording,
+            commands::capture::record_note,
             commands::capture::recording_status,
             commands::capture::set_note_microphone,
             commands::capture::set_note_system_audio,

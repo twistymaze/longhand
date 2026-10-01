@@ -135,6 +135,11 @@ pub enum Event {
     UserRecord {
         has_segments: bool,
     },
+    /// The user stopped a recording that kept no segment: every segment
+    /// was under a second and was dropped (R35). The note stays as a note
+    /// with no audio (R19). The caller sends it only for a note that has
+    /// no segments.
+    RecordingDropped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -296,6 +301,7 @@ impl SessionState {
             }
             (S::Processing { .. }, Event::TranscribeAgainFailed) => Some(S::Saved),
             (S::Saved, Event::UserRecord { has_segments }) if !*has_segments => Some(S::Capturing),
+            (S::Capturing | S::Interrupted { .. }, Event::RecordingDropped) => Some(S::Saved),
 
             (_, Event::UserResume { .. }) if self.is_stopped() => Some(S::Capturing),
             (S::Saved, Event::UserResume { audio_intact, .. }) if *audio_intact => {

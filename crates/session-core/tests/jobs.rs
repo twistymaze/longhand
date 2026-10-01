@@ -1908,6 +1908,22 @@ fn record_into_a_notes_only_note_captures_and_keeps_its_open_time() {
     ));
 }
 
+// Covers AE12 (R16): a note that capture starts keeps the time it opened,
+// so its folder name does not change when its first segment starts later.
+#[test]
+fn a_note_that_starts_to_record_keeps_the_time_it_opened() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .start_session("s1", t(0), None, &whisper(), &CaptureChoice::default())
+        .unwrap();
+    let mut first = segment(0, 0);
+    first.wall_start = t(1);
+    store.put_segment("s1", &first).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.started_at, Some(t(0)));
+    assert_eq!(record.start(&store.segments("s1").unwrap()), t(0));
+}
+
 #[test]
 fn a_recorded_note_starts_at_its_first_segment() {
     let mut store = Store::open_in_memory().unwrap();

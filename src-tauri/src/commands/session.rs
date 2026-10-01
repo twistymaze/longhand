@@ -107,6 +107,192 @@ impl From<pipeline::save::AudioState> for AudioView {
     }
 }
 
+/// What the one recording button of the note page does (R11).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordKind {
+    /// "Record": the note has no audio. The button calls `record_note`.
+    Record,
+    /// "Resume": the note has audio. The button calls `resume_recording`.
+    Resume,
+}
+
+/// The recording button of the note page (R11, R12).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct RecordButton {
+    pub kind: RecordKind,
+    /// Record or Resume can start now.
+    pub available: bool,
+    /// Why the button is unavailable. `None` while it is available.
+    pub reason: Option<String>,
+}
+
+/// The reason of a note that records or is processed on another computer
+/// (R12, R21).
+const IN_USE_ELSEWHERE: &str =
+    "This note is recording or being processed on another computer. Try again when it is done.";
+
+/// The reason of a note whose recording another computer did not save
+/// (R12, R23).
+const NOT_FINISHED_ELSEWHERE: &str =
+    "Another computer recorded into this note and did not save the recording.";
+
+/// The reason of a note whose audio was removed (AE3).
+const AUDIO_REMOVED: &str = "The audio of this note was removed.";
+
+const CANNOT_RESUME: &str = "This note can’t be resumed.";
+
+const CANNOT_RECORD: &str = "This note can’t record now.";
+
+/// What the recording button reads to find its state.
+#[derive(Debug, Clone, Copy)]
+struct RecordCheck<'a> {
+    kind: RecordKind,
+    /// The state machine allows the event now, and no save has begun.
+    allowed: bool,
+    audio: AudioView,
+    storage_unavailable: bool,
+    waiting: &'a [WaitingPart],
+    remote: Option<RemoteView>,
+}
+
+/// Why Record or Resume cannot start now (R12), or `None` when it can.
+/// The work of another computer comes first, then the storage folder, the
+/// audio and the sync.
+fn record_refusal(check: &RecordCheck) -> Option<&'static str> {
+    match check.remote {
+        Some(RemoteView::InUse) => return Some(IN_USE_ELSEWHERE),
+        Some(RemoteView::NotFinished) => return Some(NOT_FINISHED_ELSEWHERE),
+        None => {}
+    }
+    if check.storage_unavailable {
+        return Some(FOLDER_UNAVAILABLE);
+    }
+    if check.kind == RecordKind::Resume && check.audio == AudioView::Removed {
+        return Some(AUDIO_REMOVED);
+    }
+    if !check.waiting.is_empty() {
+        return Some(crate::managers::processing::WAIT_FOR_SYNC);
+    }
+    if !check.allowed {
+        return Some(match check.kind {
+            RecordKind::Record => CANNOT_RECORD,
+            RecordKind::Resume => CANNOT_RESUME,
+        });
+    }
+    None
+}
+
+/// The recording button of the note of `record`, or `None` while the note
+/// records, is interrupted (the recording bar owns those) or is
+/// discarded. `saving`: the save of the note has begun.
+fn record_button(
+    record: &SessionRecord,
+    has_segments: bool,
+    saving: bool,
+    audio: pipeline::save::AudioState,
+    status: &LibraryStatus,
+) -> Option<RecordButton> {
+    if matches!(
+        record.state,
+        SessionState::Capturing | SessionState::Interrupted { .. } | SessionState::Discarded
+    ) {
+        return None;
+    }
+    let (kind, event) = if has_segments {
+        let event = Event::UserResume {
+            space_ok: true,
+            audio_intact: audio == pipeline::save::AudioState::Present,
+        };
+        (RecordKind::Resume, event)
+    } else {
+        (RecordKind::Record, Event::UserRecord { has_segments })
+    };
+    let note = status.note(&record.id);
+    let waiting = waiting_parts(&note.waiting);
+    let reason = record_refusal(&RecordCheck {
+        kind,
+        allowed: !saving && record.state.transition(&event).is_ok(),
+        audio: audio.into(),
+        storage_unavailable: storage_unavailable(status, record),
+        waiting: &waiting,
+        remote: status.remote(record).map(RemoteView::from),
+    });
+    Some(RecordButton {
+        kind,
+        available: reason.is_none(),
+        reason: reason.map(str::to_string),
+    })
+}
+
+/// The checks of Record for the note `id` at `now` (R12, R21, R23): the
+/// recording button must be Record and available, and no in-use marker of
+/// another run in the home folder is fresh. `run_id` is this run's.
+/// Returns the reason of a refusal. Reads the folder with no store lock.
+pub(crate) fn check_record(
+    store: &pipeline::SharedStore,
+    status: &LibraryStatus,
+    run_id: &str,
+    id: &str,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<(), String> {
+    let e = |e: pipeline::StageError| e.to_string();
+    let (record, button) = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let record = store
+            .session(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no note {id}"))?;
+        let has_segments = !store.segments(id).map_err(|e| e.to_string())?.is_empty();
+        let saving =
+            record.state != SessionState::Saved && pipeline::save::begun(&store, id).map_err(e)?;
+        let audio = pipeline::save::audio_state(&store, id).map_err(e)?;
+        let button = record_button(&record, has_segments, saving, audio, status);
+        (record, button)
+    };
+    match button {
+        Some(RecordButton {
+            kind: RecordKind::Record,
+            available: true,
+            ..
+        }) => {}
+        Some(RecordButton {
+            kind: RecordKind::Resume,
+            ..
+        }) => return Err("This note has audio. Use Resume to record more.".to_string()),
+        Some(RecordButton { reason, .. }) => {
+            return Err(reason.unwrap_or_else(|| CANNOT_RECORD.to_string()));
+        }
+        None => return Err(CANNOT_RECORD.to_string()),
+    }
+    match folder_in_use(&record, run_id, now) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(IN_USE_ELSEWHERE.to_string()),
+        Err(()) => Err(FOLDER_UNAVAILABLE.to_string()),
+    }
+}
+
+/// Whether an in-use marker of another run in the home folder of `record`
+/// is fresh at `now` (KTD5): another computer records into or processes
+/// the note. The latest library scan can be older than that work, so the
+/// actions of R21 read the folder too. `run_id` is this run's. A folder
+/// that is not there (the early write waits, or the folder was removed)
+/// is not in use. `Err` when the folder cannot be read.
+fn folder_in_use(
+    record: &SessionRecord,
+    run_id: &str,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<bool, ()> {
+    let Some(home) = record.home_path.as_deref() else {
+        return Ok(false);
+    };
+    match pipeline::in_use::in_use_except(Path::new(home), Some(run_id), now) {
+        Ok(used) => Ok(used),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(()),
+    }
+}
+
 /// The parts that `waiting` names, in its order, each one time.
 fn waiting_parts(waiting: &[Waiting]) -> Vec<WaitingPart> {
     let mut parts = Vec::new();
@@ -164,6 +350,11 @@ pub struct SessionDetail {
     pub summary_problem: Option<String>,
     /// The state machine allows Resume now (R6a).
     pub resumable: bool,
+    /// The recording button of the note page: Record or Resume, whether it
+    /// is available, and why not (R11, R12). `None` while the note records
+    /// or is interrupted. The work of another computer is in
+    /// `entry.remote`.
+    pub record: Option<RecordButton>,
     pub home_path: Option<String>,
     /// Where the summary goes, and what is sent: the transcript and notes (R30).
     pub endpoint: Option<EndpointView>,
@@ -380,6 +571,7 @@ pub fn session_detail(
 
     let status = processing.library_status();
     let note = status.note(&session_id);
+    let record_button = record_button(&record, !segments.is_empty(), saving, audio, status);
     Ok(SessionDetail {
         entry: entry(&record, &segments, snapshot.current, status),
         done: snapshot.done.into_iter().map(stage_name).collect(),
@@ -391,6 +583,7 @@ pub fn session_detail(
         message,
         summary_problem,
         resumable,
+        record: record_button,
         home_path: record.home_path.clone(),
         endpoint,
         audio_kept,
@@ -443,13 +636,24 @@ pub enum NotesSaveResult {
     /// file keeps that text, and the edit is in the draft file `draft`
     /// beside it. The editor loads the notes again.
     Conflict { draft: String },
+    /// Another computer removed the folder of this note with no audio
+    /// (R24). The text is in the new note `session_id`, with no audio, and
+    /// the old note is gone from Longhand. The page tells the user and
+    /// opens the new note. `fingerprint` is the fingerprint of the saved
+    /// document.
+    NewNote {
+        session_id: String,
+        fingerprint: String,
+    },
 }
 
 /// Replace a session's notes document. The editor sends the whole
 /// document; on a saved session the home folder's `notes.md` follows (R20).
-/// The write runs off the main thread, since it can reach a synced folder.
-/// `loaded_fingerprint` is the fingerprint that [`load_session_notes`] gave
-/// for the document that the editor changed; `None` skips the check.
+/// When another computer removed the folder of a note with no audio, the
+/// text goes into a new note (R24). The write runs off the main thread,
+/// since it can reach a synced folder. `loaded_fingerprint` is the
+/// fingerprint that [`load_session_notes`] gave for the document that the
+/// editor changed; `None` skips the check.
 #[tauri::command]
 #[specta::specta]
 pub async fn save_session_notes(
@@ -460,27 +664,70 @@ pub async fn save_session_notes(
     loaded_fingerprint: Option<String>,
 ) -> Result<NotesSaveResult, String> {
     let capture = Arc::clone(&capture);
-    let claims = processing.claims();
+    let processing = Arc::clone(&processing);
     tauri::async_runtime::spawn_blocking(move || {
-        let saved = capture
-            .save_session_notes(
-                &session_id,
-                &markdown,
-                loaded_fingerprint.as_deref(),
-                &claims,
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(match saved {
-            pipeline::save::NotesSave::Saved { .. } => NotesSaveResult::Saved {
-                fingerprint: pipeline::save::notes_fingerprint(&markdown),
-            },
-            pipeline::save::NotesSave::Conflict { draft } => NotesSaveResult::Conflict {
-                draft: draft.to_string_lossy().into_owned(),
-            },
-        })
+        save_notes_keeping_text(
+            &capture,
+            &processing,
+            &session_id,
+            &markdown,
+            loaded_fingerprint.as_deref(),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The notes save of [`save_session_notes`]. A folder that has another
+/// name gets one more save; a folder that is gone makes the new note.
+fn save_notes_keeping_text(
+    capture: &CaptureManager,
+    processing: &Arc<ProcessingManager>,
+    session_id: &str,
+    markdown: &str,
+    loaded: Option<&str>,
+) -> Result<NotesSaveResult, String> {
+    use pipeline::save::{NotesRescue, NotesSave};
+    let claims = processing.claims();
+    let save = || {
+        capture
+            .save_session_notes(session_id, markdown, loaded, &claims)
+            .map_err(|e| e.to_string())
+    };
+    let fingerprint = pipeline::save::notes_fingerprint(markdown);
+    let mut saved = save()?;
+    if saved == NotesSave::FolderGone {
+        // The early write job must not write into the folder of the note
+        // while the rescue reads the storage folder.
+        processing.early_homes().cancel(session_id);
+        let new_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Local::now().fixed_offset();
+        let rescued =
+            pipeline::save::rescue_notes(&capture.shared_store(), session_id, &new_id, now);
+        if !matches!(rescued, Ok(NotesRescue::NewNote)) {
+            // The note stays: its job syncs the folder again when it can.
+            processing.early_homes().start(session_id);
+        }
+        match rescued.map_err(|e| e.to_string())? {
+            NotesRescue::Moved => saved = save()?,
+            // The store keeps the text until the folder is available.
+            NotesRescue::Unavailable => return Err(FOLDER_UNAVAILABLE.to_string()),
+            NotesRescue::NewNote => {
+                processing.early_homes().start(&new_id);
+                return Ok(NotesSaveResult::NewNote {
+                    session_id: new_id,
+                    fingerprint,
+                });
+            }
+        }
+    }
+    Ok(match saved {
+        NotesSave::Saved { .. } => NotesSaveResult::Saved { fingerprint },
+        NotesSave::Conflict { draft } => NotesSaveResult::Conflict {
+            draft: draft.to_string_lossy().into_owned(),
+        },
+        NotesSave::FolderGone => return Err(FOLDER_UNAVAILABLE.to_string()),
+    })
 }
 
 /// What a rename did to the session's folder. The title changes in every
@@ -688,6 +935,9 @@ fn busy_message(state: &str) -> String {
         "moving" => {
             "This note is being moved to the new storage folder. You can delete it when that is done."
         }
+        IN_USE_REASON => {
+            "This note is recording or being processed on another computer. You can delete it when that is done."
+        }
         _ => "This note is being processed. You can delete it when processing is done.",
     }
     .to_string()
@@ -744,6 +994,45 @@ fn remove_permanently(path: &Path) -> Result<(), String> {
     std::fs::remove_dir_all(path).map_err(|e| e.to_string())
 }
 
+/// The work on the note `id` on another computer, as the latest library
+/// scan found it (KTD5).
+fn remote_of(
+    store: &pipeline::SharedStore,
+    status: &LibraryStatus,
+    id: &str,
+) -> Option<RemoteView> {
+    let record = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .session(id)
+        .ok()
+        .flatten()?;
+    status.remote(&record).map(RemoteView::from)
+}
+
+/// Whether a saved note `id` is in use on another computer at `now`, from
+/// its folder: Delete waits for it (R21). A note that records or is
+/// processed on this computer has this run's marker, which does not count.
+/// A folder that cannot be read does not refuse the delete: the delete
+/// then reports what it cannot do. Delete of a note that another computer
+/// did not finish is allowed (R23): it has no fresh marker.
+fn in_use_elsewhere(
+    store: &pipeline::SharedStore,
+    run_id: &str,
+    id: &str,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> bool {
+    let record = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .session(id)
+        .ok()
+        .flatten();
+    record.is_some_and(|r| {
+        r.state == SessionState::Saved && folder_in_use(&r, run_id, now) == Ok(true)
+    })
+}
+
 /// Remove a session on a blocking thread: the Trash call on Windows uses
 /// COM, and a folder on a network volume can be slow.
 async fn delete(
@@ -755,11 +1044,24 @@ async fn delete(
     let store = capture.shared_store();
     let working = capture.working_root().join(&session_id);
     let claims = processing.claims();
+    let early_homes = Arc::clone(processing.early_homes());
+    let in_use_by_scan =
+        remote_of(&store, processing.library_status(), &session_id) == Some(RemoteView::InUse);
+    let run_id = processing.run_id().to_string();
     let remove = match removal {
         Removal::Trash => move_to_trash,
         Removal::Permanent => remove_permanently,
     };
     tauri::async_runtime::spawn_blocking(move || {
+        let now = chrono::Local::now().fixed_offset();
+        if in_use_by_scan || in_use_elsewhere(&store, &run_id, &session_id, now) {
+            return Err(session_core::DeleteError::Busy {
+                state: IN_USE_REASON,
+            });
+        }
+        // The early write job writes nothing more into the folder of the
+        // note after this (KTD4).
+        early_homes.cancel(&session_id);
         session_core::jobs::delete_session(&store, &session_id, &working, &claims, remove)
             .inspect(|()| log::info!("deleted session {session_id} ({removal:?})"))
     })
@@ -1400,5 +1702,233 @@ mod entry_tests {
             ..record
         };
         assert_eq!(entry(&here, &[], None, &status).remote, None);
+    }
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+    use pipeline::save::AudioState;
+
+    const RUN: &str = "this-run";
+
+    fn opened() -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339("2026-09-30T09:00:00-05:00").unwrap()
+    }
+
+    fn segment() -> session_core::Segment {
+        session_core::Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: opened(),
+            wall_end: opened() + chrono::TimeDelta::minutes(1),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        }
+    }
+
+    /// A saved note: with a segment when `audio`, else a notes-only note.
+    fn saved(audio: bool) -> SessionRecord {
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        if audio {
+            store.create_session("s", opened(), None).unwrap();
+            store.put_segment("s", &segment()).unwrap();
+            store
+                .apply(
+                    "s",
+                    &Event::UserStop {
+                        at: opened(),
+                        retained_audio: true,
+                    },
+                )
+                .unwrap();
+            store.apply("s", &Event::Dequeued).unwrap();
+            store.apply("s", &Event::Saved).unwrap();
+        } else {
+            store.create_notes_only("s", opened(), None).unwrap();
+        }
+        store.session("s").unwrap().unwrap()
+    }
+
+    fn button(record: &SessionRecord, has_segments: bool, audio: AudioState) -> RecordButton {
+        let status: Arc<LibraryStatus> = Arc::default();
+        record_button(record, has_segments, false, audio, &status).unwrap()
+    }
+
+    // Covers AE3 and R11, R12.
+    #[test]
+    fn the_button_says_record_or_resume_and_why_it_is_unavailable() {
+        let with_audio = button(&saved(true), true, AudioState::Present);
+        assert_eq!(
+            with_audio,
+            RecordButton {
+                kind: RecordKind::Resume,
+                available: true,
+                reason: None,
+            }
+        );
+        let no_audio = button(&saved(false), false, AudioState::Present);
+        assert_eq!(
+            no_audio,
+            RecordButton {
+                kind: RecordKind::Record,
+                available: true,
+                reason: None,
+            }
+        );
+        let removed = button(&saved(true), true, AudioState::Removed);
+        assert_eq!(
+            removed,
+            RecordButton {
+                kind: RecordKind::Resume,
+                available: false,
+                reason: Some(AUDIO_REMOVED.to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_note_that_records_or_is_interrupted_has_no_button() {
+        let status: Arc<LibraryStatus> = Arc::default();
+        let capturing = SessionRecord {
+            state: SessionState::Capturing,
+            ..saved(false)
+        };
+        assert_eq!(
+            record_button(&capturing, false, false, AudioState::Present, &status),
+            None
+        );
+        // A note whose save has begun cannot resume.
+        let queued = SessionRecord {
+            state: SessionState::Queued {
+                stopped_at: opened(),
+            },
+            ..saved(true)
+        };
+        let saving = record_button(&queued, true, true, AudioState::Present, &status).unwrap();
+        assert_eq!(saving.reason.as_deref(), Some(CANNOT_RESUME));
+        let waiting = record_button(&queued, true, false, AudioState::Present, &status).unwrap();
+        assert!(waiting.available);
+    }
+
+    // Covers R12, R21, R23: the work of another computer comes first, then
+    // the storage folder and the sync.
+    #[test]
+    fn each_refusal_of_the_button_has_its_reason() {
+        let check = |remote, storage_unavailable, waiting: &[WaitingPart]| {
+            record_refusal(&RecordCheck {
+                kind: RecordKind::Record,
+                allowed: true,
+                audio: AudioView::Present,
+                storage_unavailable,
+                waiting,
+                remote,
+            })
+        };
+        assert_eq!(check(None, false, &[]), None);
+        assert_eq!(
+            check(Some(RemoteView::InUse), true, &[]),
+            Some(IN_USE_ELSEWHERE)
+        );
+        assert_eq!(
+            check(Some(RemoteView::NotFinished), false, &[]),
+            Some(NOT_FINISHED_ELSEWHERE)
+        );
+        assert_eq!(check(None, true, &[]), Some(FOLDER_UNAVAILABLE));
+        assert_eq!(
+            check(None, false, &[WaitingPart::Notes]),
+            Some(crate::managers::processing::WAIT_FOR_SYNC)
+        );
+        let not_allowed = record_refusal(&RecordCheck {
+            kind: RecordKind::Record,
+            allowed: false,
+            audio: AudioView::Present,
+            storage_unavailable: false,
+            waiting: &[],
+            remote: None,
+        });
+        assert_eq!(not_allowed, Some(CANNOT_RECORD));
+        for reason in [IN_USE_ELSEWHERE, NOT_FINISHED_ELSEWHERE, CANNOT_RECORD] {
+            assert!(!reason.contains("session"), "{reason}");
+        }
+    }
+
+    /// A store with the notes-only note "n" whose home folder is in a
+    /// temporary storage folder.
+    fn placed_note() -> (tempfile::TempDir, PathBuf, pipeline::SharedStore) {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("2026-09-30 0900");
+        std::fs::create_dir(&home).unwrap();
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("n", opened(), Some(home.to_str().unwrap()))
+            .unwrap();
+        (root, home, Arc::new(std::sync::Mutex::new(store)))
+    }
+
+    // Covers R12, R21: Record waits while another computer records into
+    // the note, also before a library scan found it.
+    #[test]
+    fn record_is_refused_while_another_computer_records_into_the_note() {
+        let (_root, home, store) = placed_note();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert_eq!(check_record(&store, &status, RUN, "n", now), Ok(()));
+        // This run's own marker does not count.
+        assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
+        assert_eq!(check_record(&store, &status, RUN, "n", now), Ok(()));
+
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
+        assert_eq!(
+            check_record(&store, &status, RUN, "n", now),
+            Err(IN_USE_ELSEWHERE.to_string())
+        );
+    }
+
+    #[test]
+    fn record_is_refused_for_a_note_with_audio_and_a_note_that_records() {
+        let (_root, _home, store) = placed_note();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        store.lock().unwrap().put_segment("n", &segment()).unwrap();
+        let e = check_record(&store, &status, RUN, "n", now).unwrap_err();
+        assert!(e.contains("Resume"), "{e}");
+
+        let (_root, _home, store) = placed_note();
+        store
+            .lock()
+            .unwrap()
+            .apply(
+                "n",
+                &Event::UserRecord {
+                    has_segments: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            check_record(&store, &status, RUN, "n", now),
+            Err(CANNOT_RECORD.to_string())
+        );
+    }
+
+    // Covers R21, R23: Delete waits while another computer uses the note,
+    // and a note that another computer did not finish can be deleted.
+    #[test]
+    fn delete_waits_while_another_computer_uses_the_note() {
+        let (_root, home, store) = placed_note();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(!in_use_elsewhere(&store, RUN, "n", now));
+        assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
+        assert!(!in_use_elsewhere(&store, RUN, "n", now));
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
+        assert!(in_use_elsewhere(&store, RUN, "n", now));
+        assert!(busy_message(IN_USE_REASON).contains("another computer"));
+
+        // Not finished on another computer: its marker is old.
+        let (_root, home, store) = placed_note();
+        let old = now - pipeline::in_use::FRESH_FOR - chrono::TimeDelta::hours(1);
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", old).unwrap());
+        assert!(!in_use_elsewhere(&store, RUN, "n", now));
     }
 }

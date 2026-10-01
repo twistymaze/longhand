@@ -602,3 +602,146 @@ fn a_pending_update_queued_on_a_job_writes_the_flag_in_order() {
         SessionState::Capturing
     );
 }
+
+// Covers AE6 (R19): a recording into a note with no audio that keeps no
+// segment makes it a note with no audio again, and its flag says so.
+#[test]
+fn a_dropped_recording_into_a_notes_only_note_writes_the_no_recording_flag_again() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    notes_only_note(&store, "n", "Agenda\n");
+    let path = write(&store, "n", Some(dest.path())).unwrap().unwrap();
+    store
+        .lock()
+        .unwrap()
+        .apply(
+            "n",
+            &Event::UserRecord {
+                has_segments: false,
+            },
+        )
+        .unwrap();
+    early_home::sync(&store, "n", RUN).unwrap();
+    assert_eq!(
+        SessionDoc::read(&path).unwrap().result,
+        Some(ResultFlag::NotSaved)
+    );
+
+    store
+        .lock()
+        .unwrap()
+        .apply("n", &Event::RecordingDropped)
+        .unwrap();
+    early_home::sync(&store, "n", RUN).unwrap();
+
+    let doc = SessionDoc::read(&path).unwrap();
+    assert_eq!(doc.result, Some(ResultFlag::NoRecording));
+    assert_eq!(
+        std::fs::read_to_string(path.join("notes.md")).unwrap(),
+        "Agenda\n"
+    );
+}
+
+/// A notes-only note "n" with its home folder in `dest`, typed and saved.
+fn placed_notes_only_note(store: &SharedStore, dest: &Path) -> PathBuf {
+    notes_only_note(store, "n", "First\n");
+    write(store, "n", Some(dest)).unwrap().unwrap()
+}
+
+// Covers R24: another computer removed the folder of a note with no audio.
+// The notes save keeps the text in a new note with no audio.
+#[test]
+fn a_notes_save_after_the_home_folder_was_removed_makes_a_new_note_with_the_text() {
+    use pipeline::save::{NotesRescue, NotesSave, rescue_notes, save_notes};
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    store
+        .lock()
+        .unwrap()
+        .set_title("n", "Planning", session_core::TitleSource::User)
+        .unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::FolderGone);
+    assert!(!path.exists(), "the save makes no folder");
+
+    let rescued = rescue_notes(&store, "n", "m", at(100)).unwrap();
+    assert_eq!(rescued, NotesRescue::NewNote);
+    {
+        let s = store.lock().unwrap();
+        assert!(
+            s.session("n").unwrap().is_none(),
+            "the old row is forgotten"
+        );
+        let record = s.session("m").unwrap().unwrap();
+        assert_eq!(record.state, SessionState::Saved);
+        assert_eq!(record.started_at, Some(at(100)));
+        assert_eq!(record.title.map(|t| t.text).as_deref(), Some("Planning"));
+        assert!(s.segments("m").unwrap().is_empty());
+        assert_eq!(s.notes("m").unwrap(), "Second\n");
+        assert!(s.started_here("m").unwrap());
+    }
+    assert_eq!(early(&store, "m"), Some(EarlyState::Begun));
+
+    // The early write of the new note places its folder with the text.
+    let placed = write(&store, "m", Some(dest.path())).unwrap().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(placed.join("notes.md")).unwrap(),
+        "Second\n"
+    );
+    assert_eq!(
+        SessionDoc::read(&placed).unwrap().result,
+        Some(ResultFlag::NoRecording)
+    );
+}
+
+#[test]
+fn a_notes_save_follows_a_folder_that_has_another_name() {
+    use pipeline::save::{NotesRescue, NotesSave, rescue_notes, save_notes};
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    let moved = dest.path().join("Renamed");
+    std::fs::rename(&path, &moved).unwrap();
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::FolderGone);
+    assert_eq!(
+        rescue_notes(&store, "n", "m", at(100)).unwrap(),
+        NotesRescue::Moved
+    );
+    assert_eq!(home(&store, "n"), Some(moved.clone()));
+    assert!(store.lock().unwrap().session("m").unwrap().is_none());
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::Saved { written: true });
+    assert_eq!(
+        std::fs::read_to_string(moved.join("notes.md")).unwrap(),
+        "Second\n"
+    );
+}
+
+#[test]
+fn a_notes_save_while_the_storage_folder_is_not_available_makes_no_new_note() {
+    use pipeline::save::{NotesRescue, rescue_notes, save_notes};
+    let dest = tempfile::tempdir().unwrap();
+    let storage = dest.path().join("storage");
+    std::fs::create_dir(&storage).unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, &storage);
+    std::fs::remove_dir_all(&storage).unwrap();
+
+    save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(
+        rescue_notes(&store, "n", "m", at(100)).unwrap(),
+        NotesRescue::Unavailable
+    );
+    let s = store.lock().unwrap();
+    assert!(s.session("m").unwrap().is_none());
+    let record = s.session("n").unwrap().unwrap();
+    assert_eq!(record.home_path.map(PathBuf::from), Some(path));
+    // The store keeps the edit.
+    assert_eq!(s.notes("n").unwrap(), "Second\n");
+}

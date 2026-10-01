@@ -65,7 +65,7 @@ async function open({
       armed: false,
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },
       missing_models: [],
-      endpoint_configured: false,
+      endpoint_configured: false, can_start_note: true, note_start_refusal: null,
     }),
     shortcut_status: () => shortcutStatuses,
     login_item_status: () => "disabled",

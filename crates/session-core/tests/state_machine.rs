@@ -83,6 +83,7 @@ fn events() -> Vec<Event> {
         transcribe_again_ok(),
         Event::TranscribeAgainFailed,
         record_ok(),
+        Event::RecordingDropped,
     ]
 }
 
@@ -154,6 +155,7 @@ fn expected(state: &SessionState, event: &Event) -> Option<&'static str> {
         (_, Event::UserResume { .. }) if post_stop => Some("capturing"),
         (S::Saved, Event::UserResume { .. }) => Some("capturing"),
         (S::Saved, Event::UserRecord { .. }) => Some("capturing"),
+        (S::Capturing | S::Interrupted { .. }, Event::RecordingDropped) => Some("saved"),
         _ => None,
     }
 }

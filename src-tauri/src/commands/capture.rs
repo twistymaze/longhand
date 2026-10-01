@@ -1,11 +1,13 @@
 //! Thin IPC over the capture manager. The shortcut drives the same manager;
-//! these let the surface start, stop and resume, and carry the scratchpad.
+//! these let the surface start, stop, resume and record into a note, and
+//! carry the scratchpad.
 
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
 
-use crate::managers::capture::{CaptureManager, RecordingStatus};
+use crate::managers::capture::{CaptureManager, RecordingStatus, StopOutcome};
+use crate::managers::destination;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
 use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
@@ -18,19 +20,34 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| e.to_string())?
 }
 
+/// Start a new note (R7, KTD2). With `record`, the note records at once;
+/// without it, the note opens with no recording, and a recording that runs
+/// continues. Refused while the storage folder is not available, for both
+/// choices. `config` applies to a recording start only. Returns the id of
+/// the new note.
 #[tauri::command]
 #[specta::specta]
 pub async fn start_recording(
     app: AppHandle,
+    record: bool,
     config: Option<models::recognition::RecognitionConfig>,
     manager: State<'_, Arc<CaptureManager>>,
 ) -> Result<String, String> {
     let manager = Arc::clone(&manager);
-    let count = shortcut::speaker_count(settings::get_settings(&app).default_speaker_count);
+    let settings = settings::get_settings(&app);
+    let count = shortcut::speaker_count(settings.default_speaker_count);
+    let folder = settings.storage_folder;
     blocking(move || {
-        manager
-            .start_session_with_config(&app, count, config)
-            .map_err(|e| e.to_string())
+        // A folder on a network volume can be slow to answer.
+        if let Some(reason) = destination::note_start_refusal(&destination::status(&folder)) {
+            return Err(reason.to_string());
+        }
+        let started = if record {
+            manager.start_session_with_config(&app, count, config)
+        } else {
+            manager.open_note(&app)
+        };
+        started.map_err(|e| e.to_string())
     })
     .await
 }
@@ -41,20 +58,48 @@ pub async fn stop_recording(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-) -> Result<String, String> {
+) -> Result<StopOutcome, String> {
     let manager = Arc::clone(&manager);
-    let state = blocking(move || {
+    let outcome = blocking(move || {
         manager
             .stop_session(&app)
-            .map(|(id, state)| {
-                log::info!("session {id} is now {}", state.name());
-                state.name().to_string()
-            })
+            .inspect(|outcome| log::info!("stopped {}: {outcome:?}", outcome.session_id()))
             .map_err(|e| e.to_string())
     })
     .await?;
     processing.wake();
-    Ok(state)
+    Ok(outcome)
+}
+
+/// Record into a note with no audio (R11, KTD2), from the note page or the
+/// recording shortcut. Refused with the reason that the note page shows
+/// (R12, R21, R23): the note records or is processed on another computer,
+/// another computer did not finish its recording, its storage folder is
+/// unavailable, or it waits for a sync. A note with audio uses
+/// [`resume_recording`].
+#[tauri::command]
+#[specta::specta]
+pub async fn record_note(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<(), String> {
+    let manager = Arc::clone(&manager);
+    let processing = Arc::clone(&processing);
+    blocking(move || {
+        crate::commands::session::check_record(
+            &manager.shared_store(),
+            processing.library_status(),
+            processing.run_id(),
+            &session_id,
+            chrono::Local::now().fixed_offset(),
+        )?;
+        manager
+            .record_session(&app, &session_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]

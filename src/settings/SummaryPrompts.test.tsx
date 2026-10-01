@@ -42,7 +42,7 @@ const readiness: Readiness = {
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
   missing_models: [],
-  endpoint_configured: true,
+  endpoint_configured: true, can_start_note: true, note_start_refusal: null,
 };
 
 /// A fake of the prompt commands that keeps its own list, as the backend does.

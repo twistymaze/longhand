@@ -26,6 +26,7 @@ const waiting: SessionDetail = {
   message: "The storage folder is not available.",
   summary_problem: null,
   resumable: false,
+  record: null,
   home_path: null,
   endpoint: null,
   audio_kept: true,

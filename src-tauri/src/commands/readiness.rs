@@ -114,6 +114,11 @@ pub struct Readiness {
     /// R13). A storage folder that is not available now is shown, and does
     /// not block a recording: the note waits to save (AE1).
     pub armed: bool,
+    /// A new note can start, with or without a recording: the storage
+    /// folder is available (R7). It does not change `armed`.
+    pub can_start_note: bool,
+    /// Why a new note cannot start, while `can_start_note` is false.
+    pub note_start_refusal: Option<String>,
     pub shortcut: ShortcutStatus,
     /// Catalog ids of the weights that the next note needs and that are
     /// not on disk yet. They do not block a recording: processing waits
@@ -151,10 +156,13 @@ pub async fn readiness(
     } else {
         false
     };
+    let note_start_refusal = destination::note_start_refusal(&destination);
     Ok(Readiness {
         microphone_authorized,
         system_audio,
         armed: armed(microphone_authorized, &shortcut),
+        can_start_note: note_start_refusal.is_none(),
+        note_start_refusal: note_start_refusal.map(str::to_string),
         shortcut,
         destination,
         missing_models: models.missing_spec(

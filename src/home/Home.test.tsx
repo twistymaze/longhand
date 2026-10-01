@@ -40,6 +40,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   message: null,
   summary_problem: null,
   resumable: false,
+  record: null,
   home_path: home,
   endpoint: null,
   audio_kept: true,
@@ -100,7 +101,7 @@ describe("Home", () => {
           shortcut: { chord: null, registered: false, error: null },
           system_audio: "allowed",
           missing_models: [],
-          endpoint_configured: true,
+          endpoint_configured: true, can_start_note: true, note_start_refusal: null,
         }}
         chord={null}
         onOpen={() => {}}
@@ -152,7 +153,7 @@ describe("Home", () => {
           armed: true,
           shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
           missing_models: [],
-          endpoint_configured: true,
+          endpoint_configured: true, can_start_note: true, note_start_refusal: null,
         }}
         chord="⌥⇧L"
         onOpen={() => {}}
@@ -165,6 +166,7 @@ describe("Home", () => {
       .setup()
       .click(screen.getByRole("button", { name: "New Note" }));
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
+      record: true,
       config: null,
     });
     // The saved default configuration applies; no override is set.
@@ -559,7 +561,7 @@ const ready = {
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
   missing_models: [],
-  endpoint_configured: true,
+  endpoint_configured: true, can_start_note: true, note_start_refusal: null,
 };
 const home = (
   entries: SessionEntry[],

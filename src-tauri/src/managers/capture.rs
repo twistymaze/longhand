@@ -197,6 +197,107 @@ pub struct CaptureEnded {
     pub reason: String,
 }
 
+/// What a Stop did to the note (R19).
+#[derive(Serialize, Clone, Type, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StopOutcome {
+    /// The note kept audio and waits for processing.
+    Recorded { session_id: String },
+    /// No segment was kept: every segment was under a second. The note
+    /// stays as a note with no audio, because it existed before this
+    /// recording or its notes have text.
+    NotesOnly { session_id: String },
+    /// No segment was kept, the note started with this recording, and its
+    /// notes have no text. The note is a note with no audio now; the check
+    /// of empty notes removes it when the user leaves it (U6).
+    EmptyNote { session_id: String },
+}
+
+impl StopOutcome {
+    pub fn session_id(&self) -> &str {
+        match self {
+            Self::Recorded { session_id }
+            | Self::NotesOnly { session_id }
+            | Self::EmptyNote { session_id } => session_id,
+        }
+    }
+}
+
+/// The `result_state` key that marks a note that existed before its
+/// recording: Record started the recording in a note with no audio. A
+/// Stop that keeps no segment keeps such a note (R19).
+const RECORDED_INTO: &str = "recorded_into";
+
+/// Stop the note `id` in the store at `at`: queued for processing when it
+/// kept a segment. With no segment, the note becomes a note with no audio
+/// again (R19): the outcome tells whether it is an empty note. Its
+/// segment must already be closed.
+fn stop_note(
+    store: &mut Store,
+    id: &str,
+    at: DateTime<FixedOffset>,
+) -> Result<StopOutcome, CaptureError> {
+    let session_id = id.to_string();
+    if !store.segments(id)?.is_empty() {
+        store.apply(
+            id,
+            &Event::UserStop {
+                at,
+                retained_audio: true,
+            },
+        )?;
+        return Ok(StopOutcome::Recorded { session_id });
+    }
+    store.apply(id, &Event::RecordingDropped)?;
+    let existed = store.result_state(id, RECORDED_INTO)?.is_some();
+    let text = !store.notes(id)?.trim().is_empty();
+    Ok(if existed || text {
+        StopOutcome::NotesOnly { session_id }
+    } else {
+        StopOutcome::EmptyNote { session_id }
+    })
+}
+
+/// Make the row of the note `id` that opened at `opened` with no recording,
+/// and begin its early write in the same store lock (KTD2, KTD4). The job
+/// of `early_homes` then writes the home folder; the call does not wait
+/// for it.
+fn open_notes_only(
+    store: &pipeline::SharedStore,
+    early_homes: Option<&Arc<pipeline::early_home::EarlyHomes>>,
+    id: &str,
+    opened: DateTime<FixedOffset>,
+) -> Result<(), CaptureError> {
+    {
+        let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store.create_notes_only(id, opened, None)?;
+        pipeline::early_home::begin(&store, id).map_err(|e| CaptureError::Other(e.to_string()))?;
+    }
+    if let Some(homes) = early_homes {
+        homes.start(id);
+    }
+    Ok(())
+}
+
+/// The notes that record or are interrupted and have no segment, which a
+/// new start stops. A store error lists none: the start then stops them as
+/// before.
+fn open_with_no_segments(store: &Store) -> Vec<String> {
+    let mut ids = Vec::new();
+    for name in ["capturing", "interrupted"] {
+        match store.sessions_in(name) {
+            Ok(records) => ids.extend(
+                records
+                    .into_iter()
+                    .filter(|r| store.segments(&r.id).is_ok_and(|s| s.is_empty()))
+                    .map(|r| r.id),
+            ),
+            Err(e) => log::warn!("could not list the {name} notes: {e}"),
+        }
+    }
+    ids
+}
+
 struct ActiveSegment {
     session_id: String,
     segment: u32,
@@ -929,6 +1030,104 @@ pub fn recording_spec(
     resolve(&after_stop(in_use))
 }
 
+/// The recognition that a note records with from its first segment
+/// (KTD2): the execution spec, its stored form, the model and live mode,
+/// and the speaker count.
+struct NoteRecognition {
+    spec: models::recognition::ExecutionSpec,
+    snapshot: serde_json::Value,
+    model: RecordingModel,
+    speaker_count: Option<SpeakerCount>,
+}
+
+/// The recognition of a note that starts to record now: from `config` when
+/// the caller gives one, else from `settings` with `speaker_count`.
+/// `missing` gives the catalog ids of the files of a spec that are not on
+/// disk. Recording never waits for a download.
+fn note_recognition(
+    settings: &Settings,
+    speaker_count: Option<SpeakerCount>,
+    config: Option<models::recognition::RecognitionConfig>,
+    missing: impl Fn(&models::recognition::ExecutionSpec) -> Vec<String>,
+) -> Result<NoteRecognition, CaptureError> {
+    let (in_use, chosen) = match config {
+        Some(config) => (config, None),
+        None => {
+            let count = recognition_count(speaker_count);
+            let with_count = |mut config: models::recognition::RecognitionConfig| {
+                config.speaker_count = count;
+                config
+            };
+            (
+                with_count(settings.recognition_config()),
+                settings.chosen_config().map(with_count),
+            )
+        }
+    };
+    let spec = recording_spec(in_use, chosen, |spec| missing(spec).is_empty())
+        .map_err(|e| CaptureError::Other(e.to_string()))?;
+    let absent = missing(&spec);
+    if !absent.is_empty() {
+        log::info!(
+            "the note records before its models are on disk; processing waits for {}",
+            absent.join(", ")
+        );
+    }
+    let config = &spec.config;
+    let snapshot = serde_json::to_value(&spec).map_err(|e| CaptureError::Other(e.to_string()))?;
+    let speaker_count = config.speaker_count.map(|c| match c {
+        models::recognition::SpeakerCount::Exact { count } => SpeakerCount::Exact(count),
+        models::recognition::SpeakerCount::Range { min, max } => SpeakerCount::Range { min, max },
+    });
+    let model = RecordingModel {
+        asr_model: config.asr_model.clone(),
+        live_transcript: config.processing_mode
+            == models::recognition::ProcessingMode::DuringRecording
+            && spec.capabilities.live_transcription,
+    };
+    Ok(NoteRecognition {
+        spec,
+        snapshot,
+        model,
+        speaker_count,
+    })
+}
+
+/// How a note that the store took to Capturing opens its next segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reopen {
+    /// Resume of a note: it keeps its recognition and its capture choice.
+    Resume,
+    /// Record into a note with no audio: its first segment.
+    Record,
+}
+
+/// Take the note `id` with no audio from Saved to Capturing in the store
+/// (KTD2), with the recognition of `recognition` and the capture choice
+/// `capture`, as a new note gets them now. The note keeps the time it
+/// opened (R16), and is marked as a note that existed before its
+/// recording (R19). The caller holds the store lock.
+fn record_in_store(
+    store: &mut Store,
+    id: &str,
+    recognition: &NoteRecognition,
+    capture: &CaptureChoice,
+) -> Result<(), CaptureError> {
+    let has_segments = !store.segments(id)?.is_empty();
+    if has_segments {
+        return Err(CaptureError::Other(
+            "This note has audio. Use Resume to record more.".to_string(),
+        ));
+    }
+    store.apply(id, &Event::UserRecord { has_segments })?;
+    store.set_recognition_snapshot(id, &recognition.snapshot)?;
+    store.set_recording_model(id, &recognition.model)?;
+    store.set_speaker_count(id, recognition.speaker_count)?;
+    store.set_capture_choice(id, capture)?;
+    store.set_result_state(id, RECORDED_INTO, &serde_json::Value::Bool(true))?;
+    Ok(())
+}
+
 pub fn recording_model(settings: &Settings) -> RecordingModel {
     let streams = models::model(&settings.asr_model).is_some_and(|m| m.streaming);
     RecordingModel {
@@ -1080,39 +1279,15 @@ impl CaptureManager {
             return Err(CaptureError::Restarting);
         }
         let settings = settings::get_settings(app);
-        let (in_use, chosen) = match config {
-            Some(config) => (config, None),
-            None => {
-                let count = recognition_count(speaker_count);
-                let with_count = |mut config: models::recognition::RecognitionConfig| {
-                    config.speaker_count = count;
-                    config
-                };
-                (
-                    with_count(settings.recognition_config()),
-                    settings.chosen_config().map(with_count),
-                )
-            }
-        };
         let models = app.state::<Arc<ModelsManager>>();
-        let spec = recording_spec(in_use, chosen, |spec| models.missing_spec(spec).is_empty())
-            .map_err(|e| CaptureError::Other(e.to_string()))?;
-        let missing = models.missing_spec(&spec);
-        if !missing.is_empty() {
-            log::info!(
-                "the note records before its models are on disk; processing waits for {}",
-                missing.join(", ")
-            );
-        }
-        let config = spec.config.clone();
-        let snapshot =
-            serde_json::to_value(&spec).map_err(|e| CaptureError::Other(e.to_string()))?;
-        let speaker_count = config.speaker_count.map(|c| match c {
-            models::recognition::SpeakerCount::Exact { count } => SpeakerCount::Exact(count),
-            models::recognition::SpeakerCount::Range { min, max } => {
-                SpeakerCount::Range { min, max }
-            }
-        });
+        let NoteRecognition {
+            spec,
+            snapshot,
+            model,
+            speaker_count,
+        } = note_recognition(&settings, speaker_count, config, |spec| {
+            models.missing_spec(spec)
+        })?;
         let mut ended = inner.supersede();
         if let Some(active) = inner.active.take() {
             ended = Some(active.session_id.clone());
@@ -1122,12 +1297,6 @@ impl CaptureManager {
         let started = now();
         let mut timeline = Timeline::new();
         let index = timeline.open(0, started)?;
-        let model = RecordingModel {
-            asr_model: config.asr_model.clone(),
-            live_transcript: config.processing_mode
-                == models::recognition::ProcessingMode::DuringRecording
-                && spec.capabilities.live_transcription,
-        };
         let capture = available(capture_choice_at_start(
             inner.held_microphone.clone(),
             inner.held_system_audio,
@@ -1165,6 +1334,14 @@ impl CaptureManager {
                 return Err(e);
             }
         };
+        // A note that this start stops and that kept no segment stays as a
+        // note with no audio (R19): the new start does not discard it.
+        let open = open_with_no_segments(&self.store());
+        for other in open {
+            if let Err(e) = self.stop_in_store(app, &other) {
+                log::error!("stopping {other} failed: {e}");
+            }
+        }
         // A change of the active prompt during the recording applies from
         // the next note (R20, KTD15).
         let prompt = prompt_snapshot(&settings);
@@ -1221,9 +1398,23 @@ impl CaptureManager {
         Ok(id)
     }
 
-    /// Stop the recording session (R6b, R35). Returns its state afterwards:
-    /// queued for processing, or discarded when it kept no audio.
-    pub fn stop_session(&self, app: &AppHandle) -> Result<(String, SessionState), CaptureError> {
+    /// Open a new note that does not record (KTD2): a note with no audio,
+    /// whose home folder is written in the background (R1). A recording
+    /// that runs continues. Returns the id of the note.
+    pub fn open_note(&self, app: &AppHandle) -> Result<String, CaptureError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let early_homes = app
+            .try_state::<Arc<ProcessingManager>>()
+            .map(|processing| Arc::clone(processing.early_homes()));
+        open_notes_only(&self.store, early_homes.as_ref(), &id, now())?;
+        log::info!("note {id} opened with no recording");
+        Ok(id)
+    }
+
+    /// Stop the recording session (R6b, R35). Returns what the Stop did:
+    /// the note is queued for processing, or it kept no audio and is a note
+    /// with no audio again (R19).
+    pub fn stop_session(&self, app: &AppHandle) -> Result<StopOutcome, CaptureError> {
         let mut inner = self.inner();
         let reconnecting = inner.supersede();
         let id = match inner.active.take() {
@@ -1243,32 +1434,31 @@ impl CaptureManager {
                 },
             },
         };
-        let state = self.stop_in_store(app, &id)?;
+        let outcome = self.stop_in_store(app, &id)?;
         drop(inner);
         app.state::<Arc<AlertsManager>>().clear(&id);
         changed(app, None);
-        Ok((id, state))
+        Ok(outcome)
     }
 
-    /// Stop `id` in the store: queued for processing, or discarded when it
-    /// kept no audio. Its segment must already be closed.
-    fn stop_in_store(&self, app: &AppHandle, id: &str) -> Result<SessionState, CaptureError> {
-        let retained_audio = !self.store().segments(id)?.is_empty();
-        let state = self.store().apply(
-            id,
-            &Event::UserStop {
-                at: now(),
-                retained_audio,
-            },
-        )?;
-        if retained_audio {
+    /// Stop `id` in the store: queued for processing, or a note with no
+    /// audio again when it kept no segment (R19). Its segment must already
+    /// be closed.
+    fn stop_in_store(&self, app: &AppHandle, id: &str) -> Result<StopOutcome, CaptureError> {
+        let outcome = stop_note(&mut self.store(), id, now())?;
+        if let StopOutcome::Recorded { .. } = outcome {
             self.record_model_at_stop(app, id);
         } else {
-            // Nothing survived R35; the notice is the surface's (U7).
+            // Nothing survived R35. The folder gets the flag "no recording"
+            // again, and this run's in-use marker goes.
             let _ = std::fs::remove_dir_all(self.session_dir(id));
-            log::info!("session {id} kept no audio and was discarded");
+            log::info!("session {id} kept no audio and is a note with no audio");
+            if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+                processing.early_homes().mark_pending(id);
+                processing.in_use_changed();
+            }
         }
-        Ok(state)
+        Ok(outcome)
     }
 
     /// A session keeps the model that it recorded at its start (KTD2). Only
@@ -1326,7 +1516,7 @@ impl CaptureManager {
         app: &AppHandle,
         id: &str,
     ) -> Result<SessionState, CaptureError> {
-        let mut inner = self.inner();
+        let inner = self.inner();
         if inner.active.is_some() || inner.recovering.is_some() {
             return Err(CaptureError::AlreadyCapturing);
         }
@@ -1415,6 +1605,64 @@ impl CaptureManager {
             processing.in_use_changed();
         }
         self.record_model_at_resume(app, id);
+        self.open_next_segment(app, inner, id, resumed_at, Reopen::Resume)?;
+        Ok(state)
+    }
+
+    /// Record into the note `id` that has no audio (R11, KTD2): the store
+    /// takes it from Saved to Capturing with [`Event::UserRecord`], and the
+    /// note records its first segment with the recognition, the microphone
+    /// and Computer audio that a new note gets now. The note keeps the
+    /// time it opened (R16). The caller does the checks of the note page
+    /// (R12) first.
+    pub fn record_session(self: &Arc<Self>, app: &AppHandle, id: &str) -> Result<(), CaptureError> {
+        let mut inner = self.inner();
+        if inner.active.is_some() || inner.recovering.is_some() {
+            return Err(CaptureError::AlreadyCapturing);
+        }
+        if inner.restart_claimed {
+            return Err(CaptureError::Restarting);
+        }
+        let settings = settings::get_settings(app);
+        let models = app.state::<Arc<ModelsManager>>();
+        let count = crate::shortcut::speaker_count(settings.default_speaker_count);
+        let recognition =
+            note_recognition(&settings, count, None, |spec| models.missing_spec(spec))?;
+        let capture = available(capture_choice_at_start(
+            inner.held_microphone.clone(),
+            inner.held_system_audio,
+            &settings,
+        ));
+        let recorded_at = now();
+        {
+            let mut store = self.store();
+            let other = |e: pipeline::StageError| CaptureError::Other(e.to_string());
+            // The row follows its folder first (KTD3): the recording keeps
+            // the title and notes that another computer wrote.
+            pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
+            record_in_store(&mut store, id, &recognition, &capture)?;
+        }
+        // This run's in-use marker, then the flag "recording not saved"
+        // (KTD4). Neither write holds up the recording.
+        if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+            processing.early_homes().mark_pending(id);
+            processing.in_use_changed();
+        }
+        inner.held_microphone = None;
+        inner.held_system_audio = None;
+        self.open_next_segment(app, inner, id, recorded_at, Reopen::Record)
+    }
+
+    /// Open the next segment of the note `id`, which the store has just
+    /// taken to Capturing, at `resumed_at`. The caller holds `inner`.
+    fn open_next_segment(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        mut inner: std::sync::MutexGuard<'_, Inner>,
+        id: &str,
+        resumed_at: DateTime<FixedOffset>,
+        reopen: Reopen,
+    ) -> Result<(), CaptureError> {
         inner.supersede();
         let held = inner
             .clock
@@ -1458,6 +1706,16 @@ impl CaptureManager {
         };
         let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
+            Err(e) if reopen == Reopen::Record => {
+                // The note had no audio before: it is a note with no audio
+                // again, and the user can record later (R19).
+                drop(inner);
+                if let Err(stop) = self.stop_in_store(app, id) {
+                    log::error!("could not end the recording of {id}: {stop}");
+                }
+                changed(app, None);
+                return Err(e);
+            }
             Err(e) => {
                 // The store already says Capturing: put the session back to
                 // Interrupted, with its alert and the watch for the
@@ -1479,12 +1737,12 @@ impl CaptureManager {
         }
         inner.active = Some(active);
         inner.clock = Some(Clock::new(id, timeline, epoch));
-        log::info!("session {id} resumed as segment {index} at {offset} ms");
+        log::info!("session {id} records segment {index} at {offset} ms ({reopen:?})");
         self.copy_old_audio(id);
         self.watch_capture(app, &mut inner, id);
         app.state::<Arc<AlertsManager>>().clear(id);
         changed(app, Some(id));
-        Ok(state)
+        Ok(())
     }
 
     /// Copy the old audio of the resumed note `id` into its working
@@ -3950,5 +4208,204 @@ mod tests {
                 live_transcript: false,
             })
         );
+    }
+
+    /// The recognition that a note gets now, with every model on disk.
+    fn recognition() -> NoteRecognition {
+        note_recognition(&Settings::default(), None, None, |_| Vec::new()).unwrap()
+    }
+
+    /// A note that capture started at `at(0)`, with `notes`.
+    fn recording_note(store: &mut Store, id: &str, notes: &str) {
+        let r = recognition();
+        store
+            .start_session_with_recognition(
+                id,
+                at(0),
+                r.speaker_count,
+                &r.model,
+                &CaptureChoice::default(),
+                Some(&r.snapshot),
+                None,
+            )
+            .unwrap();
+        store.set_notes(id, notes).unwrap();
+    }
+
+    fn one_segment(at_secs: i64) -> session_core::Segment {
+        session_core::Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: at(at_secs),
+            wall_end: at(at_secs + 60),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+        }
+    }
+
+    #[test]
+    fn a_stop_that_kept_a_segment_queues_the_note() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        let outcome = stop_note(&mut store, "s", at(70)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+        assert_eq!(store.session("s").unwrap().unwrap().state.name(), "queued");
+    }
+
+    // Covers AE6 (R19).
+    #[test]
+    fn a_stop_with_no_segment_and_notes_text_keeps_a_note_with_no_audio() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "Agenda\n");
+        let outcome = stop_note(&mut store, "s", at(1)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::NotesOnly {
+                session_id: "s".into()
+            }
+        );
+        let record = store.session("s").unwrap().unwrap();
+        assert_eq!(record.state, SessionState::Saved);
+        assert!(store.segments("s").unwrap().is_empty());
+        assert_eq!(store.notes("s").unwrap(), "Agenda\n");
+    }
+
+    // Covers R19: the note started with the recording and has no text. It
+    // is a note with no audio, and the check of empty notes (U6) owns its
+    // removal.
+    #[test]
+    fn a_stop_with_no_segment_and_no_text_returns_an_empty_note() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", " \n");
+        let outcome = stop_note(&mut store, "s", at(1)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::EmptyNote {
+                session_id: "s".into()
+            }
+        );
+        assert_eq!(
+            store.session("s").unwrap().unwrap().state,
+            SessionState::Saved
+        );
+    }
+
+    // Covers AE14 (R19): a note that existed before the recording stays,
+    // also with no notes text.
+    #[test]
+    fn a_stop_with_no_segment_keeps_a_note_that_existed_before_the_recording() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("n", at(0), Some("/notes/n"))
+            .unwrap();
+        store
+            .set_title("n", "Planning", session_core::TitleSource::User)
+            .unwrap();
+        record_in_store(&mut store, "n", &recognition(), &CaptureChoice::default()).unwrap();
+        assert_eq!(
+            store.session("n").unwrap().unwrap().state,
+            SessionState::Capturing
+        );
+
+        let outcome = stop_note(&mut store, "n", at(90_000)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::NotesOnly {
+                session_id: "n".into()
+            }
+        );
+        let record = store.session("n").unwrap().unwrap();
+        assert_eq!(record.state, SessionState::Saved);
+        assert_eq!(record.home_path.as_deref(), Some("/notes/n"));
+        assert_eq!(record.title.map(|t| t.text).as_deref(), Some("Planning"));
+    }
+
+    // Covers R11, R16, R17 (KTD2): Record takes the note to Capturing with
+    // the recognition that a new note gets, and the note keeps the time it
+    // opened.
+    #[test]
+    fn record_into_a_notes_only_note_captures_with_the_recognition_of_a_new_note() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("n", at(0), Some("/notes/n"))
+            .unwrap();
+        let r = recognition();
+        let capture = CaptureChoice {
+            microphone: Some(Microphone::from(&usb())),
+            system_audio: false,
+        };
+        record_in_store(&mut store, "n", &r, &capture).unwrap();
+
+        let record = store.session("n").unwrap().unwrap();
+        assert_eq!(record.state, SessionState::Capturing);
+        assert_eq!(
+            record.asr_model.as_deref(),
+            Some(r.model.asr_model.as_str())
+        );
+        assert_eq!(
+            store.recognition_snapshot("n").unwrap(),
+            Some(r.snapshot.clone())
+        );
+        assert_eq!(store.capture_choice("n").unwrap(), capture);
+        store.put_segment("n", &one_segment(3_600)).unwrap();
+        let record = store.session("n").unwrap().unwrap();
+        assert_eq!(record.start(&store.segments("n").unwrap()), at(0));
+    }
+
+    #[test]
+    fn record_is_refused_for_a_note_with_audio() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        stop_note(&mut store, "s", at(70)).unwrap();
+        let e = record_in_store(&mut store, "s", &recognition(), &CaptureChoice::default())
+            .unwrap_err();
+        assert!(e.to_string().contains("Resume"), "{e}");
+        assert_eq!(store.session("s").unwrap().unwrap().state.name(), "queued");
+    }
+
+    // Covers R1, KTD2: a note that opens with no recording is a saved row
+    // with no segments, its home folder is written in the background, and
+    // no capture runs.
+    #[test]
+    fn a_note_that_opens_with_no_recording_gets_a_saved_row_and_a_home_folder() {
+        let dest = tempfile::tempdir().unwrap();
+        let store: pipeline::SharedStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+        let target = dest.path().to_path_buf();
+        let homes = pipeline::early_home::EarlyHomes::new(
+            Arc::clone(&store),
+            "run-1",
+            Box::new(move || Some(target.clone())),
+            Box::new(|_| {}),
+        );
+
+        open_notes_only(&store, Some(&homes), "n", at(0)).unwrap();
+        homes.wait("n");
+
+        let s = store.lock().unwrap();
+        let record = s.session("n").unwrap().unwrap();
+        assert_eq!(record.state, SessionState::Saved);
+        assert_eq!(record.started_at, Some(at(0)));
+        assert!(s.segments("n").unwrap().is_empty());
+        assert!(s.sessions_in("capturing").unwrap().is_empty());
+        let home = PathBuf::from(record.home_path.unwrap());
+        assert!(home.join("session.md").is_file());
+        assert!(home.join("notes.md").is_file());
+    }
+
+    #[test]
+    fn a_new_start_lists_the_open_notes_with_no_segment() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("empty", at(0), None).unwrap();
+        store.create_session("kept", at(0), None).unwrap();
+        store.put_segment("kept", &one_segment(1)).unwrap();
+        assert_eq!(open_with_no_segments(&store), vec!["empty".to_string()]);
     }
 }
