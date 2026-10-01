@@ -188,6 +188,38 @@ pub fn delete_title_request(store: &SharedStore, session_id: &str) -> Result<(),
     Ok(lock(store).delete_checkpoint(session_id, Stage::Summarize, TITLE_REQUEST)?)
 }
 
+/// Send the title turn `request` to `endpoint` with its reply cap, and
+/// clean the reply with [`clean_title`] (KTD13). The inner error is a
+/// failed turn or a reply that was cut off: the note then keeps its title
+/// (R14). Only a cancel is an outer error.
+pub fn send_title_request(
+    session_id: &str,
+    endpoint: &SummaryEndpoint,
+    request: &TitleRequest,
+    control: &dyn Control,
+) -> Result<Result<String, String>, StageError> {
+    let client = match Client::new(Endpoint {
+        base_url: endpoint.base_url.clone(),
+        model: endpoint.model.clone(),
+        credential: endpoint.credential.clone(),
+    }) {
+        Ok(client) => client,
+        Err(e) => return Ok(Err(e.to_string())),
+    };
+    if client.crosses_network_unencrypted() {
+        log::warn!(
+            "proposing a title for {session_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
+            client.host()
+        );
+    }
+    let runtime = Runtime::new()?;
+    control.proceed()?;
+    let reply = runtime.block_on(client.complete(&request.messages, request.cap), control)?;
+    Ok(reply
+        .map(|completion| clean_title(&completion.text))
+        .map_err(|e| e.to_string()))
+}
+
 fn call_key(layer: usize, index: usize) -> String {
     format!("l{layer:02}-{index:05}")
 }
@@ -296,7 +328,11 @@ pub fn clean_title(reply: &str) -> String {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
-    let mut title = line.trim_start_matches('#').trim();
+    // A bold label, as in `**Title:** Weekly sync`, loses its marks first.
+    let mut title = line
+        .trim_start_matches('#')
+        .trim()
+        .trim_start_matches(MARKS);
     if title
         .get(..6)
         .is_some_and(|label| label.eq_ignore_ascii_case("title:"))
@@ -919,6 +955,7 @@ mod tests {
         assert_eq!(clean_title("  \"Budget Review.\"  "), "Budget Review");
         assert_eq!(clean_title("\"Budget Review\"."), "Budget Review");
         assert_eq!(clean_title("\n# Title: **Q3 plan**\nmore"), "Q3 plan");
+        assert_eq!(clean_title("# **Title:** Weekly sync."), "Weekly sync");
         assert_eq!(clean_title("“Hiring  and\tbudget”"), "Hiring and budget");
         assert_eq!(clean_title("Plan v2.0"), "Plan v2.0");
         assert_eq!(clean_title(" \n \"\" "), "");

@@ -1127,7 +1127,12 @@ fn summarize_again(
     if complete || !same_prompt {
         summarize::clear(store, session_id)?;
     } else {
-        lock(store).delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
+        {
+            let guard = lock(store);
+            guard.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
+            // A title request of an earlier summary is not sent (KTD9).
+            guard.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE_REQUEST)?;
+        }
         // The text is the same, so the cached calls stand. The name can
         // be new after a rename, and the summary records the name now.
         checkpoint::put(

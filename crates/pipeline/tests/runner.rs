@@ -7318,3 +7318,397 @@ async fn a_sync_marker_for_a_failed_resumed_note_deletes_its_old_audio_copy() {
         "the new audio went"
     );
 }
+
+// ------------------------------------------------------------- title job (U6)
+
+use pipeline::runner::TitleJob;
+
+/// The title job's outcome for `id` in `jobs`.
+fn job_for(jobs: &[(String, TitleJob)], id: &str) -> Option<TitleJob> {
+    jobs.iter()
+        .find(|(job, _)| job == id)
+        .map(|(_, j)| j.clone())
+}
+
+fn proposed_titles(r: &Rig) -> Vec<(String, String)> {
+    r.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            RunnerEvent::TitleProposed { session_id, title } => {
+                Some((session_id.clone(), title.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_the_save_the_title_job_proposes_the_cleaned_reply_and_renames_the_folder() {
+    // Covers AE4, AE9, AE10.
+    let r = rig().await;
+    // What the note had when the title turn arrived: its state and a
+    // complete summary in its folder.
+    let at_title = Arc::new(Mutex::new(Vec::new()));
+    let (store, seen) = (Arc::clone(&r.store), Arc::clone(&at_title));
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::With(Arc::new(move |b: &str| {
+            if !is_title_call(b) {
+                return (200, http::completion("A short summary."));
+            }
+            let record = store.lock().unwrap().session("s").unwrap().unwrap();
+            let folder = record.home_path.map(std::path::PathBuf::from);
+            seen.lock().unwrap().push((
+                record.state,
+                folder.is_some_and(|f| summary_is_complete(&f)),
+            ));
+            (200, http::completion("# **Title:** Weekly sync."))
+        })),
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    let folder = saved_session(&r, None).await;
+    // The save ends before the title turn starts (R16).
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(title_of(&r), None);
+    assert!(summary_is_complete(&folder));
+    assert!(pending(&r).is_some());
+
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert_eq!(
+        *at_title.lock().unwrap(),
+        [(SessionState::Saved, true)],
+        "the note was saved with its summary before the title turn"
+    );
+    let title = title_of(&r).unwrap();
+    assert_eq!(
+        (title.text.as_str(), title.source),
+        ("Weekly sync", TitleSource::Proposed)
+    );
+    let renamed = saved_folder(&r, "s");
+    assert_eq!(renamed, r.dest.join(name_for(Some("Weekly sync"))));
+    assert!(!folder.exists());
+    assert_eq!(document_title(&renamed).as_deref(), Some("Weekly sync"));
+    assert!(summary_is_complete(&renamed));
+    assert_eq!(pending(&r), None);
+    assert_eq!(
+        checkpoint::get::<String>(&r.store, "s", Stage::Summarize, pipeline::summarize::TITLE)
+            .unwrap(),
+        Some("Weekly sync".into())
+    );
+    assert_eq!(
+        proposed_titles(&r),
+        [("s".to_string(), "Weekly sync".to_string())]
+    );
+    // The job ran once.
+    assert!(r.runner.run_titles().await.is_empty());
+    assert_eq!(title_calls(&mock).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_title_job_sends_the_stored_request_with_its_cap() {
+    let r = rig().await;
+    let title = title_reply("Budget review");
+    let mock = summaries_and_titles(&r, a_summary(), &title, Some(8_192)).await;
+    saved_session(&r, None).await;
+    let request = pending(&r).expect("a title request");
+    r.runner.run_titles().await;
+    let sent: Vec<String> = completions(&mock)
+        .into_iter()
+        .filter(|b| is_title_call(b))
+        .collect();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(request_messages(&sent[0]), pending_messages(&request));
+    let body: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+    assert_eq!(body["max_tokens"], request.cap);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_title_turn_keeps_the_title_and_the_folder_and_deletes_the_request() {
+    // Covers AE7.
+    let r = rig().await;
+    let folder = saved_session(&r, None).await;
+    assert!(pending(&r).is_some());
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Kept));
+    assert_eq!(title_of(&r), None);
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert!(summary_is_complete(&folder));
+    assert_eq!(pending(&r), None);
+    assert!(proposed_titles(&r).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_reply_cut_off_keeps_the_title_and_deletes_the_request() {
+    let r = rig().await;
+    let cut = serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": "Weekly"}, "finish_reason": "length"}]
+    })
+    .to_string();
+    let title = Arc::new(Mutex::new((200, cut)));
+    summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Kept));
+    assert_eq!(title_of(&r), None);
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert_eq!(pending(&r), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_empty_title_reply_proposes_nothing() {
+    let r = rig().await;
+    let title = title_reply(" \n \"\" ");
+    summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Kept));
+    assert_eq!(title_of(&r), None);
+    assert_eq!(saved_folder(&r, "s"), folder);
+    assert_eq!(pending(&r), None);
+    assert!(proposed_titles(&r).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_user_rename_while_the_title_job_runs_keeps_the_users_title() {
+    // Covers AE8.
+    let r = rig().await;
+    let runner = Arc::clone(&r.runner);
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::With(Arc::new(move |b: &str| {
+            if !is_title_call(b) {
+                return (200, http::completion("A short summary."));
+            }
+            // The user renames the note while the title turn runs.
+            runner.rename_session("s", "Budget review").unwrap();
+            (200, http::completion("Weekly sync"))
+        })),
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    saved_session(&r, None).await;
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Kept));
+    let title = title_of(&r).unwrap();
+    assert_eq!(
+        (title.text.as_str(), title.source),
+        ("Budget review", TitleSource::User)
+    );
+    assert_eq!(pending(&r), None);
+    assert!(proposed_titles(&r).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_a_user_title_gets_no_title_job_on_regenerate() {
+    // Covers AE8.
+    let r = rig().await;
+    let title = title_reply("Proposed");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    assert!(r.runner.run_titles().await.is_empty());
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert!(r.runner.run_titles().await.is_empty());
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(title_of(&r).unwrap().text, "Budget review");
+    assert_eq!(saved_folder(&r, "s"), folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_publishes_and_releases_its_claim_before_its_title_turn() {
+    // Covers R16.
+    let r = rig().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let regenerating = Arc::new(Mutex::new(Vec::new()));
+    let runner = Arc::clone(&r.runner);
+    let seen = Arc::clone(&regenerating);
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::With(Arc::new(move |b: &str| {
+            let k = n.fetch_add(1, Ordering::SeqCst);
+            if is_title_call(b) {
+                seen.lock().unwrap().push(runner.is_regenerating("s"));
+                (200, http::completion(&format!("Title {k}")))
+            } else {
+                (200, http::completion(&format!("Summary number {k}.")))
+            }
+        })),
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    saved_session(&r, None).await;
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().text, "Title 1");
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    // The new summary is in the folder, and no title turn was sent yet.
+    assert!(read(path.parent().unwrap(), "summary.md").contains("Summary number 2."));
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert!(!r.runner.is_regenerating("s"));
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Title 3".into()))
+    );
+    assert_eq!(*regenerating.lock().unwrap(), [false, false]);
+    assert_eq!(
+        saved_folder(&r, "s"),
+        r.dest.join(name_for(Some("Title 3")))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_with_a_pending_request_runs_the_title_job_once_at_launch() {
+    // Covers R15.
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    // The app quits before the title job runs.
+    r.runner.shutdown();
+    assert!(pending(&r).is_some());
+
+    let relaunch = || {
+        rig_with(
+            Arc::clone(&r.store),
+            tempfile::tempdir().unwrap(),
+            Arc::clone(&r.script),
+        )
+    };
+    let second = relaunch();
+    assert_eq!(second.runner.queue_pending_titles().unwrap(), ["s"]);
+    let jobs = second.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert_eq!(title_calls(&mock).len(), 1);
+
+    let third = relaunch();
+    assert!(third.runner.queue_pending_titles().unwrap().is_empty());
+    assert!(third.runner.run_titles().await.is_empty());
+    assert_eq!(title_calls(&mock).len(), 1);
+}
+
+/// Point the script's summaries at an endpoint that never answers. A
+/// responder must not block: a blocked worker stops the test runtime's
+/// timers.
+async fn hanging_endpoint(r: &Rig) -> http::Mock {
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::Hang,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    mock
+}
+
+/// Wait until `mock` has a completion request, for at most 30 s.
+async fn until_called(mock: &http::Mock) {
+    for _ in 0..1_500 {
+        if !completions(mock).is_empty() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("no completion request arrived");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_job_stopped_by_the_quit_keeps_its_request() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let mock = hanging_endpoint(&r).await;
+    let runner = Arc::clone(&r.runner);
+    let job = tokio::spawn(async move { runner.run_titles().await });
+    until_called(&mock).await;
+    assert!(is_title_call(&completions(&mock)[0]));
+    r.runner.shutdown();
+    let jobs = tokio::time::timeout(std::time::Duration::from_secs(30), job)
+        .await
+        .expect("the title job stops")
+        .unwrap();
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert_eq!(title_of(&r), None);
+    assert!(pending(&r).is_some(), "the next launch sends it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_the_note_while_its_title_job_waits_for_the_permit_cancels_the_job() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    assert!(pending(&r).is_some());
+
+    // The summary of another note holds the permit: its call never ends.
+    let mock = hanging_endpoint(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "t",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let runner = Arc::clone(&r.runner);
+    let other = tokio::spawn(async move { runner.run_next().await });
+    until_called(&mock).await;
+    let runner = Arc::clone(&r.runner);
+    let titles = tokio::spawn(async move { runner.run_titles().await });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let claims = r.runner.claims().clone();
+    session_core::jobs::delete_session(&r.store, "s", &r.root.join("s"), &claims, remove_now)
+        .unwrap();
+    // The other note's summary stops, and its stage frees the permit.
+    r.runner.cancel("t");
+    let jobs = tokio::time::timeout(std::time::Duration::from_secs(30), titles)
+        .await
+        .expect("the title job ends")
+        .unwrap();
+    let (_, outcome) = tokio::time::timeout(std::time::Duration::from_secs(30), other)
+        .await
+        .expect("the other note stops")
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_none());
+    // Only the other note's summary call went out: no title turn.
+    assert!(completions(&mock).iter().all(|b| !is_title_call(b)));
+    assert!(proposed_titles(&r).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_of_the_note_drops_its_title_job_and_its_request() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, None).await;
+    let claim = r.runner.claims().moving("s").unwrap();
+    let jobs = r.runner.run_titles().await;
+    drop(claim);
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(pending(&r), None);
+    assert_eq!(title_of(&r), None);
+    assert_eq!(saved_folder(&r, "s"), folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_no_endpoint_the_title_job_keeps_the_title_and_deletes_the_request() {
+    let r = rig().await;
+    let folder = saved_session(&r, None).await;
+    *r.script.summary.lock().unwrap() =
+        Some(Err(EndpointProblem::Unconfigured("no endpoint".into())));
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Kept));
+    assert_eq!(pending(&r), None);
+    assert_eq!(title_of(&r), None);
+    assert_eq!(saved_folder(&r, "s"), folder);
+}

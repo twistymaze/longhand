@@ -79,6 +79,31 @@ pub fn rename_locked(
     Ok(renamed)
 }
 
+/// The title job's proposal (KTD13, R13): bring the row up to date from
+/// its folder (KTD3), store `title` as a proposed title, then run the
+/// reconcile, as [`rename_locked`] does for the user's title. `None` when
+/// the row keeps its title: the title is empty, or the user set a title,
+/// also on another computer. The caller holds the store lock.
+pub fn propose_locked(
+    guard: &mut Store,
+    session_id: &str,
+    title: &str,
+    claimed: &dyn Fn(&str) -> bool,
+    fs: &dyn Fs,
+) -> Result<Option<FolderRename>, StageError> {
+    let claimed = claimed(session_id);
+    crate::follow::follow_folder(guard, session_id, claimed)?;
+    if !guard.set_title(session_id, title, TitleSource::Proposed)? {
+        return Ok(None);
+    }
+    guard.set_rename_owed(session_id, true)?;
+    let renamed = reconcile(guard, session_id, claimed, true, fs)?;
+    if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
+        write_title(guard, session_id);
+    }
+    Ok(Some(renamed))
+}
+
 /// Write the stored title into the `session.md` of the session's folder
 /// where it is now: a busy session's folder takes its new name later, and
 /// a folder whose move failed keeps its name. A writer or a library
