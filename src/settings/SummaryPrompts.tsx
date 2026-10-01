@@ -1,8 +1,10 @@
 // The summary prompts in the Summaries pane (R1–R4, KTD11): the list of
 // prompts with the prompt in use, and an editor for the selected prompt
 // under it. Each change is one backend command (KTD7). The editor saves the
-// prompt text as the user types: one second after the last change, and at
-// once on blur or a change of prompt or pane.
+// prompt text and the title text as the user types: one second after the
+// last change, and at once on blur or a change of prompt or pane. The two
+// texts are separate fields: each has its own draft, base, save error and
+// notice of a change on another computer (KTD10).
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -105,7 +107,21 @@ function PromptRow({
   );
 }
 
-type Edit = { id: string; text: string };
+/// The two texts of a prompt: the summary text and the title text.
+type Field = "text" | "title";
+
+/// The name of each field in the text that the editor shows.
+const fieldName: Record<Field, string> = { text: "prompt text", title: "title instructions" };
+
+/// The key of the editor state of one field of one prompt. A prompt id
+/// contains no line break.
+const keyOf = (id: string, field: Field) => `${field}\n${id}`;
+const keysOf = (id: string) => [keyOf(id, "text"), keyOf(id, "title")];
+
+/// The saved value of `field` of prompt `p`.
+const savedOf = (p: SummaryPromptEntry, field: Field) => (field === "text" ? p.text : (p.title_text ?? ""));
+
+type Edit = { id: string; field: Field; text: string };
 
 /// A copy of `map` with no entry for `id`.
 function without<T>(map: Record<string, T>, id: string): Record<string, T> {
@@ -127,24 +143,26 @@ export function SummaryPrompts({
 }) {
   const [list, setList] = useState<SummaryPromptList | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // The unsaved text of each prompt, by id. A prompt with no entry shows its
-  // saved text.
+  // The state below is kept by field key (`keyOf`): one entry for each
+  // field of each prompt.
+  // The unsaved text of each field. A field with no entry shows its saved
+  // text.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // The saved text that each draft started from, by id. When the saved text
+  // The saved text that each draft started from. When the saved text
   // changes to a text that this window did not send, another computer
-  // changed the prompt.
+  // changed the field.
   const [bases, setBases] = useState<Record<string, string>>({});
-  // The texts that this window sent, by id.
+  // The texts that this window sent.
   const sentTexts = useRef(new Map<string, Set<string>>());
   const [listError, setListError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
-  // The error of the last failed text save, by prompt id. The editor shows
-  // it only for that prompt.
+  // The error of the last failed save of each field. The editor shows it
+  // only for that prompt, under that field.
   const [saveErrors, setSaveErrors] = useState<Record<string, string>>({});
   const { ask, dialog } = useConfirm();
   // The valid text that waits for the timer, the timer, and the last save
   // that started. Each save waits for the save before it, so the saves apply
-  // in the order typed. `failed` holds the ids whose last text save failed.
+  // in the order typed. `failed` holds the keys whose last save failed.
   const pending = useRef<Edit | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saving = useRef<Promise<void>>(Promise.resolve());
@@ -176,42 +194,53 @@ export function SummaryPrompts({
   }, []);
 
   // Starts the save of the pending text at once. Resolves when all saves
-  // that started are complete: to false if the last text save of prompt
-  // `id` failed, or with no `id`, if the last text save of a prompt failed.
+  // that started are complete: to false if the last save of a field of
+  // prompt `id` failed, or with no `id`, if the last save of a field failed.
   const flush = useCallback(
     (id?: string) => {
       const sent = pending.current;
       cancel();
       if (sent) {
-        const fail = (error: string) => {
-          failed.current.add(sent.id);
-          setSaveErrors((m) => ({ ...m, [sent.id]: error }));
+        const key = keyOf(sent.id, sent.field);
+        // The error of the summary text comes from the backend as it is.
+        // The error of the title text names the field, because the backend
+        // error does not always name it.
+        const fail = (reason: string | null) => {
+          const error =
+            sent.field === "text"
+              ? (reason ?? "The prompt text could not be saved.")
+              : `The title instructions could not be saved.${reason ? ` ${reason}` : ""}`;
+          failed.current.add(key);
+          setSaveErrors((m) => ({ ...m, [key]: error }));
         };
-        const texts = sentTexts.current.get(sent.id) ?? new Set<string>();
-        sentTexts.current.set(sent.id, texts.add(sent.text));
+        const texts = sentTexts.current.get(key) ?? new Set<string>();
+        sentTexts.current.set(key, texts.add(sent.text));
+        const save = sent.field === "text" ? commands.setSummaryPromptText : commands.setSummaryPromptTitleText;
         saving.current = saving.current
           .then(async () => {
-            const result = await commands.setSummaryPromptText(sent.id, sent.text);
+            const result = await save(sent.id, sent.text);
             if (result.status === "error") {
               fail(result.error);
               return;
             }
-            failed.current.delete(sent.id);
-            setSaveErrors((m) => without(m, sent.id));
-            setBases((m) => ({ ...m, [sent.id]: sent.text }));
+            failed.current.delete(key);
+            setSaveErrors((m) => without(m, key));
+            setBases((m) => ({ ...m, [key]: sent.text }));
             onSettingsRef.current(result.data);
             await load();
             // Clear the draft only if it still holds the sent text, so that
             // text typed during the save stays for the next save.
-            setDrafts((m) => (m[sent.id] === sent.text ? without(m, sent.id) : m));
+            setDrafts((m) => (m[key] === sent.text ? without(m, key) : m));
           })
           .catch((e: unknown) => {
             // A failed save must not stop the saves after it.
-            console.error("The prompt text could not be saved:", e);
-            fail("The prompt text could not be saved.");
+            console.error(`The ${fieldName[sent.field]} could not be saved:`, e);
+            fail(null);
           });
       }
-      return saving.current.then(() => (id === undefined ? failed.current.size === 0 : !failed.current.has(id)));
+      return saving.current.then(() =>
+        id === undefined ? failed.current.size === 0 : !keysOf(id).some((k) => failed.current.has(k)),
+      );
     },
     [cancel, load],
   );
@@ -293,21 +322,34 @@ export function SummaryPrompts({
     };
   }, [flush, closeSaveLimit]);
 
-  // A prompt whose unsaved text started from a saved text that another
+  // A field whose unsaved text started from a saved text that another
   // computer then changed. The editor keeps the unsaved text.
-  const changedElsewhere = (p: SummaryPromptEntry) =>
-    p.id in drafts && drafts[p.id] !== p.text && p.id in bases && p.text !== bases[p.id] && !sentTexts.current.get(p.id)?.has(p.text);
-  const held = list?.prompts.filter(changedElsewhere).map((p) => p.id) ?? [];
-  const heldKey = held.join("\n");
-  // The unsaved text of such a prompt waits for Reload or Keep My Text, and
+  const changedElsewhere = (p: SummaryPromptEntry, field: Field) => {
+    const key = keyOf(p.id, field);
+    const saved = savedOf(p, field);
+    return (
+      key in drafts &&
+      drafts[key] !== saved &&
+      key in bases &&
+      saved !== bases[key] &&
+      !sentTexts.current.get(key)?.has(saved)
+    );
+  };
+  const held =
+    list?.prompts.flatMap((p) =>
+      (["text", "title"] as const).filter((f) => changedElsewhere(p, f)).map((f) => keyOf(p.id, f)),
+    ) ?? [];
+  const heldKey = held.join("\0");
+  // The unsaved text of such a field waits for Reload or Keep My Text, and
   // does not replace the text of the other computer.
   useEffect(() => {
-    if (pending.current && held.includes(pending.current.id)) cancel();
+    const sent = pending.current;
+    if (sent && held.includes(keyOf(sent.id, sent.field))) cancel();
   }, [heldKey, cancel]);
   // A base goes with its draft.
   useEffect(() => {
     setBases((m) => {
-      const kept = Object.fromEntries(Object.entries(m).filter(([id]) => id in drafts));
+      const kept = Object.fromEntries(Object.entries(m).filter(([key]) => key in drafts));
       return Object.keys(kept).length === Object.keys(m).length ? m : kept;
     });
   }, [drafts]);
@@ -315,11 +357,15 @@ export function SummaryPrompts({
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
-  const draft = selected && selected.id in drafts ? drafts[selected.id] : (selected?.text ?? "");
-  const count = [...draft].length;
-  const limit = list?.text_limit ?? 0;
+  const limits: Record<Field, number> = { text: list?.text_limit ?? 0, title: list?.title_text_limit ?? 0 };
+  const draftOf = (p: SummaryPromptEntry, field: Field) => {
+    const key = keyOf(p.id, field);
+    return key in drafts ? drafts[key] : savedOf(p, field);
+  };
   const name = selected?.name ?? "";
-  const valid = (text: string) => text.trim() !== "" && [...text].length <= limit;
+  // The summary text can't be empty. The title text can be empty (R4).
+  const valid = (field: Field, text: string) =>
+    (field === "title" || text.trim() !== "") && [...text].length <= limits[field];
 
   const run = async (
     op: () => Promise<Result<Settings, string>>,
@@ -352,11 +398,15 @@ export function SummaryPrompts({
 
   // Text that is not valid is not saved, and a change of prompt drops it.
   // Valid text stays until its save is complete. If the save fails, the text
-  // and the error stay with their prompt.
+  // and the error stay with their prompt and field.
   const select = (id: string) => {
     if (!selected || id === selected.id) return;
     const from = selected.id;
-    if (from in drafts && !valid(drafts[from])) setDrafts((m) => without(m, from));
+    const dropped = (["text", "title"] as const)
+      .map((f) => [f, keyOf(from, f)] as const)
+      .filter(([f, key]) => key in drafts && !valid(f, drafts[key]))
+      .map(([, key]) => key);
+    if (dropped.length > 0) setDrafts((m) => dropped.reduce((acc, key) => without(acc, key), m));
     void flush();
     show(id);
   };
@@ -376,9 +426,8 @@ export function SummaryPrompts({
   }
 
   const id = selected.id;
-  const empty = !selected.built_in && draft.trim() === "";
-  const saveError = saveErrors[id] ?? null;
-  // The copy gets the text that the editor shows.
+  const empty = !selected.built_in && draftOf(selected, "text").trim() === "";
+  // The copy gets the texts that the editor shows.
   const duplicate = async () => {
     if (!(await flush(id))) return;
     await run(() => commands.duplicateSummaryPrompt(id), setEditorError, showNewest);
@@ -390,42 +439,65 @@ export function SummaryPrompts({
     if (pending.current?.id === id) cancel();
     await saving.current;
     await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => {
-      failed.current.delete(id);
-      setDrafts((m) => without(m, id));
-      setSaveErrors((m) => without(m, id));
+      const keys = keysOf(id);
+      for (const key of keys) failed.current.delete(key);
+      setDrafts((m) => keys.reduce((acc, key) => without(acc, key), m));
+      setSaveErrors((m) => keys.reduce((acc, key) => without(acc, key), m));
       show(null);
     });
   };
+  // The key of the text that waits for the timer, or null.
+  const waitingKey = () => (pending.current ? keyOf(pending.current.id, pending.current.field) : null);
   // The text stays editable while a save runs. Only valid text waits for
-  // the timer; the last valid text stays saved. Text of a prompt that
+  // the timer; the last valid text stays saved. Text of a field that
   // changed on another computer does not wait for the timer: only Keep My
-  // Text saves it.
-  const change = (text: string) => {
-    const saved = selected.text;
-    setBases((m) => (id in m ? m : { ...m, [id]: saved }));
-    setDrafts((m) => ({ ...m, [id]: text }));
+  // Text saves it. A waiting save of the other field starts at once, so an
+  // edit in one field never drops the save of the other.
+  const change = (field: Field, text: string) => {
+    const key = keyOf(id, field);
+    const saved = savedOf(selected, field);
+    setBases((m) => (key in m ? m : { ...m, [key]: saved }));
+    setDrafts((m) => ({ ...m, [key]: text }));
+    if (waitingKey() !== null && waitingKey() !== key) void flush();
     cancel();
-    if (!valid(text) || changedElsewhere(selected)) return;
-    pending.current = { id, text };
+    if (!valid(field, text) || changedElsewhere(selected, field)) return;
+    pending.current = { id, field, text };
     timer.current = setTimeout(() => void flush(), saveDelay);
   };
-  const changed = changedElsewhere(selected);
   // Reload shows the text of the other computer and drops the unsaved text.
-  const reload = () => {
-    if (pending.current?.id === id) cancel();
-    setDrafts((m) => without(m, id));
-    setSaveErrors((m) => without(m, id));
+  const reload = (field: Field) => {
+    const key = keyOf(id, field);
+    if (waitingKey() === key) cancel();
+    setDrafts((m) => without(m, key));
+    setSaveErrors((m) => without(m, key));
   };
   // Keep My Text saves the unsaved text over the text of the other computer.
-  const keep = () => {
-    const saved = selected.text;
-    setBases((m) => ({ ...m, [id]: saved }));
-    if (valid(draft)) {
-      pending.current = { id, text: draft };
+  const keep = (field: Field) => {
+    const key = keyOf(id, field);
+    const saved = savedOf(selected, field);
+    setBases((m) => ({ ...m, [key]: saved }));
+    const draft = draftOf(selected, field);
+    if (valid(field, draft)) {
+      if (waitingKey() !== null && waitingKey() !== key) void flush();
+      pending.current = { id, field, text: draft };
       void flush();
     }
   };
   const locked = readOnly !== null;
+  const fieldProps = (field: Field) => ({
+    field,
+    inputId: `prompt-${field}-${id}`,
+    value: draftOf(selected, field),
+    limit: limits[field],
+    readOnly: selected.built_in || locked,
+    showCount: !selected.built_in,
+    changed: changedElsewhere(selected, field),
+    saveError: saveErrors[keyOf(id, field)] ?? null,
+    onChange: (text: string) => change(field, text),
+    onBlur: () => void flush(),
+    onKeep: () => keep(field),
+    onReload: () => reload(field),
+  });
 
   return (
     <>
@@ -470,66 +542,132 @@ export function SummaryPrompts({
             onCommit={(v) => void run(() => commands.renameSummaryPrompt(id, v), setEditorError)}
           />
         </Row>
-        <div className="settings-row px-4">
-          <div className="py-3">
-            <textarea
-              aria-label="Prompt text"
-              value={draft}
-              readOnly={selected.built_in || locked}
-              rows={14}
-              onChange={(e) => change(e.target.value)}
-              onBlur={() => void flush()}
-              className={`${fieldClass} block w-full resize-y py-1.5 leading-[1.45] read-only:text-label-secondary`}
-            />
-          </div>
-        </div>
+        <PromptField {...fieldProps("text")} label="Prompt text" detail="How to write the summary." rows={14} />
+        {empty && <ErrorText>A prompt can’t be empty.</ErrorText>}
+        <PromptField
+          {...fieldProps("title")}
+          label="Title instructions"
+          detail="How to write the note title. This can be empty."
+          rows={5}
+        />
         <div className="settings-row px-4">
           <div className="flex min-h-[3.25rem] items-center gap-2 py-2.5">
             {selected.built_in ? (
-              <>
-                <p className="min-w-0 flex-1 text-[0.85rem] leading-[1.4] text-label-secondary">
-                  Built-in prompts can’t be changed. Duplicate one to make your own.
-                </p>
-                <Button disabled={locked} onClick={() => void duplicate()}>
-                  Duplicate
-                </Button>
-              </>
+              <p className="min-w-0 flex-1 text-[0.85rem] leading-[1.4] text-label-secondary">
+                Built-in prompts can’t be changed. Duplicate one to make your own.
+              </p>
             ) : (
-              <>
-                <span
-                  className={`min-w-0 flex-1 text-[0.85rem] tabular-nums ${count > limit ? "text-negative" : "text-label-secondary"}`}
-                >
-                  {`${format(count)} / ${format(limit)}`}
-                </span>
-                <Button disabled={locked} onClick={() => void duplicate()}>
-                  Duplicate
-                </Button>
-                <Button disabled={locked} onClick={() => void remove()}>
-                  Delete
-                </Button>
-              </>
+              <span className="flex-1" />
+            )}
+            <Button disabled={locked} onClick={() => void duplicate()}>
+              Duplicate
+            </Button>
+            {!selected.built_in && (
+              <Button disabled={locked} onClick={() => void remove()}>
+                Delete
+              </Button>
             )}
           </div>
         </div>
-        {changed && (
-          <div className="settings-row px-4">
-            <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
-              <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-                <p className="font-medium text-caution">This prompt changed on another computer.</p>
-                <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
-              </div>
-              <Button onClick={keep}>Keep My Text</Button>
-              <Button prominent onClick={reload}>
-                Reload
-              </Button>
-            </div>
-          </div>
-        )}
-        {empty && <ErrorText>A prompt can’t be empty.</ErrorText>}
-        {saveError && <ErrorText>{saveError}</ErrorText>}
         {editorError && <ErrorText>{editorError}</ErrorText>}
       </Group>
       {dialog}
+    </>
+  );
+}
+
+/// One text of the selected prompt: its label, the text area, the count,
+/// the notice of a change on another computer and the save error. The
+/// notice and the error name the field.
+function PromptField({
+  field,
+  inputId,
+  label,
+  detail,
+  rows,
+  value,
+  limit,
+  readOnly,
+  showCount,
+  changed,
+  saveError,
+  onChange,
+  onBlur,
+  onKeep,
+  onReload,
+}: {
+  field: Field;
+  inputId: string;
+  label: string;
+  detail: string;
+  rows: number;
+  value: string;
+  limit: number;
+  readOnly: boolean;
+  showCount: boolean;
+  changed: boolean;
+  saveError: string | null;
+  onChange: (text: string) => void;
+  onBlur: () => void;
+  onKeep: () => void;
+  onReload: () => void;
+}) {
+  const count = [...value].length;
+  const detailId = `${inputId}-detail`;
+  // The summary buttons keep their short names. The title buttons add the
+  // field name for screen readers, because the two notices can show at the
+  // same time.
+  const suffix = field === "title" ? <span className="sr-only"> title instructions</span> : null;
+  return (
+    <>
+      <div className="settings-row px-4">
+        <div className="py-3">
+          <div className="mb-2 flex items-end gap-3">
+            <div className="min-w-0 flex-1">
+              <label htmlFor={inputId} className="font-medium">
+                {label}
+              </label>
+              <p id={detailId} className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">
+                {detail}
+              </p>
+            </div>
+            {showCount && (
+              <span
+                className={`shrink-0 text-[0.85rem] tabular-nums ${count > limit ? "text-negative" : "text-label-secondary"}`}
+              >
+                {`${format(count)} / ${format(limit)}`}
+              </span>
+            )}
+          </div>
+          <textarea
+            id={inputId}
+            aria-describedby={detailId}
+            value={value}
+            readOnly={readOnly}
+            rows={rows}
+            onChange={(e) => onChange(e.target.value)}
+            onBlur={onBlur}
+            className={`${fieldClass} block w-full resize-y py-1.5 leading-[1.45] read-only:text-label-secondary`}
+          />
+        </div>
+      </div>
+      {changed && (
+        <div className="settings-row px-4">
+          <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
+            <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
+              <p className="font-medium text-caution">{`The ${fieldName[field]} changed on another computer.`}</p>
+              <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
+            </div>
+            <Button onClick={onKeep}>
+              Keep My Text{suffix}
+            </Button>
+            <Button prominent onClick={onReload}>
+              Reload{suffix}
+            </Button>
+          </div>
+        </div>
+      )}
+      {saveError && <ErrorText>{saveError}</ErrorText>}
     </>
   );
 }
