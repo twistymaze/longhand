@@ -5,7 +5,16 @@ Shared domain vocabulary for this project — entities, named processes, and sta
 ## Sessions
 
 ### Session
-One recording and everything made from it: the audio, the user's notes, the transcript and the summary. The UI calls a session a "note" ("New Note", the Notes list); "session" is the term in code and docs only.
+One note and everything in it: the user's notes and, when it records, the audio, the transcript and the summary. A session can have no recording: see Note with no audio. The UI calls a session a "note" ("New Note", the Notes list); "session" is the term in code and docs only.
+
+### Note with no audio
+A session that has never recorded, or whose only recording was discarded because every segment was shorter than one second. It has notes and a title, and no transcript and no summary. The user opens one with New Note when the Recording setting says that New Note does not record, or with the other choice of the New Note menu. Its Record button records into it; its first recording makes the transcript and summary through the usual processing. An empty note with no audio (no notes text and no title from the user) is removed when the user leaves it, but only by the computer that started it, and only when no other computer can have used it.
+
+### Result flag
+The `result` field of `session.md` for a session that has no result yet. `none` means the session has never recorded. `pending` means a recording exists that is not saved yet, on the computer that records it. The first result removes the field. Every computer reads the flag and does not infer the state from missing files, so a session with the flag is not waiting for a sync. A `session.md` with no field, no segments and no result fingerprints reads as `none`.
+
+### Not finished on another computer
+The state of a session whose result flag is `pending` when no computer's in-use marker in its home folder is fresh and `session.md` is older than 30 minutes: the computer that recorded it stopped before it saved the recording. Other computers let the user edit its notes and delete it after a confirmation. Nothing removes it automatically. When the recording computer later recovers the session and finds its home folder deleted, the delete wins and the recording is discarded.
 
 ## Saving a session
 
@@ -15,21 +24,21 @@ The app's own storage, where a session lives while it records and processes: its
 Some of what it holds never leaves it: the processing audio and the raw recovery chunks stay behind when the session moves to the storage folder.
 
 ### Storage folder
-The one folder that holds all saved sessions of the library and the shared settings. It can be on another volume or in a synced cloud folder that several computers share. A new install uses a default folder in the local app data folder, so a new install records with no setup. Nothing partial ever appears in it. The user changes it in Settings > Storage. The UI calls it "Storage". "Destination" is the older term for the same folder, in older code and docs. The storage folder has a hidden `.longhand` folder for the library marker and the shared settings.
+The one folder that holds all saved sessions of the library and the shared settings. It can be on another volume or in a synced cloud folder that several computers share. A new install uses a default folder in the local app data folder, so a new install records with no setup. A new note appears in it at once with its notes and `session.md`; audio and results appear in it only when they are complete. New Note is unavailable while the storage folder is unavailable. The user changes it in Settings > Storage. The UI calls it "Storage". "Destination" is the older term for the same folder, in older code and docs. The storage folder has a hidden `.longhand` folder for the library marker and the shared settings.
 
 ### Save
-The step that moves a finished, verified session from the Working location into the storage folder under its final folder name. Its end state is Saved. At every moment, exactly one location holds a complete copy. After a crash at any point, Save continues from what is on disk. It does not start again and it does not lose the session.
+The step that puts the first result of a finished, verified session into the storage folder. A session that started after the early home folder existed already has its home folder, so Save writes the result into it with the Publication rules. A session from before that change has no home folder, so Save moves it from the Working location into the storage folder under its final folder name. Its end state is Saved. At every moment, exactly one location holds a complete copy. After a crash at any point, Save continues from what is on disk. It does not start again and it does not lose the session.
 *Avoid in all text (code, docs and UI):* "land", "lands", "landed" and "landing". The step is Save and its end state is Saved. The UI says saved, or shows a saved session as Ready.
 
 Save does one step at a time. It records each step durably before it does the next step. Thus each step must recognise, from disk alone, a step that completed just before a crash. The app removes the Working-location copy only after it records the session under its final name.
 
 ### Staging
-The hidden, session-specific folder inside the storage folder. Save assembles the session in this folder before the final rename. The folder is next to the final name, so the last step of every Save is a same-volume rename. This is also true when the Working location is on another volume and Save had to copy the session into Staging.
+The hidden, session-specific folder inside the storage folder. The early write assembles a new note's first files in this folder before it renames the folder to the note's home folder name. Save of a session from before the early home folder assembles the session in this folder before the final rename. The folder is next to the final name, so the last step of every Save is a same-volume rename. This is also true when the Working location is on another volume and Save had to copy the session into Staging.
 
 A staging folder is removed at launch only when its session is recorded as completed: until then it may hold the only complete copy.
 
 ### Home folder
-The folder that Save put a session into. A session keeps its home folder for life. A rename of the session changes the folder's name, not the folder: the session still has one home folder. When a saved session is resumed, recorded into and processed again, the app updates its home folder in place (it adds new audio next to the old audio and replaces the documents). It does not save a second copy.
+The folder of a session in the storage folder. The early write makes it when the note starts, recording or not, and the recording never waits for that write. A session from before that change got its home folder from Save. A session keeps its home folder for life. A rename of the session changes the folder's name, not the folder: the session still has one home folder. When a saved session is resumed, recorded into and processed again, the app updates its home folder in place (it adds new audio next to the old audio and replaces the documents). It does not save a second copy.
 
 ### Publication
 The step that writes a new result of a saved note into its home folder. The result is complete in local staging first. Then the publication writes the result files and writes `session.md` last. A small record on this computer, which never syncs, lets a publication that a crash stopped roll forward at the next launch. Only the computer that started a publication finishes it.
@@ -37,7 +46,7 @@ The step that writes a new result of a saved note into its home folder. The resu
 Before each write, the publication checks whether another computer published a result for the note. If it did, this computer drops its unfinished result and writes nothing more: the last change wins. A publication changes only the result fields of `session.md`, so a title change or a rename is not a conflict.
 
 ### Title
-The name of a session, shown on Home, on the session page and in the home folder's name. Processing proposes it. The user can rename it at any time, and a title the user set is never replaced automatically. A session with no title yet shows its start time.
+The name of a session, shown on Home, on the session page and in the home folder's name. Processing proposes it. The user can rename it at any time, and a title the user set is never replaced automatically. A session with no title yet shows its start time: the time the note opened, also when it records later.
 
 ## The library
 
