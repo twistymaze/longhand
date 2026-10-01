@@ -7,6 +7,7 @@ import { useInterfaceZoom } from "./lib/useInterfaceZoom";
 import { commands, events } from "./bindings";
 import { Home } from "./home/Home";
 import { LicencesWindow } from "./licences/LicencesWindow";
+import { notesSaved } from "./lib/notesSaves";
 import { formatChord } from "./lib/timeline";
 import { useCapture } from "./recording/useCapture";
 import { SessionPage } from "./session/SessionPage";
@@ -44,27 +45,33 @@ function MainWindow() {
   }, []);
   // The backend keeps the shown note for the recording shortcut (KTD7). The
   // note that the window stops showing is left: an empty note goes (R18).
+  // The leave waits for the notes saves of the note. The backend keeps a
+  // note that the window shows again, so each report goes before the leave.
   const shown = view.kind === "session" ? view.id : null;
   const reported = useRef<string | null>(null);
+  // Leave the note `id`. A note that goes while the window shows it again
+  // gives Home in its place.
+  const leave = useRef(async (id: string) => {
+    await notesSaved(id);
+    const left = await commands.leaveNote(id);
+    if (left.status === "ok" && left.data.kind === "removed" && reported.current === id) {
+      reported.current = null;
+      setView({ kind: "home" });
+    }
+  }).current;
   useEffect(() => {
     const previous = reported.current;
     reported.current = shown;
-    void commands.setShownNote(shown);
-    if (previous !== null && previous !== shown) void commands.leaveNote(previous);
-  }, [shown]);
-  // A hide or close of the main window leaves the shown note too. A note
-  // that goes gives Home in its place. The window that comes back reports
-  // its note again.
+    const report = commands.setShownNote(shown);
+    if (previous !== null && previous !== shown) void report.then(() => leave(previous));
+  }, [shown, leave]);
+  // A hide or close of the main window leaves the shown note too. The
+  // window that comes back reports its note again.
   useEffect(() => {
     const unlisten = events.mainWindowHidden.listen(async () => {
-      void commands.setShownNote(null);
+      await commands.setShownNote(null);
       const id = reported.current;
-      if (id === null) return;
-      const left = await commands.leaveNote(id);
-      if (left.status === "ok" && left.data.kind === "removed" && reported.current === id) {
-        reported.current = null;
-        setView({ kind: "home" });
-      }
+      if (id !== null) await leave(id);
     });
     const report = () => void commands.setShownNote(reported.current);
     window.addEventListener("focus", report);
@@ -72,7 +79,7 @@ function MainWindow() {
       void unlisten.then((f) => f());
       window.removeEventListener("focus", report);
     };
-  }, []);
+  }, [leave]);
 
   const known =
     requested !== null &&

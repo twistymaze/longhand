@@ -28,6 +28,16 @@
 //! only the files that the check accepted, one at a time, and then the
 //! empty folder. It never deletes a folder recursively.
 //!
+//! Before the first file goes, the row records the folder ([`REMOVING`]).
+//! When a removal stops after `notes.md` went, the next removal finds that
+//! record, and a missing `notes.md` in that folder does not keep the note.
+//! `session.md` must still be the file that this computer last wrote.
+//!
+//! The main window can show the note again while the removal runs. The
+//! caller then gives a `shown` check, and the note stays while it is true.
+//! The removal checks it first and again at the last step before it
+//! deletes a file or the row.
+//!
 //! The early write job of the note stops before the check
 //! ([`EarlyHomes::cancel`]), and the removal holds the note guard, a delete
 //! claim and the store lock while it checks and removes. A notes save takes
@@ -48,6 +58,11 @@ use crate::early_home::{self, EarlyHomes, EarlyState, Location};
 use crate::in_use::{is_marker_name, marker_fresh, remove_marker};
 use crate::save::{NOTES_FILE, SESSION_FILE};
 use crate::{SharedStore, StageError, lock};
+
+/// The `result_state` key that records the folder whose files the removal
+/// of an empty note started to delete. The row and this record go
+/// together.
+pub const REMOVING: &str = "empty-note-removal";
 
 /// Why an empty note stays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +89,8 @@ pub enum Kept {
     /// The folder holds a file that is not a file of the note, or it is not
     /// a real folder.
     OtherFiles,
+    /// The main window shows the note again.
+    Shown,
 }
 
 /// What [`Removal::leave`] did.
@@ -113,6 +130,20 @@ impl Removal<'_> {
     /// folder when it is empty and every check passes (R18). `now` is the
     /// time for the freshness of the in-use markers.
     pub fn leave(&self, id: &str, now: DateTime<FixedOffset>) -> Result<Leave, StageError> {
+        self.leave_unless_shown(id, now, &|_| false)
+    }
+
+    /// [`Removal::leave`], and the note stays while `shown(id)` is true:
+    /// the main window shows the note again.
+    pub fn leave_unless_shown(
+        &self,
+        id: &str,
+        now: DateTime<FixedOffset>,
+        shown: &dyn Fn(&str) -> bool,
+    ) -> Result<Leave, StageError> {
+        if shown(id) {
+            return Ok(Leave::Kept(Kept::Shown));
+        }
         // A first look: a note that is not empty keeps its early write job.
         if let Some(kept) = self.kept_by_row(&lock(self.store), id)? {
             return Ok(Leave::Kept(kept));
@@ -122,7 +153,7 @@ impl Removal<'_> {
         if let Some(homes) = self.homes {
             homes.cancel(id);
         }
-        let left = self.leave_stopped(id, now);
+        let left = self.leave_stopped(id, now, shown);
         // A note that stays continues its early write and its flag update.
         if let Some(homes) = self.homes
             && !matches!(left, Ok(Leave::Removed))
@@ -173,7 +204,12 @@ impl Removal<'_> {
         kept_by_row(store, id)
     }
 
-    fn leave_stopped(&self, id: &str, now: DateTime<FixedOffset>) -> Result<Leave, StageError> {
+    fn leave_stopped(
+        &self,
+        id: &str,
+        now: DateTime<FixedOffset>,
+        shown: &dyn Fn(&str) -> bool,
+    ) -> Result<Leave, StageError> {
         // A summary, a Move and a delete cannot start while the removal
         // holds this claim.
         let Ok(_claim) = self.claims.delete(id) else {
@@ -189,23 +225,40 @@ impl Removal<'_> {
         if let Some(kept) = kept_by_row(&store, id)? {
             return Ok(Leave::Kept(kept));
         }
-        if let Target::Folder(folder) = &target {
-            // A library refresh can give the row another home path before
-            // the store lock. A staging folder has the note id in its name.
-            let home = store.session(id)?.and_then(|r| r.home_path);
-            let staging = folder.file_name().and_then(|n| n.to_str())
-                == Some(naming::staging_name(id).as_str());
-            if !staging && home.as_deref().map(Path::new) != Some(folder.as_path()) {
-                return Ok(Leave::Kept(Kept::Changed));
-            }
-            let written = store.written_fingerprints(id)?;
-            let files = match check_folder(folder, &written, self.run_id, now) {
-                Ok(files) => files,
-                Err(kept) => {
-                    log::info!("the empty note {id} stays: {kept:?}");
-                    return Ok(Leave::Kept(kept));
+        let checked = match &target {
+            Target::Folder(folder) => {
+                // A library refresh can give the row another home path
+                // before the store lock. A staging folder has the note id in
+                // its name.
+                let home = store.session(id)?.and_then(|r| r.home_path);
+                let staging = folder.file_name().and_then(|n| n.to_str())
+                    == Some(naming::staging_name(id).as_str());
+                if !staging && home.as_deref().map(Path::new) != Some(folder.as_path()) {
+                    return Ok(Leave::Kept(Kept::Changed));
                 }
-            };
+                let written = store.written_fingerprints(id)?;
+                let removing = store.result_state(id, REMOVING)?
+                    == Some(serde_json::Value::from(folder.to_string_lossy()));
+                match check_folder(folder, &written, removing, self.run_id, now) {
+                    Ok(files) => Some((folder, files)),
+                    Err(kept) => {
+                        log::info!("the empty note {id} stays: {kept:?}");
+                        return Ok(Leave::Kept(kept));
+                    }
+                }
+            }
+            Target::Nothing => None,
+        };
+        // The last step before a file or the row goes.
+        if shown(id) {
+            return Ok(Leave::Kept(Kept::Shown));
+        }
+        if let Some((folder, files)) = checked {
+            store.set_result_state(
+                id,
+                REMOVING,
+                &serde_json::Value::from(folder.to_string_lossy()),
+            )?;
             remove_folder(folder, &files)?;
         }
         // The early write state goes first: the store does not forget a row
@@ -337,10 +390,13 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
 
 /// Check the folder of an empty note (R18). Returns the files to delete:
 /// the old in-use markers, then `notes.md`, then `session.md`. This run's
-/// own marker goes first.
+/// own marker goes first. `removing` is true when an earlier removal of
+/// this note started to delete the files of this folder: a missing
+/// `notes.md` then does not keep the note.
 fn check_folder(
     folder: &Path,
     written: &WrittenFingerprints,
+    removing: bool,
     run_id: &str,
     now: DateTime<FixedOffset>,
 ) -> Result<Vec<PathBuf>, Kept> {
@@ -390,13 +446,14 @@ fn check_folder(
             return Err(Kept::OtherFiles);
         }
     }
-    if !session || !notes {
+    if !session || !(notes || removing) {
         return Err(Kept::Changed);
     }
-    for (name, last) in [
-        (NOTES_FILE, &written.notes),
-        (SESSION_FILE, &written.session),
-    ] {
+    let mut checked = vec![(SESSION_FILE, &written.session)];
+    if notes {
+        checked.insert(0, (NOTES_FILE, &written.notes));
+    }
+    for (name, last) in checked {
         let current = match read_timed(folder.join(name), READ_TIMEOUT) {
             Read::Bytes(bytes) => folder::fingerprint(&bytes),
             Read::Missing => return Err(Kept::Changed),
@@ -406,14 +463,17 @@ fn check_folder(
             return Err(Kept::Changed);
         }
     }
-    files.push(folder.join(NOTES_FILE));
+    if notes {
+        files.push(folder.join(NOTES_FILE));
+    }
     files.push(folder.join(SESSION_FILE));
     Ok(files)
 }
 
 /// Delete `files` from `folder`, then the empty folder. `session.md` is the
 /// last file: until it goes, the folder is still a note. A file that came
-/// after the check stays, with the folder.
+/// after the check stays, with the folder. When a file cannot be deleted,
+/// the row keeps its [`REMOVING`] record, and the next removal continues.
 fn remove_folder(folder: &Path, files: &[PathBuf]) -> Result<(), StageError> {
     for file in files {
         match std::fs::remove_file(file) {

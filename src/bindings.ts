@@ -838,8 +838,8 @@ async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteS
  * another view or closes, or the user starts a new note. An empty note
  * that this computer started goes, with its home folder, when every check
  * passes. The frontend calls it when the shown note changes and when the
- * main window closes, and New Note calls it for the shown note before
- * [`crate::commands::capture::start_recording`].
+ * main window hides or closes. The note stays when [`ShownNote`] names it:
+ * the user opened the note again before the removal ended.
  */
 async leaveNote(sessionId: string) : Promise<Result<LeaveOutcome, string>> {
     try {

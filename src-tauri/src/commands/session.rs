@@ -1117,54 +1117,79 @@ pub enum LeaveOutcome {
 /// another view or closes, or the user starts a new note. An empty note
 /// that this computer started goes, with its home folder, when every check
 /// passes. The frontend calls it when the shown note changes and when the
-/// main window closes, and New Note calls it for the shown note before
-/// [`crate::commands::capture::start_recording`].
+/// main window hides or closes. The note stays when [`ShownNote`] names it:
+/// the user opened the note again before the removal ended.
 #[tauri::command]
 #[specta::specta]
 pub async fn leave_note(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
+    shown: State<'_, ShownNote>,
     session_id: String,
 ) -> Result<LeaveOutcome, String> {
     let capture = Arc::clone(&capture);
     let processing = Arc::clone(&processing);
-    tauri::async_runtime::spawn_blocking(move || leave_note_now(&capture, &processing, &session_id))
-        .await
-        .map_err(|e| e.to_string())?
+    let shown = shown.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        leave(&capture, &processing, &session_id, &|id| shown.shows(id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-/// [`leave_note`] on the calling thread. The recording shortcut calls it
-/// for the shown note before it starts a new note. It reads the storage
-/// folder: call it off the main thread.
+/// [`leave_note`] on the calling thread, for a note that is left while the
+/// main window still shows it. The recording shortcut calls it for the
+/// shown note before it starts a new note. It reads the storage folder:
+/// call it off the main thread.
 pub fn leave_note_now(
     capture: &CaptureManager,
     processing: &ProcessingManager,
     session_id: &str,
 ) -> Result<LeaveOutcome, String> {
-    Ok(match processing.leave_note(session_id)? {
-        pipeline::empty_note::Leave::Removed => {
-            // The working folder of a note with no audio is normally gone
-            // already.
-            let _ = std::fs::remove_dir_all(capture.session_dir(session_id));
-            LeaveOutcome::Removed
-        }
-        pipeline::empty_note::Leave::Kept(why) => {
-            log::debug!("the note {session_id} stays after the user left it: {why:?}");
-            LeaveOutcome::Kept
-        }
-    })
+    leave(capture, processing, session_id, &|_| false)
+}
+
+/// Leave the note `session_id`. The note stays while `shown(session_id)` is
+/// true.
+fn leave(
+    capture: &CaptureManager,
+    processing: &ProcessingManager,
+    session_id: &str,
+    shown: &dyn Fn(&str) -> bool,
+) -> Result<LeaveOutcome, String> {
+    Ok(
+        match processing.leave_note_unless_shown(session_id, shown)? {
+            pipeline::empty_note::Leave::Removed => {
+                // The working folder of a note with no audio is normally gone
+                // already.
+                let _ = std::fs::remove_dir_all(capture.session_dir(session_id));
+                LeaveOutcome::Removed
+            }
+            pipeline::empty_note::Leave::Kept(why) => {
+                log::debug!("the note {session_id} stays after the user left it: {why:?}");
+                LeaveOutcome::Kept
+            }
+        },
+    )
 }
 
 /// The note that the main window shows (KTD7). The main window keeps its
 /// view in the frontend, so the frontend reports each change with
 /// [`set_shown_note`]. The recording shortcut reads it (R10) and uses it
-/// only while the main window is visible and not minimized.
-#[derive(Default)]
-pub struct ShownNote(std::sync::Mutex<Option<String>>);
+/// only while the main window is visible and not minimized. The removal
+/// of empty notes reads it too: a note that the window shows stays. A
+/// clone reads the same state.
+#[derive(Default, Clone)]
+pub struct ShownNote(Arc<std::sync::Mutex<Option<String>>>);
 
 impl ShownNote {
     pub fn get(&self) -> Option<String> {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// True when the frontend reports that the main window shows `id`.
+    pub fn shows(&self, id: &str) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(id)
     }
 
     fn set(&self, id: Option<String>) {
@@ -1606,6 +1631,20 @@ mod delete_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clone_of_the_shown_note_sees_each_new_report() {
+        // The leave check holds a clone while the frontend reports a
+        // reopen.
+        let shown = ShownNote::default();
+        let check = shown.clone();
+        assert!(!check.shows("a"));
+        shown.set(Some("a".into()));
+        assert!(check.shows("a"));
+        assert!(!check.shows("b"));
+        shown.set(None);
+        assert!(!check.shows("a"));
+    }
 
     #[test]
     fn gaps_sit_at_the_end_of_the_segment_before_them() {

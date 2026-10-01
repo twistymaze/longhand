@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
 import { NoteEditor } from "../editor/NoteEditor";
+import { trackNotesSave } from "../lib/notesSaves";
 import { folderName } from "../settings/ui";
 
 /// A sync reloads the notes only after this long with no input.
@@ -194,7 +195,8 @@ export function NotesTab({
     const target = moved.current.get(id) ?? id;
     s.busy = true;
     const loadedFingerprint = loaded !== undefined ? loaded : id === current.current ? fingerprint.current : null;
-    void commands.saveSessionNotes(target, text, loadedFingerprint).then((r) => {
+    // A leave of the note waits for this save and the saves after it.
+    const saved = commands.saveSessionNotes(target, text, loadedFingerprint).then((r) => {
       s.busy = false;
       let next = s.next;
       s.next = null;
@@ -222,6 +224,7 @@ export function NotesTab({
       if (next) save(next.id, next.markdown, next.loaded);
       else if (stale.current) reloadWhenIdle();
     });
+    trackNotesSave(id, saved);
   }
 
   const send = (next: string) => {

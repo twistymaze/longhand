@@ -856,10 +856,20 @@ impl ProcessingManager {
     /// the note stays. This reads the storage folder: call it off the main
     /// thread.
     pub fn leave_note(&self, id: &str) -> Result<Leave, String> {
+        self.leave_note_unless_shown(id, &|_| false)
+    }
+
+    /// [`ProcessingManager::leave_note`], and the note stays while
+    /// `shown(id)` is true: the main window shows the note again.
+    pub fn leave_note_unless_shown(
+        &self,
+        id: &str,
+        shown: &dyn Fn(&str) -> bool,
+    ) -> Result<Leave, String> {
         let destination = settings::get_settings(&self.app).storage_folder();
         let left = self
             .removal(destination.as_deref())
-            .leave(id, chrono::Local::now().fixed_offset())
+            .leave_unless_shown(id, chrono::Local::now().fixed_offset(), shown)
             .map_err(|e| e.to_string())?;
         if left == Leave::Removed {
             self.removed_empty_notes(vec![id.to_string()]);

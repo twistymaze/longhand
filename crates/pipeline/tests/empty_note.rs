@@ -12,7 +12,7 @@ use chrono::TimeDelta;
 use common::{at, store};
 use pipeline::SharedStore;
 use pipeline::early_home::{self, EarlyHomes, EarlyState};
-use pipeline::empty_note::{Kept, Leave, Removal};
+use pipeline::empty_note::{Kept, Leave, REMOVING, Removal};
 use pipeline::in_use::{FRESH_FOR, marker_name, write_marker};
 use session_core::jobs::{Claims, RECORDED_INTO, TitleSource};
 use session_core::{Event, SessionState};
@@ -430,6 +430,124 @@ fn a_missing_notes_md_keeps_the_note() {
 
     assert_eq!(leave(&store, dest.path(), "n"), Leave::Kept(Kept::Changed));
     assert!(home.join("session.md").is_file());
+}
+
+/// The state after a removal deleted `notes.md` and could not delete
+/// `session.md`: the row records the folder, and `notes.md` is gone.
+fn stopped_removal(store: &SharedStore, home: &Path) {
+    store
+        .lock()
+        .unwrap()
+        .set_result_state(
+            "n",
+            REMOVING,
+            &serde_json::Value::from(home.to_string_lossy()),
+        )
+        .unwrap();
+    std::fs::remove_file(home.join("notes.md")).unwrap();
+}
+
+#[test]
+fn a_removal_that_stopped_after_notes_md_continues_at_the_next_leave() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    stopped_removal(&store, &home);
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Removed);
+    assert!(!home.exists());
+    assert!(!row_exists(&store, "n"));
+}
+
+#[test]
+fn a_stopped_removal_keeps_the_note_when_another_computer_changed_session_md() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    stopped_removal(&store, &home);
+    let mut doc = session_core::folder::SessionDoc::read(&home).unwrap();
+    doc.title = Some("Typed on B".into());
+    doc.title_source = Some(TitleSource::User);
+    std::fs::write(home.join("session.md"), doc.render()).unwrap();
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Kept(Kept::Changed));
+    assert!(home.join("session.md").is_file());
+    assert!(row_exists(&store, "n"));
+}
+
+#[test]
+fn a_stopped_removal_of_another_folder_does_not_accept_a_missing_notes_md() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    let other = dest.path().join("another folder");
+    store
+        .lock()
+        .unwrap()
+        .set_result_state(
+            "n",
+            REMOVING,
+            &serde_json::Value::from(other.to_string_lossy()),
+        )
+        .unwrap();
+    std::fs::remove_file(home.join("notes.md")).unwrap();
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Kept(Kept::Changed));
+    assert!(home.join("session.md").is_file());
+}
+
+// ---------------------------------------------------------------- keep: shown again
+
+fn leave_shown(store: &SharedStore, dest: &Path, shown: &dyn Fn(&str) -> bool) -> Leave {
+    Removal {
+        store,
+        claims: &Claims::default(),
+        homes: None,
+        destination: Some(dest),
+        run_id: RUN,
+    }
+    .leave_unless_shown("n", now(), shown)
+    .unwrap()
+}
+
+#[test]
+fn a_note_that_the_main_window_shows_stays() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+
+    assert_eq!(
+        leave_shown(&store, dest.path(), &|id| id == "n"),
+        Leave::Kept(Kept::Shown)
+    );
+    assert_eq!(names(&home), vec!["notes.md", "session.md"]);
+    assert!(row_exists(&store, "n"));
+}
+
+#[test]
+fn a_note_that_the_main_window_shows_again_during_the_removal_stays() {
+    // The first check passes. The user opens the note again before the
+    // files go.
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    let checks = std::cell::Cell::new(0);
+    let shown = |_: &str| {
+        checks.set(checks.get() + 1);
+        checks.get() > 1
+    };
+
+    assert_eq!(
+        leave_shown(&store, dest.path(), &shown),
+        Leave::Kept(Kept::Shown)
+    );
+    assert_eq!(checks.get(), 2);
+    assert_eq!(names(&home), vec!["notes.md", "session.md"]);
+    assert!(row_exists(&store, "n"));
+    assert_eq!(
+        store.lock().unwrap().result_state("n", REMOVING).unwrap(),
+        None
+    );
 }
 
 #[test]
