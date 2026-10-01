@@ -29,7 +29,7 @@ import { useDeleteSession } from "./DeleteSession";
 import { LevelBars } from "./LevelBars";
 import { NotesTab } from "./NotesTab";
 import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
-import { RecordingBar } from "./RecordingBar";
+import { RecordingBar, StopButton } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
 import { copyText, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu } from "./SessionMenu";
@@ -45,6 +45,9 @@ type Tab = "summary" | "transcript" | "notes";
 type TabItem = { value: Tab; label: string };
 
 // Summary is first, because a reader who returns to a note wants the summary.
+/// The time after a recording starts before Stop is available.
+export const STOP_DELAY_MS = 1000;
+
 const tabs: TabItem[] = [
   { value: "summary", label: "Summary" },
   { value: "notes", label: "My Notes" },
@@ -330,6 +333,27 @@ export function SessionPage({
     }
     void capture.refresh();
     changed();
+  };
+  // Stop takes the place of the recording button while the note records.
+  // It is unavailable for the first second, so a double click on Record
+  // does not stop the recording that it starts.
+  const [stopBusy, setStopBusy] = useState(false);
+  const [stopReady, setStopReady] = useState(false);
+  useEffect(() => {
+    setStopReady(false);
+    if (phase !== "recording") return;
+    const timer = setTimeout(() => setStopReady(true), STOP_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [phase]);
+  const stop = async () => {
+    setStopBusy(true);
+    try {
+      const r = await commands.stopRecording();
+      setNotice(r.status === "error" ? { tone: "negative", text: sentence(r.error) } : null);
+    } finally {
+      setStopBusy(false);
+    }
+    await capture.refresh();
   };
 
   // Another computer works on the note (R20, R21, R23). Its notes stay
@@ -637,12 +661,22 @@ export function SessionPage({
           </div>
         )}
         <div data-tauri-drag-region className="flex items-center justify-end gap-1">
+          {phase === "recording" && (
+            <span className="mr-1 inline-flex">
+              <StopButton disabled={stopBusy || !stopReady} onClick={() => void stop()} />
+            </span>
+          )}
           {recordButton && !deleted && (
             // A disabled button gets no pointer events, so the reason is on
             // the element around it.
             <span title={recordButton.available ? undefined : (recordButton.reason ?? undefined)} className="mr-1 inline-flex">
               <Button disabled={!recordButton.available || recordBusy} onClick={() => void record()}>
-                {recordButton.kind === "record" ? "Record" : "Resume"}
+                {/* A red dot marks the button that starts a recording. It
+                    does not move: it shows before a recording, not during. */}
+                <span className="inline-flex items-center gap-1.5">
+                  <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-negative" />
+                  {recordButton.kind === "record" ? "Record" : "Resume"}
+                </span>
               </Button>
             </span>
           )}

@@ -389,12 +389,13 @@ describe("SessionPage", () => {
     expect(tauri.calls.some((c) => c.cmd === "rename_session")).toBe(false);
   });
 
-  test("the recording bar shows Stop and the elapsed time, and the quiet-input warning only while the input is quiet", async () => {
+  test("the recording bar shows the elapsed time, and the quiet-input warning only while the input is quiet", async () => {
     const e = entry("rec", { state: "capturing" });
     mockPage(e);
     const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
     const bar = screen.getByRole("region", { name: "Recording" });
-    expect(within(bar).getByRole("button", { name: "Stop" })).toBeTruthy();
+    // Stop is in the toolbar, in the place of Record and Resume.
+    expect(within(bar).queryByRole("button", { name: "Stop" })).toBeNull();
     expect(bar.textContent).toContain("00:05:07");
     expect(within(bar).queryByText(/hears almost nothing/)).toBeNull();
     expect(within(bar).queryByRole("img", { name: /Audio level/ })).toBeNull();
@@ -670,11 +671,14 @@ describe("SessionPage", () => {
     });
   });
 
-  test("Stop stops the recording", async () => {
+  test("Stop is unavailable for the first second, then stops the recording", async () => {
     const e = entry("rec", { state: "capturing" });
     const tauri = mockPage(e, {}, { stop_recording: () => "rec" });
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Stop" }));
+    const stop = screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement;
+    expect(stop.disabled).toBe(true);
+    await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
+    await userEvent.setup().click(stop);
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true);
   });
 
