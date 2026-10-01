@@ -1318,9 +1318,29 @@ fn user_content(body: &str) -> String {
         .to_string()
 }
 
-/// Whether a completion request is the title call.
+/// The role and the content of each message of a completion request.
+fn request_messages(body: &str) -> Vec<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap();
+    v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["role"].as_str().unwrap_or_default().to_string(),
+                m["content"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Whether a completion request is a title turn. The title request is the
+/// last message: in a title turn, the second message is the transcript
+/// (KTD2).
 fn is_title_call(body: &str) -> bool {
-    user_content(body).contains("Propose a title")
+    request_messages(body)
+        .last()
+        .is_some_and(|(_, content)| content.contains("Propose a title"))
 }
 
 fn completions(mock: &http::Mock) -> Vec<String> {
@@ -2068,6 +2088,12 @@ async fn the_first_summary_uses_the_prompt_that_was_active_when_the_note_started
             .unwrap()
             .unwrap();
     assert_eq!(saved, started);
+    // The title request carries the snapshot's title text.
+    let request = pipeline::summarize::pending_title_request(&r.store, "s")
+        .unwrap()
+        .expect("a title request");
+    let ask = &request.messages.last().unwrap().content;
+    assert!(ask.contains("Name the team."), "{ask}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3865,13 +3891,6 @@ fn title_of(r: &Rig) -> Option<Title> {
     r.store.lock().unwrap().title("s").unwrap()
 }
 
-fn proposed(text: &str) -> Option<Title> {
-    Some(Title {
-        text: text.into(),
-        source: TitleSource::Proposed,
-    })
-}
-
 fn summary_is_complete(folder: &std::path::Path) -> bool {
     let text = std::fs::read_to_string(folder.join("summary.md")).unwrap();
     matches!(
@@ -3880,35 +3899,95 @@ fn summary_is_complete(folder: &std::path::Path) -> bool {
     )
 }
 
+// The Summarize stage stores the title turn and sends no title call
+// (KTD3). The title job of U6 sends it.
+
+/// The pending title request of "s".
+fn pending(r: &Rig) -> Option<pipeline::summarize::TitleRequest> {
+    pipeline::summarize::pending_title_request(&r.store, "s").unwrap()
+}
+
+/// The role and the content of each message of a stored title request.
+fn pending_messages(request: &pipeline::summarize::TitleRequest) -> Vec<(String, String)> {
+    request
+        .messages
+        .iter()
+        .map(|m| (m.role.to_string(), m.content.clone()))
+        .collect()
+}
+
+fn cost_of(messages: &[summarize::client::Message]) -> usize {
+    summarize::tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
+}
+
+/// The reply cap of a title turn of `messages` in a context of `limit`
+/// tokens (KTD12).
+fn cap_for(messages: &[summarize::client::Message], limit: u32) -> u32 {
+    let used = summarize::tokens::with_margin(cost_of(messages)) as u32;
+    summarize::tokens::reply_reserve(limit).min(limit.saturating_sub(used))
+}
+
+/// The final call's messages of a stored title request, as the client sent
+/// them, then the summary reply and the title request.
+fn assert_title_turn_of(
+    request: &pipeline::summarize::TitleRequest,
+    final_call: &str,
+    summary: &str,
+    title_text: &str,
+) {
+    let stored = pending_messages(request);
+    let sent = request_messages(final_call);
+    assert_eq!(stored.len(), sent.len() + 2);
+    assert_eq!(stored[..sent.len()], sent[..]);
+    assert_eq!(
+        stored[sent.len()],
+        ("assistant".to_string(), summary.into())
+    );
+    let (role, ask) = &stored[sent.len() + 1];
+    assert_eq!(role, "user");
+    assert!(ask.contains("Propose a title for this session"), "{ask}");
+    assert!(ask.contains(title_text.trim()), "{ask}");
+    assert!(ask.ends_with(summarize::prompts::TITLE_RULES), "{ask}");
+}
+
+const TITLE_MARKER: &str = "Name the title after the main decision. TITLE-MARKER";
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_proposed_title_is_cleaned_and_names_the_saved_folder() {
+async fn a_whole_call_run_stores_its_title_turn_and_sends_no_title_call() {
     let r = rig().await;
-    let title = title_reply("  \"Budget Review.\"  ");
-    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            title_text: TITLE_MARKER.into(),
+            ..custom_prompt("Team sync", "SUMMARY-MARKER")
+        },
+    );
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("A short summary.")),
+        Some(8_192),
+    )
+    .await;
     let folder = saved_session(&r, None).await;
-    assert_eq!(title_calls(&mock).len(), 1);
-    assert_eq!(title_of(&r), proposed("Budget Review"));
-    assert_eq!(folder, r.dest.join(name_for(Some("Budget Review"))));
-    assert_eq!(document_title(&folder).as_deref(), Some("Budget Review"));
-    // The title call carries the summary.
-    assert!(title_calls(&mock)[0].contains("A short summary."));
+    assert!(title_calls(&mock).is_empty());
+    let all = completions(&mock);
+    assert_eq!(all.len(), 1, "one whole call and no title call");
+    let request = pending(&r).expect("a title request");
+    assert_title_turn_of(&request, &all[0], "A short summary.", TITLE_MARKER);
+    // A short summary leaves the whole reply reserve for the title.
+    assert_eq!(request.cap, summarize::tokens::reply_reserve(8_192));
+    assert_eq!(request.cap, cap_for(&request.messages, 8_192));
+    // No title is proposed until the title job runs (U6).
+    assert_eq!(title_of(&r), None);
+    assert_eq!(folder, r.dest.join(name_for(None)));
+    let text = std::fs::read_to_string(folder.join("summary.md")).unwrap();
+    let summary = session_core::folder::Summary::parse(&text).unwrap();
+    assert_eq!(summary.body.trim(), "A short summary.");
+    assert!(summary_is_complete(&folder));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_long_proposed_title_is_cut_to_the_folder_name_length() {
-    let r = rig().await;
-    let long = "word ".repeat(100);
-    let title = title_reply(&format!("{long}\nA second line"));
-    summaries_and_titles(&r, a_summary(), &title, None).await;
-    saved_session(&r, None).await;
-    let stored = title_of(&r).unwrap().text;
-    assert!(stored.chars().count() <= session_save::naming::MAX_TITLE_CHARS);
-    assert!(stored.starts_with("word word"), "{stored}");
-    assert!(!stored.contains("second"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_session_with_a_user_title_makes_no_title_call() {
+async fn a_session_with_a_user_title_stores_no_title_request() {
     // Covers AE9.
     let r = rig().await;
     let title = title_reply("Something else");
@@ -3916,52 +3995,54 @@ async fn a_session_with_a_user_title_makes_no_title_call() {
     let folder = saved_session(&r, Some("Budget review")).await;
     assert!(title_calls(&mock).is_empty());
     assert_eq!(chat_calls(&mock).len(), 1);
+    assert_eq!(pending(&r), None);
     assert_eq!(title_of(&r).unwrap().text, "Budget review");
     assert_eq!(folder, r.dest.join(name_for(Some("Budget review"))));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_failing_title_call_leaves_no_title_and_the_summary_complete() {
+async fn a_session_with_no_speech_stores_no_title_request() {
     let r = rig().await;
-    let title: TitleReply = Arc::new(Mutex::new((500, r#"{"error":"overloaded"}"#.into())));
-    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let mock = numbered_summaries(&r).await;
     let folder = saved_session(&r, None).await;
-    assert_eq!(title_calls(&mock).len(), 1);
-    assert_eq!(title_of(&r), None);
-    assert_eq!(folder, r.dest.join(name_for(None)));
-    assert!(summary_is_complete(&folder));
-    assert!(
-        !r.events
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|e| matches!(e, RunnerEvent::SummaryUnavailable { .. }))
-    );
+    assert!(pending(&r).is_some());
+    // Another computer wrote a transcript with no turns.
+    std::fs::write(folder.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(completions(&mock).len(), 1, "nothing to send");
+    assert_eq!(pending(&r), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_regeneration_on_a_proposed_title_proposes_again_and_renames_the_folder() {
+async fn a_regeneration_stores_the_title_turn_of_the_new_summary() {
     // Covers AE4.
     let r = rig().await;
-    let title = title_reply("First");
-    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let mock = numbered_summaries(&r).await;
     let old = saved_session(&r, None).await;
-    assert_eq!(old, r.dest.join(name_for(Some("First"))));
+    let first = pending(&r).expect("a title request");
+    assert_title_turn_of(
+        &first,
+        &completions(&mock)[0],
+        "Summary number 0.",
+        &summarize::prompts::topic_summary().title_text,
+    );
 
-    *title.lock().unwrap() = (200, http::completion("Second"));
-    let summary = r.runner.regenerate_summary("s").await.unwrap();
-    let new = r.dest.join(name_for(Some("Second")));
-    assert_eq!(title_calls(&mock).len(), 2);
-    assert_eq!(title_of(&r), proposed("Second"));
-    assert_eq!(summary, new.join("summary.md"));
-    assert_eq!(saved_folder(&r, "s"), new);
-    assert_eq!(destination_entries(&r), [name_for(Some("Second"))]);
-    assert_eq!(document_title(&new).as_deref(), Some("Second"));
-    assert!(summary_is_complete(&new));
+    r.runner.regenerate_summary("s").await.unwrap();
+    let all = completions(&mock);
+    assert_eq!(all.len(), 2, "one summary call and no title call");
+    let second = pending(&r).expect("a title request");
+    assert_title_turn_of(
+        &second,
+        &all[1],
+        "Summary number 1.",
+        &summarize::prompts::topic_summary().title_text,
+    );
+    assert_eq!(title_of(&r), None);
+    assert_eq!(saved_folder(&r, "s"), old);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_regeneration_on_a_user_title_keeps_the_title() {
+async fn a_regeneration_on_a_user_title_keeps_the_title_and_stores_no_title_request() {
     // Covers AE3.
     let r = rig().await;
     let title = title_reply("Proposed");
@@ -3969,27 +4050,133 @@ async fn a_regeneration_on_a_user_title_keeps_the_title() {
     let folder = saved_session(&r, Some("Budget review")).await;
     r.runner.regenerate_summary("s").await.unwrap();
     assert!(title_calls(&mock).is_empty());
+    assert_eq!(pending(&r), None);
     assert_eq!(title_of(&r).unwrap().source, TitleSource::User);
     assert_eq!(title_of(&r).unwrap().text, "Budget review");
     assert_eq!(saved_folder(&r, "s"), folder);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_regeneration_on_a_session_saved_with_no_title_proposes_one_and_renames_the_folder() {
-    // R32: a session saved before titles has no title.
+async fn a_resumed_summary_sends_no_final_call_again_and_stores_the_same_title_turn() {
+    // R15.
     let r = rig().await;
-    let title: TitleReply = Arc::new(Mutex::new((500, "{}".into())));
-    summaries_and_titles(&r, a_summary(), &title, None).await;
-    let old = saved_session(&r, None).await;
-    assert_eq!(old, r.dest.join(name_for(None)));
-
-    *title.lock().unwrap() = (200, http::completion("Budget review"));
+    let mock = numbered_summaries(&r).await;
+    saved_session(&r, None).await;
+    let first = pending(&r).expect("a title request");
+    // A stub: the stage stopped after the final call, before it completed
+    // and stored the title request.
+    {
+        let s = r.store.lock().unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, checkpoint::DONE)
+            .unwrap();
+    }
+    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    assert_eq!(pending(&r), None);
     r.runner.regenerate_summary("s").await.unwrap();
-    let new = r.dest.join(name_for(Some("Budget review")));
-    assert_eq!(title_of(&r), proposed("Budget review"));
-    assert_eq!(saved_folder(&r, "s"), new);
-    assert_eq!(destination_entries(&r), [name_for(Some("Budget review"))]);
-    assert_eq!(document_title(&new).as_deref(), Some("Budget review"));
+    assert_eq!(
+        completions(&mock).len(),
+        1,
+        "the final reply came from its checkpoint"
+    );
+    assert_eq!(pending(&r), Some(first));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split() {
+    // KTD4.
+    use summarize::tokens::{reply_reserve, with_margin};
+    let big = rig().await;
+    let mock = summaries_from(
+        &big,
+        http::Reply::Json(200, http::completion("Notes.")),
+        Some(100_000),
+    )
+    .await;
+    long_session(&big);
+    assert_eq!(big.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(chat_calls(&mock).len(), 1);
+    let request = pending(&big).expect("a title request");
+    let whole = &request.messages[..request.messages.len() - 2];
+    let cost = cost_of(whole);
+    let reserve =
+        summarize::prompts::title_reserve(&summarize::prompts::topic_summary().title_text);
+    // The smallest context that holds the whole call without the title
+    // reserve. It does not hold the whole call with it.
+    let limit = (2_048..)
+        .find(|&l| with_margin(cost) + reply_reserve(l) as usize <= l as usize)
+        .unwrap();
+    assert!(with_margin(cost + reserve) + reply_reserve(limit) as usize > limit as usize);
+
+    let r = rig().await;
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("Notes.")),
+        Some(limit),
+    )
+    .await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[0].contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[0][..80]
+    );
+    let request = pending(&r).expect("a title request");
+    assert!(request.cap >= summarize::prompts::TITLE_REPLY_MIN);
+    assert!(with_margin(cost_of(&request.messages)) + request.cap as usize <= limit as usize);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_title_reply_cap_is_what_the_context_has_left() {
+    // KTD12.
+    use summarize::prompts::{TITLE_REPLY_MIN, title_turn, topic_summary};
+    use summarize::tokens::reply_reserve;
+    const LIMIT: u32 = 4_096;
+    let run = |summary: String| async move {
+        let r = rig().await;
+        summaries_from(
+            &r,
+            http::Reply::Json(200, http::completion(&summary)),
+            Some(LIMIT),
+        )
+        .await;
+        let folder = saved_session(&r, None).await;
+        (pending(&r), folder, r)
+    };
+
+    // A short summary gets the whole reply reserve.
+    let (short, _, _r) = run("A short summary.".into()).await;
+    let short = short.expect("a title request");
+    assert_eq!(short.cap, reply_reserve(LIMIT));
+    let final_call = &short.messages[..short.messages.len() - 2];
+
+    // The summary lengths that leave the title less than the reserve, and
+    // less than the minimum.
+    let title_text = topic_summary().title_text;
+    let cap_with = |words: usize| {
+        cap_for(
+            &title_turn(final_call, &"word ".repeat(words), &title_text),
+            LIMIT,
+        )
+    };
+    let near = (0..)
+        .find(|&w| cap_with(w) < reply_reserve(LIMIT) - 100)
+        .unwrap();
+    let over = (near..).find(|&w| cap_with(w) < TITLE_REPLY_MIN).unwrap();
+
+    let (request, _, _r) = run("word ".repeat(near)).await;
+    let request = request.expect("a title request");
+    assert!(request.cap < reply_reserve(LIMIT), "{}", request.cap);
+    assert!(request.cap >= TITLE_REPLY_MIN, "{}", request.cap);
+    assert_eq!(request.cap, cap_for(&request.messages, LIMIT));
+    let used = summarize::tokens::with_margin(cost_of(&request.messages));
+    assert!(used + request.cap as usize <= LIMIT as usize);
+
+    // A cap below the minimum stores no request, and the summary completes.
+    let (none, folder, _r) = run("word ".repeat(over)).await;
+    assert_eq!(none, None);
+    assert!(summary_is_complete(&folder));
 }
 
 const DOCUMENT: &str = "# Plan\n\n- [00:00:01] the rules changed\n- **bring snacks**\n";
@@ -4020,11 +4207,25 @@ async fn a_notes_edit_after_the_run_starts_reaches_no_request_of_that_run() {
             .count()
             > 2
     );
-    let titles = title_calls(&mock);
-    assert_eq!(titles.len(), 1);
-    for c in calls.iter().chain(&titles) {
+    assert!(title_calls(&mock).is_empty());
+    for c in &calls {
         assert_eq!(c.matches(DOCUMENT).count(), 1, "{c}");
         assert!(!c.contains("an edit made later"));
+    }
+    // A long run stores the title turn on the last merge's messages.
+    let all = completions(&mock);
+    let last = all.last().unwrap();
+    assert!(user_content(last).contains("Combine these into the summary of the whole session"));
+    let request = pending(&r).expect("a title request");
+    assert_title_turn_of(
+        &request,
+        last,
+        "Notes on a part.",
+        &summarize::prompts::topic_summary().title_text,
+    );
+    for (_, content) in pending_messages(&request) {
+        assert!(content.matches(DOCUMENT).count() <= 1, "{content}");
+        assert!(!content.contains("an edit made later"));
     }
 }
 
@@ -4053,6 +4254,10 @@ async fn a_notes_document_longer_than_the_budget_is_cut_and_every_request_fits()
             content.len()
         );
     }
+    // The stored title turn also fits, with its reply cap.
+    let request = pending(&r).expect("a title request");
+    let used = summarize::tokens::with_margin(cost_of(&request.messages));
+    assert!(used + request.cap as usize <= 2_048);
 }
 
 // ------------------------------------------------------------- delete (U9)
@@ -4991,20 +5196,23 @@ async fn changed_processing_audio_during_summary_stops_save_and_retry_verifies_a
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn transcribe_again_proposes_no_title_and_keeps_the_folder_name() {
+async fn transcribe_again_stores_no_title_request_and_keeps_the_folder_name() {
     let r = rig().await;
     let title = title_reply("First");
     let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
     let folder = saved_session(&r, None).await;
-    assert_eq!(title_of(&r), proposed("First"));
+    // The title job of the first run sent its request (U6).
+    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    let before = completions(&mock).len();
 
-    *title.lock().unwrap() = (200, http::completion("Second"));
     confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert_eq!(title_calls(&mock).len(), 1, "no title call for the run");
-    assert_eq!(title_of(&r), proposed("First"));
+    assert_eq!(completions(&mock).len(), before + 1, "one summary call");
+    assert!(title_calls(&mock).is_empty());
+    assert_eq!(pending(&r), None);
+    assert_eq!(title_of(&r), None);
     assert_eq!(saved_folder(&r, "s"), folder);
-    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
+    assert_eq!(destination_entries(&r), [name_for(None)]);
 }
 
 /// The transcript that the stored checkpoints of "s" give.

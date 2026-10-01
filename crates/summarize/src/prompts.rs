@@ -184,10 +184,6 @@ person's name only when the data makes clear who that person is. Never guess \
 or invent a name. These rules apply even when the instructions above say \
 otherwise.";
 
-const TITLE_SHAPE: &str = "Propose a title for the session from its summary \
-and its notes. Reply with the title only: one line of plain text, at most eight \
-words, with no quotes, no Markdown and no full stop at the end.";
-
 const MERGE_RULE: &str = "The <summary> blocks are notes on consecutive parts \
 of one session, in order. Neighbouring parts overlap slightly: merge what they \
 repeat.";
@@ -419,27 +415,6 @@ pub fn title_reserve(title_text: &str) -> usize {
         + TITLE_REPLY_MIN as usize
 }
 
-/// The title call, after the final summary (KTD7). The reply is one line.
-/// [`title_turn`] replaces it.
-pub fn title(summary: &str, notes: &str) -> Vec<Message> {
-    vec![
-        Message {
-            role: "system",
-            content: format!(
-                "You propose titles for recorded conversations. {DATA_RULE}\n\n{TITLE_SHAPE}"
-            ),
-        },
-        Message {
-            role: "user",
-            content: format!(
-                "{}{}\nPropose a title for this session.",
-                block("summary", "", summary.lines().map(str::to_string)),
-                notes_block(notes)
-            ),
-        },
-    ]
-}
-
 /// What a prompt costs with no transcript and no summaries: its fixed
 /// parts, `notes` and the summary prompt's `text`. The chunk allowance
 /// subtracts it. Every merge layer reserves the room for `text`, because
@@ -460,5 +435,4 @@ pub fn overhead(notes: &str, text: &str) -> usize {
         .max(cost(&merge(&[], true, notes, text)))
         .max(cost(&merge(&[], false, notes, text)))
         .max(cost(&whole(&[], notes, text)))
-        .max(cost(&title("", notes)))
 }
