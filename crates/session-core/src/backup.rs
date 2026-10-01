@@ -18,17 +18,22 @@
 //!
 //! 1. Make the backup folder. On disk: a folder with no entries and no flag.
 //!    [`undo_incomplete`] removes it.
-//! 2. Write the flag, then the marker (if any). On disk: the flag and no
-//!    entries. [`undo_incomplete`] removes the folder.
+//! 2. Write the flag, then the marker (if any). Sync the two files, the
+//!    backup folder, `database-backups/` and the app data folder. On disk:
+//!    the flag and no entries. [`undo_incomplete`] removes the folder.
 //! 3. Rename the entries. On disk: the flag and some entries.
 //!    [`undo_incomplete`] moves them back and removes the folder.
-//! 4. Remove the flag. On disk: a complete backup.
+//! 4. Sync the backup folder and the app data folder, then remove the flag.
+//!    On disk: a complete backup.
+//!
+//! The syncs make sure that a power loss cannot keep a rename but lose the
+//! flag or the marker. On Windows, a directory sync does nothing.
 //!
 //! Recovery is manual: put back both the database and the working folder,
 //! then open the build that owns the database.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -245,11 +250,17 @@ fn fill(
     retry_for: Duration,
 ) -> Result<(), BackupError> {
     let flag = folder.join(INCOMPLETE_FLAG);
-    fs::write(&flag, INCOMPLETE_TEXT).map_err(io_error("write", &flag))?;
+    write_synced(&flag, INCOMPLETE_TEXT)?;
     if kind == BackupKind::ChosenInAlert {
-        let marker = folder.join(REBUILD_MARKER);
-        fs::write(&marker, MARKER_TEXT).map_err(io_error("write", &marker))?;
+        write_synced(&folder.join(REBUILD_MARKER), MARKER_TEXT)?;
     }
+    // Put the flag, the marker and the new folders on the disk before the
+    // first rename. Otherwise, after a power loss, the disk can show the
+    // renamed entries without the flag, and the undo at the next launch
+    // skips the folder.
+    sync_dir(folder)?;
+    sync_dir(&app_data.join(BACKUPS_DIR))?;
+    sync_dir(app_data)?;
     for name in order {
         let from = app_data.join(name);
         if !exists(&from) {
@@ -258,7 +269,35 @@ fn fill(
         rename_with_retry(rename, &from, &folder.join(name), retry_for)
             .map_err(io_error("move", &from))?;
     }
+    // Put the renames on the disk before the flag goes. Otherwise, after a
+    // power loss, the disk can show no flag and only some of the entries.
+    sync_dir(folder)?;
+    sync_dir(app_data)?;
     fs::remove_file(&flag).map_err(io_error("remove", &flag))
+}
+
+/// Write `text` to a new file at `path` and put the file on the disk.
+fn write_synced(path: &Path, text: &str) -> Result<(), BackupError> {
+    let mut file = fs::File::create(path).map_err(io_error("write", path))?;
+    file.write_all(text.as_bytes())
+        .map_err(io_error("write", path))?;
+    file.sync_all().map_err(io_error("sync", path))
+}
+
+/// Put the entries of the directory `dir` on the disk, so that a new or
+/// renamed entry stays after a power loss.
+#[cfg(not(windows))]
+fn sync_dir(dir: &Path) -> Result<(), BackupError> {
+    fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .map_err(io_error("sync", dir))
+}
+
+/// On Windows, `File::open` cannot open a directory, and NTFS records
+/// directory changes in its journal. This function does nothing there.
+#[cfg(windows)]
+fn sync_dir(_dir: &Path) -> Result<(), BackupError> {
+    Ok(())
 }
 
 /// Make `database-backups/<UTC time>/`. A second folder in the same second

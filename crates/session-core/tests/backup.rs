@@ -198,6 +198,19 @@ fn an_undo_never_overwrites_an_entry_in_the_app_data_folder() {
 }
 
 #[test]
+fn an_undo_removes_a_backup_folder_with_no_flag_and_no_entries() {
+    let app = tempfile::tempdir().unwrap();
+    // A crash after the folder was made, before the flag was written.
+    let empty = app.path().join(BACKUPS_DIR).join("2026-09-30T15-28-00Z");
+    fs::create_dir_all(&empty).unwrap();
+
+    let undone = undo_incomplete(app.path()).unwrap();
+
+    assert_eq!(undone, vec![empty.clone()]);
+    assert!(!empty.exists());
+}
+
+#[test]
 fn an_undo_leaves_complete_backups_alone() {
     let app = tempfile::tempdir().unwrap();
     populate(app.path());
@@ -221,6 +234,19 @@ fn an_orphan_wal_moves_aside_and_a_new_database_has_none_of_its_rows() {
     assert!(!backup.join(INCOMPLETE_FLAG).exists());
     drop(Store::open(&app.path().join(DB)).unwrap());
     assert_eq!(rows_in_t(&app.path().join(DB)), 0);
+}
+
+#[test]
+fn a_lone_shm_moves_aside() {
+    let app = tempfile::tempdir().unwrap();
+    fs::write(app.path().join(SHM), b"shm bytes").unwrap();
+
+    let backup = move_orphan_wal(app.path()).unwrap().expect("a backup");
+
+    assert!(!app.path().join(SHM).exists());
+    assert_eq!(fs::read(backup.join(SHM)).unwrap(), b"shm bytes");
+    assert!(!backup.join(WAL).exists());
+    assert!(!backup.join(INCOMPLETE_FLAG).exists());
 }
 
 #[test]
