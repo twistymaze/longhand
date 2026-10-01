@@ -227,9 +227,24 @@ pub(crate) fn stage_name(stage: session_core::Stage) -> String {
         .unwrap_or_default()
 }
 
-impl From<RunnerEvent> for ProcessingUpdate {
+/// What the app sends for a runner event.
+enum Sent {
+    Processing(ProcessingUpdate),
+    /// A proposed title changes a saved note and its folder name, as a
+    /// sync does. Home and the note page read the note again on it
+    /// (KTD13).
+    Library(LibraryChanged),
+}
+
+impl From<RunnerEvent> for Sent {
     fn from(event: RunnerEvent) -> Self {
         let (session_id, update) = match event {
+            RunnerEvent::TitleProposed { session_id, .. } => {
+                return Self::Library(LibraryChanged {
+                    changed: vec![session_id],
+                    removed: Vec::new(),
+                });
+            }
             RunnerEvent::StageStarted { session_id, stage } => (
                 session_id,
                 ProcessingStep::StageStarted {
@@ -310,7 +325,7 @@ impl From<RunnerEvent> for ProcessingUpdate {
             RunnerEvent::Cancelled { session_id } => (session_id, ProcessingStep::Cancelled),
             RunnerEvent::Finished { session_id } => (session_id, ProcessingStep::Finished),
         };
-        Self { session_id, update }
+        Self::Processing(ProcessingUpdate { session_id, update })
     }
 }
 
@@ -738,8 +753,13 @@ impl ProcessingManager {
                 {
                     processing.in_use_changed();
                 }
-                if let Err(e) = ProcessingUpdate::from(event).emit(&events) {
-                    log::warn!("could not emit a processing update: {e}");
+                match Sent::from(event) {
+                    Sent::Processing(update) => {
+                        if let Err(e) = update.emit(&events) {
+                            log::warn!("could not emit a processing update: {e}");
+                        }
+                    }
+                    Sent::Library(changes) => emit_library_changed(&events, changes),
                 }
             }),
         });
@@ -1399,9 +1419,35 @@ mod tests {
         }
     }
 
+    /// The processing update that the app sends for `event`.
+    fn processing_update(event: RunnerEvent) -> ProcessingUpdate {
+        match Sent::from(event) {
+            Sent::Processing(update) => update,
+            Sent::Library(_) => panic!("a library change, not a processing update"),
+        }
+    }
+
+    #[test]
+    fn a_proposed_title_reaches_the_app_as_a_library_change_of_the_note() {
+        // Home and the note page read the note again on a library change.
+        let Sent::Library(changes) = Sent::from(RunnerEvent::TitleProposed {
+            session_id: "s".into(),
+            title: "Weekly sync".into(),
+        }) else {
+            panic!("a processing update, not a library change");
+        };
+        assert_eq!(
+            changes,
+            LibraryChanged {
+                changed: vec!["s".into()],
+                removed: Vec::new(),
+            }
+        );
+    }
+
     #[test]
     fn speaker_progress_reaches_the_surface_with_its_attempt() {
-        let update = ProcessingUpdate::from(RunnerEvent::SpeakerProgress {
+        let update = processing_update(RunnerEvent::SpeakerProgress {
             session_id: "s".into(),
             progress: pipeline::progress::SpeakerProgress {
                 attempt: "a1".into(),
@@ -1427,7 +1473,7 @@ mod tests {
 
     #[test]
     fn transcription_progress_keeps_its_window_counts() {
-        let update = ProcessingUpdate::from(RunnerEvent::Progress {
+        let update = processing_update(RunnerEvent::Progress {
             session_id: "s".into(),
             stage: session_core::Stage::Transcribe,
             segment: 1,

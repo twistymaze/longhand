@@ -7,8 +7,9 @@
 //! learns it for the endpoint, and re-chunks that layer.
 //!
 //! The notes document goes whole with every call (KTD6), as it was when the
-//! run started (R36). After the final summary, one more call proposes a
-//! title, unless the user set one (KTD7).
+//! run started (R36). After the final summary, the stage stores the title
+//! turn as a pending title request, unless the user set a title, and sends
+//! no title call (KTD3). The title job sends the request after the save.
 //!
 //! A run takes a snapshot of the active summary prompt before its first
 //! call and keeps it to the end, also after a resume (KTD4). The snapshot's
@@ -45,9 +46,14 @@ pub const WHOLE: &str = "whole";
 /// leave too little of the model's context for the transcript (KTD8).
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
 shorten the prompt in Settings or choose a model with a larger context";
-/// The proposed title, a string, once the title call has run. An empty
+/// The proposed title, a string, once the title turn has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
+/// The pending title turn, a [`TitleRequest`] (KTD3). The Summarize stage
+/// stores it after the final call, and the title job sends it and deletes
+/// it. It is a row in the store, so it stays after Save removes the working
+/// folder.
+pub const TITLE_REQUEST: &str = "title-request";
 /// The fingerprint of the transcript and the notes that the cached calls
 /// were made from, a string. A run whose input has another fingerprint
 /// makes every call again.
@@ -113,6 +119,105 @@ impl Plan {
         }
         self.layers.push(room);
     }
+}
+
+/// The title turn that the Summarize stage stores for the title job: the
+/// whole request (KTD1) and its reply cap (KTD12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TitleRequest {
+    pub messages: Vec<Message>,
+    /// The reply cap in tokens. It is never less than
+    /// [`prompts::TITLE_REPLY_MIN`].
+    pub cap: u32,
+}
+
+/// The stored form of a [`TitleRequest`]. A [`Message`] has a fixed role
+/// text, so the read maps each role to it.
+#[derive(Deserialize)]
+struct StoredTitleRequest {
+    messages: Vec<StoredMessage>,
+    cap: u32,
+}
+
+#[derive(Deserialize)]
+struct StoredMessage {
+    role: String,
+    content: String,
+}
+
+/// The pending title request of `session_id`, or `None` when no title turn
+/// is due.
+pub fn pending_title_request(
+    store: &SharedStore,
+    session_id: &str,
+) -> Result<Option<TitleRequest>, StageError> {
+    let Some(stored) =
+        checkpoint::get::<StoredTitleRequest>(store, session_id, Stage::Summarize, TITLE_REQUEST)?
+    else {
+        return Ok(None);
+    };
+    let messages = stored
+        .messages
+        .into_iter()
+        .map(|m| {
+            let role = match m.role.as_str() {
+                "system" => "system",
+                "user" => "user",
+                "assistant" => "assistant",
+                other => {
+                    return Err(StageError::Failed(format!(
+                        "the title request of {session_id} has a message with the unknown role {other:?}"
+                    )));
+                }
+            };
+            Ok(Message {
+                role,
+                content: m.content,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(Some(TitleRequest {
+        messages,
+        cap: stored.cap,
+    }))
+}
+
+/// Delete the pending title request of `session_id`. A session with no
+/// request is not an error.
+pub fn delete_title_request(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
+    Ok(lock(store).delete_checkpoint(session_id, Stage::Summarize, TITLE_REQUEST)?)
+}
+
+/// Send the title turn `request` to `endpoint` with its reply cap, and
+/// clean the reply with [`clean_title`] (KTD13). The inner error is a
+/// failed turn or a reply that was cut off: the note then keeps its title
+/// (R14). Only a cancel is an outer error.
+pub fn send_title_request(
+    session_id: &str,
+    endpoint: &SummaryEndpoint,
+    request: &TitleRequest,
+    control: &dyn Control,
+) -> Result<Result<String, String>, StageError> {
+    let client = match Client::new(Endpoint {
+        base_url: endpoint.base_url.clone(),
+        model: endpoint.model.clone(),
+        credential: endpoint.credential.clone(),
+    }) {
+        Ok(client) => client,
+        Err(e) => return Ok(Err(e.to_string())),
+    };
+    if client.crosses_network_unencrypted() {
+        log::warn!(
+            "proposing a title for {session_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
+            client.host()
+        );
+    }
+    let runtime = Runtime::new()?;
+    control.proceed()?;
+    let reply = runtime.block_on(client.complete(&request.messages, request.cap), control)?;
+    Ok(reply
+        .map(|completion| clean_title(&completion.text))
+        .map_err(|e| e.to_string()))
 }
 
 fn call_key(layer: usize, index: usize) -> String {
@@ -213,7 +318,7 @@ fn session_notes(store: &SharedStore, session_id: &str) -> Result<String, StageE
     Ok(notes)
 }
 
-/// The title call's reply as a title: its first line with text, with no
+/// The title turn's reply as a title: its first line with text, with no
 /// heading marks, no `Title:` label, no quotes around it and no full stop
 /// at the end, cut to the length that a folder name keeps (KTD7).
 pub fn clean_title(reply: &str) -> String {
@@ -223,7 +328,11 @@ pub fn clean_title(reply: &str) -> String {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
-    let mut title = line.trim_start_matches('#').trim();
+    // A bold label, as in `**Title:** Weekly sync`, loses its marks first.
+    let mut title = line
+        .trim_start_matches('#')
+        .trim()
+        .trim_start_matches(MARKS);
     if title
         .get(..6)
         .is_some_and(|label| label.eq_ignore_ascii_case("title:"))
@@ -245,8 +354,8 @@ pub fn clean_title(reply: &str) -> String {
     cut.trim_end().to_string()
 }
 
-/// Forget a summary and its title proposal, so the stage runs again from
-/// the transcript (R19, R31).
+/// Forget a summary, its title proposal and its title request, so the
+/// stage runs again from the transcript (R19, R31).
 pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     Ok(lock(store).clear_checkpoints(session_id, Stage::Summarize)?)
 }
@@ -380,15 +489,16 @@ pub fn produce(
         control,
         notes: &notes,
         text: &prompt.text,
+        title_text: &prompt.title_text,
         progress: &mut *progress,
     };
-    let text = if turns.is_empty() {
+    let done = if turns.is_empty() {
         // Nothing was said (AE16): there is nothing to send.
-        String::from("Nothing was transcribed in this note.")
+        None
     } else {
-        loop {
+        Some(loop {
             match calls.summarize(&turns, &plan) {
-                Ok(text) => break text,
+                Ok(done) => break done,
                 Err(Pressure { layer, room }) if shrinks < MAX_SHRINKS => {
                     shrinks += 1;
                     let smaller = ((room.limit as f64 * SHRINK) as u32).max(MIN_LIMIT);
@@ -445,12 +555,28 @@ pub fn produce(
                 }
                 Err(Stop(e)) => return Err(e),
             }
+        })
+    };
+    // A title problem never fails the summary (R14): an error is logged,
+    // and the note keeps its title.
+    let text = match done {
+        Some(done) => {
+            if let Err(e) = calls.store_title_request(&done) {
+                log::warn!("could not store the title request of {session_id}: {e}");
+                if let Err(e) = delete_title_request(store, session_id) {
+                    log::warn!("could not delete the title request of {session_id}: {e}");
+                }
+            }
+            done.reply
+        }
+        None => {
+            // With nothing said, no title turn is due.
+            if let Err(e) = delete_title_request(store, session_id) {
+                log::warn!("could not delete the title request of {session_id}: {e}");
+            }
+            String::from("Nothing was transcribed in this note.")
         }
     };
-    if !turns.is_empty() {
-        let room = *plan.layers.last().expect("a plan has a layer");
-        calls.propose_title(&text, room)?;
-    }
 
     Ok(Summary {
         meta: SummaryMeta::Complete {
@@ -465,12 +591,14 @@ pub fn produce(
     })
 }
 
-/// Remove the plan, every cached call and the title proposal.
+/// Remove the plan, every cached call, the title proposal and the title
+/// request.
 fn forget_calls(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
     forget_layers_from(store, session_id, 0)?;
     let guard = lock(store);
     guard.delete_checkpoint(session_id, Stage::Summarize, PLAN)?;
     guard.delete_checkpoint(session_id, Stage::Summarize, TITLE)?;
+    guard.delete_checkpoint(session_id, Stage::Summarize, TITLE_REQUEST)?;
     Ok(())
 }
 
@@ -527,15 +655,27 @@ struct Calls<'a> {
     notes: &'a str,
     /// The text of the run's prompt snapshot (KTD4).
     text: &'a str,
+    /// The title text of the run's prompt snapshot. Every call that can be
+    /// the final call keeps room for the title turn with it (KTD4).
+    title_text: &'a str,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
+/// The final call: its messages, its reply, which is the summary, and the
+/// room that it was built under (KTD3).
+struct Final {
+    messages: Vec<Message>,
+    reply: String,
+    room: Room,
+}
+
 impl Calls<'_> {
-    fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<String, Outcome> {
-        let text = self.text;
+    fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<Final, Outcome> {
+        let (text, title_text) = (self.text, self.title_text);
         let room = plan.room(0);
         // The final call's fixed parts and the prompt text must leave at
-        // least half of the prompt allowance for the transcript (KTD8).
+        // least half of the prompt allowance for the transcript (KTD8). The
+        // title reserve is not part of this check (KTD4).
         if prompts::overhead("", text) * 2 > tokens::prompt_allowance(room.limit, room.reserve) {
             // Remove the plan, so that the next run takes the budget from
             // the endpoint again. A model with a larger context can then
@@ -545,14 +685,22 @@ impl Calls<'_> {
                 .map_err(StageError::from)?;
             return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
         }
-        let notes = fit_notes(room, self.notes, text);
+        let notes = fit_notes(room, self.notes, text, title_text);
         let whole = prompts::whole(turns, &notes, text);
-        if tokens::with_margin(cost(&whole)) + room.reserve as usize <= room.limit as usize {
-            return self.call_as(WHOLE.into(), 0, 0, &whole, room, 1);
+        let title_reserve = prompts::title_reserve(title_text);
+        if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
+            <= room.limit as usize
+        {
+            let reply = self.call_as(WHOLE.into(), 0, 0, &whole, room, 1)?;
+            return Ok(Final {
+                messages: whole,
+                reply,
+                room,
+            });
         }
 
         // Too long for one call: parts, then merges until one remains.
-        let allowance = chunk_allowance(room, &notes, text);
+        let allowance = chunk_allowance(room, &notes, text, title_text);
         let chunks: Vec<Chunk> = chunk::chunk(turns, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
@@ -565,21 +713,32 @@ impl Calls<'_> {
             // its notes still need the summary's shape.
             let only = [summaries[0].as_str()];
             let room = plan.room(1);
-            return self.call(
-                1,
-                0,
-                &prompts::merge(&only, true, &fit_notes(room, self.notes, text), text),
+            let notes = fit_notes(room, self.notes, text, title_text);
+            let messages = prompts::merge(&only, true, &notes, text);
+            let reply = self.call(1, 0, &messages, room, 1)?;
+            return Ok(Final {
+                messages,
+                reply,
                 room,
-                1,
-            );
+            });
         }
         while summaries.len() > 1 {
             let room = plan.room(layer);
-            let notes = fit_notes(room, self.notes, text);
-            let allowance = chunk_allowance(room, &notes, text);
+            let notes = fit_notes(room, self.notes, text, title_text);
+            let allowance = chunk_allowance(room, &notes, text, title_text);
             let costs: Vec<usize> = summaries.iter().map(|s| tokens::estimate(s) + 8).collect();
             let groups = chunk::merge_groups(&costs, allowance);
-            let last = groups.len() == 1;
+            if groups.len() == 1 {
+                // The last merge: one group holds every summary.
+                let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
+                let messages = prompts::merge(&parts, true, &notes, text);
+                let reply = self.call(layer, 0, &messages, room, 1)?;
+                return Ok(Final {
+                    messages,
+                    reply,
+                    room,
+                });
+            }
             let mut next = Vec::with_capacity(groups.len());
             for (i, g) in groups.iter().enumerate() {
                 if g.len() == 1 {
@@ -590,7 +749,7 @@ impl Calls<'_> {
                 next.push(self.call(
                     layer,
                     i,
-                    &prompts::merge(&parts, last, &notes, text),
+                    &prompts::merge(&parts, false, &notes, text),
                     room,
                     groups.len(),
                 )?);
@@ -598,20 +757,21 @@ impl Calls<'_> {
             summaries = next;
             layer += 1;
         }
-        Ok(summaries.pop().unwrap_or_default())
+        Err(Stop(StageError::Failed(
+            "the transcript gave no summaries to combine".into(),
+        )))
     }
 
-    /// Propose a title from the final summary and the notes (KTD7), unless
-    /// the user set a title. The proposal never replaces a title that the
-    /// user sets during the call (R31). A failed call leaves the session
-    /// with the title it has, and the summary still completes. Only a
-    /// cancel stops the stage.
-    fn propose_title(&mut self, summary: &str, room: Room) -> Result<(), StageError> {
-        if checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, TITLE)?
-            .is_some()
-        {
-            return Ok(());
-        }
+    /// Store the title turn of the final call `done` as the pending title
+    /// request (KTD3), unless no title turn is due: the user set a title, a
+    /// Transcribe Again run keeps the title (R16, KTD14), or a title was
+    /// proposed before. The stage sends no call here. When the context
+    /// leaves less than [`prompts::TITLE_REPLY_MIN`] for the reply (KTD12),
+    /// the stage stores no request and the summary still completes (R14).
+    fn store_title_request(&self, done: &Final) -> Result<(), StageError> {
+        let proposed =
+            checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, TITLE)?
+                .is_some();
         let (user_title, again) = {
             let guard = lock(self.store);
             (
@@ -624,43 +784,30 @@ impl Calls<'_> {
                     .is_some(),
             )
         };
-        // A Transcribe Again run keeps the title and so the folder name
-        // (R16, KTD14).
-        if user_title || again {
-            return Ok(());
+        if proposed || user_title || again {
+            return delete_title_request(self.store, self.session_id);
         }
-        self.control.proceed()?;
-        let allowance = tokens::prompt_allowance(room.limit, room.reserve)
-            .saturating_sub(tokens::estimate(summary));
-        let messages = prompts::title(summary, &prompts::fit_notes(self.notes, allowance, ""));
-        let reply = self
-            .runtime
-            .block_on(self.client.complete(&messages, room.reserve), self.control)?;
-        let title = match reply {
-            Ok(completion) => clean_title(&completion.text),
-            Err(e) => {
-                log::warn!(
-                    "proposing a title for {} failed: {e}; the session keeps the title it has",
-                    self.session_id
-                );
-                return Ok(());
-            }
-        };
-        // The title and its checkpoint change together, so a resumed run
-        // does not propose again over an edit the user made after.
-        let guard = lock(self.store);
-        if guard.set_title(self.session_id, &title, TitleSource::Proposed)? {
-            // The folder takes the new name when the work ends, or at the
-            // next launch after a crash.
-            guard.set_rename_owed(self.session_id, true)?;
+        let messages = prompts::title_turn(&done.messages, &done.reply, self.title_text);
+        let used = tokens::with_margin(cost(&messages));
+        let cap = (done.room.limit as usize)
+            .saturating_sub(used)
+            .min(done.room.reserve as usize) as u32;
+        if cap < prompts::TITLE_REPLY_MIN {
+            log::warn!(
+                "the title turn for {} leaves {cap} tokens of the context for the reply, under {}; \
+                 the session keeps the title it has",
+                self.session_id,
+                prompts::TITLE_REPLY_MIN
+            );
+            return delete_title_request(self.store, self.session_id);
         }
-        guard.put_checkpoint(
+        checkpoint::put(
+            self.store,
             self.session_id,
             Stage::Summarize,
-            TITLE,
-            &serde_json::to_string(&title)?,
-        )?;
-        Ok(())
+            TITLE_REQUEST,
+            &TitleRequest { messages, cap },
+        )
     }
 
     fn call(
@@ -727,20 +874,24 @@ fn cost(messages: &[Message]) -> usize {
 }
 
 /// The notes document, cut when it would take too much of what `room`
-/// lets a prompt use with the prompt `text`.
-fn fit_notes(room: Room, notes: &str, text: &str) -> String {
+/// lets a prompt use with the prompt `text`, after the room for the title
+/// turn with `title_text` (KTD4).
+fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str) -> String {
     prompts::fit_notes(
         notes,
-        tokens::prompt_allowance(room.limit, room.reserve),
+        tokens::prompt_allowance(room.limit, room.reserve)
+            .saturating_sub(prompts::title_reserve(title_text)),
         text,
     )
 }
 
 /// What is left for the transcript or the summaries in one call, after the
-/// prompt's fixed parts, the notes and the prompt `text`.
-fn chunk_allowance(room: Room, notes: &str, text: &str) -> usize {
+/// prompt's fixed parts, the notes, the prompt `text` and the room for the
+/// title turn with `title_text` (KTD4).
+fn chunk_allowance(room: Room, notes: &str, text: &str, title_text: &str) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
         .saturating_sub(prompts::overhead(notes, text))
+        .saturating_sub(prompts::title_reserve(title_text))
         .max(1)
 }
 
@@ -813,6 +964,7 @@ mod tests {
         assert_eq!(clean_title("  \"Budget Review.\"  "), "Budget Review");
         assert_eq!(clean_title("\"Budget Review\"."), "Budget Review");
         assert_eq!(clean_title("\n# Title: **Q3 plan**\nmore"), "Q3 plan");
+        assert_eq!(clean_title("# **Title:** Weekly sync."), "Weekly sync");
         assert_eq!(clean_title("“Hiring  and\tbudget”"), "Hiring and budget");
         assert_eq!(clean_title("Plan v2.0"), "Plan v2.0");
         assert_eq!(clean_title(" \n \"\" "), "");

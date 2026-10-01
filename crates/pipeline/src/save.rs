@@ -1058,6 +1058,13 @@ pub fn regenerate_summary(
         control,
         progress,
     );
+    // A failed regeneration publishes no new summary, so the title request
+    // of that summary is not sent (KTD13). The note keeps its title.
+    if regenerated.is_err()
+        && let Err(e) = summarize::delete_title_request(store, session_id)
+    {
+        log::warn!("could not delete the title request of {session_id}: {e}");
+    }
     // The regeneration has ended, and the caller holds the one processing
     // permit, so no other regeneration runs.
     let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
@@ -1127,7 +1134,12 @@ fn summarize_again(
     if complete || !same_prompt {
         summarize::clear(store, session_id)?;
     } else {
-        lock(store).delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
+        {
+            let guard = lock(store);
+            guard.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
+            // A title request of an earlier summary is not sent (KTD9).
+            guard.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE_REQUEST)?;
+        }
         // The text is the same, so the cached calls stand. The name can
         // be new after a rename, and the summary records the name now.
         checkpoint::put(

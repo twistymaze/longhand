@@ -5,6 +5,7 @@
 //! where cancellation (a resume took the session back, or the app is
 //! quitting) and suspension (capture is active) take effect.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -192,6 +193,38 @@ pub enum RunnerEvent {
     Finished {
         session_id: String,
     },
+    /// The title job gave the saved note a proposed title (KTD13). Its
+    /// folder has the new name, or takes it when the work on it ends.
+    TitleProposed {
+        session_id: String,
+        title: String,
+    },
+}
+
+/// What a title job did (KTD13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleJob {
+    /// The note has this proposed title.
+    Proposed(String),
+    /// The note keeps its title: the title turn failed, was cut off or
+    /// gave an empty title, no endpoint is set, or the user set a title.
+    /// The request is deleted (R14).
+    Kept,
+    /// The job sent no title. A delete, a Move or a regeneration of the
+    /// note deleted the request, or the request stays for later: the note
+    /// is not saved, the app quits, or the secret store is locked.
+    Skipped,
+}
+
+/// Whether a title job can send its request now.
+enum TitleDue {
+    Yes,
+    /// Leave the request as it is: the note is gone, is not saved, or has
+    /// no request.
+    No,
+    /// Delete the request: a delete, a Move or a regeneration works on the
+    /// note.
+    Dropped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +252,8 @@ pub struct Runner {
     /// exclude each other, and a folder rename waits for both (R8, KTD8).
     claims: Claims,
     power: power::ProcessingPower,
+    /// The saved notes whose title job waits for its turn (KTD13).
+    titles: Mutex<VecDeque<String>>,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -285,6 +320,7 @@ impl Runner {
             permit: Arc::new(Semaphore::new(1)),
             claims: Claims::default(),
             power,
+            titles: Mutex::default(),
         })
     }
 
@@ -377,8 +413,18 @@ impl Runner {
     }
 
     /// Summarize a saved session again, replacing its `summary.md` (R19,
-    /// AE17). Takes its turn with the stages, one at a time (R20c).
+    /// AE17). Takes its turn with the stages, one at a time (R20c). The
+    /// title job of the new summary is queued after the regeneration
+    /// releases its claim and the permit (R16).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
+        let regenerated = self.regenerate_claimed(session_id).await;
+        if regenerated.is_ok() {
+            self.queue_title_if_pending(session_id);
+        }
+        regenerated
+    }
+
+    async fn regenerate_claimed(&self, session_id: &str) -> Result<PathBuf, StageError> {
         // While the Move holds the note for its final check, the
         // regeneration waits (KTD9).
         let _claim = loop {
@@ -505,6 +551,106 @@ impl Runner {
         &self.claims
     }
 
+    /// Queue the title job of `session_id` when it has a pending title
+    /// request (KTD13), and wake the runner.
+    fn queue_title_if_pending(&self, session_id: &str) {
+        match has_title_request(&self.env.store, session_id) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                log::warn!("could not read the title request of {session_id}: {e}");
+                return;
+            }
+        }
+        self.queue_title(session_id);
+    }
+
+    fn queue_title(&self, session_id: &str) {
+        {
+            let mut titles = self.titles.lock().unwrap_or_else(|e| e.into_inner());
+            if !titles.iter().any(|id| id == session_id) {
+                titles.push_back(session_id.to_string());
+            }
+        }
+        self.wake();
+    }
+
+    /// At launch: queue a title job for each saved session that still has
+    /// a pending title request (R15, KTD13). Returns their ids.
+    pub fn queue_pending_titles(&self) -> Result<Vec<String>, StageError> {
+        let saved = lock(&self.env.store).sessions_in(SessionState::Saved.name())?;
+        let mut queued = Vec::new();
+        for record in saved {
+            match has_title_request(&self.env.store, &record.id) {
+                Ok(true) => {
+                    self.queue_title(&record.id);
+                    queued.push(record.id);
+                }
+                Ok(false) => {}
+                // One unreadable request does not stop the other notes.
+                Err(e) => log::warn!("could not read the title request of {}: {e}", record.id),
+            }
+        }
+        Ok(queued)
+    }
+
+    /// Run the queued title jobs, one at a time, each with the processing
+    /// permit (KTD13). Nothing starts while capture is active or after
+    /// [`Runner::shutdown`]. Returns what each job did.
+    pub async fn run_titles(&self) -> Vec<(String, TitleJob)> {
+        let mut done = Vec::new();
+        while !self.shutdown.is_cancelled() && !(self.env.suspended)() {
+            let next = self
+                .titles
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front();
+            let Some(id) = next else {
+                break;
+            };
+            let job = self.title_job(&id).await;
+            done.push((id, job));
+        }
+        done
+    }
+
+    /// The title job of a saved note (KTD13): send its pending title
+    /// request, propose the cleaned reply and give the folder its name.
+    /// The job holds no claim while it waits or while the title turn runs,
+    /// so a delete or a Move of the note is not refused. A delete, a Move
+    /// or a regeneration stops the job and deletes the request instead.
+    async fn title_job(&self, session_id: &str) -> TitleJob {
+        if let Some(job) = title_gate(&lock(&self.env.store), &self.claims, session_id) {
+            return job;
+        }
+        let Ok(_permit) = self.permit.clone().acquire_owned().await else {
+            return TitleJob::Skipped;
+        };
+        let env = Arc::clone(&self.env);
+        let claims = self.claims.clone();
+        let id = session_id.to_string();
+        let control = TitleControl {
+            cancel: self.shutdown.child_token(),
+            env: Arc::clone(&self.env),
+            claims: self.claims.clone(),
+            session_id: id.clone(),
+            power: ActivePower::new(self.power.clone()),
+        };
+        let job = tokio::task::spawn_blocking(move || send_title(&env, &claims, &id, &control))
+            .await
+            .unwrap_or_else(|e| {
+                log::error!("the title job of {session_id} stopped unexpectedly: {e}");
+                TitleJob::Skipped
+            });
+        if let TitleJob::Proposed(title) = &job {
+            (self.env.events)(RunnerEvent::TitleProposed {
+                session_id: session_id.to_string(),
+                title: title.clone(),
+            });
+        }
+        job
+    }
+
     /// The user's rename (R9): the title changes at once, and a saved, idle
     /// session's folder takes the new name now. A busy session's folder
     /// takes it when the work ends.
@@ -614,13 +760,21 @@ impl Runner {
         )
     }
 
+    /// The processing loop. The title job of a saved note runs between two
+    /// sessions, so it does not wait for the whole queue (KTD13).
     pub async fn run(self: Arc<Self>) {
+        if let Err(e) = self.queue_pending_titles() {
+            log::warn!("could not queue the pending title jobs: {e}");
+        }
         loop {
             // A session waiting on a model is back at the head of the queue;
             // claiming it again at once would spin until the model download finishes.
             while let Some((_, outcome)) = self.run_next().await
                 && outcome != Outcome::Waiting
-            {}
+            {
+                self.run_titles().await;
+            }
+            self.run_titles().await;
             tokio::select! {
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(POLL) => {}
@@ -844,6 +998,9 @@ impl Runner {
         emit(RunnerEvent::Finished {
             session_id: id.to_string(),
         });
+        // The note is saved with its summary; its title turn comes after
+        // (R16).
+        self.queue_title_if_pending(id);
         Outcome::Finished
     }
 
@@ -1267,7 +1424,228 @@ fn first_summary_prompt(
         id: p.id,
         name: p.name,
         text: p.text,
+        title_text: p.title_text,
     }))
+}
+
+fn has_title_request(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
+    Ok(checkpoint::get::<serde_json::Value>(
+        store,
+        session_id,
+        Stage::Summarize,
+        summarize::TITLE_REQUEST,
+    )?
+    .is_some())
+}
+
+/// Whether the title job of `session_id` can send its request now. The
+/// caller holds the store lock.
+fn title_due(store: &session_core::Store, claims: &Claims, session_id: &str) -> TitleDue {
+    if claims.busy(session_id) {
+        return TitleDue::Dropped;
+    }
+    let record = match store.session(session_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => return TitleDue::No,
+        Err(e) => {
+            log::warn!("could not read {session_id} for its title job: {e}");
+            return TitleDue::No;
+        }
+    };
+    if record.state != SessionState::Saved || record.home_path.is_none() {
+        return TitleDue::No;
+    }
+    // The Move puts the note in the new storage folder (KTD9).
+    if !matches!(
+        store.move_step(session_id),
+        Ok(None | Some(session_core::MoveStep::Done))
+    ) {
+        return TitleDue::Dropped;
+    }
+    match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE_REQUEST) {
+        Ok(Some(_)) => {}
+        Ok(None) => return TitleDue::No,
+        Err(e) => {
+            log::warn!("could not read the title request of {session_id}: {e}");
+            return TitleDue::No;
+        }
+    }
+    // A stop between the title checkpoint and the delete of the request
+    // leaves a request whose title is already proposed.
+    match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE) {
+        Ok(None) => TitleDue::Yes,
+        Ok(Some(_)) => TitleDue::Dropped,
+        Err(e) => {
+            log::warn!("could not read the title proposal of {session_id}: {e}");
+            TitleDue::No
+        }
+    }
+}
+
+/// `None` when the title job of `session_id` can send its request now.
+/// Otherwise the result of the job, after the request is deleted when the
+/// note dropped it. The caller holds the store lock.
+fn title_gate(store: &session_core::Store, claims: &Claims, session_id: &str) -> Option<TitleJob> {
+    match title_due(store, claims, session_id) {
+        TitleDue::Yes => None,
+        TitleDue::No => Some(TitleJob::Skipped),
+        TitleDue::Dropped => {
+            drop_title_request(store, session_id);
+            Some(TitleJob::Skipped)
+        }
+    }
+}
+
+/// Delete the title request of `session_id`. An error is logged: the note
+/// keeps its title in every case. The caller holds the store lock.
+fn drop_title_request(store: &session_core::Store, session_id: &str) {
+    if let Err(e) = store.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE_REQUEST)
+    {
+        log::warn!("could not delete the title request of {session_id}: {e}");
+    }
+}
+
+/// The blocking part of a title job (KTD13). The caller holds the
+/// processing permit.
+fn send_title(
+    env: &Environment,
+    claims: &Claims,
+    session_id: &str,
+    control: &TitleControl,
+) -> TitleJob {
+    // The job can wait long for the permit.
+    if let Some(job) = title_gate(&lock(&env.store), claims, session_id) {
+        return job;
+    }
+    let kept = |why: &str| {
+        log::warn!("proposing a title for {session_id} failed: {why}; the note keeps its title");
+        drop_title_request(&lock(&env.store), session_id);
+        TitleJob::Kept
+    };
+    let request = match summarize::pending_title_request(&env.store, session_id) {
+        Ok(Some(request)) => request,
+        Ok(None) => return TitleJob::Skipped,
+        Err(e) => return kept(&e.to_string()),
+    };
+    let endpoint = match env.engines.summary_endpoint() {
+        Ok(endpoint) => endpoint,
+        // The request stays, and the next launch sends it (R20b).
+        Err(EndpointProblem::Locked(message)) => {
+            log::info!("the title job of {session_id} waits for the secret store: {message}");
+            return TitleJob::Skipped;
+        }
+        // The summary had an endpoint moments ago. A title is not worth a
+        // wait for the settings.
+        Err(EndpointProblem::Unconfigured(message)) => return kept(&message),
+    };
+    let title = match summarize::send_title_request(session_id, &endpoint, &request, control) {
+        Ok(Ok(title)) => title,
+        Ok(Err(why)) => return kept(&why),
+        Err(StageError::Cancelled) => {
+            // A quit leaves the request for the next launch. A delete, a
+            // Move or a regeneration deletes it.
+            if let TitleDue::Dropped = title_due(&lock(&env.store), claims, session_id) {
+                drop_title_request(&lock(&env.store), session_id);
+            }
+            return TitleJob::Skipped;
+        }
+        Err(e) => return kept(&e.to_string()),
+    };
+
+    // The title changes as a rename does: it waits while the Move holds
+    // the note, and the folder takes the name under the same lock.
+    let mut guard = crate::move_notes::lock_unheld(&env.store, claims, session_id);
+    if let Some(job) = title_gate(&guard, claims, session_id) {
+        return job;
+    }
+    let proposed = if title.is_empty() {
+        Ok(None)
+    } else {
+        folder_rename::propose_locked(
+            &mut guard,
+            session_id,
+            &title,
+            &|id| claims.busy(id),
+            &session_save::RealFs,
+        )
+    };
+    // The title checkpoint comes before the request is deleted, so a
+    // resumed Summarize stage stores no request again.
+    let job = match proposed {
+        Ok(renamed) => {
+            let recorded = serde_json::to_string(&title)
+                .map_err(StageError::from)
+                .and_then(|text| {
+                    Ok(guard.put_checkpoint(
+                        session_id,
+                        Stage::Summarize,
+                        summarize::TITLE,
+                        &text,
+                    )?)
+                });
+            if let Err(e) = recorded {
+                log::warn!("could not record the title proposal of {session_id}: {e}");
+            }
+            match renamed {
+                Some(FolderRename::Kept(why)) => {
+                    log::warn!("the folder of {session_id} keeps its name: {why}");
+                    TitleJob::Proposed(title)
+                }
+                Some(_) => TitleJob::Proposed(title),
+                None => {
+                    log::info!("{session_id} keeps its title: the title turn gave no new title");
+                    TitleJob::Kept
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("could not propose a title for {session_id}: {e}; the note keeps its title");
+            TitleJob::Kept
+        }
+    };
+    drop_title_request(&guard, session_id);
+    job
+}
+
+/// The control of a title job: it stops on shutdown, and when a delete, a
+/// Move or a regeneration starts on the note, or the note is no longer
+/// saved with a pending request. It waits out capture.
+struct TitleControl {
+    cancel: CancellationToken,
+    env: Arc<Environment>,
+    claims: Claims,
+    session_id: String,
+    power: ActivePower,
+}
+
+impl TitleControl {
+    fn stopped(&self) -> bool {
+        self.cancel.is_cancelled()
+            || !matches!(
+                title_due(&lock(&self.env.store), &self.claims, &self.session_id),
+                TitleDue::Yes
+            )
+    }
+}
+
+impl Control for TitleControl {
+    fn proceed(&self) -> Result<(), StageError> {
+        loop {
+            if self.stopped() {
+                return Err(StageError::Cancelled);
+            }
+            if !(self.env.suspended)() {
+                self.power.resume();
+                return Ok(());
+            }
+            self.power.suspend();
+            std::thread::sleep(SUSPENDED_POLL);
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.stopped()
+    }
 }
 
 /// Empty `slot` when it holds `model`. A slot that a stage holds now stays

@@ -1802,6 +1802,7 @@ fn a_note_keeps_the_prompt_snapshot_from_its_start() {
         id: "b1".into(),
         name: "Standup".into(),
         text: "Write a standup.".into(),
+        title_text: "Name the team.".into(),
     };
     let model = RecordingModel {
         asr_model: "m".into(),

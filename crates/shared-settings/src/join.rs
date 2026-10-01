@@ -126,20 +126,21 @@ fn prompts_of(cache: &Cache) -> Vec<Prompt> {
 }
 
 /// Add each prompt of `prompts` that the folder does not have (R22). A
-/// prompt with the same name and the same text, or with the same id and
-/// the same text, is there already. A prompt with the same name and
-/// another text gets a free name. Returns the file names that it wrote.
+/// prompt with the same name and the same texts, or with the same id and
+/// the same texts, is there already. The texts are the summary text and
+/// the title text (KTD9). A prompt with the same name and other texts gets
+/// a free name. Returns the file names that it wrote.
 fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
     let scan = scan_prompts(root).map_err(|cause| io::Error::other(cause.to_string()))?;
-    // The id, the names and the text of each prompt in the folder.
-    let mut folder: Vec<(String, Vec<String>, String)> = scan
+    // The id, the names and the texts of each prompt in the folder.
+    let mut folder: Vec<(String, Vec<String>, (String, String))> = scan
         .prompts
         .iter()
         .map(|p| {
             (
                 p.id.clone(),
                 vec![p.name.clone(), p.stored_name.clone()],
-                p.text.clone(),
+                (p.text.clone(), p.title_text.clone()),
             )
         })
         .collect();
@@ -154,8 +155,9 @@ fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
         } else {
             prompt.id.clone()
         };
-        let present = folder.iter().any(|(folder_id, names, text)| {
-            *text == prompt.text
+        let texts = (prompt.text.clone(), prompt.title_text.clone());
+        let present = folder.iter().any(|(folder_id, names, folder_texts)| {
+            *folder_texts == texts
                 && (*folder_id == prompt.id
                     || *folder_id == id
                     || names.iter().any(|n| same_name(n, &prompt.name)))
@@ -171,8 +173,8 @@ fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
             )
             .collect();
         let name = free_prompt_name(prompt.name.trim(), taken.iter().map(String::as_str));
-        let file_name = write_new_prompt(root, &id, &name, &prompt.text)?;
-        folder.push((id, vec![name], prompt.text.clone()));
+        let file_name = write_new_prompt(root, &id, &name, &prompt.text, &prompt.title_text)?;
+        folder.push((id, vec![name], texts));
         written.push(file_name);
     }
     Ok(written)

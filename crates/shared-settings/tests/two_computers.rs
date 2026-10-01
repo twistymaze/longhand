@@ -11,7 +11,9 @@ use shared_settings::file::{
     AudioRemoval, Field, SharedValue, apply_patch, default_settings, save_settings, settings_path,
 };
 use shared_settings::join::{JoinKind, Joined, join_folder};
-use shared_settings::prompts::{create_prompt, render_prompt_file, set_prompt_text};
+use shared_settings::prompts::{
+    create_prompt, render_prompt_file, set_prompt_text, set_prompt_title_text,
+};
 use shared_settings::view::{ActivePrompt, Availability, SharedView, refresh};
 
 /// One computer: its local cache folder.
@@ -122,6 +124,35 @@ fn two_texts_of_one_prompt_show_as_two_prompts_on_both_computers() {
     assert_eq!(on_a.prompts.len(), 2);
     let texts: Vec<&str> = on_a.prompts.iter().map(|p| p.text.as_str()).collect();
     assert!(texts.contains(&"A's text.") && texts.contains(&"B's text."));
+}
+
+#[test]
+fn a_title_text_change_on_a_shows_on_b() {
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::ChangeOfFolder);
+    let recap = create_prompt(folder.path(), "Recap", "Recap text.").unwrap();
+    b.save(
+        folder.path(),
+        &[SharedValue::ActiveSummaryPrompt(recap.id.clone())],
+    );
+    set_prompt_title_text(folder.path(), &recap.id, "A's title text.").unwrap();
+    let on_b = b.refresh(folder.path());
+    assert_eq!(on_b.prompts.len(), 1);
+    assert_eq!(on_b.prompts[0].title_text, "A's title text.");
+    assert_eq!(on_b.prompts[0].text, "Recap text.");
+    match &on_b.active {
+        ActivePrompt::Custom { prompt, from_cache } => {
+            assert_eq!(prompt.title_text, "A's title text.");
+            assert!(!from_cache);
+        }
+        other => panic!("unexpected active prompt {other:?}"),
+    }
+    // B's cache keeps the title text for a folder that goes away.
+    let cache = read_cache(b.cache.path()).unwrap();
+    assert_eq!(cache.prompts[0].title_text, "A's title text.");
+    assert_eq!(cache.active_prompt.unwrap().title_text, "A's title text.");
 }
 
 #[test]

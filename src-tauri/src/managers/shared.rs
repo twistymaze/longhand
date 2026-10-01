@@ -406,24 +406,30 @@ impl SharedSettingsManager {
     }
 
     /// Add a prompt named "New prompt", or a free name made from it, with
-    /// the Topic summary text (R3). Returns its id.
+    /// the Topic summary text and title text (R3). Returns its id.
     pub fn create_prompt(&self) -> Result<String, String> {
-        let text = topic_summary().text;
+        let topic = topic_summary();
         self.change(|root| {
-            prompts::create_prompt(root, NEW_PROMPT_NAME, &text)
+            prompts::create_prompt_with_title(root, NEW_PROMPT_NAME, &topic.text, &topic.title_text)
                 .map(|p| p.id)
                 .map_err(Failure::from)
         })
     }
 
     /// Add a copy of the prompt `id`, named "X copy", or a free name made
-    /// from it (R3). Returns the id of the copy.
+    /// from it, with the texts of the source (R3). Returns the id of the
+    /// copy.
     pub fn duplicate_prompt(&self, id: &str) -> Result<String, String> {
         self.change(|root| {
             let source = find_prompt(root, id).ok_or(Failure::Refused(NO_SUCH_PROMPT.into()))?;
-            prompts::create_prompt(root, &format!("{} copy", source.name), &source.text)
-                .map(|p| p.id)
-                .map_err(Failure::from)
+            prompts::create_prompt_with_title(
+                root,
+                &format!("{} copy", source.name),
+                &source.text,
+                &source.title_text,
+            )
+            .map(|p| p.id)
+            .map_err(Failure::from)
         })
     }
 
@@ -438,6 +444,15 @@ impl SharedSettingsManager {
     pub fn set_prompt_text(&self, id: &str, text: &str) -> Result<(), String> {
         self.change(|root| {
             prompts::set_prompt_text(root, id, text)
+                .map(drop)
+                .map_err(Failure::from)
+        })
+    }
+
+    /// Give a custom prompt a new title text. It can be empty (R4).
+    pub fn set_prompt_title_text(&self, id: &str, title_text: &str) -> Result<(), String> {
+        self.change(|root| {
+            prompts::set_prompt_title_text(root, id, title_text)
                 .map(drop)
                 .map_err(Failure::from)
         })
@@ -1017,17 +1032,21 @@ mod tests {
         let topic = topic_summary();
         let settings = settings_of(&manager);
         assert_eq!(names(&settings), ["New prompt", "New prompt 2"]);
+        // A new prompt starts with the Topic summary title text (R3).
         assert!(
             settings
                 .summary_prompts
                 .iter()
-                .all(|p| p.text == topic.text)
+                .all(|p| p.text == topic.text && p.title_text == topic.title_text)
         );
 
         manager.duplicate_prompt(TOPIC_SUMMARY_ID).unwrap();
         manager.duplicate_prompt(TOPIC_SUMMARY_ID).unwrap();
         manager.rename_prompt(&first, "Team sync").unwrap();
         manager.set_prompt_text(&first, "Write a recap.").unwrap();
+        manager
+            .set_prompt_title_text(&first, "Name the team.")
+            .unwrap();
         let copy = manager.duplicate_prompt(&first).unwrap();
         let settings = settings_of(&manager);
         let copy = settings
@@ -1037,6 +1056,14 @@ mod tests {
             .unwrap();
         assert_eq!(copy.name, "Team sync copy");
         assert_eq!(copy.text, "Write a recap.");
+        // A duplicate copies the title text of its source (R3).
+        assert_eq!(copy.title_text, "Name the team.");
+        let built_in_copy = settings
+            .summary_prompts
+            .iter()
+            .find(|p| p.name == "Topic summary copy")
+            .unwrap();
+        assert_eq!(built_in_copy.title_text, topic.title_text);
         assert_eq!(
             names(&settings),
             [
@@ -1071,9 +1098,38 @@ mod tests {
         assert!(manager.set_prompt_text(&id, " \n ").is_err());
         let too_long = "é".repeat(summarize::prompts::PROMPT_TEXT_LIMIT + 1);
         assert!(manager.set_prompt_text(&id, &too_long).is_err());
+        assert!(
+            manager
+                .set_prompt_title_text(TOPIC_SUMMARY_ID, "Mine.")
+                .is_err()
+        );
+        assert!(manager.set_prompt_title_text("missing", "Mine.").is_err());
+        let too_long = "é".repeat(summarize::prompts::TITLE_TEXT_LIMIT + 1);
+        assert!(manager.set_prompt_title_text(&id, &too_long).is_err());
         assert!(manager.delete_prompt(PLAY_BY_PLAY_ID).is_err());
         assert!(manager.delete_prompt("missing").is_err());
         assert_eq!(names(&settings_of(&manager)), ["New prompt", "One on one"]);
+    }
+
+    #[test]
+    fn a_title_text_can_be_empty_or_at_the_limit() {
+        // R4: an empty title text saves. The summary text stays.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let id = manager.create_prompt().unwrap();
+        let texts = |manager: &SharedSettingsManager| {
+            let settings = settings_of(manager);
+            let prompt = settings.summary_prompts.into_iter().find(|p| p.id == id);
+            prompt.map(|p| (p.text, p.title_text)).unwrap()
+        };
+
+        manager.set_prompt_title_text(&id, "").unwrap();
+        assert_eq!(texts(&manager), (topic_summary().text, String::new()));
+        let at_limit = "é".repeat(summarize::prompts::TITLE_TEXT_LIMIT);
+        manager.set_prompt_title_text(&id, &at_limit).unwrap();
+        assert_eq!(texts(&manager).1, at_limit);
     }
 
     #[test]

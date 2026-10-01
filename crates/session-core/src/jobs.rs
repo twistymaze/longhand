@@ -74,6 +74,8 @@ pub struct PromptSnapshot {
     pub id: String,
     pub name: String,
     pub text: String,
+    /// Empty for a note from before migration 0015.
+    pub title_text: String,
 }
 
 /// A microphone that a note chose: cpal's stable device ID, with the device
@@ -371,8 +373,9 @@ impl Store {
         self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
                mic_id, mic_label, system_audio, recognition_snapshot,
-               prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+               prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
+               prompt_snapshot_title_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -389,6 +392,7 @@ impl Store {
                 prompt.map(|p| p.id.as_str()),
                 prompt.map(|p| p.name.as_str()),
                 prompt.map(|p| p.text.as_str()),
+                prompt.map_or("", |p| p.title_text.as_str()),
             ],
         )?;
         Ok(())
@@ -451,19 +455,25 @@ impl Store {
     /// a note from before migration 0013, or one that another computer
     /// recorded.
     pub fn prompt_snapshot(&self, id: &str) -> Result<Option<PromptSnapshot>> {
-        type Columns = (Option<String>, Option<String>, Option<String>);
-        let (id_, name, text): Columns = self
+        type Columns = (Option<String>, Option<String>, Option<String>, String);
+        let (id_, name, text, title_text): Columns = self
             .conn
             .query_row(
-                "SELECT prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text
+                "SELECT prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
+                   prompt_snapshot_title_text
                  FROM sessions WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?
             .ok_or_else(|| StoreError::NoSuchSession(id.into()))?;
         Ok(match (id_, name, text) {
-            (Some(id), Some(name), Some(text)) => Some(PromptSnapshot { id, name, text }),
+            (Some(id), Some(name), Some(text)) => Some(PromptSnapshot {
+                id,
+                name,
+                text,
+                title_text,
+            }),
             _ => None,
         })
     }

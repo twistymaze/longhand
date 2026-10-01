@@ -63,9 +63,40 @@ pub fn rename_locked(
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
+    let renamed = retitle_locked(guard, session_id, title, TitleSource::User, claimed, fs)?;
+    Ok(renamed.expect("a user title always replaces the stored title"))
+}
+
+/// The title job's proposal (KTD13, R13): bring the row up to date from
+/// its folder (KTD3), store `title` as a proposed title, then run the
+/// reconcile, as [`rename_locked`] does for the user's title. `None` when
+/// the row keeps its title: the title is empty, or the user set a title,
+/// also on another computer. The caller holds the store lock.
+pub fn propose_locked(
+    guard: &mut Store,
+    session_id: &str,
+    title: &str,
+    claimed: &dyn Fn(&str) -> bool,
+    fs: &dyn Fs,
+) -> Result<Option<FolderRename>, StageError> {
+    retitle_locked(guard, session_id, title, TitleSource::Proposed, claimed, fs)
+}
+
+/// Bring the row up to date from its folder (KTD3), store `title` with
+/// `source`, then run the reconcile. `None` when the row keeps its title.
+fn retitle_locked(
+    guard: &mut Store,
+    session_id: &str,
+    title: &str,
+    source: TitleSource,
+    claimed: &dyn Fn(&str) -> bool,
+    fs: &dyn Fs,
+) -> Result<Option<FolderRename>, StageError> {
     let claimed = claimed(session_id);
     crate::follow::follow_folder(guard, session_id, claimed)?;
-    guard.set_title(session_id, title, TitleSource::User)?;
+    if !guard.set_title(session_id, title, source)? {
+        return Ok(None);
+    }
     // Recorded before the move, so a crash before the reconcile ends leaves
     // the rename to the next launch.
     guard.set_rename_owed(session_id, true)?;
@@ -76,7 +107,7 @@ pub fn rename_locked(
     if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
         write_title(guard, session_id);
     }
-    Ok(renamed)
+    Ok(Some(renamed))
 }
 
 /// Write the stored title into the `session.md` of the session's folder
