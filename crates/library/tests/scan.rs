@@ -17,6 +17,7 @@ const SUMMARY: &str = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo sum
 fn options() -> ScanOptions {
     ScanOptions {
         read_timeout: Duration::from_millis(300),
+        ..ScanOptions::default()
     }
 }
 
@@ -857,5 +858,147 @@ mod early_home {
             .run_at(&store, &target, &never_claimed, later)
             .unwrap();
         assert_eq!(changes.removed, ["n"]);
+    }
+}
+
+// ------------------------------- the result flag and the remote state (U4)
+
+mod result_flag {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use chrono::{DateTime, FixedOffset, Local, TimeDelta};
+    use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
+    use session_core::folder::{ResultFlag, SessionDoc};
+    use session_save::in_use_marker::{FRESH_FOR, write_marker};
+
+    use super::{marked_root, options};
+
+    fn opened() -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap()
+    }
+
+    /// The folder of a note with no result, as the early write leaves it:
+    /// `session.md` and `notes.md` only.
+    fn early_note(root: &Path, id: &str, result: Option<ResultFlag>) -> PathBuf {
+        let dir = root.join(format!("2026-09-25 0900 {id}"));
+        fs::create_dir_all(&dir).unwrap();
+        let mut doc = SessionDoc::without_audio(id, opened(), None);
+        doc.result = result;
+        fs::write(dir.join("session.md"), doc.render()).unwrap();
+        fs::write(dir.join("notes.md"), "Agenda\n").unwrap();
+        dir
+    }
+
+    fn now() -> DateTime<FixedOffset> {
+        Local::now().fixed_offset()
+    }
+
+    /// Make the file time of `session.md` in `dir` older than the time a
+    /// marker stays fresh.
+    fn age_session_md(dir: &Path) {
+        let old = SystemTime::now() - FRESH_FOR.to_std().unwrap() - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(dir.join("session.md"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    fn remote(root: &Path, own_run: Option<&str>) -> Option<RemoteState> {
+        let options = ScanOptions {
+            own_run: own_run.map(str::to_string),
+            ..options()
+        };
+        let result = scan(&[root.to_path_buf()], &Known::default(), &options);
+        assert_eq!(result.notes.len(), 1);
+        result.notes[0].remote
+    }
+
+    #[test]
+    fn a_note_with_no_recording_waits_for_no_transcript_summary_or_audio() {
+        let root = marked_root();
+        early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert!(result.notes[0].waiting.is_empty(), "{:?}", result.notes[0]);
+        assert_eq!(result.notes[0].remote, None);
+    }
+
+    #[test]
+    fn a_note_with_no_field_no_segment_and_no_fingerprint_waits_for_nothing() {
+        let root = marked_root();
+        early_note(root.path(), "n1", None);
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert!(result.notes[0].waiting.is_empty(), "{:?}", result.notes[0]);
+    }
+
+    #[test]
+    fn a_note_whose_recording_is_not_saved_waits_for_no_result() {
+        let root = marked_root();
+        early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert!(result.notes[0].waiting.is_empty(), "{:?}", result.notes[0]);
+    }
+
+    #[test]
+    fn a_note_with_no_result_still_waits_for_its_notes() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        fs::remove_file(dir.join("notes.md")).unwrap();
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert_eq!(result.notes[0].waiting, [Waiting::Notes]);
+    }
+
+    #[test]
+    fn a_fresh_marker_of_another_run_shows_the_note_in_use_whatever_the_flag() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote(root.path(), Some("run-b")), Some(RemoteState::InUse));
+        // The marker of this computer's own run does not count.
+        assert_eq!(remote(root.path(), Some("run-a")), None);
+    }
+
+    #[test]
+    fn a_saved_note_with_a_fresh_marker_of_another_run_is_in_use() {
+        let root = marked_root();
+        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "A1");
+        assert_eq!(remote(root.path(), Some("run-b")), None);
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote(root.path(), Some("run-b")), Some(RemoteState::InUse));
+    }
+
+    #[test]
+    fn a_new_note_that_is_not_saved_and_has_no_marker_yet_is_in_use() {
+        let root = marked_root();
+        early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
+        assert_eq!(remote(root.path(), None), Some(RemoteState::InUse));
+    }
+
+    // Covers AE13.
+    #[test]
+    fn an_old_note_that_is_not_saved_and_has_no_fresh_marker_is_not_finished() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
+        let old = now() - FRESH_FOR - TimeDelta::minutes(1);
+        assert!(write_marker(&dir, "run-a", old).unwrap());
+        age_session_md(&dir);
+        assert_eq!(remote(root.path(), None), Some(RemoteState::NotFinished));
+
+        // A fresh marker wins over the flag.
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote(root.path(), None), Some(RemoteState::InUse));
+    }
+
+    #[test]
+    fn an_old_note_with_no_recording_and_no_fresh_marker_is_not_remote() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        let old = now() - FRESH_FOR - TimeDelta::minutes(1);
+        assert!(write_marker(&dir, "run-a", old).unwrap());
+        age_session_md(&dir);
+        assert_eq!(remote(root.path(), None), None);
     }
 }

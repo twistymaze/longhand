@@ -1557,6 +1557,22 @@ system_audio_other_output: boolean;
  */
 system_audio_mic_copy: boolean }
 /**
+ * Work on a note on another computer (KTD5). Record, Resume, Transcribe
+ * Again, Regenerate Summary, Remove Audio and Delete wait for it (R21),
+ * except as R23 allows.
+ */
+export type RemoteView = 
+/**
+ * Another computer records into or processes the note (R12, R20).
+ */
+"in_use" | 
+/**
+ * Another computer recorded into the note and stopped before it saved
+ * the recording: "Not finished on another computer" (R23). Notes
+ * edits, and Delete after a confirmation, are available.
+ */
+"not_finished"
+/**
  * Why Remove Audio did not complete (R13).
  */
 export type RemoveAudioFailure = 
@@ -1680,7 +1696,13 @@ found_speakers: number | null;
  * The note's storage folder is unavailable, or its `session.md` cannot
  * be read now (R16). Opening it and its actions wait.
  */
-storage_unavailable: boolean }
+storage_unavailable: boolean; 
+/**
+ * Work on the note on another computer, as the latest library scan
+ * found it (KTD5). `None` when no other computer works on the note,
+ * and always for a note that is not Saved on this computer.
+ */
+remote: RemoteView | null }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds

@@ -25,6 +25,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   title: null,
   found_speakers: 3,
   storage_unavailable: false,
+  remote: null,
   ...over,
 });
 

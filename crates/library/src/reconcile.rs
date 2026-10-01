@@ -2,7 +2,9 @@
 //!
 //! - A note id with no row is adopted (KTD1).
 //! - A known note is refreshed from its folder (KTD3), but only when its row
-//!   is Saved and no stage has claimed it.
+//!   is Saved and no stage has claimed it. Any other row with a home folder
+//!   takes only its notes from the folder (R22, KTD6 of the notes without a
+//!   recording plan).
 //! - A note in a new folder moves the row's home path there, whatever the
 //!   row's state or claim, so the home path follows a rename by id (R8). A
 //!   row with a rename intent on this computer, or a note that the Move has
@@ -31,7 +33,7 @@ use std::time::{Duration, Instant};
 use session_core::jobs::busy;
 use session_core::{Adoption, Segment, SessionRecord, Store, StoreError};
 
-use crate::refresh::{self, FolderContents, RefreshError};
+use crate::refresh::{self, FolderContents, RefreshError, Scope};
 use crate::scan::{self, DocumentState, Known, LibraryScan, NoteFolder, ScanOptions};
 use crate::status::LibraryStatus;
 
@@ -118,9 +120,12 @@ struct MismatchKey {
 }
 
 impl MismatchKey {
-    /// `None` when both result documents of `note` match.
+    /// `None` when both result documents of `note` match, or when the note
+    /// has no result yet (R6, KTD1): it waits for no result document.
     fn of(note: &NoteFolder) -> Option<Self> {
-        if note.transcript == DocumentState::Matches && note.summary == DocumentState::Matches {
+        if note.transcript == DocumentState::Matches && note.summary == DocumentState::Matches
+            || note.doc.result_flag().is_some()
+        {
             return None;
         }
         Some(Self {
@@ -161,6 +166,8 @@ pub struct Reconciler {
     /// The notes whose result documents do not match `session.md`, by id.
     mismatches: HashMap<String, Mismatch>,
     read_timeout: Duration,
+    /// The run ID of this computer's in-use markers ([`ScanOptions::own_run`]).
+    own_run: Option<String>,
     /// What the scans of [`Reconciler::run`] found (KTD10).
     status: Arc<LibraryStatus>,
 }
@@ -172,14 +179,22 @@ impl Default for Reconciler {
 }
 
 impl Reconciler {
-    /// A reconciler whose folder reads use the time limit of `options`.
+    /// A reconciler whose scans use `options`.
     pub fn new(options: &ScanOptions) -> Self {
         Self {
             pending: HashMap::new(),
             mismatches: HashMap::new(),
             read_timeout: options.read_timeout,
+            own_run: options.own_run.clone(),
             status: Arc::default(),
         }
+    }
+
+    /// Count the in-use markers of the run `run_id` as this computer's own
+    /// work: they do not make a note in use on another computer (KTD5).
+    pub fn with_own_run(mut self, run_id: impl Into<String>) -> Self {
+        self.own_run = Some(run_id.into());
+        self
     }
 
     /// Write the status of each scan into `status`, which the caller
@@ -237,6 +252,7 @@ impl Reconciler {
         let known = Known::from_records(&lock().sessions()?);
         let options = ScanOptions {
             read_timeout: self.read_timeout,
+            own_run: self.own_run.clone(),
         };
         let (result, coverage) = match target {
             Target::Full(roots) => (scan::scan(roots, &known, &options), Coverage::Full),
@@ -373,9 +389,13 @@ impl Reconciler {
                 .home_path
                 .as_deref()
                 .is_some_and(|home| Path::new(home) != note.path);
-            let refreshable = !busy(&record, claimed);
-            let changes = moved
-                || refreshable && refresh::differs(store, id, &FolderContents::from_scan(note))?;
+            let refreshes = match refresh_scope(&record, claimed) {
+                Some(scope) => {
+                    refresh::differs(store, id, &FolderContents::from_scan(note), scope)?
+                }
+                None => false,
+            };
+            let changes = moved || refreshes;
             if !changes {
                 continue;
             }
@@ -593,16 +613,32 @@ fn follow(
         log::info!("library: the folder of {id} is now {}", note.path.display());
         store.set_home_path(id, &note.path.to_string_lossy())?;
     }
-    if busy(record, claimed) {
+    let Some(scope) = refresh_scope(record, claimed) else {
         return Ok(moved);
-    }
-    match refresh::apply(store, id, contents) {
+    };
+    match refresh::apply_scoped(store, id, contents, scope) {
         Ok(refreshed) => Ok(moved || refreshed.changed),
         Err(RefreshError::Store(e)) => Err(e),
         Err(e) => {
             log::warn!("library: cannot refresh {id}: {e}");
             Ok(moved)
         }
+    }
+}
+
+/// Which parts of the row `record` a refresh takes from its folder. A
+/// Saved row that no stage has claimed takes every part. A busy row with
+/// a home folder takes only the notes, so a notes edit from another
+/// computer shows while the note records or processes here (R22, KTD6).
+/// The work on this computer owns the rest of the row. A row with no home
+/// folder has no folder to follow.
+fn refresh_scope(record: &SessionRecord, claimed: bool) -> Option<Scope> {
+    if !busy(record, claimed) {
+        Some(Scope::All)
+    } else if record.home_path.is_some() {
+        Some(Scope::Notes)
+    } else {
+        None
     }
 }
 

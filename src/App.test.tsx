@@ -48,6 +48,7 @@ const recordingEntry: SessionEntry = {
   title: null,
   found_speakers: null,
   storage_unavailable: false,
+  remote: null,
 };
 
 function mockApp(status: { current: RecordingStatus }, entries: { current: SessionEntry[] }) {

@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use session_core::folder::SessionDoc;
+use session_core::folder::{ResultFlag, SessionDoc};
 use session_core::jobs::busy;
 use session_core::{RenameIntent, Segment, SessionRecord, SessionState, Store, TitleSource};
 use session_save::rename_home::{self, Move, RenameError, Resolved};
@@ -30,7 +30,9 @@ pub enum FolderRename {
     Unchanged,
     /// The session is busy: it records, is queued, processes, regenerates
     /// its summary, is deleted or moves to a new storage folder. The folder
-    /// takes the name when that ends.
+    /// takes the name when that ends. Also for a note that another
+    /// computer records into and has not saved: that computer renames the
+    /// folder after its Save (KTD9).
     Later,
     /// The folder has the new name at this path.
     Moved(PathBuf),
@@ -165,6 +167,13 @@ pub fn reconcile(
     check_document: bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
+    if not_saved_elsewhere(store, session_id, claimed)? {
+        // The computer that records into the note renames the folder after
+        // its Save, with the title that it takes from `session.md` (KTD9).
+        // This computer owes no rename.
+        store.set_rename_owed(session_id, false)?;
+        return Ok(FolderRename::Later);
+    }
     let result = reconcile_once(store, session_id, claimed, check_document, fs)?;
     let owed = matches!(result, FolderRename::Later | FolderRename::Kept(_));
     store.set_rename_owed(session_id, owed)?;
@@ -363,6 +372,23 @@ fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), Stag
 
 /// The `session.md` in `folder`, or `None` when it is not there or does not
 /// parse.
+/// Whether another computer records into the note `session_id` and has not
+/// saved the recording (KTD9): this computer does no work on the note (its
+/// row is Saved and idle), and `session.md` in the home folder says
+/// "recording not saved". A folder or a document that cannot be read
+/// gives `false`, and the rename goes on as before.
+fn not_saved_elsewhere(store: &Store, session_id: &str, claimed: bool) -> Result<bool, StageError> {
+    let record = require(store, session_id)?;
+    if busy(&record, claimed) {
+        return Ok(false);
+    }
+    Ok(record
+        .home_path
+        .as_deref()
+        .and_then(|home| read_document(Path::new(home)))
+        .is_some_and(|doc| doc.result_flag() == Some(ResultFlag::NotSaved)))
+}
+
 fn read_document(folder: &Path) -> Option<SessionDoc> {
     std::fs::read_to_string(folder.join(SESSION_FILE))
         .ok()

@@ -15,8 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
+use chrono::{Local, TimeDelta};
 use session_core::SessionRecord;
-use session_core::folder::{self, SessionDoc, fingerprint};
+use session_core::folder::{self, ResultFlag, SessionDoc, fingerprint};
+use session_save::in_use_marker;
 
 use crate::conflict;
 
@@ -39,12 +41,17 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanOptions {
     pub read_timeout: Duration,
+    /// The run ID of this computer's in-use markers. Such a marker shows
+    /// this computer's own work, so it does not make a note in use on
+    /// another computer (KTD5). `None` counts every marker.
+    pub own_run: Option<String>,
 }
 
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
             read_timeout: READ_TIMEOUT,
+            own_run: None,
         }
     }
 }
@@ -166,6 +173,23 @@ pub enum DocumentState {
     Unreadable,
 }
 
+/// What a note folder shows about work on the note on another computer
+/// (KTD5). The in-use markers decide first, then the `result` flag of
+/// `session.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RemoteState {
+    /// Another computer records into or processes the note: a fresh in-use
+    /// marker of another run is in the folder, whatever the flag says
+    /// (R12, R20, R21). A note whose flag says "recording not saved" and
+    /// whose `session.md` is newer than [`in_use_marker::FRESH_FOR`] is also in use: its
+    /// marker can still be on its way.
+    InUse,
+    /// The flag says "recording not saved", no in-use marker is fresh, and
+    /// `session.md` is older than [`in_use_marker::FRESH_FOR`]: the computer that records
+    /// into the note stopped before it saved the recording (R23).
+    NotFinished,
+}
+
 /// One note: the real folder of one note id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteFolder {
@@ -193,6 +217,11 @@ pub struct NoteFolder {
     pub conflict_copies: Vec<PathBuf>,
     /// Other folders with the same note id. Their content is not read.
     pub duplicate_folders: Vec<PathBuf>,
+    /// What the folder shows about work on the note on another computer.
+    /// The folder alone cannot tell this computer's own work from the work
+    /// of an earlier run, so the reader also checks the row
+    /// ([`crate::status::LibraryStatus::remote`]).
+    pub remote: Option<RemoteState>,
 }
 
 /// A folder whose `session.md` exists but gives no note.
@@ -427,6 +456,7 @@ struct Found {
     summary_fingerprint: Option<String>,
     notes: Option<String>,
     conflict_copies: Vec<PathBuf>,
+    remote: Option<RemoteState>,
 }
 
 enum FolderRead {
@@ -450,6 +480,10 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         },
     };
 
+    // A note with the result flag has no result yet: a missing transcript,
+    // summary or audio does not wait for the sync (R6, KTD1). Its notes
+    // still do.
+    let flag = doc.result_flag();
     let mut waiting = Vec::new();
     let (transcript, transcript_fingerprint) = document_state(
         dir,
@@ -457,7 +491,7 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         doc.transcript_fingerprint.as_deref(),
         options,
     );
-    if transcript != DocumentState::Matches {
+    if transcript != DocumentState::Matches && flag.is_none() {
         waiting.push(Waiting::Transcript);
     }
     let (summary, summary_fingerprint) = document_state(
@@ -466,7 +500,7 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         doc.summary_fingerprint.as_deref(),
         options,
     );
-    if summary != DocumentState::Matches {
+    if summary != DocumentState::Matches && flag.is_none() {
         waiting.push(Waiting::Summary);
     }
     let notes = read_notes(dir, options.read_timeout);
@@ -477,10 +511,14 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
     // removal marker does not wait for its audio (R15).
     let removed_audio = removed_audio(dir, &doc);
     for segment in &doc.segments {
-        if !removed_audio.contains(&segment.audio) && !exists(&dir.join(&segment.audio)) {
+        if flag.is_none()
+            && !removed_audio.contains(&segment.audio)
+            && !exists(&dir.join(&segment.audio))
+        {
             waiting.push(Waiting::Audio(segment.audio.clone()));
         }
     }
+    let remote = remote_state(dir, flag, options);
 
     let mut conflict_copies: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
@@ -514,7 +552,43 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         summary_fingerprint,
         notes,
         conflict_copies,
+        remote,
     }))
+}
+
+/// What the note folder `dir` shows about work on the note on another
+/// computer (KTD5). A fresh in-use marker of another run decides first,
+/// whatever `flag` says. A marker that cannot be read counts by its file
+/// time ([`in_use_marker::marker_fresh`]), and a folder whose names cannot
+/// be listed shows no marker. This reads the names in `dir`, the small
+/// marker files and the file time of `session.md` only.
+fn remote_state(dir: &Path, flag: Option<ResultFlag>, options: &ScanOptions) -> Option<RemoteState> {
+    let now = Local::now().fixed_offset();
+    let in_use = in_use_marker::in_use_except(dir, options.own_run.as_deref(), now)
+        .unwrap_or_else(|e| {
+            log::warn!(
+                "library: cannot read the in-use markers in {}: {e}",
+                dir.display()
+            );
+            false
+        });
+    if in_use {
+        return Some(RemoteState::InUse);
+    }
+    if flag != Some(ResultFlag::NotSaved) {
+        return None;
+    }
+    // A new note's marker can sync after its `session.md`. Until the file
+    // is as old as a marker stays fresh, the note counts as in use.
+    let age = std::fs::metadata(dir.join("session.md"))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .and_then(|age| TimeDelta::from_std(age).ok());
+    match age {
+        Some(age) if age >= in_use_marker::FRESH_FOR => Some(RemoteState::NotFinished),
+        _ => Some(RemoteState::InUse),
+    }
 }
 
 /// The text of `notes.md` in `dir`. `None` when the file is missing, cannot
@@ -625,6 +699,7 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
                 notes: real.notes,
                 conflict_copies: real.conflict_copies,
                 duplicate_folders,
+                remote: real.remote,
             }
         })
         .collect();

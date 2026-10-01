@@ -13,7 +13,7 @@ use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
 
-use library::scan::{READ_TIMEOUT, Read, Waiting, read_timed};
+use library::scan::{READ_TIMEOUT, Read, RemoteState, Waiting, read_timed};
 use library::status::LibraryStatus;
 
 use crate::managers::capture::CaptureManager;
@@ -42,6 +42,33 @@ pub struct SessionEntry {
     /// The note's storage folder is unavailable, or its `session.md` cannot
     /// be read now (R16). Opening it and its actions wait.
     pub storage_unavailable: bool,
+    /// Work on the note on another computer, as the latest library scan
+    /// found it (KTD5). `None` when no other computer works on the note,
+    /// and always for a note that is not Saved on this computer.
+    pub remote: Option<RemoteView>,
+}
+
+/// Work on a note on another computer (KTD5). Record, Resume, Transcribe
+/// Again, Regenerate Summary, Remove Audio and Delete wait for it (R21),
+/// except as R23 allows.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteView {
+    /// Another computer records into or processes the note (R12, R20).
+    InUse,
+    /// Another computer recorded into the note and stopped before it saved
+    /// the recording: "Not finished on another computer" (R23). Notes
+    /// edits, and Delete after a confirmation, are available.
+    NotFinished,
+}
+
+impl From<RemoteState> for RemoteView {
+    fn from(state: RemoteState) -> Self {
+        match state {
+            RemoteState::InUse => Self::InUse,
+            RemoteState::NotFinished => Self::NotFinished,
+        }
+    }
 }
 
 /// A part of a note that the sync has not delivered yet (R6).
@@ -209,11 +236,13 @@ pub struct SessionDocument {
     pub summary: Option<SummaryView>,
 }
 
+/// The entry of `record`. The storage flag and the remote state come from
+/// the latest library scan in `status`: the entry reads no folder.
 fn entry(
     record: &SessionRecord,
     segments: &[session_core::Segment],
     stage: Option<Stage>,
-    storage_unavailable: bool,
+    status: &LibraryStatus,
 ) -> SessionEntry {
     let stage = match &record.state {
         SessionState::ProcessingFailed { stage, .. } => Some(*stage),
@@ -228,7 +257,8 @@ fn entry(
         stage: stage.map(stage_name),
         title: record.title.as_ref().map(|t| t.text.clone()),
         found_speakers: record.found_speakers,
-        storage_unavailable,
+        storage_unavailable: storage_unavailable(status, record),
+        remote: status.remote(record).map(RemoteView::from),
     }
 }
 
@@ -254,8 +284,7 @@ pub fn list_sessions(
         if record.state != SessionState::Discarded {
             let segments = store.segments(&record.id).map_err(|e| e.to_string())?;
             let stage = store.current_stage(&record.id).map_err(|e| e.to_string())?;
-            let unavailable = storage_unavailable(status, record);
-            out.push(entry(record, &segments, stage, unavailable));
+            out.push(entry(record, &segments, stage, status));
         }
     }
     Ok(out)
@@ -352,12 +381,7 @@ pub fn session_detail(
     let status = processing.library_status();
     let note = status.note(&session_id);
     Ok(SessionDetail {
-        entry: entry(
-            &record,
-            &segments,
-            snapshot.current,
-            storage_unavailable(status, &record),
-        ),
+        entry: entry(&record, &segments, snapshot.current, status),
         done: snapshot.done.into_iter().map(stage_name).collect(),
         current: snapshot.current.map(stage_name),
         windows_done: snapshot.windows.map(|(d, _)| d as u32),
@@ -1305,22 +1329,76 @@ mod entry_tests {
             transcribe_again_model: None,
             started_at: None,
         };
-        let e = entry(&record, &[], None, false);
+        let status: Arc<LibraryStatus> = Arc::default();
+        let e = entry(&record, &[], None, &status);
         assert!(!e.storage_unavailable);
+        assert_eq!(e.remote, None);
         assert_eq!(e.title.as_deref(), Some("Budget review"));
         assert_eq!(e.found_speakers, Some(3));
+        // A scan finds the storage folder of the note missing.
+        let gone = tempfile::tempdir().unwrap().path().join("gone");
+        let store = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        library::reconcile::Reconciler::default()
+            .with_status(Arc::clone(&status))
+            .run(
+                &store,
+                &library::reconcile::Target::Full(vec![gone.clone()]),
+                &|_| false,
+            )
+            .unwrap();
         let e = entry(
             &SessionRecord {
                 title: None,
                 found_speakers: None,
+                home_path: Some(gone.join("note").to_string_lossy().into_owned()),
                 ..record
             },
             &[],
             None,
-            true,
+            &status,
         );
         assert!(e.storage_unavailable);
         assert_eq!(e.title, None);
         assert_eq!(e.found_speakers, None);
+    }
+
+    // Covers R12, R20, R23 (KTD5): the entry carries what the latest scan
+    // found about work on the note on another computer, for a Saved row
+    // only.
+    #[test]
+    fn an_entry_carries_the_remote_state_of_a_saved_note_only() {
+        let root = tempfile::tempdir().unwrap();
+        library::scan::write_marker(root.path());
+        let home = root.path().join("2026-09-25 0900 Longhand session");
+        std::fs::create_dir(&home).unwrap();
+        let opened = chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let mut doc = SessionDoc::without_audio("s", opened, None);
+        doc.result = Some(session_core::folder::ResultFlag::NotSaved);
+        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        std::fs::write(home.join("notes.md"), "").unwrap();
+        let store = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        let status: Arc<LibraryStatus> = Arc::default();
+        library::reconcile::Reconciler::default()
+            .with_status(Arc::clone(&status))
+            .run(
+                &store,
+                &library::reconcile::Target::Full(vec![root.path().to_path_buf()]),
+                &|_| false,
+            )
+            .unwrap();
+        let record = store.lock().unwrap().session("s").unwrap().unwrap();
+
+        let e = entry(&record, &[], None, &status);
+        assert_eq!(e.remote, Some(RemoteView::InUse));
+        assert!(!e.storage_unavailable);
+        let here = SessionRecord {
+            state: SessionState::Capturing,
+            ..record
+        };
+        assert_eq!(entry(&here, &[], None, &status).remote, None);
     }
 }

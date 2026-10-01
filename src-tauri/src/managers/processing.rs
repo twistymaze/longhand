@@ -878,8 +878,11 @@ impl ProcessingManager {
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
-        let mut reconciler =
-            library::reconcile::Reconciler::default().with_status(Arc::clone(&self.library_status));
+        // The in-use markers of this run are its own work: they do not
+        // show a note as in use on another computer (KTD5).
+        let mut reconciler = library::reconcile::Reconciler::default()
+            .with_status(Arc::clone(&self.library_status))
+            .with_own_run(self.runner.owner());
         match self.runner.reconcile_library(&roots, &mut reconciler) {
             Ok(changes) => {
                 log::info!(
