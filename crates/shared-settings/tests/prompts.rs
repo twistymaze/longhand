@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 
 use shared_settings::file::{Unavailable, default_settings};
 use shared_settings::prompts::{
-    PromptError, PromptScan, create_prompt, delete_prompt, free_prompt_name, rename_prompt,
-    render_prompt_file, safe_file_name, scan_prompts, set_prompt_text,
+    PromptError, PromptScan, TITLE_MARKER, create_prompt, create_prompt_with_title, delete_prompt,
+    free_prompt_name, rename_prompt, render_prompt_file, render_prompt_file_with_title,
+    safe_file_name, scan_prompts, set_prompt_text, set_prompt_title_text,
 };
+use summarize::prompts::{PROMPT_TEXT_LIMIT, TITLE_TEXT_LIMIT};
 
 /// A storage folder with the default shared settings.
 fn folder() -> tempfile::TempDir {
@@ -584,4 +586,229 @@ fn a_rename_of_the_original_keeps_the_id_of_each_conflict_copy() {
     assert_eq!(after.get(&made.id).unwrap().text, "Text from A.");
     assert_eq!(after.get(&made.id).unwrap().name, "Weekly recap");
     assert_eq!(after.get(&copy_id).unwrap().text, "Text from B.");
+}
+
+// The title text (title instructions U2, KTD8, KTD9).
+
+/// The contents of the prompt file `name`.
+fn read_file(root: &Path, name: &str) -> String {
+    fs::read_to_string(prompts_dir(root).join(name)).unwrap()
+}
+
+#[test]
+fn a_file_with_a_title_text_reads_both_texts_and_renders_the_same_bytes() {
+    let root = folder();
+    let contents = render_prompt_file_with_title("abc", "Recap", "Summary text.", "Title text.");
+    assert_eq!(
+        contents,
+        format!(
+            "---\nid: abc\nname: \"Recap\"\n---\n\nSummary text.\n{TITLE_MARKER}\nTitle text.\n"
+        )
+    );
+    write_file(root.path(), "Recap.md", &contents);
+    let prompt = scan(root.path()).prompts.remove(0);
+    assert_eq!(prompt.text, "Summary text.");
+    assert_eq!(prompt.title_text, "Title text.");
+    let again = render_prompt_file_with_title(
+        &prompt.id,
+        &prompt.stored_name,
+        &prompt.text,
+        &prompt.title_text,
+    );
+    assert_eq!(again, contents);
+    let converted = summarize::Prompt::from(&prompt);
+    assert_eq!(converted.title_text, "Title text.");
+}
+
+#[test]
+fn a_file_with_no_marker_has_an_empty_title_text() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        &render_prompt_file("abc", "Recap", "Summary text."),
+    );
+    write_file(root.path(), "Plain.md", "Just a summary text.\n");
+    let scanned = scan(root.path());
+    assert_eq!(scanned.prompts.len(), 2);
+    for prompt in scanned.prompts {
+        assert_eq!(prompt.title_text, "", "{}", prompt.file_name);
+    }
+    // An empty title text writes no marker.
+    assert_eq!(
+        render_prompt_file_with_title("abc", "Recap", "Summary text.", ""),
+        render_prompt_file("abc", "Recap", "Summary text."),
+    );
+    assert!(!render_prompt_file("abc", "Recap", "Summary text.").contains(TITLE_MARKER));
+}
+
+#[test]
+fn a_title_text_with_headings_and_blank_lines_survives_a_round_trip() {
+    let root = folder();
+    let text = "\n# Summary\n\nBody.\n\n";
+    let title = "\n# Title\n\nUse the meeting type.\n\n- One\n- Two\n\n";
+    let made = create_prompt_with_title(root.path(), "Spacing", text, title).unwrap();
+    assert_eq!(made.title_text, title);
+    let prompt = scan(root.path()).get(&made.id).unwrap().clone();
+    assert_eq!(prompt.text, text);
+    assert_eq!(prompt.title_text, title);
+}
+
+#[test]
+fn a_file_with_crlf_lines_and_a_marker_reads_both_texts() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Win.md",
+        &format!("---\r\nid: abc\r\nname: Win\r\n---\r\n\r\nBody.\r\n{TITLE_MARKER}\r\nTitle.\r\n"),
+    );
+    let prompt = scan(root.path()).prompts.remove(0);
+    assert_eq!(prompt.text, "Body.");
+    assert_eq!(prompt.title_text, "Title.");
+}
+
+#[test]
+fn a_change_of_the_title_text_changes_only_the_part_after_the_marker() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        &format!(
+            "---\nid: abc\nname: \"Recap\"\ncolour: blue\n---\n\nSummary text.\n{TITLE_MARKER}\nOld title.\n"
+        ),
+    );
+    let before = read_file(root.path(), "Recap.md");
+    let changed = set_prompt_title_text(root.path(), "abc", "New title.").unwrap();
+    assert_eq!(changed.title_text, "New title.");
+    assert_eq!(changed.text, "Summary text.");
+    let after = read_file(root.path(), "Recap.md");
+    assert_eq!(after, before.replace("Old title.", "New title."));
+    assert_eq!(file_names(root.path()), vec!["Recap.md"]);
+    // An empty title text removes the marker and keeps the rest.
+    set_prompt_title_text(root.path(), "abc", "").unwrap();
+    assert_eq!(
+        read_file(root.path(), "Recap.md"),
+        "---\nid: abc\nname: \"Recap\"\ncolour: blue\n---\n\nSummary text.\n"
+    );
+    assert_eq!(scan(root.path()).prompts[0].title_text, "");
+}
+
+#[test]
+fn a_change_of_the_summary_text_or_the_name_keeps_the_title_text() {
+    let root = folder();
+    let made = create_prompt_with_title(root.path(), "Recap", "Old.", "Title.").unwrap();
+    let changed = set_prompt_text(root.path(), &made.id, "New.").unwrap();
+    assert_eq!(changed.title_text, "Title.");
+    let renamed = rename_prompt(root.path(), &made.id, "Weekly").unwrap();
+    assert_eq!(renamed.title_text, "Title.");
+    let prompt = scan(root.path()).get(&made.id).unwrap().clone();
+    assert_eq!(prompt.name, "Weekly");
+    assert_eq!(prompt.text, "New.");
+    assert_eq!(prompt.title_text, "Title.");
+}
+
+#[test]
+fn a_title_text_over_the_limit_is_refused_and_an_empty_one_is_accepted() {
+    let root = folder();
+    let made = create_prompt_with_title(root.path(), "Recap", "Text.", "").unwrap();
+    assert_eq!(made.title_text, "");
+    let long = "x".repeat(TITLE_TEXT_LIMIT + 1);
+    let refused = set_prompt_title_text(root.path(), &made.id, &long).unwrap_err();
+    assert!(
+        matches!(refused, PromptError::TitleTextTooLong),
+        "{refused}"
+    );
+    assert_eq!(
+        refused.to_string(),
+        "The title instructions are too long. Use 1,000 characters or fewer."
+    );
+    assert!(matches!(
+        create_prompt_with_title(root.path(), "Other", "Text.", &long),
+        Err(PromptError::TitleTextTooLong)
+    ));
+    set_prompt_title_text(root.path(), &made.id, &"x".repeat(TITLE_TEXT_LIMIT)).unwrap();
+    assert_eq!(
+        scan(root.path()).get(&made.id).unwrap().title_text.len(),
+        TITLE_TEXT_LIMIT
+    );
+    set_prompt_title_text(root.path(), &made.id, "").unwrap();
+    assert_eq!(scan(root.path()).get(&made.id).unwrap().title_text, "");
+}
+
+#[test]
+fn a_built_in_title_text_cannot_be_changed() {
+    let root = folder();
+    assert!(matches!(
+        set_prompt_title_text(root.path(), summarize::prompts::TOPIC_SUMMARY_ID, "Mine"),
+        Err(PromptError::BuiltIn)
+    ));
+}
+
+#[test]
+fn a_summary_text_with_the_marker_line_is_refused() {
+    let root = folder();
+    let text = format!("Summary.\n{TITLE_MARKER}\nMore.");
+    assert!(matches!(
+        create_prompt(root.path(), "Recap", &text),
+        Err(PromptError::TextHasMarker)
+    ));
+    let made = create_prompt(root.path(), "Recap", "Summary.").unwrap();
+    let refused =
+        set_prompt_text(root.path(), &made.id, &format!("A.\n  {TITLE_MARKER}  ")).unwrap_err();
+    assert!(matches!(refused, PromptError::TextHasMarker), "{refused}");
+    assert_eq!(scan(root.path()).get(&made.id).unwrap().text, "Summary.");
+    // The marker inside a line is only text.
+    let inline = format!("Keep {TITLE_MARKER} here.");
+    set_prompt_text(root.path(), &made.id, &inline).unwrap();
+    let prompt = scan(root.path()).get(&made.id).unwrap().clone();
+    assert_eq!(prompt.text, inline);
+    assert_eq!(prompt.title_text, "");
+}
+
+#[test]
+fn the_longest_texts_of_four_byte_characters_fit_and_round_trip() {
+    let root = folder();
+    let text = "😀".repeat(PROMPT_TEXT_LIMIT);
+    let title = "😀".repeat(TITLE_TEXT_LIMIT);
+    let made = create_prompt_with_title(root.path(), &"n".repeat(150), &text, &title).unwrap();
+    let prompt = scan(root.path()).get(&made.id).unwrap().clone();
+    assert_eq!(prompt.text, text);
+    assert_eq!(prompt.title_text, title);
+}
+
+#[test]
+fn two_files_with_one_id_and_one_summary_text_but_two_title_texts_are_a_conflict() {
+    let root = folder();
+    let made = create_prompt_with_title(root.path(), "Recap", "Same.", "Title from A.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file_with_title(&made.id, "Recap", "Same.", "Title from B."),
+    );
+    let scanned = scan(root.path());
+    assert_eq!(scanned.prompts.len(), 2);
+    assert!(scanned.conflicted.contains(&made.id));
+    assert_eq!(scanned.get(&made.id).unwrap().title_text, "Title from A.");
+    let copy = scanned.prompts.iter().find(|p| p.id != made.id).unwrap();
+    assert_eq!(copy.title_text, "Title from B.");
+    assert!(copy.duplicates.is_empty());
+    // A change of the original writes the made id into the copy and keeps
+    // the copy's title text.
+    let copy_id = copy.id.clone();
+    set_prompt_title_text(root.path(), &made.id, "New title from A.").unwrap();
+    let after = scan(root.path());
+    assert!(after.conflicted.is_empty());
+    assert_eq!(after.get(&made.id).unwrap().title_text, "New title from A.");
+    assert_eq!(after.get(&copy_id).unwrap().title_text, "Title from B.");
+}
+
+#[test]
+fn a_file_with_a_title_text_over_the_limit_is_not_a_prompt() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Long.md",
+        &render_prompt_file_with_title("abc", "Long", "Text.", &"x".repeat(TITLE_TEXT_LIMIT + 1)),
+    );
+    assert!(scan(root.path()).prompts.is_empty());
 }

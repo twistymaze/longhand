@@ -12,16 +12,22 @@ use shared_settings::file::{
     AudioRemoval, Field, SharedValue, Unavailable, apply_patch, default_settings,
 };
 use shared_settings::join::{JoinKind, join};
-use shared_settings::prompts::{create_prompt, render_prompt_file, scan_prompts};
+use shared_settings::prompts::{
+    create_prompt, render_prompt_file, render_prompt_file_with_title, scan_prompts,
+};
 use shared_settings::view::{ActivePrompt, Availability, load};
 use summarize::prompts::Prompt;
 
 fn prompt(id: &str, name: &str, text: &str) -> Prompt {
+    titled(id, name, text, "")
+}
+
+fn titled(id: &str, name: &str, text: &str, title_text: &str) -> Prompt {
     Prompt {
         id: id.into(),
         name: name.into(),
         text: text.into(),
-        title_text: String::new(),
+        title_text: title_text.into(),
     }
 }
 
@@ -229,6 +235,73 @@ fn a_cached_prompt_whose_id_the_folder_has_with_another_text_is_added_with_its_o
     assert_eq!(scan.get("recap-a").unwrap().text, "A's recap.");
     let again = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
     assert!(again.written.prompt_files.is_empty());
+}
+
+#[test]
+fn a_prompt_with_the_same_name_and_text_and_another_title_text_is_added() {
+    // KTD9: the title text is part of what makes two prompts the same.
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = cache_of_b(
+        old.path(),
+        vec![titled("recap-b", "Recap", "A's recap.", "B's title.")],
+    );
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert_eq!(joined.written.prompt_files, vec!["Recap 2.md".to_string()]);
+    let scan = scan_prompts(root.path()).unwrap();
+    assert_eq!(scan.prompts.len(), 2);
+    assert_eq!(scan.get("recap-a").unwrap().title_text, "");
+    assert_eq!(scan.get("recap-b").unwrap().title_text, "B's title.");
+    assert_eq!(scan.get("recap-b").unwrap().text, "A's recap.");
+    let again = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(again.written.prompt_files.is_empty());
+}
+
+#[test]
+fn a_cached_prompt_whose_id_the_folder_has_with_another_title_text_is_added_with_its_own_id() {
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = cache_of_b(
+        old.path(),
+        vec![titled("recap-a", "Recap", "A's recap.", "Older title.")],
+    );
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert_eq!(joined.written.prompt_files.len(), 1);
+    let scan = scan_prompts(root.path()).unwrap();
+    assert_eq!(scan.prompts.len(), 2);
+    assert!(scan.conflicted.is_empty());
+    assert_eq!(scan.get("recap-a").unwrap().title_text, "");
+    let added = scan.prompts.iter().find(|p| p.id != "recap-a").unwrap();
+    assert_eq!(added.title_text, "Older title.");
+}
+
+#[test]
+fn a_prompt_with_the_same_texts_and_title_text_is_not_added() {
+    let root = folder_of_a();
+    fs::write(
+        root.path().join(".longhand/prompts/Recap.md"),
+        render_prompt_file_with_title("recap-a", "Recap", "A's recap.", "A's title."),
+    )
+    .unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = cache_of_b(
+        old.path(),
+        vec![titled("recap-b", "Recap", "A's recap.", "A's title.")],
+    );
+    let before = snapshot(root.path());
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(joined.written.prompt_files.is_empty());
+    assert_eq!(snapshot(root.path()), before);
+    // The view and the cache carry the title text.
+    let recap = joined
+        .view
+        .prompts
+        .iter()
+        .find(|p| p.id == "recap-a")
+        .unwrap();
+    assert_eq!(recap.title_text, "A's title.");
+    let cached = joined.cache.unwrap();
+    assert_eq!(cached.prompts[0].title_text, "A's title.");
 }
 
 #[test]

@@ -12,7 +12,13 @@
 //! ---
 //!
 //! The prompt text.
+//! <!-- longhand: title instructions -->
+//! The title text.
 //! ```
+//!
+//! The marker line and the title text follow the summary text only when
+//! the title text is not empty. A file with no marker line has an empty
+//! title text (KTD8).
 //!
 //! A markdown file with no front matter is a prompt too: its id comes from
 //! its file name, and its name is its file name. A sync conflict copy of a
@@ -48,10 +54,19 @@ const FALLBACK_STEM: &str = "Prompt";
 /// and the total must stay below the 255-byte limit of macOS and Windows.
 const MAX_STEM_BYTES: usize = 197;
 
-/// The largest prompt file that the scan reads. A text of
-/// [`summarize::prompts::PROMPT_TEXT_LIMIT`] characters of four bytes each
-/// fits, with space for the front matter.
-const MAX_FILE_BYTES: u64 = summarize::prompts::PROMPT_TEXT_LIMIT as u64 * 4 + 4096;
+/// The line in the body of a prompt file between the summary text and
+/// the title text (KTD8). A summary text cannot hold this line.
+pub const TITLE_MARKER: &str = "<!-- longhand: title instructions -->";
+
+/// The largest prompt file that the scan reads. A summary text of
+/// [`summarize::prompts::PROMPT_TEXT_LIMIT`] characters and a title text
+/// of [`summarize::prompts::TITLE_TEXT_LIMIT`] characters, of four bytes
+/// each, fit with the marker line and space for the front matter.
+const MAX_FILE_BYTES: u64 = summarize::prompts::PROMPT_TEXT_LIMIT as u64 * 4
+    + summarize::prompts::TITLE_TEXT_LIMIT as u64 * 4
+    + TITLE_MARKER.len() as u64
+    + 2
+    + 4096;
 
 /// The namespace of the ids that the scan makes (UUID v5). It never
 /// changes: every computer and every version must make the same ids.
@@ -83,9 +98,12 @@ pub struct PromptFile {
     /// has no name.
     pub stored_name: String,
     pub text: String,
+    /// The text after the marker line, or empty when the file has no
+    /// marker line.
+    pub title_text: String,
     pub file_name: String,
-    /// The other files with the same id and the same text. They show as
-    /// this one prompt.
+    /// The other files with the same id, the same text and the same title
+    /// text. They show as this one prompt.
     pub duplicates: Vec<String>,
     /// The id that the file holds. It differs from [`Self::id`] for a
     /// conflict copy, and it is `None` for a file with no id.
@@ -98,7 +116,7 @@ impl From<&PromptFile> for summarize::Prompt {
             id: prompt.id.clone(),
             name: prompt.name.clone(),
             text: prompt.text.clone(),
-            title_text: String::new(),
+            title_text: prompt.title_text.clone(),
         }
     }
 }
@@ -108,7 +126,8 @@ impl From<&PromptFile> for summarize::Prompt {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PromptScan {
     pub prompts: Vec<PromptFile>,
-    /// The ids that more than one file with different texts holds. Such an
+    /// The ids that more than one file with different texts or different
+    /// title texts holds. Such an
     /// id has a conflict copy (KTD5).
     pub conflicted: BTreeSet<String>,
 }
@@ -139,6 +158,13 @@ pub enum PromptError {
         format_count(summarize::prompts::PROMPT_TEXT_LIMIT)
     )]
     TextTooLong,
+    #[error("The prompt text can't contain the line {TITLE_MARKER}.")]
+    TextHasMarker,
+    #[error(
+        "The title instructions are too long. Use {} characters or fewer.",
+        format_count(summarize::prompts::TITLE_TEXT_LIMIT)
+    )]
+    TitleTextTooLong,
     /// The shared settings are read-only. The change wrote nothing.
     #[error("{0}")]
     NotAvailable(Unavailable),
@@ -210,10 +236,15 @@ pub fn safe_file_name(name: &str) -> String {
 
 /// The text of a prompt file with `id`, `name` and `text`.
 pub fn render_prompt_file(id: &str, name: &str, text: &str) -> String {
-    render(id, name, &[], text)
+    render(id, name, &[], text, "")
 }
 
-fn render(id: &str, name: &str, extra: &[String], text: &str) -> String {
+/// The text of a prompt file with `id`, `name`, `text` and `title_text`.
+pub fn render_prompt_file_with_title(id: &str, name: &str, text: &str, title_text: &str) -> String {
+    render(id, name, &[], text, title_text)
+}
+
+fn render(id: &str, name: &str, extra: &[String], text: &str, title_text: &str) -> String {
     let name = serde_json::to_string(name).expect("a string serializes");
     let mut out = format!("{FRONT_MATTER_LINE}\n{KEY_ID}: {id}\n{KEY_NAME}: {name}\n");
     for line in extra {
@@ -224,7 +255,34 @@ fn render(id: &str, name: &str, extra: &[String], text: &str) -> String {
     out.push_str("\n\n");
     out.push_str(text);
     out.push('\n');
+    if !title_text.is_empty() {
+        out.push_str(TITLE_MARKER);
+        out.push('\n');
+        out.push_str(title_text);
+        out.push('\n');
+    }
     out
+}
+
+/// Whether `line`, without its line end, is the marker line.
+fn is_marker_line(line: &str) -> bool {
+    line.trim() == TITLE_MARKER
+}
+
+/// The summary text and the title text of the body of a prompt file. The
+/// first marker line splits them. The render adds one line end after each
+/// text, and this removes it.
+fn split_body(body: &str) -> (String, String) {
+    let mut start = 0;
+    for line in body.split_inclusive('\n') {
+        if is_marker_line(line) {
+            let text = strip_final_newline(&body[..start]);
+            let title = strip_final_newline(&body[start + line.len()..]);
+            return (text.to_string(), title.to_string());
+        }
+        start += line.len();
+    }
+    (strip_final_newline(body).to_string(), String::new())
 }
 
 /// The parts of a prompt file.
@@ -236,15 +294,20 @@ struct Parsed {
     /// keeps them.
     extra: Vec<String>,
     text: String,
+    title_text: String,
 }
 
 fn parse_prompt_file(contents: &str) -> Parsed {
     let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
-    front_matter(contents).unwrap_or_else(|| Parsed {
-        id: None,
-        name: None,
-        extra: Vec::new(),
-        text: strip_final_newline(contents).to_string(),
+    front_matter(contents).unwrap_or_else(|| {
+        let (text, title_text) = split_body(contents);
+        Parsed {
+            id: None,
+            name: None,
+            extra: Vec::new(),
+            text,
+            title_text,
+        }
     })
 }
 
@@ -260,6 +323,7 @@ fn front_matter(contents: &str) -> Option<Parsed> {
         name: None,
         extra: Vec::new(),
         text: String::new(),
+        title_text: String::new(),
     };
     let mut consumed = contents.split_inclusive('\n').next()?.len();
     for line in lines {
@@ -271,7 +335,7 @@ fn front_matter(contents: &str) -> Option<Parsed> {
                 .strip_prefix("\r\n")
                 .or_else(|| body.strip_prefix('\n'))
                 .unwrap_or(body);
-            parsed.text = strip_final_newline(body).to_string();
+            (parsed.text, parsed.title_text) = split_body(body);
             return Some(parsed);
         }
         match line.split_once(':') {
@@ -337,9 +401,16 @@ struct Entry {
     id_in_file: Option<String>,
     stored_name: String,
     text: String,
+    title_text: String,
 }
 
 impl Entry {
+    /// Two files are the same prompt only when both texts are the same
+    /// (KTD9).
+    fn same_texts(&self, other: &Entry) -> bool {
+        self.text == other.text && self.title_text == other.title_text
+    }
+
     /// The file name is the safe file name of the prompt's own name.
     fn qualifies(&self) -> bool {
         self.file_name == safe_file_name(&self.stored_name)
@@ -401,6 +472,7 @@ fn read_entry(folder: &Path, file_name: String) -> Option<Entry> {
     let parsed = parse_prompt_file(&contents);
     if parsed.text.trim().is_empty()
         || parsed.text.chars().count() > summarize::prompts::PROMPT_TEXT_LIMIT
+        || parsed.title_text.chars().count() > summarize::prompts::TITLE_TEXT_LIMIT
     {
         return None;
     }
@@ -415,11 +487,12 @@ fn read_entry(folder: &Path, file_name: String) -> Option<Entry> {
         id_in_file,
         stored_name,
         text: parsed.text,
+        title_text: parsed.title_text,
     })
 }
 
-/// Give each file its id (KTD5), join the files with one id and one text,
-/// and give each prompt the name that Settings shows.
+/// Give each file its id (KTD5), join the files with one id and the same
+/// texts (KTD9), and give each prompt the name that Settings shows.
 fn resolve(entries: Vec<Entry>) -> PromptScan {
     let mut groups: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
     for entry in entries {
@@ -434,10 +507,10 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
     let mut prompts: Vec<(PromptFile, bool)> = Vec::new();
     for (id, mut files) in groups {
         files.sort_by(|a, b| a.file_name.as_bytes().cmp(b.file_name.as_bytes()));
-        // The files with one text, in file name order.
+        // The files with the same texts, in file name order.
         let mut texts: Vec<Vec<Entry>> = Vec::new();
         for file in files {
-            match texts.iter_mut().find(|group| group[0].text == file.text) {
+            match texts.iter_mut().find(|group| group[0].same_texts(&file)) {
                 Some(group) => group.push(file),
                 None => texts.push(vec![file]),
             }
@@ -473,6 +546,7 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
                     name: entry.stored_name.clone(),
                     stored_name: entry.stored_name,
                     text: entry.text,
+                    title_text: entry.title_text,
                     file_name: entry.file_name,
                     duplicates: group.into_iter().map(|f| f.file_name).collect(),
                     id_in_file: entry.id_in_file,
@@ -526,6 +600,18 @@ fn check_text(text: &str) -> Result<(), PromptError> {
     if text.chars().count() > summarize::prompts::PROMPT_TEXT_LIMIT {
         return Err(PromptError::TextTooLong);
     }
+    // The file must parse back to the same summary text (KTD8).
+    if text.split('\n').any(is_marker_line) {
+        return Err(PromptError::TextHasMarker);
+    }
+    Ok(())
+}
+
+/// An empty title text is valid (R4).
+fn check_title_text(title_text: &str) -> Result<(), PromptError> {
+    if title_text.chars().count() > summarize::prompts::TITLE_TEXT_LIMIT {
+        return Err(PromptError::TitleTextTooLong);
+    }
     Ok(())
 }
 
@@ -578,18 +664,19 @@ fn free_file_name(safe: &str, taken: &BTreeSet<String>) -> String {
         .expect("an unbounded range always gives a free name")
 }
 
-/// Write a new prompt file for `id`, `name` and `text` under a free file
-/// name. A file that appears at that name in the meantime stays. Returns
-/// the file name.
+/// Write a new prompt file for `id`, `name`, `text` and `title_text` under
+/// a free file name. A file that appears at that name in the meantime
+/// stays. Returns the file name.
 pub(crate) fn write_new_prompt(
     root: &Path,
     id: &str,
     name: &str,
     text: &str,
+    title_text: &str,
 ) -> io::Result<String> {
     let folder = prompts_folder(root);
     std::fs::create_dir_all(&folder)?;
-    let contents = render(id, name, &[], text);
+    let contents = render(id, name, &[], text, title_text);
     let mut taken = names_in_folder(&folder)?;
     for _ in 0..NAME_ATTEMPTS {
         let file_name = free_file_name(&safe_file_name(name), &taken);
@@ -612,10 +699,22 @@ fn names_taken() -> io::Error {
     )
 }
 
-/// Add a prompt with `text`, named `base` or a free name made from it.
-/// Returns the new prompt.
+/// Add a prompt with `text` and an empty title text, named `base` or a
+/// free name made from it. Returns the new prompt.
 pub fn create_prompt(root: &Path, base: &str, text: &str) -> Result<PromptFile, PromptError> {
+    create_prompt_with_title(root, base, text, "")
+}
+
+/// Add a prompt with `text` and `title_text`, named `base` or a free name
+/// made from it. Returns the new prompt.
+pub fn create_prompt_with_title(
+    root: &Path,
+    base: &str,
+    text: &str,
+    title_text: &str,
+) -> Result<PromptFile, PromptError> {
     check_text(text)?;
+    check_title_text(title_text)?;
     let base = base.trim();
     if base.is_empty() {
         return Err(PromptError::EmptyName);
@@ -626,12 +725,13 @@ pub fn create_prompt(root: &Path, base: &str, text: &str) -> Result<PromptFile, 
     let name = free_prompt_name(base, taken.iter().map(String::as_str));
     // A random id never matches a built-in id, which is a fixed word.
     let id = Uuid::new_v4().to_string();
-    let file_name = write_new_prompt(root, &id, &name, text)?;
+    let file_name = write_new_prompt(root, &id, &name, text, title_text)?;
     Ok(PromptFile {
         id: id.clone(),
         name: name.clone(),
         stored_name: name,
         text: text.to_string(),
+        title_text: title_text.to_string(),
         file_name,
         duplicates: Vec::new(),
         id_in_file: Some(id),
@@ -655,7 +755,7 @@ pub fn rename_prompt(root: &Path, id: &str, name: &str) -> Result<PromptFile, Pr
     }
     settle_copies(root, &scan, id)?;
     let folder = prompts_folder(root);
-    rewrite(&folder, &prompt, name, &prompt.text)?;
+    rewrite(&folder, &prompt, name, &prompt.text, &prompt.title_text)?;
     let file_name = move_to_name(&folder, &prompt.file_name, name)?;
     Ok(PromptFile {
         name: name.to_string(),
@@ -675,9 +775,43 @@ pub fn set_prompt_text(root: &Path, id: &str, text: &str) -> Result<PromptFile, 
     let scan = scan_for_change(root)?;
     let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?.clone();
     settle_copies(root, &scan, id)?;
-    rewrite(&prompts_folder(root), &prompt, &prompt.stored_name, text)?;
+    rewrite(
+        &prompts_folder(root),
+        &prompt,
+        &prompt.stored_name,
+        text,
+        &prompt.title_text,
+    )?;
     Ok(PromptFile {
         text: text.to_string(),
+        duplicates: Vec::new(),
+        id_in_file: Some(prompt.id.clone()),
+        ..prompt
+    })
+}
+
+/// Give the prompt `id` a new title text. This writes one file, and keeps
+/// the summary text. An empty title text removes the marker line.
+pub fn set_prompt_title_text(
+    root: &Path,
+    id: &str,
+    title_text: &str,
+) -> Result<PromptFile, PromptError> {
+    check_custom(id)?;
+    check_title_text(title_text)?;
+    ensure_writable(root)?;
+    let scan = scan_for_change(root)?;
+    let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?.clone();
+    settle_copies(root, &scan, id)?;
+    rewrite(
+        &prompts_folder(root),
+        &prompt,
+        &prompt.stored_name,
+        &prompt.text,
+        title_text,
+    )?;
+    Ok(PromptFile {
+        title_text: title_text.to_string(),
         duplicates: Vec::new(),
         id_in_file: Some(prompt.id.clone()),
         ..prompt
@@ -713,21 +847,33 @@ fn settle_copies(root: &Path, scan: &PromptScan, id: &str) -> Result<(), PromptE
         .iter()
         .filter(|p| p.id != id && p.id_in_file.as_deref() == Some(id))
     {
-        rewrite(&folder, copy, &copy.stored_name, &copy.text)?;
+        rewrite(
+            &folder,
+            copy,
+            &copy.stored_name,
+            &copy.text,
+            &copy.title_text,
+        )?;
     }
     Ok(())
 }
 
-/// Write the file of `prompt` with its id, `name` and `text`, and remove
-/// its duplicates, which have the old text.
-fn rewrite(folder: &Path, prompt: &PromptFile, name: &str, text: &str) -> Result<(), PromptError> {
+/// Write the file of `prompt` with its id, `name`, `text` and
+/// `title_text`, and remove its duplicates, which have the old texts.
+fn rewrite(
+    folder: &Path,
+    prompt: &PromptFile,
+    name: &str,
+    text: &str,
+    title_text: &str,
+) -> Result<(), PromptError> {
     let path = folder.join(&prompt.file_name);
     let extra = match std::fs::read_to_string(&path) {
         Ok(contents) => parse_prompt_file(&contents).extra,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(PromptError::NoSuchPrompt),
         Err(e) => return Err(e.into()),
     };
-    let contents = render(&prompt.id, name, &extra, text);
+    let contents = render(&prompt.id, name, &extra, text, title_text);
     session_save::home_write::write_atomic(folder, &prompt.file_name, contents.as_bytes())?;
     for duplicate in &prompt.duplicates {
         remove_if_present(&folder.join(duplicate))?;
@@ -808,11 +954,49 @@ mod tests {
     #[test]
     fn a_rendered_file_parses_back() {
         let text = "Line one.\n\nLine two.";
-        let parsed = parse_prompt_file(&render("abc", "1:1 \"notes\"", &[], text));
+        let parsed = parse_prompt_file(&render("abc", "1:1 \"notes\"", &[], text, ""));
         assert_eq!(parsed.id.as_deref(), Some("abc"));
         assert_eq!(parsed.name.as_deref(), Some("1:1 \"notes\""));
         assert_eq!(parsed.text, text);
+        assert_eq!(parsed.title_text, "");
         assert!(parsed.extra.is_empty());
+    }
+
+    #[test]
+    fn each_pair_of_texts_parses_back() {
+        let texts = ["One.", "\nOne.\n\n", "One.\r\nTwo."];
+        let titles = [
+            "",
+            "Title.",
+            "\n",
+            "\n# Title\n\n",
+            "A\n<!-- longhand: title instructions -->\nB",
+        ];
+        for text in texts {
+            for title in titles {
+                let parsed = parse_prompt_file(&render("abc", "N", &[], text, title));
+                assert_eq!(
+                    (parsed.text.as_str(), parsed.title_text.as_str()),
+                    (text, title)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_with_no_front_matter_splits_at_the_marker() {
+        let parsed = parse_prompt_file(&format!("Summary.\n{TITLE_MARKER}\nTitle."));
+        assert_eq!(parsed.text, "Summary.");
+        assert_eq!(parsed.title_text, "Title.");
+    }
+
+    #[test]
+    fn the_largest_file_fits_the_byte_limit() {
+        let text = "😀".repeat(summarize::prompts::PROMPT_TEXT_LIMIT);
+        let title = "😀".repeat(summarize::prompts::TITLE_TEXT_LIMIT);
+        let id = Uuid::new_v4().to_string();
+        let contents = render(&id, &"n".repeat(MAX_STEM_BYTES), &[], &text, &title);
+        assert!(contents.len() as u64 <= MAX_FILE_BYTES);
     }
 
     #[test]
