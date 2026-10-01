@@ -23,7 +23,11 @@ fn populate(dir: &Path) {
     fs::write(dir.join(WAL), b"wal bytes").unwrap();
     fs::write(dir.join(SHM), b"shm bytes").unwrap();
     fs::create_dir_all(dir.join(SESSIONS).join("s1")).unwrap();
-    fs::write(dir.join(SESSIONS).join("s1").join("audio.wav"), b"audio bytes").unwrap();
+    fs::write(
+        dir.join(SESSIONS).join("s1").join("audio.wav"),
+        b"audio bytes",
+    )
+    .unwrap();
 }
 
 fn assert_populated(dir: &Path) {
@@ -38,7 +42,11 @@ fn assert_populated(dir: &Path) {
 
 fn assert_empty_of_entries(dir: &Path) {
     for name in [DB, WAL, SHM, SESSIONS] {
-        assert!(!dir.join(name).exists(), "{name} is still in {}", dir.display());
+        assert!(
+            !dir.join(name).exists(),
+            "{name} is still in {}",
+            dir.display()
+        );
     }
 }
 

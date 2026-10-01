@@ -206,7 +206,8 @@ fn not_own_reason(conn: &Connection) -> rusqlite::Result<Option<NotOwnReason>> {
 /// or column that does not exist counts as zero.
 fn count_database_work(conn: &Connection) -> rusqlite::Result<UnfinishedWork> {
     let mut work = UnfinishedWork::default();
-    if table_exists(conn, "sessions")? && column_exists(conn, "sessions", "state")? {
+    let sessions = table_exists(conn, "sessions")?;
+    if sessions && column_exists(conn, "sessions", "state")? {
         work.notes = count(
             conn,
             "SELECT count(*) FROM sessions
@@ -217,8 +218,7 @@ fn count_database_work(conn: &Connection) -> rusqlite::Result<UnfinishedWork> {
     if table_exists(conn, "jobs")? {
         work.jobs += count(conn, "SELECT count(*) FROM jobs")?;
     }
-    if table_exists(conn, "sessions")? && column_exists(conn, "sessions", "transcribe_again_model")?
-    {
+    if sessions && column_exists(conn, "sessions", "transcribe_again_model")? {
         work.jobs += count(
             conn,
             "SELECT count(*) FROM sessions WHERE transcribe_again_model IS NOT NULL",

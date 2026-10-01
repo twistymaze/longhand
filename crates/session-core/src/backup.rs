@@ -135,10 +135,15 @@ fn exists(path: &Path) -> bool {
 pub fn undo_incomplete(app_data: &Path) -> Result<Vec<PathBuf>, BackupError> {
     let mut undone = Vec::new();
     for folder in backup_folders(app_data)? {
-        let has_entries = MOVE_ORDER.iter().any(|name| exists(&folder.join(name)));
         if folder.join(INCOMPLETE_FLAG).exists() {
-            move_back(app_data, &folder, &MOVE_ORDER, &mut system_rename, RETRY_FOR)?;
-        } else if has_entries {
+            move_back(
+                app_data,
+                &folder,
+                &MOVE_ORDER,
+                &mut system_rename,
+                RETRY_FOR,
+            )?;
+        } else if MOVE_ORDER.iter().any(|name| exists(&folder.join(name))) {
             continue;
         }
         fs::remove_dir_all(&folder).map_err(io_error("remove", &folder))?;
