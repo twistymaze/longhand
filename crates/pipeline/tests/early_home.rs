@@ -208,6 +208,64 @@ fn a_crash_after_the_rename_and_before_its_record_finds_the_folder_by_session_id
     );
 }
 
+// Covers R23, R24: the folder was at its final name, and another computer
+// or the user removed it before the Done record.
+#[test]
+fn a_folder_removed_after_the_rename_and_before_its_record_is_not_made_again() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    recording_note(&store, "s", "");
+    let filled = step(&store, "s", dest.path());
+    // The rename happened; its record was lost.
+    let placed = early_home::step(&store, "s", &filled, Some(dest.path()), RUN, &RealFs).unwrap();
+    let EarlyState::Done { path } = placed else {
+        panic!("{placed:?}");
+    };
+    std::fs::remove_dir_all(&path).unwrap();
+
+    let written = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert!(folders(dest.path()).is_empty());
+    assert!(!dest.path().join(staging_name("s")).exists());
+    assert!(!written.exists());
+    assert!(!early_home::unfinished(&store.lock().unwrap(), "s").unwrap());
+    // A second run makes no folder either.
+    write(&store, "s", Some(dest.path())).unwrap();
+    assert!(folders(dest.path()).is_empty());
+    assert!(!dest.path().join(staging_name("s")).exists());
+}
+
+#[test]
+fn a_folder_at_the_name_that_cannot_be_read_keeps_the_filled_state() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    recording_note(&store, "s", "");
+    let filled = step(&store, "s", dest.path());
+    let EarlyState::Done { path } =
+        early_home::step(&store, "s", &filled, Some(dest.path()), RUN, &RealFs).unwrap()
+    else {
+        panic!("not placed");
+    };
+    // The `session.md` of the folder cannot be read, as a file that does
+    // not download yet.
+    let session = path.join("session.md");
+    let text = std::fs::read(&session).unwrap();
+    std::fs::remove_file(&session).unwrap();
+    std::fs::create_dir(&session).unwrap();
+
+    let error = write(&store, "s", Some(dest.path())).unwrap_err();
+
+    assert!(matches!(error, StageError::NoDestination(_)), "{error:?}");
+    assert_eq!(early(&store, "s"), Some(filled));
+    assert_eq!(folders(dest.path()).len(), 1);
+    assert!(!dest.path().join(staging_name("s")).exists());
+    // The file is back: the write finds the folder.
+    std::fs::remove_dir(&session).unwrap();
+    std::fs::write(&session, text).unwrap();
+    assert_eq!(write(&store, "s", Some(dest.path())).unwrap(), Some(path));
+    assert_eq!(folders(dest.path()).len(), 1);
+}
+
 #[test]
 fn a_folder_of_another_note_at_the_name_is_not_taken_for_this_one() {
     let dest = tempfile::tempdir().unwrap();
@@ -626,6 +684,10 @@ fn a_dropped_recording_into_a_notes_only_note_writes_the_no_recording_flag_again
         SessionDoc::read(&path).unwrap().result,
         Some(ResultFlag::NotSaved)
     );
+    assert!(path.join(marker_name(RUN)).is_file());
+    // The marker of another run stays.
+    let other = path.join(marker_name("run-2"));
+    std::fs::write(&other, "{}").unwrap();
 
     store
         .lock()
@@ -636,6 +698,12 @@ fn a_dropped_recording_into_a_notes_only_note_writes_the_no_recording_flag_again
 
     let doc = SessionDoc::read(&path).unwrap();
     assert_eq!(doc.result, Some(ResultFlag::NoRecording));
+    // The note does not record any more: this run's marker goes, so other
+    // computers do not show the note as in use.
+    assert!(!path.join(marker_name(RUN)).exists());
+    assert!(other.is_file());
+    // A second update with no marker is not an error.
+    early_home::sync(&store, "n", RUN).unwrap();
     assert_eq!(
         std::fs::read_to_string(path.join("notes.md")).unwrap(),
         "Agenda\n"

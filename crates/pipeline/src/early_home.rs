@@ -24,7 +24,9 @@
 //! `session.md`. When the staging folder is gone in the Filled state, the
 //! rename happened and its record did not: the step finds the folder at a
 //! name candidate by `session_id` before it does anything again. So a crash
-//! at any step leaves at most one folder (R4).
+//! at any step leaves at most one folder (R4). When no candidate holds the
+//! note, another computer or the user removed the folder, and the write
+//! ends with no folder (R23, R24).
 //!
 //! The start of a recording never waits for this write: capture records
 //! [`EarlyState::Begun`] with the row and starts the job of the note
@@ -204,15 +206,27 @@ fn storage(root: &Path, e: io::Error) -> StageError {
 
 /// Whether `path` is the folder of the note `id`: its `session.md` names
 /// `id`. The read has a time limit, because a synced folder can hold a
-/// file that does not download.
-fn is_note(path: &Path, id: &str) -> bool {
+/// file that does not download. Such a file gives [`NoteAt::Unknown`].
+fn note_at(path: &Path, id: &str) -> NoteAt {
     match read_timed(path.join(SESSION_FILE), READ_TIMEOUT) {
-        Read::Bytes(bytes) => std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| SessionDoc::parse(text).ok())
-            .is_some_and(|doc| doc.session_id == id),
-        Read::Missing | Read::Failed(_) => false,
+        Read::Bytes(bytes) => {
+            let named = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| SessionDoc::parse(text).ok())
+                .is_some_and(|doc| doc.session_id == id);
+            if named { NoteAt::Yes } else { NoteAt::No }
+        }
+        Read::Missing => NoteAt::No,
+        Read::Failed(why) => NoteAt::Unknown(why.to_string()),
     }
+}
+
+/// Whether a folder is the folder of a note, from [`note_at`].
+enum NoteAt {
+    Yes,
+    No,
+    /// The `session.md` of the folder cannot be read now.
+    Unknown(String),
 }
 
 /// Take one step of the early write of `id` from `state`. `destination` is
@@ -293,10 +307,34 @@ pub fn step(
             if !exists(&staging) {
                 // The rename happened and its record did not: the folder's
                 // `session.md` names the note.
-                if let Some(path) = candidates.clone().find(|path| is_note(path, id)) {
-                    return Ok(EarlyState::Done { path });
+                let mut unreadable = None;
+                for path in candidates.clone() {
+                    match note_at(&path, id) {
+                        NoteAt::Yes => return Ok(EarlyState::Done { path }),
+                        NoteAt::No => {}
+                        NoteAt::Unknown(why) => unreadable = Some(why),
+                    }
                 }
-                return Ok(EarlyState::Begun);
+                // A folder that does not download yet can be the note: the
+                // write tries again later.
+                if let Some(why) = unreadable {
+                    return Err(StageError::NoDestination(format!(
+                        "a folder in {} cannot be read: {why}",
+                        root.display()
+                    )));
+                }
+                // Filled is recorded after the staging writes, so the
+                // folder was at its final name, and another computer or the
+                // user removed it. A folder that was removed is not made
+                // again (R23, R24): the write ends, as `sync` does for a
+                // home folder that is gone. The home path is the staging
+                // name, which holds the note id, so no other note is ever
+                // at it. A later scan finds the folder if it is at another
+                // name ([`locate`]).
+                log::warn!(
+                    "the folder of {id} is gone from the storage folder, so it is not made again"
+                );
+                return Ok(EarlyState::Done { path: staging });
             }
             for target in candidates {
                 match fs.rename_new(&staging, &target) {
@@ -400,8 +438,9 @@ fn write_guarded(
 
 /// Bring the flag and the notes of the home folder of `id` up to date,
 /// after its early write is done (R2, R6). A note that records gets this
-/// run's in-use marker before its flag says "recording not saved". The
-/// flag is written only while the note has no result and its first Save
+/// run's in-use marker before its flag says "recording not saved". A note
+/// whose flag says "no recording" loses this run's marker after the flag
+/// write. The flag is written only while the note has no result and its first Save
 /// has not begun: after that, the Save owns `session.md`. `notes.md` is
 /// written when the store holds other notes and the file is still the one
 /// this computer last wrote. Each write records its fingerprint (KTD8).
@@ -466,6 +505,14 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
             .map_err(|e| storage(&root, e))?;
         lock(store)
             .set_written_session_fingerprint(id, Some(&folder::fingerprint(text.as_bytes())))?;
+    }
+    // The note does not record any more: a recording that kept no audio
+    // went back to "no recording". This job wrote the marker, and the
+    // in-use keeper removes only the markers that it wrote, so the job
+    // removes it here. A recording that starts after the check queues this
+    // job again, and that run writes the marker again.
+    if flag == ResultFlag::NoRecording {
+        in_use::remove_marker(&home, run_id).map_err(|e| storage(&root, e))?;
     }
     sync_notes(store, id, &home)
 }
