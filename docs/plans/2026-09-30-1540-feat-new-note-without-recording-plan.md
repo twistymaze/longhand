@@ -23,7 +23,7 @@ execution: code
 
 ## Product Contract
 
-Product Contract preservation: changed R6, R10, R16, R18, R19, R21; added R23, R24; Goal, Summary and Problem Frame reframed around the user's choice. The user confirmed these at the plan scoping review: the two flag values, the open time as the note's time, the stricter removal checks, the state for a note that a crashed computer did not finish, and the rule for an edit to a removed note.
+Product Contract preservation: changed R6, R9, R10, R16, R18, R19, R21; added R23, R24; Goal, Summary and Problem Frame reframed around the user's choice. The user confirmed these at the plan scoping review: the two flag values, the open time as the note's time, the stricter removal checks, the state for a note that a crashed computer did not finish, and the rule for an edit to a removed note.
 
 ### Summary
 
@@ -45,6 +45,7 @@ Today New Note always starts to record at once. A user cannot open a note early 
 - **An empty note that never recorded is removed.** A mis-click leaves nothing in the storage folder or on Home. Governs R18, R19. (session-settled: user-approved — chosen over keeping it.)
 - **An explicit flag marks a note that has no result yet, with two values.** Missing files mean "waiting for a sync" today, so the state must not be inferred from them; the second value tells other computers that a recording exists elsewhere. Governs R6, R12, R23. (session-settled: user-directed — chosen over inferring the state from missing files: no ambiguity. The two values are user-approved at plan scoping, chosen over one value that cannot tell "never recorded" from "recording not saved".)
 - **The note's time is the time it opened.** A note opened at 09:00 and recorded at 10:00 keeps 09:00. Governs R16. (session-settled: user-approved — chosen over the time of the first recording: the title and folder name do not change when the note records.)
+- **A note that another computer did not finish is cleaned up only by a person.** A deliberate Delete wins: the recording computer does not bring the note back. Governs R23. (session-settled: user-directed — chosen over automatic cleanup and over saving the recovered recording as a new note: a person's Delete is authoritative, and a delete during a crash is a rare edge case.)
 - **The Recording setting is local to each computer.** It sits with the other new-note defaults (microphone, Computer audio), which are local. Governs R8.
 
 ### Requirements
@@ -62,7 +63,7 @@ Today New Note always starts to record at once. A user cannot open a note early 
 
 - R7. While the storage folder is unavailable, New Note (both choices) and the recording shortcut do not start a note. New Note shows why.
 - R8. Settings > Recording has a setting for what New Note does: start to record (the default for a new install, as today) or open a note that does not record.
-- R9. New Note is a split button. A click does the default of R8. Its menu gives the other choice.
+- R9. New Note is a split button. A click does the default of R8, and the label of its main part shows which default that is. Its menu gives the other choice.
 - R10. The recording shortcut stops a recording when one runs. Otherwise, when the default is "does not record" and the main window is open, not minimized, and shows a note whose button says "Record" and is available (R11, R12), it records into that note, also when another app has the focus. Otherwise it does the default of R8.
 
 **Record and Resume on the note page**
@@ -88,7 +89,7 @@ Today New Note always starts to record at once. A user cannot open a note early 
 - R20. Another computer lists a note that records or processes elsewhere, shows that it records or processes on another computer, shows its notes, and lets the user edit them. Notes edits follow the current rules: the last change wins, and a conflict copy keeps an edit that would be lost.
 - R21. On that computer, Record, Resume, Transcribe Again, Regenerate Summary, Remove Audio and Delete wait until the other computer is done with the note, except as R23 allows.
 - R22. On the recording computer, notes edits that arrive from another computer show in My Notes while the note records.
-- R23. When the flag says "recording not saved" and no computer's in-use marker in the folder is fresh, other computers show the note as "Not finished on another computer". They allow notes edits, and Delete after a confirmation that names the recording that is not saved. Record and the processing actions stay unavailable.
+- R23. When the flag says "recording not saved" and no computer's in-use marker in the folder is fresh, other computers show the note as "Not finished on another computer". They allow notes edits, and Delete after a confirmation that names the recording that is not saved. Record and the processing actions stay unavailable. Nothing removes such a note automatically: only a person deletes it. When the recording computer later recovers the note and finds its home folder deleted, it treats the note as deleted and discards the recording.
 - R24. When a computer saves notes for a note whose home folder another computer removed (R18), it saves the text as a new note with no audio and tells the user. The text is never lost.
 
 ### Key Flows
@@ -162,7 +163,7 @@ Today New Note always starts to record at once. A user cannot open a note early 
 - KTD1. **`session.md` gets a `result` field with the values `none` and `pending`, absent once a result exists.** `none` = no recording; `pending` = recording not saved (R6). A note with no audio writes `started` (the open time, R16) and `segments: []`. A reader treats zero segments with no transcript or summary fingerprint as `none` when the field is missing, so a rewrite by an older build does not make the note wait for a sync. `pending` is written when a recording starts into the note, in the first write or as an update, and capture never waits for that write.
 - KTD2. **A notes-only note is a Saved row with zero segments and `result: none`.** Move, Delete, adopt and the Home list then work as for any saved note. Record into it is a new event, `UserRecord`, from Saved with zero segments to Capturing. It is not `UserResume`, whose `audio_intact` guard and `audio_state` (Waiting for zero segments) refuse a note with no audio.
 - KTD3. **The store records the home path after the early write places the folder, and the first Save publishes into that folder.** Today `save::run` already calls `update_home` when a row has a home path, so the first result follows the Publication rules (R3) and clears the flag in the same `session.md` write. Recovery and the library scan find a folder by the `session_id` in `session.md` (in the staging folder or at a name candidate) before they adopt, stage or write again, so a crash at any step of KTD4 cannot make a second folder or a second row (R4).
-- KTD4. **The early write follows the Save staging pattern, as a background step with its own checkpoint.** It writes this run's in-use marker, `notes.md` and `session.md` into a hidden staging folder in the storage folder (`naming::staging_name`), moves it to the first free `naming::candidate` with `rename_new`, then records the actual home path in the store. Every file in the folder is then identifiable by `session_id`. It retries while the storage folder is unavailable (R5) and shows the same storage status as Save. A note that does not record shows "Not saved yet" until the write succeeds; its notes stay in the local store until then. Record into a notes-only note writes this run's marker before it writes `pending`.
+- KTD4. **The early write follows the Save staging pattern, as a background step with its own checkpoint.** It writes this run's in-use marker, `notes.md` and `session.md` into a hidden staging folder in the storage folder (`naming::staging_name`), moves it to the first free `naming::candidate` with `rename_new`, then records the actual home path in the store. Every file in the folder is then identifiable by `session_id`. It retries while the storage folder is unavailable (R5) and shows the same storage status as Save. A note that does not record shows "Not saved yet" until the write succeeds; its notes stay in the local store until then. Record into a notes-only note writes this run's marker before it writes `pending`. One job per note runs the early write and every later flag update in order; it checks the row state before each write, and removal (U6) and the first Save cancel it or wait for it. Until its checkpoint is done, the library never forgets the row because its folder is missing.
 - KTD5. **Other computers derive the remote state from the in-use markers first, then the flag.** The library scan lists the `.longhand-in-use-*` names of each folder and checks their freshness. A fresh marker from another run means the note records or processes elsewhere, whatever the flag says (R12, R20, R21). "Not finished on another computer" (R23) needs all of: `pending`, no fresh marker, and a `session.md` file time older than `FRESH_FOR`; a newer `pending` note with no marker yet shows as recording elsewhere. The session entry carries this state for the UI. The marker name and freshness functions move from `crates/pipeline/src/in_use.rs` to `crates/session-save`, because `library` cannot depend on `pipeline` (pipeline already depends on library); `pipeline::in_use` keeps the keeper and re-exports them.
 - KTD6. **A busy row with a home path refreshes only `notes.md` from its folder.** This closes R22: today `busy()` blocks every refresh of a row that records or processes. The notes conflict rules stay unchanged.
 - KTD7. **The frontend reports the shown note to the backend.** A new command records the note id on each navigation and clears it on Home, hide and close. The shortcut uses it only while the main window is visible and not minimized (R10); a stale id falls back to the R8 default.
@@ -341,12 +342,15 @@ flowchart TB
 - Crash after the rename and before the store records the home path: at launch, recovery finds the folder at a name candidate by `session_id` and records it; no second folder exists.
 - Crash after the store records the home path: at launch, the note uses that folder.
 - Crash before any write: at launch, the early write runs again and makes one folder.
+- Covers R23. Crash during a recording, then another computer deletes the home folder: at launch, recovery treats the note as deleted, discards the recording, and makes no new folder.
 - The early folder holds this run's in-use marker before its `session.md` exists at the final name.
 - The storage folder is unavailable at the first write: the write retries and succeeds when the folder is back; Save waits for it.
 - The first Save publishes the transcript and summary into the early folder and removes the `result` field from `session.md`.
 - Covers F1. A notes-only note with typed notes records, stops and processes; the result uses the notes and goes into the same folder.
 - This computer's scan does not adopt its own early folder as a second row.
 - Notes saved during the recording appear in the home folder's `notes.md`.
+- A `pending` update that is still queued when the first Save starts runs before the Save or is cancelled; `session.md` after the Save has no `result` field.
+- An empty note removed while its early write retries: the job stops and no folder appears later.
 
 **Verification:** A note has exactly one home folder after each crash point, and the first result publishes into it.
 
@@ -394,6 +398,7 @@ flowchart TB
 - B renames A's `pending` note: only the title in `session.md` changes; the folder name stays until A's Save.
 - The audio removal pass skips a note with zero segments and writes no removal marker.
 - A Move moves a notes-only note like any saved note.
+- A notes-only row whose early write is not done, with an available storage folder and no folder yet, stays after the delete wait.
 
 **Verification:** The two-computer tests show the right state on B at each step of A's recording.
 
@@ -418,7 +423,7 @@ flowchart TB
 1. `start_recording` takes a choice to record or not; a note that does not record is made through the U2 store call.
 2. A new `record_note` command sends `UserRecord`, with the same checks as the R12 button.
 3. Readiness gets a flag for "a note can start", which is false while the storage folder is unavailable, with the reason (R7). `armed` stays as it is.
-4. On Stop with no kept segment: if the note existed before this recording or has notes text, it returns to a notes-only note with `result: none`; otherwise U6 removes it (R19).
+4. On Stop with no kept segment: if the note existed before this recording or has notes text, it returns to a notes-only note with `result: none`; otherwise Stop returns an "empty note" outcome, and U6 owns its removal (R19).
 5. `SessionDetail` gets whether the button is Record or Resume, its availability and its reason, and the remote state.
 6. `save_notes`: when the home folder is gone and the row is a notes-only note, save the text as a new notes-only note and return a result that the UI reports (R24).
 
@@ -451,7 +456,7 @@ flowchart TB
 - `crates/pipeline/tests/empty_note.rs` (new)
 
 **Approach:**
-1. One check function owns the R18 conditions and returns remove or keep.
+1. One check function owns the R18 conditions and returns remove or keep. It also handles the "empty note" outcome of Stop (U5).
 2. A `leave_note` command runs it when the shown note changes or the window closes; New Note and the shortcut run it for the shown note first.
 3. At launch, run it for each empty notes-only note that this computer started.
 4. Removal deletes the home folder and forgets the row; it never touches a folder that fails a check.
@@ -467,6 +472,7 @@ flowchart TB
 - The storage folder is unavailable: nothing is removed, and the launch pass tries again later.
 - A note that another computer started is never removed by this computer.
 - Covers AE15. New Note while an empty note is shown removes it.
+- A recording discarded under R19 with no notes text and no earlier note is removed when the user leaves it.
 
 **Verification:** Each keep condition has a test, and only the one remove path deletes a folder.
 
@@ -538,6 +544,7 @@ flowchart TB
 
 **Test scenarios:**
 - The split button's main part calls start with the default choice; the menu item calls it with the other choice.
+- The main part's label follows the default, and changes when the setting changes.
 - With the storage folder unavailable, both parts are unavailable and the reason shows.
 - The note page shows "Record" for a note with no audio and "Resume" for a note with audio; the menu has no "Resume Recording".
 - Covers AE3. A note with removed audio shows "Resume", unavailable, with the reason.
