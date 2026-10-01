@@ -35,8 +35,12 @@ pub enum Decision {
 /// The alert that [`Decision::Ask`] shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Question {
-    /// The database holds unfinished work (R6).
-    UnfinishedWork(UnfinishedWork),
+    /// The database holds unfinished work (R6). `reason` tells if the
+    /// database is from a newer version or from another version.
+    UnfinishedWork {
+        reason: NotOwnReason,
+        work: UnfinishedWork,
+    },
     /// The inspection could not read the database (R7). The text is the
     /// error.
     CheckFailed(String),
@@ -85,7 +89,10 @@ pub fn decide(inspection: &Inspection, only_instance: bool) -> Decision {
     match inspection {
         Inspection::Own => Decision::Continue,
         Inspection::NotOwn { work, .. } if work.is_empty() => Decision::Rebuild,
-        Inspection::NotOwn { work, .. } => Decision::Ask(Question::UnfinishedWork(*work)),
+        Inspection::NotOwn { reason, work } => Decision::Ask(Question::UnfinishedWork {
+            reason: *reason,
+            work: *work,
+        }),
         Inspection::Unreadable { error } => Decision::Ask(Question::CheckFailed(error.clone())),
     }
 }
@@ -141,16 +148,24 @@ fn join_list(items: &[String]) -> String {
 pub fn question_text(question: &Question, backups: &Path) -> (String, String) {
     let backups = backups.display();
     match question {
-        Question::UnfinishedWork(work) => (
-            "Your notes list is from a newer version of Longhand".to_string(),
-            format!(
-                "It has work that is not finished: {}.\n\n\
-                 Rebuild makes a new notes list from your saved notes. The unfinished \
-                 work will not be in it. A copy is kept in {backups}. To get the work \
-                 back, put the copy back and open the newer version.",
-                join_list(&work_items(work))
-            ),
-        ),
+        Question::UnfinishedWork { reason, work } => {
+            // A different migration hash does not tell which version is
+            // newer, so that text says "another version".
+            let (from, open) = match reason {
+                NotOwnReason::NewerVersion { .. } => ("a newer version", "the newer version"),
+                NotOwnReason::DifferentMigration { .. } => ("another version", "that version"),
+            };
+            (
+                format!("Your notes list is from {from} of Longhand"),
+                format!(
+                    "It has work that is not finished: {}.\n\n\
+                     Rebuild makes a new notes list from your saved notes. The unfinished \
+                     work will not be in it. A copy is kept in {backups}. To get the work \
+                     back, put the copy back and open {open}.",
+                    join_list(&work_items(work))
+                ),
+            )
+        }
         Question::CheckFailed(error) => (
             "Longhand can't check your notes list".to_string(),
             format!(
@@ -264,8 +279,15 @@ fn rebuild(app_data: &Path, kind: BackupKind, inspection: &Inspection) -> Result
         source: Box::new(e),
     };
     let backup_path = backup::move_aside(app_data, kind).map_err(to_failure)?;
-    for removed in backup::apply_retention(app_data).map_err(to_failure)? {
-        log::info!("deleted the old database backup {}", removed.display());
+    // The database is aside, so normal startup can make a new one. A
+    // failure to delete old backups does not stop the start.
+    match backup::apply_retention(app_data) {
+        Ok(removed) => {
+            for folder in removed {
+                log::info!("deleted the old database backup {}", folder.display());
+            }
+        }
+        Err(e) => log::warn!("could not delete old database backups: {e}"),
     }
     log::info!(
         "rebuilt the notes database: old {}, new version {}, backup {}",
@@ -384,7 +406,21 @@ mod tests {
         };
         assert_eq!(
             decide(&not_own(work), true),
-            Decision::Ask(Question::UnfinishedWork(work))
+            Decision::Ask(Question::UnfinishedWork {
+                reason: NotOwnReason::NewerVersion { found: 12, own: 10 },
+                work
+            })
+        );
+        let other = Inspection::NotOwn {
+            reason: NotOwnReason::DifferentMigration { version: 3 },
+            work,
+        };
+        assert_eq!(
+            decide(&other, true),
+            Decision::Ask(Question::UnfinishedWork {
+                reason: NotOwnReason::DifferentMigration { version: 3 },
+                work
+            })
         );
     }
 
@@ -454,7 +490,14 @@ mod tests {
             ..Default::default()
         };
         let backups = Path::new("/data/database-backups");
-        let (title, body) = question_text(&Question::UnfinishedWork(work), backups);
+        let newer = NotOwnReason::NewerVersion { found: 12, own: 10 };
+        let (title, body) = question_text(
+            &Question::UnfinishedWork {
+                reason: newer,
+                work,
+            },
+            backups,
+        );
         assert_eq!(title, "Your notes list is from a newer version of Longhand");
         assert_eq!(
             body,
@@ -464,12 +507,66 @@ mod tests {
              work will not be in it. A copy is kept in /data/database-backups. To get \
              the work back, put the copy back and open the newer version."
         );
-        let (_, body) = question_text(&Question::UnfinishedWork(one_of_each()), backups);
+        let (_, body) = question_text(
+            &Question::UnfinishedWork {
+                reason: newer,
+                work: one_of_each(),
+            },
+            backups,
+        );
         assert!(body.starts_with(
             "It has work that is not finished: 1 note that is not saved yet, \
              a transcription or summary that is running, a move of your storage \
              folder, a folder rename and a summary that is being written.\n\n"
         ));
+    }
+
+    #[test]
+    fn the_unfinished_work_alert_for_a_different_migration_says_another_version() {
+        let work = UnfinishedWork {
+            notes: 1,
+            ..Default::default()
+        };
+        let backups = Path::new("/data/database-backups");
+        let (title, body) = question_text(
+            &Question::UnfinishedWork {
+                reason: NotOwnReason::DifferentMigration { version: 3 },
+                work,
+            },
+            backups,
+        );
+        assert_eq!(title, "Your notes list is from another version of Longhand");
+        assert_eq!(
+            body,
+            "It has work that is not finished: 1 note that is not saved yet.\n\n\
+             Rebuild makes a new notes list from your saved notes. The unfinished \
+             work will not be in it. A copy is kept in /data/database-backups. To get \
+             the work back, put the copy back and open that version."
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_log_file_on_macos_is_in_library_logs() {
+        let home = dirs::home_dir().expect("a home folder");
+        assert_eq!(
+            log_file_for("net.ewal.longhand", "Longhand"),
+            Some(home.join("Library/Logs/net.ewal.longhand/Longhand.log"))
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_log_file_on_other_systems_is_in_the_local_data_folder() {
+        let data = dirs::data_local_dir().expect("a local data folder");
+        assert_eq!(
+            log_file_for("net.ewal.longhand", "Longhand"),
+            Some(
+                data.join("net.ewal.longhand")
+                    .join("logs")
+                    .join("Longhand.log")
+            )
+        );
     }
 
     #[test]
