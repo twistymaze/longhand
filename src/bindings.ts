@@ -283,6 +283,17 @@ async setSummaryPromptText(id: string, text: string) : Promise<Result<Settings, 
 }
 },
 /**
+ * Save the title text of a custom summary prompt. It can be empty (R4).
+ */
+async setSummaryPromptTitleText(id: string, text: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_summary_prompt_title_text", { id, text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Delete a custom summary prompt. The Topic summary becomes active when the
  * deleted prompt was active (R4).
  */
@@ -1864,11 +1875,16 @@ export type SpeakerSource = "off" | "pyannote" | "sortformer" | "nemotron"
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.
  */
-export type SummaryPrompt = { id: string; name: string; text: string }
+export type SummaryPrompt = { id: string; name: string; text: string; 
+/**
+ * Empty for a prompt that the old local store holds: that store has
+ * no title texts (KTD6).
+ */
+title_text?: string }
 /**
  * One row of the prompt list that the Settings window shows.
  */
-export type SummaryPromptEntry = { id: string; name: string; text: string; 
+export type SummaryPromptEntry = { id: string; name: string; text: string; title_text: string; 
 /**
  * A built-in prompt cannot be renamed, edited or deleted (R2).
  */
@@ -1881,7 +1897,11 @@ export type SummaryPromptList = { prompts: SummaryPromptEntry[]; active: string;
 /**
  * The most characters a prompt text can have.
  */
-text_limit: number }
+text_limit: number; 
+/**
+ * The most characters a title text can have.
+ */
+title_text_limit: number }
 export type SummaryView = { 
 /**
  * Markdown.

@@ -459,6 +459,19 @@ pub fn set_summary_prompt_text(
     Ok(settings::get_settings(&app))
 }
 
+/// Save the title text of a custom summary prompt. It can be empty (R4).
+#[tauri::command(async)]
+#[specta::specta]
+pub fn set_summary_prompt_title_text(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    id: String,
+    text: String,
+) -> Result<Settings, String> {
+    shared.set_prompt_title_text(&id, &text)?;
+    Ok(settings::get_settings(&app))
+}
+
 /// Delete a custom summary prompt. The Topic summary becomes active when the
 /// deleted prompt was active (R4).
 #[tauri::command(async)]

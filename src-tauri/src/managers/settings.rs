@@ -171,6 +171,10 @@ pub struct SummaryPrompt {
     pub id: String,
     pub name: String,
     pub text: String,
+    /// Empty for a prompt that the old local store holds: that store has
+    /// no title texts (KTD6).
+    #[serde(default)]
+    pub title_text: String,
 }
 
 impl From<&summarize::Prompt> for SummaryPrompt {
@@ -179,6 +183,7 @@ impl From<&summarize::Prompt> for SummaryPrompt {
             id: prompt.id.clone(),
             name: prompt.name.clone(),
             text: prompt.text.clone(),
+            title_text: prompt.title_text.clone(),
         }
     }
 }
@@ -189,7 +194,7 @@ impl From<&SummaryPrompt> for summarize::Prompt {
             id: prompt.id.clone(),
             name: prompt.name.clone(),
             text: prompt.text.clone(),
-            title_text: String::new(),
+            title_text: prompt.title_text.clone(),
         }
     }
 }
@@ -200,6 +205,7 @@ pub struct SummaryPromptEntry {
     pub id: String,
     pub name: String,
     pub text: String,
+    pub title_text: String,
     /// A built-in prompt cannot be renamed, edited or deleted (R2).
     pub built_in: bool,
 }
@@ -212,6 +218,8 @@ pub struct SummaryPromptList {
     pub active: String,
     /// The most characters a prompt text can have.
     pub text_limit: u32,
+    /// The most characters a title text can have.
+    pub title_text_limit: u32,
 }
 
 /// The settings that stay on this computer (R13), as the local store holds
@@ -830,18 +838,21 @@ impl Settings {
                 id: p.id,
                 name: p.name,
                 text: p.text,
+                title_text: p.title_text,
                 built_in: true,
             });
         let custom = self.summary_prompts.iter().map(|p| SummaryPromptEntry {
             id: p.id.clone(),
             name: p.name.clone(),
             text: p.text.clone(),
+            title_text: p.title_text.clone(),
             built_in: false,
         });
         SummaryPromptList {
             prompts: built_ins.chain(custom).collect(),
             active: self.active_summary_prompt_snapshot().id,
             text_limit: summarize::prompts::PROMPT_TEXT_LIMIT as u32,
+            title_text_limit: summarize::prompts::TITLE_TEXT_LIMIT as u32,
         }
     }
 
@@ -2044,6 +2055,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             text: "Write a recap.".into(),
+            title_text: String::new(),
         }
     }
 
@@ -2110,6 +2122,49 @@ mod tests {
         let mut shown = names(&settings);
         shown.sort();
         assert_eq!(shown, ["One on one", "Team sync"]);
+    }
+
+    #[test]
+    fn a_stored_prompt_with_no_title_text_has_an_empty_title_text() {
+        // KTD6: the old local store has no title texts. Its prompts are
+        // read, not dropped.
+        let stored = json!([{ "id": "a", "name": "Team sync", "text": "Recap." }]);
+        assert_eq!(
+            legacy_prompts(Some(&stored)),
+            [summarize::Prompt {
+                id: "a".into(),
+                name: "Team sync".into(),
+                text: "Recap.".into(),
+                title_text: String::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_prompt_list_shows_the_title_texts_and_the_title_limit() {
+        let mut settings = Settings::default();
+        settings.summary_prompts.push(SummaryPrompt {
+            title_text: "Name the team.".into(),
+            ..custom("g", "Team sync")
+        });
+        let list = settings.summary_prompt_list();
+        assert_eq!(
+            list.title_text_limit,
+            summarize::prompts::TITLE_TEXT_LIMIT as u32
+        );
+        let topic = summarize::prompts::topic_summary();
+        let title_text = |id: &str| {
+            let entry = list.prompts.iter().find(|p| p.id == id).unwrap();
+            entry.title_text.clone()
+        };
+        assert_eq!(title_text(TOPIC_SUMMARY_ID), topic.title_text);
+        assert_eq!(title_text("g"), "Name the team.");
+        // The prompt of a summary run carries the title text.
+        settings.active_summary_prompt = "g".into();
+        assert_eq!(
+            settings.active_summary_prompt_snapshot().title_text,
+            "Name the team."
+        );
     }
 
     #[test]

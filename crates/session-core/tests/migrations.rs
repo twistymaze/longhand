@@ -395,8 +395,11 @@ fn a_database_with_no_table_gets_its_rows_and_keeps_its_data() {
     let store = Store::open(&path).unwrap();
     assert!(store.session("s1").unwrap().is_some());
     drop(store);
-    assert_eq!(applied_rows(&path), build_rows()[..14].to_vec());
-    assert_eq!(user_version(&path), 14);
+    assert_eq!(applied_rows(&path), build_rows());
+    assert_eq!(
+        user_version(&path),
+        session_core::schema::MIGRATION_SQL.len() as i64
+    );
 }
 
 #[test]
@@ -466,4 +469,43 @@ fn an_added_migration_records_its_hash() {
         })
         .unwrap();
     assert_eq!(count, 1);
+}
+
+/// A database as the audio removal work left it: migrations 0001 to 0014
+/// applied.
+fn version_fourteen(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 14)
+        .unwrap();
+    conn
+}
+
+#[test]
+fn migration_fifteen_gives_existing_prompt_snapshots_an_empty_title_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_fourteen(&path);
+        add_session(&conn, "s1");
+        conn.execute(
+            "UPDATE sessions SET prompt_snapshot_id = 'b1', prompt_snapshot_name = 'Standup',
+               prompt_snapshot_text = 'Write a standup.' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+        add_session(&conn, "s2");
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.prompt_snapshot("s1").unwrap(),
+        Some(session_core::PromptSnapshot {
+            id: "b1".into(),
+            name: "Standup".into(),
+            text: "Write a standup.".into(),
+            title_text: String::new(),
+        })
+    );
+    // A note with no snapshot still has none.
+    assert_eq!(store.prompt_snapshot("s2").unwrap(), None);
 }

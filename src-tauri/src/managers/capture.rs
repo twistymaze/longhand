@@ -2940,6 +2940,7 @@ fn prompt_snapshot(settings: &Settings) -> session_core::PromptSnapshot {
         id: prompt.id,
         name: prompt.name,
         text: prompt.text,
+        title_text: prompt.title_text,
     }
 }
 
@@ -3003,12 +3004,14 @@ mod tests {
 
     #[test]
     fn the_prompt_snapshot_is_the_active_prompt_at_the_start() {
-        // KTD15: the id, the name and the text of the active prompt.
+        // KTD15: the id, the name, the text and the title text of the
+        // active prompt.
         let mut settings = Settings::default();
         settings.summary_prompts = vec![settings::SummaryPrompt {
             id: "b1".into(),
             name: "Standup".into(),
             text: "Write a standup.".into(),
+            title_text: "Name the team.".into(),
         }];
         settings.active_summary_prompt = "b1".into();
         assert_eq!(
@@ -3017,10 +3020,13 @@ mod tests {
                 id: "b1".into(),
                 name: "Standup".into(),
                 text: "Write a standup.".into(),
+                title_text: "Name the team.".into(),
             }
         );
         let topic = summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap();
-        assert_eq!(prompt_snapshot(&Settings::default()).text, topic.text);
+        let snapshot = prompt_snapshot(&Settings::default());
+        assert_eq!(snapshot.text, topic.text);
+        assert_eq!(snapshot.title_text, topic.title_text);
     }
 
     #[test]

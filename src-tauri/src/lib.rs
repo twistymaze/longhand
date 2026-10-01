@@ -50,6 +50,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::duplicate_summary_prompt,
             commands::settings::rename_summary_prompt,
             commands::settings::set_summary_prompt_text,
+            commands::settings::set_summary_prompt_title_text,
             commands::settings::delete_summary_prompt,
             commands::settings::activate_summary_prompt,
             commands::settings::pick_storage_folder,

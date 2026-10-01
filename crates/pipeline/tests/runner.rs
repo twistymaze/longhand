@@ -2021,6 +2021,7 @@ fn snapshot_of(prompt: &summarize::Prompt) -> session_core::PromptSnapshot {
         id: prompt.id.clone(),
         name: prompt.name.clone(),
         text: prompt.text.clone(),
+        title_text: prompt.title_text.clone(),
     }
 }
 
@@ -2051,13 +2052,22 @@ async fn the_first_summary_uses_the_prompt_that_was_active_when_the_note_started
     // R20, KTD15: a change of the active prompt during the recording
     // applies from the next note.
     let r = rig().await;
-    let started = custom_prompt("Team sync", "FIRST-MARKER");
+    let started = summarize::Prompt {
+        title_text: "Name the team.".into(),
+        ..custom_prompt("Team sync", "FIRST-MARKER")
+    };
     let now = custom_prompt("Business meeting", "SECOND-MARKER");
     let (mock, path) = note_started_with(&r, &started, &now).await;
     let calls = chat_messages(&mock);
     assert!(calls.iter().any(|(s, _)| s.contains("FIRST-MARKER")));
     assert!(calls.iter().all(|(s, _)| !s.contains("SECOND-MARKER")));
     assert_eq!(prompt_name(&path), Some("Team sync".into()));
+    // The snapshot keeps its title text (KTD7).
+    let saved: summarize::Prompt =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PROMPT)
+            .unwrap()
+            .unwrap();
+    assert_eq!(saved, started);
 }
 
 #[tokio::test(flavor = "multi_thread")]
