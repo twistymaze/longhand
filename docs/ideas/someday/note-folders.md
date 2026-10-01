@@ -23,7 +23,7 @@ All notes are in one flat list today. The user wants to browse by group on Home,
 - Nothing is built. Every note goes into the storage folder, and Home lists every note by day.
 - `STRATEGY.md` allows folders and rules out tags ("Folders, and that's it"). The user first thought of tags because the current UI suits tags better than a tree. This idea keeps folders on disk and borrows the tag-like UI.
 - Questions for a brainstorm:
-  - Which folder a new note goes to: none, the last one used, or a choice in the New Note menu ([new-note-without-recording](../next/new-note-without-recording.md) adds that menu).
+  - Which folder a new note goes to: none, the last one used, or a choice in the New Note menu ([new-note-without-recording](../done/new-note-without-recording.md) adds that menu).
   - How a move works with one library across computers: a move is a rename of the home folder, which other computers see as a sync change.
   - Whether a folder can hold other folders. The current answer is no.
   - How a note that is recording or processing moves.

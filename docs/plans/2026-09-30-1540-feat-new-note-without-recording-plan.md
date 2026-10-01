@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A user can choose to take a note without a recording: notes only, or notes first with the recording started later. Recording at once stays available, and stays the default.
 - **Means:** A local New Note default with a split button, a Record/Resume button on the note page, and a home folder for every note from its start, so a note can exist and sync before it has audio (KTD1, KTD3).
-- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Source idea: `docs/ideas/next/new-note-without-recording.md`.
+- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Source idea: `docs/ideas/done/new-note-without-recording.md`.
 - **Stop conditions:** Stop and ask when a change would make the start of a recording wait for the storage folder, could make a second home folder for one note (R4), or would delete a note or notes text that another computer wrote (R18, R24).
 - **Execution profile:** Implement with `ce-work` in a worktree from `origin/main`, one commit per unit, then one PR. Test microphone and two-computer behavior only in a signed bundle.
 - **Open blockers:** None.
@@ -566,7 +566,7 @@ flowchart TB
 
 **Files:**
 - `CONCEPTS.md`
-- `docs/ideas/next/new-note-without-recording.md` (moved after the merge with `bun scripts/ideas.ts move`)
+- `docs/ideas/done/new-note-without-recording.md` (moved after the merge with `bun scripts/ideas.ts move`)
 
 **Approach:**
 1. Update Session (a session can have no recording), Save (the first result publishes into the existing home folder), Home folder (written at the start), Staging (only for older rows), and Title (the start time is the open time).
