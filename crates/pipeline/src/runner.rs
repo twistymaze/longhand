@@ -581,9 +581,14 @@ impl Runner {
         let saved = lock(&self.env.store).sessions_in(SessionState::Saved.name())?;
         let mut queued = Vec::new();
         for record in saved {
-            if has_title_request(&self.env.store, &record.id)? {
-                self.queue_title(&record.id);
-                queued.push(record.id);
+            match has_title_request(&self.env.store, &record.id) {
+                Ok(true) => {
+                    self.queue_title(&record.id);
+                    queued.push(record.id);
+                }
+                Ok(false) => {}
+                // One unreadable request does not stop the other notes.
+                Err(e) => log::warn!("could not read the title request of {}: {e}", record.id),
             }
         }
         Ok(queued)
@@ -1458,10 +1463,20 @@ fn title_due(store: &session_core::Store, claims: &Claims, session_id: &str) -> 
         return TitleDue::Dropped;
     }
     match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE_REQUEST) {
-        Ok(Some(_)) => TitleDue::Yes,
-        Ok(None) => TitleDue::No,
+        Ok(Some(_)) => {}
+        Ok(None) => return TitleDue::No,
         Err(e) => {
             log::warn!("could not read the title request of {session_id}: {e}");
+            return TitleDue::No;
+        }
+    }
+    // A stop between the title checkpoint and the delete of the request
+    // leaves a request whose title is already proposed.
+    match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE) {
+        Ok(None) => TitleDue::Yes,
+        Ok(Some(_)) => TitleDue::Dropped,
+        Err(e) => {
+            log::warn!("could not read the title proposal of {session_id}: {e}");
             TitleDue::No
         }
     }

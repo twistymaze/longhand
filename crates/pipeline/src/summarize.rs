@@ -557,14 +557,23 @@ pub fn produce(
             }
         })
     };
+    // A title problem never fails the summary (R14): an error is logged,
+    // and the note keeps its title.
     let text = match done {
         Some(done) => {
-            calls.store_title_request(&done)?;
+            if let Err(e) = calls.store_title_request(&done) {
+                log::warn!("could not store the title request of {session_id}: {e}");
+                if let Err(e) = delete_title_request(store, session_id) {
+                    log::warn!("could not delete the title request of {session_id}: {e}");
+                }
+            }
             done.reply
         }
         None => {
             // With nothing said, no title turn is due.
-            delete_title_request(store, session_id)?;
+            if let Err(e) = delete_title_request(store, session_id) {
+                log::warn!("could not delete the title request of {session_id}: {e}");
+            }
             String::from("Nothing was transcribed in this note.")
         }
     };

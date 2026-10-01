@@ -1058,6 +1058,13 @@ pub fn regenerate_summary(
         control,
         progress,
     );
+    // A failed regeneration publishes no new summary, so the title request
+    // of that summary is not sent (KTD13). The note keeps its title.
+    if regenerated.is_err()
+        && let Err(e) = summarize::delete_title_request(store, session_id)
+    {
+        log::warn!("could not delete the title request of {session_id}: {e}");
+    }
     // The regeneration has ended, and the caller holds the one processing
     // permit, so no other regeneration runs.
     let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);

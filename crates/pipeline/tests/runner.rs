@@ -7596,6 +7596,73 @@ async fn a_restart_with_a_pending_request_runs_the_title_job_once_at_launch() {
     assert_eq!(title_calls(&mock).len(), 1);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_left_after_its_title_was_proposed_is_dropped_at_launch() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    let request = pending(&r).expect("a title request");
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().text, "Weekly sync");
+    // A stop between the title checkpoint and the delete of the request.
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Summarize,
+        pipeline::summarize::TITLE_REQUEST,
+        &request,
+    )
+    .unwrap();
+
+    let second = rig_with(
+        Arc::clone(&r.store),
+        tempfile::tempdir().unwrap(),
+        Arc::clone(&r.script),
+    );
+    assert_eq!(second.runner.queue_pending_titles().unwrap(), ["s"]);
+    let jobs = second.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(pending(&r), None);
+    assert_eq!(title_of(&r).unwrap().text, "Weekly sync");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_regeneration_deletes_the_title_request_of_its_summary() {
+    let r = rig().await;
+    let n = Arc::new(AtomicUsize::new(0));
+    let store = Arc::clone(&r.store);
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::With(Arc::new(move |b: &str| {
+            let k = n.fetch_add(1, Ordering::SeqCst);
+            if is_title_call(b) {
+                return (200, http::completion(&format!("Title {k}")));
+            }
+            // The notes change during the call of the regeneration.
+            if k > 0 {
+                pipeline::save::set_notes(&mut store.lock().unwrap(), "s", "- a later note\n")
+                    .unwrap();
+            }
+            (200, http::completion(&format!("Summary number {k}.")))
+        })),
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    saved_session(&r, None).await;
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().text, "Title 1");
+
+    assert!(r.runner.regenerate_summary("s").await.is_err());
+    assert!(read(&saved_folder(&r, "s"), "summary.md").contains("Summary number 0."));
+    assert_eq!(pending(&r), None);
+    assert!(r.runner.run_titles().await.is_empty());
+    assert!(r.runner.queue_pending_titles().unwrap().is_empty());
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(title_of(&r).unwrap().text, "Title 1");
+}
+
 /// Point the script's summaries at an endpoint that never answers. A
 /// responder must not block: a blocked worker stops the test runtime's
 /// timers.
