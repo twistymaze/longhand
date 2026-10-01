@@ -52,6 +52,11 @@ The state of a saved note whose `transcript.md` or `summary.md` does not match t
 ### Adopt
 The step that makes a Saved row in this computer's store from a home folder that another computer saved. The row is built from `session.md` and `notes.md`. Its opposite, forget, removes a row from the store and does not touch any folder: a computer forgets a session when its home folder is deleted from an available storage folder.
 
+### Database rebuild
+The step at launch that replaces this computer's store when another version of Longhand owns it: a newer version, or a build whose migrations differ. Longhand moves the store and the Working location aside together as one database backup, makes a new store, and the library scan then adopts every saved session again.
+
+The home folders hold every saved session, so a rebuild loses no saved note. Unfinished work exists only in the old store and the Working location: a note that is not saved yet, a running transcription or summary, an open Move, a rename or a publication. When the old store or the Working location holds unfinished work, or Longhand cannot read the store, Longhand asks the user to choose Quit or Rebuild first. Quit changes no file. Longhand keeps the newest automatic backups and every backup that the user chose in that alert.
+
 ### Move
 The step that copies every saved session from the old storage folder to a new one, when the user changes the storage folder and chooses Move. Move works on one note at a time and records each step. A crash, a full disk or an unavailable folder pauses it, and it continues from what is on disk after a launch or a Retry. A note leaves the Move without a copy only when its source is gone from an old folder that is still available; when the whole old folder goes away, even in the middle of a Move, the Move pauses. At every step, one complete copy of each note exists. The other choice, Leave them, changes the storage folder and leaves the old notes where they are; the library then forgets them. The user cannot change the storage folder while a Move is open.
 
