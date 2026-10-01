@@ -1,6 +1,6 @@
-//! The global shortcuts: the recording chord, which starts a session and
-//! stops it (R1), and the optional chord that shows or hides the main
-//! window (R5, R6).
+//! The global shortcuts: the recording chord, which starts a note or
+//! records into the shown note, and stops the recording (R1, R10), and the
+//! optional chord that shows or hides the main window (R5, R6).
 //!
 //! Registration follows Handy's `shortcut/tauri_impl.rs`, and a change
 //! follows its `change_binding`: a press is handled on `Pressed` only, and a
@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::managers::capture::CaptureManager;
+use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, Settings, SpeakerCountSetting};
 
 /// Which of the two shortcuts a command acts on.
@@ -341,41 +342,178 @@ pub fn resume(app: &AppHandle) {
     }
 }
 
-/// Stop a recording session, or start one when armed (R1a, R1c): the
-/// microphone is authorized.
+/// What one press of the recording shortcut reads (R10, KTD7).
+#[derive(Debug, Clone, Copy)]
+pub struct Press<'a> {
+    /// A recording runs.
+    pub capturing: bool,
+    /// The storage folder is available, so a note can start (R7).
+    pub folder_available: bool,
+    /// The setting: New Note starts a note that records (R8).
+    pub new_note_records: bool,
+    /// The note that the main window shows, while the window is visible
+    /// and not minimized.
+    pub shown: Option<&'a str>,
+}
+
+/// What one press of the recording shortcut does (R10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShortcutAction {
+    /// Stop the recording that runs.
+    Stop,
+    /// Start nothing: the storage folder is not available (AE8).
+    Nothing,
+    /// Start a new note that records.
+    NewRecordingNote,
+    /// Record into the shown note (AE1, AE9).
+    RecordInto(String),
+    /// Open a new note that does not record.
+    NewNote,
+}
+
+/// The decision of the recording shortcut (R10, the "recording shortcut"
+/// flowchart of the plan). `can_record` tells whether the Record button of
+/// a note is available (R11, R12); it is read only for the shown note when
+/// New Note does not record.
+pub fn press_action(press: &Press, can_record: impl FnOnce(&str) -> bool) -> ShortcutAction {
+    if press.capturing {
+        return ShortcutAction::Stop;
+    }
+    if !press.folder_available {
+        return ShortcutAction::Nothing;
+    }
+    if press.new_note_records {
+        return ShortcutAction::NewRecordingNote;
+    }
+    match press.shown {
+        Some(id) if can_record(id) => ShortcutAction::RecordInto(id.to_string()),
+        _ => ShortcutAction::NewNote,
+    }
+}
+
+/// The reported shown note, while the main window is visible and not
+/// minimized (KTD7). Otherwise no note counts as shown.
+pub fn shown_while_visible(
+    shown: Option<String>,
+    visible: bool,
+    minimized: bool,
+) -> Option<String> {
+    shown.filter(|_| visible && !minimized)
+}
+
+/// The note that the main window shows now, from the frontend's report and
+/// the state of the window (KTD7).
+fn shown_note(app: &AppHandle) -> Option<String> {
+    let shown = app.state::<crate::commands::session::ShownNote>().get();
+    let window = app.get_webview_window(crate::window::MAIN_WINDOW)?;
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(true);
+    shown_while_visible(shown, visible, minimized)
+}
+
+/// The press decision with the state of the app. It reads the storage
+/// folder and the store: call it off the main thread.
+fn decide(app: &AppHandle, manager: &CaptureManager) -> ShortcutAction {
+    let current = settings::get_settings(app);
+    let folder = crate::managers::destination::status(&current.storage_folder);
+    let shown = shown_note(app);
+    let press = Press {
+        capturing: manager.is_capturing(),
+        folder_available: crate::managers::destination::note_start_refusal(&folder).is_none(),
+        new_note_records: current.new_note_records,
+        shown: shown.as_deref(),
+    };
+    press_action(&press, |id| {
+        let processing = app.state::<Arc<ProcessingManager>>();
+        let checked = crate::commands::session::check_record(
+            &manager.shared_store(),
+            processing.library_status(),
+            processing.run_id(),
+            id,
+            chrono::Local::now().fixed_offset(),
+        );
+        if let Err(reason) = &checked {
+            log::info!("the shortcut does not record into the shown note {id}: {reason}");
+        }
+        checked.is_ok()
+    })
+}
+
+/// Leave the reported shown note before a new note starts (R18, AE15). The
+/// note goes when it is empty. A failure keeps the note and does not stop
+/// the start.
+fn leave_shown(app: &AppHandle, manager: &CaptureManager) {
+    let Some(id) = app.state::<crate::commands::session::ShownNote>().get() else {
+        return;
+    };
+    let processing = app.state::<Arc<ProcessingManager>>();
+    if let Err(e) = crate::commands::session::leave_note_now(manager, &processing, &id) {
+        log::warn!("the shortcut could not leave the note {id}: {e}");
+    }
+}
+
+/// Do one press of the recording shortcut (R1a, R1c, R10). A recording
+/// start needs an authorized microphone; without it, a press does nothing.
 async fn toggle(app: AppHandle) {
     // One press at a time: a quick double press must not race two starts.
     static TOGGLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one_at_a_time = TOGGLE.lock().await;
     let manager = Arc::clone(&app.state::<Arc<CaptureManager>>());
-    if manager.is_capturing() {
+    let action = {
         let app = app.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || match manager.stop_session(&app) {
-            Ok(outcome) => {
-                log::info!("shortcut stopped {}: {outcome:?}", outcome.session_id());
-                app.state::<Arc<crate::managers::processing::ProcessingManager>>()
-                    .wake();
-            }
-            Err(e) => log::error!("shortcut stop failed: {e}"),
-        })
-        .await;
-        return;
-    }
-    let current = settings::get_settings(&app);
-    // The storage folder does not count: a note that cannot save yet waits
-    // for its folder (AE1).
-    let microphone = tauri_plugin_macos_permissions::check_microphone_permission().await;
-    if !microphone {
+        let manager = Arc::clone(&manager);
+        tauri::async_runtime::spawn_blocking(move || decide(&app, &manager)).await
+    };
+    let action = match action {
+        Ok(action) => action,
+        Err(e) => {
+            log::error!("the shortcut could not decide: {e}");
+            return;
+        }
+    };
+    if matches!(
+        action,
+        ShortcutAction::NewRecordingNote | ShortcutAction::RecordInto(_)
+    ) && !tauri_plugin_macos_permissions::check_microphone_permission().await
+    {
         log::info!("shortcut pressed while not armed (microphone missing)");
         return;
     }
-    let count = speaker_count(current.default_speaker_count);
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        match manager.start_session(&app, count) {
-            // The main window comes forward and opens the new session's
-            // page on the recording-changed event (KTD2).
-            Ok(_) => crate::window::show_main_window(&app),
-            Err(e) => log::error!("shortcut start failed: {e}"),
+    let count = speaker_count(settings::get_settings(&app).default_speaker_count);
+    let _ = tauri::async_runtime::spawn_blocking(move || match action {
+        ShortcutAction::Stop => match manager.stop_session(&app) {
+            Ok(outcome) => {
+                log::info!("shortcut stopped {}: {outcome:?}", outcome.session_id());
+                app.state::<Arc<ProcessingManager>>().wake();
+            }
+            Err(e) => log::error!("shortcut stop failed: {e}"),
+        },
+        ShortcutAction::Nothing => {
+            log::info!("shortcut pressed while the storage folder is not available");
+        }
+        ShortcutAction::NewRecordingNote => {
+            leave_shown(&app, &manager);
+            match manager.start_session(&app, count) {
+                // The main window comes forward and opens the new note's
+                // page on the recording-changed event (KTD2).
+                Ok(_) => crate::window::show_main_window(&app),
+                Err(e) => log::error!("shortcut start failed: {e}"),
+            }
+        }
+        ShortcutAction::RecordInto(id) => match manager.record_session(&app, &id) {
+            Ok(()) => crate::window::show_main_window(&app),
+            Err(e) => log::error!("shortcut record into {id} failed: {e}"),
+        },
+        ShortcutAction::NewNote => {
+            leave_shown(&app, &manager);
+            match manager.open_note(&app) {
+                Ok(session_id) => {
+                    crate::window::show_main_window(&app);
+                    let _ =
+                        tauri_specta::Event::emit(&crate::tray::ShowSession { session_id }, &app);
+                }
+                Err(e) => log::error!("shortcut new note failed: {e}"),
+            }
         }
     })
     .await;
@@ -521,6 +659,100 @@ mod tests {
         let mut plugin = Plugin::default();
         assert_eq!(change(&mut plugin, None, Some("Super+KeyB"), None), Ok(()));
         assert_eq!(plugin.calls, ["register Super+KeyB"]);
+    }
+
+    /// A press with no recording, an available storage folder, the default
+    /// "does not record" and the note "n" on the main window.
+    fn press() -> Press<'static> {
+        Press {
+            capturing: false,
+            folder_available: true,
+            new_note_records: false,
+            shown: Some("n"),
+        }
+    }
+
+    // Covers AE1, AE9: the window shows "n" with an available Record button.
+    #[test]
+    fn the_shortcut_records_into_the_shown_note_when_new_note_does_not_record() {
+        let mut asked = Vec::new();
+        let action = press_action(&press(), |id| {
+            asked.push(id.to_string());
+            true
+        });
+        assert_eq!(action, ShortcutAction::RecordInto("n".into()));
+        assert_eq!(asked, ["n"]);
+    }
+
+    // Covers AE1: the second press stops the recording.
+    #[test]
+    fn a_press_during_a_recording_stops_it() {
+        let action = press_action(
+            &Press {
+                capturing: true,
+                ..press()
+            },
+            |_| panic!("a stop reads no note"),
+        );
+        assert_eq!(action, ShortcutAction::Stop);
+    }
+
+    // Covers AE2.
+    #[test]
+    fn the_shortcut_starts_a_new_recording_note_when_new_note_records() {
+        let action = press_action(
+            &Press {
+                new_note_records: true,
+                ..press()
+            },
+            |_| panic!("the shown note does not count"),
+        );
+        assert_eq!(action, ShortcutAction::NewRecordingNote);
+    }
+
+    // Covers AE10: Record is not available, for example because the note
+    // records on another computer.
+    #[test]
+    fn the_shortcut_opens_a_new_note_when_the_shown_note_cannot_record() {
+        assert_eq!(press_action(&press(), |_| false), ShortcutAction::NewNote);
+    }
+
+    #[test]
+    fn the_shortcut_opens_a_new_note_when_no_note_is_shown() {
+        let action = press_action(
+            &Press {
+                shown: None,
+                ..press()
+            },
+            |_| panic!("no note to read"),
+        );
+        assert_eq!(action, ShortcutAction::NewNote);
+    }
+
+    // Covers AE8.
+    #[test]
+    fn the_shortcut_starts_nothing_while_the_storage_folder_is_unavailable() {
+        for new_note_records in [true, false] {
+            let action = press_action(
+                &Press {
+                    folder_available: false,
+                    new_note_records,
+                    ..press()
+                },
+                |_| true,
+            );
+            assert_eq!(action, ShortcutAction::Nothing);
+        }
+    }
+
+    // The window is minimized or hidden: the shortcut does the default.
+    #[test]
+    fn a_note_counts_as_shown_only_while_the_window_is_visible_and_not_minimized() {
+        let id = || Some("n".to_string());
+        assert_eq!(shown_while_visible(id(), true, false), id());
+        assert_eq!(shown_while_visible(id(), true, true), None);
+        assert_eq!(shown_while_visible(id(), false, false), None);
+        assert_eq!(shown_while_visible(None, true, false), None);
     }
 
     #[test]

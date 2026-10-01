@@ -26,6 +26,7 @@ const baseSettings: Settings = {
   recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
   microphone: null,
   system_audio_default: false,
+  new_note_records: true,
   hide_from_dock: false,
   check_updates_automatically: true,
   audio_removal: { kind: "after_days", days: 30 },

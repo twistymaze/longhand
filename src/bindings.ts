@@ -182,6 +182,18 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 }
 },
 /**
+ * Choose what New Note and the recording shortcut do (R8): start a note
+ * that records, or open a note that does not record.
+ */
+async setNewNoteRecords(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_new_note_records", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app checks for updates by itself (R10). The next
  * scheduled check reads the new value.
  */
@@ -838,6 +850,14 @@ async leaveNote(sessionId: string) : Promise<Result<LeaveOutcome, string>> {
 }
 },
 /**
+ * The main window shows the note `session_id`, or no note (KTD7). The
+ * frontend calls it on each view change, and with `None` when the main
+ * window hides or closes.
+ */
+async setShownNote(sessionId: string | null) : Promise<void> {
+    await TAURI_INVOKE("set_shown_note", { sessionId });
+},
+/**
  * Remove the audio of a saved note now, whether the setting of audio
  * removal is on or off (R13). The transcript, summary and notes stay.
  * Refused while the note is busy, while a Move runs or is paused, or while
@@ -930,6 +950,7 @@ livePartSaved: LivePartSaved,
 liveRecognitionEvent: LiveRecognitionEvent,
 liveTranscriptEvent: LiveTranscriptEvent,
 liveTranscriptStatus: LiveTranscriptStatus,
+mainWindowHidden: MainWindowHidden,
 modelDownloadEvent: ModelDownloadEvent,
 movePaused: MovePaused,
 moveProgress: MoveProgress,
@@ -946,6 +967,7 @@ livePartSaved: "live-part-saved",
 liveRecognitionEvent: "live-recognition-event",
 liveTranscriptEvent: "live-transcript-event",
 liveTranscriptStatus: "live-transcript-status",
+mainWindowHidden: "main-window-hidden",
 modelDownloadEvent: "model-download-event",
 movePaused: "move-paused",
 moveProgress: "move-progress",
@@ -1248,6 +1270,11 @@ export type LiveWord = { start_ms: number; end_ms: number; text: string }
  */
 export type LoadedNotes = { markdown: string; fingerprint: string }
 export type LoginItemStatus = "disabled" | "enabled" | "approval_required" | "unavailable"
+/**
+ * The main window hid or closed (KTD7). The frontend then leaves the shown
+ * note (R18) and reports that no note is shown.
+ */
+export type MainWindowHidden = null
 /**
  * The usual microphone (R1, KTD1): cpal's stable device ID, with the device
  * name as its label, so Settings can name a microphone that is not
@@ -1873,6 +1900,12 @@ microphone: MicrophoneChoice | null;
  * Whether a new note starts with system audio on (R6, KD13).
  */
 system_audio_default: boolean; 
+/**
+ * What New Note and the recording shortcut do (R8, R10): start a note
+ * that records, or open a note that does not record. On by default,
+ * as before the setting.
+ */
+new_note_records: boolean; 
 /**
  * macOS only: the app has no Dock icon while no window is visible
  * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.

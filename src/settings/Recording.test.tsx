@@ -26,6 +26,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
     microphone: null,
     system_audio_default: false,
+    new_note_records: true,
     hide_from_dock: false,
     check_updates_automatically: true,
     audio_removal: { kind: "after_days", days: 30 },
@@ -78,6 +79,10 @@ async function open({
     },
     set_system_audio_default: ({ enabled }) => {
       state.settings = { ...state.settings, system_audio_default: enabled as boolean };
+      return state.settings;
+    },
+    set_new_note_records: ({ enabled }) => {
+      state.settings = { ...state.settings, new_note_records: enabled as boolean };
       return state.settings;
     },
   });
@@ -199,6 +204,18 @@ describe("Recording pane", () => {
     } finally {
       features.systemAudio = false;
     }
+  });
+
+  // Covers R8.
+  test("the New Note switch shows the setting and turning it off saves the change", async () => {
+    const { mock, user } = await open();
+    const toggle = screen.getByRole("switch", { name: "New Note starts recording" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await user.click(toggle);
+    expect(calls(mock, "set_new_note_records")).toEqual([{ enabled: false }]);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "New Note starts recording" }).getAttribute("aria-checked")).toBe("false"),
+    );
   });
 
   test("the pane is after General in the sidebar and opens with the arrow keys", async () => {

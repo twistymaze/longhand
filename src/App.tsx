@@ -2,9 +2,9 @@
 // `?window=settings`, the licences window with `?window=licences`, the update
 // window with `?window=update`, and the main window with no query.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInterfaceZoom } from "./lib/useInterfaceZoom";
-import { events } from "./bindings";
+import { commands, events } from "./bindings";
 import { Home } from "./home/Home";
 import { LicencesWindow } from "./licences/LicencesWindow";
 import { formatChord } from "./lib/timeline";
@@ -42,6 +42,38 @@ function MainWindow() {
       for (const u of unlisteners) void u.then((f) => f());
     };
   }, []);
+  // The backend keeps the shown note for the recording shortcut (KTD7). The
+  // note that the window stops showing is left: an empty note goes (R18).
+  const shown = view.kind === "session" ? view.id : null;
+  const reported = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = reported.current;
+    reported.current = shown;
+    void commands.setShownNote(shown);
+    if (previous !== null && previous !== shown) void commands.leaveNote(previous);
+  }, [shown]);
+  // A hide or close of the main window leaves the shown note too. A note
+  // that goes gives Home in its place. The window that comes back reports
+  // its note again.
+  useEffect(() => {
+    const unlisten = events.mainWindowHidden.listen(async () => {
+      void commands.setShownNote(null);
+      const id = reported.current;
+      if (id === null) return;
+      const left = await commands.leaveNote(id);
+      if (left.status === "ok" && left.data.kind === "removed" && reported.current === id) {
+        reported.current = null;
+        setView({ kind: "home" });
+      }
+    });
+    const report = () => void commands.setShownNote(reported.current);
+    window.addEventListener("focus", report);
+    return () => {
+      void unlisten.then((f) => f());
+      window.removeEventListener("focus", report);
+    };
+  }, []);
+
   const known =
     requested !== null &&
     (capture.status?.session_id === requested || sessions.entries.some((e) => e.id === requested));

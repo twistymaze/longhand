@@ -51,8 +51,14 @@ const recordingEntry: SessionEntry = {
   remote: null,
 };
 
-function mockApp(status: { current: RecordingStatus }, entries: { current: SessionEntry[] }) {
+function mockApp(
+  status: { current: RecordingStatus },
+  entries: { current: SessionEntry[] },
+  leave: () => { kind: "removed" | "kept" } = () => ({ kind: "kept" }),
+) {
   return mockTauri({
+    set_shown_note: () => null,
+    leave_note: () => leave(),
     get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
     readiness: () => readiness,
     shortcut_status: () => shortcutStatuses,
@@ -131,6 +137,8 @@ describe("App", () => {
     const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
     const entries = [saved("a", "Alpha"), saved("b", "Beta")];
     const tauri = mockTauri({
+      set_shown_note: () => null,
+      leave_note: () => ({ kind: "kept" }),
       get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
@@ -226,4 +234,74 @@ test("an older selection survives opening, returning, and a newly synced note", 
   expect(screen.getByRole("option", { name: /Older/ }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("option", { name: /Newest/ })).toBeTruthy();
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("option", { name: /Older/ })));
+});
+
+describe("the shown note (KTD7, R18)", () => {
+  const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
+  const args = (tauri: { calls: { cmd: string; args: Record<string, unknown> }[] }, cmd: string) =>
+    tauri.calls.filter((c) => c.cmd === cmd).map((c) => c.args);
+  /** The last shown note that the page reported. */
+  const shownLast = (tauri: { calls: { cmd: string; args: Record<string, unknown> }[] }) => {
+    const reports = args(tauri, "set_shown_note");
+    return reports[reports.length - 1];
+  };
+
+  test("each view change reports the shown note, and the note that the window stops showing is left", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    const user = userEvent.setup();
+    await user.dblClick(await screen.findByRole("option", { name: /Alpha/ }));
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: "a" }));
+    expect(args(tauri, "leave_note")).toEqual([]);
+
+    await user.click(await screen.findByRole("button", { name: "Back" }));
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: null }));
+    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
+  });
+
+  test("a note that opens in place of another leaves the first note", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha"), saved("b", "Beta")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await screen.findByRole("button", { name: "Back" });
+    await act(() => tauri.emit("show-session", { session_id: "b" }));
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: "b" }));
+    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
+  });
+
+  test("when the main window hides, the shown note is left and is reported again when the window comes back", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await screen.findByRole("button", { name: "Back" });
+
+    await act(() => tauri.emit("main-window-hidden", null));
+    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]));
+    expect(shownLast(tauri)).toEqual({ sessionId: null });
+    // The note stays, so its page stays.
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: "a" }));
+  });
+
+  // Covers AE4 when the window closes.
+  test("an empty note that is removed when the main window hides gives Home in its place", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] }, () => ({ kind: "removed" }));
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await screen.findByRole("button", { name: "Back" });
+
+    await act(() => tauri.emit("main-window-hidden", null));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Back" })).toBeNull());
+    expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
+    // The note is left one time only.
+    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
+    expect(shownLast(tauri)).toEqual({ sessionId: null });
+  });
 });

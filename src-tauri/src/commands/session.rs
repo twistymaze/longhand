@@ -1149,6 +1149,32 @@ pub fn leave_note_now(
     })
 }
 
+/// The note that the main window shows (KTD7). The main window keeps its
+/// view in the frontend, so the frontend reports each change with
+/// [`set_shown_note`]. The recording shortcut reads it (R10) and uses it
+/// only while the main window is visible and not minimized.
+#[derive(Default)]
+pub struct ShownNote(std::sync::Mutex<Option<String>>);
+
+impl ShownNote {
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set(&self, id: Option<String>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = id;
+    }
+}
+
+/// The main window shows the note `session_id`, or no note (KTD7). The
+/// frontend calls it on each view change, and with `None` when the main
+/// window hides or closes.
+#[tauri::command]
+#[specta::specta]
+pub fn set_shown_note(shown: State<'_, ShownNote>, session_id: Option<String>) {
+    shown.set(session_id);
+}
+
 /// Why Remove Audio did not complete (R13).
 #[derive(Debug, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]

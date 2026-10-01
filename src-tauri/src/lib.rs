@@ -41,6 +41,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::list_microphones,
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
+            commands::settings::set_new_note_records,
             commands::settings::set_check_updates_automatically,
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,
@@ -100,6 +101,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::delete_session,
             commands::session::delete_session_permanently,
             commands::session::leave_note,
+            commands::session::set_shown_note,
             commands::session::remove_audio,
             commands::window::open_settings,
             commands::window::close_settings_window,
@@ -126,6 +128,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::live::LivePartSaved,
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,
+            window::MainWindowHidden,
             managers::updates::UpdateStateChanged,
         ])
         .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)
@@ -205,6 +208,7 @@ fn setup_app(
     let launch_reason = autostart::launch_reason();
     log::info!("startup launch reason: {launch_reason:?}");
     specta_builder.mount_events(app);
+    app.manage(commands::session::ShownNote::default());
 
     let handle = app.handle().clone();
     let liveness = take_instance_lock(&handle)?;

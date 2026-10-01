@@ -108,12 +108,18 @@ pub fn toggle_main_window(app: &AppHandle) {
     }
 }
 
+/// The main window hid or closed (KTD7). The frontend then leaves the shown
+/// note (R18) and reports that no note is shown.
+#[derive(serde::Serialize, Clone, specta::Type, tauri_specta::Event)]
+pub struct MainWindowHidden;
+
 /// Hide the main window and remove the Dock icon when no other window is
 /// visible. The close button and the show shortcut both hide this way.
 fn hide_main_window(window: &Window) {
     if let Err(e) = window.hide() {
         log::error!("failed to hide main window: {e}");
     }
+    let _ = tauri_specta::Event::emit(&MainWindowHidden, window.app_handle());
     hide_dock_icon_if_no_window(window);
 }
 

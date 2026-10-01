@@ -263,6 +263,17 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
     })
 }
 
+/// Choose what New Note and the recording shortcut do (R8): start a note
+/// that records, or open a note that does not record.
+#[tauri::command]
+#[specta::specta]
+pub fn set_new_note_records(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| {
+        s.new_note_records = enabled;
+        Ok(())
+    })
+}
+
 /// Choose whether the app checks for updates by itself (R10). The next
 /// scheduled check reads the new value.
 #[tauri::command(async)]
