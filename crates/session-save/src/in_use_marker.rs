@@ -129,23 +129,24 @@ pub fn marker_fresh(path: &Path, now: DateTime<FixedOffset>) -> bool {
 /// remove the audio. This reads the names in `home` and the small marker
 /// files only. It opens no audio (KTD11).
 pub fn in_use(home: &Path, now: DateTime<FixedOffset>) -> io::Result<bool> {
-    in_use_except(home, None, now)
+    in_use_except(home, &[], now)
 }
 
-/// [`in_use`], but the marker of the run `except` does not count. The
-/// library scan gives this computer's own run here, so that its own work
-/// does not show as work on another computer (KTD5).
+/// [`in_use`], but the markers of the runs in `except` do not count. The
+/// library scan gives this computer's runs here (this run and its earlier
+/// runs), so that its own work does not show as work on another computer
+/// (KTD5). A marker of any other run counts.
 pub fn in_use_except(
     home: &Path,
-    except: Option<&str>,
+    except: &[String],
     now: DateTime<FixedOffset>,
 ) -> io::Result<bool> {
-    let own = except.map(marker_name);
+    let own: Vec<String> = except.iter().map(|run| marker_name(run)).collect();
     for entry in std::fs::read_dir(home)? {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !is_marker_name(&name) || own.as_deref() == Some(&*name) {
+        if !is_marker_name(&name) || own.iter().any(|own| *own == *name) {
             continue;
         }
         if entry.file_type().is_ok_and(|t| t.is_file()) && marker_fresh(&entry.path(), now) {
@@ -168,10 +169,27 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         assert!(write_marker(home.path(), "mine", now()).unwrap());
         assert!(in_use(home.path(), now()).unwrap());
-        assert!(!in_use_except(home.path(), Some("mine"), now()).unwrap());
+        assert!(!in_use_except(home.path(), &runs(&["mine"]), now()).unwrap());
 
         assert!(write_marker(home.path(), "theirs", now()).unwrap());
-        assert!(in_use_except(home.path(), Some("mine"), now()).unwrap());
+        assert!(in_use_except(home.path(), &runs(&["mine"]), now()).unwrap());
+    }
+
+    // A relaunch: the marker of this computer's earlier run is still fresh,
+    // and it does not count. A marker of another computer still counts.
+    #[test]
+    fn the_markers_of_all_excepted_runs_do_not_count() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(write_marker(home.path(), "earlier", now()).unwrap());
+        let own = runs(&["now", "earlier"]);
+        assert!(!in_use_except(home.path(), &own, now()).unwrap());
+
+        assert!(write_marker(home.path(), "theirs", now()).unwrap());
+        assert!(in_use_except(home.path(), &own, now()).unwrap());
+    }
+
+    fn runs(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
     }
 
     #[test]
@@ -179,6 +197,6 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let old = now() - FRESH_FOR - TimeDelta::minutes(1);
         assert!(write_marker(home.path(), "theirs", old).unwrap());
-        assert!(!in_use_except(home.path(), Some("mine"), now()).unwrap());
+        assert!(!in_use_except(home.path(), &runs(&["mine"]), now()).unwrap());
     }
 }

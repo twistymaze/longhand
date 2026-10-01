@@ -227,12 +227,13 @@ fn record_button(
 
 /// The checks of Record for the note `id` at `now` (R12, R21, R23): the
 /// recording button must be Record and available, and no in-use marker of
-/// another run in the home folder is fresh. `run_id` is this run's.
-/// Returns the reason of a refusal. Reads the folder with no store lock.
+/// another computer's run in the home folder is fresh. `own_runs` are
+/// this computer's runs ([`ProcessingManager::own_runs`]). Returns the
+/// reason of a refusal. Reads the folder with no store lock.
 pub(crate) fn check_record(
     store: &pipeline::SharedStore,
     status: &LibraryStatus,
-    run_id: &str,
+    own_runs: &[String],
     id: &str,
     now: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<(), String> {
@@ -265,28 +266,29 @@ pub(crate) fn check_record(
         }
         None => return Err(CANNOT_RECORD.to_string()),
     }
-    match folder_in_use(&record, run_id, now) {
+    match folder_in_use(&record, own_runs, now) {
         Ok(false) => Ok(()),
         Ok(true) => Err(IN_USE_ELSEWHERE.to_string()),
         Err(()) => Err(FOLDER_UNAVAILABLE.to_string()),
     }
 }
 
-/// Whether an in-use marker of another run in the home folder of `record`
-/// is fresh at `now` (KTD5): another computer records into or processes
-/// the note. The latest library scan can be older than that work, so the
-/// actions of R21 read the folder too. `run_id` is this run's. A folder
-/// that is not there (the early write waits, or the folder was removed)
-/// is not in use. `Err` when the folder cannot be read.
+/// Whether an in-use marker of a run that is not in `own_runs` is fresh in
+/// the home folder of `record` at `now` (KTD5): another computer records
+/// into or processes the note. The latest library scan can be older than
+/// that work, so the actions of R21 read the folder too. `own_runs` are
+/// this computer's runs. A folder that is not there (the early write
+/// waits, or the folder was removed) is not in use. `Err` when the folder
+/// cannot be read.
 fn folder_in_use(
     record: &SessionRecord,
-    run_id: &str,
+    own_runs: &[String],
     now: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<bool, ()> {
     let Some(home) = record.home_path.as_deref() else {
         return Ok(false);
     };
-    match pipeline::in_use::in_use_except(Path::new(home), Some(run_id), now) {
+    match pipeline::in_use::in_use_except(Path::new(home), own_runs, now) {
         Ok(used) => Ok(used),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err(()),
@@ -633,6 +635,7 @@ pub fn load_session_notes(
 
 /// What a notes save did.
 #[derive(Serialize, Type)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NotesSaveResult {
     /// `fingerprint` is the fingerprint of the saved document, which the
@@ -693,33 +696,67 @@ fn save_notes_keeping_text(
     markdown: &str,
     loaded: Option<&str>,
 ) -> Result<NotesSaveResult, String> {
-    use pipeline::save::{NotesRescue, NotesSave};
     let claims = processing.claims();
-    let save = || {
-        capture
-            .save_session_notes(session_id, markdown, loaded, &claims)
-            .map_err(|e| e.to_string())
-    };
-    let fingerprint = pipeline::save::notes_fingerprint(markdown);
+    let store = capture.shared_store();
+    let early_homes = processing.early_homes();
+    keep_notes_text(
+        session_id,
+        pipeline::save::notes_fingerprint(markdown),
+        || {
+            capture
+                .save_session_notes(session_id, markdown, loaded, &claims)
+                .map_err(|e| e.to_string())
+        },
+        |new_id| {
+            let now = chrono::Local::now().fixed_offset();
+            pipeline::save::rescue_notes(&store, session_id, new_id, now).map_err(|e| e.to_string())
+        },
+        |step| match step {
+            EarlyHomeStep::Cancel(id) => early_homes.cancel(id),
+            EarlyHomeStep::Start(id) => early_homes.start(id),
+        },
+    )
+}
+
+/// A step of [`keep_notes_text`] on the early write job of a note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EarlyHomeStep<'a> {
+    /// Stop the job of the note.
+    Cancel(&'a str),
+    /// Start the job of the note again, or for the first time.
+    Start(&'a str),
+}
+
+/// The steps of [`save_notes_keeping_text`] for the note `session_id`,
+/// with the notes save `save`, the rescue `rescue` of the notes into the
+/// new note that it gets, and the steps `early_home` on the early write
+/// jobs. `fingerprint` is the fingerprint of the document that the editor
+/// sends.
+fn keep_notes_text(
+    session_id: &str,
+    fingerprint: String,
+    mut save: impl FnMut() -> Result<pipeline::save::NotesSave, String>,
+    rescue: impl FnOnce(&str) -> Result<pipeline::save::NotesRescue, String>,
+    mut early_home: impl FnMut(EarlyHomeStep<'_>),
+) -> Result<NotesSaveResult, String> {
+    use pipeline::save::{NotesRescue, NotesSave};
     let mut saved = save()?;
     if saved == NotesSave::FolderGone {
         // The early write job must not write into the folder of the note
         // while the rescue reads the storage folder.
-        processing.early_homes().cancel(session_id);
+        early_home(EarlyHomeStep::Cancel(session_id));
         let new_id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Local::now().fixed_offset();
-        let rescued =
-            pipeline::save::rescue_notes(&capture.shared_store(), session_id, &new_id, now);
+        let rescued = rescue(&new_id);
         if !matches!(rescued, Ok(NotesRescue::NewNote)) {
             // The note stays: its job syncs the folder again when it can.
-            processing.early_homes().start(session_id);
+            early_home(EarlyHomeStep::Start(session_id));
         }
-        match rescued.map_err(|e| e.to_string())? {
+        match rescued? {
             NotesRescue::Moved => saved = save()?,
             // The store keeps the text until the folder is available.
             NotesRescue::Unavailable => return Err(FOLDER_UNAVAILABLE.to_string()),
             NotesRescue::NewNote => {
-                processing.early_homes().start(&new_id);
+                early_home(EarlyHomeStep::Start(&new_id));
                 return Ok(NotesSaveResult::NewNote {
                     session_id: new_id,
                     fingerprint,
@@ -1018,13 +1055,14 @@ fn remote_of(
 
 /// Whether a saved note `id` is in use on another computer at `now`, from
 /// its folder: Delete waits for it (R21). A note that records or is
-/// processed on this computer has this run's marker, which does not count.
+/// processed on this computer has the marker of one of `own_runs`, which
+/// does not count.
 /// A folder that cannot be read does not refuse the delete: the delete
 /// then reports what it cannot do. Delete of a note that another computer
 /// did not finish is allowed (R23): it has no fresh marker.
 fn in_use_elsewhere(
     store: &pipeline::SharedStore,
-    run_id: &str,
+    own_runs: &[String],
     id: &str,
     now: chrono::DateTime<chrono::FixedOffset>,
 ) -> bool {
@@ -1035,7 +1073,7 @@ fn in_use_elsewhere(
         .ok()
         .flatten();
     record.is_some_and(|r| {
-        r.state == SessionState::Saved && folder_in_use(&r, run_id, now) == Ok(true)
+        r.state == SessionState::Saved && folder_in_use(&r, own_runs, now) == Ok(true)
     })
 }
 
@@ -1053,14 +1091,14 @@ async fn delete(
     let early_homes = Arc::clone(processing.early_homes());
     let in_use_by_scan =
         remote_of(&store, processing.library_status(), &session_id) == Some(RemoteView::InUse);
-    let run_id = processing.run_id().to_string();
+    let own_runs = processing.own_runs().to_vec();
     let remove = match removal {
         Removal::Trash => move_to_trash,
         Removal::Permanent => remove_permanently,
     };
     tauri::async_runtime::spawn_blocking(move || {
         let now = chrono::Local::now().fixed_offset();
-        if in_use_by_scan || in_use_elsewhere(&store, &run_id, &session_id, now) {
+        if in_use_by_scan || in_use_elsewhere(&store, &own_runs, &session_id, now) {
             return Err(session_core::DeleteError::Busy {
                 state: IN_USE_REASON,
             });
@@ -1835,6 +1873,12 @@ mod record_tests {
     use pipeline::save::AudioState;
 
     const RUN: &str = "this-run";
+    const EARLIER_RUN: &str = "earlier-run";
+
+    /// This computer's runs: this run and its earlier run.
+    fn own() -> Vec<String> {
+        vec![RUN.to_string(), EARLIER_RUN.to_string()]
+    }
 
     fn opened() -> chrono::DateTime<chrono::FixedOffset> {
         chrono::DateTime::parse_from_rfc3339("2026-09-30T09:00:00-05:00").unwrap()
@@ -1998,14 +2042,14 @@ mod record_tests {
         let (_root, home, store) = placed_note();
         let status: Arc<LibraryStatus> = Arc::default();
         let now = chrono::Local::now().fixed_offset();
-        assert_eq!(check_record(&store, &status, RUN, "n", now), Ok(()));
+        assert_eq!(check_record(&store, &status, &own(), "n", now), Ok(()));
         // This run's own marker does not count.
         assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
-        assert_eq!(check_record(&store, &status, RUN, "n", now), Ok(()));
+        assert_eq!(check_record(&store, &status, &own(), "n", now), Ok(()));
 
         assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
         assert_eq!(
-            check_record(&store, &status, RUN, "n", now),
+            check_record(&store, &status, &own(), "n", now),
             Err(IN_USE_ELSEWHERE.to_string())
         );
     }
@@ -2016,7 +2060,7 @@ mod record_tests {
         let status: Arc<LibraryStatus> = Arc::default();
         let now = chrono::Local::now().fixed_offset();
         store.lock().unwrap().put_segment("n", &segment()).unwrap();
-        let e = check_record(&store, &status, RUN, "n", now).unwrap_err();
+        let e = check_record(&store, &status, &own(), "n", now).unwrap_err();
         assert!(e.contains("Resume"), "{e}");
 
         let (_root, _home, store) = placed_note();
@@ -2031,7 +2075,7 @@ mod record_tests {
             )
             .unwrap();
         assert_eq!(
-            check_record(&store, &status, RUN, "n", now),
+            check_record(&store, &status, &own(), "n", now),
             Err(CANNOT_RECORD.to_string())
         );
     }
@@ -2042,17 +2086,198 @@ mod record_tests {
     fn delete_waits_while_another_computer_uses_the_note() {
         let (_root, home, store) = placed_note();
         let now = chrono::Local::now().fixed_offset();
-        assert!(!in_use_elsewhere(&store, RUN, "n", now));
+        assert!(!in_use_elsewhere(&store, &own(), "n", now));
         assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
-        assert!(!in_use_elsewhere(&store, RUN, "n", now));
+        assert!(!in_use_elsewhere(&store, &own(), "n", now));
         assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
-        assert!(in_use_elsewhere(&store, RUN, "n", now));
+        assert!(in_use_elsewhere(&store, &own(), "n", now));
         assert!(busy_message(IN_USE_REASON).contains("another computer"));
 
         // Not finished on another computer: its marker is old.
         let (_root, home, store) = placed_note();
         let old = now - pipeline::in_use::FRESH_FOR - chrono::TimeDelta::hours(1);
         assert!(pipeline::in_use::write_marker(&home, "other-computer", old).unwrap());
-        assert!(!in_use_elsewhere(&store, RUN, "n", now));
+        assert!(!in_use_elsewhere(&store, &own(), "n", now));
+    }
+
+    // A relaunch: the earlier run on this computer quit while the note
+    // recorded or processed, and its marker is still fresh. This run
+    // finished the work and the note is Saved. Record and Delete are not
+    // refused. A fresh marker of another computer still refuses them.
+    #[test]
+    fn a_fresh_marker_of_an_earlier_run_on_this_computer_refuses_nothing() {
+        let (_root, home, store) = placed_note();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&home, EARLIER_RUN, now).unwrap());
+        assert_eq!(check_record(&store, &status, &own(), "n", now), Ok(()));
+        assert!(!in_use_elsewhere(&store, &own(), "n", now));
+        // Without the earlier run in this computer's runs, the marker
+        // counts as work on another computer.
+        let this_run = [RUN.to_string()];
+        assert!(in_use_elsewhere(&store, &this_run, "n", now));
+
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
+        assert_eq!(
+            check_record(&store, &status, &own(), "n", now),
+            Err(IN_USE_ELSEWHERE.to_string())
+        );
+        assert!(in_use_elsewhere(&store, &own(), "n", now));
+    }
+}
+
+#[cfg(test)]
+mod notes_save_tests {
+    use super::*;
+    use pipeline::save::{NotesRescue, NotesSave};
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    /// What one run of [`keep_notes_text`] did.
+    struct Run {
+        result: Result<NotesSaveResult, String>,
+        /// The steps on the early write jobs: `true` for a start.
+        steps: Vec<(bool, String)>,
+        saves: usize,
+        /// The id that the rescue got for the new note.
+        rescued: Option<String>,
+    }
+
+    /// Run [`keep_notes_text`] for the note "n". The saves give `saves` in
+    /// order, and the rescue gives `rescue`.
+    fn run(saves: Vec<NotesSave>, rescue: Result<NotesRescue, String>) -> Run {
+        let saves = RefCell::new(VecDeque::from(saves));
+        let count = RefCell::new(0);
+        let rescued = RefCell::new(None);
+        let steps = RefCell::new(Vec::new());
+        let result = keep_notes_text(
+            "n",
+            "fp".to_string(),
+            || {
+                *count.borrow_mut() += 1;
+                Ok(saves.borrow_mut().pop_front().expect("one more save"))
+            },
+            |new_id| {
+                *rescued.borrow_mut() = Some(new_id.to_string());
+                rescue
+            },
+            |step| {
+                let step = match step {
+                    EarlyHomeStep::Cancel(id) => cancel(id),
+                    EarlyHomeStep::Start(id) => start(id),
+                };
+                steps.borrow_mut().push(step);
+            },
+        );
+        Run {
+            result,
+            steps: steps.into_inner(),
+            saves: count.into_inner(),
+            rescued: rescued.into_inner(),
+        }
+    }
+
+    fn cancel(id: &str) -> (bool, String) {
+        (false, id.to_string())
+    }
+
+    fn start(id: &str) -> (bool, String) {
+        (true, id.to_string())
+    }
+
+    fn saved() -> Result<NotesSaveResult, String> {
+        Ok(NotesSaveResult::Saved {
+            fingerprint: "fp".into(),
+        })
+    }
+
+    #[test]
+    fn a_save_that_finds_its_folder_saves_with_no_rescue() {
+        let run = run(
+            vec![NotesSave::Saved { written: true }],
+            Ok(NotesRescue::Moved),
+        );
+        assert_eq!(run.result, saved());
+        assert_eq!(run.saves, 1);
+        assert_eq!(run.rescued, None);
+        assert!(run.steps.is_empty());
+    }
+
+    // R24: the folder has another name. The job of the note starts again,
+    // and the second save writes the notes.
+    #[test]
+    fn a_moved_folder_gets_one_more_save() {
+        let run = run(
+            vec![NotesSave::FolderGone, NotesSave::Saved { written: true }],
+            Ok(NotesRescue::Moved),
+        );
+        assert_eq!(run.result, saved());
+        assert_eq!(run.saves, 2);
+        assert_eq!(run.steps, [cancel("n"), start("n")]);
+    }
+
+    // The second save after Moved finds the folder gone again: the store
+    // keeps the text, and no second rescue runs.
+    #[test]
+    fn a_folder_gone_again_after_the_move_is_unavailable() {
+        let run = run(
+            vec![NotesSave::FolderGone, NotesSave::FolderGone],
+            Ok(NotesRescue::Moved),
+        );
+        assert_eq!(run.result, Err(FOLDER_UNAVAILABLE.to_string()));
+        assert_eq!(run.saves, 2);
+        assert_eq!(run.steps, [cancel("n"), start("n")]);
+    }
+
+    #[test]
+    fn an_unavailable_storage_folder_keeps_the_note_and_its_job() {
+        let run = run(vec![NotesSave::FolderGone], Ok(NotesRescue::Unavailable));
+        assert_eq!(run.result, Err(FOLDER_UNAVAILABLE.to_string()));
+        assert_eq!(run.saves, 1);
+        assert_eq!(run.steps, [cancel("n"), start("n")]);
+    }
+
+    #[test]
+    fn a_failed_rescue_keeps_the_note_and_its_job() {
+        let run = run(vec![NotesSave::FolderGone], Err("disk".to_string()));
+        assert_eq!(run.result, Err("disk".to_string()));
+        assert_eq!(run.steps, [cancel("n"), start("n")]);
+    }
+
+    // R24: the folder is gone. The text is in the new note, and the job of
+    // the new note starts. The job of the old note does not start again.
+    #[test]
+    fn a_gone_folder_makes_the_new_note_and_starts_its_job() {
+        let run = run(vec![NotesSave::FolderGone], Ok(NotesRescue::NewNote));
+        let new_id = run.rescued.clone().expect("the rescue ran");
+        assert_ne!(new_id, "n");
+        assert_eq!(
+            run.result,
+            Ok(NotesSaveResult::NewNote {
+                session_id: new_id.clone(),
+                fingerprint: "fp".into(),
+            })
+        );
+        assert_eq!(run.saves, 1);
+        assert_eq!(run.steps, [cancel("n"), start(&new_id)]);
+    }
+
+    #[test]
+    fn a_conflict_gives_the_draft_with_no_rescue() {
+        let draft = PathBuf::from("/notes/draft.md");
+        let run = run(
+            vec![NotesSave::Conflict {
+                draft: draft.clone(),
+            }],
+            Ok(NotesRescue::Moved),
+        );
+        assert_eq!(
+            run.result,
+            Ok(NotesSaveResult::Conflict {
+                draft: draft.to_string_lossy().into_owned(),
+            })
+        );
+        assert_eq!(run.rescued, None);
+        assert!(run.steps.is_empty());
     }
 }

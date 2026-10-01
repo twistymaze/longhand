@@ -101,6 +101,24 @@ fn the_current_runs_claim_is_left_alone() {
     );
 }
 
+// The in-use markers of this computer's earlier runs are its own work
+// (KTD5 of the plan for notes without a recording).
+#[test]
+fn a_run_gets_the_earlier_runs_newest_first_and_the_store_keeps_the_newest() {
+    let mut store = Store::open_in_memory().unwrap();
+    assert!(store.add_run("run-1").unwrap().is_empty());
+    assert_eq!(store.add_run("run-2").unwrap(), ["run-1"]);
+    assert_eq!(store.add_run("run-3").unwrap(), ["run-2", "run-1"]);
+    for n in 4..=session_core::jobs::RUNS_KEPT + 2 {
+        store.add_run(&format!("run-{n}")).unwrap();
+    }
+    let last = session_core::jobs::RUNS_KEPT + 3;
+    let earlier = store.add_run(&format!("run-{last}")).unwrap();
+    assert_eq!(earlier.len(), session_core::jobs::RUNS_KEPT - 1);
+    assert_eq!(earlier[0], format!("run-{}", last - 1));
+    assert!(!earlier.iter().any(|id| id == "run-1" || id == "run-3"));
+}
+
 #[test]
 fn without_the_lock_a_fresh_heartbeat_keeps_a_claim_and_a_quiet_one_loses_it() {
     let mut store = Store::open_in_memory().unwrap();

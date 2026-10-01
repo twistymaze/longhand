@@ -628,6 +628,34 @@ fn completed(store: &pipeline::SharedStore, id: &str) -> bool {
         && !pipeline::early_home::unfinished(&store, id).unwrap_or(true)
 }
 
+/// The runs whose in-use markers are this computer's own work, this run
+/// `run_id` first (KTD5). The store adds this run to the runs of this
+/// computer. A quit or a crash keeps the markers of a run, and they stay
+/// fresh for a time, so the earlier runs are this computer's too. Only
+/// with the instance lock held: without it, another run on this computer
+/// can be alive and work on its notes. When the store cannot add the run,
+/// only this run counts, and the marker of an earlier run counts as work on
+/// another computer.
+fn own_runs(
+    store: &pipeline::SharedStore,
+    run_id: &str,
+    liveness: session_core::jobs::Liveness,
+) -> Vec<String> {
+    let earlier = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .add_run(run_id)
+        .unwrap_or_else(|e| {
+            log::error!("could not add this run to the runs of this computer: {e}");
+            Vec::new()
+        });
+    let mut runs = vec![run_id.to_string()];
+    if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+        runs.extend(earlier);
+    }
+    runs
+}
+
 /// Refuses a change of folder while a Move runs or is paused (KTD11).
 pub const MOVE_OPEN: &str =
     "Longhand is moving your notes. Wait until the move is done, then change the folder.";
@@ -702,6 +730,9 @@ pub struct ProcessingManager {
     /// The in-use markers of the saved notes that this run resumes or
     /// processes (KTD4 of the audio removal plan).
     in_use: Arc<InUseKeeper>,
+    /// The runs whose in-use markers are this computer's own work, this
+    /// run first ([`own_runs`]).
+    own_runs: Vec<String>,
     /// The passes that remove the audio of old notes (U6 of the audio
     /// removal plan).
     audio_removal: Arc<AudioRemovalManager>,
@@ -787,6 +818,7 @@ impl ProcessingManager {
         }
         // The run ID of the in-use markers is the claim owner of this run.
         let in_use = InUseKeeper::new(capture.shared_store(), runner.owner());
+        let own_runs = own_runs(&capture.shared_store(), runner.owner(), liveness);
         // The early writes use the same run ID for their in-use markers.
         // After each write, the in-use markers refresh, and a note whose
         // save waits for its folder tries again.
@@ -814,6 +846,7 @@ impl ProcessingManager {
         );
         Self {
             in_use,
+            own_runs,
             audio_removal,
             early_homes,
             runner,
@@ -847,6 +880,7 @@ impl ProcessingManager {
             homes: Some(&self.early_homes),
             destination,
             run_id: self.run_id(),
+            earlier_runs: &self.own_runs[1..],
         }
     }
 
@@ -922,6 +956,12 @@ impl ProcessingManager {
         self.in_use.run_id()
     }
 
+    /// The runs whose in-use markers are this computer's own work: this run
+    /// and the earlier runs on this computer (KTD5).
+    pub fn own_runs(&self) -> &[String] {
+        &self.own_runs
+    }
+
     /// What the latest library scans found about each note.
     pub fn library_status(&self) -> &library::status::LibraryStatus {
         &self.library_status
@@ -966,11 +1006,12 @@ impl ProcessingManager {
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
-        // The in-use markers of this run are its own work: they do not
-        // show a note as in use on another computer (KTD5).
+        // The in-use markers of this run and of the earlier runs on this
+        // computer are its own work: they do not show a note as in use on
+        // another computer (KTD5).
         let mut reconciler = library::reconcile::Reconciler::default()
             .with_status(Arc::clone(&self.library_status))
-            .with_own_run(self.runner.owner());
+            .with_own_runs(self.own_runs.iter().cloned());
         match self.runner.reconcile_library(&roots, &mut reconciler) {
             Ok(changes) => {
                 log::info!(

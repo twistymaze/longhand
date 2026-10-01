@@ -428,7 +428,7 @@ fn decide(app: &AppHandle, manager: &CaptureManager) -> ShortcutAction {
         let checked = crate::commands::session::check_record(
             &manager.shared_store(),
             processing.library_status(),
-            processing.run_id(),
+            processing.own_runs(),
             id,
             chrono::Local::now().fixed_offset(),
         );

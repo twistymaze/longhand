@@ -166,8 +166,8 @@ pub struct Reconciler {
     /// The notes whose result documents do not match `session.md`, by id.
     mismatches: HashMap<String, Mismatch>,
     read_timeout: Duration,
-    /// The run ID of this computer's in-use markers ([`ScanOptions::own_run`]).
-    own_run: Option<String>,
+    /// The run IDs of this computer's in-use markers ([`ScanOptions::own_runs`]).
+    own_runs: Vec<String>,
     /// What the scans of [`Reconciler::run`] found (KTD10).
     status: Arc<LibraryStatus>,
 }
@@ -185,15 +185,16 @@ impl Reconciler {
             pending: HashMap::new(),
             mismatches: HashMap::new(),
             read_timeout: options.read_timeout,
-            own_run: options.own_run.clone(),
+            own_runs: options.own_runs.clone(),
             status: Arc::default(),
         }
     }
 
-    /// Count the in-use markers of the run `run_id` as this computer's own
-    /// work: they do not make a note in use on another computer (KTD5).
-    pub fn with_own_run(mut self, run_id: impl Into<String>) -> Self {
-        self.own_run = Some(run_id.into());
+    /// Count the in-use markers of the runs `run_ids` as this computer's
+    /// own work: they do not make a note in use on another computer
+    /// (KTD5).
+    pub fn with_own_runs(mut self, run_ids: impl IntoIterator<Item = String>) -> Self {
+        self.own_runs = run_ids.into_iter().collect();
         self
     }
 
@@ -252,7 +253,7 @@ impl Reconciler {
         let known = Known::from_records(&lock().sessions()?);
         let options = ScanOptions {
             read_timeout: self.read_timeout,
-            own_run: self.own_run.clone(),
+            own_runs: self.own_runs.clone(),
         };
         let (result, coverage) = match target {
             Target::Full(roots) => (scan::scan(roots, &known, &options), Coverage::Full),

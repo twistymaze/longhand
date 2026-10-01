@@ -24,6 +24,7 @@ pub const MIGRATION_SQL: &[&str] = &[
     include_str!("../migrations/0014_segment_audio_removed.sql"),
     include_str!("../migrations/0015_prompt_snapshot_title.sql"),
     include_str!("../migrations/0016_notes_only.sql"),
+    include_str!("../migrations/0017_runs.sql"),
 ];
 
 /// The version of migration 0002, which has a hook.

@@ -19,8 +19,9 @@
 //!   is fresh, and the folder holds no other file.
 //!
 //! This run's own in-use marker goes first: after a discarded recording, it
-//! can still be in the folder. Each other fresh marker counts as work on
-//! another computer.
+//! can still be in the folder. A marker of an earlier run on this computer
+//! is an old marker: the app quit or stopped before that run removed it.
+//! Each other fresh marker counts as work on another computer.
 //!
 //! The names in the folder come from the file system and are compared
 //! exactly with the names that Longhand writes. A name in another case, a
@@ -55,7 +56,7 @@ use session_core::{SessionState, Store};
 use session_save::{RealFs, fsync, naming};
 
 use crate::early_home::{self, EarlyHomes, EarlyState, Location};
-use crate::in_use::{is_marker_name, marker_fresh, remove_marker};
+use crate::in_use::{is_marker_name, marker_fresh, marker_name, remove_marker};
 use crate::save::{NOTES_FILE, SESSION_FILE};
 use crate::{SharedStore, StageError, lock};
 
@@ -114,6 +115,9 @@ pub struct Removal<'a> {
     pub destination: Option<&'a Path>,
     /// This run, which names its own in-use marker.
     pub run_id: &'a str,
+    /// The earlier runs on this computer. Their markers are this
+    /// computer's own work, so they do not keep the note.
+    pub earlier_runs: &'a [String],
 }
 
 /// The folder of the note that the removal checks.
@@ -239,7 +243,14 @@ impl Removal<'_> {
                 let written = store.written_fingerprints(id)?;
                 let removing = store.result_state(id, REMOVING)?
                     == Some(serde_json::Value::from(folder.to_string_lossy()));
-                match check_folder(folder, &written, removing, self.run_id, now) {
+                match check_folder(
+                    folder,
+                    &written,
+                    removing,
+                    self.run_id,
+                    self.earlier_runs,
+                    now,
+                ) {
                     Ok(files) => Some((folder, files)),
                     Err(kept) => {
                         log::info!("the empty note {id} stays: {kept:?}");
@@ -390,16 +401,19 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
 
 /// Check the folder of an empty note (R18). Returns the files to delete:
 /// the old in-use markers, then `notes.md`, then `session.md`. This run's
-/// own marker goes first. `removing` is true when an earlier removal of
-/// this note started to delete the files of this folder: a missing
-/// `notes.md` then does not keep the note.
+/// own marker goes first. A marker of one of the `earlier_runs` on this
+/// computer is an old marker, also when it is fresh. `removing` is true
+/// when an earlier removal of this note started to delete the files of
+/// this folder: a missing `notes.md` then does not keep the note.
 fn check_folder(
     folder: &Path,
     written: &WrittenFingerprints,
     removing: bool,
     run_id: &str,
+    earlier_runs: &[String],
     now: DateTime<FixedOffset>,
 ) -> Result<Vec<PathBuf>, Kept> {
+    let earlier: Vec<String> = earlier_runs.iter().map(|run| marker_name(run)).collect();
     let Some(root) = folder.parent() else {
         return Err(Kept::OtherFiles);
     };
@@ -438,7 +452,7 @@ fn check_folder(
         } else if name == NOTES_FILE {
             notes = true;
         } else if is_marker_name(name) {
-            if marker_fresh(&entry.path(), now) {
+            if !earlier.iter().any(|own| own == name) && marker_fresh(&entry.path(), now) {
                 return Err(Kept::InUse);
             }
             files.push(entry.path());

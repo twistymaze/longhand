@@ -309,6 +309,12 @@ pub struct MoveJournal {
 /// 10 s.
 pub const CLAIM_STALE_AFTER: chrono::TimeDelta = chrono::TimeDelta::seconds(30);
 
+/// How many runs of this computer the store keeps ([`Store::add_run`]). A
+/// marker of an earlier run is fresh for 30 minutes after that run ends,
+/// so only the runs of the last few launches can have a fresh marker. The
+/// marker of an older run counts as work on another computer.
+pub const RUNS_KEPT: usize = 16;
+
 /// What launch knows of the other runs that hold claims.
 #[derive(Debug, Clone, Copy)]
 pub enum Liveness {
@@ -1711,6 +1717,26 @@ impl Store {
             }
         }
         Ok(reclaimed)
+    }
+
+    /// At launch, add the run `run_id` to the runs of this computer.
+    /// Returns the earlier runs, newest first. The store keeps the newest
+    /// [`RUNS_KEPT`] runs, this run included.
+    pub fn add_run(&mut self, run_id: &str) -> Result<Vec<String>> {
+        let tx = self.conn.transaction()?;
+        tx.execute("INSERT OR IGNORE INTO runs (id) VALUES (?1)", [run_id])?;
+        tx.execute(
+            "DELETE FROM runs WHERE seq NOT IN
+             (SELECT seq FROM runs ORDER BY seq DESC LIMIT ?1)",
+            [RUNS_KEPT as i64],
+        )?;
+        let earlier = {
+            let mut stmt = tx.prepare("SELECT id FROM runs WHERE id != ?1 ORDER BY seq DESC")?;
+            stmt.query_map([run_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        tx.commit()?;
+        Ok(earlier)
     }
 
     // ------------------------------------------------------------ checkpoints

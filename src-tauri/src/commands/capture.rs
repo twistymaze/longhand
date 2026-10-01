@@ -91,7 +91,7 @@ pub async fn record_note(
         crate::commands::session::check_record(
             &manager.shared_store(),
             processing.library_status(),
-            processing.run_id(),
+            processing.own_runs(),
             &session_id,
             chrono::Local::now().fixed_offset(),
         )?;

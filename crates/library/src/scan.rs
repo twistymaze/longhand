@@ -41,17 +41,18 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanOptions {
     pub read_timeout: Duration,
-    /// The run ID of this computer's in-use markers. Such a marker shows
-    /// this computer's own work, so it does not make a note in use on
-    /// another computer (KTD5). `None` counts every marker.
-    pub own_run: Option<String>,
+    /// The run IDs of this computer's in-use markers: this run and the
+    /// earlier runs on this computer. Such a marker shows this computer's
+    /// own work, so it does not make a note in use on another computer
+    /// (KTD5). An empty list counts every marker.
+    pub own_runs: Vec<String>,
 }
 
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
             read_timeout: READ_TIMEOUT,
-            own_run: None,
+            own_runs: Vec::new(),
         }
     }
 }
@@ -568,14 +569,13 @@ fn remote_state(
     options: &ScanOptions,
 ) -> Option<RemoteState> {
     let now = Local::now().fixed_offset();
-    let in_use =
-        in_use_marker::in_use_except(dir, options.own_run.as_deref(), now).unwrap_or_else(|e| {
-            log::warn!(
-                "library: cannot read the in-use markers in {}: {e}",
-                dir.display()
-            );
-            false
-        });
+    let in_use = in_use_marker::in_use_except(dir, &options.own_runs, now).unwrap_or_else(|e| {
+        log::warn!(
+            "library: cannot read the in-use markers in {}: {e}",
+            dir.display()
+        );
+        false
+    });
     if in_use {
         return Some(RemoteState::InUse);
     }

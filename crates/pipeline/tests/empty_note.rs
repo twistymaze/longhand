@@ -76,6 +76,7 @@ fn leave_with(
         homes,
         destination: dest,
         run_id: RUN,
+        earlier_runs: &[],
     }
     .leave(id, now())
     .unwrap()
@@ -140,6 +141,28 @@ fn this_runs_own_marker_does_not_keep_the_note() {
     assert!(write_marker(&home, RUN, now()).unwrap());
 
     assert_eq!(leave(&store, dest.path(), "n"), Leave::Removed);
+    assert!(!home.exists());
+}
+
+// A relaunch: the earlier run on this computer quit and left its marker,
+// which is still fresh. It does not keep the note.
+#[test]
+fn a_fresh_marker_of_an_earlier_run_on_this_computer_does_not_keep_the_note() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    assert!(write_marker(&home, "earlier-run", now()).unwrap());
+    let earlier = ["earlier-run".to_string()];
+    let removal = Removal {
+        store: &store,
+        claims: &Claims::default(),
+        homes: None,
+        destination: Some(dest.path()),
+        run_id: RUN,
+        earlier_runs: &earlier,
+    };
+
+    assert_eq!(removal.leave("n", now()).unwrap(), Leave::Removed);
     assert!(!home.exists());
 }
 
@@ -505,6 +528,7 @@ fn leave_shown(store: &SharedStore, dest: &Path, shown: &dyn Fn(&str) -> bool) -
         homes: None,
         destination: Some(dest),
         run_id: RUN,
+        earlier_runs: &[],
     }
     .leave_unless_shown("n", now(), shown)
     .unwrap()
@@ -651,6 +675,7 @@ fn an_unavailable_storage_folder_removes_nothing_and_the_next_pass_removes_the_n
         homes: None,
         destination: Some(&dest),
         run_id: RUN,
+        earlier_runs: &[],
     };
     let passed = removal.launch_pass(at(10), now()).unwrap();
     assert_eq!(passed, vec![("n".to_string(), Leave::Removed)]);
@@ -719,6 +744,7 @@ fn the_launch_pass_removes_only_empty_notes_that_this_computer_started_before_th
         homes: None,
         destination: Some(dest.path()),
         run_id: RUN,
+        earlier_runs: &[],
     };
     let passed = removal.launch_pass(at(50), now()).unwrap();
 

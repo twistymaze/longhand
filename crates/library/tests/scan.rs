@@ -908,8 +908,12 @@ mod result_flag {
     }
 
     fn remote(root: &Path, own_run: Option<&str>) -> Option<RemoteState> {
+        remote_with_runs(root, own_run.into_iter().collect())
+    }
+
+    fn remote_with_runs(root: &Path, own_runs: Vec<&str>) -> Option<RemoteState> {
         let options = ScanOptions {
-            own_run: own_run.map(str::to_string),
+            own_runs: own_runs.into_iter().map(str::to_string).collect(),
             ..options()
         };
         let result = scan(&[root.to_path_buf()], &Known::default(), &options);
@@ -968,6 +972,24 @@ mod result_flag {
         assert_eq!(remote(root.path(), Some("run-b")), None);
         assert!(write_marker(&dir, "run-a", now()).unwrap());
         assert_eq!(remote(root.path(), Some("run-b")), Some(RemoteState::InUse));
+    }
+
+    // A relaunch on the same computer: the run "run-a" quit while the note
+    // processed, and its marker is still fresh. The next run "run-b"
+    // finished the work. The note is not in use on another computer. A
+    // fresh marker of another computer's run still counts.
+    #[test]
+    fn a_fresh_marker_of_an_earlier_run_on_this_computer_does_not_count() {
+        let root = marked_root();
+        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "A1");
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote_with_runs(root.path(), vec!["run-b", "run-a"]), None);
+
+        assert!(write_marker(&dir, "other-computer", now()).unwrap());
+        assert_eq!(
+            remote_with_runs(root.path(), vec!["run-b", "run-a"]),
+            Some(RemoteState::InUse)
+        );
     }
 
     #[test]

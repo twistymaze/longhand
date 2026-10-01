@@ -1389,7 +1389,7 @@ const RUN_B: &str = "run-b";
 /// are its own, and its scans do not count them.
 fn computer_run(run: &str) -> Computer {
     Computer {
-        reconciler: Reconciler::new(&options()).with_own_run(run),
+        reconciler: Reconciler::new(&options()).with_own_runs([run.to_string()]),
         ..computer()
     }
 }
