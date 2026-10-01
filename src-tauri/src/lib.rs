@@ -6,6 +6,7 @@ mod managers;
 #[cfg(target_os = "macos")]
 mod menu;
 mod shortcut;
+mod startup;
 mod tray;
 mod window;
 #[cfg(target_os = "macos")]
@@ -193,6 +194,134 @@ fn take_instance_lock(
     }
 }
 
+/// The body of `setup`. `run` handles its error (KTD7).
+fn setup_app(
+    app: &mut tauri::App,
+    specta_builder: &Builder<tauri::Wry>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let launch_reason = autostart::launch_reason();
+    log::info!("startup launch reason: {launch_reason:?}");
+    specta_builder.mount_events(app);
+
+    let handle = app.handle().clone();
+    let liveness = take_instance_lock(&handle)?;
+    // Before any manager starts: a saved update that no quit
+    // installed installs now, and the app restarts (KTD10).
+    if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+        managers::updates::install_at_launch(&handle);
+    }
+    // After the update check, so a newer build that installs at launch
+    // shows no alert, and before any reader opens `longhand.db` (KTD5).
+    // Without the instance lock the check is skipped; a database that this
+    // build cannot open then stops the start with the R9 alert.
+    startup::check_database(&handle, &liveness)?;
+    // Read once before any other reader, so a first run writes the
+    // defaults and an old store migrates. The migration puts the old
+    // shared values into the cache (R21). The join with the storage
+    // folder runs on the launch thread, before the first library
+    // scan; until then the shared view comes from the cache.
+    let local = managers::settings::get_local_settings(&handle);
+    log::info!(
+        "settings loaded (schema version {})",
+        local.settings_schema_version
+    );
+    // Before the shared settings join and the first library scan: a
+    // new install gets the default storage folder (R2, KTD12).
+    let local = managers::settings::ensure_storage_folder(&handle, local);
+    app.manage(std::sync::Arc::new(
+        managers::shared::SharedSettingsManager::new(
+            managers::settings::shared_cache_dir(&handle)?,
+            local.storage_folder(),
+        ),
+    ));
+    let secrets = managers::secrets::SecretsManager::new(&handle);
+    let secret_store = secrets.store();
+    app.manage(secrets);
+    let models = std::sync::Arc::new(managers::models::ModelsManager::new(&handle)?);
+    app.manage(std::sync::Arc::clone(&models));
+    let capture = std::sync::Arc::new(
+        managers::capture::CaptureManager::new(&handle)
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
+    );
+    app.manage(std::sync::Arc::clone(&capture));
+    // Before processing's launch sweep and any writer (U16), and
+    // only when no other instance can be recording.
+    if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+        capture.recover_at_launch();
+        // After the recovery, so that the notes it recovers keep
+        // their models (R9).
+        commands::models::remove_unneeded_supporting_models(&handle);
+    }
+    let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
+    app.manage(std::sync::Arc::clone(&alerts));
+    // Sleep closes the segment on the notifying thread, before the
+    // machine stops; the wake's restart runs off it (U13).
+    let sleeping = std::sync::Arc::clone(&capture);
+    let sleep_app = handle.clone();
+    let watch = power::SleepWatch::start(move |event| match event {
+        power::PowerEvent::WillSleep => sleeping.will_sleep(&sleep_app),
+        power::PowerEvent::DidWake => {
+            let capture = std::sync::Arc::clone(&sleeping);
+            let app = sleep_app.clone();
+            if let Some(updates) =
+                app.try_state::<std::sync::Arc<managers::updates::UpdateManager>>()
+            {
+                updates.wake();
+            }
+            std::thread::spawn(move || capture.did_wake(&app));
+        }
+    });
+    app.manage(std::sync::Mutex::new(watch));
+    // Managed before anything records: capture starts a live worker
+    // for each segment of a note in live mode.
+    let live = std::sync::Arc::new(managers::live::LiveManager::new(std::sync::Arc::clone(
+        &models,
+    )));
+    app.manage(std::sync::Arc::clone(&live));
+    let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
+        &handle,
+        &capture,
+        &live,
+        models,
+        secret_store,
+        liveness,
+    ));
+    // The settings commands start a removal pass after a change
+    // (R17), and the count before a change reads it.
+    app.manage(std::sync::Arc::clone(processing.audio_removal()));
+    processing.start();
+    let working = std::sync::Arc::clone(&processing);
+    app.manage(processing);
+    // Busy means that a note records or processes (KTD7).
+    let recording = std::sync::Arc::clone(&capture);
+    let updates = managers::updates::UpdateManager::new(&handle, move || {
+        recording.is_capturing() || working.is_working()
+    });
+    updates.start();
+    app.manage(updates);
+    // Resolving the microphone queries the audio HAL; keep it off the
+    // launch path. A failure here is retried at the first press.
+    let preparing = std::sync::Arc::clone(&capture);
+    let preparing_app = handle.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = preparing.prepare(&preparing_app) {
+            log::warn!("microphone not prepared at launch: {e}");
+        }
+    });
+    window::create_main_window(&handle)?;
+    tray::create_tray(&handle)?;
+    #[cfg(target_os = "macos")]
+    menu::set_app_menu(&handle)?;
+    shortcut::register(&handle);
+    // After the tray exists, so the restored alert can mark it.
+    alerts.restore(&handle, &capture);
+
+    if launch_reason == autostart::LaunchReason::Manual {
+        window::show_main_window(&handle);
+    }
+    Ok(())
+}
+
 pub fn run() {
     let specta_builder = specta_builder();
 
@@ -248,130 +377,33 @@ pub fn run() {
             .build(),
     );
 
+    // Before `build`, so the alert after a build error can name the log
+    // file. No app handle exists then.
+    let context = tauri::generate_context!();
+    let log_file = startup::log_file_for(
+        &context.config().identifier,
+        context
+            .config()
+            .product_name
+            .as_deref()
+            .unwrap_or(env!("CARGO_PKG_NAME")),
+    );
+
     #[allow(unused_mut)]
     let mut app = builder
         .setup(move |app| {
-            let launch_reason = autostart::launch_reason();
-            log::info!("startup launch reason: {launch_reason:?}");
-            specta_builder.mount_events(app);
-
-            let handle = app.handle().clone();
-            let liveness = take_instance_lock(&handle)?;
-            // Before any manager starts: a saved update that no quit
-            // installed installs now, and the app restarts (KTD10).
-            if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
-                managers::updates::install_at_launch(&handle);
-            }
-            // Read once before any other reader, so a first run writes the
-            // defaults and an old store migrates. The migration puts the old
-            // shared values into the cache (R21). The join with the storage
-            // folder runs on the launch thread, before the first library
-            // scan; until then the shared view comes from the cache.
-            let local = managers::settings::get_local_settings(&handle);
-            log::info!(
-                "settings loaded (schema version {})",
-                local.settings_schema_version
-            );
-            // Before the shared settings join and the first library scan: a
-            // new install gets the default storage folder (R2, KTD12).
-            let local = managers::settings::ensure_storage_folder(&handle, local);
-            app.manage(std::sync::Arc::new(
-                managers::shared::SharedSettingsManager::new(
-                    managers::settings::shared_cache_dir(&handle)?,
-                    local.storage_folder(),
-                ),
-            ));
-            let secrets = managers::secrets::SecretsManager::new(&handle);
-            let secret_store = secrets.store();
-            app.manage(secrets);
-            let models = std::sync::Arc::new(managers::models::ModelsManager::new(&handle)?);
-            app.manage(std::sync::Arc::clone(&models));
-            let capture = std::sync::Arc::new(
-                managers::capture::CaptureManager::new(&handle)
-                    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?,
-            );
-            app.manage(std::sync::Arc::clone(&capture));
-            // Before processing's launch sweep and any writer (U16), and
-            // only when no other instance can be recording.
-            if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
-                capture.recover_at_launch();
-                // After the recovery, so that the notes it recovers keep
-                // their models (R9).
-                commands::models::remove_unneeded_supporting_models(&handle);
-            }
-            let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
-            app.manage(std::sync::Arc::clone(&alerts));
-            // Sleep closes the segment on the notifying thread, before the
-            // machine stops; the wake's restart runs off it (U13).
-            let sleeping = std::sync::Arc::clone(&capture);
-            let sleep_app = handle.clone();
-            let watch = power::SleepWatch::start(move |event| match event {
-                power::PowerEvent::WillSleep => sleeping.will_sleep(&sleep_app),
-                power::PowerEvent::DidWake => {
-                    let capture = std::sync::Arc::clone(&sleeping);
-                    let app = sleep_app.clone();
-                    if let Some(updates) =
-                        app.try_state::<std::sync::Arc<managers::updates::UpdateManager>>()
-                    {
-                        updates.wake();
-                    }
-                    std::thread::spawn(move || capture.did_wake(&app));
-                }
-            });
-            app.manage(std::sync::Mutex::new(watch));
-            // Managed before anything records: capture starts a live worker
-            // for each segment of a note in live mode.
-            let live = std::sync::Arc::new(managers::live::LiveManager::new(
-                std::sync::Arc::clone(&models),
-            ));
-            app.manage(std::sync::Arc::clone(&live));
-            let processing = std::sync::Arc::new(managers::processing::ProcessingManager::new(
-                &handle,
-                &capture,
-                &live,
-                models,
-                secret_store,
-                liveness,
-            ));
-            // The settings commands start a removal pass after a change
-            // (R17), and the count before a change reads it.
-            app.manage(std::sync::Arc::clone(processing.audio_removal()));
-            processing.start();
-            let working = std::sync::Arc::clone(&processing);
-            app.manage(processing);
-            // Busy means that a note records or processes (KTD7).
-            let recording = std::sync::Arc::clone(&capture);
-            let updates = managers::updates::UpdateManager::new(&handle, move || {
-                recording.is_capturing() || working.is_working()
-            });
-            updates.start();
-            app.manage(updates);
-            // Resolving the microphone queries the audio HAL; keep it off the
-            // launch path. A failure here is retried at the first press.
-            let preparing = std::sync::Arc::clone(&capture);
-            let preparing_app = handle.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                if let Err(e) = preparing.prepare(&preparing_app) {
-                    log::warn!("microphone not prepared at launch: {e}");
-                }
-            });
-            window::create_main_window(&handle)?;
-            tray::create_tray(&handle)?;
-            #[cfg(target_os = "macos")]
-            menu::set_app_menu(&handle)?;
-            shortcut::register(&handle);
-            // After the tray exists, so the restored alert can mark it.
-            alerts.restore(&handle, &capture);
-
-            if launch_reason == autostart::LaunchReason::Manual {
-                window::show_main_window(&handle);
+            // An error never leaves `setup`: the app shows the R9 alert and
+            // exits with code 1, and no panic occurs (KTD7).
+            if let Err(e) = setup_app(app, &specta_builder) {
+                startup::fail(e.as_ref(), startup::log_file(app.handle()).as_deref());
             }
             Ok(())
         })
         .on_window_event(window::on_window_event)
         .invoke_handler(invoke_handler)
-        .build(tauri::generate_context!())
-        .expect("error while building tauri application");
+        .build(context)
+        // The logger can be missing here; the alert shows all the same (KTD7).
+        .unwrap_or_else(|e| startup::fail(&e, log_file.as_deref()));
 
     // Before the event loop, as Handy does (KTD2). With "Hide from Dock" on,
     // the app starts as Accessory: an ordinary show promotes it to Regular,

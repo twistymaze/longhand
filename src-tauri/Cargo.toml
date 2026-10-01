@@ -35,6 +35,12 @@ serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
 sha2 = "0.10"
+# The startup alerts (src/startup.rs). The same declaration as
+# tauri-plugin-dialog, so no new crate enters Cargo.lock (KTD6).
+rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
+# The log file path for the alert after a build error (src/startup.rs).
+# tauri uses the same crate for its paths.
+dirs = "6"
 # Free space on the destination volume, as anarlog measures it.
 sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
