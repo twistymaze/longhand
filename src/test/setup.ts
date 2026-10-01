@@ -19,8 +19,22 @@ if (!("getTargetRanges" in InputEvent.prototype)) {
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 // Import after the DOM exists: Testing Library reads `document` when it loads.
-const { cleanup } = await import("@testing-library/react");
+const { cleanup, prettyDOM } = await import("@testing-library/react");
 const { clearMocks } = await import("@tauri-apps/api/mocks");
+
+// A failed expect prints the value it received. For a happy-dom node, bun
+// prints each property through to the document, which takes seconds on a
+// large page. A `waitFor` check that fails then blocks the timers, and the test
+// times out. Print the markup of the node instead.
+Object.defineProperty(Node.prototype, Symbol.for("nodejs.util.inspect.custom"), {
+  configurable: true,
+  value(this: Node) {
+    if (this instanceof Element || this instanceof Document) {
+      return prettyDOM(this, 2000, { highlight: false }) || this.nodeName;
+    }
+    return `${this.nodeName} ${JSON.stringify(this.textContent)}`;
+  },
+});
 
 afterEach(() => {
   cleanup();
