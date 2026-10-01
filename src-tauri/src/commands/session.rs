@@ -1306,6 +1306,7 @@ mod entry_tests {
             found_speakers: Some(3),
             live_transcript: None,
             transcribe_again_model: None,
+            started_at: None,
         };
         let e = entry(&record, &[], None, false);
         assert!(!e.storage_unavailable);

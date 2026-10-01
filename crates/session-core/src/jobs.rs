@@ -56,6 +56,30 @@ pub struct SessionRecord {
     /// as [`TranscribeAgainMarks::model`]. The run uses this model, not
     /// `asr_model` (KTD14).
     pub transcribe_again_model: Option<String>,
+    /// The time the note opened, for a note that opened with no recording
+    /// (R16, migration 0016). The note keeps it when it records later.
+    /// `None` for a note that recorded at once: see [`SessionRecord::start`].
+    pub started_at: Option<DateTime<FixedOffset>>,
+}
+
+impl SessionRecord {
+    /// The start time of the note (R16): the time it opened when the store
+    /// has it, else the start of its first segment in `segments`, else the
+    /// time the row was made.
+    pub fn start(&self, segments: &[Segment]) -> DateTime<FixedOffset> {
+        self.started_at
+            .or_else(|| segments.first().map(|s| s.wall_start))
+            .unwrap_or(self.created_at)
+    }
+}
+
+/// The fingerprints of the `session.md` and `notes.md` that this computer
+/// last wrote into a note's home folder (KTD8). `None` until this computer
+/// writes the file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WrittenFingerprints {
+    pub session: Option<String>,
+    pub notes: Option<String>,
 }
 
 /// The recognition model and the live mode that a session records when it
@@ -305,7 +329,8 @@ fn stage_key(stage: Stage) -> String {
 
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
-     home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot";
+     home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot, \
+     started_at";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -374,8 +399,8 @@ impl Store {
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
                mic_id, mic_label, system_audio, recognition_snapshot,
                prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
-               prompt_snapshot_title_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+               prompt_snapshot_title_text, started_here)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -396,6 +421,45 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Make the row of a note that opens with no recording (KTD2): a Saved
+    /// row with zero segments, an empty notes document, `opened_at` as its
+    /// start time (R16), and the mark that this computer started it (KTD8),
+    /// in one INSERT. `home_path` is the note's home folder, or `None`
+    /// until the folder is written: the row is busy until then
+    /// ([`busy`]). The row does not go through the state machine and is not
+    /// queued. Record into it is [`Event::UserRecord`].
+    pub fn create_notes_only(
+        &mut self,
+        id: &str,
+        opened_at: DateTime<FixedOffset>,
+        home_path: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sessions (id, created_at, state, home_path, started_at, started_here)
+             VALUES (?1, ?2, ?3, ?4, ?2, 1)",
+            params![
+                id,
+                opened_at.to_rfc3339(),
+                serde_json::to_string(&SessionState::Saved)?,
+                home_path,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Whether this computer started the note (KTD8). False for a note
+    /// from another computer, and for a note from before migration 0016.
+    pub fn started_here(&self, id: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT started_here FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
     }
 
     /// Start a new session from the shortcut (R6c): any session still capturing
@@ -685,7 +749,8 @@ impl Store {
 
     /// Make a Saved row for a note from another computer, from its folder
     /// (KTD1): its segments, notes, title, recognition model, speakers found,
-    /// home path and transcript fingerprint, in one transaction. The row does
+    /// home path and transcript fingerprint, in one transaction. A note with
+    /// no segments keeps `created_at` as its start time (R16). The row does
     /// not go through the state machine, because the note never recorded on
     /// this computer. Returns false and changes nothing when `note.id`
     /// already has a row.
@@ -698,8 +763,10 @@ impl Store {
         let tx = self.conn.transaction()?;
         let inserted = tx.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, home_path,
-               title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint, recognition_snapshot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+               title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint, recognition_snapshot,
+               started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+               CASE WHEN ?14 THEN ?2 END)
              ON CONFLICT (id) DO NOTHING",
             params![
                 note.id,
@@ -717,6 +784,8 @@ impl Store {
                 stereo_from,
                 note.transcript_fingerprint,
                 note.recognition_snapshot.as_ref().map(serde_json::to_string).transpose()?,
+                // A note with no segments starts at `started` (R16).
+                note.segments.is_empty(),
             ],
         )?;
         if inserted == 0 {
@@ -765,6 +834,60 @@ impl Store {
     pub fn set_transcript_fingerprint(&self, id: &str, fingerprint: Option<&str>) -> Result<()> {
         let changed = self.conn.execute(
             "UPDATE sessions SET transcript_fingerprint = ?2 WHERE id = ?1",
+            params![id, fingerprint],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ last-written fingerprints
+
+    /// The fingerprints of the `session.md` and `notes.md` that this
+    /// computer last wrote for the note (KTD8).
+    pub fn written_fingerprints(&self, id: &str) -> Result<WrittenFingerprints> {
+        self.conn
+            .query_row(
+                "SELECT written_session_fingerprint, written_notes_fingerprint
+                 FROM sessions WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(WrittenFingerprints {
+                        session: r.get(0)?,
+                        notes: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
+    }
+
+    /// Record the fingerprint of the `session.md` that this computer wrote
+    /// for the note. Call it after each write of the file.
+    pub fn set_written_session_fingerprint(
+        &self,
+        id: &str,
+        fingerprint: Option<&str>,
+    ) -> Result<()> {
+        self.set_written_fingerprint(id, "written_session_fingerprint", fingerprint)
+    }
+
+    /// Record the fingerprint of the `notes.md` that this computer wrote
+    /// for the note. Call it after each write of the file.
+    pub fn set_written_notes_fingerprint(&self, id: &str, fingerprint: Option<&str>) -> Result<()> {
+        self.set_written_fingerprint(id, "written_notes_fingerprint", fingerprint)
+    }
+
+    /// `column` is one of the two fixed column names above, never input.
+    fn set_written_fingerprint(
+        &self,
+        id: &str,
+        column: &'static str,
+        fingerprint: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            &format!("UPDATE sessions SET {column} = ?2 WHERE id = ?1"),
             params![id, fingerprint],
         )?;
         if changed == 0 {
@@ -1724,6 +1847,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let live_transcript: Option<bool> = r.get(10)?;
     let transcribe_again_model: Option<String> = r.get(11)?;
     let recognition_snapshot: Option<String> = r.get(12)?;
+    let started_at: Option<String> = r.get(13)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -1751,6 +1875,7 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
             recognition_snapshot: recognition_snapshot
                 .map(|v| serde_json::from_str(&v))
                 .transpose()?,
+            started_at: started_at.as_deref().map(parse_time).transpose()?,
         })
     })())
 }

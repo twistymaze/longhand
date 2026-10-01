@@ -129,6 +129,12 @@ pub enum Event {
     /// A Transcribe Again run failed before its save. The session is saved
     /// again with its previous files (R19).
     TranscribeAgainFailed,
+    /// The user's Record on a saved note with no audio (R11, KTD2).
+    /// `has_segments` is the caller's answer to whether the note has
+    /// segments. A note with segments uses [`Event::UserResume`].
+    UserRecord {
+        has_segments: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -289,6 +295,7 @@ impl SessionState {
                 Some(S::Queued { stopped_at: *at })
             }
             (S::Processing { .. }, Event::TranscribeAgainFailed) => Some(S::Saved),
+            (S::Saved, Event::UserRecord { has_segments }) if !*has_segments => Some(S::Capturing),
 
             (_, Event::UserResume { .. }) if self.is_stopped() => Some(S::Capturing),
             (S::Saved, Event::UserResume { audio_intact, .. }) if *audio_intact => {

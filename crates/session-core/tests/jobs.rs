@@ -1829,3 +1829,187 @@ fn a_note_keeps_the_prompt_snapshot_from_its_start() {
         Err(StoreError::NoSuchSession(_))
     ));
 }
+
+// ---------------------------------------------------------------- notes-only notes (KTD2, KTD8)
+
+#[test]
+fn a_notes_only_note_is_a_saved_row_with_no_segments_that_lists_with_its_open_time() {
+    use session_core::jobs::busy;
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .create_notes_only("n1", t(0), Some("/notes/2026-09-22 1000"))
+        .unwrap();
+    let record = store.session("n1").unwrap().unwrap();
+    assert_eq!(record.state, SessionState::Saved);
+    assert_eq!(record.home_path.as_deref(), Some("/notes/2026-09-22 1000"));
+    assert_eq!(record.started_at, Some(t(0)));
+    assert!(store.segments("n1").unwrap().is_empty());
+    assert_eq!(store.notes("n1").unwrap(), "");
+    assert!(store.started_here("n1").unwrap());
+    // It is not in the queue and has no job.
+    assert!(store.queue().unwrap().is_empty());
+    assert!(!busy(&record, false));
+
+    let listed = store.sessions().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].start(&[]), t(0));
+}
+
+#[test]
+fn a_notes_only_note_with_no_home_folder_yet_is_busy() {
+    use session_core::jobs::busy;
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_notes_only("n1", t(0), None).unwrap();
+    let record = store.session("n1").unwrap().unwrap();
+    assert_eq!(record.state, SessionState::Saved);
+    assert!(busy(&record, false));
+    store.set_home_path("n1", "/notes/a").unwrap();
+    assert!(!busy(&store.session("n1").unwrap().unwrap(), false));
+}
+
+#[test]
+fn record_into_a_notes_only_note_captures_and_keeps_its_open_time() {
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .create_notes_only("n1", t(0), Some("/notes/a"))
+        .unwrap();
+    let next = store
+        .apply(
+            "n1",
+            &Event::UserRecord {
+                has_segments: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(next, SessionState::Capturing);
+    // A note opened at 10:00 and recorded at 11:00 keeps 10:00 (R16).
+    let mut later = segment(0, 0);
+    later.wall_start = t(60);
+    later.wall_end = t(61);
+    store.put_segment("n1", &later).unwrap();
+    let record = store.session("n1").unwrap().unwrap();
+    assert_eq!(record.started_at, Some(t(0)));
+    assert_eq!(record.start(&store.segments("n1").unwrap()), t(0));
+    assert_eq!(record.home_path.as_deref(), Some("/notes/a"));
+
+    // Record is refused once the note has segments: that is a Resume.
+    store
+        .apply(
+            "n1",
+            &Event::UserStop {
+                at: t(62),
+                retained_audio: true,
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        store.apply("n1", &Event::UserRecord { has_segments: true }),
+        Err(StoreError::Illegal(_))
+    ));
+}
+
+#[test]
+fn a_recorded_note_starts_at_its_first_segment() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    let mut first = segment(0, 0);
+    first.wall_start = t(2);
+    store.put_segment("s1", &first).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.started_at, None);
+    assert_eq!(record.start(&store.segments("s1").unwrap()), t(2));
+    // With no segment yet, the start is the time the row was made.
+    assert_eq!(record.start(&[]), t(0));
+}
+
+#[test]
+fn only_a_note_that_this_computer_started_is_started_here() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("recorded", t(0), None).unwrap();
+    store.create_notes_only("notes", t(1), None).unwrap();
+    assert!(store.adopt(&adoption("remote", "/notes/remote")).unwrap());
+    assert!(store.started_here("recorded").unwrap());
+    assert!(store.started_here("notes").unwrap());
+    assert!(!store.started_here("remote").unwrap());
+    assert!(matches!(
+        store.started_here("absent"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn an_adopted_note_with_no_segments_keeps_its_start_time() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut note = adoption("remote", "/notes/remote");
+    note.segments.clear();
+    note.created_at = t(5);
+    assert!(store.adopt(&note).unwrap());
+    let record = store.session("remote").unwrap().unwrap();
+    assert_eq!(record.started_at, Some(t(5)));
+    // An adopted note with segments starts at its first segment, as before.
+    assert!(store.adopt(&adoption("audio", "/notes/audio")).unwrap());
+    assert_eq!(store.session("audio").unwrap().unwrap().started_at, None);
+}
+
+#[test]
+fn the_last_written_fingerprints_update_on_each_write_and_read_back() {
+    use session_core::jobs::WrittenFingerprints;
+    let mut store = Store::open_in_memory().unwrap();
+    store
+        .create_notes_only("n1", t(0), Some("/notes/a"))
+        .unwrap();
+    assert_eq!(
+        store.written_fingerprints("n1").unwrap(),
+        WrittenFingerprints::default()
+    );
+
+    store
+        .set_written_session_fingerprint("n1", Some("s-1"))
+        .unwrap();
+    store
+        .set_written_notes_fingerprint("n1", Some("n-1"))
+        .unwrap();
+    assert_eq!(
+        store.written_fingerprints("n1").unwrap(),
+        WrittenFingerprints {
+            session: Some("s-1".into()),
+            notes: Some("n-1".into()),
+        }
+    );
+
+    // Each later write replaces only its own fingerprint.
+    store
+        .set_written_notes_fingerprint("n1", Some("n-2"))
+        .unwrap();
+    assert_eq!(
+        store.written_fingerprints("n1").unwrap(),
+        WrittenFingerprints {
+            session: Some("s-1".into()),
+            notes: Some("n-2".into()),
+        }
+    );
+    store
+        .set_written_session_fingerprint("n1", Some("s-2"))
+        .unwrap();
+    store.set_written_notes_fingerprint("n1", None).unwrap();
+    assert_eq!(
+        store.written_fingerprints("n1").unwrap(),
+        WrittenFingerprints {
+            session: Some("s-2".into()),
+            notes: None,
+        }
+    );
+
+    assert!(matches!(
+        store.written_fingerprints("absent"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.set_written_session_fingerprint("absent", Some("x")),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.set_written_notes_fingerprint("absent", Some("x")),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}

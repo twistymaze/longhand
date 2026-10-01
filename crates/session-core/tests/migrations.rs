@@ -509,3 +509,44 @@ fn migration_fifteen_gives_existing_prompt_snapshots_an_empty_title_text() {
     // A note with no snapshot still has none.
     assert_eq!(store.prompt_snapshot("s2").unwrap(), None);
 }
+
+#[test]
+fn migration_sixteen_keeps_existing_rows_and_gives_them_no_open_time_owner_or_fingerprints() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_fourteen(&path);
+        add_session(&conn, "s1");
+        conn.execute(
+            "UPDATE sessions SET home_path = '/notes/a', notes = '- agenda\n' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO segments
+             (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels)
+             VALUES ('s1', 0, 0, 60000, '2026-09-22T10:05:00-05:00',
+                     '2026-09-22T10:06:00-05:00', 'audio/segment-01.opus', 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.state, session_core::SessionState::Saved);
+    assert_eq!(record.home_path.as_deref(), Some("/notes/a"));
+    assert_eq!(store.notes("s1").unwrap(), "- agenda\n");
+    let segments = store.segments("s1").unwrap();
+    assert_eq!(segments.len(), 1);
+    // A row from before the migration has no open time, so its start is
+    // its first segment, as before.
+    assert_eq!(record.started_at, None);
+    assert_eq!(record.start(&segments), segments[0].wall_start);
+    // This computer cannot tell whether it started an older note, so the
+    // flag is false: removal (R18) then keeps the note.
+    assert!(!store.started_here("s1").unwrap());
+    assert_eq!(
+        store.written_fingerprints("s1").unwrap(),
+        session_core::jobs::WrittenFingerprints::default()
+    );
+}
