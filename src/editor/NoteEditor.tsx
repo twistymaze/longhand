@@ -21,6 +21,7 @@ import { Node as PMNode } from "prosemirror-model";
 import { EditorState, Plugin, Selection } from "prosemirror-state";
 import { type ComponentType, useEffect, useMemo, useRef } from "react";
 
+import { addNotesSend } from "../lib/notesSaves";
 import { json2md, type JSONContent, md2json } from "./markdown";
 import { TaskItemView } from "./node-views/task-item-view";
 import { buildInputRules, buildKeymap } from "./note/keymap";
@@ -127,8 +128,15 @@ export function NoteEditor({ markdown, onChange, autoFocus = false, editable = t
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Send a pending change when the editor closes.
-  useEffect(() => flush, [flush]);
+  // Send a pending change when the editor closes, and when a leave of the
+  // note asks for it.
+  useEffect(() => {
+    const remove = addNotesSend(flush);
+    return () => {
+      remove();
+      flush();
+    };
+  }, [flush]);
 
   return (
     <ProseMirror

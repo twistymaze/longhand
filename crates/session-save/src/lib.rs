@@ -11,6 +11,7 @@
 
 pub mod fsync;
 pub mod home_write;
+pub mod in_use_marker;
 pub mod naming;
 pub mod publication;
 pub mod rename;

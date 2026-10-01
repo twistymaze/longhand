@@ -5,22 +5,24 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, FixedOffset};
 use library::reconcile::{Changes, Coverage, DELETE_WAIT, HAND_EDIT_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
-use library::scan::{Known, ScanOptions, Waiting, scan};
+use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
 use library::status::NoteStatus;
 use pipeline::SharedStore;
-use session_core::folder::{AudioState, SessionDoc, fingerprint};
+use session_core::folder::{AudioState, ResultFlag, SessionDoc, fingerprint};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
+use session_save::in_use_marker::FRESH_FOR;
 
 const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n";
 
 fn options() -> ScanOptions {
     ScanOptions {
         read_timeout: Duration::from_secs(2),
+        ..ScanOptions::default()
     }
 }
 
@@ -51,6 +53,21 @@ impl Computer {
     /// Record, process and save the note `id` into `root` through the real
     /// save stage. Returns its folder.
     fn save_note(&self, id: &str, root: &Path, title: Option<Title>, notes: &str) -> PathBuf {
+        {
+            let mut s = self.store.lock().unwrap();
+            s.create_session(id, started(), None).unwrap();
+            s.set_notes(id, notes).unwrap();
+            if let Some(title) = &title {
+                assert!(s.set_title(id, &title.text, title.source).unwrap());
+            }
+        }
+        self.save_recording(id, root)
+    }
+
+    /// Record one segment into the note `id`, which captures now, then
+    /// process and save it into `root` through the real save stage.
+    /// Returns its folder.
+    fn save_recording(&self, id: &str, root: &Path) -> PathBuf {
         let segment = Segment {
             index: 0,
             offset_ms: 0,
@@ -62,13 +79,8 @@ impl Computer {
         };
         {
             let mut s = self.store.lock().unwrap();
-            s.create_session(id, started(), None).unwrap();
             s.put_segment(id, &segment).unwrap();
             s.set_asr_model(id, "m").unwrap();
-            s.set_notes(id, notes).unwrap();
-            if let Some(title) = &title {
-                assert!(s.set_title(id, &title.text, title.source).unwrap());
-            }
             s.apply(
                 id,
                 &Event::UserStop {
@@ -1366,4 +1378,218 @@ fn the_recording_computer_also_sees_its_own_note_as_removed() {
     assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
     assert_eq!(b.removed_audio("n1"), [AUDIO]);
     assert_eq!(b.audio_state("n1"), AudioState::Removed);
+}
+
+// ------------------------------------- a note that records elsewhere (U4)
+
+const RUN_A: &str = "run-a";
+const RUN_B: &str = "run-b";
+
+/// A computer whose run has the ID `run`: the in-use markers of that run
+/// are its own, and its scans do not count them.
+fn computer_run(run: &str) -> Computer {
+    Computer {
+        reconciler: Reconciler::new(&options()).with_own_runs([run.to_string()]),
+        ..computer()
+    }
+}
+
+impl Computer {
+    /// Start a note that records, and write its home folder in `root` as
+    /// the early write does: this run's in-use marker, `notes.md`, and
+    /// `session.md` with `result: pending`. Returns the folder.
+    fn start_recording(&self, id: &str, root: &Path, run: &str) -> PathBuf {
+        {
+            let mut s = self.store.lock().unwrap();
+            s.create_session(id, started(), None).unwrap();
+            pipeline::early_home::begin(&s, id).unwrap();
+        }
+        pipeline::early_home::write(&self.store, id, Some(root), run, &session_save::RealFs)
+            .unwrap()
+            .unwrap()
+    }
+
+    /// Open a note that does not record, and write its home folder in
+    /// `root` with `result: none` and no in-use marker. Returns the folder.
+    fn open_note(&self, id: &str, root: &Path) -> PathBuf {
+        self.store
+            .lock()
+            .unwrap()
+            .create_notes_only(id, started(), None)
+            .unwrap();
+        pipeline::early_home::write(&self.store, id, Some(root), RUN_A, &session_save::RealFs)
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The remote state that the note page and Home show for `id`.
+    fn remote(&self, id: &str) -> Option<RemoteState> {
+        self.reconciler.status().remote(&self.record(id).unwrap())
+    }
+}
+
+/// Make the file time of `session.md` in `folder` older than the time an
+/// in-use marker stays fresh.
+fn age_session_md(folder: &Path) {
+    let old = SystemTime::now() - FRESH_FOR.to_std().unwrap() - Duration::from_secs(60);
+    fs::File::options()
+        .write(true)
+        .open(folder.join("session.md"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+}
+
+fn now() -> DateTime<FixedOffset> {
+    chrono::Local::now().fixed_offset()
+}
+
+// Covers R12, R20.
+#[test]
+fn b_shows_a_note_that_a_records_as_in_use_and_reads_its_notes() {
+    let (_dir, root) = shared_root();
+    let mut a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.start_recording("n1", &root, RUN_A);
+    fs::write(folder.join("notes.md"), "Agenda\n").unwrap();
+
+    assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(b.state("n1"), SessionState::Saved);
+    assert_eq!(b.home("n1"), folder);
+    assert_eq!(b.notes("n1"), "Agenda\n");
+    assert!(b.reconciler.status().note("n1").waiting.is_empty());
+    assert_eq!(b.remote("n1"), Some(RemoteState::InUse));
+
+    // On A, the note records here: its own marker and flag are not work on
+    // another computer.
+    a.sync_roots(&[&root]);
+    assert_eq!(a.remote("n1"), None);
+    assert!(a.reconciler.status().note("n1").waiting.is_empty());
+}
+
+// Covers R23.
+#[test]
+fn b_shows_a_new_note_that_is_not_saved_as_in_use_before_its_marker_syncs() {
+    let (_dir, root) = shared_root();
+    let a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.start_recording("n1", &root, RUN_A);
+    pipeline::in_use::remove_marker(&folder, RUN_A).unwrap();
+
+    b.sync_roots(&[&root]);
+    assert_eq!(b.remote("n1"), Some(RemoteState::InUse));
+}
+
+// Covers AE13, R23.
+#[test]
+fn b_shows_a_note_that_a_did_not_finish_as_not_finished() {
+    let (_dir, root) = shared_root();
+    let a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.start_recording("n1", &root, RUN_A);
+    // A crashed an hour ago: its marker is old, and so is `session.md`.
+    let old = now() - chrono::TimeDelta::hours(1);
+    assert!(pipeline::in_use::write_marker(&folder, RUN_A, old).unwrap());
+    age_session_md(&folder);
+
+    assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(b.remote("n1"), Some(RemoteState::NotFinished));
+    assert!(b.reconciler.status().note("n1").waiting.is_empty());
+
+    // A launches again and refreshes its marker: the note is in use.
+    assert!(pipeline::in_use::write_marker(&folder, RUN_A, now()).unwrap());
+    assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
+    assert_eq!(b.remote("n1"), Some(RemoteState::InUse));
+}
+
+// Covers R12, R21.
+#[test]
+fn a_fresh_marker_on_a_note_with_no_recording_makes_it_in_use_on_b() {
+    let (_dir, root) = shared_root();
+    let a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.open_note("n1", &root);
+
+    b.sync_roots(&[&root]);
+    assert_eq!(b.remote("n1"), None);
+    assert!(b.reconciler.status().note("n1").waiting.is_empty());
+
+    // A starts to record into the note: its marker comes before the flag.
+    assert!(pipeline::in_use::write_marker(&folder, RUN_A, now()).unwrap());
+    assert_eq!(b.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(b.remote("n1"), Some(RemoteState::InUse));
+}
+
+// Covers R22.
+#[test]
+fn a_notes_edit_from_b_reaches_a_while_a_records() {
+    let (_dir, root) = shared_root();
+    let mut a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.start_recording("n1", &root, RUN_A);
+    b.sync_roots(&[&root]);
+
+    // B's notes save writes `notes.md`.
+    fs::write(folder.join("notes.md"), "From B\n").unwrap();
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(a.notes("n1"), "From B\n");
+    assert_eq!(a.state("n1"), SessionState::Capturing);
+    assert!(a.store.lock().unwrap().segments("n1").unwrap().is_empty());
+}
+
+// Covers R6, R20.
+#[test]
+fn the_result_of_a_reaches_the_open_note_on_b_and_ends_its_remote_state() {
+    let (_dir, root) = shared_root();
+    let a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.start_recording("n1", &root, RUN_A);
+    b.sync_roots(&[&root]);
+    assert_eq!(b.remote("n1"), Some(RemoteState::InUse));
+
+    // A saves the result into the folder, and its keeper removes the
+    // marker. The sync delivers the whole result.
+    let saved = a.save_recording("n1", &root);
+    assert_eq!(saved, folder);
+    pipeline::in_use::remove_marker(&folder, RUN_A).unwrap();
+
+    assert_eq!(b.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert_eq!(b.remote("n1"), None);
+    assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+    assert_eq!(b.store.lock().unwrap().segments("n1").unwrap().len(), 1);
+    let doc = SessionDoc::parse(&fs::read_to_string(folder.join("session.md")).unwrap()).unwrap();
+    assert_eq!(doc.result_flag(), None);
+}
+
+// Covers KTD9.
+#[test]
+fn a_rename_on_b_of_a_note_that_a_records_changes_only_the_title() {
+    let (_dir, root) = shared_root();
+    let a = computer_run(RUN_A);
+    let mut b = computer_run(RUN_B);
+    let folder = a.start_recording("n1", &root, RUN_A);
+    b.sync_roots(&[&root]);
+
+    let renamed = pipeline::folder_rename::rename_session(
+        &b.store,
+        "n1",
+        "Budget",
+        &never_claimed,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    assert_eq!(renamed, pipeline::folder_rename::FolderRename::Later);
+    assert!(folder.is_dir(), "the folder keeps its name");
+    let doc = SessionDoc::parse(&fs::read_to_string(folder.join("session.md")).unwrap()).unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Budget"));
+    assert_eq!(doc.result_flag(), Some(ResultFlag::NotSaved));
+    assert!(b.store.lock().unwrap().owed_renames().unwrap().is_empty());
+
+    // A's Save takes the title from the folder and renames the folder.
+    let saved = a.save_recording("n1", &root);
+    assert_eq!(
+        saved.file_name().unwrap().to_string_lossy(),
+        session_save::naming::folder_name(started(), Some("Budget"))
+    );
+    assert!(!folder.exists());
 }

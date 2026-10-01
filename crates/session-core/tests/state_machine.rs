@@ -82,7 +82,16 @@ fn events() -> Vec<Event> {
         Event::ClaimLost,
         transcribe_again_ok(),
         Event::TranscribeAgainFailed,
+        record_ok(),
+        Event::RecordingDropped,
     ]
+}
+
+/// Record into a note that has no segments (KTD2).
+fn record_ok() -> Event {
+    Event::UserRecord {
+        has_segments: false,
+    }
 }
 
 /// Transcribe Again with the audio in the folder, no capture and no
@@ -145,6 +154,8 @@ fn expected(state: &SessionState, event: &Event) -> Option<&'static str> {
         (S::Processing { .. }, Event::TranscribeAgainFailed) => Some("saved"),
         (_, Event::UserResume { .. }) if post_stop => Some("capturing"),
         (S::Saved, Event::UserResume { .. }) => Some("capturing"),
+        (S::Saved, Event::UserRecord { .. }) => Some("capturing"),
+        (S::Capturing | S::Interrupted { .. }, Event::RecordingDropped) => Some("saved"),
         _ => None,
     }
 }
@@ -184,6 +195,23 @@ fn a_completed_session_resumes_only_while_its_folder_holds_its_audio() {
     };
     assert!(SessionState::Saved.transition(&missing).is_err());
     assert!(SessionState::Discarded.transition(&resume_ok()).is_err());
+}
+
+#[test]
+fn record_starts_capture_only_in_a_saved_note_with_no_segments() {
+    assert_eq!(
+        SessionState::Saved.transition(&record_ok()).unwrap(),
+        SessionState::Capturing
+    );
+    let with_segments = Event::UserRecord { has_segments: true };
+    assert!(SessionState::Saved.transition(&with_segments).is_err());
+    // A note with no segments gets no Resume: the caller's audio check
+    // gives `audio_intact: false` for it, and Resume refuses that (KTD2).
+    let resume_no_audio = Event::UserResume {
+        space_ok: true,
+        audio_intact: false,
+    };
+    assert!(SessionState::Saved.transition(&resume_no_audio).is_err());
 }
 
 #[test]

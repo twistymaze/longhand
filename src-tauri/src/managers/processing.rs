@@ -7,6 +7,8 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
+use pipeline::early_home::EarlyHomes;
+use pipeline::empty_note::{Leave, Removal};
 use pipeline::in_use::InUseKeeper;
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::{
@@ -613,15 +615,45 @@ fn forget_outside(
 /// Whether the staging folder of `id` is left over from a save that
 /// completed: the id has a Saved row. A first save's staging has an id
 /// that no other computer knows, so its row is not Saved until the save
-/// completes, and an id with no row keeps its staging (KTD9).
+/// completes, and an id with no row keeps its staging (KTD9). A note that
+/// opened with no recording is Saved before its early write is done: its
+/// staging is that write's, and stays (KTD4).
 fn completed(store: &pipeline::SharedStore, id: &str) -> bool {
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
     store
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .session(id)
         .ok()
         .flatten()
         .is_some_and(|r| r.state == session_core::SessionState::Saved)
+        && !pipeline::early_home::unfinished(&store, id).unwrap_or(true)
+}
+
+/// The runs whose in-use markers are this computer's own work, this run
+/// `run_id` first (KTD5). The store adds this run to the runs of this
+/// computer. A quit or a crash keeps the markers of a run, and they stay
+/// fresh for a time, so the earlier runs are this computer's too. Only
+/// with the instance lock held: without it, another run on this computer
+/// can be alive and work on its notes. When the store cannot add the run,
+/// only this run counts, and the marker of an earlier run counts as work on
+/// another computer.
+fn own_runs(
+    store: &pipeline::SharedStore,
+    run_id: &str,
+    liveness: session_core::jobs::Liveness,
+) -> Vec<String> {
+    let earlier = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .add_run(run_id)
+        .unwrap_or_else(|e| {
+            log::error!("could not add this run to the runs of this computer: {e}");
+            Vec::new()
+        });
+    let mut runs = vec![run_id.to_string()];
+    if matches!(liveness, session_core::jobs::Liveness::OnlyInstance) {
+        runs.extend(earlier);
+    }
+    runs
 }
 
 /// Refuses a change of folder while a Move runs or is paused (KTD11).
@@ -698,9 +730,14 @@ pub struct ProcessingManager {
     /// The in-use markers of the saved notes that this run resumes or
     /// processes (KTD4 of the audio removal plan).
     in_use: Arc<InUseKeeper>,
+    /// The runs whose in-use markers are this computer's own work, this
+    /// run first ([`own_runs`]).
+    own_runs: Vec<String>,
     /// The passes that remove the audio of old notes (U6 of the audio
     /// removal plan).
     audio_removal: Arc<AudioRemovalManager>,
+    /// The early writes of the home folders of new notes (KTD4).
+    early_homes: Arc<EarlyHomes>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -781,6 +818,25 @@ impl ProcessingManager {
         }
         // The run ID of the in-use markers is the claim owner of this run.
         let in_use = InUseKeeper::new(capture.shared_store(), runner.owner());
+        let own_runs = own_runs(&capture.shared_store(), runner.owner(), liveness);
+        // The early writes use the same run ID for their in-use markers.
+        // After each write, the in-use markers refresh, and a note whose
+        // save waits for its folder tries again.
+        let storage = app.clone();
+        let written = app.clone();
+        let early_homes = EarlyHomes::new(
+            capture.shared_store(),
+            runner.owner(),
+            Box::new(move || settings::get_settings(&storage).storage_folder()),
+            Box::new(move |_| {
+                if let Some(processing) = written.try_state::<Arc<ProcessingManager>>() {
+                    processing.in_use_changed();
+                    if let Err(e) = processing.runner.retry_awaiting() {
+                        log::error!("could not retry sessions awaiting a destination: {e}");
+                    }
+                }
+            }),
+        );
         let library_status: Arc<library::status::LibraryStatus> = Arc::default();
         let audio_removal = AudioRemovalManager::new(
             app,
@@ -790,7 +846,9 @@ impl ProcessingManager {
         );
         Self {
             in_use,
+            own_runs,
             audio_removal,
+            early_homes,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -806,6 +864,102 @@ impl ProcessingManager {
     /// The passes that remove the audio of old notes.
     pub fn audio_removal(&self) -> &Arc<AudioRemovalManager> {
         &self.audio_removal
+    }
+
+    /// The early writes of the home folders of new notes (KTD4).
+    pub fn early_homes(&self) -> &Arc<EarlyHomes> {
+        &self.early_homes
+    }
+
+    /// The removal of empty notes (U6) with this run's store, claims,
+    /// early write jobs and run ID, and the storage folder `destination`.
+    fn removal<'a>(&'a self, destination: Option<&'a std::path::Path>) -> Removal<'a> {
+        Removal {
+            store: &self.store,
+            claims: self.runner.claims(),
+            homes: Some(&self.early_homes),
+            destination,
+            run_id: self.run_id(),
+            earlier_runs: &self.own_runs[1..],
+        }
+    }
+
+    /// The user left the note `id`: the main window shows another view or
+    /// closes, or the user starts a new note (R18). The note and its home
+    /// folder go when the note is empty and every check passes. Otherwise
+    /// the note stays. This reads the storage folder: call it off the main
+    /// thread.
+    pub fn leave_note(&self, id: &str) -> Result<Leave, String> {
+        self.leave_note_unless_shown(id, &|_| false)
+    }
+
+    /// [`ProcessingManager::leave_note`], and the note stays while
+    /// `shown(id)` is true: the main window shows the note again.
+    pub fn leave_note_unless_shown(
+        &self,
+        id: &str,
+        shown: &dyn Fn(&str) -> bool,
+    ) -> Result<Leave, String> {
+        let destination = settings::get_settings(&self.app).storage_folder();
+        let left = self
+            .removal(destination.as_deref())
+            .leave_unless_shown(id, chrono::Local::now().fixed_offset(), shown)
+            .map_err(|e| e.to_string())?;
+        if left == Leave::Removed {
+            self.removed_empty_notes(vec![id.to_string()]);
+        }
+        Ok(left)
+    }
+
+    /// The launch pass of empty notes: each empty note that this computer
+    /// started before `launched` (R18, KTD8). A note that stays because the
+    /// storage folder is not available gets the next pass at the next
+    /// launch.
+    fn remove_empty_notes(&self, launched: chrono::DateTime<chrono::FixedOffset>) {
+        let destination = settings::get_settings(&self.app).storage_folder();
+        let passed = match self
+            .removal(destination.as_deref())
+            .launch_pass(launched, chrono::Local::now().fixed_offset())
+        {
+            Ok(passed) => passed,
+            Err(e) => {
+                log::error!("the launch pass of empty notes failed: {e}");
+                return;
+            }
+        };
+        let removed: Vec<String> = passed
+            .into_iter()
+            .filter(|(_, left)| *left == Leave::Removed)
+            .map(|(id, _)| id)
+            .collect();
+        if !removed.is_empty() {
+            log::info!("the launch pass removed {} empty note(s)", removed.len());
+            self.removed_empty_notes(removed);
+        }
+    }
+
+    /// Empty notes are gone: Home drops them, and the in-use markers
+    /// refresh.
+    fn removed_empty_notes(&self, removed: Vec<String>) {
+        self.in_use_changed();
+        emit_library_changed(
+            &self.app,
+            LibraryChanged {
+                changed: Vec::new(),
+                removed,
+            },
+        );
+    }
+
+    /// The run ID of this run, which names its in-use markers.
+    pub fn run_id(&self) -> &str {
+        self.in_use.run_id()
+    }
+
+    /// The runs whose in-use markers are this computer's own work: this run
+    /// and the earlier runs on this computer (KTD5).
+    pub fn own_runs(&self) -> &[String] {
+        &self.own_runs
     }
 
     /// What the latest library scans found about each note.
@@ -824,16 +978,19 @@ impl ProcessingManager {
         if let Err(e) = self.in_use.start() {
             log::error!("could not start the in-use markers: {e}");
         }
+        // A note that opens from now on can be on the page: the launch
+        // pass of empty notes leaves it (U6).
+        let launched = chrono::Local::now().fixed_offset();
         let manager = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("launch".into())
-            .spawn(move || manager.launch());
+            .spawn(move || manager.launch(launched));
         if let Err(e) = spawned {
             log::error!("could not start the launch steps: {e}");
         }
     }
 
-    fn launch(self: &Arc<Self>) {
+    fn launch(self: &Arc<Self>, launched: chrono::DateTime<chrono::FixedOffset>) {
         // Before the library scan: the shared settings of the storage folder
         // apply, and a folder with no settings file gets this computer's
         // shared settings (R21, KTD8).
@@ -849,8 +1006,12 @@ impl ProcessingManager {
         let roots = self.roots();
         // Before the folder reconcile: a title that a sync delivered is in
         // the row first, so no folder is renamed back (KTD9).
-        let mut reconciler =
-            library::reconcile::Reconciler::default().with_status(Arc::clone(&self.library_status));
+        // The in-use markers of this run and of the earlier runs on this
+        // computer are its own work: they do not show a note as in use on
+        // another computer (KTD5).
+        let mut reconciler = library::reconcile::Reconciler::default()
+            .with_status(Arc::clone(&self.library_status))
+            .with_own_runs(self.own_runs.iter().cloned());
         match self.runner.reconcile_library(&roots, &mut reconciler) {
             Ok(changes) => {
                 log::info!(
@@ -891,6 +1052,23 @@ impl ProcessingManager {
                     runner.wake();
                 }
             }));
+        // The early writes that a quit or a crash stopped continue (R4).
+        // Only with the instance lock held, so no other run writes the
+        // same folders.
+        if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
+            // First the empty notes that this computer started and did not
+            // remove before it quit (R18, KTD8): a folder that the pass
+            // removes is not written again.
+            self.remove_empty_notes(launched);
+            self.early_homes.resume();
+            // A note that the crash recovery made a note with no audio
+            // again gets the flag "no recording" in its folder (R19).
+            if let Some(capture) = self.app.try_state::<Arc<CaptureManager>>() {
+                for id in capture.take_recovered_without_audio() {
+                    self.early_homes.mark_pending(&id);
+                }
+            }
+        }
         // The volume may be back, or the folder restored (U18).
         self.retry_awaiting();
         tauri::async_runtime::spawn(Arc::clone(&self.runner).run());
@@ -1252,6 +1430,7 @@ impl ProcessingManager {
             self.mover.signal.notify_all();
         }
         self.audio_removal.stop();
+        self.early_homes.stop();
         self.live.shutdown();
         self.runner.shutdown();
         self.in_use.stop();
@@ -1284,6 +1463,8 @@ impl ProcessingManager {
 
     /// The destination changed: sessions waiting for one go back in line.
     pub fn retry_awaiting(&self) {
+        // The early writes wait for the same storage folder (R5).
+        self.early_homes.wake();
         match self.runner.retry_awaiting() {
             Ok(ids) if !ids.is_empty() => {
                 log::info!("{} session(s) will try the new destination", ids.len())
@@ -1501,6 +1682,26 @@ mod tests {
         let staging = root
             .path()
             .join(session_save::naming::staging_name("unknown"));
+        std::fs::create_dir_all(&staging).unwrap();
+        let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
+        assert!(removed.is_empty());
+        assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn the_staging_sweep_keeps_the_staging_of_an_early_write_that_is_not_done() {
+        let root = tempfile::tempdir().unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        let opened = chrono::DateTime::parse_from_rfc3339("2026-09-30T09:00:00Z").unwrap();
+        {
+            let mut s = store.lock().unwrap();
+            // A note that opened with no recording is Saved at once.
+            s.create_notes_only("n", opened, None).unwrap();
+            pipeline::early_home::begin(&s, "n").unwrap();
+        }
+        let staging = root.path().join(session_save::naming::staging_name("n"));
         std::fs::create_dir_all(&staging).unwrap();
         let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
         assert!(removed.is_empty());

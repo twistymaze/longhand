@@ -54,7 +54,13 @@ export function useDeleteSession({
     confirm === null ? null : confirm.kind === "trash" ? (
       <ConfirmDialog
         title="Delete note?"
-        message={`“${title}” moves to the Trash.`}
+        message={
+          // R23: another computer has a recording of this note that it did
+          // not save. The delete loses it.
+          confirm.entry.remote === "not_finished"
+            ? `“${title}” moves to the Trash. The recording that another computer did not save is lost.`
+            : `“${title}” moves to the Trash.`
+        }
         action="Delete"
         busy={busy}
         onConfirm={() => void remove(confirm)}

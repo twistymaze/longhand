@@ -2,7 +2,8 @@
 // It keeps the two tiers of walking-skeleton U7, because a glance is all a
 // participant at the table should spend:
 // - always: the live dot, the elapsed time, the microphone as secondary
-//   text, the Computer audio toggle, and Stop (KTD14);
+//   text, and the Computer audio toggle (KTD14). Stop is in the page's
+//   toolbar, in the place of Record and Resume;
 // - only while a condition exists: the level meter and the warnings.
 // Nothing in the bar moves: the level bars on the Transcript tab show the
 // input. The warnings appear at once, with no fade: motion would pull the
@@ -43,18 +44,18 @@ function LiveDot({ input }: { input: InputStatus }) {
   );
 }
 
-/// Stop, with the square that marks it on every recorder.
-function StopButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
+/// Stop, with the square that marks it on every recorder. The page's
+/// toolbar shows it in the place of Record and Resume, so one place starts
+/// and stops a recording. The square has the text colour: red marks only
+/// the button that starts a recording.
+export function StopButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="flex items-center gap-1.5 rounded-md bg-fill py-[3px] pr-2.5 pl-2 whitespace-nowrap text-label active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
-    >
-      <span aria-hidden className="size-[9px] rounded-[2px] bg-negative" />
-      Stop
-    </button>
+    <Button disabled={disabled} onClick={onClick}>
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden="true" className="size-[9px] shrink-0 rounded-[2px] bg-current" />
+        Stop
+      </span>
+    </Button>
   );
 }
 
@@ -270,7 +271,6 @@ export function RecordingBar({
             onClick={() => void act(() => commands.setNoteSystemAudio(id, !status.system_audio))}
           />
         )}
-        <StopButton disabled={busy} onClick={() => void act(() => commands.stopRecording())} />
         {interruption && id && (
           <Button prominent disabled={busy} onClick={() => void act(() => commands.resumeRecording(id))}>
             Resume

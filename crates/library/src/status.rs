@@ -8,10 +8,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use session_core::SessionRecord;
+use session_core::{SessionRecord, SessionState};
 
 use crate::reconcile::Coverage;
-use crate::scan::{DocumentState, LibraryScan, NoteFolder, RootState, Waiting};
+use crate::scan::{DocumentState, LibraryScan, NoteFolder, RemoteState, RootState, Waiting};
 
 /// What the latest scan found about one note folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,6 +24,10 @@ pub struct NoteStatus {
     /// `session.md` exists but cannot be read (KTD5): the note waits as if
     /// its Destination were unavailable.
     pub unreadable: bool,
+    /// What the folder shows about work on the note on another computer
+    /// ([`NoteFolder::remote`]). Read it with [`LibraryStatus::remote`],
+    /// which also checks the row.
+    pub remote: Option<RemoteState>,
 }
 
 impl NoteStatus {
@@ -80,6 +84,20 @@ impl LibraryStatus {
             .get(id)
             .map(|(_, status)| status.clone())
             .unwrap_or_default()
+    }
+
+    /// The work on the note of `record` on another computer, as the latest
+    /// scan found it (KTD5, R12, R20, R21, R23). Only a Saved row can show
+    /// it: a row that records, processes or waits on this computer does
+    /// that work here, and its folder shows this computer's own work.
+    pub fn remote(&self, record: &SessionRecord) -> Option<RemoteState> {
+        if record.state != SessionState::Saved {
+            return None;
+        }
+        self.lock()
+            .notes
+            .get(&record.id)
+            .and_then(|(_, status)| status.remote)
     }
 
     /// Whether the note with the home folder `home` cannot be read now: its
@@ -149,6 +167,7 @@ impl LibraryStatus {
                     .cloned()
                     .collect(),
                 unreadable: false,
+                remote: note.remote,
             };
             found.insert(note.doc.session_id.clone(), (note.path.clone(), status));
         }

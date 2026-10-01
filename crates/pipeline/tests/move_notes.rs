@@ -405,6 +405,43 @@ fn a_move_on_one_volume_renames_each_note_and_across_volumes_copies_it() {
     }
 }
 
+/// A note with no audio is a Saved row with zero segments (KTD2 of the
+/// notes without a recording plan): the Move moves it like any saved note.
+#[test]
+fn a_move_moves_a_note_with_no_audio_like_any_saved_note() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        f.store
+            .lock()
+            .unwrap()
+            .create_notes_only("n", started(), None)
+            .unwrap();
+        f.store.lock().unwrap().set_notes("n", "Agenda\n").unwrap();
+        let old = pipeline::early_home::write(&f.store, "n", Some(&f.old), "run", &RealFs)
+            .unwrap()
+            .unwrap();
+        f.open();
+        finish(&mover(&f, &fs));
+
+        let home = f.home("n");
+        assert_eq!(home.parent(), Some(f.new.as_path()));
+        assert_eq!(home.file_name(), old.file_name());
+        assert_eq!(folders_of(&f.new, "n"), vec![home.clone()]);
+        assert!(folders_of(&f.old, "n").is_empty());
+        assert_eq!(
+            std::fs::read_to_string(home.join("notes.md")).unwrap(),
+            "Agenda\n"
+        );
+        assert!(staging_left(&f.new).is_empty());
+        assert_eq!(f.listed("n"), 1);
+        assert_eq!(f.state("n"), SessionState::Saved);
+        let changes = f.reconcile();
+        assert!(changes.removed.is_empty(), "{changes:?}");
+        assert_eq!(f.home("n"), home);
+    }
+}
+
 /// While a note is in both folders, the library does not show its other
 /// folder as another version of the note (R6). After the Move, a second
 /// folder with the note's id shows again.

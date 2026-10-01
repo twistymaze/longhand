@@ -2881,6 +2881,116 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
     assert!(!home.join(session_save::MARKER).exists());
 }
 
+// ------------------------------------------- the early home folder (U3)
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_save_waits_for_the_early_folder_and_then_publishes_into_it() {
+    use pipeline::early_home;
+    use session_core::folder::ResultFlag;
+    let r = rig().await;
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    early_home::begin(&r.store.lock().unwrap(), "s").unwrap();
+    add_notes(&r.store, "s");
+    common::stop_session(&r.store, "s", 100);
+
+    // The early write is not done: the save waits and writes nothing.
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(&outcome, Outcome::AwaitingDestination { problem } if problem.contains("not in the storage folder yet")),
+        "{outcome:?}"
+    );
+    assert!(destination_entries(&r).is_empty());
+
+    let early = early_home::write(&r.store, "s", Some(&r.dest), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap();
+    assert_eq!(session_md(&early).result, Some(ResultFlag::NotSaved));
+    r.runner.retry_awaiting().unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    let folder = saved_folder(&r, "s");
+    assert_eq!(folder, early);
+    assert_eq!(destination_entries(&r).len(), 1, "one home folder");
+    let doc = session_md(&folder);
+    assert_eq!(doc.result, None, "the first result removes the flag");
+    assert_eq!(doc.timeline_segments().len(), 1);
+    assert_fingerprints_match(&folder);
+    assert!(folder.join("audio/segment-01.opus").exists());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+        NOTES
+    );
+    assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_only_note_that_records_publishes_its_result_into_the_same_folder() {
+    use pipeline::early_home;
+    use session_core::Event;
+    use session_core::folder::ResultFlag;
+    let r = rig().await;
+    let opened = common::at(-600);
+    {
+        let mut s = r.store.lock().unwrap();
+        s.create_notes_only("n", opened, None).unwrap();
+        early_home::begin(&s, "n").unwrap();
+    }
+    add_notes(&r.store, "n");
+    let early = early_home::write(&r.store, "n", Some(&r.dest), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap();
+    assert_eq!(session_md(&early).result, Some(ResultFlag::NoRecording));
+    {
+        let mut s = r.store.lock().unwrap();
+        s.apply(
+            "n",
+            &Event::UserRecord {
+                has_segments: false,
+            },
+        )
+        .unwrap();
+        let segment = common::write_segment(&r.root.join("n"), 0, 0, 16_000, &speech(), false);
+        s.put_segment("n", &segment).unwrap();
+        s.set_asr_model("n", "m").unwrap();
+    }
+    early_home::sync(&r.store, "n", "run").unwrap();
+    assert_eq!(session_md(&early).result, Some(ResultFlag::NotSaved));
+    common::stop_session(&r.store, "n", 100);
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    let folder = saved_folder(&r, "n");
+    assert_eq!(folder, early);
+    assert_eq!(destination_entries(&r).len(), 1);
+    let doc = session_md(&folder);
+    assert_eq!(doc.result, None);
+    assert_eq!(doc.started, opened, "the note keeps the time it opened");
+    assert_fingerprints_match(&folder);
+    // The summary used the notes typed before the recording (F1).
+    let source: Option<String> =
+        checkpoint::get(&r.store, "n", Stage::Summarize, "source-notes").unwrap();
+    assert_eq!(
+        source,
+        Some(session_core::folder::fingerprint(NOTES.as_bytes()))
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.md")).unwrap(),
+        NOTES
+    );
+
+    // A flag update that comes after the save writes nothing.
+    let before = std::fs::read(folder.join("session.md")).unwrap();
+    early_home::sync(&r.store, "n", "run").unwrap();
+    assert_eq!(std::fs::read(folder.join("session.md")).unwrap(), before);
+}
+
 // ------------------------------------------------------- folder names (U7)
 
 /// A filesystem whose first final rename fails: before the rename, or after
@@ -3842,6 +3952,36 @@ async fn a_title_change_that_keeps_the_folder_name_keeps_the_recorded_fingerprin
     assert_eq!(doc.transcript_fingerprint, before.transcript_fingerprint);
     assert_eq!(doc.summary_fingerprint, before.summary_fingerprint);
     assert_eq!(doc.recognition_artifact, before.recognition_artifact);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_no_audio_takes_the_name_of_its_title_and_keeps_its_open_time() {
+    // KTD9: the folder name uses the note's start time, also with no
+    // segment. Before, the rename gave `Unchanged`.
+    use session_core::folder::{ResultFlag, SessionDoc};
+    let r = rig().await;
+    let opened = common::at(0);
+    let old = r.dest.join(name_for(None));
+    std::fs::create_dir_all(&old).unwrap();
+    let doc = SessionDoc::without_audio("s", opened, None);
+    std::fs::write(old.join(pipeline::save::SESSION_FILE), doc.render()).unwrap();
+    let adoption = session_core::jobs::Adoption::from_doc(
+        &doc,
+        String::new(),
+        old.to_string_lossy().into_owned(),
+        None,
+    );
+    assert!(r.store.lock().unwrap().adopt(&adoption).unwrap());
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(saved_folder(&r, "s"), new);
+    let written = session_md(&new);
+    assert_eq!(written.title.as_deref(), Some("Budget review"));
+    assert_eq!(written.started, opened);
+    assert!(written.segments.is_empty());
+    assert_eq!(written.result, Some(ResultFlag::NoRecording));
 }
 
 // ------------------------------------------------- notes and titles (U5)

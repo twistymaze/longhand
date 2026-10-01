@@ -245,6 +245,7 @@ pub struct LocalSettings {
     pub default_speaker_count: Option<SpeakerCountSetting>,
     pub microphone: Option<MicrophoneChoice>,
     pub system_audio_default: bool,
+    pub new_note_records: bool,
     pub hide_from_dock: bool,
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
 }
@@ -482,6 +483,10 @@ pub struct Settings {
     pub microphone: Option<MicrophoneChoice>,
     /// Whether a new note starts with system audio on (R6, KD13).
     pub system_audio_default: bool,
+    /// What New Note and the recording shortcut do (R8, R10): start a note
+    /// that records, or open a note that does not record. On by default,
+    /// as before the setting.
+    pub new_note_records: bool,
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
@@ -635,6 +640,7 @@ impl Default for Settings {
             recognition: RecognitionState::default(),
             microphone: None,
             system_audio_default: false,
+            new_note_records: true,
             hide_from_dock: false,
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
@@ -680,6 +686,7 @@ impl Settings {
             chosen_recognition,
             microphone: local.microphone,
             system_audio_default: local.system_audio_default,
+            new_note_records: local.new_note_records,
             hide_from_dock: local.hide_from_dock,
             check_updates_automatically: known_or(
                 &fields.check_updates_automatically,
@@ -727,6 +734,7 @@ impl Settings {
             default_speaker_count: self.default_speaker_count,
             microphone: self.microphone.clone(),
             system_audio_default: self.system_audio_default,
+            new_note_records: self.new_note_records,
             hide_from_dock: self.hide_from_dock,
             learned_context_limits: self.learned_context_limits.clone(),
         }
@@ -1777,6 +1785,32 @@ mod tests {
         assert_eq!(settings.endpoint_model, "kept");
         assert_eq!(Settings::default().microphone, None);
         assert!(!Settings::default().system_audio_default);
+    }
+
+    // Covers R8: a store from before the setting starts to record at New
+    // Note, as before.
+    #[test]
+    fn a_store_without_the_new_note_key_reads_as_new_note_records() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert!(settings.new_note_records);
+        assert!(Settings::default().new_note_records);
+    }
+
+    #[test]
+    fn the_new_note_setting_stays_local() {
+        let settings = Settings {
+            new_note_records: false,
+            ..Settings::default()
+        };
+        let stored = serde_json::to_value(settings.local()).unwrap();
+        assert_eq!(stored["new_note_records"], json!(false));
+        let (read, _) = settings_from_value(&stored);
+        assert!(!read.new_note_records);
     }
 
     #[test]

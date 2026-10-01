@@ -17,6 +17,7 @@ const SUMMARY: &str = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo sum
 fn options() -> ScanOptions {
     ScanOptions {
         read_timeout: Duration::from_millis(300),
+        ..ScanOptions::default()
     }
 }
 
@@ -732,4 +733,294 @@ fn no_removal_marker_is_opened() {
     let result = within(move || scan(&[path], &Known::default(), &options()));
     assert!(result.notes[0].waiting.is_empty());
     assert_eq!(result.notes[0].removed_audio, [AUDIO]);
+}
+
+// ------------------------------------------- the early home folder (U3)
+
+mod early_home {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use library::reconcile::{DELETE_WAIT, Reconciler, Target};
+    use pipeline::early_home::{self, EarlyState};
+    use session_core::Store;
+    use session_save::RealFs;
+
+    use super::{marked_root, options};
+
+    fn never_claimed(_: &str) -> bool {
+        false
+    }
+
+    fn at() -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap()
+    }
+
+    fn shared() -> pipeline::SharedStore {
+        Arc::new(Mutex::new(Store::open_in_memory().unwrap()))
+    }
+
+    fn recording(store: &pipeline::SharedStore, id: &str) {
+        let mut s = store.lock().unwrap();
+        s.create_session(id, at(), None).unwrap();
+        early_home::begin(&s, id).unwrap();
+    }
+
+    #[test]
+    fn this_computers_early_folder_is_not_adopted_as_a_second_row() {
+        let root = marked_root();
+        let store = shared();
+        recording(&store, "placed");
+        let home = early_home::write(&store, "placed", Some(root.path()), "run", &RealFs)
+            .unwrap()
+            .unwrap();
+        // A crash after the rename and before its record: the folder is at
+        // its name, and the row has no home path yet.
+        recording(&store, "renamed");
+        let state = early_home::state(&store.lock().unwrap(), "renamed")
+            .unwrap()
+            .unwrap();
+        let filled =
+            early_home::step(&store, "renamed", &state, Some(root.path()), "run", &RealFs).unwrap();
+        early_home::record(&store, "renamed", &filled).unwrap();
+        let placed = early_home::step(
+            &store,
+            "renamed",
+            &filled,
+            Some(root.path()),
+            "run",
+            &RealFs,
+        )
+        .unwrap();
+        assert!(matches!(placed, EarlyState::Done { .. }));
+
+        let mut reconciler = Reconciler::new(&options());
+        reconciler
+            .run(
+                &store,
+                &Target::Full(vec![root.path().to_path_buf()]),
+                &never_claimed,
+            )
+            .unwrap();
+
+        let s = store.lock().unwrap();
+        assert_eq!(s.sessions().unwrap().len(), 2, "no row is adopted");
+        let record = s.session("placed").unwrap().unwrap();
+        assert_eq!(record.home_path.map(PathBuf::from), Some(home));
+        assert_eq!(s.session("renamed").unwrap().unwrap().home_path, None);
+    }
+
+    #[test]
+    fn a_row_whose_early_write_is_not_done_is_never_forgotten() {
+        let root = marked_root();
+        let store = shared();
+        let name = "2026-09-25 0900 Longhand session";
+        let missing = root.path().join(name);
+        let set = |state: &EarlyState| {
+            store
+                .lock()
+                .unwrap()
+                .set_result_state(
+                    "n",
+                    early_home::STATE,
+                    &serde_json::to_value(state).unwrap(),
+                )
+                .unwrap();
+        };
+        store
+            .lock()
+            .unwrap()
+            .create_notes_only("n", at(), Some(&missing.to_string_lossy()))
+            .unwrap();
+        // The home path is recorded; the Done record is not (a crash).
+        set(&EarlyState::Filled {
+            root: root.path().to_path_buf(),
+            folder_name: name.into(),
+        });
+        let target = Target::Full(vec![root.path().to_path_buf()]);
+        let mut reconciler = Reconciler::new(&options());
+        let start = Instant::now();
+        let later = start + DELETE_WAIT + std::time::Duration::from_secs(1);
+        reconciler
+            .run_at(&store, &target, &never_claimed, start)
+            .unwrap();
+        let changes = reconciler
+            .run_at(&store, &target, &never_claimed, later)
+            .unwrap();
+
+        assert!(changes.removed.is_empty());
+        assert!(store.lock().unwrap().session("n").unwrap().is_some());
+
+        // Once the early write is done, a folder that is gone is a delete.
+        set(&EarlyState::Done { path: missing });
+        let changes = reconciler
+            .run_at(&store, &target, &never_claimed, later)
+            .unwrap();
+        assert_eq!(changes.removed, ["n"]);
+    }
+}
+
+// ------------------------------- the result flag and the remote state (U4)
+
+mod result_flag {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    use chrono::{DateTime, FixedOffset, Local, TimeDelta};
+    use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
+    use session_core::folder::{ResultFlag, SessionDoc};
+    use session_save::in_use_marker::{FRESH_FOR, write_marker};
+
+    use super::{marked_root, options};
+
+    fn opened() -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap()
+    }
+
+    /// The folder of a note with no result, as the early write leaves it:
+    /// `session.md` and `notes.md` only.
+    fn early_note(root: &Path, id: &str, result: Option<ResultFlag>) -> PathBuf {
+        let dir = root.join(format!("2026-09-25 0900 {id}"));
+        fs::create_dir_all(&dir).unwrap();
+        let mut doc = SessionDoc::without_audio(id, opened(), None);
+        doc.result = result;
+        fs::write(dir.join("session.md"), doc.render()).unwrap();
+        fs::write(dir.join("notes.md"), "Agenda\n").unwrap();
+        dir
+    }
+
+    fn now() -> DateTime<FixedOffset> {
+        Local::now().fixed_offset()
+    }
+
+    /// Make the file time of `session.md` in `dir` older than the time a
+    /// marker stays fresh.
+    fn age_session_md(dir: &Path) {
+        let old = SystemTime::now() - FRESH_FOR.to_std().unwrap() - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(dir.join("session.md"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    fn remote(root: &Path, own_run: Option<&str>) -> Option<RemoteState> {
+        remote_with_runs(root, own_run.into_iter().collect())
+    }
+
+    fn remote_with_runs(root: &Path, own_runs: Vec<&str>) -> Option<RemoteState> {
+        let options = ScanOptions {
+            own_runs: own_runs.into_iter().map(str::to_string).collect(),
+            ..options()
+        };
+        let result = scan(&[root.to_path_buf()], &Known::default(), &options);
+        assert_eq!(result.notes.len(), 1);
+        result.notes[0].remote
+    }
+
+    #[test]
+    fn a_note_with_no_recording_waits_for_no_transcript_summary_or_audio() {
+        let root = marked_root();
+        early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert!(result.notes[0].waiting.is_empty(), "{:?}", result.notes[0]);
+        assert_eq!(result.notes[0].remote, None);
+    }
+
+    #[test]
+    fn a_note_with_no_field_no_segment_and_no_fingerprint_waits_for_nothing() {
+        let root = marked_root();
+        early_note(root.path(), "n1", None);
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert!(result.notes[0].waiting.is_empty(), "{:?}", result.notes[0]);
+    }
+
+    #[test]
+    fn a_note_whose_recording_is_not_saved_waits_for_no_result() {
+        let root = marked_root();
+        early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert!(result.notes[0].waiting.is_empty(), "{:?}", result.notes[0]);
+    }
+
+    #[test]
+    fn a_note_with_no_result_still_waits_for_its_notes() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        fs::remove_file(dir.join("notes.md")).unwrap();
+        let result = scan(&[root.path().to_path_buf()], &Known::default(), &options());
+        assert_eq!(result.notes[0].waiting, [Waiting::Notes]);
+    }
+
+    #[test]
+    fn a_fresh_marker_of_another_run_shows_the_note_in_use_whatever_the_flag() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote(root.path(), Some("run-b")), Some(RemoteState::InUse));
+        // The marker of this computer's own run does not count.
+        assert_eq!(remote(root.path(), Some("run-a")), None);
+    }
+
+    #[test]
+    fn a_saved_note_with_a_fresh_marker_of_another_run_is_in_use() {
+        let root = marked_root();
+        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "A1");
+        assert_eq!(remote(root.path(), Some("run-b")), None);
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote(root.path(), Some("run-b")), Some(RemoteState::InUse));
+    }
+
+    // A relaunch on the same computer: the run "run-a" quit while the note
+    // processed, and its marker is still fresh. The next run "run-b"
+    // finished the work. The note is not in use on another computer. A
+    // fresh marker of another computer's run still counts.
+    #[test]
+    fn a_fresh_marker_of_an_earlier_run_on_this_computer_does_not_count() {
+        let root = marked_root();
+        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "A1");
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote_with_runs(root.path(), vec!["run-b", "run-a"]), None);
+
+        assert!(write_marker(&dir, "other-computer", now()).unwrap());
+        assert_eq!(
+            remote_with_runs(root.path(), vec!["run-b", "run-a"]),
+            Some(RemoteState::InUse)
+        );
+    }
+
+    #[test]
+    fn a_new_note_that_is_not_saved_and_has_no_marker_yet_is_in_use() {
+        let root = marked_root();
+        early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
+        assert_eq!(remote(root.path(), None), Some(RemoteState::InUse));
+    }
+
+    // Covers AE13.
+    #[test]
+    fn an_old_note_that_is_not_saved_and_has_no_fresh_marker_is_not_finished() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
+        let old = now() - FRESH_FOR - TimeDelta::minutes(1);
+        assert!(write_marker(&dir, "run-a", old).unwrap());
+        age_session_md(&dir);
+        assert_eq!(remote(root.path(), None), Some(RemoteState::NotFinished));
+
+        // A fresh marker wins over the flag.
+        assert!(write_marker(&dir, "run-a", now()).unwrap());
+        assert_eq!(remote(root.path(), None), Some(RemoteState::InUse));
+    }
+
+    #[test]
+    fn an_old_note_with_no_recording_and_no_fresh_marker_is_not_remote() {
+        let root = marked_root();
+        let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
+        let old = now() - FRESH_FOR - TimeDelta::minutes(1);
+        assert!(write_marker(&dir, "run-a", old).unwrap());
+        age_session_md(&dir);
+        assert_eq!(remote(root.path(), None), None);
+    }
 }

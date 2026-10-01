@@ -1156,6 +1156,7 @@ mod tests {
             found_speakers: None,
             live_transcript: None,
             transcribe_again_model: None,
+            started_at: None,
         }
     }
 

@@ -26,6 +26,7 @@ const baseSettings: Settings = {
   recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
   microphone: null,
   system_audio_default: false,
+  new_note_records: true,
   hide_from_dock: false,
   check_updates_automatically: true,
   audio_removal: { kind: "after_days", days: 30 },
@@ -42,7 +43,7 @@ const readiness: Readiness = {
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
   missing_models: [],
-  endpoint_configured: true,
+  endpoint_configured: true, can_start_note: true, note_start_refusal: null,
 };
 
 /// A fake of the prompt commands that keeps its own list, as the backend does.

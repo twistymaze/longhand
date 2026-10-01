@@ -40,8 +40,24 @@ pub fn recover_crashed(
     for record in capturing {
         let id = record.id;
         let session_dir = working_root.join(&id);
-        let state = recover_one(store, &id, &session_dir, record.created_at)?;
-        if state == SessionState::Discarded {
+        let state = if crate::early_home::home_deleted(store, &id)? {
+            // Another computer deleted the note while this one recorded
+            // into it: a person's Delete wins, and the recording goes
+            // (R23). No folder is made again.
+            log::warn!("the folder of {id} was deleted on another computer");
+            lock(store).apply(
+                &id,
+                &Event::UserStop {
+                    at: record.created_at,
+                    retained_audio: false,
+                },
+            )?
+        } else {
+            recover_one(store, &id, &session_dir, record.created_at)?
+        };
+        // A discarded recording and a note with no audio keep no working
+        // folder.
+        if matches!(state, SessionState::Discarded | SessionState::Saved) {
             let _ = std::fs::remove_dir_all(&session_dir);
         }
         log::info!(
@@ -114,14 +130,11 @@ fn recover_one(
     let segments = store.segments(id)?;
     // The last segment is the one that was recording.
     let Some(ended) = segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end) else {
-        // Nothing survived R35: the session never held audio.
-        return Ok(store.apply(
-            id,
-            &Event::UserStop {
-                at: created_at,
-                retained_audio: false,
-            },
-        )?);
+        // Nothing survived R35: the note is a note with no audio again, as
+        // after a Stop with no segment (R19). A note that existed before
+        // the recording or has notes text stays. The removal of empty notes
+        // owns an empty note (U6).
+        return Ok(store.apply(id, &Event::RecordingDropped)?);
     };
     Ok(store.apply(
         id,

@@ -19,9 +19,11 @@ const RESERVED: &[&str] = &[
 const RESERVED_FILES: &[&str] = &["desktop.ini", "thumbs.db", ".lock"];
 
 /// `YYYY-MM-DD HHMM <title>`, in the session's own wall clock (R30, KTD7).
-/// The title goes through [`sanitize_title`]. With no title, or a title
-/// that has nothing left after that, the name is
-/// `YYYY-MM-DD HHMM Longhand session`. Every Destination gets this name.
+/// `started` is the note's start time, not the start of its first segment:
+/// a note that opens before it records keeps its open time. The title goes
+/// through [`sanitize_title`]. With no title, or a title that has nothing
+/// left after that, the name is `YYYY-MM-DD HHMM Longhand session`. Every
+/// Destination gets this name.
 pub fn folder_name(started: DateTime<FixedOffset>, title: Option<&str>) -> String {
     let title = title
         .and_then(sanitize_title)

@@ -17,9 +17,10 @@
 //! result copies plan). While the sync delivers the documents, the row
 //! keeps its snapshot.
 //!
-//! The refresh does not check claims: the library reconcile calls it only
-//! for a Saved row that no stage has claimed, and a writer calls it on the
-//! row that it holds.
+//! The refresh does not check claims: the library reconcile refreshes every
+//! part only for a Saved row that no stage has claimed, and only the notes
+//! ([`Scope::Notes`]) for any other row with a home folder (KTD6). A writer
+//! calls it on the row that it holds.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -145,6 +146,11 @@ pub enum Scope {
     /// to the run, and its new transcript and summary replace the folder's
     /// (KTD3).
     TitleAndNotes,
+    /// Only the notes. For a row that records, processes or waits on this
+    /// computer, so that a notes edit from another computer shows in My
+    /// Notes during that work (R22, KTD6). The work owns the rest of the
+    /// row.
+    Notes,
 }
 
 /// Read the note folder `folder` and bring the row `id` up to date from it.
@@ -197,11 +203,17 @@ pub fn apply_scoped(
     if scope == Scope::All && contents.result_matches() {
         store.promote_result_snapshot(id, contents.doc.recognition_snapshot.as_ref())?;
     }
-    let updates = match (scope, updates(store, id, contents)?) {
-        (Scope::All, updates) => updates,
+    let updates = scoped(updates(store, id, contents)?, scope);
+    Ok(write(store, id, updates)?)
+}
+
+/// The part of `updates` that `scope` names.
+fn scoped(updates: Updates, scope: Scope) -> Updates {
+    match scope {
+        Scope::All => updates,
         // The run proposes its own title with its new summary, so only a
         // title that a user set in the folder replaces the row's.
-        (Scope::TitleAndNotes, updates) => Updates {
+        Scope::TitleAndNotes => Updates {
             title: updates.title.filter(|title| {
                 title
                     .as_ref()
@@ -210,17 +222,22 @@ pub fn apply_scoped(
             notes: updates.notes,
             ..Updates::default()
         },
-    };
-    Ok(write(store, id, updates)?)
+        Scope::Notes => Updates {
+            notes: updates.notes,
+            ..Updates::default()
+        },
+    }
 }
 
-/// Whether [`apply`] with `contents` would write to the row `id`.
+/// Whether [`apply_scoped`] with `contents` and `scope` would write to the
+/// row `id`.
 pub(crate) fn differs(
     store: &Store,
     id: &str,
     contents: &FolderContents,
+    scope: Scope,
 ) -> Result<bool, StoreError> {
-    Ok(!updates(store, id, contents)?.is_empty())
+    Ok(!scoped(updates(store, id, contents)?, scope).is_empty())
 }
 
 /// How the stored transcript fingerprint changes.

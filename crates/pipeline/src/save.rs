@@ -14,7 +14,7 @@ use chrono::{DateTime, FixedOffset};
 use library::refresh::Scope;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 pub use session_core::folder::AudioState;
-use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
+use session_core::folder::{self, ResultFlag, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 use session_save::publication::{Outcome, Publication, WriteSet};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
@@ -197,10 +197,24 @@ pub fn run(
                 .into(),
         ));
     }
-    let home = lock(store)
+    // The note guard keeps the flag updates of the early write out of the
+    // save: an update either completes before the claim, or sees the claim
+    // and writes nothing (KTD4).
+    let _guard = crate::early_home::guard(session_id);
+    // A note whose early write is not done waits for that one folder, and
+    // never gets a second one here (R5). The authoritative state is the
+    // early write state, not the home path, which its last step records
+    // before that state.
+    if crate::early_home::unfinished(&lock(store), session_id)? {
+        return Err(StageError::NoDestination(
+            "the note's folder is not in the storage folder yet; the note is saved there when the folder is written"
+                .into(),
+        ));
+    }
+    let record = lock(store)
         .session(session_id)?
-        .and_then(|record| record.home_path)
-        .map(PathBuf::from);
+        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+    let home = record.home_path.clone().map(PathBuf::from);
     let recorded = checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)?;
     // `home_path` is recorded with `Saved`, before the step loop reaches
     // `Done`: a first save still in progress finishes through the loop. A
@@ -216,10 +230,8 @@ pub fn run(
     }
     let destination =
         destination.ok_or_else(|| StageError::NoDestination("no storage folder is set".into()))?;
-    let started = segments
-        .first()
-        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?
-        .wall_start;
+    // The note's start time names the folder (R16, KTD9).
+    let started = note_started(&record, segments);
     let (mut state, folder_name) = match recorded {
         Some(state) => {
             // A save that began before names were recorded used the
@@ -736,6 +748,12 @@ fn render(
     Ok(())
 }
 
+/// The start time of the note of `record` (R16, KTD9): the time it opened,
+/// else its first segment, else the time of its row.
+pub fn note_started(record: &SessionRecord, segments: &[Segment]) -> DateTime<FixedOffset> {
+    record.start(segments)
+}
+
 /// The contents of `session.md`: the session's record, and the fingerprints
 /// of the `transcript.md` and `summary.md` that are in `folder` now (KTD2).
 /// Write `session.md` after those files, so that the fingerprints match.
@@ -744,8 +762,13 @@ pub fn session_doc(
     segments: &[Segment],
     folder: &Path,
 ) -> Result<SessionDoc, StageError> {
-    let mut doc = SessionDoc::new(&record.id, record.speaker_count, segments)
-        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?;
+    let started = note_started(record, segments);
+    let mut doc = SessionDoc::at(&record.id, started, record.speaker_count, segments);
+    // A note with no segment never recorded: it has no result (R6). A
+    // writer that keeps the present `session.md` keeps its flag.
+    if segments.is_empty() {
+        doc.result = Some(ResultFlag::NoRecording);
+    }
     doc.title = record.title.as_ref().map(|t| t.text.clone());
     doc.title_source = record.title.as_ref().map(|t| t.source);
     // A Transcribe Again run saves its transcript before the store records
@@ -901,9 +924,13 @@ fn render_notes(store: &Store, session_id: &str) -> Result<String, StageError> {
     Ok(folder::render_notes(&store.notes(session_id)?))
 }
 
+/// Write the notes of the store into `folder`, and record the fingerprint
+/// of the file as the `notes.md` that this computer last wrote (KTD8).
 fn write_notes(store: &Store, session_id: &str, folder: &Path) -> Result<(), StageError> {
     let notes = render_notes(store, session_id)?;
     home_write::write_atomic(folder, NOTES_FILE, notes.as_bytes())?;
+    store
+        .set_written_notes_fingerprint(session_id, Some(&folder::fingerprint(notes.as_bytes())))?;
     Ok(())
 }
 
@@ -935,6 +962,11 @@ pub enum NotesSave {
     /// wrote it. The file and the row keep that text, and the document is
     /// in the draft file at `draft`, beside `notes.md`.
     Conflict { draft: PathBuf },
+    /// The note has no audio, and its home folder is not at its home path:
+    /// another computer can have removed it (R24). The store holds the
+    /// document, and no folder is made. [`rescue_notes`] finds out what
+    /// happened to the folder.
+    FolderGone,
 }
 
 /// The fingerprint of the `notes.md` that holds `document`. The editor
@@ -950,6 +982,7 @@ pub fn notes_fingerprint(document: &str) -> String {
 pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<bool, StageError> {
     match save_notes(store, session_id, document, None)? {
         NotesSave::Saved { written } => Ok(written),
+        NotesSave::FolderGone => Ok(false),
         NotesSave::Conflict { .. } => unreachable!("a save with no loaded fingerprint"),
     }
 }
@@ -986,6 +1019,15 @@ pub fn save_notes(
         .home_path
         .map(PathBuf::from)
         .filter(|home| saved || home.is_dir());
+    // A saved note with no audio whose folder is gone keeps the edit in the
+    // store and makes no folder (R24).
+    if saved
+        && home.as_ref().is_some_and(|home| !home.is_dir())
+        && store.segments(session_id)?.is_empty()
+    {
+        store.set_notes(session_id, document)?;
+        return Ok(NotesSave::FolderGone);
+    }
     // A `notes.md` that cannot be read in time is not replaced: this
     // computer cannot tell what it holds, so the edit goes into a draft.
     if let (Some(home), Some(loaded)) = (&home, loaded)
@@ -1030,6 +1072,75 @@ fn write_draft(dir: &Path, document: &str) -> Result<PathBuf, StageError> {
     }
     home_write::write_atomic(dir, &name, folder::render_notes(document).as_bytes())?;
     Ok(dir.join(name))
+}
+
+/// What [`rescue_notes`] did (R24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesRescue {
+    /// The folder is at another name in the storage folder, and the row
+    /// now has that home path. The notes save can run again.
+    Moved,
+    /// The storage folder is not available, or a note folder in it cannot
+    /// be read. Nothing changed, and the store keeps the notes.
+    Unavailable,
+    /// The folder is gone. The notes and the title are in the new note
+    /// with no audio, and the row of the old note is forgotten.
+    NewNote,
+}
+
+/// Keep the notes of the note `id` after a notes save found its home
+/// folder gone ([`NotesSave::FolderGone`], R24). When no folder in the
+/// storage folder holds the note, the store makes the note `new_id`, which
+/// opened at `now` with no audio, with the notes and the title of `id`,
+/// and then forgets `id`. The new note has its early write begun: the
+/// caller starts its job. The caller stops the early write job of `id`
+/// first. The text is never lost.
+pub fn rescue_notes(
+    store: &SharedStore,
+    id: &str,
+    new_id: &str,
+    now: DateTime<FixedOffset>,
+) -> Result<NotesRescue, StageError> {
+    let Some(home) = lock(store)
+        .session(id)?
+        .and_then(|r| r.home_path)
+        .map(PathBuf::from)
+    else {
+        return Ok(NotesRescue::Unavailable);
+    };
+    match crate::early_home::locate(store, id, &home)? {
+        crate::early_home::Location::Moved | crate::early_home::Location::There => {
+            return Ok(NotesRescue::Moved);
+        }
+        crate::early_home::Location::Unknown => return Ok(NotesRescue::Unavailable),
+        crate::early_home::Location::Gone => {}
+    }
+    let mut guard = lock(store);
+    // The row can change while the scan runs: only the same note with no
+    // audio and the same home path moves into a new note.
+    let Some(record) = guard.session(id)? else {
+        return Ok(NotesRescue::Unavailable);
+    };
+    if record.state != SessionState::Saved
+        || record.home_path.as_deref().map(Path::new) != Some(home.as_path())
+        || !guard.segments(id)?.is_empty()
+    {
+        return Ok(NotesRescue::Unavailable);
+    }
+    let notes = guard.notes(id)?;
+    guard.create_notes_only(new_id, now, None)?;
+    crate::early_home::begin(&guard, new_id)?;
+    guard.set_notes(new_id, &notes)?;
+    if let Some(title) = &record.title {
+        guard.set_title(new_id, &title.text, title.source)?;
+    }
+    if !guard.forget(id)? {
+        // A rename or a Move still needs the row: the library forgets it
+        // later. The new note holds the text.
+        log::warn!("the row of {id} stays until its rename or Move ends");
+    }
+    log::info!("the folder of {id} is gone; its notes are in the new note {new_id}");
+    Ok(NotesRescue::NewNote)
 }
 
 /// Summarize a saved session again and replace its `summary.md` (R19,

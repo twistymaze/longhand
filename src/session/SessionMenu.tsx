@@ -3,6 +3,7 @@
 // close at once, with no motion: they are used many times a day.
 
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import type { RemoteView } from "../bindings";
 import { CheckIcon, ChevronIcon } from "../settings/icons";
 
 export type MenuItem = {
@@ -28,6 +29,28 @@ export function canDelete(state: string): boolean {
   return !["capturing", "interrupted", "queued", "processing"].includes(state);
 }
 
+/// The short status of a note that another computer works on, for a Home
+/// row and the preview (R20, R23).
+export const remoteLabels: Record<RemoteView, string> = {
+  in_use: "In use on another computer",
+  not_finished: "Not finished on another computer",
+};
+
+/// The full status for the status line of the note page. The marker of
+/// another computer cannot tell a recording from processing, so one
+/// sentence says both.
+export const remoteSentences: Record<RemoteView, string> = {
+  in_use: "Recording or processing on another computer",
+  not_finished: "Not finished on another computer",
+};
+
+/// Why an action that needs the audio waits, for a note that another
+/// computer works on (R21, R23).
+export const remoteReasons: Record<RemoteView, string> = {
+  in_use: "Wait until the other computer is done with this note.",
+  not_finished: "Another computer did not finish this note.",
+};
+
 const itemClass =
   "flex w-full items-center gap-1 rounded-[4px] px-2.5 py-[3px] text-left text-label enabled:hover:bg-accent enabled:hover:text-white focus-visible:bg-accent focus-visible:text-white focus-visible:outline-none disabled:text-label-tertiary";
 
@@ -45,10 +68,14 @@ export function Menu({
   onClose,
   submenu = false,
   focusFirst = true,
+  width = "w-52",
 }: {
   items: MenuItem[];
   onClose: () => void;
   submenu?: boolean;
+  /// The width classes of a top menu. A menu with long labels sets a
+  /// width that fits them.
+  width?: string;
   /// A submenu that the pointer opens keeps the focus on its item.
   focusFirst?: boolean;
 }) {
@@ -115,7 +142,7 @@ export function Menu({
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       className={`absolute z-10 rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)] ${
-        submenu ? "top-[-4px] right-full mr-1 w-60" : "top-full right-0 mt-1 w-52"
+        submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full right-0 mt-1 ${width}`
       }`}
     >
       {items.map((entry) => {

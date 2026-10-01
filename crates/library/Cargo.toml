@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 log.workspace = true
 serde_json.workspace = true
 session-core = { path = "../session-core" }

@@ -169,9 +169,34 @@ function SystemAudio({ settings, onSettings }: { settings: Settings; onSettings:
   );
 }
 
+function NewNote({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const change = async (enabled: boolean) => {
+    const result = await commands.setNewNoteRecords(enabled);
+    if (result.status === "error") setError(sentence(result.error));
+    else {
+      setError(null);
+      onSettings(result.data);
+    }
+  };
+  return (
+    <Group footer="When off, New Note opens a note without recording. The recording shortcut then records into the open note, or opens a new note if that note can’t record.">
+      <Row label="New Note starts recording" detail="Start recording as soon as a new note opens">
+        <Switch
+          label="New Note starts recording"
+          checked={settings.new_note_records}
+          onChange={(v) => void change(v)}
+        />
+      </Row>
+      {error && <ErrorText>{error}</ErrorText>}
+    </Group>
+  );
+}
+
 export function RecordingPane({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
   return (
     <Pane title="Recording">
+      <NewNote settings={settings} onSettings={onSettings} />
       <MicrophoneGroup settings={settings} onSettings={onSettings} />
       {features.systemAudio && <SystemAudio settings={settings} onSettings={onSettings} />}
     </Pane>

@@ -7,7 +7,7 @@
 import { useRef, useState } from "react";
 import type { SessionEntry } from "../bindings";
 import { entryStatus, entryTone, formatDuration, sessionTitle } from "../processing/describe";
-import { canDelete, Menu } from "../session/SessionMenu";
+import { canDelete, Menu, remoteLabels, remoteReasons } from "../session/SessionMenu";
 import { MoreIcon, NoteIcon } from "../settings/icons";
 import { Status } from "../settings/ui";
 import { speakerCount } from "./group";
@@ -81,16 +81,32 @@ export function SessionRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const row = useRef<HTMLDivElement>(null);
-  const status = entry.state === "saved" ? null : entryStatus(entry, stage);
+  // A note that another computer works on says so (R20, R23).
+  const status = entry.remote
+    ? remoteLabels[entry.remote]
+    : entry.state === "saved"
+      ? null
+      : entryStatus(entry, stage);
   const tone = entryTone(entry.state) ?? "neutral";
   // An untitled row shows the start time as its title already.
   // A note whose storage folder is unavailable says so in place of its
   // details (R16).
   const details = entry.storage_unavailable
     ? "Storage folder unavailable"
-    : [entry.title === null ? null : time, formatDuration(entry.duration_ms), speakerCount(entry.found_speakers)]
+    : [
+        entry.title === null ? null : time,
+        // A note with no audio has no length (R15). A saved note with no
+        // audio says so, so the row always has details.
+        entry.duration_ms > 0
+          ? formatDuration(entry.duration_ms)
+          : entry.state === "saved"
+            ? "Notes only"
+            : null,
+        speakerCount(entry.found_speakers),
+      ]
         .filter(Boolean)
-        .join(" · ");
+        // An empty line keeps the row as tall as the others.
+        .join(" · ") || " ";
   const secondary = selected ? "text-white/75" : "text-label-secondary";
   const surface = selected ? "bg-accent text-white" : menuOpen ? "bg-row-hover text-label" : "text-label";
 
@@ -180,10 +196,12 @@ export function SessionRow({
               },
               {
                 label: "Delete…",
-                disabled: !canDelete(entry.state) || entry.storage_unavailable,
+                disabled: !canDelete(entry.state) || entry.storage_unavailable || entry.remote === "in_use",
                 reason: entry.storage_unavailable
                   ? "The storage folder for this note is unavailable."
-                  : "You can delete this note after processing finishes.",
+                  : entry.remote === "in_use"
+                    ? remoteReasons.in_use
+                    : "You can delete this note after processing finishes.",
                 onSelect: () => {
                   setMenuOpen(false);
                   onDelete();

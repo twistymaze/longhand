@@ -4,144 +4,28 @@
 //! home folder of the note. The removal of old audio on any computer skips
 //! a note while any in-use marker of the note is fresh (R10, AE4).
 //!
-//! The file name is `.longhand-in-use-<run ID>`. The dot keeps the library
-//! watcher and the library scan from reading it. The file holds the run ID
-//! and the time of its last refresh. A marker is fresh while that time is
-//! less than [`FRESH_FOR`] old. A time that is up to [`CLOCK_MARGIN`] in
-//! the future is fresh, because the clock of the other computer can be
-//! ahead. A marker whose time does not parse, or is further in the future,
-//! is fresh until its file time is [`FRESH_FOR`] old.
-//!
-//! The write never makes a missing home folder: a rename on another
-//! computer can move the folder, and a new folder at the old path would
-//! be a second copy of the note. Each run removes only its own marker.
+//! The marker file, its name and its freshness are in
+//! [`session_save::in_use_marker`], so that the library scan can read the
+//! markers too (KTD5 of the notes without a recording plan). This module
+//! re-exports them and keeps the [`InUseKeeper`] of this run.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use chrono::{DateTime, FixedOffset, Local, TimeDelta};
-use serde::{Deserialize, Serialize};
-use session_save::home_write;
+use chrono::{DateTime, FixedOffset, Local};
+
+pub use session_save::in_use_marker::{
+    CLOCK_MARGIN, FRESH_FOR, MARKER_PREFIX, in_use, in_use_except, is_marker_name, marker_fresh,
+    marker_name, remove_marker, write_marker,
+};
 
 use crate::{SharedStore, lock};
 
-/// The start of the name of each in-use marker.
-pub const MARKER_PREFIX: &str = ".longhand-in-use-";
-
-/// How long a marker stays fresh after its last refresh.
-pub const FRESH_FOR: TimeDelta = TimeDelta::minutes(30);
-
-/// How far in the future the time in a marker can be and stay fresh.
-pub const CLOCK_MARGIN: TimeDelta = TimeDelta::minutes(5);
-
 /// How often this run refreshes its markers.
 pub const REFRESH_EVERY: Duration = Duration::from_secs(2 * 60);
-
-/// The content of a marker.
-#[derive(Debug, Serialize, Deserialize)]
-struct Marker {
-    run_id: String,
-    refreshed_at: DateTime<FixedOffset>,
-}
-
-/// The file name of the marker of `run_id`. A character that is not a
-/// letter, a digit, `-` or `_` becomes `_`, so the name is always one plain
-/// file name.
-pub fn marker_name(run_id: &str) -> String {
-    let safe: String = run_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    format!("{MARKER_PREFIX}{safe}")
-}
-
-/// Whether `name` is the file name of an in-use marker.
-pub fn is_marker_name(name: &str) -> bool {
-    name.strip_prefix(MARKER_PREFIX)
-        .is_some_and(|run| !run.is_empty())
-}
-
-/// Write or refresh the marker of `run_id` in `home`, with the time `now`.
-/// Returns `false`, and writes nothing, when `home` is not a folder. The
-/// write never makes a folder.
-pub fn write_marker(home: &Path, run_id: &str, now: DateTime<FixedOffset>) -> io::Result<bool> {
-    match home.symlink_metadata() {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Ok(false),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e),
-    }
-    let marker = Marker {
-        run_id: run_id.to_string(),
-        refreshed_at: now,
-    };
-    let text = serde_json::to_vec(&marker).map_err(io::Error::other)?;
-    match home_write::write_atomic(home, &marker_name(run_id), &text) {
-        Ok(()) => Ok(true),
-        // The folder went away after the check.
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
-    }
-}
-
-/// Remove the marker of `run_id` from `home`. A marker or a folder that is
-/// not there is not an error.
-pub fn remove_marker(home: &Path, run_id: &str) -> io::Result<()> {
-    match std::fs::remove_file(home.join(marker_name(run_id))) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
-}
-
-/// Whether the marker file at `path` is fresh at `now`. A file that cannot
-/// be read counts by its file time. A file that is not there is not fresh.
-pub fn marker_fresh(path: &Path, now: DateTime<FixedOffset>) -> bool {
-    let refreshed = std::fs::read(path)
-        .ok()
-        .and_then(|text| serde_json::from_slice::<Marker>(&text).ok())
-        .map(|marker| marker.refreshed_at);
-    if let Some(at) = refreshed
-        && at <= now + CLOCK_MARGIN
-    {
-        return now.signed_duration_since(at) < FRESH_FOR;
-    }
-    // The time does not parse, or is too far in the future to trust.
-    let Ok(modified) = path.symlink_metadata().and_then(|m| m.modified()) else {
-        return false;
-    };
-    let age = SystemTime::now()
-        .duration_since(modified)
-        .unwrap_or(Duration::ZERO);
-    TimeDelta::from_std(age).is_ok_and(|age| age < FRESH_FOR)
-}
-
-/// Whether any in-use marker in `home` is fresh at `now`: another run, on
-/// this computer or another one, resumes or processes the note. An error
-/// means that the folder cannot be read, and the caller must not remove
-/// the audio. This reads the names in `home` and the small marker files
-/// only. It opens no audio (KTD11).
-pub fn in_use(home: &Path, now: DateTime<FixedOffset>) -> io::Result<bool> {
-    for entry in std::fs::read_dir(home)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if !is_marker_name(&name.to_string_lossy()) {
-            continue;
-        }
-        if entry.file_type().is_ok_and(|t| t.is_file()) && marker_fresh(&entry.path(), now) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
 
 // ------------------------------------------------------------------ the keeper
 

@@ -1,6 +1,12 @@
 // The library keeps one selected note and its preview through navigation.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   commands,
   type Readiness,
@@ -14,9 +20,10 @@ import {
 } from "../processing/describe";
 import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
-import { AppIcon, CautionIcon, NoteIcon, PlusIcon } from "../settings/icons";
+import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { groupByDay, rowTitle } from "./group";
+import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
@@ -35,7 +42,9 @@ export function Home({
   recording,
   readiness,
   chord,
+  newNoteRecords = true,
   onOpen,
+  onStarted,
   onChanged,
   now,
 }: {
@@ -54,7 +63,12 @@ export function Home({
   /// The recording shortcut as this platform writes it, or null when the
   /// user cleared it (R14).
   chord: string | null;
+  /// The default of Settings > Recording: New Note starts to record (R8).
+  newNoteRecords?: boolean;
   onOpen: (id: string) => void;
+  /// A note that does not record started. A note that records opens from
+  /// the recording event.
+  onStarted?: (id: string) => void;
   /// Read the list again after a rename or a delete.
   onChanged: () => void;
   now?: Date;
@@ -173,18 +187,27 @@ export function Home({
     return () => window.removeEventListener("keydown", navigateFromPage);
   }, [active, order, selected?.id, renamingId, deletion.dialog]);
 
-  const record = async () => {
+  // Home shows no note, so no note is left here: the view change to Home
+  // already left the note that the page showed (R18).
+  const start = async (record: boolean) => {
     setStarting(true);
     try {
-      const result = await commands.startRecording(null);
+      const result = await commands.startRecording(record, null);
       setNotice(
         result.status === "error"
           ? { tone: "negative", text: sentence(result.error) }
           : null,
       );
+      if (result.status === "ok" && !record) {
+        onChanged();
+        onStarted?.(result.data);
+      }
       return result.status === "ok";
     } catch {
-      setNotice({ tone: "negative", text: "Could not start recording." });
+      setNotice({
+        tone: "negative",
+        text: record ? "Could not start recording." : "Could not start a new note.",
+      });
       return false;
     } finally {
       setStarting(false);
@@ -208,19 +231,13 @@ export function Home({
           Longhand
         </span>
         {readiness && !recording && (
-          <>
-            <Button
-              ref={newNote}
-              prominent
-              disabled={starting || !readiness.armed}
-              onClick={() => void record()}
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <PlusIcon className="-ml-0.5 size-3.5" />
-                New Note
-              </span>
-            </Button>
-          </>
+          <NewNoteButton
+            ref={newNote}
+            records={newNoteRecords}
+            readiness={readiness}
+            busy={starting}
+            onStart={(record) => void start(record)}
+          />
         )}
       </header>
       <div className="flex min-h-0 flex-1 overflow-hidden bg-pane">
@@ -236,9 +253,20 @@ export function Home({
             )}
           </div>
 
-          {readiness && !readiness.armed && !recording && (
-            <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
-              <CautionIcon className="size-4 text-caution" />
+          {readiness && !readiness.can_start_note && !recording && (
+            <CautionBanner>
+              <span className="min-w-0 flex-1">
+                {noteStartRefusal(readiness)}
+              </span>
+              {/* The fix of an unavailable storage folder is in Settings. */}
+              <Button onClick={() => void commands.openSettings()}>
+                Open Settings…
+              </Button>
+            </CautionBanner>
+          )}
+          {/* While no note can start, the banner above is the only one. */}
+          {readiness && readiness.can_start_note && !readiness.armed && !recording && (
+            <CautionBanner>
               <span className="min-w-0 flex-1">
                 {missing
                   ? `To record, ${missing} in Settings.`
@@ -247,7 +275,7 @@ export function Home({
               <Button onClick={() => void commands.openSettings()}>
                 Open Settings…
               </Button>
-            </div>
+            </CautionBanner>
           )}
           {notice && (
             <p
@@ -366,6 +394,15 @@ export function Home({
         )}
       </div>
       {deletion.dialog}
+    </div>
+  );
+}
+
+function CautionBanner({ children }: { children: ReactNode }) {
+  return (
+    <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
+      <CautionIcon className="size-4 text-caution" />
+      {children}
     </div>
   );
 }

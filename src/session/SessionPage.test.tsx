@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   LiveTranscript,
@@ -23,7 +23,7 @@ const readiness: Readiness = {
   armed: true,
   shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
   missing_models: [],
-  endpoint_configured: true,
+  endpoint_configured: true, can_start_note: true, note_start_refusal: null,
 };
 
 const idle: RecordingStatus = {
@@ -59,6 +59,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   title: null,
   found_speakers: 3,
   storage_unavailable: false,
+  remote: null,
   ...over,
 });
 
@@ -73,6 +74,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   message: null,
   summary_problem: null,
   resumable: false,
+  record: null,
   home_path: null,
   endpoint: null,
   audio_kept: true,
@@ -85,6 +87,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   summary_not_updated: null,
   waiting: [],
   conflict_files: [],
+  not_saved_yet: null,
   ...over,
 });
 
@@ -133,11 +136,13 @@ function renderPage({
   id,
   capture = captureOf(),
   sessions,
+  started = false,
   onBack = () => {},
 }: {
   id: string;
   capture?: Capture;
   sessions: Sessions;
+  started?: boolean;
   onBack?: () => void;
 }) {
   const ui = (c: Capture, s: Sessions) => (
@@ -146,6 +151,7 @@ function renderPage({
       capture={c}
       sessions={s}
       readiness={readiness}
+      started={started}
       onBack={onBack}
     />
   );
@@ -206,7 +212,7 @@ describe("SessionPage", () => {
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
   });
 
-  test("Resume Recording hides Summary and moves the page to My Notes, and Stop shows it again", async () => {
+  test("Resume hides Summary and moves the page to My Notes, and Stop shows it again", async () => {
     const e = entry("s");
     mockPage(e);
     const view = renderPage({ id: "s", sessions: sessionsOf([e]) });
@@ -383,12 +389,13 @@ describe("SessionPage", () => {
     expect(tauri.calls.some((c) => c.cmd === "rename_session")).toBe(false);
   });
 
-  test("the recording bar shows Stop and the elapsed time, and the quiet-input warning only while the input is quiet", async () => {
+  test("the recording bar shows the elapsed time, and the quiet-input warning only while the input is quiet", async () => {
     const e = entry("rec", { state: "capturing" });
     mockPage(e);
     const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
     const bar = screen.getByRole("region", { name: "Recording" });
-    expect(within(bar).getByRole("button", { name: "Stop" })).toBeTruthy();
+    // Stop is in the toolbar, in the place of Record and Resume.
+    expect(within(bar).queryByRole("button", { name: "Stop" })).toBeNull();
     expect(bar.textContent).toContain("00:05:07");
     expect(within(bar).queryByText(/hears almost nothing/)).toBeNull();
     expect(within(bar).queryByRole("img", { name: /Audio level/ })).toBeNull();
@@ -664,11 +671,14 @@ describe("SessionPage", () => {
     });
   });
 
-  test("Stop stops the recording", async () => {
+  test("Stop is unavailable for the first second, then stops the recording", async () => {
     const e = entry("rec", { state: "capturing" });
     const tauri = mockPage(e, {}, { stop_recording: () => "rec" });
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Stop" }));
+    const stop = screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement;
+    expect(stop.disabled).toBe(true);
+    await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
+    await userEvent.setup().click(stop);
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true);
   });
 
@@ -799,16 +809,20 @@ describe("SessionPage", () => {
     expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
   });
 
-  test("the menu shows Resume for a stopped session, and Resume records again", async () => {
+  test("a stopped session shows Resume, which records again, and its menu has Delete", async () => {
     const e = entry("s");
-    const tauri = mockPage(e, { resumable: true }, { resume_recording: () => "s" });
+    const tauri = mockPage(e, { resumable: true, record: { kind: "resume", available: true, reason: null } }, {
+      resume_recording: () => "s",
+    });
     renderPage({ id: "s", sessions: sessionsOf([e]) });
     await act(async () => {});
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Actions" }));
-    const resume = screen.getByRole("menuitem", { name: "Resume Recording" });
-    expect(resume.hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByRole("menuitem", { name: "Resume Recording" })).toBeNull();
     expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    const resume = screen.getByRole("button", { name: "Resume" });
+    expect(resume.hasAttribute("disabled")).toBe(false);
     await user.click(resume);
     expect(tauri.calls.filter((c) => c.cmd === "resume_recording").map((c) => c.args)).toEqual([
       { sessionId: "s" },
@@ -1184,7 +1198,12 @@ describe("SessionPage", () => {
       let audio: SessionDetail["audio"] = "present";
       const tauri = mockTauri({
         load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
-        session_detail: () => detail(e, { audio, resumable: audio === "present" }),
+        session_detail: () =>
+          detail(e, {
+            audio,
+            resumable: audio === "present",
+            record: { kind: "resume", available: audio === "present", reason: audio === "present" ? null : removedReason },
+          }),
         session_document: () => doc,
         remove_audio: () => {
           audio = "removed";
@@ -1208,10 +1227,13 @@ describe("SessionPage", () => {
       expect(sessions.refresh).toHaveBeenCalled();
 
       await user.click(screen.getByRole("button", { name: "Actions" }));
-      for (const name of ["Transcribe Again…", "Resume Recording", "Remove Audio…"]) {
+      for (const name of ["Transcribe Again…", "Remove Audio…"]) {
         expect(item(name).hasAttribute("disabled")).toBe(true);
         expect(item(name).getAttribute("title")).toBe(removedReason);
       }
+      const resume = screen.getByRole("button", { name: "Resume" });
+      expect(resume.hasAttribute("disabled")).toBe(true);
+      expect(resume.closest("[title]")?.getAttribute("title")).toBe(removedReason);
     });
 
     test("Cancel and Escape close the dialog and remove nothing", async () => {
@@ -1248,19 +1270,15 @@ describe("SessionPage", () => {
       expect(screen.queryByText(/audio/i)).toBeNull();
       expect(screen.queryAllByRole("status")).toEqual([]);
       await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
-      for (const name of ["Transcribe Again…", "Resume Recording"]) {
-        expect(item(name).hasAttribute("disabled")).toBe(true);
-        expect(item(name).getAttribute("title")).toBe(removedReason);
-      }
+      expect(item("Transcribe Again…").hasAttribute("disabled")).toBe(true);
+      expect(item("Transcribe Again…").getAttribute("title")).toBe(removedReason);
       expect(item("Regenerate Summary").hasAttribute("disabled")).toBe(false);
       expect(item("Delete…").hasAttribute("disabled")).toBe(false);
     });
 
     test("a note whose audio waits for the sync keeps the syncing reason and can remove its audio", async () => {
       await openMenu(entry("s"), { audio: "waiting", waiting: ["audio"], resumable: true });
-      for (const name of ["Transcribe Again…", "Resume Recording"]) {
-        expect(item(name).getAttribute("title")).toBe("Wait until the note finishes syncing.");
-      }
+      expect(item("Transcribe Again…").getAttribute("title")).toBe("Wait until the note finishes syncing.");
       expect(item("Remove Audio…").hasAttribute("disabled")).toBe(false);
     });
 
@@ -1461,16 +1479,18 @@ describe("SessionPage", () => {
       release = r;
     });
     let n = 0;
-    mockPage(e, {}, { session_detail: () => (n++ === 0 ? late : detail(e, { resumable: true })) });
+    const resumeOf = (available: boolean) => ({
+      record: { kind: "resume" as const, available, reason: available ? null : "No." },
+    });
+    mockPage(e, {}, { session_detail: () => (n++ === 0 ? late : detail(e, resumeOf(true))) });
     const sessions = sessionsOf([e]);
     const view = renderPage({ id: "s", sessions });
     await act(async () => {});
     // A change to the session reads the detail again, and that read ends first.
     view.rerenderWith(captureOf(), { ...sessions, version: { s: 1 } });
     await act(async () => {});
-    await act(async () => release(detail(e, { resumable: false })));
-    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
-    expect(screen.getByRole("menuitem", { name: "Resume Recording" }).hasAttribute("disabled")).toBe(false);
+    await act(async () => release(detail(e, resumeOf(false))));
+    expect(screen.getByRole("button", { name: "Resume" }).hasAttribute("disabled")).toBe(false);
   });
 });
 
@@ -1547,7 +1567,7 @@ describe("SessionPage and the synced library", () => {
     expect(box.getAttribute("contenteditable")).toBe("false");
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
-    for (const name of ["Resume Recording", "Regenerate Summary", "Transcribe Again…"]) {
+    for (const name of ["Regenerate Summary", "Transcribe Again…"]) {
       expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
     }
   });
@@ -1562,7 +1582,7 @@ describe("SessionPage and the synced library", () => {
     expect(box.getAttribute("contenteditable")).toBe("true");
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
-    for (const name of ["Resume Recording", "Transcribe Again…"]) {
+    for (const name of ["Transcribe Again…"]) {
       expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
     }
     expect(screen.getByRole("menuitem", { name: "Regenerate Summary" }).hasAttribute("disabled")).toBe(false);
@@ -1613,7 +1633,7 @@ describe("SessionPage and the synced library", () => {
     expect(screen.queryByText(/could not read/)).toBeNull();
 
     await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
-    for (const name of ["Resume Recording", "Regenerate Summary", "Transcribe Again…", "Rename", "Delete…"]) {
+    for (const name of ["Regenerate Summary", "Transcribe Again…", "Rename", "Delete…"]) {
       expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
     }
     const box = await screen.findByRole("textbox", { name: "My Notes", hidden: true });
@@ -1634,5 +1654,207 @@ describe("SessionPage and the synced library", () => {
     );
     expect(await screen.findByText(/^Storage: Folder not found/)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/Destination/);
+  });
+});
+
+describe("SessionPage: Record, Resume and other computers", () => {
+  const noAudio = (id: string, over: Partial<SessionEntry> = {}) =>
+    entry(id, { duration_ms: 0, found_speakers: null, ...over });
+  const recordButton = (name: "Record" | "Resume") => screen.getByRole("button", { name });
+  const reasonOf = (el: HTMLElement) => el.closest("[title]")?.getAttribute("title") ?? null;
+  const openMenu = async () => {
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+  };
+
+  // R11, R14.
+  test("a note that never recorded shows only My Notes and Record, and Record records into it", async () => {
+    const e = noAudio("n");
+    const tauri = mockPage(e, { record: { kind: "record", available: true, reason: null } }, {
+      record_note: () => null,
+    });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    await act(async () => {});
+    expect(screen.queryByRole("tab", { name: "Summary" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Transcript" })).toBeNull();
+    expect(await screen.findByRole("textbox", { name: "My Notes" })).toBeTruthy();
+    await userEvent.setup().click(recordButton("Record"));
+    expect(tauri.calls.filter((c) => c.cmd === "record_note").map((c) => c.args)).toEqual([{ sessionId: "n" }]);
+  });
+
+  test("a note that the user just started without recording has the cursor in the editor", async () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    renderPage({ id: "n", sessions: sessionsOf([e]), started: true });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await act(async () => {});
+    expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(true);
+  });
+
+  test("a note with no audio that opens from Home does not take the focus", async () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await act(async () => {});
+    expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(false);
+  });
+
+  // The page does not move when Record adds the tabs.
+  test("a note with no audio keeps a placeholder of the tabs' height in the header", async () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    const view = renderPage({ id: "n", sessions: sessionsOf([e]) });
+    await act(async () => {});
+    const placeholder = view.container.querySelector('[data-testid="tabs-placeholder"]');
+    expect(placeholder?.className).toContain("p-[2px]");
+    expect(placeholder?.querySelector(".py-\\[3px\\]")).toBeTruthy();
+  });
+
+  test("a note with no audio opens on My Notes before its detail loads", () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    expect(screen.queryByRole("tab", { name: "Summary" })).toBeNull();
+  });
+
+  // R11.
+  test("a note with audio shows Resume, which resumes it, and the menu has no Resume Recording", async () => {
+    const e = entry("s");
+    const tauri = mockPage(e, { resumable: true, record: { kind: "resume", available: true, reason: null } }, {
+      resume_recording: () => "s",
+    });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
+    await userEvent.setup().click(recordButton("Resume"));
+    expect(tauri.calls.filter((c) => c.cmd === "resume_recording").map((c) => c.args)).toEqual([{ sessionId: "s" }]);
+    await openMenu();
+    expect(screen.queryByRole("menuitem", { name: "Resume Recording" })).toBeNull();
+  });
+
+  // Covers AE3.
+  test("a note whose audio was removed shows Resume, unavailable, with the reason", async () => {
+    const reason = "The audio of this note was removed.";
+    const e = entry("s");
+    const tauri = mockPage(e, { audio: "removed", record: { kind: "resume", available: false, reason } }, {
+      resume_recording: () => "s",
+    });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    await act(async () => {});
+    const button = recordButton("Resume");
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(reasonOf(button)).toBe(reason);
+    await userEvent.setup().click(button);
+    expect(tauri.calls.some((c) => c.cmd === "resume_recording")).toBe(false);
+  });
+
+  test("while the note records, the page has no Record or Resume button", async () => {
+    const e = entry("rec", { state: "capturing" });
+    mockPage(e);
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+  });
+
+  // R20, R21, F3.
+  test("a note in use on another computer says so, keeps its notes editable, and holds its other actions", async () => {
+    const e = entry("s", { remote: "in_use" });
+    mockPage(e, {
+      record: { kind: "resume", available: false, reason: "Another computer is using this note." },
+    });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Recording or processing on another computer.")).toBeTruthy();
+    const box = await screen.findByRole("textbox", { name: "My Notes", hidden: true });
+    expect(box.getAttribute("contenteditable")).toBe("true");
+    expect(recordButton("Resume").hasAttribute("disabled")).toBe(true);
+    await openMenu();
+    for (const name of ["Regenerate Summary", "Transcribe Again…", "Remove Audio…", "Delete…"]) {
+      expect(screen.getByRole("menuitem", { name }).hasAttribute("disabled")).toBe(true);
+      expect(screen.getByRole("menuitem", { name }).getAttribute("title")).toBe(
+        "Wait until the other computer is done with this note.",
+      );
+    }
+    expect(screen.getByRole("menuitem", { name: "Rename" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("on a note in use on another computer, the Summary tab's Regenerate Summary waits with the reason", async () => {
+    const e = entry("s", { remote: "in_use" });
+    const stub = { ...doc, summary: { body: "No summary was produced.", stub: true, host: null, model: null, prompt: null } };
+    mockPage(e, {}, { session_document: () => stub });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    const button = await screen.findByRole("button", { name: "Regenerate Summary" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(reasonOf(button)).toBe("Wait until the other computer is done with this note.");
+  });
+
+  // R23, AE13.
+  test("a note that another computer did not finish allows notes and Delete after a confirmation that names the recording", async () => {
+    const e = noAudio("s", { remote: "not_finished", title: "Planning" });
+    const tauri = mockPage(e, {
+      record: { kind: "record", available: false, reason: "Another computer did not finish this note." },
+    }, { delete_session: () => null });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Not finished on another computer.")).toBeTruthy();
+    const box = await screen.findByRole("textbox", { name: "My Notes", hidden: true });
+    expect(box.getAttribute("contenteditable")).toBe("true");
+    expect(recordButton("Record").hasAttribute("disabled")).toBe(true);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toContain("“Planning” moves to the Trash.");
+    expect(dialog.textContent).toContain("The recording that another computer did not save is lost.");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+    expect(tauri.calls.filter((c) => c.cmd === "delete_session").map((c) => c.args)).toEqual([{ sessionId: "s" }]);
+  });
+
+  // KTD4.
+  test("a note whose folder is not written yet says Not saved yet, with the reason", async () => {
+    const e = noAudio("n");
+    mockPage(e, {
+      record: { kind: "record", available: true, reason: null },
+      not_saved_yet: "the storage folder is not available",
+    });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    const line = await screen.findByText("Not saved yet.");
+    expect(line.getAttribute("title")).toBe("The storage folder is not available.");
+  });
+
+  // R24.
+  test("a notes save that another computer's removal turned into a new note says so and opens it", async () => {
+    const e = noAudio("old");
+    const opened: string[] = [];
+    let saved = 0;
+    const tauri = mockPage(e, { record: { kind: "record", available: true, reason: null } }, {
+      save_session_notes: () =>
+        saved++ === 0
+          ? { kind: "new_note", session_id: "new", fingerprint: "f9" }
+          : { kind: "saved", fingerprint: "f10" },
+    });
+    render(
+      <SessionPage
+        id="old"
+        capture={captureOf()}
+        sessions={sessionsOf([e])}
+        readiness={readiness}
+        onBack={() => {}}
+        onOpenNote={(id) => opened.push(id)}
+      />,
+    );
+    const user = userEvent.setup();
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    await user.type(box, "a");
+    expect(
+      await screen.findByText("Another computer removed this note. Your notes are saved in a new note."),
+    ).toBeTruthy();
+    await user.type(box, "b");
+    const saveIds = () => tauri.calls.filter((c) => c.cmd === "save_session_notes").map((c) => c.args.sessionId);
+    await waitFor(() => expect(saveIds().length).toBeGreaterThan(1));
+    const saves = saveIds();
+    expect(saves[0]).toBe("old");
+    expect(saves.slice(1).every((id) => id === "new")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Open New Note" }));
+    expect(opened).toEqual(["new"]);
   });
 });

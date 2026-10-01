@@ -2,11 +2,12 @@
 // `?window=settings`, the licences window with `?window=licences`, the update
 // window with `?window=update`, and the main window with no query.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInterfaceZoom } from "./lib/useInterfaceZoom";
-import { events } from "./bindings";
+import { commands, events } from "./bindings";
 import { Home } from "./home/Home";
 import { LicencesWindow } from "./licences/LicencesWindow";
+import { notesSaved } from "./lib/notesSaves";
 import { formatChord } from "./lib/timeline";
 import { useCapture } from "./recording/useCapture";
 import { SessionPage } from "./session/SessionPage";
@@ -18,7 +19,9 @@ import { useAppSettings } from "./settings/useAppSettings";
 const isMac = navigator.userAgent.includes("Mac");
 
 /// What the main window shows: Home, or the page of one session (KTD2).
-export type View = { kind: "home" } | { kind: "session"; id: string };
+/// `started` is true for a note that the user just started: its notes
+/// editor takes the focus.
+export type View = { kind: "home" } | { kind: "session"; id: string; started?: boolean };
 
 function MainWindow() {
   const [view, setView] = useState<View>({ kind: "home" });
@@ -31,23 +34,70 @@ function MainWindow() {
   // session records (R3). The page opens when the capture status or the
   // list knows the session, so it never shows a session it cannot find.
   const [requested, setRequested] = useState<string | null>(null);
+  // The requested note that the user just started: New Note on Home, or
+  // the shortcut. The shortcut and the tray send `showSession`. The tray
+  // sends it only while a note records, and that page takes the focus too.
+  const started = useRef<string | null>(null);
+  const requestStarted = useRef((id: string) => {
+    started.current = id;
+    setRequested(id);
+  }).current;
   useEffect(() => {
     const unlisteners = [
       events.recordingChanged.listen(({ payload }) => {
         if (payload.session_id) setRequested(payload.session_id);
       }),
-      events.showSession.listen(({ payload }) => setRequested(payload.session_id)),
+      events.showSession.listen(({ payload }) => requestStarted(payload.session_id)),
     ];
     return () => {
       for (const u of unlisteners) void u.then((f) => f());
     };
   }, []);
+  // The backend keeps the shown note for the recording shortcut (KTD7). The
+  // note that the window stops showing is left: an empty note goes (R18).
+  // The leave waits for the notes saves of the note. The backend keeps a
+  // note that the window shows again, so each report goes before the leave.
+  const shown = view.kind === "session" ? view.id : null;
+  const reported = useRef<string | null>(null);
+  // Leave the note `id`. A note that goes while the window shows it again
+  // gives Home in its place.
+  const leave = useRef(async (id: string) => {
+    await notesSaved(id);
+    const left = await commands.leaveNote(id);
+    if (left.status === "ok" && left.data.kind === "removed" && reported.current === id) {
+      reported.current = null;
+      setView({ kind: "home" });
+    }
+  }).current;
+  useEffect(() => {
+    const previous = reported.current;
+    reported.current = shown;
+    const report = commands.setShownNote(shown);
+    if (previous !== null && previous !== shown) void report.then(() => leave(previous));
+  }, [shown, leave]);
+  // A hide or close of the main window leaves the shown note too. The
+  // window that comes back reports its note again.
+  useEffect(() => {
+    const unlisten = events.mainWindowHidden.listen(async () => {
+      await commands.setShownNote(null);
+      const id = reported.current;
+      if (id !== null) await leave(id);
+    });
+    const report = () => void commands.setShownNote(reported.current);
+    window.addEventListener("focus", report);
+    return () => {
+      void unlisten.then((f) => f());
+      window.removeEventListener("focus", report);
+    };
+  }, [leave]);
+
   const known =
     requested !== null &&
     (capture.status?.session_id === requested || sessions.entries.some((e) => e.id === requested));
   useEffect(() => {
     if (requested === null || !known) return;
-    setView({ kind: "session", id: requested });
+    setView({ kind: "session", id: requested, started: started.current === requested });
+    started.current = null;
     setRequested(null);
   }, [requested, known]);
 
@@ -77,7 +127,12 @@ function MainWindow() {
           capture={capture}
           sessions={sessions}
           readiness={readiness}
+          started={view.started ?? false}
           onBack={back}
+          onOpenNote={(id) => {
+            setRequested(id);
+            void sessions.refresh();
+          }}
         />
       )}
       <div hidden={view.kind === "session"} className="h-full">
@@ -95,7 +150,10 @@ function MainWindow() {
           chord={
             !settings ? "the shortcut" : settings.shortcut ? formatChord(settings.shortcut, isMac) : null
           }
+          newNoteRecords={settings?.new_note_records ?? true}
           onOpen={(id) => setView({ kind: "session", id })}
+          // A note that does not record opens when the list knows it.
+          onStarted={requestStarted}
           onChanged={() => void sessions.refresh()}
         />
       </div>
