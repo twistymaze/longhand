@@ -1,6 +1,7 @@
 ---
 title: Parallel worktree PRs that each raise a schema version must renumber at merge
 date: 2026-09-25
+last_updated: 2026-09-30
 category: workflow-issues
 module: Settings store migrations (src-tauri/src/managers/settings.rs apply_settings_migrations) and session store migrations (crates/session-core/src/schema.rs)
 problem_type: workflow_issue
@@ -97,7 +98,7 @@ if stored_version < 4 {
 
 ## Why This Matters
 
-A textual conflict is the good case: it forces a decision. If the two migrations had been in different places or files, both PRs would merge without a conflict and both would claim version 3. An install that already reached version 3 with one build would never run the other build's migration. The result is a store that is marked current but is missing a change, with no error. For the session store, the same failure leaves a database at `user_version` N without the columns or tables of the other branch's migration N.
+A textual conflict is the good case: it forces a decision. If the two migrations had been in different places or files, both PRs would merge without a conflict and both would claim version 3. An install that already reached version 3 with one build would never run the other build's migration. The result is a store that is marked current but is missing a change, with no error. For the session store, the same failure leaves a database at `user_version` N without the columns or tables of the other branch's migration N. Since PR #30, when both builds record migration hashes, a build that finds a different hash for migration N moves the database aside and rebuilds the notes list instead ([database rebuild](../runtime-errors/older-build-panicked-on-newer-database-at-launch.md)). Unfinished work then stays only in the backup, so the renumber rule still applies. The settings store has no such check.
 
 ## When to Apply
 
