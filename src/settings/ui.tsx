@@ -135,9 +135,12 @@ const dotClass: Record<Tone, string> = {
 
 export function Status({ tone, children }: { tone: Tone; children: ReactNode }) {
   return (
-    <span className={`inline-flex items-center gap-1.5 ${toneClass[tone]}`}>
-      <span aria-hidden className={`size-2 rounded-full ${dotClass[tone]}`} />
-      {children}
+    // The dot is centred on the first line of text, also when the text wraps.
+    <span className={`inline-flex items-start gap-1.5 ${toneClass[tone]}`}>
+      <span aria-hidden className="flex h-[1lh] shrink-0 items-center">
+        <span className={`size-2 rounded-full ${dotClass[tone]}`} />
+      </span>
+      <span className="min-w-0">{children}</span>
     </span>
   );
 }

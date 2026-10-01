@@ -258,9 +258,14 @@ export function Home({
               <span className="min-w-0 flex-1">
                 {noteStartRefusal(readiness)}
               </span>
+              {/* The fix of an unavailable storage folder is in Settings. */}
+              <Button onClick={() => void commands.openSettings()}>
+                Open Settings…
+              </Button>
             </CautionBanner>
           )}
-          {readiness && !readiness.armed && !recording && (
+          {/* While no note can start, the banner above is the only one. */}
+          {readiness && readiness.can_start_note && !readiness.armed && !recording && (
             <CautionBanner>
               <span className="min-w-0 flex-1">
                 {missing

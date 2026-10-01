@@ -136,11 +136,13 @@ function renderPage({
   id,
   capture = captureOf(),
   sessions,
+  started = false,
   onBack = () => {},
 }: {
   id: string;
   capture?: Capture;
   sessions: Sessions;
+  started?: boolean;
   onBack?: () => void;
 }) {
   const ui = (c: Capture, s: Sessions) => (
@@ -149,6 +151,7 @@ function renderPage({
       capture={c}
       sessions={s}
       readiness={readiness}
+      started={started}
       onBack={onBack}
     />
   );
@@ -1674,6 +1677,35 @@ describe("SessionPage: Record, Resume and other computers", () => {
     expect(tauri.calls.filter((c) => c.cmd === "record_note").map((c) => c.args)).toEqual([{ sessionId: "n" }]);
   });
 
+  test("a note that the user just started without recording has the cursor in the editor", async () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    renderPage({ id: "n", sessions: sessionsOf([e]), started: true });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await act(async () => {});
+    expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(true);
+  });
+
+  test("a note with no audio that opens from Home does not take the focus", async () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await act(async () => {});
+    expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(false);
+  });
+
+  // The page does not move when Record adds the tabs.
+  test("a note with no audio keeps a placeholder of the tabs' height in the header", async () => {
+    const e = noAudio("n");
+    mockPage(e, { record: { kind: "record", available: true, reason: null } });
+    const view = renderPage({ id: "n", sessions: sessionsOf([e]) });
+    await act(async () => {});
+    const placeholder = view.container.querySelector('[data-testid="tabs-placeholder"]');
+    expect(placeholder?.className).toContain("p-[2px]");
+    expect(placeholder?.querySelector(".py-\\[3px\\]")).toBeTruthy();
+  });
+
   test("a note with no audio opens on My Notes before its detail loads", () => {
     const e = noAudio("n");
     mockPage(e, { record: { kind: "record", available: true, reason: null } });
@@ -1740,6 +1772,16 @@ describe("SessionPage: Record, Resume and other computers", () => {
       );
     }
     expect(screen.getByRole("menuitem", { name: "Rename" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("on a note in use on another computer, the Summary tab's Regenerate Summary waits with the reason", async () => {
+    const e = entry("s", { remote: "in_use" });
+    const stub = { ...doc, summary: { body: "No summary was produced.", stub: true, host: null, model: null, prompt: null } };
+    mockPage(e, {}, { session_document: () => stub });
+    renderPage({ id: "s", sessions: sessionsOf([e]) });
+    const button = await screen.findByRole("button", { name: "Regenerate Summary" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(reasonOf(button)).toBe("Wait until the other computer is done with this note.");
   });
 
   // R23, AE13.

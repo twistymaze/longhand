@@ -19,7 +19,9 @@ import { useAppSettings } from "./settings/useAppSettings";
 const isMac = navigator.userAgent.includes("Mac");
 
 /// What the main window shows: Home, or the page of one session (KTD2).
-export type View = { kind: "home" } | { kind: "session"; id: string };
+/// `started` is true for a note that the user just started: its notes
+/// editor takes the focus.
+export type View = { kind: "home" } | { kind: "session"; id: string; started?: boolean };
 
 function MainWindow() {
   const [view, setView] = useState<View>({ kind: "home" });
@@ -32,12 +34,20 @@ function MainWindow() {
   // session records (R3). The page opens when the capture status or the
   // list knows the session, so it never shows a session it cannot find.
   const [requested, setRequested] = useState<string | null>(null);
+  // The requested note that the user just started: New Note on Home, or
+  // the shortcut. The shortcut and the tray send `showSession`. The tray
+  // sends it only while a note records, and that page takes the focus too.
+  const started = useRef<string | null>(null);
+  const requestStarted = useRef((id: string) => {
+    started.current = id;
+    setRequested(id);
+  }).current;
   useEffect(() => {
     const unlisteners = [
       events.recordingChanged.listen(({ payload }) => {
         if (payload.session_id) setRequested(payload.session_id);
       }),
-      events.showSession.listen(({ payload }) => setRequested(payload.session_id)),
+      events.showSession.listen(({ payload }) => requestStarted(payload.session_id)),
     ];
     return () => {
       for (const u of unlisteners) void u.then((f) => f());
@@ -86,7 +96,8 @@ function MainWindow() {
     (capture.status?.session_id === requested || sessions.entries.some((e) => e.id === requested));
   useEffect(() => {
     if (requested === null || !known) return;
-    setView({ kind: "session", id: requested });
+    setView({ kind: "session", id: requested, started: started.current === requested });
+    started.current = null;
     setRequested(null);
   }, [requested, known]);
 
@@ -116,6 +127,7 @@ function MainWindow() {
           capture={capture}
           sessions={sessions}
           readiness={readiness}
+          started={view.started ?? false}
           onBack={back}
           onOpenNote={(id) => {
             setRequested(id);
@@ -141,7 +153,7 @@ function MainWindow() {
           newNoteRecords={settings?.new_note_records ?? true}
           onOpen={(id) => setView({ kind: "session", id })}
           // A note that does not record opens when the list knows it.
-          onStarted={setRequested}
+          onStarted={requestStarted}
           onChanged={() => void sessions.refresh()}
         />
       </div>

@@ -91,6 +91,8 @@ export function NewNoteButton({
       {open && (
         <Menu
           onClose={close}
+          // The menu is as wide as its label, so the label shows in full.
+          width="w-max min-w-52 max-w-80"
           items={[
             {
               label: records ? labels.note.menu : labels.record.menu,

@@ -32,7 +32,7 @@ import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { RecordingBar } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
 import { copyText, tabMarkdown } from "./copy";
-import { canDelete, type MenuItem, remoteLabels, remoteReasons, SessionMenu } from "./SessionMenu";
+import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
@@ -188,6 +188,7 @@ export function SessionPage({
   capture,
   sessions,
   readiness,
+  started = false,
   onBack,
   onOpenNote,
 }: {
@@ -195,6 +196,9 @@ export function SessionPage({
   capture: Capture;
   sessions: Sessions;
   readiness: Readiness | null;
+  /// The user just started this note: its notes editor takes the focus,
+  /// as the editor of a recording does.
+  started?: boolean;
   onBack: () => void;
   /// Open the page of another note: the new note that holds the text of
   /// this note after another computer removed it (R24).
@@ -493,9 +497,17 @@ export function SessionPage({
 
   const live = sessions.live[id];
   const regenerateControl = (
-    <Button prominent={!doc?.summary || doc.summary.stub || summaryKept} disabled={held} onClick={regenerate}>
-      Regenerate Summary
-    </Button>
+    // A disabled button gets no pointer events, so the reason is on the
+    // element around it. The reason is the reason of the "…" menu item.
+    <span title={held ? heldReason : (remoteReason ?? undefined)} className="inline-flex">
+      <Button
+        prominent={!doc?.summary || doc.summary.stub || summaryKept}
+        disabled={held || remote !== null}
+        onClick={regenerate}
+      >
+        Regenerate Summary
+      </Button>
+    </span>
   );
 
   // The note's own live mode decides, not the model selected now (R9). A
@@ -580,7 +592,7 @@ export function SessionPage({
   const syncLines: string[] = [];
   if (deleted) syncLines.push("This note was deleted.");
   else {
-    if (remote) syncLines.push(`${remoteLabels[remote]}.`);
+    if (remote) syncLines.push(`${remoteSentences[remote]}.`);
     if (unavailable) syncLines.push("The storage folder for this note is unavailable.");
     else if (waiting.length > 0) syncLines.push(`Waiting for the ${listOf(waiting.map(partName))} to sync.`);
     if (draft) syncLines.push(`The notes changed on another computer. Your edit is in ${draft}.`);
@@ -618,7 +630,11 @@ export function SessionPage({
             meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
           />
         ) : (
-          <div />
+          // The placeholder has the height of the tabs, so the page does
+          // not move when Record adds the tabs.
+          <div aria-hidden data-testid="tabs-placeholder" className="invisible p-[2px]">
+            <span className="block py-[3px]">&nbsp;</span>
+          </div>
         )}
         <div data-tauri-drag-region className="flex items-center justify-end gap-1">
           {recordButton && !deleted && (
@@ -711,7 +727,7 @@ export function SessionPage({
           <NotesTab
             key={id}
             sessionId={id}
-            autoFocus={tab === "notes" && phase === "recording"}
+            autoFocus={tab === "notes" && (phase === "recording" || started)}
             editable={!held && !deleted}
             synced={sessions.synced[id] ?? 0}
             onMarkdown={setNotes}

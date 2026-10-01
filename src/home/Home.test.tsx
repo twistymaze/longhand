@@ -1062,12 +1062,50 @@ describe("Home: notes with no audio and other computers", () => {
     mockTauri();
     render(
       home([], {
-        readiness: { ...ready, can_start_note: false, note_start_refusal: "The storage folder is not available." },
+        readiness: {
+          ...ready,
+          armed: false,
+          can_start_note: false,
+          note_start_refusal: "The storage folder is not available.",
+        },
       }),
     );
     expect(screen.getByRole("button", { name: "Record New Note" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "New Note Options" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByText("The storage folder is not available.")).toBeTruthy();
+    // One banner only, with the way to the fix.
+    expect(screen.queryByText(/Not ready to record|To record,/)).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Open Settings…" })).toHaveLength(1);
+  });
+
+  test("when a note can start but not record, the record banner shows", () => {
+    mockTauri();
+    render(home([], { readiness: { ...ready, armed: false } }));
+    expect(screen.getByText(/Not ready to record|To record,/)).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Open Settings…" })).toHaveLength(1);
+  });
+
+  // R14.
+  test("the preview of a note with no audio shows the start of its notes", async () => {
+    const tauri = mockTauri({
+      load_session_notes: () => ({ markdown: "First thoughts.\n\nMore.", fingerprint: "f" }),
+      session_detail: () => detail(entry("a"), null),
+    });
+    render(home([entry("a", { duration_ms: 0, found_speakers: null })]));
+    const preview = screen.getByRole("region", { name: "Preview" });
+    expect(await within(preview).findByText("First thoughts.")).toBeTruthy();
+    expect(within(preview).getByText("My Notes")).toBeTruthy();
+    expect(within(preview).queryByText("Summary")).toBeNull();
+    expect(tauri.calls.some((c) => c.cmd === "session_document")).toBe(false);
+  });
+
+  test("the preview of a note with no audio and no notes says so", async () => {
+    mockTauri({
+      load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
+      session_detail: () => detail(entry("a"), null),
+    });
+    render(home([entry("a", { duration_ms: 0, found_speakers: null })]));
+    expect(await screen.findByText("No notes yet.")).toBeTruthy();
   });
 
   // R15.
@@ -1081,15 +1119,17 @@ describe("Home: notes with no audio and other computers", () => {
     });
     const untitled = row(sessionTitle(entry("a").started, now));
     expect(untitled.textContent).not.toMatch(/minute|min\b|Ready/);
+    expect(within(untitled).getByText("Notes only")).toBeTruthy();
     const titled = row("Agenda");
     expect(titled.textContent).not.toMatch(/minute|min\b|Ready/);
+    expect(titled.textContent).toContain("Notes only");
   });
 
   // R20, R21.
   test("a note in use on another computer says so, and its Delete waits", async () => {
     mockTauri();
     renderHome({ entries: [entry("a", { title: "Planning", remote: "in_use" })] });
-    expect(within(row("Planning")).getByText("Recording or processing on another computer")).toBeTruthy();
+    expect(within(row("Planning")).getByText("In use on another computer")).toBeTruthy();
     await userEvent.setup().click(within(row("Planning")).getByRole("button", { name: "Actions" }));
     const del = screen.getByRole("menuitem", { name: "Delete…" });
     expect(del.hasAttribute("disabled")).toBe(true);

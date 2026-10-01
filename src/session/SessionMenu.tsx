@@ -29,10 +29,17 @@ export function canDelete(state: string): boolean {
   return !["capturing", "interrupted", "queued", "processing"].includes(state);
 }
 
-/// The status of a note that another computer works on (R20, R23). The
-/// marker of another computer cannot tell a recording from processing, so
-/// one label says both.
+/// The short status of a note that another computer works on, for a Home
+/// row and the preview (R20, R23).
 export const remoteLabels: Record<RemoteView, string> = {
+  in_use: "In use on another computer",
+  not_finished: "Not finished on another computer",
+};
+
+/// The full status for the status line of the note page. The marker of
+/// another computer cannot tell a recording from processing, so one
+/// sentence says both.
+export const remoteSentences: Record<RemoteView, string> = {
   in_use: "Recording or processing on another computer",
   not_finished: "Not finished on another computer",
 };
@@ -61,10 +68,14 @@ export function Menu({
   onClose,
   submenu = false,
   focusFirst = true,
+  width = "w-52",
 }: {
   items: MenuItem[];
   onClose: () => void;
   submenu?: boolean;
+  /// The width classes of a top menu. A menu with long labels sets a
+  /// width that fits them.
+  width?: string;
   /// A submenu that the pointer opens keeps the focus on its item.
   focusFirst?: boolean;
 }) {
@@ -131,7 +142,7 @@ export function Menu({
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       className={`absolute z-10 rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)] ${
-        submenu ? "top-[-4px] right-full mr-1 w-60" : "top-full right-0 mt-1 w-52"
+        submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full right-0 mt-1 ${width}`
       }`}
     >
       {items.map((entry) => {

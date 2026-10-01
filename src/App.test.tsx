@@ -131,6 +131,17 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
   });
 
+  // The shortcut opens a new note that does not record with `showSession`.
+  test("a new note that the shortcut opens has the cursor in its editor", async () => {
+    const note: SessionEntry = { ...recordingEntry, id: "n", state: "saved" };
+    const tauri = mockApp({ current: idle }, { current: [note] });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
+    await act(() => tauri.emit("show-session", { session_id: "n" }));
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await waitFor(() => expect(editor === document.activeElement || editor.contains(document.activeElement)).toBe(true));
+  });
+
   // A page that opens in place of another starts again, so an edit on the
   // first page never goes to the second session.
   test("a title typed on one page is not given to the session that opens in its place", async () => {

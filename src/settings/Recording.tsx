@@ -180,7 +180,7 @@ function NewNote({ settings, onSettings }: { settings: Settings; onSettings: (s:
     }
   };
   return (
-    <Group footer="When this is off, New Note opens a note without recording, and you can record later. The recording shortcut then records into the note that is open, or opens a new note.">
+    <Group footer="When off, New Note opens a note without recording. The recording shortcut then records into the open note, or opens a new note if that note can’t record.">
       <Row label="New Note starts recording" detail="Start recording as soon as a new note opens">
         <Switch
           label="New Note starts recording"

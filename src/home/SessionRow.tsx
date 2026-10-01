@@ -95,8 +95,13 @@ export function SessionRow({
     ? "Storage folder unavailable"
     : [
         entry.title === null ? null : time,
-        // A note with no audio has no length (R15).
-        entry.duration_ms > 0 ? formatDuration(entry.duration_ms) : null,
+        // A note with no audio has no length (R15). A saved note with no
+        // audio says so, so the row always has details.
+        entry.duration_ms > 0
+          ? formatDuration(entry.duration_ms)
+          : entry.state === "saved"
+            ? "Notes only"
+            : null,
         speakerCount(entry.found_speakers),
       ]
         .filter(Boolean)

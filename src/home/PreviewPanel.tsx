@@ -1,4 +1,5 @@
-// The selected note shows its summary or its current status.
+// The selected note shows its summary or its current status. A note with
+// no audio shows the start of its notes.
 
 import { useEffect, useState } from "react";
 import { commands, type SessionEntry } from "../bindings";
@@ -44,14 +45,22 @@ export function PreviewPanel({
 
   useEffect(() => {
     let current = true;
-    void Promise.all([
-      saved ? commands.sessionDocument(id) : Promise.resolve(null),
-      commands.sessionDetail(id),
-    ]).then(([doc, detail]) => {
-      const body = doc?.status === "ok" ? doc.data.summary?.body : undefined;
+    // A note with no audio has no summary: the preview shows the start of
+    // its notes in place of the summary.
+    const overview = !saved
+      ? Promise.resolve(null)
+      : hasAudio
+        ? commands.sessionDocument(id).then((doc) =>
+            doc.status === "ok" ? { ok: true, text: doc.data.summary?.body } : { ok: false, text: undefined },
+          )
+        : commands.loadSessionNotes(id).then((notes) =>
+            notes.status === "ok" ? { ok: true, text: notes.data.markdown } : { ok: false, text: undefined },
+          );
+    void Promise.all([overview, commands.sessionDetail(id)]).then(([doc, detail]) => {
+      const body = doc?.text;
       const value = {
         overview: body ? firstParagraph(body) : null,
-        error: doc?.status === "error" || detail.status === "error",
+        error: doc?.ok === false || detail.status === "error",
         folder: detail.status === "ok" ? detail.data.home_path : null,
       };
       if (current) setLoaded({ id, state, value });
@@ -61,7 +70,7 @@ export function PreviewPanel({
     return () => {
       current = false;
     };
-  }, [key, id, saved, state]);
+  }, [key, id, saved, hasAudio, state]);
 
   // Keep the current preview during a refresh, but never across notes or states.
   const shown = loaded?.id === id && loaded.state === state ? loaded.value : null;
@@ -88,10 +97,13 @@ export function PreviewPanel({
       {saved && hasAudio && shown && !shown.error && !shown.overview && (
         <p className="mt-3 text-label-secondary">No summary yet.</p>
       )}
+      {saved && !hasAudio && shown && !shown.error && !shown.overview && (
+        <p className="mt-3 text-label-secondary">No notes yet.</p>
+      )}
       {shown?.overview && (
         <div className="mt-5">
           <h3 className="mb-1.5 text-[0.72rem] font-semibold tracking-[0.06em] text-label-tertiary uppercase">
-            Summary
+            {hasAudio ? "Summary" : "My Notes"}
           </h3>
           <p className="line-clamp-[12] leading-[1.5]">{shown.overview}</p>
         </div>

@@ -44,6 +44,14 @@ describe("NewNoteButton", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  test("the menu is as wide as its label, so the label is not cut off", async () => {
+    renderButton(true);
+    await userEvent.setup().click(choices());
+    const classes = screen.getByRole("menu").className.split(" ");
+    expect(classes).toContain("w-max");
+    expect(classes).not.toContain("w-52");
+  });
+
   test("with the default that does not record, the main part opens a note and the menu records", async () => {
     const { onStart } = renderButton(false);
     const user = userEvent.setup();
