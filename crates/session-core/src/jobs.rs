@@ -2356,3 +2356,9 @@ where
         }),
     }
 }
+
+/// The `result_state` key that marks a note that existed before its
+/// recording: Record started the recording in a note with no audio. A
+/// Stop or a crash recovery that keeps no segment keeps such a note, and
+/// the removal of empty notes never removes it (R19).
+pub const RECORDED_INTO: &str = "recorded_into";

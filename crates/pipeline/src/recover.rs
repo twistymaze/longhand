@@ -55,7 +55,9 @@ pub fn recover_crashed(
         } else {
             recover_one(store, &id, &session_dir, record.created_at)?
         };
-        if state == SessionState::Discarded {
+        // A discarded recording and a note with no audio keep no working
+        // folder.
+        if matches!(state, SessionState::Discarded | SessionState::Saved) {
             let _ = std::fs::remove_dir_all(&session_dir);
         }
         log::info!(
@@ -128,14 +130,11 @@ fn recover_one(
     let segments = store.segments(id)?;
     // The last segment is the one that was recording.
     let Some(ended) = segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end) else {
-        // Nothing survived R35: the session never held audio.
-        return Ok(store.apply(
-            id,
-            &Event::UserStop {
-                at: created_at,
-                retained_audio: false,
-            },
-        )?);
+        // Nothing survived R35: the note is a note with no audio again, as
+        // after a Stop with no segment (R19). A note that existed before
+        // the recording or has notes text stays. The removal of empty notes
+        // owns an empty note (U6).
+        return Ok(store.apply(id, &Event::RecordingDropped)?);
     };
     Ok(store.apply(
         id,

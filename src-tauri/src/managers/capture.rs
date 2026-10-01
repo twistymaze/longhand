@@ -46,6 +46,7 @@ use recorder::{
     ChunkedWriter, Frame, SegmentArgs, SegmentEnd, SegmentInput, SegmentOutcome, SpeakerCommand,
 };
 use serde::Serialize;
+use session_core::jobs::RECORDED_INTO;
 use session_core::{
     CaptureChoice, Closed, Event, InterruptReason, Microphone, RecordingModel, SessionState,
     SpeakerCount, Store, Timeline,
@@ -223,11 +224,6 @@ impl StopOutcome {
     }
 }
 
-/// The `result_state` key that marks a note that existed before its
-/// recording: Record started the recording in a note with no audio. A
-/// Stop that keeps no segment keeps such a note (R19).
-const RECORDED_INTO: &str = "recorded_into";
-
 /// Stop the note `id` in the store at `at`: queued for processing when it
 /// kept a segment. With no segment, the note becomes a note with no audio
 /// again (R19): the outcome tells whether it is an empty note. Its
@@ -277,6 +273,31 @@ fn open_notes_only(
         homes.start(id);
     }
     Ok(())
+}
+
+/// The user left the empty notes `ids` (R18): the removal of empty notes
+/// runs for each one on another thread, so a start never waits for the
+/// storage folder (R1).
+fn leave_in_background(app: &AppHandle, ids: Vec<String>) {
+    if ids.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("leave-note".into())
+        .spawn(move || {
+            let Some(processing) = app.try_state::<Arc<ProcessingManager>>() else {
+                return;
+            };
+            for id in ids {
+                if let Err(e) = processing.leave_note(&id) {
+                    log::warn!("could not check the empty note {id}: {e}");
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        log::error!("could not start the check of empty notes: {e}");
+    }
 }
 
 /// The notes that record or are interrupted and have no segment, which a
@@ -962,6 +983,8 @@ pub struct CaptureManager {
     /// through one connection.
     store: pipeline::SharedStore,
     inner: Mutex<Inner>,
+    /// See [`CaptureManager::take_recovered_without_audio`].
+    recovered_without_audio: Mutex<Vec<String>>,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -1163,6 +1186,7 @@ impl CaptureManager {
             working_root: data.join("sessions"),
             store: Arc::new(Mutex::new(store)),
             inner: Mutex::new(Inner::default()),
+            recovered_without_audio: Mutex::default(),
         })
     }
 
@@ -1188,7 +1212,9 @@ impl CaptureManager {
 
     /// At launch, before anything records: sessions a dead process left
     /// recording get their open segment back from its chunks and become
-    /// Interrupted(crash), or are discarded if they kept nothing (U16).
+    /// Interrupted(crash). A session that kept nothing is a note with no
+    /// audio again (R19), or is discarded when another computer deleted
+    /// its folder (U16, R23).
     pub fn recover_at_launch(&self) {
         match pipeline::recover::recover_crashed(&self.store, &self.working_root) {
             Ok(recovered) => {
@@ -1198,10 +1224,29 @@ impl CaptureManager {
                         session.session_id,
                         session.state.name()
                     );
+                    if session.state == SessionState::Saved {
+                        self.recovered_without_audio
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(session.session_id);
+                    }
                 }
             }
             Err(e) => log::error!("crash recovery at launch failed: {e}"),
         }
+    }
+
+    /// The notes that the launch recovery made notes with no audio again.
+    /// Their folders still have the flag "recording not saved": the
+    /// processing launch queues the flag update. A second call returns
+    /// none.
+    pub fn take_recovered_without_audio(&self) -> Vec<String> {
+        std::mem::take(
+            &mut self
+                .recovered_without_audio
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
     }
 
     /// Resolve the microphone and its format ahead of the press, so pressing
@@ -1336,10 +1381,15 @@ impl CaptureManager {
         };
         // A note that this start stops and that kept no segment stays as a
         // note with no audio (R19): the new start does not discard it.
+        // An empty note that it stops is left: the user starts a new note
+        // (R18).
         let open = open_with_no_segments(&self.store());
+        let mut emptied = Vec::new();
         for other in open {
-            if let Err(e) = self.stop_in_store(app, &other) {
-                log::error!("stopping {other} failed: {e}");
+            match self.stop_in_store(app, &other) {
+                Ok(StopOutcome::EmptyNote { session_id }) => emptied.push(session_id),
+                Ok(_) => {}
+                Err(e) => log::error!("stopping {other} failed: {e}"),
             }
         }
         // A change of the active prompt during the recording applies from
@@ -1395,6 +1445,7 @@ impl CaptureManager {
         );
         self.watch_capture(app, &mut inner, &id);
         changed(app, Some(&id));
+        leave_in_background(app, emptied);
         Ok(id)
     }
 

@@ -1096,6 +1096,59 @@ pub async fn delete_session_permanently(
     delete(&capture, &processing, session_id, Removal::Permanent).await
 }
 
+/// What leaving a note did (R18).
+#[derive(Debug, Serialize, Type, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LeaveOutcome {
+    /// The note was empty: the note and its home folder are gone.
+    Removed,
+    /// The note stays: it is not empty, or another computer can have used
+    /// it, or its storage folder is not available.
+    Kept,
+}
+
+/// The user left the note `session_id` (R18): the main window shows
+/// another view or closes, or the user starts a new note. An empty note
+/// that this computer started goes, with its home folder, when every check
+/// passes. The frontend calls it when the shown note changes and when the
+/// main window closes, and New Note calls it for the shown note before
+/// [`crate::commands::capture::start_recording`].
+#[tauri::command]
+#[specta::specta]
+pub async fn leave_note(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<LeaveOutcome, String> {
+    let capture = Arc::clone(&capture);
+    let processing = Arc::clone(&processing);
+    tauri::async_runtime::spawn_blocking(move || leave_note_now(&capture, &processing, &session_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// [`leave_note`] on the calling thread. The recording shortcut calls it
+/// for the shown note before it starts a new note. It reads the storage
+/// folder: call it off the main thread.
+pub fn leave_note_now(
+    capture: &CaptureManager,
+    processing: &ProcessingManager,
+    session_id: &str,
+) -> Result<LeaveOutcome, String> {
+    Ok(match processing.leave_note(session_id)? {
+        pipeline::empty_note::Leave::Removed => {
+            // The working folder of a note with no audio is normally gone
+            // already.
+            let _ = std::fs::remove_dir_all(capture.session_dir(session_id));
+            LeaveOutcome::Removed
+        }
+        pipeline::empty_note::Leave::Kept(why) => {
+            log::debug!("the note {session_id} stays after the user left it: {why:?}");
+            LeaveOutcome::Kept
+        }
+    })
+}
+
 /// Why Remove Audio did not complete (R13).
 #[derive(Debug, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]

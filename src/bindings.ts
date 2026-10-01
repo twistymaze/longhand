@@ -822,6 +822,22 @@ async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteS
 }
 },
 /**
+ * The user left the note `session_id` (R18): the main window shows
+ * another view or closes, or the user starts a new note. An empty note
+ * that this computer started goes, with its home folder, when every check
+ * passes. The frontend calls it when the shown note changes and when the
+ * main window closes, and New Note calls it for the shown note before
+ * [`crate::commands::capture::start_recording`].
+ */
+async leaveNote(sessionId: string) : Promise<Result<LeaveOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("leave_note", { sessionId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Remove the audio of a saved note now, whether the setting of audio
  * removal is on or off (R13). The transcript, summary and notes stay.
  * Refused while the note is busy, while a Move runs or is paused, or while
@@ -1105,6 +1121,19 @@ export type Interruption = { headline: string;
  * A disk interruption resumes only once space is freed (R7a).
  */
 disk: boolean }
+/**
+ * What leaving a note did (R18).
+ */
+export type LeaveOutcome = 
+/**
+ * The note was empty: the note and its home folder are gone.
+ */
+{ kind: "removed" } | 
+/**
+ * The note stays: it is not empty, or another computer can have used
+ * it, or its storage folder is not available.
+ */
+{ kind: "kept" }
 /**
  * The rows that a library reconcile changed (KTD10). `changed` holds
  * adopted notes, refreshed notes and notes in a new folder. `removed`

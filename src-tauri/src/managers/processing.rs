@@ -8,6 +8,7 @@ use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
 use pipeline::early_home::EarlyHomes;
+use pipeline::empty_note::{Leave, Removal};
 use pipeline::in_use::InUseKeeper;
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::{
@@ -837,6 +838,75 @@ impl ProcessingManager {
         &self.early_homes
     }
 
+    /// The removal of empty notes (U6) with this run's store, claims,
+    /// early write jobs and run ID, and the storage folder `destination`.
+    fn removal<'a>(&'a self, destination: Option<&'a std::path::Path>) -> Removal<'a> {
+        Removal {
+            store: &self.store,
+            claims: self.runner.claims(),
+            homes: Some(&self.early_homes),
+            destination,
+            run_id: self.run_id(),
+        }
+    }
+
+    /// The user left the note `id`: the main window shows another view or
+    /// closes, or the user starts a new note (R18). The note and its home
+    /// folder go when the note is empty and every check passes. Otherwise
+    /// the note stays. This reads the storage folder: call it off the main
+    /// thread.
+    pub fn leave_note(&self, id: &str) -> Result<Leave, String> {
+        let destination = settings::get_settings(&self.app).storage_folder();
+        let left = self
+            .removal(destination.as_deref())
+            .leave(id, chrono::Local::now().fixed_offset())
+            .map_err(|e| e.to_string())?;
+        if left == Leave::Removed {
+            self.removed_empty_notes(vec![id.to_string()]);
+        }
+        Ok(left)
+    }
+
+    /// The launch pass of empty notes: each empty note that this computer
+    /// started before `launched` (R18, KTD8). A note that stays because the
+    /// storage folder is not available gets the next pass at the next
+    /// launch.
+    fn remove_empty_notes(&self, launched: chrono::DateTime<chrono::FixedOffset>) {
+        let destination = settings::get_settings(&self.app).storage_folder();
+        let passed = match self
+            .removal(destination.as_deref())
+            .launch_pass(launched, chrono::Local::now().fixed_offset())
+        {
+            Ok(passed) => passed,
+            Err(e) => {
+                log::error!("the launch pass of empty notes failed: {e}");
+                return;
+            }
+        };
+        let removed: Vec<String> = passed
+            .into_iter()
+            .filter(|(_, left)| *left == Leave::Removed)
+            .map(|(id, _)| id)
+            .collect();
+        if !removed.is_empty() {
+            log::info!("the launch pass removed {} empty note(s)", removed.len());
+            self.removed_empty_notes(removed);
+        }
+    }
+
+    /// Empty notes are gone: Home drops them, and the in-use markers
+    /// refresh.
+    fn removed_empty_notes(&self, removed: Vec<String>) {
+        self.in_use_changed();
+        emit_library_changed(
+            &self.app,
+            LibraryChanged {
+                changed: Vec::new(),
+                removed,
+            },
+        );
+    }
+
     /// The run ID of this run, which names its in-use markers.
     pub fn run_id(&self) -> &str {
         self.in_use.run_id()
@@ -858,16 +928,19 @@ impl ProcessingManager {
         if let Err(e) = self.in_use.start() {
             log::error!("could not start the in-use markers: {e}");
         }
+        // A note that opens from now on can be on the page: the launch
+        // pass of empty notes leaves it (U6).
+        let launched = chrono::Local::now().fixed_offset();
         let manager = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("launch".into())
-            .spawn(move || manager.launch());
+            .spawn(move || manager.launch(launched));
         if let Err(e) = spawned {
             log::error!("could not start the launch steps: {e}");
         }
     }
 
-    fn launch(self: &Arc<Self>) {
+    fn launch(self: &Arc<Self>, launched: chrono::DateTime<chrono::FixedOffset>) {
         // Before the library scan: the shared settings of the storage folder
         // apply, and a folder with no settings file gets this computer's
         // shared settings (R21, KTD8).
@@ -932,7 +1005,18 @@ impl ProcessingManager {
         // Only with the instance lock held, so no other run writes the
         // same folders.
         if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
+            // First the empty notes that this computer started and did not
+            // remove before it quit (R18, KTD8): a folder that the pass
+            // removes is not written again.
+            self.remove_empty_notes(launched);
             self.early_homes.resume();
+            // A note that the crash recovery made a note with no audio
+            // again gets the flag "no recording" in its folder (R19).
+            if let Some(capture) = self.app.try_state::<Arc<CaptureManager>>() {
+                for id in capture.take_recovered_without_audio() {
+                    self.early_homes.mark_pending(&id);
+                }
+            }
         }
         // The volume may be back, or the folder restored (U18).
         self.retry_awaiting();

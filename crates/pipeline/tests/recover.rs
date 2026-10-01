@@ -113,8 +113,17 @@ fn a_crash_in_a_mono_note_sets_no_stereo_mark() {
     assert_eq!(store.stereo_from("s").unwrap(), None);
 }
 
+/// The state of a note with no audio (KTD2): Saved with zero segments.
+fn assert_note_with_no_audio(store: &pipeline::SharedStore, state: &SessionState) {
+    assert_eq!(*state, SessionState::Saved);
+    let s = store.lock().unwrap();
+    assert_eq!(s.session("s").unwrap().unwrap().state, SessionState::Saved);
+    assert!(s.segments("s").unwrap().is_empty());
+}
+
 #[test]
-fn a_crash_that_kept_under_a_second_discards_the_session() {
+fn a_crash_that_kept_under_a_second_leaves_a_note_with_no_audio() {
+    // R19: the removal of empty notes owns the note now (U6).
     let root = tempfile::tempdir().unwrap();
     let store = store();
     store
@@ -126,7 +135,60 @@ fn a_crash_that_kept_under_a_second_discards_the_session() {
 
     let recovered = recover_crashed(&store, root.path()).unwrap();
 
-    assert_eq!(recovered[0].state, SessionState::Discarded);
+    assert_note_with_no_audio(&store, &recovered[0].state);
+    assert!(!root.path().join("s").exists());
+}
+
+#[test]
+fn a_crash_under_a_second_in_a_note_with_notes_text_keeps_the_note() {
+    // R19: the notes have text.
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s", common::at(0), None).unwrap();
+        s.set_notes("s", "Agenda\n").unwrap();
+    }
+    write_segment(&root.path().join("s"), 0, 0, RATE, &tone(0.5), true);
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    assert_note_with_no_audio(&store, &recovered[0].state);
+    assert_eq!(store.lock().unwrap().notes("s").unwrap(), "Agenda\n");
+}
+
+#[test]
+fn a_crash_under_a_second_in_a_note_that_existed_before_keeps_the_note() {
+    // R19, AE14: Record started the recording in a note with no audio.
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_notes_only("s", common::at(0), Some("/notes/s"))
+            .unwrap();
+        s.set_title("s", "Budget", session_core::jobs::TitleSource::User)
+            .unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::UserRecord {
+                has_segments: false,
+            },
+        )
+        .unwrap();
+        s.set_result_state(
+            "s",
+            session_core::jobs::RECORDED_INTO,
+            &serde_json::Value::Bool(true),
+        )
+        .unwrap();
+    }
+    write_segment(&root.path().join("s"), 0, 0, RATE, &tone(0.5), true);
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    assert_note_with_no_audio(&store, &recovered[0].state);
+    let record = store.lock().unwrap().session("s").unwrap().unwrap();
+    assert_eq!(record.home_path.as_deref(), Some("/notes/s"));
     assert!(!root.path().join("s").exists());
 }
 
