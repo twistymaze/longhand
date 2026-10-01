@@ -61,4 +61,20 @@ describe("DOM test environment", () => {
     await act(() => tauri.emit("model-download-event", { model_id: "whisper", update: null }));
     expect(screen.getByText("whisper")).toBeTruthy();
   });
+
+  test("a failed expect on an element prints its markup, not the happy-dom internals", () => {
+    // bun prints each property of a happy-dom node, through to the document.
+    // On a large page that takes seconds, and a `waitFor` check that fails
+    // once then makes the test time out.
+    render(<p>Checking</p>);
+    let message = "";
+    try {
+      expect(screen.getByText("Checking")).toBeNull();
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain("<p>");
+    expect(message).toContain("Checking");
+    expect(message).not.toContain("Symbol(");
+  });
 });
