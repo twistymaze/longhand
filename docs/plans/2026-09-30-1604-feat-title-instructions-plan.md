@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A proposed note title tells the user what kind of meeting the note is and what it was about, for example "1:1 Meeting: Hiring plan and Q3 budget". A user who wants a different title pattern gets it by editing a summary prompt, with no change to the app.
 - **Means:** Each summary prompt gets a second, editable text, "Title instructions". After the final summary call, a second turn of the same conversation asks for the title (KTD1). A title job sends that turn after the note is saved (KTD13).
-- **Product authority:** The user, in the brainstorm and the plan scoping of 2026-09-30. The Product Contract wins on product behavior; the KTDs win on mechanism. Source idea: `docs/ideas/next/title-instructions.md`. Builds on `docs/plans/2026-09-25-1145-feat-summary-prompts-plan.md`.
+- **Product authority:** The user, in the brainstorm and the plan scoping of 2026-09-30. The Product Contract wins on product behavior; the KTDs win on mechanism. Source idea: `docs/ideas/done/title-instructions.md`. Builds on `docs/plans/2026-09-25-1145-feat-summary-prompts-plan.md`.
 - **Stop conditions:** Stop and ask when a change would make a title problem fail or delay the save of a summary, or when a prompt edit could relax a fixed rule (R9).
 - **Execution profile:** One PR from a worktree off `origin/main`, units in the order of the Implementation Units section. The implementer (`ce-work`) finishes, reviews and ships the work.
 - **Open blockers:** None.

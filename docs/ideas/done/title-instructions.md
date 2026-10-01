@@ -18,4 +18,4 @@ The title today comes from a separate call with fixed instructions. It sees only
 
 ## Notes / Current state
 - Requirements: [the plan](../../plans/2026-09-30-1604-feat-title-instructions-plan.md).
-- Builds on saved summary prompts ([done/summary-prompts.md](../done/summary-prompts.md)).
+- Builds on saved summary prompts ([done/summary-prompts.md](summary-prompts.md)).
