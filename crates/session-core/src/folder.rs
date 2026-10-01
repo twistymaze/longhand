@@ -136,7 +136,27 @@ pub struct SessionDoc {
     /// The [`fingerprint`] of `summary.md` when `session.md` was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_fingerprint: Option<String>,
+    /// Why the note has no result yet (R6, KTD1). `None` once a result is
+    /// saved. A file that an older build wrote can lose the field; read the
+    /// state with [`SessionDoc::result_flag`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ResultFlag>,
+    /// Empty for a note with no audio. A file with no field has none.
+    #[serde(default)]
     pub segments: Vec<SegmentRecord>,
+}
+
+/// The `result` field of `session.md` (R6, KTD1): the note has no result
+/// yet, and this tells why. A missing transcript, summary or audio of a
+/// note with this flag does not mean that the note waits for a sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResultFlag {
+    /// The note never recorded.
+    #[serde(rename = "none")]
+    NoRecording,
+    /// The note has a recording that is not saved yet.
+    #[serde(rename = "pending")]
+    NotSaved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,15 +206,47 @@ impl From<&SegmentRecord> for Segment {
 }
 
 impl SessionDoc {
+    /// The document of a note that starts at its first segment. `None`
+    /// when the note has no segment.
     pub fn new(
         session_id: impl Into<String>,
         speaker_count: Option<SpeakerCount>,
         segments: &[Segment],
     ) -> Option<Self> {
         let first = segments.first()?;
-        Some(Self {
+        Some(Self::at(
+            session_id,
+            first.wall_start,
+            speaker_count,
+            segments,
+        ))
+    }
+
+    /// The document of a note that never recorded: `started` is the time
+    /// the note opened (R16), and the flag is
+    /// [`ResultFlag::NoRecording`] (R6).
+    pub fn without_audio(
+        session_id: impl Into<String>,
+        started: DateTime<FixedOffset>,
+        speaker_count: Option<SpeakerCount>,
+    ) -> Self {
+        Self {
+            result: Some(ResultFlag::NoRecording),
+            ..Self::at(session_id, started, speaker_count, &[])
+        }
+    }
+
+    /// The document of a note that starts at `started`, with no result
+    /// flag. A note opened before it records keeps its open time (R16).
+    pub fn at(
+        session_id: impl Into<String>,
+        started: DateTime<FixedOffset>,
+        speaker_count: Option<SpeakerCount>,
+        segments: &[Segment],
+    ) -> Self {
+        Self {
             session_id: session_id.into(),
-            started: first.wall_start,
+            started,
             title: None,
             title_source: None,
             speaker_count,
@@ -205,7 +257,22 @@ impl SessionDoc {
             found_speakers: None,
             transcript_fingerprint: None,
             summary_fingerprint: None,
+            result: None,
             segments: segments.iter().map(SegmentRecord::from).collect(),
+        }
+    }
+
+    /// The result flag of the note (KTD1). With no `result` field, a note
+    /// with no segment and no transcript or summary fingerprint reads as
+    /// [`ResultFlag::NoRecording`]: an older build that rewrites the file
+    /// drops the field, and the note must not wait for a sync. Any other
+    /// note with no field has a result.
+    pub fn result_flag(&self) -> Option<ResultFlag> {
+        self.result.or_else(|| {
+            (self.segments.is_empty()
+                && self.transcript_fingerprint.is_none()
+                && self.summary_fingerprint.is_none())
+            .then_some(ResultFlag::NoRecording)
         })
     }
 

@@ -14,7 +14,7 @@ use chrono::{DateTime, FixedOffset};
 use library::refresh::Scope;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 pub use session_core::folder::AudioState;
-use session_core::folder::{self, SessionDoc, Summary, SummaryMeta};
+use session_core::folder::{self, ResultFlag, SessionDoc, Summary, SummaryMeta};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 use session_save::publication::{Outcome, Publication, WriteSet};
 use session_save::{Fs, Job, SaveError, SaveState, home_write};
@@ -736,6 +736,12 @@ fn render(
     Ok(())
 }
 
+/// The start time of the note of `record` (R16, KTD9): the time it opened,
+/// else its first segment, else the time of its row.
+pub fn note_started(record: &SessionRecord, segments: &[Segment]) -> DateTime<FixedOffset> {
+    record.start(segments)
+}
+
 /// The contents of `session.md`: the session's record, and the fingerprints
 /// of the `transcript.md` and `summary.md` that are in `folder` now (KTD2).
 /// Write `session.md` after those files, so that the fingerprints match.
@@ -744,8 +750,13 @@ pub fn session_doc(
     segments: &[Segment],
     folder: &Path,
 ) -> Result<SessionDoc, StageError> {
-    let mut doc = SessionDoc::new(&record.id, record.speaker_count, segments)
-        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?;
+    let started = note_started(record, segments);
+    let mut doc = SessionDoc::at(&record.id, started, record.speaker_count, segments);
+    // A note with no segment never recorded: it has no result (R6). A
+    // writer that keeps the present `session.md` keeps its flag.
+    if segments.is_empty() {
+        doc.result = Some(ResultFlag::NoRecording);
+    }
     doc.title = record.title.as_ref().map(|t| t.text.clone());
     doc.title_source = record.title.as_ref().map(|t| t.source);
     // A Transcribe Again run saves its transcript before the store records

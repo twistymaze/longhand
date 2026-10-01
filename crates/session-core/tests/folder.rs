@@ -1,7 +1,8 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
-    AudioState, REMOVAL_MARKER_TEXT, SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine,
-    audio_removed, audio_state, fingerprint, format_position, removal_marker, render_notes,
+    AudioState, REMOVAL_MARKER_TEXT, ResultFlag, SessionDoc, Summary, SummaryMeta, Transcript,
+    TranscriptLine, audio_removed, audio_state, fingerprint, format_position, removal_marker,
+    render_notes,
 };
 use session_core::{Segment, SpeakerCount, Timeline};
 
@@ -414,4 +415,82 @@ fn a_folder_that_does_not_exist_is_waiting() {
         audio_state(&dir.path().join("gone"), [ONE]),
         AudioState::Waiting
     );
+}
+
+// ---------------------------------------------------------------- notes with no audio
+
+#[test]
+fn a_note_with_no_audio_round_trips_with_its_open_time_and_the_result_flag() {
+    let doc = SessionDoc::without_audio("01J8Z", wall(0), None);
+    let text = doc.render();
+    assert!(
+        text.contains("started: 2026-09-22T09:00:00-05:00"),
+        "{text}"
+    );
+    assert!(text.contains("segments: []"), "{text}");
+    assert!(text.contains("result: none"), "{text}");
+    let parsed = SessionDoc::parse(&text).unwrap();
+    assert_eq!(parsed, doc);
+    assert_eq!(parsed.result, Some(ResultFlag::NoRecording));
+    assert!(parsed.segments.is_empty());
+}
+
+#[test]
+fn a_recording_not_saved_round_trips_as_pending() {
+    let mut doc = SessionDoc::without_audio("01J8Z", wall(0), None);
+    doc.result = Some(ResultFlag::NotSaved);
+    let text = doc.render();
+    assert!(text.contains("result: pending"), "{text}");
+    assert_eq!(SessionDoc::parse(&text).unwrap(), doc);
+}
+
+#[test]
+fn a_note_with_a_result_writes_no_result_field_and_an_older_document_parses() {
+    let doc = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
+    assert_eq!(doc.result, None);
+    assert!(!doc.render().contains("result:"), "{}", doc.render());
+    // An older build wrote no `result` field, and can write no `segments`.
+    let text = "---\nsession_id: 01J8Z\nstarted: 2026-09-22T09:00:00-05:00\n---\n\n# Old note\n";
+    let parsed = SessionDoc::parse(text).unwrap();
+    assert_eq!(parsed.result, None);
+    assert!(parsed.segments.is_empty());
+}
+
+#[test]
+fn a_missing_result_field_reads_as_no_recording_only_for_a_note_with_nothing() {
+    // KTD1: an older build that rewrites `session.md` drops the field.
+    let mut empty = SessionDoc::without_audio("01J8Z", wall(0), None);
+    empty.result = None;
+    assert_eq!(empty.result_flag(), Some(ResultFlag::NoRecording));
+
+    let mut transcribed = empty.clone();
+    transcribed.transcript_fingerprint = Some(fingerprint(b"transcript"));
+    assert_eq!(transcribed.result_flag(), None);
+    let mut summarized = empty.clone();
+    summarized.summary_fingerprint = Some(fingerprint(b"summary"));
+    assert_eq!(summarized.result_flag(), None);
+
+    let recorded = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
+    assert_eq!(recorded.result_flag(), None);
+
+    let mut pending = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
+    pending.result = Some(ResultFlag::NotSaved);
+    assert_eq!(pending.result_flag(), Some(ResultFlag::NotSaved));
+}
+
+#[test]
+fn a_note_opened_before_it_records_keeps_its_open_time() {
+    // Covers AE12: opened at 09:00, first segment at 10:00.
+    let mut segments = one_segment(1);
+    segments[0].wall_start = wall(60);
+    segments[0].wall_end = wall(61);
+    let doc = SessionDoc::at("01J8Z", wall(0), None, &segments);
+    let text = doc.render();
+    assert!(
+        text.contains("started: 2026-09-22T09:00:00-05:00"),
+        "{text}"
+    );
+    assert!(text.contains("Started 2026-09-22 09:00."), "{text}");
+    assert_eq!(doc.result, None);
+    assert_eq!(SessionDoc::parse(&text).unwrap(), doc);
 }

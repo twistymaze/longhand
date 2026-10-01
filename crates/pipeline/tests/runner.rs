@@ -3844,6 +3844,36 @@ async fn a_title_change_that_keeps_the_folder_name_keeps_the_recorded_fingerprin
     assert_eq!(doc.recognition_artifact, before.recognition_artifact);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_no_audio_takes_the_name_of_its_title_and_keeps_its_open_time() {
+    // KTD9: the folder name uses the note's start time, also with no
+    // segment. Before, the rename gave `Unchanged`.
+    use session_core::folder::{ResultFlag, SessionDoc};
+    let r = rig().await;
+    let opened = common::at(0);
+    let old = r.dest.join(name_for(None));
+    std::fs::create_dir_all(&old).unwrap();
+    let doc = SessionDoc::without_audio("s", opened, None);
+    std::fs::write(old.join(pipeline::save::SESSION_FILE), doc.render()).unwrap();
+    let adoption = session_core::jobs::Adoption::from_doc(
+        &doc,
+        String::new(),
+        old.to_string_lossy().into_owned(),
+        None,
+    );
+    assert!(r.store.lock().unwrap().adopt(&adoption).unwrap());
+
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_eq!(saved_folder(&r, "s"), new);
+    let written = session_md(&new);
+    assert_eq!(written.title.as_deref(), Some("Budget review"));
+    assert_eq!(written.started, opened);
+    assert!(written.segments.is_empty());
+    assert_eq!(written.result, Some(ResultFlag::NoRecording));
+}
+
 // ------------------------------------------------- notes and titles (U5)
 
 use session_core::{Title, TitleSource};

@@ -20,7 +20,7 @@ use session_core::{RenameIntent, Segment, SessionRecord, SessionState, Store, Ti
 use session_save::rename_home::{self, Move, RenameError, Resolved};
 use session_save::{Fs, home_write};
 
-use crate::save::{SESSION_FILE, session_doc};
+use crate::save::{SESSION_FILE, note_started, session_doc};
 use crate::{SharedStore, StageError, lock};
 
 /// What a reconcile did to a session's home folder.
@@ -200,11 +200,10 @@ fn reconcile_once(
         return Ok(FolderRename::Later);
     };
     let segments = store.segments(session_id)?;
-    let Some(first) = segments.first() else {
-        return Ok(FolderRename::Unchanged);
-    };
+    // The note's start time names the folder, also for a note with no
+    // segment (KTD9).
     let title = record.title.as_ref().map(|t| t.text.as_str());
-    let name = session_save::naming::folder_name(first.wall_start, title);
+    let name = session_save::naming::folder_name(note_started(&record, &segments), title);
     let current = home
         .file_name()
         .and_then(|n| n.to_str())
@@ -421,6 +420,11 @@ fn document(
         doc.recognition_audio = previous.recognition_audio;
         doc.transcript_fingerprint = previous.transcript_fingerprint;
         doc.summary_fingerprint = previous.summary_fingerprint;
+        // A note with no segment here can have a recording that another
+        // computer has not saved yet (R6).
+        if doc.segments.is_empty() && previous.result.is_some() {
+            doc.result = previous.result;
+        }
     }
     Ok(doc)
 }
