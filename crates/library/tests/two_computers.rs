@@ -14,8 +14,8 @@ use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
 use library::status::NoteStatus;
 use pipeline::SharedStore;
 use session_core::folder::{AudioState, ResultFlag, SessionDoc, fingerprint};
-use session_save::in_use_marker::FRESH_FOR;
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
+use session_save::in_use_marker::FRESH_FOR;
 
 const TRANSCRIPT: &str = "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n";
 

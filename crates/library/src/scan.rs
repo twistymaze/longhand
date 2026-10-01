@@ -562,10 +562,14 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
 /// time ([`in_use_marker::marker_fresh`]), and a folder whose names cannot
 /// be listed shows no marker. This reads the names in `dir`, the small
 /// marker files and the file time of `session.md` only.
-fn remote_state(dir: &Path, flag: Option<ResultFlag>, options: &ScanOptions) -> Option<RemoteState> {
+fn remote_state(
+    dir: &Path,
+    flag: Option<ResultFlag>,
+    options: &ScanOptions,
+) -> Option<RemoteState> {
     let now = Local::now().fixed_offset();
-    let in_use = in_use_marker::in_use_except(dir, options.own_run.as_deref(), now)
-        .unwrap_or_else(|e| {
+    let in_use =
+        in_use_marker::in_use_except(dir, options.own_run.as_deref(), now).unwrap_or_else(|e| {
             log::warn!(
                 "library: cannot read the in-use markers in {}: {e}",
                 dir.display()
