@@ -9,6 +9,7 @@
 pub mod assemble;
 pub mod checkpoint;
 pub mod diarize;
+pub mod early_home;
 pub mod echo;
 pub mod folder_rename;
 pub mod follow;

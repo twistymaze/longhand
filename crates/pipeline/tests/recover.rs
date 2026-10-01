@@ -310,3 +310,99 @@ fn launch_recovery_of_a_failed_note_deletes_only_the_copies_of_marked_old_audio(
     assert!(!working.join(OLD).exists(), "the marked copy stayed");
     assert!(working.join(OLD_TOO).is_file(), "the unmarked copy went");
 }
+
+// ------------------------------------------- the early home folder (U3)
+
+/// A note that records with its early home folder written in `dest`, and a
+/// segment that a crash left open.
+fn recording_with_home(
+    store: &pipeline::SharedStore,
+    root: &std::path::Path,
+    dest: &std::path::Path,
+) -> std::path::PathBuf {
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s", common::at(0), None).unwrap();
+        pipeline::early_home::begin(&s, "s").unwrap();
+    }
+    write_segment(&root.join("s"), 0, 0, RATE, &tone(30.0), true);
+    pipeline::early_home::write(store, "s", Some(dest), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn a_recording_whose_home_folder_another_computer_deleted_is_discarded_at_launch() {
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = recording_with_home(&store, root.path(), dest.path());
+    std::fs::remove_dir_all(&home).unwrap();
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    assert_eq!(recovered[0].state, SessionState::Discarded);
+    assert!(
+        !root.path().join("s").exists(),
+        "the recording is discarded"
+    );
+    let folders = std::fs::read_dir(dest.path())
+        .unwrap()
+        .filter(|e| {
+            !e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with('.')
+        })
+        .count();
+    assert_eq!(folders, 0, "no new folder");
+}
+
+#[test]
+fn a_recording_whose_home_folder_moved_keeps_its_audio_and_follows_the_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = recording_with_home(&store, root.path(), dest.path());
+    let moved = dest.path().join("Renamed");
+    std::fs::rename(&home, &moved).unwrap();
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    interrupted_since(&recovered[0].state);
+    let record = store.lock().unwrap().session("s").unwrap().unwrap();
+    assert_eq!(record.home_path.as_deref(), Some(moved.to_str().unwrap()));
+}
+
+#[test]
+fn a_recording_whose_storage_folder_is_an_empty_mount_point_keeps_its_audio() {
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = recording_with_home(&store, root.path(), dest.path());
+    // No note and no library marker: the volume is not mounted.
+    std::fs::remove_dir_all(&home).unwrap();
+    std::fs::remove_dir_all(dest.path().join(library::scan::LONGHAND_FOLDER)).unwrap();
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    interrupted_since(&recovered[0].state);
+    assert!(root.path().join("s").exists());
+}
+
+#[test]
+fn a_recording_whose_storage_folder_is_not_available_keeps_its_audio() {
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let storage = dest.path().join("storage");
+    std::fs::create_dir(&storage).unwrap();
+    let store = store();
+    recording_with_home(&store, root.path(), &storage);
+    std::fs::rename(&storage, dest.path().join("away")).unwrap();
+
+    let recovered = recover_crashed(&store, root.path()).unwrap();
+
+    interrupted_since(&recovered[0].state);
+    assert!(root.path().join("s").exists());
+}

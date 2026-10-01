@@ -7,6 +7,7 @@ use std::sync::Arc;
 use asr::{Engine, Recognizer};
 use diarize::{DiarizeError, OnnxAnalyzer, SpeakerAnalyzer};
 use models::ModelKind;
+use pipeline::early_home::EarlyHomes;
 use pipeline::in_use::InUseKeeper;
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::{
@@ -613,15 +614,17 @@ fn forget_outside(
 /// Whether the staging folder of `id` is left over from a save that
 /// completed: the id has a Saved row. A first save's staging has an id
 /// that no other computer knows, so its row is not Saved until the save
-/// completes, and an id with no row keeps its staging (KTD9).
+/// completes, and an id with no row keeps its staging (KTD9). A note that
+/// opened with no recording is Saved before its early write is done: its
+/// staging is that write's, and stays (KTD4).
 fn completed(store: &pipeline::SharedStore, id: &str) -> bool {
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
     store
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .session(id)
         .ok()
         .flatten()
         .is_some_and(|r| r.state == session_core::SessionState::Saved)
+        && !pipeline::early_home::unfinished(&store, id).unwrap_or(true)
 }
 
 /// Refuses a change of folder while a Move runs or is paused (KTD11).
@@ -701,6 +704,8 @@ pub struct ProcessingManager {
     /// The passes that remove the audio of old notes (U6 of the audio
     /// removal plan).
     audio_removal: Arc<AudioRemovalManager>,
+    /// The early writes of the home folders of new notes (KTD4).
+    early_homes: Arc<EarlyHomes>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -781,6 +786,24 @@ impl ProcessingManager {
         }
         // The run ID of the in-use markers is the claim owner of this run.
         let in_use = InUseKeeper::new(capture.shared_store(), runner.owner());
+        // The early writes use the same run ID for their in-use markers.
+        // After each write, the in-use markers refresh, and a note whose
+        // save waits for its folder tries again.
+        let storage = app.clone();
+        let written = app.clone();
+        let early_homes = EarlyHomes::new(
+            capture.shared_store(),
+            runner.owner(),
+            Box::new(move || settings::get_settings(&storage).storage_folder()),
+            Box::new(move |_| {
+                if let Some(processing) = written.try_state::<Arc<ProcessingManager>>() {
+                    processing.in_use_changed();
+                    if let Err(e) = processing.runner.retry_awaiting() {
+                        log::error!("could not retry sessions awaiting a destination: {e}");
+                    }
+                }
+            }),
+        );
         let library_status: Arc<library::status::LibraryStatus> = Arc::default();
         let audio_removal = AudioRemovalManager::new(
             app,
@@ -791,6 +814,7 @@ impl ProcessingManager {
         Self {
             in_use,
             audio_removal,
+            early_homes,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -806,6 +830,11 @@ impl ProcessingManager {
     /// The passes that remove the audio of old notes.
     pub fn audio_removal(&self) -> &Arc<AudioRemovalManager> {
         &self.audio_removal
+    }
+
+    /// The early writes of the home folders of new notes (KTD4).
+    pub fn early_homes(&self) -> &Arc<EarlyHomes> {
+        &self.early_homes
     }
 
     /// What the latest library scans found about each note.
@@ -891,6 +920,12 @@ impl ProcessingManager {
                     runner.wake();
                 }
             }));
+        // The early writes that a quit or a crash stopped continue (R4).
+        // Only with the instance lock held, so no other run writes the
+        // same folders.
+        if matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
+            self.early_homes.resume();
+        }
         // The volume may be back, or the folder restored (U18).
         self.retry_awaiting();
         tauri::async_runtime::spawn(Arc::clone(&self.runner).run());
@@ -1252,6 +1287,7 @@ impl ProcessingManager {
             self.mover.signal.notify_all();
         }
         self.audio_removal.stop();
+        self.early_homes.stop();
         self.live.shutdown();
         self.runner.shutdown();
         self.in_use.stop();
@@ -1284,6 +1320,8 @@ impl ProcessingManager {
 
     /// The destination changed: sessions waiting for one go back in line.
     pub fn retry_awaiting(&self) {
+        // The early writes wait for the same storage folder (R5).
+        self.early_homes.wake();
         match self.runner.retry_awaiting() {
             Ok(ids) if !ids.is_empty() => {
                 log::info!("{} session(s) will try the new destination", ids.len())
@@ -1501,6 +1539,26 @@ mod tests {
         let staging = root
             .path()
             .join(session_save::naming::staging_name("unknown"));
+        std::fs::create_dir_all(&staging).unwrap();
+        let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
+        assert!(removed.is_empty());
+        assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn the_staging_sweep_keeps_the_staging_of_an_early_write_that_is_not_done() {
+        let root = tempfile::tempdir().unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        let opened = chrono::DateTime::parse_from_rfc3339("2026-09-30T09:00:00Z").unwrap();
+        {
+            let mut s = store.lock().unwrap();
+            // A note that opened with no recording is Saved at once.
+            s.create_notes_only("n", opened, None).unwrap();
+            pipeline::early_home::begin(&s, "n").unwrap();
+        }
+        let staging = root.path().join(session_save::naming::staging_name("n"));
         std::fs::create_dir_all(&staging).unwrap();
         let removed = session_save::sweep_staging(root.path(), |id| completed(&store, id)).unwrap();
         assert!(removed.is_empty());

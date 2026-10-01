@@ -733,3 +733,129 @@ fn no_removal_marker_is_opened() {
     assert!(result.notes[0].waiting.is_empty());
     assert_eq!(result.notes[0].removed_audio, [AUDIO]);
 }
+
+// ------------------------------------------- the early home folder (U3)
+
+mod early_home {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use library::reconcile::{DELETE_WAIT, Reconciler, Target};
+    use pipeline::early_home::{self, EarlyState};
+    use session_core::Store;
+    use session_save::RealFs;
+
+    use super::{marked_root, options};
+
+    fn never_claimed(_: &str) -> bool {
+        false
+    }
+
+    fn at() -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap()
+    }
+
+    fn shared() -> pipeline::SharedStore {
+        Arc::new(Mutex::new(Store::open_in_memory().unwrap()))
+    }
+
+    fn recording(store: &pipeline::SharedStore, id: &str) {
+        let mut s = store.lock().unwrap();
+        s.create_session(id, at(), None).unwrap();
+        early_home::begin(&s, id).unwrap();
+    }
+
+    #[test]
+    fn this_computers_early_folder_is_not_adopted_as_a_second_row() {
+        let root = marked_root();
+        let store = shared();
+        recording(&store, "placed");
+        let home = early_home::write(&store, "placed", Some(root.path()), "run", &RealFs)
+            .unwrap()
+            .unwrap();
+        // A crash after the rename and before its record: the folder is at
+        // its name, and the row has no home path yet.
+        recording(&store, "renamed");
+        let state = early_home::state(&store.lock().unwrap(), "renamed")
+            .unwrap()
+            .unwrap();
+        let filled =
+            early_home::step(&store, "renamed", &state, Some(root.path()), "run", &RealFs).unwrap();
+        early_home::record(&store, "renamed", &filled).unwrap();
+        let placed = early_home::step(
+            &store,
+            "renamed",
+            &filled,
+            Some(root.path()),
+            "run",
+            &RealFs,
+        )
+        .unwrap();
+        assert!(matches!(placed, EarlyState::Done { .. }));
+
+        let mut reconciler = Reconciler::new(&options());
+        reconciler
+            .run(
+                &store,
+                &Target::Full(vec![root.path().to_path_buf()]),
+                &never_claimed,
+            )
+            .unwrap();
+
+        let s = store.lock().unwrap();
+        assert_eq!(s.sessions().unwrap().len(), 2, "no row is adopted");
+        let record = s.session("placed").unwrap().unwrap();
+        assert_eq!(record.home_path.map(PathBuf::from), Some(home));
+        assert_eq!(s.session("renamed").unwrap().unwrap().home_path, None);
+    }
+
+    #[test]
+    fn a_row_whose_early_write_is_not_done_is_never_forgotten() {
+        let root = marked_root();
+        let store = shared();
+        let name = "2026-09-25 0900 Longhand session";
+        let missing = root.path().join(name);
+        let set = |state: &EarlyState| {
+            store
+                .lock()
+                .unwrap()
+                .set_result_state(
+                    "n",
+                    early_home::STATE,
+                    &serde_json::to_value(state).unwrap(),
+                )
+                .unwrap();
+        };
+        store
+            .lock()
+            .unwrap()
+            .create_notes_only("n", at(), Some(&missing.to_string_lossy()))
+            .unwrap();
+        // The home path is recorded; the Done record is not (a crash).
+        set(&EarlyState::Filled {
+            root: root.path().to_path_buf(),
+            folder_name: name.into(),
+        });
+        let target = Target::Full(vec![root.path().to_path_buf()]);
+        let mut reconciler = Reconciler::new(&options());
+        let start = Instant::now();
+        let later = start + DELETE_WAIT + std::time::Duration::from_secs(1);
+        reconciler
+            .run_at(&store, &target, &never_claimed, start)
+            .unwrap();
+        let changes = reconciler
+            .run_at(&store, &target, &never_claimed, later)
+            .unwrap();
+
+        assert!(changes.removed.is_empty());
+        assert!(store.lock().unwrap().session("n").unwrap().is_some());
+
+        // Once the early write is done, a folder that is gone is a delete.
+        set(&EarlyState::Done { path: missing });
+        let changes = reconciler
+            .run_at(&store, &target, &never_claimed, later)
+            .unwrap();
+        assert_eq!(changes.removed, ["n"]);
+    }
+}

@@ -1168,22 +1168,37 @@ impl CaptureManager {
         // A change of the active prompt during the recording applies from
         // the next note (R20, KTD15).
         let prompt = prompt_snapshot(&settings);
-        let stopped = match self.store().start_session_with_recognition(
-            &id,
-            started,
-            speaker_count,
-            &model,
-            &capture,
-            Some(&snapshot),
-            Some(&prompt),
-        ) {
-            Ok(stopped) => stopped,
-            Err(e) => {
-                abandon(active);
-                let _ = std::fs::remove_dir_all(self.session_dir(&id));
-                return Err(e.into());
+        let stopped = {
+            let mut store = self.store();
+            let stopped = match store.start_session_with_recognition(
+                &id,
+                started,
+                speaker_count,
+                &model,
+                &capture,
+                Some(&snapshot),
+                Some(&prompt),
+            ) {
+                Ok(stopped) => stopped,
+                Err(e) => {
+                    drop(store);
+                    abandon(active);
+                    let _ = std::fs::remove_dir_all(self.session_dir(&id));
+                    return Err(e.into());
+                }
+            };
+            // The early write of the home folder begins with the row, so
+            // a crash before its first step still gets one folder (KTD4).
+            if let Err(e) = pipeline::early_home::begin(&store, &id) {
+                log::error!("could not begin the folder write of {id}: {e}");
             }
+            stopped
         };
+        // The folder is written on the thread of its job: the recording
+        // does not wait for the storage folder (R1).
+        if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+            processing.early_homes().start(&id);
+        }
         if let Some(live) = &mut active.live {
             live.activate();
         }

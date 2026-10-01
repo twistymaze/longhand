@@ -197,10 +197,24 @@ pub fn run(
                 .into(),
         ));
     }
-    let home = lock(store)
+    // The note guard keeps the flag updates of the early write out of the
+    // save: an update either completes before the claim, or sees the claim
+    // and writes nothing (KTD4).
+    let _guard = crate::early_home::guard(session_id);
+    // A note whose early write is not done waits for that one folder, and
+    // never gets a second one here (R5). The authoritative state is the
+    // early write state, not the home path, which its last step records
+    // before that state.
+    if crate::early_home::unfinished(&lock(store), session_id)? {
+        return Err(StageError::NoDestination(
+            "the note's folder is not in the storage folder yet; the note is saved there when the folder is written"
+                .into(),
+        ));
+    }
+    let record = lock(store)
         .session(session_id)?
-        .and_then(|record| record.home_path)
-        .map(PathBuf::from);
+        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+    let home = record.home_path.clone().map(PathBuf::from);
     let recorded = checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)?;
     // `home_path` is recorded with `Saved`, before the step loop reaches
     // `Done`: a first save still in progress finishes through the loop. A
@@ -216,10 +230,8 @@ pub fn run(
     }
     let destination =
         destination.ok_or_else(|| StageError::NoDestination("no storage folder is set".into()))?;
-    let started = segments
-        .first()
-        .ok_or_else(|| StageError::Failed("the note has no audio".into()))?
-        .wall_start;
+    // The note's start time names the folder (R16, KTD9).
+    let started = note_started(&record, segments);
     let (mut state, folder_name) = match recorded {
         Some(state) => {
             // A save that began before names were recorded used the
@@ -912,9 +924,13 @@ fn render_notes(store: &Store, session_id: &str) -> Result<String, StageError> {
     Ok(folder::render_notes(&store.notes(session_id)?))
 }
 
+/// Write the notes of the store into `folder`, and record the fingerprint
+/// of the file as the `notes.md` that this computer last wrote (KTD8).
 fn write_notes(store: &Store, session_id: &str, folder: &Path) -> Result<(), StageError> {
     let notes = render_notes(store, session_id)?;
     home_write::write_atomic(folder, NOTES_FILE, notes.as_bytes())?;
+    store
+        .set_written_notes_fingerprint(session_id, Some(&folder::fingerprint(notes.as_bytes())))?;
     Ok(())
 }
 

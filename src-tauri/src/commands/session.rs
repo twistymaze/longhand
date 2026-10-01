@@ -222,10 +222,7 @@ fn entry(
     };
     SessionEntry {
         id: record.id.clone(),
-        started: segments
-            .first()
-            .map_or(record.created_at, |s| s.wall_start)
-            .to_rfc3339(),
+        started: record.start(segments).to_rfc3339(),
         duration_ms: segments.iter().map(|s| s.duration_ms).sum(),
         state: record.state.name().to_string(),
         stage: stage.map(stage_name),

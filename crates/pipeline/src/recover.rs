@@ -40,7 +40,21 @@ pub fn recover_crashed(
     for record in capturing {
         let id = record.id;
         let session_dir = working_root.join(&id);
-        let state = recover_one(store, &id, &session_dir, record.created_at)?;
+        let state = if crate::early_home::home_deleted(store, &id)? {
+            // Another computer deleted the note while this one recorded
+            // into it: a person's Delete wins, and the recording goes
+            // (R23). No folder is made again.
+            log::warn!("the folder of {id} was deleted on another computer");
+            lock(store).apply(
+                &id,
+                &Event::UserStop {
+                    at: record.created_at,
+                    retained_audio: false,
+                },
+            )?
+        } else {
+            recover_one(store, &id, &session_dir, record.created_at)?
+        };
         if state == SessionState::Discarded {
             let _ = std::fs::remove_dir_all(&session_dir);
         }

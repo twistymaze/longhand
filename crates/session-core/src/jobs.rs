@@ -801,17 +801,20 @@ impl Store {
 
     /// Remove the row of a saved note, with its segments, notes, checkpoints
     /// and job (KTD1, KTD6). No folder changes. Returns false and changes
-    /// nothing when the note has no row, is not Saved, or has a folder rename
-    /// or a Move in progress: then capture, processing, a rename or the Move
-    /// can still need the row. The caller checks the claims of [`Claims`]
-    /// first.
+    /// nothing when the note has no row, is not Saved, or has a folder
+    /// rename, a Move or an early write of its home folder ([`EARLY_HOME`],
+    /// KTD4) in progress: then capture, processing, a rename, the Move or
+    /// the early write can still need the row. The caller checks the claims
+    /// of [`Claims`] first.
     pub fn forget(&mut self, id: &str) -> Result<bool> {
         let removed = self.conn.execute(
             "DELETE FROM sessions WHERE id = ?1 AND json_extract(state, '$.state') = 'saved'
              AND NOT EXISTS (SELECT 1 FROM rename_intents WHERE session_id = ?1)
              AND NOT EXISTS (SELECT 1 FROM move_notes WHERE session_id = ?1
-                 AND json_extract(step, '$.step') != 'done')",
-            [id],
+                 AND json_extract(step, '$.step') != 'done')
+             AND NOT EXISTS (SELECT 1 FROM result_state WHERE session_id = ?1
+                 AND key = ?2 AND json_extract(value, '$.step') != 'done')",
+            params![id, EARLY_HOME],
         )?;
         Ok(removed > 0)
     }
@@ -2320,6 +2323,11 @@ impl Store {
 /// The key of the save stage's checkpoint that holds its state
 /// (`pipeline::save::STATE`).
 pub const SAVE_STATE: &str = "state";
+
+/// The `result_state` key that holds the state of the early write of a
+/// note's home folder (`pipeline::early_home`, KTD4). Its `step` field is
+/// `done` once the store records the home path.
+pub const EARLY_HOME: &str = "early-home";
 
 fn remove_dir<R>(dir: &Path, remove: &mut R) -> std::result::Result<(), DeleteError>
 where
