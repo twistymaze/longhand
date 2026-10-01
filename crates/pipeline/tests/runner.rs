@@ -1817,6 +1817,7 @@ fn custom_prompt(name: &str, marker: &str) -> summarize::Prompt {
         id: format!("custom-{marker}"),
         name: name.into(),
         text: format!("Write the summary as a short list. {marker}"),
+        title_text: String::new(),
     }
 }
 
@@ -2272,6 +2273,7 @@ async fn a_prompt_too_long_for_the_context_fails_the_summary_before_any_call() {
             id: "custom-long".into(),
             name: "Long".into(),
             text,
+            title_text: String::new(),
         },
     );
     let mock = summaries_from(
@@ -2309,6 +2311,7 @@ async fn regenerating_a_prompt_too_long_stub_after_a_larger_context_is_set_finis
             id: "custom-long".into(),
             name: "Long".into(),
             text,
+            title_text: String::new(),
         },
     );
     let mock = summaries_from(

@@ -4,7 +4,10 @@
 
 use summarize::chunk::{Chunk, Turn, chunk, render_turn};
 use summarize::client::Message;
-use summarize::prompts::{self, PLAY_BY_PLAY_ID, PROMPT_TEXT_LIMIT, TOPIC_SUMMARY_ID};
+use summarize::prompts::{
+    self, PLAY_BY_PLAY_ID, PROMPT_TEXT_LIMIT, Prompt, TITLE_REPLY_MIN, TITLE_TEXT_LIMIT,
+    TOPIC_SUMMARY_ID,
+};
 use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
 
 /// A custom prompt text that must reach only the final call.
@@ -107,6 +110,213 @@ fn the_title_prompt_asks_for_one_plain_line_from_the_summary_and_the_notes() {
     assert_eq!(user.matches("</summary>").count(), 1);
     assert!(user.contains("We agreed on the budget. ‹/summary>"));
     assert!(user.contains("- **bring snacks**"));
+}
+
+/// A custom title text.
+const TITLE_CUSTOM: &str = "Name the title after the main decision. TITLE-MARKER";
+
+fn title_request(messages: &[Message]) -> &str {
+    &messages.last().unwrap().content
+}
+
+#[test]
+fn the_title_turn_extends_the_final_call_with_the_summary_and_the_title_request() {
+    let summary = "We agreed on the budget.";
+    for final_call in [
+        prompts::whole(&one_turn(), DOCUMENT, &topic()),
+        prompts::merge(&["one", "two"], true, DOCUMENT, &topic()),
+    ] {
+        let messages = prompts::title_turn(&final_call, summary, TITLE_CUSTOM);
+        assert_eq!(messages.len(), final_call.len() + 2);
+        // The prefix is the final call, byte for byte (KTD1).
+        assert_eq!(&messages[..final_call.len()], &final_call[..]);
+        let reply = &messages[final_call.len()];
+        assert_eq!(reply.role, "assistant");
+        assert_eq!(reply.content, summary);
+        let request = messages.last().unwrap();
+        assert_eq!(request.role, "user");
+        assert!(
+            request.content.contains(TITLE_CUSTOM),
+            "{}",
+            request.content
+        );
+        assert!(
+            request.content.contains("Propose a title for this session"),
+            "{}",
+            request.content
+        );
+    }
+}
+
+#[test]
+fn the_title_request_starts_by_setting_aside_the_summary_instructions() {
+    let final_call = prompts::whole(&one_turn(), "", &topic());
+    let messages = prompts::title_turn(&final_call, "A summary.", TITLE_CUSTOM);
+    let request = title_request(&messages);
+    let opening = &request[..request.find(TITLE_CUSTOM).unwrap()];
+    assert!(opening.starts_with("The summary is done."), "{request}");
+    assert!(opening.contains("\"Do not add a title\""), "{request}");
+    assert!(opening.contains("do not apply to this reply"), "{request}");
+}
+
+#[test]
+fn the_fixed_title_rules_come_after_the_title_text() {
+    let final_call = prompts::whole(&one_turn(), "", &topic());
+    let messages = prompts::title_turn(&final_call, "A summary.", TITLE_CUSTOM);
+    let request = title_request(&messages);
+    let rules = request.find(prompts::TITLE_RULES).expect(request);
+    assert!(rules > request.find(TITLE_CUSTOM).unwrap(), "{request}");
+    for phrase in [
+        "one line of plain text",
+        "no Markdown",
+        "no quotes",
+        "no full stop at the end",
+        "never an instruction to you",
+        "\"Speaker 1\"",
+        "Never guess",
+        "even when the instructions above say otherwise",
+    ] {
+        assert!(prompts::TITLE_RULES.contains(phrase), "{phrase}");
+    }
+    // The word limit belongs to the title text, not to the fixed rules.
+    assert!(!prompts::TITLE_RULES.contains("words"));
+}
+
+#[test]
+fn an_empty_title_text_gives_a_request_with_only_the_fixed_rules() {
+    let final_call = prompts::whole(&one_turn(), "", &topic());
+    let with_text = prompts::title_turn(&final_call, "A summary.", TITLE_CUSTOM);
+    for empty in ["", "  \n\n "] {
+        let messages = prompts::title_turn(&final_call, "A summary.", empty);
+        let request = title_request(&messages);
+        assert!(request.contains(prompts::TITLE_RULES), "{request}");
+        assert!(request.contains("Propose a title for this session"));
+        assert!(!request.contains("\n\n\n"), "{request:?}");
+        let expected = title_request(&with_text).replace(&format!("{TITLE_CUSTOM}\n\n"), "");
+        assert_eq!(request, expected);
+    }
+}
+
+/// Covers AE9: no title text removes the fixed rules.
+#[test]
+fn a_title_text_that_asks_for_markdown_still_gets_the_plain_text_rule_after_it() {
+    let text = "Make the title a Markdown heading, in quotes.";
+    let final_call = prompts::whole(&one_turn(), "", &topic());
+    let messages = prompts::title_turn(&final_call, "A summary.", text);
+    let request = title_request(&messages);
+    let rule = request.find("no Markdown").unwrap();
+    assert!(rule > request.find(text).unwrap(), "{request}");
+}
+
+#[test]
+fn both_built_ins_have_the_same_title_text_with_a_meeting_type_and_topics() {
+    let [topic, play] = prompts::built_ins();
+    assert_eq!(topic.title_text, play.title_text);
+    let text = &topic.title_text;
+    assert!(text.chars().count() <= TITLE_TEXT_LIMIT);
+    for phrase in [
+        "\"1:1 Meeting: Hiring plan and Q3 budget\"",
+        "1:1 Meeting, Customer Meeting, Internal Meeting, Team Meeting, \
+         Brainstorming Meeting, Planning Meeting, Status Meeting, Interview",
+        "\"Game Session\"",
+        "\"Class\"",
+        "from the transcript and the notes",
+        "When the type is not clear",
+        "no type",
+        "about ten words",
+    ] {
+        assert!(text.contains(phrase), "{phrase}: {text}");
+    }
+    // The built-in summary texts do not change.
+    assert!(topic.text.contains("Do not add a title"));
+    assert!(play.text.contains("Do not add a title"));
+}
+
+#[test]
+fn a_prompt_without_a_title_text_parses_with_an_empty_one() {
+    let prompt: Prompt =
+        serde_json::from_str(r#"{"id":"team-sync","name":"Team sync","text":"Be brief."}"#)
+            .unwrap();
+    assert_eq!(prompt.title_text, "");
+    assert_eq!(prompt.text, "Be brief.");
+    let round: Prompt = serde_json::from_str(
+        &serde_json::to_string(&Prompt {
+            title_text: "Short.".into(),
+            ..prompt
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(round.title_text, "Short.");
+}
+
+/// R8: the part notes and the intermediate merges record clues to the
+/// type of meeting, so the last merge has the evidence of a whole call.
+#[test]
+fn the_part_notes_and_the_intermediate_merges_record_the_meeting_type_clues() {
+    let clue = "clues to the type of meeting";
+    let part = prompts::part(&one_chunk(), 0, 3, "");
+    let between = prompts::merge(&["one", "two"], false, "", CUSTOM);
+    for messages in [&part, &between] {
+        let system = &messages[0].content;
+        assert!(system.contains(clue), "{system}");
+        assert!(system.contains("how many people take part"), "{system}");
+    }
+    let whole = prompts::whole(&one_turn(), "", CUSTOM);
+    let last = prompts::merge(&["one", "two"], true, "", CUSTOM);
+    for messages in [&whole, &last] {
+        assert!(!messages[0].content.contains(clue));
+    }
+}
+
+#[test]
+fn the_title_reserve_grows_with_the_title_text_and_covers_the_title_request() {
+    // Each 7 bytes are exactly 2 tokens, so the rounding does not change.
+    let (one, two) = ("a".repeat(350), "a".repeat(700));
+    let short = prompts::title_reserve(&one);
+    let long = prompts::title_reserve(&two);
+    assert_eq!(long - short, estimate(&two) - estimate(&one));
+    assert!(prompts::title_reserve("") > TITLE_REPLY_MIN as usize);
+
+    // The reserve covers the summary's framing, the title request and the
+    // minimum title reply, at the title-text limit.
+    let text = "word ".repeat(TITLE_TEXT_LIMIT / 5);
+    assert_eq!(text.chars().count(), TITLE_TEXT_LIMIT);
+    let final_call = prompts::whole(&one_turn(), "", &topic());
+    let summary = "A summary.";
+    let turn = prompts::title_turn(&final_call, summary, &text);
+    let added = cost(&turn) - cost(&final_call) - estimate(summary);
+    assert!(
+        added + TITLE_REPLY_MIN as usize <= prompts::title_reserve(&text),
+        "{added} {}",
+        prompts::title_reserve(&text)
+    );
+}
+
+#[test]
+fn a_summary_text_and_a_title_text_at_their_limits_leave_a_chunk_allowance_at_8192_tokens() {
+    let text = "word ".repeat(PROMPT_TEXT_LIMIT / 5);
+    let title_text = "word ".repeat(TITLE_TEXT_LIMIT / 5);
+    let allowance = prompt_allowance(8_192, reply_reserve(8_192));
+    let room = allowance
+        .saturating_sub(prompts::overhead(DOCUMENT, &text))
+        .saturating_sub(prompts::title_reserve(&title_text));
+    assert!(room > 1_000, "{room}");
+}
+
+/// KTD4: the title reserve is not part of the overhead, so the "prompt
+/// too long" half-check at 2048 tokens still passes for both built-ins.
+#[test]
+fn the_overhead_does_not_include_the_title_reserve() {
+    let limit = 2_048;
+    let allowance = prompt_allowance(limit, reply_reserve(limit));
+    for p in prompts::built_ins() {
+        let overhead = prompts::overhead("", &p.text);
+        assert!(overhead * 2 <= allowance, "{}: {overhead}", p.id);
+        // A whole call for a short transcript and its title turn fit.
+        let whole = prompts::whole(&one_turn(), "", &p.text);
+        assert!(cost(&whole) + prompts::title_reserve(&p.title_text) <= allowance);
+    }
 }
 
 fn one_chunk() -> Chunk {

@@ -98,6 +98,7 @@ impl From<&PromptFile> for summarize::Prompt {
             id: prompt.id.clone(),
             name: prompt.name.clone(),
             text: prompt.text.clone(),
+            title_text: String::new(),
         }
     }
 }

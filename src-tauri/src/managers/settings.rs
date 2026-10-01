@@ -189,6 +189,7 @@ impl From<&SummaryPrompt> for summarize::Prompt {
             id: prompt.id.clone(),
             name: prompt.name.clone(),
             text: prompt.text.clone(),
+            title_text: String::new(),
         }
     }
 }
@@ -2370,6 +2371,7 @@ mod tests {
                 id: "g".into(),
                 name: "Team sync".into(),
                 text: "Write a recap.".into(),
+                title_text: String::new(),
             }
         );
 
@@ -2388,6 +2390,7 @@ mod tests {
             id: "g".into(),
             name: "Team sync".into(),
             text: "The last text read.".into(),
+            title_text: String::new(),
         };
         let mut settings = Settings {
             active_summary_prompt: "g".into(),

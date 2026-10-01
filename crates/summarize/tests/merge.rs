@@ -27,18 +27,20 @@ fn a_lone_summary_at_the_end_of_a_layer_passes_up_unchanged() {
     assert_eq!(groups, vec![0..2, 2..3]);
 }
 
-/// Covers AE9: grouping reserves the room for the prompt text in every
-/// layer, because it does not know which layer is last.
+/// Covers AE9: grouping reserves the room for the prompt text and the
+/// title turn in every layer, because it does not know which layer is
+/// last.
 #[test]
 fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
-    use summarize::prompts::{self, PROMPT_TEXT_LIMIT};
+    use summarize::prompts::{self, PROMPT_TEXT_LIMIT, TITLE_REPLY_MIN, TITLE_TEXT_LIMIT};
     use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
 
     let text = "word ".repeat(PROMPT_TEXT_LIMIT / 5);
+    let title_text = "word ".repeat(TITLE_TEXT_LIMIT / 5);
     let notes = "- the budget\n- the launch date\n";
     let limit = 8_192;
     let budget = prompt_allowance(limit, reply_reserve(limit));
-    let allowance = budget - prompts::overhead(notes, &text);
+    let allowance = budget - prompts::overhead(notes, &text) - prompts::title_reserve(&title_text);
     // Nine part notes of about 900 tokens each.
     let mut summaries: Vec<String> = (0..9)
         .map(|i| format!("{i} {}", "x".repeat(3_150)))
@@ -59,6 +61,17 @@ fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
             let cost = estimate_messages(messages.iter().map(|m| m.content.as_str()));
             assert!(cost <= budget, "layer {layers}: {cost} of {budget}");
             assert_eq!(messages[0].content.contains(text.trim()), last);
+            if last {
+                // The title turn after the last merge leaves room for the
+                // minimum title reply, without the summary itself.
+                let summary = "";
+                let turn = prompts::title_turn(&messages, summary, &title_text);
+                let turn_cost = estimate_messages(turn.iter().map(|m| m.content.as_str()));
+                assert!(
+                    turn_cost + TITLE_REPLY_MIN as usize <= budget,
+                    "{turn_cost} of {budget}"
+                );
+            }
             next.push(parts[0].to_string());
         }
         summaries = next;

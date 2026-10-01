@@ -1267,6 +1267,7 @@ fn first_summary_prompt(
         id: p.id,
         name: p.name,
         text: p.text,
+        title_text: String::new(),
     }))
 }
 

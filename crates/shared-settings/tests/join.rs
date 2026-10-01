@@ -21,6 +21,7 @@ fn prompt(id: &str, name: &str, text: &str) -> Prompt {
         id: id.into(),
         name: name.into(),
         text: text.into(),
+        title_text: String::new(),
     }
 }
 
