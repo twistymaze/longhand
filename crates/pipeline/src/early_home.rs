@@ -185,7 +185,7 @@ impl Drop for NoteGuard {
 
 // ------------------------------------------------------------ the steps
 
-fn exists(path: &Path) -> bool {
+pub(crate) fn exists(path: &Path) -> bool {
     path.symlink_metadata().is_ok()
 }
 

@@ -1,6 +1,12 @@
 // The library keeps one selected note and its preview through navigation.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   commands,
   type Readiness,
@@ -17,7 +23,7 @@ import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { groupByDay, rowTitle } from "./group";
-import { NewNoteButton } from "./NewNoteButton";
+import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
@@ -248,16 +254,14 @@ export function Home({
           </div>
 
           {readiness && !readiness.can_start_note && !recording && (
-            <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
-              <CautionIcon className="size-4 text-caution" />
+            <CautionBanner>
               <span className="min-w-0 flex-1">
-                {readiness.note_start_refusal ?? "A new note can’t start now."}
+                {noteStartRefusal(readiness)}
               </span>
-            </div>
+            </CautionBanner>
           )}
           {readiness && !readiness.armed && !recording && (
-            <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
-              <CautionIcon className="size-4 text-caution" />
+            <CautionBanner>
               <span className="min-w-0 flex-1">
                 {missing
                   ? `To record, ${missing} in Settings.`
@@ -266,7 +270,7 @@ export function Home({
               <Button onClick={() => void commands.openSettings()}>
                 Open Settings…
               </Button>
-            </div>
+            </CautionBanner>
           )}
           {notice && (
             <p
@@ -385,6 +389,15 @@ export function Home({
         )}
       </div>
       {deletion.dialog}
+    </div>
+  );
+}
+
+function CautionBanner({ children }: { children: ReactNode }) {
+  return (
+    <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
+      <CautionIcon className="size-4 text-caution" />
+      {children}
     </div>
   );
 }

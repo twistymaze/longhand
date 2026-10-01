@@ -17,9 +17,16 @@ const labels = {
   note: { main: "New Note", menu: "New Note Without Recording" },
 };
 
+/// Why no new note can start now, or null when one can.
+export function noteStartRefusal(readiness: Readiness): string | null {
+  if (readiness.can_start_note) return null;
+  return readiness.note_start_refusal ?? "A new note can’t start now.";
+}
+
 /// Why the choice `record` cannot start now, or null when it can.
 function refusal(readiness: Readiness, record: boolean): string | null {
-  if (!readiness.can_start_note) return readiness.note_start_refusal ?? "A new note can’t start now.";
+  const noteRefusal = noteStartRefusal(readiness);
+  if (noteRefusal) return noteRefusal;
   if (record && !readiness.armed) {
     const missing = missingPreconditions(readiness);
     return missing ? `To record, ${missing} in Settings.` : "Not ready to record.";

@@ -247,7 +247,7 @@ impl Removal<'_> {
                     return Ok(Err(Kept::Unavailable));
                 }
                 let staging = root.join(naming::staging_name(id));
-                Ok(Ok(if exists(&staging) {
+                Ok(Ok(if early_home::exists(&staging) {
                     Target::Folder(staging)
                 } else {
                     Target::Nothing
@@ -258,7 +258,7 @@ impl Removal<'_> {
                     return Ok(Err(Kept::Unavailable));
                 }
                 let staging = root.join(naming::staging_name(id));
-                if exists(&staging) {
+                if early_home::exists(&staging) {
                     return Ok(Ok(Target::Folder(staging)));
                 }
                 // The rename to the final name happened and its record did
@@ -333,10 +333,6 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
         return Ok(Some(Kept::Busy));
     }
     Ok(None)
-}
-
-fn exists(path: &Path) -> bool {
-    path.symlink_metadata().is_ok()
 }
 
 /// Check the folder of an empty note (R18). Returns the files to delete:
