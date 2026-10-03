@@ -19,7 +19,7 @@ The state of a session whose result flag is `pending` when no computer's in-use 
 ## Saving a session
 
 ### Working location
-The app's own storage, where a session lives while it records and processes: its audio, the processing copies and every intermediate file. The user never browses it.
+The app's own storage, where a session lives while it records and processes: its audio, the processing copies and every intermediate file. The user never browses it. A computer that has not recorded can have no Working location yet, also when it shows and changes notes from a shared storage folder.
 
 Some of what it holds never leaves it: the processing audio and the raw recovery chunks stay behind when the session moves to the storage folder.
 
