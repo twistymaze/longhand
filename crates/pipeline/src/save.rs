@@ -1293,6 +1293,8 @@ fn summarize_again(
         if folder::fingerprint(&std::fs::read(path.join(SESSION_FILE))?) != expected {
             return Err(changed());
         }
+        // A computer that has not recorded has no working folder yet.
+        std::fs::create_dir_all(working_root)?;
         let local = tempfile::Builder::new()
             .prefix(".longhand-summary-")
             .tempdir_in(working_root)?

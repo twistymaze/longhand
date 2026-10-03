@@ -4989,6 +4989,21 @@ async fn regenerate_summary_makes_a_missing_summary() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_on_a_computer_with_no_working_folder_makes_the_folder() {
+    // A computer that has not recorded has no `sessions/` folder, but it
+    // can regenerate the summary of a note in the storage folder.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    std::fs::remove_dir_all(&r.root).unwrap();
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert!(read(&home, "summary.md").contains("Summary number"));
+    assert_fingerprints_match(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn regenerate_summary_with_no_transcript_refuses() {
     // R8: with no `transcript.md` there is nothing to summarize.
     let r = rig().await;
