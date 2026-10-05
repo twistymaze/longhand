@@ -3,5 +3,5 @@
   "identifier": "update",
   "description": "Capabilities for the update window",
   "windows": ["update"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-set-size"]
 }

@@ -256,6 +256,8 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
     match (visible, existing) {
         (true, None) => {
             let built = crate::interface_zoom::build(app, |percent| {
+                // The page then sets the size that fits its content.
+                let scale = f64::from(percent) / 100.0;
                 WebviewWindowBuilder::new(
                     app,
                     UPDATE_WINDOW,
@@ -265,7 +267,7 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
                 .zoom_hotkeys_enabled(false)
                 .initialization_script(crate::interface_zoom::initialization(percent))
                 .title("Software Update")
-                .inner_size(480.0, 200.0)
+                .inner_size(480.0 * scale, 200.0 * scale)
                 .resizable(false)
                 .maximizable(false)
                 .minimizable(false)
