@@ -3,7 +3,8 @@
 // The manager opens and closes the window. A close by the user counts as
 // the left button's choice.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { commands, events, type Choice, type UpdateState } from "../bindings";
 import { AppIcon } from "../settings/icons";
 import { sentence } from "../processing/describe";
@@ -73,6 +74,41 @@ function progressText({ downloaded, total }: { downloaded: number; total: number
   return total ? `${formatBytes(downloaded)} of ${formatBytes(total)}` : formatBytes(downloaded);
 }
 
+/// The window size that shows all of the page. The webview zoom scales CSS
+/// pixels, so one CSS pixel is `scale` logical pixels.
+export function windowSize(width: number, height: number, scale: number): LogicalSize {
+  return new LogicalSize(Math.ceil(width * scale), Math.ceil(height * scale));
+}
+
+function interfaceScale(): number {
+  const scale = Number((window as { __interfaceScale?: string }).__interfaceScale);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+/// Size the window to the page, as a macOS alert sizes to its text. The page
+/// sets the size again when its content or the interface zoom changes.
+function useWindowFitsContent(content: RefObject<HTMLElement | null>, shown: boolean) {
+  useLayoutEffect(() => {
+    const element = content.current;
+    if (!element) return;
+    const fit = () => {
+      const { width, height } = element.getBoundingClientRect();
+      if (width === 0 || height === 0) return;
+      getCurrentWindow().setSize(windowSize(width, height, interfaceScale())).catch(() => {});
+    };
+    fit();
+    const resized = new ResizeObserver(fit);
+    resized.observe(element);
+    // A zoom change sets the scale property on the root element.
+    const zoomed = new MutationObserver(fit);
+    zoomed.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+    return () => {
+      resized.disconnect();
+      zoomed.disconnect();
+    };
+  }, [content, shown]);
+}
+
 export function UpdateWindow() {
   const [state, setState] = useState<UpdateState | null>(null);
   useEffect(() => {
@@ -94,6 +130,8 @@ export function UpdateWindow() {
   // WKWebView does not focus a button on click, so the page sets the focus
   // itself. Return then activates the default button.
   useEffect(() => defaultButton.current?.focus(), [title]);
+  const content = useRef<HTMLElement>(null);
+  useWindowFitsContent(content, view !== null);
 
   if (!view) return <main className="h-screen bg-window" />;
   const choose = (choice: Choice) => void commands.chooseUpdate(choice);
@@ -102,7 +140,8 @@ export function UpdateWindow() {
 
   return (
     <main
-      className="flex h-screen gap-4 bg-window px-5 pt-5 pb-4 text-label select-none"
+      ref={content}
+      className="flex w-[480px] gap-4 bg-window px-5 pt-5 pb-4 text-label select-none"
       onKeyDown={(e) => {
         if (e.key === "Escape") choose(cancel.choice);
       }}
@@ -135,7 +174,7 @@ export function UpdateWindow() {
             <p className="mt-1.5 text-[0.8rem] tabular-nums text-label-secondary">{progressText(view.progress)}</p>
           </div>
         )}
-        <div className="mt-auto flex justify-end gap-2 pt-4">
+        <div className="flex justify-end gap-2 pt-4">
           {view.buttons.map((b, i) => {
             const isDefault = i === view.buttons.length - 1;
             return (
