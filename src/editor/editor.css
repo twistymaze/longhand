@@ -42,11 +42,6 @@
   padding-bottom: 0;
 }
 
-/* A read-only field shows the text in the secondary label colour. */
-.prosemirror-editor.markdown-field[aria-readonly="true"] {
-  color: var(--label-secondary);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .note-typography input.task-checkbox,
   .note-typography ul[data-type="taskList"] > li > div > p,

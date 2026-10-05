@@ -515,7 +515,7 @@ impl EngineProvider for Models {
     /// The Background of the shared view. It is the cached text while the
     /// Background file or the storage folder is not available (KTD3).
     fn background(&self) -> String {
-        settings::get_settings(&self.app).background
+        settings::get_background(&self.app)
     }
 
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {

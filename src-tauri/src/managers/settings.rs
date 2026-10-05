@@ -1360,6 +1360,13 @@ fn shared_snapshot(app: &AppHandle) -> SharedSnapshot {
         .unwrap_or_default()
 }
 
+/// The Background text of the shared view: the value of
+/// `Settings::background`. It is the cached text while the Background file
+/// or the storage folder is not available (KTD3).
+pub fn get_background(app: &AppHandle) -> String {
+    shared_snapshot(app).view.background
+}
+
 /// The local settings. A first run writes the defaults, and an old store
 /// migrates. The migration of a store from before version 6 puts the old
 /// shared values into the cache first, when no cache exists. When that

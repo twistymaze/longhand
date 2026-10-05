@@ -39,9 +39,9 @@ pub struct Prompt {
     /// Stored prompts from before the title text read as empty.
     #[serde(default)]
     pub title_text: String,
-    /// The Background: what the user wants every call to know (R7). The
-    /// runner sets it when a summary starts. A stored prompt never holds
-    /// it, so it reads as empty.
+    /// The Background: what the user wants every call to know (R7).
+    /// Settings and prompt files do not hold the Background. The runner
+    /// sets it when a summary starts, and the PROMPT checkpoint keeps it.
     #[serde(default)]
     pub background: String,
 }

@@ -10,7 +10,7 @@ import { commands, type Settings } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
 import { readOnlyReason } from "./shared";
-import { Button, ErrorText, Group } from "./ui";
+import { ChangedElsewhereNotice, ErrorText, Group } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
 const saveDelay = 1000;
@@ -177,20 +177,7 @@ export function Background({
           />
         </div>
       </div>
-      {changedElsewhere && (
-        <div className="settings-row px-4">
-          <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
-            <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-              <p className="font-medium text-caution">The Background changed on another computer.</p>
-              <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
-            </div>
-            <Button onClick={keep}>Keep My Text</Button>
-            <Button prominent onClick={reload}>
-              Reload
-            </Button>
-          </div>
-        </div>
-      )}
+      {changedElsewhere && <ChangedElsewhereNotice name="Background" onKeep={keep} onReload={reload} />}
       {saveError && <ErrorText>{saveError}</ErrorText>}
     </Group>
   );

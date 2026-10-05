@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
-import { Button, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
+import { Button, ChangedElsewhereNotice, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
 const saveDelay = 1000;
@@ -571,22 +571,7 @@ function PromptField({
           />
         </div>
       </div>
-      {changed && (
-        <div className="settings-row px-4">
-          <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
-            <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-              <p className="font-medium text-caution">{`The ${fieldName[field]} changed on another computer.`}</p>
-              <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
-            </div>
-            <Button onClick={onKeep}>
-              Keep My Text{suffix}
-            </Button>
-            <Button prominent onClick={onReload}>
-              Reload{suffix}
-            </Button>
-          </div>
-        </div>
-      )}
+      {changed && <ChangedElsewhereNotice name={fieldName[field]} suffix={suffix} onKeep={onKeep} onReload={onReload} />}
       {saveError && <ErrorText>{saveError}</ErrorText>}
     </>
   );
