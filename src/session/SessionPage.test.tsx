@@ -172,6 +172,23 @@ describe("SessionPage", () => {
     expect(document.activeElement === editor || editor.contains(document.activeElement)).toBe(true);
   });
 
+  test("My Notes keeps the cursor where the user put it after another tab shows", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0, found_speakers: null });
+    mockPage(e, {}, { load_session_notes: () => ({ markdown: "first\n\nsecond", fingerprint: "f0" }) });
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await screen.findByText("first");
+    const user = userEvent.setup();
+    // Select all the notes: a selection that is not the cursor at the end.
+    await user.keyboard(/Mac/.test(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}");
+    const selected = () => window.getSelection()!.isCollapsed === false;
+    expect(selected()).toBe(true);
+    await user.click(tab("Transcript"));
+    await user.click(tab("My Notes"));
+    expect(editor.contains(window.getSelection()!.anchorNode)).toBe(true);
+    expect(selected()).toBe(true);
+  });
+
   test("a recording that the list knows before the capture status opens on My Notes and stays there", async () => {
     const e = entry("rec", { state: "capturing", duration_ms: 0, found_speakers: null });
     mockPage(e);

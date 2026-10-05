@@ -756,12 +756,13 @@ export function SessionPage({
           </div>
         )}
         {/* My Notes stays mounted, so the editor keeps its document, cursor
-            and undo history while another tab shows. */}
+            and undo history while another tab shows. `autoFocus` does not
+            change with the tab: a change to true moves the cursor to the end. */}
         <div ref={notesPanel} role="tabpanel" hidden={tab !== "notes"}>
           <NotesTab
             key={id}
             sessionId={id}
-            autoFocus={tab === "notes" && (phase === "recording" || started)}
+            autoFocus={phase === "recording" || started}
             editable={!held && !deleted}
             synced={sessions.synced[id] ?? 0}
             onMarkdown={setNotes}
