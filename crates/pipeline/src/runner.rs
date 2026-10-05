@@ -95,6 +95,11 @@ pub trait EngineProvider: Send + Sync {
     /// note that recorded its prompt at the start uses that prompt instead
     /// (KTD15). Summarize Again always uses this prompt.
     fn summary_prompt(&self) -> summarize::Prompt;
+    /// The Background text that the next summary uses, read fresh when a
+    /// summary starts like the prompt (KTD6). It is the cached text when
+    /// the Background file cannot be used (KTD3), and empty when the user
+    /// has none.
+    fn background(&self) -> String;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
     /// The destination folder chosen now. It is read when the session is saved,
@@ -1752,6 +1757,9 @@ mod tests {
             unreachable!()
         }
         fn summary_prompt(&self) -> summarize::Prompt {
+            unreachable!()
+        }
+        fn background(&self) -> String {
             unreachable!()
         }
         fn learn_limit(&self, _: &str, _: &str, _: u32) {

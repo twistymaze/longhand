@@ -508,6 +508,19 @@ pub fn activate_summary_prompt(
     Ok(settings::get_settings(&app))
 }
 
+/// Save the Background text that each summary uses (R4, R5). An empty
+/// text is a valid Background.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn set_background(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    text: String,
+) -> Result<Settings, String> {
+    shared.set_background(&text)?;
+    Ok(settings::get_settings(&app))
+}
+
 /// Pick a folder with the system dialog and return its path. Nothing
 /// changes: the surface then asks what to do with the notes in the old
 /// folder, and calls [`change_storage_folder`] (R4). `None` when the user

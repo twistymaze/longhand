@@ -80,6 +80,9 @@ impl EngineProvider for RealModel {
     fn summary_prompt(&self) -> summarize::Prompt {
         summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
     }
+    fn background(&self) -> String {
+        String::new()
+    }
     fn learn_limit(&self, _: &str, _: &str, limit: u32) {
         eprintln!("learned a context limit of {limit}");
     }

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
+use shared_settings::background::{self, BackgroundError};
 use shared_settings::cache::{self, Cache};
 use shared_settings::file::{self, SaveError, SharedValue, Unavailable};
 use shared_settings::join::{self, JoinKind};
@@ -207,6 +208,16 @@ impl From<SaveError> for Failure {
     }
 }
 
+impl From<BackgroundError> for Failure {
+    fn from(error: BackgroundError) -> Self {
+        match error {
+            BackgroundError::NoSettingsFile => Failure::Missing,
+            BackgroundError::NotAvailable(cause) => Failure::NotAvailable(cause),
+            other => Failure::Refused(other.to_string()),
+        }
+    }
+}
+
 impl From<PromptError> for Failure {
     fn from(error: PromptError) -> Self {
         match error {
@@ -244,7 +255,7 @@ enum ReadStart {
     /// The cache came from another folder, so the read joined the folder.
     /// The value tells whether the view changed.
     Joined(bool),
-    Read(PendingRead),
+    Read(Box<PendingRead>),
 }
 
 /// The shared settings of the storage folder (KTD7).
@@ -350,7 +361,7 @@ impl SharedSettingsManager {
         let read = match self.begin_read() {
             ReadStart::Nothing => return false,
             ReadStart::Joined(changed) => return changed,
-            ReadStart::Read(read) => read,
+            ReadStart::Read(read) => *read,
         };
         let loaded = view::load(&read.root, read.cache.as_ref());
         self.finish_read(read, loaded)
@@ -375,11 +386,11 @@ impl SharedSettingsManager {
         if cache.as_ref().is_some_and(|c| c.source != root) {
             return ReadStart::Joined(self.join(None));
         }
-        ReadStart::Read(PendingRead {
+        ReadStart::Read(Box::new(PendingRead {
             root,
             generation,
             cache,
-        })
+        }))
     }
 
     /// Keep the result of `read`, unless a join or a change came during
@@ -472,6 +483,13 @@ impl SharedSettingsManager {
             }
             Ok(())
         })
+    }
+
+    /// Save the Background text that each summary uses (R4, R5). Only a
+    /// change that the user makes calls this. An empty text writes an empty
+    /// file (KTD2).
+    pub fn set_background(&self, text: &str) -> Result<(), String> {
+        self.change(|root| background::save_background(root, text).map_err(Failure::from))
     }
 
     /// Make a prompt the one that the next summary uses (R1).
@@ -1358,7 +1376,7 @@ mod tests {
         };
         let loaded = view::load(&started.root, started.cache.as_ref());
         manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
-        assert!(!manager.finish_read(started, loaded));
+        assert!(!manager.finish_read(*started, loaded));
         assert!(!settings_of(&manager).chosen_recognition.live_transcript);
     }
 
@@ -1415,5 +1433,120 @@ mod tests {
         assert!(available(&manager));
         assert_eq!(file_of(new.path())["live_transcript"], false);
         assert_eq!(prompt_files(new.path()), ["New prompt.md"]);
+    }
+
+    fn background_file(root: &Path) -> Option<String> {
+        std::fs::read_to_string(shared_settings::background::background_path(root)).ok()
+    }
+
+    #[test]
+    fn a_background_save_writes_the_file_and_the_settings_show_the_new_text() {
+        // R4, R5.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let settings = settings_of(&manager);
+        assert_eq!(settings.background, "");
+        assert_eq!(settings.background_read_only, None);
+        assert_eq!(
+            settings.background_limit as usize,
+            shared_settings::background::BACKGROUND_TEXT_LIMIT
+        );
+
+        manager.set_background("I am Erv Walter.").unwrap();
+        assert_eq!(settings_of(&manager).background, "I am Erv Walter.");
+        assert_eq!(
+            background_file(folder.path()).as_deref(),
+            Some("I am Erv Walter.")
+        );
+
+        // A clear writes an empty file. It does not delete the file (KTD2).
+        manager.set_background("").unwrap();
+        assert_eq!(settings_of(&manager).background, "");
+        assert_eq!(background_file(folder.path()).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_background_over_the_limit_is_refused_and_writes_nothing() {
+        // R6.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let limit = shared_settings::background::BACKGROUND_TEXT_LIMIT;
+
+        let error = manager.set_background(&"x".repeat(limit + 1)).unwrap_err();
+        assert_eq!(
+            error,
+            shared_settings::background::BackgroundError::TooLong.to_string()
+        );
+        assert_eq!(background_file(folder.path()), None);
+
+        manager.set_background(&"x".repeat(limit)).unwrap();
+        assert_eq!(settings_of(&manager).background.chars().count(), limit);
+    }
+
+    #[test]
+    fn with_the_folder_not_reachable_the_background_is_read_only_and_a_save_fails() {
+        // R5: the cached text stays, and nothing is written.
+        let parent = TempDir::new().unwrap();
+        let folder = parent.path().join("External");
+        let computer = Computer::new();
+        let manager = computer.manager(Some(&folder));
+        manager.join_at_launch();
+
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.background_read_only.as_deref(),
+            Some(ReadOnlyCause::FolderNotAvailable.message())
+        );
+        let error = manager.set_background("Text.").unwrap_err();
+        assert_eq!(error, ReadOnlyCause::FolderNotAvailable.message());
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_background_file_that_cannot_be_used_keeps_the_cached_text_and_stays() {
+        // KTD3: summaries use the cached text, the Background is read-only
+        // with a reason, and a save does not write over the file.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        manager.set_background("Cached text.").unwrap();
+
+        let too_long = "x".repeat(shared_settings::background::BACKGROUND_TEXT_LIMIT + 1);
+        std::fs::write(
+            shared_settings::background::background_path(folder.path()),
+            &too_long,
+        )
+        .unwrap();
+        assert!(manager.reread());
+
+        let settings = settings_of(&manager);
+        assert_eq!(settings.background, "Cached text.");
+        assert_eq!(
+            settings.background_read_only,
+            Some(shared_settings::background::BackgroundUnavailable::TooLong.to_string())
+        );
+        // The rest of the shared settings stay writable.
+        assert!(available(&manager));
+        assert!(manager.set_background("New text.").is_err());
+        assert_eq!(background_file(folder.path()), Some(too_long));
+    }
+
+    #[test]
+    fn a_background_that_another_computer_changed_shows_after_a_read() {
+        let folder = TempDir::new().unwrap();
+        let (computer_a, computer_b) = (Computer::new(), Computer::new());
+        let a = computer_a.manager(Some(folder.path()));
+        let b_manager = computer_b.manager(Some(folder.path()));
+        a.join_at_launch();
+        b_manager.join_at_launch();
+
+        a.set_background("From A.").unwrap();
+        assert!(b_manager.reread());
+        assert_eq!(settings_of(&b_manager).background, "From A.");
     }
 }

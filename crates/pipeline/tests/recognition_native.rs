@@ -67,6 +67,9 @@ impl EngineProvider for Provider {
     fn summary_prompt(&self) -> pipeline::summarize::Prompt {
         summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
     }
+    fn background(&self) -> String {
+        String::new()
+    }
     fn learn_limit(&self, _: &str, _: &str, _: u32) {}
     fn destination(&self) -> Option<PathBuf> {
         None

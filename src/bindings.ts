@@ -329,6 +329,18 @@ async activateSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * Save the Background text that each summary uses (R4, R5). An empty
+ * text is a valid Background.
+ */
+async setBackground(text: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_background", { text }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Pick a folder with the system dialog and return its path. Nothing
  * changes: the surface then asks what to do with the notes in the old
  * folder, and calls [`change_storage_folder`] (R4). `None` when the user
@@ -1952,7 +1964,22 @@ active_summary_prompt: string;
  * Whether this computer can change the shared settings now, and the
  * values that this version does not know (R16, R17).
  */
-shared: SharedState }
+shared: SharedState; 
+/**
+ * A shared setting. The Background text that each summary uses (R1,
+ * R7). It is the cached text while the Background file or the storage
+ * folder is not available (KTD3).
+ */
+background: string; 
+/**
+ * The most characters the Background can have (R6).
+ */
+background_limit: number; 
+/**
+ * Why the Background cannot change now, as UI text. `None` when
+ * this computer can change it (R5, KTD3).
+ */
+background_read_only: string | null }
 /**
  * The settings changed without a command from the surface, for example
  * when a picked model becomes the selected model after its download.

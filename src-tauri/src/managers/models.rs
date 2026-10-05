@@ -1071,6 +1071,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            background: String::new(),
         };
         let shared = crate::managers::shared::SharedSnapshot {
             view: view::cached(Some(&cache), Availability::Available),

@@ -76,6 +76,8 @@ struct Script {
     capturing: AtomicBool,
     /// The active summary prompt; unset is the "Topic summary" built-in.
     prompt: Mutex<Option<summarize::Prompt>>,
+    /// The Background text; unset is empty.
+    background: Mutex<String>,
     /// Named sentences that the recognizer hears: when set, each window
     /// decodes the name of each sentence once for each time it finds the
     /// sentence in the window's audio (see [`heard`]).
@@ -440,6 +442,9 @@ impl EngineProvider for Provider {
         self.0.prompt.lock().unwrap().clone().unwrap_or_else(|| {
             summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
         })
+    }
+    fn background(&self) -> String {
+        self.0.background.lock().unwrap().clone()
     }
     fn learn_limit(&self, _: &str, _: &str, limit: u32) {
         self.0.learned.lock().unwrap().push(limit);
