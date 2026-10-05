@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { NoteEditor, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS } from "./NoteEditor";
+import { NoteEditor, type NoteEditorProps, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS } from "./NoteEditor";
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -113,5 +113,121 @@ describe("NoteEditor", () => {
     advance(SAVE_DEBOUNCE_MS);
     expect(box.querySelector("h2")?.textContent).toBe("Actions");
     expect(changes[changes.length - 1]).toBe("## Actions");
+  });
+});
+
+// The Settings form of the editor (KTD7). My Notes passes none of these props.
+describe("NoteEditor in Settings", () => {
+  const selectAll = /Mac/.test(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}";
+
+  function field(props: Partial<NoteEditorProps> = {}) {
+    const changes: string[] = [];
+    const all: NoteEditorProps = {
+      markdown: "hello",
+      onChange: (m: string) => changes.push(m),
+      ...props,
+    };
+    const view = render(<NoteEditor {...all} />);
+    const user = userEvent.setup({ delay: null });
+    return { changes, view, user, all };
+  }
+
+  test("with immediate, one typed character calls onChange at once", async () => {
+    const { changes, user } = field({ immediate: true, autoFocus: true });
+    await user.type(screen.getByRole("textbox"), "!");
+    // No timer moved: the change came without a delay.
+    expect(changes).toEqual(["hello!"]);
+    advance(5000);
+    expect(changes).toEqual(["hello!"]);
+  });
+
+  test("labelledBy and describedBy give the textbox its name and hint", () => {
+    render(
+      <>
+        <span id="a-label">Background</span>
+        <span id="a-hint">Names and terms.</span>
+        <span id="b-label">Summary prompt</span>
+        <NoteEditor markdown="one" onChange={() => {}} labelledBy="a-label" describedBy="a-hint" />
+        <NoteEditor markdown="two" onChange={() => {}} labelledBy="b-label" />
+      </>,
+    );
+    const a = screen.getByRole("textbox", { name: "Background" });
+    expect(a.textContent).toBe("one");
+    expect(a.getAttribute("aria-describedby")).toBe("a-hint");
+    expect(a.getAttribute("aria-label")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Summary prompt" }).textContent).toBe("two");
+    expect(screen.queryByRole("textbox", { name: "My Notes" })).toBeNull();
+  });
+
+  test("without the new props, the textbox keeps the name My Notes and the placeholder", () => {
+    field({ markdown: "" });
+    const box = screen.getByRole("textbox", { name: "My Notes" });
+    expect(box.querySelector("[data-placeholder]")?.getAttribute("data-placeholder")).toContain("Take notes.");
+  });
+
+  test("placeholder null shows no note placeholder in an empty field", () => {
+    field({ markdown: "", placeholder: null, labelledBy: "x" });
+    const box = screen.getByRole("textbox");
+    expect(box.querySelector("[data-placeholder]")).toBeNull();
+    expect(box.textContent).toBe("");
+  });
+
+  test("className adds a class to the textbox", () => {
+    field({ className: "settings-markdown" });
+    expect(screen.getByRole("textbox").classList.contains("settings-markdown")).toBe(true);
+  });
+
+  test("onBlur fires when focus leaves the editor", () => {
+    let blurs = 0;
+    field({ onBlur: () => blurs++, autoFocus: true });
+    act(() => {
+      fireEvent.blur(screen.getByRole("textbox"));
+    });
+    expect(blurs).toBe(1);
+  });
+
+  test("a mount with a text and no edit calls onChange zero times", () => {
+    const { changes, view } = field({ markdown: "- a\n- b\nline one\nline two", immediate: true });
+    act(() => {
+      fireEvent.blur(screen.getByRole("textbox"));
+    });
+    advance(5000);
+    view.unmount();
+    expect(changes).toEqual([]);
+  });
+
+  test("the selection toolbar shows only while the editor is editable", async () => {
+    const { user, view, all } = field({ autoFocus: true });
+    await user.keyboard(selectAll);
+    expect(window.getSelection()!.isCollapsed).toBe(false);
+    expect(screen.getByRole("toolbar", { name: "Format selection" })).toBeTruthy();
+    view.rerender(<NoteEditor {...all} editable={false} />);
+    expect(screen.queryByRole("toolbar", { name: "Format selection" })).toBeNull();
+  });
+
+  test("the / menu shows only while the editor is editable", async () => {
+    const { user, view, all } = field({ markdown: "", autoFocus: true });
+    await user.type(screen.getByRole("textbox"), "/");
+    expect(screen.getByRole("button", { name: "Heading 1" })).toBeTruthy();
+    view.rerender(<NoteEditor {...all} editable={false} />);
+    expect(screen.queryByRole("button", { name: "Heading 1" })).toBeNull();
+  });
+
+  test("a read-only editor marks itself read-only and sends no change", async () => {
+    const { changes, user, view } = field({
+      markdown: "- [ ] send notes",
+      editable: false,
+      immediate: true,
+      labelledBy: "x",
+    });
+    const box = screen.getByRole("textbox");
+    expect(box.getAttribute("aria-readonly")).toBe("true");
+    await user.type(box, "abc");
+    act(() => {
+      fireEvent.click(box.querySelector("input[type=checkbox]")!);
+    });
+    advance(5000);
+    view.unmount();
+    expect(changes).toEqual([]);
   });
 });

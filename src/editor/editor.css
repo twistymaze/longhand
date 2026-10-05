@@ -33,6 +33,20 @@
   display: none;
 }
 
+/* The editor in a Settings field (src/settings/MarkdownField.tsx). The text
+   has the size of the Settings text, and the editor has a minimum height of
+   a number of lines, as a multi-line field has. */
+.prosemirror-editor.markdown-field {
+  --note-editor-font-size: 1em;
+  min-height: calc(var(--markdown-field-rows, 4) * 1.5em);
+  padding-bottom: 0;
+}
+
+/* A read-only field shows the text in the secondary label colour. */
+.prosemirror-editor.markdown-field[aria-readonly="true"] {
+  color: var(--label-secondary);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .note-typography input.task-checkbox,
   .note-typography ul[data-type="taskList"] > li > div > p,
