@@ -2,7 +2,7 @@
 title: A destroyed webview's close listener stopped the close of the next Settings window
 date: 2026-09-25
 category: ui-bugs
-module: Settings window close (src/settings/SummaryPrompts.tsx, src-tauri/src/window.rs)
+module: Settings window close (src/settings/closeSaves.ts, src-tauri/src/window.rs)
 problem_type: ui_bug
 component: frontend
 severity: high
@@ -44,7 +44,7 @@ Sometimes the Settings window did not close when the user clicked its close butt
 
 ## Solution
 
-Remove the JS close listener **before** the page destroys its window (`src/settings/SummaryPrompts.tsx:220-223`):
+Remove the JS close listener **before** the page destroys its window (`src/settings/closeSaves.ts`, the `close` function of `install`):
 
 ```ts
 // Remove the listener before the destroy. Tauri keeps the listener

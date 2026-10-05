@@ -135,7 +135,7 @@ One free-form Markdown text in Settings, above the summary prompts, where the us
 ## Shared settings
 
 ### Shared settings
-The settings that every computer with the same storage folder uses: the summary prompts, the active summary prompt and the chosen configuration, and the setting for automatic update checks. They are in the hidden `.longhand` folder of the storage folder, so the sync service delivers them to each computer. Other settings stay on each computer, for example the microphone, the shortcuts, the storage folder itself and the track. A computer changes only the fields that the user changed and keeps the fields it does not know. When the shared settings are not available, Settings shows them as read-only, and the computer uses its last known values.
+The settings that every computer with the same storage folder uses: the summary prompts, the active summary prompt, the Background and the chosen configuration, and the setting for automatic update checks. They are in the hidden `.longhand` folder of the storage folder, so the sync service delivers them to each computer. Other settings stay on each computer, for example the microphone, the shortcuts, the storage folder itself and the track. A computer changes only the fields that the user changed and keeps the fields it does not know. When the shared settings are not available, Settings shows them as read-only, and the computer uses its last known values.
 
 ### Chosen configuration
 The recognition choices that the user made in Settings and that every computer shares: the transcription model, live transcript, speaker source, speaker processing mode, language and default speaker count. It is what the user wants, not always what a computer can use now. Compare Configuration in use.

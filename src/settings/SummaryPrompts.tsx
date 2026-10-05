@@ -216,14 +216,17 @@ export function SummaryPrompts({
     [cancel, load],
   );
 
-  // A pane change unmounts the pane, and the save then runs with no wait.
-  // A window close and the page events go through the close coordinator
-  // (KTD9).
+  // A pane change unmounts the pane, and the save of the pending text then
+  // starts. The registration stays until that save is complete, so that a
+  // window close during the save waits for it. A window close and the page
+  // events go through the close coordinator (KTD9).
   useEffect(() => {
     const remove = registerCloseSave(() => flush(), closeSaveLimit);
     return () => {
-      remove();
-      void flush();
+      const starts = pending.current !== null;
+      const saved = flush();
+      if (starts) void saved.finally(remove);
+      else remove();
     };
   }, [flush, closeSaveLimit]);
 

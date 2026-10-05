@@ -59,13 +59,13 @@ function setup(settings: Partial<Settings> = {}, over: Record<string, CommandHan
     ...over,
   });
   mockWindows("settings");
-  render(<Harness initial={current} />);
+  const { unmount } = render(<Harness initial={current} />);
   // Another computer changes the saved text.
   const remote = (text: string) => {
     current = { ...current, background: text };
     act(() => setShown((s) => ({ ...s, background: text })));
   };
-  return { tauri, remote, user: userEvent.setup() };
+  return { tauri, remote, unmount, user: userEvent.setup() };
 }
 
 const box = () => screen.getByRole("textbox", { name: "Background" });
@@ -236,6 +236,29 @@ describe("Background", () => {
     await user.keyboard("Erv");
     await tauri.emit("tauri://close-requested");
     await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]));
+    await pause(20);
+    expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
+    await act(async () => finish());
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+  });
+
+  test("a window close during the save that a pane change started waits for that save", async () => {
+    let finish: () => void = () => {};
+    const held = new Promise<void>((r) => (finish = r));
+    const { tauri, unmount, user } = setup({}, {
+      set_background: async ({ text }) => {
+        await held;
+        return { ...baseSettings, background: text as string };
+      },
+      "plugin:window|destroy": () => null,
+      log_from_webview: () => null,
+    });
+    await pause(10);
+    await user.click(box());
+    await user.keyboard("Erv");
+    unmount();
+    await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]));
+    await tauri.emit("tauri://close-requested");
     await pause(20);
     expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
     await act(async () => finish());

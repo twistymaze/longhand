@@ -220,6 +220,28 @@ fn a_save_writes_the_text_and_a_read_gives_it_back() {
 }
 
 #[test]
+fn a_settings_file_from_a_newer_version_still_reads_and_saves_the_background() {
+    let root = folder();
+    let mut newer = default_settings();
+    newer.insert("schema_version".into(), serde_json::json!(999));
+    let settings = root.path().join(".longhand").join("settings.json");
+    fs::write(&settings, serde_json::to_vec(&newer).unwrap()).unwrap();
+    let before = fs::read(&settings).unwrap();
+    write_background(root.path(), "Old text.");
+    assert_eq!(
+        read_background(root.path()),
+        BackgroundRead::Text("Old text.".into())
+    );
+    save_background(root.path(), "New text.").unwrap();
+    assert_eq!(
+        read_background(root.path()),
+        BackgroundRead::Text("New text.".into())
+    );
+    // A Background save does not write the settings file.
+    assert_eq!(fs::read(&settings).unwrap(), before);
+}
+
+#[test]
 fn a_save_replaces_the_old_text() {
     let root = folder();
     save_background(root.path(), "Old text.").unwrap();
