@@ -44,6 +44,9 @@ pub const PROMPT_TEXT_LIMIT: usize = 4_000;
 /// The maximum number of characters in a title text. The token budget
 /// reserves room for a title text of this length.
 pub const TITLE_TEXT_LIMIT: usize = 1_000;
+/// The maximum number of characters in the Background. Every model call
+/// carries the full Background, so the token budget counts it.
+pub const BACKGROUND_TEXT_LIMIT: usize = 4_000;
 /// The smallest reply cap for the title turn, in tokens. A reasoning model
 /// can spend part of the cap before it writes the title.
 pub const TITLE_REPLY_MIN: u32 = 256;
