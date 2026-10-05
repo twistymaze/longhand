@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** Summaries and titles spell the user's names and terms correctly and name the people the user told Longhand about. The user writes this background one time, in free-form Markdown, and every summary uses it.
 - **Means:** A shared `background.md` file in the storage folder (KTD1), edited on the Summaries page of Settings above the summary prompts with a Settings form of the My Notes editor (KTD7). Summarize adds it to the system prompt of each model call (KTD4). The summary prompt and title instruction boxes change to the same editor.
-- **Product authority:** The user, in the brainstorm and the plan scoping of 2026-10-05. The Product Contract wins on product behavior; the KTDs win on mechanism. Source idea: `docs/ideas/next/summary-background.md`. This is a smaller step before `docs/ideas/someday/agentic-summary.md`; Background is the text that idea calls "context about the user".
+- **Product authority:** The user, in the brainstorm and the plan scoping of 2026-10-05. The Product Contract wins on product behavior; the KTDs win on mechanism. Source idea: `docs/ideas/done/summary-background.md`. This is a smaller step before `docs/ideas/someday/agentic-summary.md`; Background is the text that idea calls "context about the user".
 - **Stop conditions:** Stop and ask when a change would let a read, a mount or a join write the Background (KTD2), when a Background could relax a fixed rule other than the four name rules of R8, or when the budget test of U3 cannot pass with the 4,000-character limit at a 16K context.
 - **Execution profile:** One PR from a worktree off `origin/main`, units in the order of the Implementation Units section. The implementer (`ce-work`) finishes, reviews and ships the work, then gives a signed build for the manual test.
 - **Open blockers:** None.
@@ -400,4 +400,4 @@ The rule text depends on one boolean, "the trimmed Background is not empty" (KTD
 - No code path writes `background.md` except a user edit and the join cases of KTD2.
 - The My Notes editor behaves as before, except that its toolbar and `/` menu no longer show while it is read-only.
 - All gates of the Verification Contract pass, and the signed-build manual test is done.
-- `docs/ideas/next/summary-background.md` moves to `done/` with the PR, and code from abandoned attempts is removed from the diff.
+- The idea file `summary-background.md` moves to `docs/ideas/done/` with the PR, and code from abandoned attempts is removed from the diff.
