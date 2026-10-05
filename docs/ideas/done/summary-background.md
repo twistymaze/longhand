@@ -17,5 +17,6 @@ A Background section on the Summaries page of Settings, above the summary prompt
 The transcript often spells names and terms wrong, and the summary repeats the errors. The model knows nothing about the user. The prompt text is per prompt, and built-in prompts cannot be changed.
 
 ## Notes / Current state
+- Shipped in [PR #38](https://github.com/twistymaze/longhand/pull/38).
 - Later, the [summary agent](../someday/agentic-summary.md) can read this text as its "context about the user".
 - The Background counts as evidence for names in the summary (the naming rule changes).
