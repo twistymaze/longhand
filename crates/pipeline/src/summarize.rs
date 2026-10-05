@@ -43,9 +43,10 @@ pub const PROMPT: &str = "prompt";
 /// other (KTD5).
 pub const WHOLE: &str = "whole";
 /// The error when the fixed parts of the final call and the prompt text
-/// leave too little of the model's context for the transcript (KTD8).
+/// leave too little of the model's context for the transcript (KTD8). The
+/// prompt text and the Background both count (KTD11).
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
-shorten the prompt in Settings or choose a model with a larger context";
+shorten the prompt or the Background in Settings, or choose a model with a larger context";
 /// The proposed title, a string, once the title turn has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";

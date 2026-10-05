@@ -1233,7 +1233,8 @@ fn summarize_again(
         home_write::write_atomic(&home, SESSION_FILE, current.render().as_bytes())?;
     }
     // A stub resumes from the calls made before the failure, but only when
-    // they were made with the active prompt's text (KTD5), and from the
+    // they were made with the active prompt's text (KTD5) and the current
+    // Background, compared after trimming (KTD6), and from the
     // transcript and the notes that the folder holds now
     // ([`summarize::INPUT`]). A complete
     // summary, or a stub made with another prompt or with no saved prompt,
@@ -1241,7 +1242,11 @@ fn summarize_again(
     // follows (R31). A title that the user set stays.
     let complete = checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())?;
     let saved = checkpoint::get::<Prompt>(store, session_id, Stage::Summarize, summarize::PROMPT)?;
-    let same_prompt = saved.is_some_and(|p| p.id == active.id && p.text == active.text);
+    let same_prompt = saved.is_some_and(|p| {
+        p.id == active.id
+            && p.text == active.text
+            && p.background.trim() == active.background.trim()
+    });
     if complete || !same_prompt {
         summarize::clear(store, session_id)?;
     } else {

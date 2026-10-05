@@ -462,12 +462,17 @@ impl Runner {
             control.proceed()?;
             let endpoint = endpoint(&env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
+            // Regenerate uses the current Background (R10, KTD6).
+            let active = summarize::Prompt {
+                background: env.engines.background(),
+                ..env.engines.summary_prompt()
+            };
             save::regenerate_summary(
                 &env.store,
                 &id,
                 &env.working_root,
                 endpoint,
-                env.engines.summary_prompt(),
+                active,
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 &control,
                 &mut |done, total| {
@@ -1324,8 +1329,12 @@ fn execute(
         Stage::Summarize => {
             let endpoint = endpoint(env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
-            let prompt = first_summary_prompt(&env.store, id)?
+            let mut prompt = first_summary_prompt(&env.store, id)?
                 .unwrap_or_else(|| env.engines.summary_prompt());
+            // The summary uses the Background of the time that it starts
+            // (KTD6). A resumed summary uses the Background of its saved
+            // PROMPT checkpoint, which `summarize::produce` reads first.
+            prompt.background = env.engines.background();
             summarize::run(
                 &env.store,
                 id,
@@ -1430,7 +1439,7 @@ fn first_summary_prompt(
         name: p.name,
         text: p.text,
         title_text: p.title_text,
-        // The runner sets the Background when a summary starts (KTD6).
+        // The caller sets the Background when the summary starts (KTD6).
         background: String::new(),
     }))
 }
