@@ -33,6 +33,11 @@ pub struct Cache {
     /// copy (R14).
     #[serde(default)]
     pub active_prompt: Option<Prompt>,
+    /// The last Background text that this computer read. Summaries use it
+    /// while the Background file cannot be used (KTD3). A cache from a
+    /// version before the Background has an empty text.
+    #[serde(default)]
+    pub background: String,
 }
 
 /// Read the cache in `dir`. A cache that is missing or does not parse

@@ -14,12 +14,18 @@
 //!
 //! A join writes each added prompt as its own file, so a join that runs
 //! again adds nothing.
+//!
+//! A join writes the Background file only when the cache text is not
+//! empty and the folder has no Background file. It does this when it also
+//! writes the settings file, or after a change of folder (KTD2). It never
+//! writes over a Background file.
 
 use std::io;
 use std::path::Path;
 
 use summarize::prompts::Prompt;
 
+use crate::background::write_new_background;
 use crate::cache::{Cache, read_cache};
 use crate::file::{FileRead, apply_patch, default_settings, read_settings, write_new_settings};
 use crate::prompts::{
@@ -48,6 +54,8 @@ pub struct Written {
     pub settings_file: bool,
     /// The file names of the prompts that the join added.
     pub prompt_files: Vec<String>,
+    /// The join wrote the Background file (KTD2).
+    pub background_file: bool,
 }
 
 /// The result of a join.
@@ -70,6 +78,7 @@ pub fn join(root: &Path, cache: Option<&Cache>, kind: JoinKind) -> io::Result<Jo
                 && let Some(cache) = cache
             {
                 written.prompt_files = merge_prompts(root, &prompts_of(cache))?;
+                written.background_file = write_new_background(root, &cache.background)?;
             }
         }
         FileRead::Missing => {
@@ -86,6 +95,7 @@ pub fn join(root: &Path, cache: Option<&Cache>, kind: JoinKind) -> io::Result<Jo
                     && (written.settings_file || kind == JoinKind::ChangeOfFolder)
                 {
                     written.prompt_files = merge_prompts(root, &prompts_of(cache))?;
+                    written.background_file = write_new_background(root, &cache.background)?;
                 }
             }
         }

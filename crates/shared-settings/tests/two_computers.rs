@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::json;
+use shared_settings::background::save_background;
 use shared_settings::cache::read_cache;
 use shared_settings::file::{
     AudioRemoval, Field, SharedValue, apply_patch, default_settings, save_settings, settings_path,
@@ -350,4 +351,49 @@ fn a_partial_settings_file_gives_no_audio_removal_delay_until_it_is_complete() {
     assert_eq!(fs::read(settings_path(folder.path())).unwrap(), partial);
     fs::write(settings_path(folder.path()), &complete).unwrap();
     assert_eq!(b.refresh(folder.path()).audio_removal_days(), Some(30));
+}
+
+#[test]
+fn a_background_change_on_a_shows_on_b_and_a_prompt_save_on_b_keeps_it() {
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::ChangeOfFolder);
+    let standup = create_prompt(folder.path(), "Standup", "B's standup.").unwrap();
+
+    save_background(folder.path(), "A's Background.").unwrap();
+    let on_a = a.refresh(folder.path());
+    assert_eq!(on_a.background, "A's Background.");
+    let on_b = b.refresh(folder.path());
+    assert_eq!(on_b.background, "A's Background.");
+    assert!(on_b.background_writable());
+    assert_eq!(
+        read_cache(b.cache.path()).unwrap().background,
+        "A's Background."
+    );
+
+    // B saves a prompt and a setting. A's Background stays.
+    set_prompt_text(folder.path(), &standup.id, "B's new standup.").unwrap();
+    b.save(folder.path(), &[SharedValue::LiveTranscript(false)]);
+    assert_eq!(a.refresh(folder.path()).background, "A's Background.");
+    assert_eq!(
+        fs::read_to_string(folder.path().join(".longhand").join("background.md")).unwrap(),
+        "A's Background."
+    );
+}
+
+#[test]
+fn b_keeps_the_cached_background_while_the_folder_is_missing() {
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Notes");
+    fs::create_dir(&folder).unwrap();
+    let b = computer();
+    b.join(&folder, JoinKind::ChangeOfFolder);
+    save_background(&folder, "Kept on B.").unwrap();
+    assert_eq!(b.refresh(&folder).background, "Kept on B.");
+    fs::rename(&folder, parent.path().join("Away")).unwrap();
+    let on_b = b.refresh(&folder);
+    assert!(matches!(on_b.availability, Availability::NotAvailable(_)));
+    assert_eq!(on_b.background, "Kept on B.");
+    assert!(!on_b.background_writable());
 }
