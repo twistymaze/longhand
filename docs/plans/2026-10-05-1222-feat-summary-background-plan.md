@@ -45,7 +45,7 @@ The fixed naming rule also stops the model from using a name unless the transcri
 
 - R1. Settings has one Background text. It is free-form Markdown with no required structure.
 - R2. The Background section is on the Summaries page, after Model and before the summary prompts. Its hint text tells the user what to write: names, work, terms they use, and words the transcript often gets wrong.
-- R3. The Background uses the same Markdown editor as the My Notes tab.
+- R3. The Background uses the same Markdown editor as the My Notes tab. In Settings, each editor has its own accessible name and a hint line under its visible label that stays visible while the user types, as the prompt boxes have today. The My Notes placeholder does not show in Settings.
 - R4. A change saves automatically, the same as the other Settings texts. There is no Save button.
 - R5. The Background is shared across computers through the storage folder, the same as the summary prompts. When the storage folder is not available, the section is read-only and says why, the same as the summary prompts.
 - R6. The Background has a size limit, shown as a character count the same as the prompt text. A text over the limit is not saved and the count shows the error.
@@ -53,7 +53,7 @@ The fixed naming rule also stops the model from using a name unless the transcri
 **Use in summaries**
 
 - R7. Every model call that Summarize makes includes the Background in a labelled section of the system prompt: the call for a whole transcript, the part-note and merge calls for a long transcript, the final merge, and the title turn. An empty Background adds nothing.
-- R8. The fixed naming rule changes so that the Background counts as evidence. A name is used when the transcript, the notes and the Background together make clear who a person is. The rule still forbids "Speaker N" labels and invented names.
+- R8. Every fixed rule about names counts the Background as evidence: the naming rule of the final call, the label rule of part notes and merges, the "keep every name exactly as it was said" rule of part notes, and the title rules. A name is used, or a spelling corrected, when the transcript, the notes and the Background together make clear who or what is meant. The rules still forbid "Speaker N" in the summary and title, and still forbid invented names. The rules mention the Background only when the Background is not empty.
 - R9. The fixed rules keep their priority over the Background, the same as over the prompt text. A Background cannot relax them.
 - R10. A summary uses the Background as it is when the summary starts. A change to the Background does not change existing summaries; Regenerate uses the current Background.
 
@@ -71,6 +71,7 @@ The fixed naming rule also stops the model from using a name unless the transcri
 - AE4. **Covers R7.** **Given** an empty Background, **when** the user summarizes, **then** the system prompt is the same as before this change.
 - AE5. **Covers R7.** **Given** a transcript long enough to be split into parts, **when** Summarize runs, **then** each part note already uses the Background spelling.
 - AE6. **Covers R12.** **Given** the built-in Topic summary is selected, **when** the user clicks its text, **then** the editor shows the formatted text and takes no input.
+- AE7. **Covers R8.** **Given** the AE2 Background and a transcript long enough to be split into parts, **when** Summarize runs, **then** the part notes write "Speaker 2 (Sam)" and the final summary and the title name Sam.
 
 ### Scope Boundaries
 
@@ -91,7 +92,8 @@ The fixed naming rule also stops the model from using a name unless the transcri
 - The size limit for R6. Start near the prompt text limit of 4,000 characters, and check what a local model's context window allows, because every call carries the full Background.
 - Where the Background is stored in the storage folder, and its file format.
 - How the editor in Settings differs from the My Notes editor, for example a smaller height, and whether the `/` menu and toolbar fit a Settings box.
-- The exact wording of the labelled section and of the changed naming rule.
+- The exact wording of the labelled section and of the changed naming rules.
+- The editor saves through a Markdown round trip, which joins single line breaks and changes list markers. A Background written one fact per line, or a prompt file written outside the app, changes shape on its first edit. Decide whether the editor must keep single line breaks in these texts.
 
 ### Sources / Research
 
