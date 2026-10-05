@@ -5,6 +5,7 @@ import { mockWindows } from "@tauri-apps/api/mocks";
 import type { Readiness, Settings, SummaryPrompt } from "../bindings";
 import { type CommandHandler, type TauriMock, mockTauri, shortcutStatuses } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
+import { Background } from "./Background";
 import { SummaryPrompts } from "./SummaryPrompts";
 
 const baseSettings: Settings = {
@@ -447,6 +448,49 @@ describe("SummaryPrompts", () => {
     expect(lines.slice(0, 3)).toEqual(["info: close requested", "info: the save is complete", "info: destroy called"]);
     expect(lines[3]).toStartWith("error: destroy failed: Error: destroy refused");
     expect(lines).toHaveLength(4);
+  });
+
+  test("a window close waits for a Background save and a prompt save that are both pending", async () => {
+    let finishPrompt: () => void = () => {};
+    const promptHeld = new Promise<void>((r) => (finishPrompt = r));
+    let finishBackground: () => void = () => {};
+    const backgroundHeld = new Promise<void>((r) => (finishBackground = r));
+    const tauri = backend({
+      set_summary_prompt_text: async () => {
+        await promptHeld;
+        return baseSettings;
+      },
+      set_background: async ({ text }) => {
+        await backgroundHeld;
+        return { ...baseSettings, background: text as string };
+      },
+      "plugin:window|destroy": () => null,
+      log_from_webview: () => null,
+    });
+    mockWindows("settings");
+    render(
+      <>
+        <Background settings={baseSettings} onSettings={() => {}} />
+        <SummaryPrompts onSettings={() => {}} />
+      </>,
+    );
+    const user = userEvent.setup();
+    await selectCustom(user);
+    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await user.click(screen.getByRole("textbox", { name: "Background" }));
+    await user.keyboard("Erv");
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+
+    await tauri.emit("tauri://close-requested");
+    await waitFor(() => expect(called(tauri, "set_background")).toBe(1));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]));
+    await act(async () => finishBackground());
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(called(tauri, "plugin:window|destroy")).toBe(0);
+    await act(async () => finishPrompt());
+    await waitFor(() => expect(called(tauri, "plugin:window|destroy")).toBe(1));
+    expect(called(tauri, "set_background")).toBe(1);
+    expect(logLines(tauri)).toEqual(["info: close requested", "info: the save is complete", "info: destroy called"]);
   });
 
   test("a log failure does not stop the close", async () => {
