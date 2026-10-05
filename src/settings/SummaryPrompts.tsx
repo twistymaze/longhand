@@ -4,17 +4,17 @@
 // prompt text and the title text as the user types: one second after the
 // last change, and at once on blur or a change of prompt or pane. The two
 // texts are separate fields: each has its own draft, base, save error and
-// notice of a change on another computer (KTD10).
+// notice of a change on another computer (KTD10). Each text shows in the
+// Markdown editor of My Notes (KTD7).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
-import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } from "./ui";
+import { MarkdownField } from "./MarkdownField";
+import { Button, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
 const saveDelay = 1000;
-
-const format = (n: number) => n.toLocaleString("en-US");
 
 function CheckIcon() {
   return (
@@ -259,6 +259,29 @@ export function SummaryPrompts({
     });
   }, [drafts]);
 
+  // The editor of a field gets a new key only on a new document (KTD10): a
+  // change of prompt or field, Reload, and a change from another computer
+  // while the field has no draft. An own save, the notice of a change on
+  // another computer and a read-only change keep the editor.
+  const [generations, setGenerations] = useState<Record<string, number>>({});
+  const bump = (key: string) => setGenerations((m) => ({ ...m, [key]: (m[key] ?? 0) + 1 }));
+  // The saved text of each field at the last check.
+  const shownSaved = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const p of list?.prompts ?? []) {
+      for (const field of ["text", "title"] as const) {
+        const key = keyOf(p.id, field);
+        const saved = savedOf(p, field);
+        const before = shownSaved.current.get(key);
+        shownSaved.current.set(key, saved);
+        if (before === undefined || before === saved) continue;
+        if (!(key in drafts) && !sentTexts.current.get(key)?.has(saved)) bump(key);
+      }
+    }
+    // Only a new list is a change of the saved texts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list]);
+
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
@@ -375,6 +398,7 @@ export function SummaryPrompts({
     if (waitingKey() === key) cancel();
     setDrafts((m) => without(m, key));
     setSaveErrors((m) => without(m, key));
+    bump(key);
   };
   // Keep My Text saves the unsaved text over the text of the other computer.
   const keep = (field: Field) => {
@@ -392,6 +416,9 @@ export function SummaryPrompts({
   const fieldProps = (field: Field) => ({
     field,
     inputId: `prompt-${field}-${id}`,
+    // The key holds the prompt id and the field, so a change of prompt
+    // mounts a new editor. The editor mounts from the draft when one exists.
+    editorKey: `${keyOf(id, field)}\n${generations[keyOf(id, field)] ?? 0}`,
     value: draftOf(selected, field),
     limit: limits[field],
     readOnly: selected.built_in || locked,
@@ -481,12 +508,13 @@ export function SummaryPrompts({
   );
 }
 
-/// One text of the selected prompt: its label, the text area, the count,
+/// One text of the selected prompt: its label, the Markdown editor, the count,
 /// the notice of a change on another computer and the save error. The
 /// notice and the error name the field.
 function PromptField({
   field,
   inputId,
+  editorKey,
   label,
   detail,
   rows,
@@ -503,6 +531,8 @@ function PromptField({
 }: {
   field: Field;
   inputId: string;
+  /// The key of the editor (KTD10).
+  editorKey: string;
   label: string;
   detail: string;
   rows: number;
@@ -517,8 +547,6 @@ function PromptField({
   onKeep: () => void;
   onReload: () => void;
 }) {
-  const count = [...value].length;
-  const detailId = `${inputId}-detail`;
   // The summary buttons keep their short names. The title buttons add the
   // field name for screen readers, because the two notices can show at the
   // same time.
@@ -527,32 +555,19 @@ function PromptField({
     <>
       <div className="settings-row px-4">
         <div className="py-3">
-          <div className="mb-2 flex items-end gap-3">
-            <div className="min-w-0 flex-1">
-              <label htmlFor={inputId} className="font-medium">
-                {label}
-              </label>
-              <p id={detailId} className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">
-                {detail}
-              </p>
-            </div>
-            {showCount && (
-              <span
-                className={`shrink-0 text-[0.85rem] tabular-nums ${count > limit ? "text-negative" : "text-label-secondary"}`}
-              >
-                {`${format(count)} / ${format(limit)}`}
-              </span>
-            )}
-          </div>
-          <textarea
+          <MarkdownField
+            key={editorKey}
             id={inputId}
-            aria-describedby={detailId}
+            label={label}
+            hint={detail}
             value={value}
+            count={[...value].length}
+            limit={limit}
+            showCount={showCount}
             readOnly={readOnly}
             rows={rows}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={onChange}
             onBlur={onBlur}
-            className={`${fieldClass} block w-full resize-y py-1.5 leading-[1.45] read-only:text-label-secondary`}
           />
         </div>
       </div>
