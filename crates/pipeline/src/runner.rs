@@ -1425,6 +1425,8 @@ fn first_summary_prompt(
         name: p.name,
         text: p.text,
         title_text: p.title_text,
+        // The runner sets the Background when a summary starts (KTD6).
+        background: String::new(),
     }))
 }
 

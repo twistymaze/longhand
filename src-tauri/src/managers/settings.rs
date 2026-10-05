@@ -195,6 +195,8 @@ impl From<&SummaryPrompt> for summarize::Prompt {
             name: prompt.name.clone(),
             text: prompt.text.clone(),
             title_text: prompt.title_text.clone(),
+            // A stored prompt never holds the Background (KTD6).
+            background: String::new(),
         }
     }
 }
@@ -2170,6 +2172,7 @@ mod tests {
                 name: "Team sync".into(),
                 text: "Recap.".into(),
                 title_text: String::new(),
+                background: String::new(),
             }]
         );
     }
@@ -2461,6 +2464,7 @@ mod tests {
                 name: "Team sync".into(),
                 text: "Write a recap.".into(),
                 title_text: String::new(),
+                background: String::new(),
             }
         );
 
@@ -2480,6 +2484,7 @@ mod tests {
             name: "Team sync".into(),
             text: "The last text read.".into(),
             title_text: String::new(),
+            background: String::new(),
         };
         let mut settings = Settings {
             active_summary_prompt: "g".into(),

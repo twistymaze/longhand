@@ -1838,6 +1838,7 @@ fn custom_prompt(name: &str, marker: &str) -> summarize::Prompt {
         name: name.into(),
         text: format!("Write the summary as a short list. {marker}"),
         title_text: String::new(),
+        background: String::new(),
     }
 }
 
@@ -2310,6 +2311,7 @@ async fn a_prompt_too_long_for_the_context_fails_the_summary_before_any_call() {
             name: "Long".into(),
             text,
             title_text: String::new(),
+            background: String::new(),
         },
     );
     let mock = summaries_from(
@@ -2348,6 +2350,7 @@ async fn regenerating_a_prompt_too_long_stub_after_a_larger_context_is_set_finis
             name: "Long".into(),
             text,
             title_text: String::new(),
+            background: String::new(),
         },
     );
     let mock = summaries_from(
@@ -4239,7 +4242,7 @@ async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split
     let whole = &request.messages[..request.messages.len() - 2];
     let cost = cost_of(whole);
     let reserve =
-        summarize::prompts::title_reserve(&summarize::prompts::topic_summary().title_text);
+        summarize::prompts::title_reserve(&summarize::prompts::topic_summary().title_text, "");
     // The smallest context that holds the whole call without the title
     // reserve. It does not hold the whole call with it.
     let limit = (2_048..)
@@ -4296,7 +4299,7 @@ async fn the_title_reply_cap_is_what_the_context_has_left() {
     let title_text = topic_summary().title_text;
     let cap_with = |words: usize| {
         cap_for(
-            &title_turn(final_call, &"word ".repeat(words), &title_text),
+            &title_turn(final_call, &"word ".repeat(words), &title_text, ""),
             LIMIT,
         )
     };

@@ -40,7 +40,8 @@ fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
     let notes = "- the budget\n- the launch date\n";
     let limit = 8_192;
     let budget = prompt_allowance(limit, reply_reserve(limit));
-    let allowance = budget - prompts::overhead(notes, &text) - prompts::title_reserve(&title_text);
+    let allowance =
+        budget - prompts::overhead(notes, &text, "") - prompts::title_reserve(&title_text, "");
     // Nine part notes of about 900 tokens each.
     let mut summaries: Vec<String> = (0..9)
         .map(|i| format!("{i} {}", "x".repeat(3_150)))
@@ -57,7 +58,7 @@ fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
                 continue;
             }
             let parts: Vec<&str> = summaries[g.clone()].iter().map(String::as_str).collect();
-            let messages = prompts::merge(&parts, last, notes, &text);
+            let messages = prompts::merge(&parts, last, notes, &text, "");
             let cost = estimate_messages(messages.iter().map(|m| m.content.as_str()));
             assert!(cost <= budget, "layer {layers}: {cost} of {budget}");
             assert_eq!(messages[0].content.contains(text.trim()), last);
@@ -65,7 +66,7 @@ fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
                 // The title turn after the last merge leaves room for the
                 // minimum title reply, without the summary itself.
                 let summary = "";
-                let turn = prompts::title_turn(&messages, summary, &title_text);
+                let turn = prompts::title_turn(&messages, summary, &title_text, "");
                 let turn_cost = estimate_messages(turn.iter().map(|m| m.content.as_str()));
                 assert!(
                     turn_cost + TITLE_REPLY_MIN as usize <= budget,
