@@ -1,3 +1,7 @@
 # The licence texts and the generated full list keep LF line ends on every
 # platform, so the drift check (scripts/check-licences.sh) compares the same bytes.
 licences/** text eol=lf
+
+# Golden test files keep LF line ends, so the tests compare the same bytes
+# on Windows as on macOS.
+crates/*/tests/golden/** text eol=lf
