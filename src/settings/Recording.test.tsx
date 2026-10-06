@@ -311,17 +311,17 @@ describe("Recording pane", () => {
     expect(await screen.findByText("no output device")).toBeTruthy();
   });
 
-  test("the pane is after General in the sidebar and opens with the arrow keys", async () => {
+  test("the pane is after Storage in the sidebar and opens with the arrow keys", async () => {
     const { user } = await open();
     const tabs = screen.getAllByRole("tab").map((t) => t.getAttribute("data-pane"));
-    expect(tabs.slice(0, 3)).toEqual(["status", "recording", "destination"]);
+    expect(tabs.slice(0, 3)).toEqual(["status", "destination", "recording"]);
 
-    await user.click(screen.getByRole("tab", { name: /General/ }));
-    screen.getByRole("tab", { name: /General/ }).focus();
+    await user.click(screen.getByRole("tab", { name: /Storage/ }));
+    screen.getByRole("tab", { name: /Storage/ }).focus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("tab", { name: /Recording/ }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByRole("radiogroup", { name: "Microphone" })).toBeTruthy();
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("tab", { name: /Storage/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: /Transcription/ }).getAttribute("aria-selected")).toBe("true");
   });
 });

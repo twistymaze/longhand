@@ -12,7 +12,9 @@ import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
 import { readOnlyReason } from "./shared";
 import { type PaneId, StatusPane } from "./Status";
+import { outstandingItems } from "./setup";
 import { ErrorText, type Tone } from "./ui";
+import { features } from "../lib/features";
 import { useAppSettings, useRecognitionDefaultsSave } from "./useAppSettings";
 
 type PaneEntry = { id: PaneId; label: string; icon: ReactNode };
@@ -22,10 +24,10 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
     label: "Settings",
     panes: [
       { id: "status", label: "General", icon: <SlidersIcon /> },
-      { id: "recording", label: "Recording", icon: <MicrophoneIcon /> },
+      // Where notes go, how they are recorded, then the order of processing:
+      // a note is transcribed, then summarized (R12).
       { id: "destination", label: "Storage", icon: <FolderIcon /> },
-      // The order of processing: a note is saved, then transcribed, then
-      // summarized. The General pane lists its rows in the same order.
+      { id: "recording", label: "Recording", icon: <MicrophoneIcon /> },
       { id: "recognition", label: "Transcription", icon: <TranscriptIcon /> },
       { id: "summarization", label: "Summaries", icon: <SparkleIcon /> },
     ],
@@ -36,11 +38,17 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
   },
 ];
 
-const order = sections.flatMap((s) => s.panes.map((p) => p.id));
+export const paneOrder = sections.flatMap((s) => s.panes.map((p) => p.id));
 
-function paneTone(id: PaneId, readiness: Readiness, settings: Settings): Tone | null {
+/// The mark of one pane in the sidebar (R5, R10). General follows the
+/// setup list: caution when a recording cannot start, neutral when only
+/// other items are outstanding.
+export function paneTone(id: PaneId, readiness: Readiness, settings: Settings): Tone | null {
   switch (id) {
     case "status":
+      if (!readiness.armed) return "caution";
+      return outstandingItems(readiness, settings, { systemAudio: features.systemAudio }).length > 0 ? "neutral" : null;
+    case "recording":
       return readiness.armed ? null : "caution";
     case "destination":
       return readiness.destination.kind === "ready" && !readOnlyReason(settings) ? null : "caution";
@@ -48,7 +56,6 @@ function paneTone(id: PaneId, readiness: Readiness, settings: Settings): Tone | 
       return readiness.endpoint_configured ? null : "neutral";
     case "recognition":
       return readiness.missing_models.length === 0 ? null : "neutral";
-    case "recording":
     case "about":
       return null;
   }
@@ -101,8 +108,8 @@ export function SettingsWindow() {
   const onNavKey = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
-    const at = order.indexOf(pane);
-    const next = order[Math.min(order.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)))];
+    const at = paneOrder.indexOf(pane);
+    const next = paneOrder[Math.min(paneOrder.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)))];
     show(next);
     requestAnimationFrame(() => nav.current?.querySelector<HTMLElement>(`[data-pane="${next}"]`)?.focus());
   };
