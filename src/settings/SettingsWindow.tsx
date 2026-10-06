@@ -172,7 +172,7 @@ export function SettingsWindow() {
         )}
         <div>
           {pane === "status" && <StatusPane readiness={readiness} settings={settings} onSettings={onSettings} onRefresh={refresh} onNavigate={show} />}
-          {pane === "recording" && <RecordingPane settings={settings} onSettings={onSettings} />}
+          {pane === "recording" && <RecordingPane settings={settings} onSettings={onSettings} readiness={readiness} onRefresh={refresh} />}
           {pane === "destination" && (
             <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
           )}

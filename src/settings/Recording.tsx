@@ -1,11 +1,15 @@
 // The Recording pane (R1, R6, KTD15): the usual microphone and the default of
-// the Computer audio switch. A new note starts with both.
+// the Computer audio switch. A new note starts with both. The pane also holds
+// the recording shortcut, the two permissions and the alert sound (R6–R9).
 
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { commands, type MicrophoneChoice, type MicrophoneList, type Settings } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type MicrophoneChoice, type MicrophoneList, type Readiness, type Settings } from "../bindings";
 import { sentence } from "../processing/describe";
 import { CheckIcon } from "./icons";
-import { ErrorText, Group, Pane, Row, Switch } from "./ui";
+import { MicrophoneAccessRow, SystemAudioAccessRow } from "./Permissions";
+import { ShortcutField } from "./ShortcutField";
+import { SettingSwitch } from "./Status";
+import { Button, ErrorText, Group, Pane, Row, Status as StatusText, Switch } from "./ui";
 import { features } from "../lib/features";
 
 /// One row of the Microphone group. `choice` is null for "System default".
@@ -55,7 +59,14 @@ export function microphoneOptions(
   return { options: [...options, missing], selected: missing.key };
 }
 
-function MicrophoneGroup({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+type PaneProps = {
+  settings: Settings;
+  onSettings: (s: Settings) => void;
+  readiness: Readiness;
+  onRefresh: () => Promise<void>;
+};
+
+function MicrophoneGroup({ settings, onSettings, readiness, onRefresh }: PaneProps) {
   const [list, setList] = useState<MicrophoneList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const radios = useRef(new Map<string, HTMLButtonElement>());
@@ -105,6 +116,7 @@ function MicrophoneGroup({ settings, onSettings }: { settings: Settings; onSetti
       header="Microphone"
       footer="Each new note records from this microphone. If it is not connected, the note uses the system default."
     >
+      <MicrophoneAccessRow authorized={readiness.microphone_authorized} onRefresh={onRefresh} />
       <div role="radiogroup" aria-label="Microphone" onKeyDown={onKey}>
         {options.map((o) => {
           const on = o.key === selected;
@@ -145,7 +157,7 @@ function MicrophoneGroup({ settings, onSettings }: { settings: Settings; onSetti
   );
 }
 
-function SystemAudio({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+function SystemAudio({ settings, onSettings, readiness, onRefresh }: PaneProps) {
   const [error, setError] = useState<string | null>(null);
   const change = async (enabled: boolean) => {
     const result = await commands.setSystemAudioDefault(enabled);
@@ -164,12 +176,13 @@ function SystemAudio({ settings, onSettings }: { settings: Settings; onSettings:
           onChange={(v) => void change(v)}
         />
       </Row>
+      <SystemAudioAccessRow permission={readiness.system_audio} onRefresh={onRefresh} />
       {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );
 }
 
-function NewNote({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
   const [error, setError] = useState<string | null>(null);
   const change = async (enabled: boolean) => {
     const result = await commands.setNewNoteRecords(enabled);
@@ -188,17 +201,70 @@ function NewNote({ settings, onSettings }: { settings: Settings; onSettings: (s:
           onChange={(v) => void change(v)}
         />
       </Row>
+      <RecordingShortcut readiness={readiness} onRefresh={onRefresh} />
       {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );
 }
 
-export function RecordingPane({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+/// The recording shortcut (R8). Readiness holds its status, and ready to
+/// record depends on it (R13 of the shortcut work), so a change refreshes
+/// readiness.
+function RecordingShortcut({ readiness, onRefresh }: { readiness: Readiness; onRefresh: () => Promise<void> }) {
+  const recording = readiness.shortcut;
+  return (
+    <ShortcutField
+      kind="recording"
+      label="Recording shortcut"
+      status={recording}
+      resetTo={DEFAULT_SHORTCUT}
+      detail={
+        !recording.chord ? (
+          <StatusText tone="neutral">Off — New Note still starts a recording</StatusText>
+        ) : recording.registered ? (
+          "Starts and stops a recording from any app"
+        ) : (
+          <StatusText tone="negative">{recording.error ?? "Not registered"}</StatusText>
+        )
+      }
+      onChanged={() => void onRefresh()}
+    />
+  );
+}
+
+/// The failed-recording sound (R9, KTD1, KTD2). The switch applies from the
+/// next alert. Test Sound plays the sound also when the switch is off.
+function AlertGroup({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  const [error, setError] = useState<string | null>(null);
+
+  const play = async () => {
+    const result = await commands.playAlertSound();
+    setError(result.status === "error" ? result.error : null);
+  };
+
+  return (
+    <Group header="Alert">
+      <SettingSwitch
+        label="Play a sound if recording stops"
+        detail="Plays when recording stops and cannot restart"
+        checked={settings.alert_sound}
+        set={commands.setAlertSound}
+        onSettings={onSettings}
+      />
+      <Row label="Alert sound" detail={error ?? undefined}>
+        <Button onClick={() => void play()}>Test Sound</Button>
+      </Row>
+    </Group>
+  );
+}
+
+export function RecordingPane(props: PaneProps) {
   return (
     <Pane title="Recording">
-      <NewNote settings={settings} onSettings={onSettings} />
-      <MicrophoneGroup settings={settings} onSettings={onSettings} />
-      {features.systemAudio && <SystemAudio settings={settings} onSettings={onSettings} />}
+      <NewNote {...props} />
+      <MicrophoneGroup {...props} />
+      {features.systemAudio && <SystemAudio {...props} />}
+      <AlertGroup settings={props.settings} onSettings={props.onSettings} />
     </Pane>
   );
 }
