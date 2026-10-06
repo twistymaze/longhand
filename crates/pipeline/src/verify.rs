@@ -8,7 +8,9 @@
 //! A segment fails below [`MIN_COVERAGE`], or when one stretch of speech
 //! with nothing transcribed between its parts carries more than
 //! [`MAX_UNCOVERED_MS`] of voiced time. A segment with no voiced time
-//! passes: silence is never a shortfall (AE16). A failure is recorded with
+//! passes: silence is never a shortfall (AE16). Voiced time that a gap fill
+//! sent to the model counts as covered, with or without words
+//! ([`refilled_spans`]). A failure is recorded with
 //! the windows to redo, so a retry re-transcribes only those.
 
 use std::collections::BTreeSet;
@@ -98,17 +100,21 @@ pub fn run(
             .iter()
             .filter(|w| w.segment == segment.index)
             .collect();
-        let coverage = measure(segment.index, &speech, &text_spans(&own));
+        let text = text_spans(&own);
+        let coverage = measure(segment.index, &speech, &text);
+        let judged = judge(segment.index, &speech, &text, &refilled_spans(&own));
         log::info!(
-            "coverage of {session_id} segment {}: {:.1}% of {} s voiced, worst gap {} s",
+            "coverage of {session_id} segment {}: {:.1}% of {} s voiced, worst gap {} s, \
+             {} s of sound without words after a gap fill",
             segment.index,
             coverage.ratio() * 100.0,
             coverage.voiced_ms / 1000,
-            coverage.longest_uncovered_ms / 1000
+            coverage.longest_uncovered_ms / 1000,
+            wordless_ms(&coverage, &judged) / 1000
         );
-        if !coverage.passes() {
+        if !judged.passes() {
             for (i, window) in plan.windows.iter().enumerate() {
-                if coverage
+                if judged
                     .uncovered
                     .iter()
                     .any(|u| u.start_ms < window.end_ms && window.start_ms < u.end_ms)
@@ -116,7 +122,7 @@ pub fn run(
                     redo.insert((segment.index, i));
                 }
             }
-            failing.push(coverage.clone());
+            failing.push(judged);
         }
         checkpoint::put(
             store,
@@ -178,6 +184,42 @@ pub fn text_spans(windows: &[&WindowResult]) -> Vec<Span> {
     union(spans)
 }
 
+/// The spans that a gap fill sent to the model, within the segment. A gap
+/// fill runs only in a segment with live text, on the voiced time that the
+/// live text missed (KTD6), so the model heard this voiced time two times.
+/// Sound that still has no words there, for example background music, is
+/// not missing text: a retry runs the same model on the same audio and
+/// cannot add text.
+pub fn refilled_spans(windows: &[&WindowResult]) -> Vec<Span> {
+    if !windows.iter().any(|w| w.live) {
+        return Vec::new();
+    }
+    union(
+        windows
+            .iter()
+            .filter(|w| !w.live)
+            .map(|w| Span {
+                start_ms: w.start_ms,
+                end_ms: w.end_ms,
+            })
+            .collect(),
+    )
+}
+
+/// The coverage that decides whether a segment passes: [`measure`], with
+/// the [`refilled_spans`] also counted as covered. The slack applies to
+/// text only: voiced time outside a gap-fill window was not sent to the
+/// model.
+pub fn judge(segment: u32, voiced: &[Span], text: &[Span], refilled: &[Span]) -> Coverage {
+    measure_with_exact(segment, voiced, text, refilled)
+}
+
+/// The voiced time that has no text but that a gap fill heard, from the
+/// coverage against the text and the [`judge`] coverage.
+pub fn wordless_ms(coverage: &Coverage, judged: &Coverage) -> u64 {
+    (coverage.voiced_ms - coverage.covered_ms).saturating_sub(judged.voiced_ms - judged.covered_ms)
+}
+
 /// The spans of the words that have text, in milliseconds from the start of
 /// the segment. A word of no length covers one millisecond, so that
 /// [`measure`] counts it.
@@ -209,6 +251,12 @@ fn union(mut spans: Vec<Span>) -> Vec<Span> {
 /// Voiced spans against the spans carrying text, each widened by
 /// [`SLACK_MS`].
 pub fn measure(segment: u32, voiced: &[Span], covered: &[Span]) -> Coverage {
+    measure_with_exact(segment, voiced, covered, &[])
+}
+
+/// [`measure`], with `exact` spans also counted as covered, without the
+/// slack.
+fn measure_with_exact(segment: u32, voiced: &[Span], covered: &[Span], exact: &[Span]) -> Coverage {
     let covered = union(
         covered
             .iter()
@@ -216,6 +264,7 @@ pub fn measure(segment: u32, voiced: &[Span], covered: &[Span]) -> Coverage {
                 start_ms: c.start_ms.saturating_sub(SLACK_MS),
                 end_ms: c.end_ms + SLACK_MS,
             })
+            .chain(exact.iter().copied())
             .collect(),
     );
     let voiced_ms: u64 = voiced.iter().map(Span::duration_ms).sum();

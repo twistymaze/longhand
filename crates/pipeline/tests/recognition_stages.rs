@@ -1855,3 +1855,161 @@ fn prepared_pyannote_measures_its_analysis_and_stays_below_100() {
     );
     assert!(checkpoint::is_complete(&store, "route", Stage::Diarize, segments.len()).unwrap());
 }
+
+/// A model that finds no words in its audio, as with background music.
+struct Wordless;
+impl Recognizer for Wordless {
+    fn model_id(&self) -> &str {
+        MODEL
+    }
+    fn native_token_timestamps(&self) -> bool {
+        true
+    }
+    fn transcribe_tokens(&mut self, _: &[f32]) -> Result<Vec<asr::TimedToken>, AsrError> {
+        Ok(vec![])
+    }
+    fn transcribe(&mut self, _: &[f32]) -> Result<WindowText, AsrError> {
+        Ok(WindowText {
+            text: String::new(),
+            segments: vec![],
+        })
+    }
+}
+struct WordlessProvider(Provider);
+impl EngineProvider for WordlessProvider {
+    fn nemo_helper(&self) -> Result<PathBuf, String> {
+        self.0.nemo_helper()
+    }
+    fn artifact_path(&self, spec: &models::recognition::ArtifactSpec) -> Result<PathBuf, String> {
+        self.0.artifact_path(spec)
+    }
+    fn load_exact(&self, _: &ExecutionSpec) -> Result<Box<dyn Recognizer>, String> {
+        self.0.loads.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(Wordless))
+    }
+    fn analyzer_exact(
+        &self,
+        spec: &ExecutionSpec,
+    ) -> Result<Box<dyn diarize::SpeakerAnalyzer>, diarize::DiarizeError> {
+        self.0.analyzer_exact(spec)
+    }
+    fn ready(&self, model: &str) -> bool {
+        self.0.ready(model)
+    }
+    fn ready_exact(&self, spec: &ExecutionSpec) -> bool {
+        self.0.ready_exact(spec)
+    }
+    fn load(&self, model: &str) -> Result<Box<dyn Recognizer>, String> {
+        self.0.load(model)
+    }
+    fn default_model(&self) -> String {
+        self.0.default_model()
+    }
+    fn analyzer(&self) -> Result<Box<dyn diarize::SpeakerAnalyzer>, diarize::DiarizeError> {
+        self.0.analyzer()
+    }
+    fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
+        self.0.summary_endpoint()
+    }
+    fn summary_prompt(&self) -> pipeline::summarize::Prompt {
+        self.0.summary_prompt()
+    }
+    fn background(&self) -> String {
+        self.0.background()
+    }
+    fn learn_limit(&self, model: &str, id: &str, limit: u32) {
+        self.0.learn_limit(model, id, limit)
+    }
+    fn destination(&self) -> Option<PathBuf> {
+        self.0.destination()
+    }
+}
+fn wordless() -> WordlessProvider {
+    WordlessProvider(Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: true,
+    })
+}
+/// Save a live part with no words for all of segment 0.
+fn save_wordless_live_part(
+    temp: &tempfile::TempDir,
+    store: &pipeline::SharedStore,
+    spec: &ExecutionSpec,
+    segments: &[session_core::Segment],
+) {
+    let mut reader =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: temp.path().join("route").join(pipeline::RECOVERY_DIR),
+            segment: 0,
+            offset_ms: segments[0].offset_ms,
+            rate: 16000,
+        });
+    while reader.next_frame().unwrap().is_some() {}
+    let mut config = pipeline::live::LiveConfig::new("route", 0, &spec.config.asr_model, 16000);
+    config.snapshot = Some(spec.clone());
+    pipeline::live::archive::save_proof(store, &config, &reader).unwrap();
+    pipeline::recognition::durable::stamp_live_identity(
+        store,
+        "route",
+        &temp.path().join("route"),
+        segments,
+        spec,
+    )
+    .unwrap();
+    pipeline::live::save_part(
+        store,
+        "route",
+        0,
+        0,
+        &asr::LivePart {
+            start_ms: 0,
+            end_ms: segments[0].duration_ms,
+            words: vec![],
+        },
+    )
+    .unwrap();
+}
+fn run_to_verify(
+    temp: &tempfile::TempDir,
+    store: &pipeline::SharedStore,
+    spec: &ExecutionSpec,
+    segments: &[session_core::Segment],
+    provider: &dyn EngineProvider,
+) -> Result<(), pipeline::StageError> {
+    for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
+        pipeline::recognition::execute(
+            store,
+            "route",
+            &temp.path().join("route"),
+            segments,
+            spec,
+            provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )?;
+    }
+    Ok(())
+}
+#[test]
+fn voiced_sound_without_words_after_a_gap_fill_passes_verify() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    save_wordless_live_part(&temp, &store, &spec, &segments);
+    let provider = wordless();
+    run_to_verify(&temp, &store, &spec, &segments, &provider).unwrap();
+    assert!(
+        provider.0.loads.load(Ordering::SeqCst) > 0,
+        "the gap fill must send the voiced time to the model"
+    );
+}
+#[test]
+fn voiced_sound_without_words_and_without_a_gap_fill_fails_verify() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    let error = run_to_verify(&temp, &store, &spec, &segments, &wordless()).unwrap_err();
+    assert!(
+        error.to_string().contains("has speech but no text"),
+        "{error}"
+    );
+}

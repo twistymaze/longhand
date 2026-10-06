@@ -656,6 +656,7 @@ fn verify(
 ) -> Result<(), StageError> {
     let result = saved_result(store, id)?.ok_or_else(|| failed("recognition result is absent"))?;
     validate_result(&result, &ranges(dir, segments)?)?;
+    let windows = transcribe::results(store, id)?;
     for segment in segments {
         let plan = transcribe::plan_segment(dir, segment, &[])?;
         let speech = plan
@@ -669,7 +670,16 @@ fn verify(
             .iter()
             .filter(|r| r.range.start >= start && r.range.start < end)
             .collect();
-        if !speech.is_empty() && own.is_empty() {
+        let refilled = crate::verify::refilled_spans(
+            &windows
+                .iter()
+                .filter(|w| w.segment == segment.index)
+                .collect::<Vec<_>>(),
+        );
+        if !speech.is_empty()
+            && own.is_empty()
+            && !crate::verify::judge(segment.index, speech, &[], &refilled).passes()
+        {
             return Err(failed(format!(
                 "segment {} has speech but no text",
                 segment.index
@@ -696,6 +706,15 @@ fn verify(
             })
             .collect();
         let coverage = crate::verify::measure(segment.index, speech, &text);
+        let judged = crate::verify::judge(segment.index, speech, &text, &refilled);
+        let wordless_ms = crate::verify::wordless_ms(&coverage, &judged);
+        if wordless_ms > 0 {
+            log::info!(
+                "segment {}: {} s of sound without words after a gap fill",
+                segment.index,
+                wordless_ms / 1000
+            );
+        }
         checkpoint::put(
             store,
             id,
@@ -703,7 +722,7 @@ fn verify(
             &checkpoint::segment_key(segment.index),
             &coverage,
         )?;
-        if !coverage.passes() {
+        if !judged.passes() {
             let saved_plan: Option<transcribe::WindowPlan> = checkpoint::get(
                 store,
                 id,

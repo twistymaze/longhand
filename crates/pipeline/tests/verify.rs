@@ -411,3 +411,94 @@ fn live_words_put_text_on_their_own_spans() {
     let c = measure(0, &[span(0, 30_000)], &text_spans(&[&part]));
     assert_eq!(c.uncovered, vec![span(2_800, 4_000), span(6_001, 28_800)]);
 }
+
+#[test]
+fn voiced_time_just_outside_a_gap_fill_window_is_not_covered() {
+    let voiced = [span(10_500, 11_000)];
+    let judged = pipeline::verify::judge(0, &voiced, &[], &[span(0, 10_000)]);
+    assert_eq!(
+        judged.covered_ms, 0,
+        "the text slack must not widen a window"
+    );
+    assert!(!judged.passes());
+}
+
+#[test]
+fn voiced_sound_without_words_after_a_gap_fill_passes() {
+    // As in a recorded meeting: live text stops at 4.8 s, and the gap fill
+    // finds no words in the voiced sound that follows it.
+    let store = common::store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("music", common::at(0), None)
+        .unwrap();
+    let segment = session_core::Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 65_780,
+        wall_start: common::at(0),
+        wall_end: common::at(66),
+        audio_file: "unused.opus".into(),
+        channels: 1,
+    };
+    let put = |key: &str, value: serde_json::Value| {
+        pipeline::checkpoint::put(
+            &store,
+            "music",
+            session_core::Stage::Transcribe,
+            key,
+            &value,
+        )
+        .unwrap()
+    };
+    put(
+        &pipeline::checkpoint::plan_key(0),
+        serde_json::json!({
+            "segment": 0, "duration_ms": 65780, "voiced_ms": 18308,
+            "voiced": [span(1134, 19442)],
+            "speech": [span(1584, 18992)],
+            "windows": [span(1134, 19442)]
+        }),
+    );
+    put(
+        &pipeline::checkpoint::live_key(0, 0),
+        serde_json::to_value(LiveRow {
+            segment: 0,
+            part: 0,
+            start_ms: 0,
+            end_ms: 65_780,
+            words: vec![LiveWord {
+                start_ms: 1_280,
+                end_ms: 4_880,
+                text: "Spoken words".into(),
+            }],
+        })
+        .unwrap(),
+    );
+    let fill = pipeline::checkpoint::window_key(0, 0);
+    let dir = tempfile::tempdir().unwrap();
+    let run = || pipeline::verify::run(&store, "music", dir.path(), std::slice::from_ref(&segment));
+    // Without a gap fill, the model did not hear the voiced sound again.
+    assert!(run().is_err());
+    put(
+        &fill,
+        serde_json::to_value(WindowResult {
+            segment: 0,
+            window: 0,
+            start_ms: 1134,
+            end_ms: 19442,
+            text: String::new(),
+            segments: vec![],
+            words: Some(vec![]),
+            live: false,
+        })
+        .unwrap(),
+    );
+    store
+        .lock()
+        .unwrap()
+        .clear_checkpoints("music", session_core::Stage::Verify)
+        .unwrap();
+    run().unwrap();
+}
