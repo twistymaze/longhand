@@ -1088,15 +1088,34 @@ fn a_segment_with_no_live_rows_transcribes_every_window() {
 }
 
 #[test]
+fn a_gap_fill_window_that_decodes_nothing_passes_verify() {
+    // Sound without words, for example background music. A retry runs the
+    // same model on the same audio, so it cannot add text.
+    let g = Gaps::new(&[
+        (0, 20_000, live_words(0, 20)),
+        (40_000, 60_000, live_words(40, 60)),
+    ]);
+    g.blank_on.lock().unwrap().push(1);
+    g.transcribe();
+    assert_eq!(g.calls(), 2);
+    g.verify().unwrap();
+}
+
+#[test]
 fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_window() {
     let g = Gaps::new(&[
         (0, 20_000, live_words(0, 20)),
         (40_000, 60_000, live_words(40, 60)),
     ]);
-    // The second gap-fill window decodes nothing.
-    g.blank_on.lock().unwrap().push(1);
     g.transcribe();
     assert_eq!(g.calls(), 2);
+    // The result of the second gap-fill window is lost: the model did not
+    // hear its voiced time.
+    g.r.store
+        .lock()
+        .unwrap()
+        .delete_checkpoint(ID, Stage::Transcribe, &checkpoint::window_key(0, 3))
+        .unwrap();
     assert!(g.verify().is_err());
     let rows = live::rows(&g.r.store, ID).unwrap();
 
