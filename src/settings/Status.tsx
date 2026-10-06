@@ -189,7 +189,12 @@ export function StatusPane({
               <StatusText tone="negative">{showWindow.error ?? "Not registered"}</StatusText>
             )
           }
-          onChanged={(next) => setShowWindow(next.show_window)}
+          onChanged={(next) => {
+            setShowWindow(next.show_window);
+            // A capture pauses both shortcuts, and the resume can change whether
+            // the recording shortcut is registered (R13 of the shortcut work).
+            void onRefresh();
+          }}
         />
       </Group>
 

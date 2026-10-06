@@ -10,9 +10,8 @@ import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon
 import { About } from "./About";
 import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
-import { readOnlyReason } from "./shared";
 import { type PaneId, StatusPane } from "./Status";
-import { outstandingItems } from "./setup";
+import { outstandingItems, type SetupItemId } from "./setup";
 import { ErrorText, type Tone } from "./ui";
 import { features } from "../lib/features";
 import { useAppSettings, useRecognitionDefaultsSave } from "./useAppSettings";
@@ -42,20 +41,23 @@ export const paneOrder = sections.flatMap((s) => s.panes.map((p) => p.id));
 
 /// The mark of one pane in the sidebar (R5, R10). General follows the
 /// setup list: caution when a recording cannot start, neutral when only
-/// other items are outstanding.
+/// other items are outstanding. The other marks read the same items, so a
+/// mark and the General list cannot disagree.
 export function paneTone(id: PaneId, readiness: Readiness, settings: Settings): Tone | null {
+  const items = outstandingItems(readiness, settings, { systemAudio: features.systemAudio });
+  const has = (item: SetupItemId) => items.some((i) => i.id === item);
   switch (id) {
     case "status":
       if (!readiness.armed) return "caution";
-      return outstandingItems(readiness, settings, { systemAudio: features.systemAudio }).length > 0 ? "neutral" : null;
+      return items.length > 0 ? "neutral" : null;
     case "recording":
       return readiness.armed ? null : "caution";
     case "destination":
-      return readiness.destination.kind === "ready" && !readOnlyReason(settings) ? null : "caution";
+      return has("storage") ? "caution" : null;
     case "summarization":
-      return readiness.endpoint_configured ? null : "neutral";
+      return has("endpoint") ? "neutral" : null;
     case "recognition":
-      return readiness.missing_models.length === 0 ? null : "neutral";
+      return has("models") ? "neutral" : null;
     case "about":
       return null;
   }

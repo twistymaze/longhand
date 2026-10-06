@@ -94,11 +94,25 @@ test("the General pane shows its groups in the order Setup, Window", () => {
 });
 
 test("the General pane shows no setting that belongs to another pane", () => {
-  mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
-  render(<Harness readiness={readiness} />);
-  const text = document.body.textContent ?? "";
-  for (const moved of ["Recording shortcut", "Microphone access", "Computer audio", "Models", "Summaries", "Alert sound", "Play Sound"]) {
-    expect(text).not.toContain(moved);
+  features.systemAudio = true;
+  try {
+    mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+    // Not ready, with Computer audio not allowed: only the setup items can
+    // name these topics, and each item has one row.
+    render(
+      <Harness
+        readiness={{ ...readiness, microphone_authorized: false, armed: false, system_audio: "denied" }}
+        initial={{ ...baseSettings, system_audio_default: false }}
+      />,
+    );
+    const text = document.body.textContent ?? "";
+    expect(screen.getAllByText("Microphone access")).toHaveLength(1);
+    for (const moved of ["Recording shortcut", "Computer audio", "Models", "Summaries", "Alert sound", "Play Sound", "Test Sound"]) {
+      expect(text).not.toContain(moved);
+    }
+    expect(screen.queryByRole("radiogroup", { name: "Microphone" })).toBeNull();
+  } finally {
+    features.systemAudio = false;
   }
 });
 

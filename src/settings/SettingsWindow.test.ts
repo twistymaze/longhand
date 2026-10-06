@@ -36,6 +36,17 @@ describe("the sidebar", () => {
     expect(t.recording).toBe("caution");
   });
 
+  test("storage and endpoint marks follow the setup items", () => {
+    const t = tones({
+      ...ready,
+      destination: { kind: "low_space", path: "/x", free_bytes: 1, floor_bytes: 2 },
+      endpoint_configured: false,
+    });
+    expect(t.destination).toBe("caution");
+    expect(t.summarization).toBe("neutral");
+    expect(t.status).toBe("neutral");
+  });
+
   test("Covers AE2. Only models outstanding: General and Transcription are neutral, Recording has no mark", () => {
     const t = tones({ ...ready, missing_models: ["a"] });
     expect(t.status).toBe("neutral");
