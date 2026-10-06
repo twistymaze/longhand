@@ -255,7 +255,7 @@ export function RecordingBar({
       aria-label="Recording"
       className="shrink-0 border-t border-separator bg-group select-none"
     >
-      <div className="mx-auto flex max-w-[44rem] items-center gap-2.5 px-8 py-2.5">
+      <div className="note-column flex items-center gap-2.5 py-2.5">
         <LiveDot input={interruption ? "lost" : capture.input} />
         <span className="shrink-0 font-medium">
           {interruption ? "Recording interrupted" : statusText[capture.input]}
@@ -278,7 +278,7 @@ export function RecordingBar({
         )}
       </div>
       {(interruption || items.length > 0 || error) && (
-        <div role="status" className="mx-auto grid max-w-[44rem] gap-1 px-8 pb-2.5 text-[0.85rem]">
+        <div role="status" className="note-column grid gap-1 pb-2.5 text-[0.85rem]">
           {interruption && (
             <>
               <p className="font-medium text-negative">{interruption.headline}</p>

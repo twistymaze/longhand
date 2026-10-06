@@ -175,6 +175,15 @@ html {
   letter-spacing: 0.04em;
 }
 
+/* The note page's content column. All rows on the page use it, so their
+   edges align. The maximum width keeps lines readable in a wide window; in a
+   narrow window the column fills the window and the side padding shrinks. */
+.note-column {
+  max-width: 64rem;
+  margin-inline: auto;
+  padding-inline: clamp(0.75rem, 3vw, 2rem);
+}
+
 /* A separator above each row after the first, inset to the text. */
 .settings-row + .settings-row > div {
   border-top: 1px solid var(--separator);
