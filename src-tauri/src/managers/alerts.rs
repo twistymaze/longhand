@@ -26,6 +26,17 @@ pub const CUE_AT: [Duration; 3] = [
     Duration::from_secs(90),
 ];
 
+/// When the cue plays for one alert. `cue` is false when nothing was in
+/// progress to hear. `alert_sound` is the user's setting (R9, KTD2). The
+/// tray and the notification do not depend on either.
+fn cue_times(cue: bool, alert_sound: bool) -> &'static [Duration] {
+    if cue && alert_sound {
+        &CUE_AT[..]
+    } else {
+        &[][..]
+    }
+}
+
 /// How often a raised alert checks whether its session has moved on.
 const WATCH: Duration = Duration::from_secs(1);
 
@@ -64,7 +75,9 @@ fn failed(state: &SessionState) -> bool {
 
 impl AlertsManager {
     /// Raise the alert for a session whose capture stopped. `cue` is false
-    /// when nothing was in progress to hear, as after a relaunch.
+    /// when nothing was in progress to hear, as after a relaunch. The cue
+    /// also plays only when the alert sound setting is on (R9); the alert
+    /// reads it once, here.
     pub fn raise(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -74,6 +87,10 @@ impl AlertsManager {
         detail: Option<&str>,
         cue: bool,
     ) {
+        let cues = cue_times(
+            cue,
+            crate::managers::settings::get_settings(app).alert_sound,
+        );
         let cancel = CancellationToken::new();
         let generation = self.generations.fetch_add(1, Ordering::Relaxed);
         {
@@ -98,7 +115,7 @@ impl AlertsManager {
             .name("longhand-alert".into())
             .spawn(move || {
                 let raised_at = Instant::now();
-                let mut cues = if cue { &CUE_AT[..] } else { &[][..] };
+                let mut cues = cues;
                 while !cancel.is_cancelled() {
                     if !capture.session_state(&id).is_some_and(|s| failed(&s)) {
                         break;
@@ -175,6 +192,19 @@ mod tests {
         assert_eq!(CUE_AT.len(), 3);
         assert_eq!(CUE_AT[0], Duration::ZERO);
         assert!(CUE_AT[2] - CUE_AT[1] > CUE_AT[1] - CUE_AT[0]);
+    }
+
+    // Covers AE5 (R9): with the alert sound off, no cue plays.
+    #[test]
+    fn the_alert_sound_setting_off_gives_no_cues() {
+        assert!(cue_times(true, false).is_empty());
+        assert!(cue_times(false, false).is_empty());
+    }
+
+    #[test]
+    fn the_alert_sound_setting_on_gives_the_cues_only_when_a_cue_is_asked() {
+        assert_eq!(cue_times(true, true), &CUE_AT[..]);
+        assert!(cue_times(false, true).is_empty());
     }
 
     #[test]

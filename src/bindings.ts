@@ -194,6 +194,18 @@ async setNewNoteRecords(enabled: boolean) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * Choose whether a recording that stops and cannot restart plays the
+ * alert sound (R9). The next alert reads the new value.
+ */
+async setAlertSound(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_alert_sound", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app checks for updates by itself (R10). The next
  * scheduled check reads the new value.
  */
@@ -1925,6 +1937,11 @@ system_audio_default: boolean;
  * as before the setting.
  */
 new_note_records: boolean; 
+/**
+ * Whether a recording that stops and cannot restart plays the alert
+ * sound (R9, KTD1). On by default. Test Sound plays when it is off.
+ */
+alert_sound: boolean; 
 /**
  * macOS only: the app has no Dock icon while no window is visible
  * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.

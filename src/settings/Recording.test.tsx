@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { features } from "../lib/features";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { MicrophoneList, Settings } from "../bindings";
+import type { MicrophoneList, Readiness, Settings } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
 
@@ -27,6 +27,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     microphone: null,
     system_audio_default: false,
     new_note_records: true,
+    alert_sound: true,
     hide_from_dock: false,
     check_updates_automatically: true,
     audio_removal: { kind: "after_days", days: 30 },
@@ -54,9 +55,13 @@ const twoInputs: MicrophoneList = {
 async function open({
   extra = {},
   microphones = twoInputs,
+  ready = {},
+  handlers = {},
 }: {
   extra?: Partial<Settings>;
   microphones?: MicrophoneList;
+  ready?: Partial<Readiness>;
+  handlers?: Record<string, (args: Record<string, unknown>) => unknown>;
 } = {}) {
   const state = { settings: settings(extra), microphones };
   const mock = mockTauri({
@@ -70,6 +75,7 @@ async function open({
       shortcut: { chord: "CmdOrCtrl+Shift+R", registered: true, error: null },
       missing_models: [],
       endpoint_configured: false, can_start_note: true, note_start_refusal: null,
+      ...ready,
     }),
     shortcut_status: () => shortcutStatuses,
     login_item_status: () => "disabled",
@@ -88,6 +94,11 @@ async function open({
       state.settings = { ...state.settings, new_note_records: enabled as boolean };
       return state.settings;
     },
+    set_alert_sound: ({ enabled }) => {
+      state.settings = { ...state.settings, alert_sound: enabled as boolean };
+      return state.settings;
+    },
+    ...handlers,
   });
   const user = userEvent.setup();
   render(<SettingsWindow />);
@@ -221,17 +232,96 @@ describe("Recording pane", () => {
     );
   });
 
-  test("the pane is after General in the sidebar and opens with the arrow keys", async () => {
+  test("the recording shortcut is on this pane, and a change refreshes readiness", async () => {
+    const { mock, user } = await open({
+      handlers: {
+        set_shortcut: () => shortcutStatuses,
+        suspend_shortcuts: () => null,
+        resume_shortcuts: () => null,
+      },
+    });
+    const row = screen.getByText("Recording shortcut").closest(".settings-row") as HTMLElement;
+    expect(row.textContent).toContain("Starts and stops a recording from any app");
+    const before = calls(mock, "readiness").length;
+    await user.click(within(row).getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(calls(mock, "readiness").length).toBeGreaterThan(before));
+  });
+
+  test("with microphone access not allowed on macOS, the Microphone group offers Allow", async () => {
+    Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Mac OS X)", configurable: true });
+    try {
+      const { group } = await open({ ready: { microphone_authorized: false } });
+      const section = group.closest("section") as HTMLElement;
+      const row = within(section).getByText("Microphone access").closest(".settings-row") as HTMLElement;
+      expect(within(row).getByRole("button", { name: "Allow…" })).toBeTruthy();
+    } finally {
+      delete (navigator as { userAgent?: string }).userAgent;
+    }
+  });
+
+  test("with Computer audio on, its group shows the access row", async () => {
+    features.systemAudio = true;
+    try {
+      await open({ ready: { system_audio: "not_asked" } });
+      const row = screen.getByText("Computer audio access").closest(".settings-row") as HTMLElement;
+      expect(row.textContent).toContain("Not allowed yet");
+    } finally {
+      features.systemAudio = false;
+    }
+  });
+
+  test("Covers AE5. The alert switch is on by default, and turning it off saves the change", async () => {
+    const { mock, user } = await open();
+    const toggle = screen.getByRole("switch", { name: "Play a sound if recording stops" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await user.click(toggle);
+    expect(calls(mock, "set_alert_sound")).toEqual([{ enabled: false }]);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+  });
+
+  test("a failed alert switch change shows the error and keeps the value", async () => {
+    const { user } = await open({
+      handlers: {
+        set_alert_sound: () => {
+          throw "could not save settings";
+        },
+      },
+    });
+    const toggle = screen.getByRole("switch", { name: "Play a sound if recording stops" });
+    await user.click(toggle);
+    expect(await screen.findByText(/could not save settings/i)).toBeTruthy();
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("Test Sound plays the sound while the alert switch is off", async () => {
+    const { mock, user } = await open({ extra: { alert_sound: false }, handlers: { play_alert_sound: () => null } });
+    await user.click(screen.getByRole("button", { name: "Test Sound" }));
+    expect(calls(mock, "play_alert_sound")).toHaveLength(1);
+  });
+
+  test("a sound that cannot play shows the error", async () => {
+    const { user } = await open({
+      handlers: {
+        play_alert_sound: () => {
+          throw "no output device";
+        },
+      },
+    });
+    await user.click(screen.getByRole("button", { name: "Test Sound" }));
+    expect(await screen.findByText("no output device")).toBeTruthy();
+  });
+
+  test("the pane is after Storage in the sidebar and opens with the arrow keys", async () => {
     const { user } = await open();
     const tabs = screen.getAllByRole("tab").map((t) => t.getAttribute("data-pane"));
-    expect(tabs.slice(0, 3)).toEqual(["status", "recording", "destination"]);
+    expect(tabs.slice(0, 3)).toEqual(["status", "destination", "recording"]);
 
-    await user.click(screen.getByRole("tab", { name: /General/ }));
-    screen.getByRole("tab", { name: /General/ }).focus();
+    await user.click(screen.getByRole("tab", { name: /Storage/ }));
+    screen.getByRole("tab", { name: /Storage/ }).focus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("tab", { name: /Recording/ }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByRole("radiogroup", { name: "Microphone" })).toBeTruthy();
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("tab", { name: /Storage/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: /Transcription/ }).getAttribute("aria-selected")).toBe("true");
   });
 });

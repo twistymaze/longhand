@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import type { Readiness, Settings } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
-import { StatusPane } from "./Status";
+import { type PaneId, StatusPane } from "./Status";
 import { features } from "../lib/features";
 
 const readiness: Readiness = {
@@ -37,6 +37,7 @@ const baseSettings: Settings = {
   microphone: null,
   system_audio_default: false,
   new_note_records: true,
+  alert_sound: true,
   hide_from_dock: false,
   check_updates_automatically: true,
   audio_removal: { kind: "after_days", days: 30 },
@@ -54,130 +55,17 @@ const baseSettings: Settings = {
 function Harness({
   readiness: r,
   onRefresh = async () => {},
+  onNavigate = () => {},
   initial = baseSettings,
 }: {
   readiness: Readiness;
   onRefresh?: () => Promise<void>;
   initial?: Settings;
+  onNavigate?: (p: PaneId) => void;
 }) {
   const [settings, setSettings] = useState(initial);
-  return <StatusPane readiness={r} settings={settings} onSettings={setSettings} onRefresh={onRefresh} onNavigate={() => {}} />;
+  return <StatusPane readiness={r} settings={settings} onSettings={setSettings} onRefresh={onRefresh} onNavigate={onNavigate} />;
 }
-
-function renderPane(playResult: () => unknown = () => null) {
-  const tauri = mockTauri({
-    shortcut_status: () => shortcutStatuses,
-    login_item_status: () => "disabled",
-    play_alert_sound: playResult,
-  });
-  render(<Harness readiness={readiness} />);
-  const row = () => screen.getByText("Alert sound").closest(".settings-row") as HTMLElement;
-  return { tauri, row };
-}
-
-describe("the alert sound row", () => {
-  test("says what the sound is for and asks for no test", () => {
-    const { row } = renderPane();
-    expect(row().textContent).toContain("Plays when recording stops and cannot restart");
-    expect(document.body.textContent).not.toMatch(/Not tested|Heard at setup|Tested|Do Not Disturb|silence the notification/);
-  });
-
-  test("Play Sound plays the sound and asks no question", async () => {
-    const { tauri, row } = renderPane();
-    await userEvent.setup().click(within(row()).getByRole("button", { name: "Play Sound" }));
-    expect(tauri.calls.filter((c) => c.cmd === "play_alert_sound")).toHaveLength(1);
-    expect(screen.queryByText("Did you hear it?")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Yes" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "No" })).toBeNull();
-    expect(within(row()).getByRole("button", { name: "Play Sound" })).toBeTruthy();
-    expect(tauri.calls.some((c) => c.cmd === "confirm_alert_sound")).toBe(false);
-  });
-
-  test("a sound that cannot play shows the error", async () => {
-    const { row } = renderPane(() => {
-      throw "no output device";
-    });
-    await userEvent.setup().click(within(row()).getByRole("button", { name: "Play Sound" }));
-    expect(await within(row()).findByText("no output device")).toBeTruthy();
-  });
-});
-
-function renderSystemAudio(
-  state: Readiness["system_audio"],
-  handlers: Record<string, (args: Record<string, unknown>) => unknown> = {},
-) {
-  const tauri = mockTauri({ shortcut_status: () => shortcutStatuses,
-    login_item_status: () => "disabled", ...handlers });
-  let refreshed = 0;
-  render(
-    <Harness
-      readiness={{ ...readiness, system_audio: state }}
-      onRefresh={async () => {
-        refreshed += 1;
-      }}
-    />,
-  );
-  const row = () => screen.getByText("Computer audio").closest(".settings-row") as HTMLElement;
-  return { tauri, row, refreshed: () => refreshed };
-}
-
-test("while Computer audio is hidden, the General pane has no Computer audio row", () => {
-  mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
-  render(<Harness readiness={{ ...readiness, system_audio: "not_asked" }} />);
-  expect(screen.queryByText("Computer audio")).toBeNull();
-});
-
-describe("the Computer audio permission row", () => {
-  beforeEach(() => {
-    features.systemAudio = true;
-  });
-  afterEach(() => {
-    features.systemAudio = false;
-  });
-
-  test("not asked: says so and offers Allow…", () => {
-    const { row } = renderSystemAudio("not_asked");
-    expect(row().textContent).toContain("Not allowed yet");
-    expect(within(row()).getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow…"]);
-  });
-
-  test("denied: says so and opens System Settings", async () => {
-    const { tauri, row } = renderSystemAudio("denied", { open_system_audio_settings: () => null });
-    expect(row().textContent).toContain("Not allowed");
-    expect(row().textContent).not.toContain("Not allowed yet");
-    const buttons = within(row()).getAllByRole("button");
-    expect(buttons.map((b) => b.textContent)).toEqual(["Open System Settings"]);
-    await userEvent.setup().click(buttons[0]);
-    expect(tauri.calls.filter((c) => c.cmd === "open_system_audio_settings")).toHaveLength(1);
-  });
-
-  test("unknown: cannot check, and opens System Settings", () => {
-    const { row } = renderSystemAudio("unknown");
-    expect(row().textContent).toContain("Cannot check");
-    expect(within(row()).getAllByRole("button").map((b) => b.textContent)).toEqual(["Open System Settings"]);
-  });
-
-  test("allowed: says so and shows no button", () => {
-    const { row } = renderSystemAudio("allowed");
-    expect(row().textContent).toContain("Allowed");
-    expect(within(row()).queryAllByRole("button")).toHaveLength(0);
-  });
-
-  test("Allow… asks, checks the status again, and refreshes the pane", async () => {
-    let checks = 0;
-    const { tauri, row, refreshed } = renderSystemAudio("not_asked", {
-      request_system_audio_permission: () => "not_asked",
-      system_audio_permission: () => {
-        checks += 1;
-        return checks < 2 ? "not_asked" : "allowed";
-      },
-    });
-    await userEvent.setup().click(within(row()).getByRole("button", { name: "Allow…" }));
-    await waitFor(() => expect(refreshed()).toBe(1), { timeout: 3000 });
-    expect(tauri.calls.filter((c) => c.cmd === "request_system_audio_permission")).toHaveLength(1);
-    expect(checks).toBe(2);
-  });
-});
 
 function setUserAgent(value: string) {
   Object.defineProperty(navigator, "userAgent", { value, configurable: true });
@@ -190,15 +78,125 @@ function renderWindowGroup(handlers: Record<string, (args: Record<string, unknow
   return { tauri, group };
 }
 
-test("the General pane shows its groups in the order Window, Recording, Processing, Alerts", () => {
+function renderSetup(r: Readiness, initial: Settings = baseSettings) {
+  mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+  const opened: PaneId[] = [];
+  render(<Harness readiness={r} initial={initial} onNavigate={(p) => opened.push(p)} />);
+  const group = () => screen.getByRole("heading", { name: "Setup" }).closest("section") as HTMLElement;
+  const rows = () => Array.from(group().querySelectorAll(".settings-row")).map((el) => el.textContent ?? "");
+  return { group, rows, opened };
+}
+
+test("the General pane shows its groups in the order Setup, Window", () => {
   mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
   render(<Harness readiness={readiness} />);
-  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
-    "Window",
-    "Recording",
-    "Processing",
-    "Alerts",
-  ]);
+  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Setup", "Window"]);
+});
+
+test("the General pane shows no setting that belongs to another pane", () => {
+  features.systemAudio = true;
+  try {
+    mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+    // Not ready, with Computer audio not allowed: only the setup items can
+    // name these topics, and each item has one row.
+    render(
+      <Harness
+        readiness={{ ...readiness, microphone_authorized: false, armed: false, system_audio: "denied" }}
+        initial={{ ...baseSettings, system_audio_default: false }}
+      />,
+    );
+    const text = document.body.textContent ?? "";
+    expect(screen.getAllByText("Microphone access")).toHaveLength(1);
+    for (const moved of ["Recording shortcut", "Computer audio", "Models", "Summaries", "Alert sound", "Play Sound", "Test Sound"]) {
+      expect(text).not.toContain(moved);
+    }
+    expect(screen.queryByRole("radiogroup", { name: "Microphone" })).toBeNull();
+  } finally {
+    features.systemAudio = false;
+  }
+});
+
+describe("the setup group", () => {
+  afterEach(() => {
+    features.systemAudio = false;
+    delete (navigator as { userAgent?: string }).userAgent;
+  });
+
+  test("Covers AE1. All ready: only the Ready to record row", () => {
+    const { rows, group } = renderSetup(readiness);
+    expect(rows()).toEqual(["Ready to record"]);
+    expect(group().textContent).not.toContain("processed once");
+  });
+
+  test("Covers AE2. Models and endpoint missing: ready to record, with two items that open their panes", async () => {
+    const { rows, group, opened } = renderSetup({ ...readiness, missing_models: ["a", "b"], endpoint_configured: false });
+    expect(rows()).toHaveLength(3);
+    expect(rows()[0]).toContain("Ready to record");
+    expect(rows()[0]).toContain("The items below do not stop a recording");
+    expect(rows()[1]).toContain("2 still to download");
+    expect(rows()[2]).toContain("No endpoint yet");
+    const user = userEvent.setup();
+    await user.click(within(group()).getByRole("button", { name: "Download…" }));
+    await user.click(within(group()).getByRole("button", { name: "Set Up…" }));
+    expect(opened).toEqual(["recognition", "summarization"]);
+  });
+
+  test("Covers AE3. Microphone not allowed on macOS: not ready, with Allow in place", () => {
+    setUserAgent("Mozilla/5.0 (Macintosh; Mac OS X)");
+    const { rows, group } = renderSetup({ ...readiness, microphone_authorized: false, armed: false });
+    expect(rows()[0]).toContain("Not ready to record");
+    expect(rows()[1]).toContain("Microphone access");
+    expect(within(group()).getByRole("button", { name: "Allow…" })).toBeTruthy();
+  });
+
+  test("on another platform, the microphone item has no button", () => {
+    setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    const { group } = renderSetup({ ...readiness, microphone_authorized: false, armed: false });
+    expect(group().textContent).toContain("Microphone access");
+    expect(within(group()).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  test("a storage folder low on space is listed and opens Storage", async () => {
+    const { group, opened } = renderSetup({
+      ...readiness,
+      destination: { kind: "low_space", path: "/x", free_bytes: 1000, floor_bytes: 5000 },
+    });
+    expect(group().textContent).toContain("Storage");
+    expect(group().textContent).toContain("free");
+    await userEvent.setup().click(within(group()).getByRole("button", { name: "Fix…" }));
+    expect(opened).toEqual(["destination"]);
+  });
+
+  test("a read-only storage folder is listed with its reason", () => {
+    const readOnly: Settings = {
+      ...baseSettings,
+      shared: { ...baseSettings.shared, availability: { kind: "read_only", cause: "folder_not_available" } },
+    };
+    const { group } = renderSetup(readiness, readOnly);
+    expect(group().textContent).toContain("The storage folder is not available.");
+  });
+
+  test("a recording shortcut that did not register is listed and opens Recording", async () => {
+    const { group, opened } = renderSetup({
+      ...readiness,
+      armed: false,
+      shortcut: { chord: "Alt+Shift+L", registered: false, error: "Another app uses this shortcut" },
+    });
+    expect(group().textContent).toContain("Another app uses this shortcut");
+    await userEvent.setup().click(within(group()).getByRole("button", { name: "Fix…" }));
+    expect(opened).toEqual(["recording"]);
+  });
+
+  test("Covers AE4. Computer audio access is listed only while new notes start with Computer audio on", () => {
+    features.systemAudio = true;
+    const denied = { ...readiness, system_audio: "denied" as const };
+    const first = renderSetup(denied);
+    expect(first.group().textContent).not.toContain("Computer audio access");
+    cleanup();
+    const second = renderSetup(denied, { ...baseSettings, system_audio_default: true });
+    expect(second.group().textContent).toContain("Computer audio access");
+    expect(within(second.group()).getByRole("button", { name: "Open System Settings" })).toBeTruthy();
+  });
 });
 
 describe("the Hide from Dock switch on macOS", () => {
@@ -275,14 +273,12 @@ describe("the Updates group on macOS", () => {
     delete (navigator as { userAgent?: string }).userAgent;
   });
 
-  test("shows after Processing, and the switch is on by default", () => {
+  test("shows after Window, and the switch is on by default", () => {
     const { group } = renderUpdatesGroup();
     expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
+      "Setup",
       "Window",
-      "Recording",
-      "Processing",
       "Updates",
-      "Alerts",
     ]);
     const toggle = within(group()).getByRole("switch", { name: "Check for updates automatically" });
     expect(toggle.getAttribute("aria-checked")).toBe("true");

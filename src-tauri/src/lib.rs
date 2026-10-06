@@ -42,6 +42,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_microphone,
             commands::settings::set_system_audio_default,
             commands::settings::set_new_note_records,
+            commands::settings::set_alert_sound,
             commands::settings::set_check_updates_automatically,
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,

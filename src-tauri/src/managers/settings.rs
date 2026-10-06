@@ -250,6 +250,9 @@ pub struct LocalSettings {
     pub microphone: Option<MicrophoneChoice>,
     pub system_audio_default: bool,
     pub new_note_records: bool,
+    /// Whether a recording that stops and cannot restart plays the alert
+    /// sound (R9). Local to this computer (KTD1).
+    pub alert_sound: bool,
     pub hide_from_dock: bool,
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
 }
@@ -491,6 +494,9 @@ pub struct Settings {
     /// that records, or open a note that does not record. On by default,
     /// as before the setting.
     pub new_note_records: bool,
+    /// Whether a recording that stops and cannot restart plays the alert
+    /// sound (R9, KTD1). On by default. Test Sound plays when it is off.
+    pub alert_sound: bool,
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
@@ -671,6 +677,7 @@ impl Default for Settings {
             microphone: None,
             system_audio_default: false,
             new_note_records: true,
+            alert_sound: true,
             hide_from_dock: false,
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
@@ -720,6 +727,7 @@ impl Settings {
             microphone: local.microphone,
             system_audio_default: local.system_audio_default,
             new_note_records: local.new_note_records,
+            alert_sound: local.alert_sound,
             hide_from_dock: local.hide_from_dock,
             check_updates_automatically: known_or(
                 &fields.check_updates_automatically,
@@ -771,6 +779,7 @@ impl Settings {
             microphone: self.microphone.clone(),
             system_audio_default: self.system_audio_default,
             new_note_records: self.new_note_records,
+            alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
             learned_context_limits: self.learned_context_limits.clone(),
         }
@@ -1856,6 +1865,32 @@ mod tests {
         assert_eq!(stored["new_note_records"], json!(false));
         let (read, _) = settings_from_value(&stored);
         assert!(!read.new_note_records);
+    }
+
+    // Covers R9: a store from before the setting plays the alert sound, as
+    // before.
+    #[test]
+    fn a_store_without_the_alert_sound_key_reads_as_on() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert!(settings.alert_sound);
+        assert!(Settings::default().alert_sound);
+    }
+
+    #[test]
+    fn the_alert_sound_setting_stays_local() {
+        let settings = Settings {
+            alert_sound: false,
+            ..Settings::default()
+        };
+        let stored = serde_json::to_value(settings.local()).unwrap();
+        assert_eq!(stored["alert_sound"], json!(false));
+        let (read, _) = settings_from_value(&stored);
+        assert!(!read.alert_sound);
     }
 
     #[test]
