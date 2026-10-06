@@ -27,6 +27,7 @@ const baseSettings: Settings = {
   microphone: null,
   system_audio_default: false,
   new_note_records: true,
+  alert_sound: true,
   hide_from_dock: false,
   check_updates_automatically: true,
   audio_removal: { kind: "after_days", days: 30 },

@@ -1,16 +1,14 @@
 import { useEffect, useState } from "react";
-import { requestMicrophonePermission, checkMicrophonePermission } from "tauri-plugin-macos-permissions-api";
-import { DEFAULT_SHORTCUT, commands, type SystemAudioPermission, type Readiness, type Result, type Settings, type ShortcutStatus, type ShortcutStatuses } from "../bindings";
+import { commands, type Readiness, type Result, type Settings, type ShortcutStatus } from "../bindings";
 import { sentence } from "../processing/describe";
 import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { readOnlyReason } from "./shared";
 import { LoginItem } from "./LoginItem";
+import { isMac, MicrophoneAllowButton, SystemAudioButton, systemAudioDetail } from "./Permissions";
+import { outstandingItems, type SetupItem } from "./setup";
 import { Button, ErrorText, Group, Pane, Row, Status as StatusText, Switch } from "./ui";
-
-// Read the platform on each render, so that tests can set the user agent.
-const isMac = () => navigator.userAgent.includes("Mac");
 
 const SHOW_SHORTCUT_TEXT = "This shortcut brings the window back from any app, and hides it again when it is in front.";
 
@@ -29,6 +27,126 @@ function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: Pa
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
 }
 
+/// One outstanding item of the setup list (R3, R4): what is missing, and
+/// one button that fixes it in place or opens its pane.
+function SetupRow({
+  item,
+  readiness,
+  settings,
+  onRefresh,
+  onNavigate,
+}: {
+  item: SetupItem;
+  readiness: Readiness;
+  settings: Settings;
+  onRefresh: () => Promise<void>;
+  onNavigate: (p: PaneId) => void;
+}) {
+  switch (item.id) {
+    case "microphone":
+      return (
+        <Row
+          label="Microphone access"
+          detail={<StatusText tone="caution">Longhand needs permission to hear the room</StatusText>}
+        >
+          <MicrophoneAllowButton onRefresh={onRefresh} />
+        </Row>
+      );
+    case "shortcut":
+      return (
+        <Row
+          label="Recording shortcut"
+          detail={<StatusText tone="negative">{readiness.shortcut.error ?? "Not registered"}</StatusText>}
+        >
+          <GoTo pane="recording" onNavigate={onNavigate}>
+            Fix…
+          </GoTo>
+        </Row>
+      );
+    case "storage": {
+      const detail =
+        readiness.destination.kind !== "ready"
+          ? describeDestination(readiness.destination)
+          : { tone: "caution" as const, text: readOnlyReason(settings) ?? "" };
+      return (
+        <Row label="Storage" detail={<StatusText tone={detail.tone}>{detail.text}</StatusText>}>
+          <GoTo pane="destination" onNavigate={onNavigate}>
+            Fix…
+          </GoTo>
+        </Row>
+      );
+    }
+    case "system_audio":
+      return (
+        <Row label="Computer audio access" detail={systemAudioDetail(readiness.system_audio)}>
+          <SystemAudioButton permission={readiness.system_audio} onRefresh={onRefresh} />
+        </Row>
+      );
+    case "models":
+      return (
+        <Row label="Models" detail={`${readiness.missing_models.length} still to download`}>
+          <GoTo pane="recognition" onNavigate={onNavigate}>
+            Download…
+          </GoTo>
+        </Row>
+      );
+    case "endpoint":
+      return (
+        <Row label="Summaries" detail="No endpoint yet — summaries wait until one is set up">
+          <GoTo pane="summarization" onNavigate={onNavigate}>
+            Set Up…
+          </GoTo>
+        </Row>
+      );
+  }
+}
+
+/// The setup group (R2, R3): one readiness row, then only the items that
+/// are still outstanding.
+function SetupGroup({
+  readiness,
+  settings,
+  onRefresh,
+  onNavigate,
+}: {
+  readiness: Readiness;
+  settings: Settings;
+  onRefresh: () => Promise<void>;
+  onNavigate: (p: PaneId) => void;
+}) {
+  const items = outstandingItems(readiness, settings, { systemAudio: features.systemAudio });
+  const detail = !readiness.armed
+    ? "Set up the items below to record"
+    : items.length > 0
+      ? "The items below do not stop a recording"
+      : undefined;
+  return (
+    <Group
+      header="Setup"
+      footer={items.length > 0 ? "A note recorded before these are ready is processed once they are." : undefined}
+    >
+      <Row
+        label={
+          <StatusText tone={readiness.armed ? "positive" : "caution"}>
+            {readiness.armed ? "Ready to record" : "Not ready to record"}
+          </StatusText>
+        }
+        detail={detail}
+      />
+      {items.map((item) => (
+        <SetupRow
+          key={item.id}
+          item={item}
+          readiness={readiness}
+          settings={settings}
+          onRefresh={onRefresh}
+          onNavigate={onNavigate}
+        />
+      ))}
+    </Group>
+  );
+}
+
 export function StatusPane({
   readiness,
   settings,
@@ -42,39 +160,19 @@ export function StatusPane({
   onRefresh: () => Promise<void>;
   onNavigate: (p: PaneId) => void;
 }) {
-  const [asking, setAsking] = useState(false);
-  const destination = describeDestination(readiness.destination);
   // Readiness holds the recording shortcut; only the show shortcut is read here.
-  const recording = readiness.shortcut;
   const [showWindow, setShowWindow] = useState<ShortcutStatus>({ chord: null, registered: false, error: null });
   useEffect(() => {
     void commands.shortcutStatus().then((s) => setShowWindow(s.show_window));
   }, []);
-  const onShortcutsChanged = (next: ShortcutStatuses) => {
-    setShowWindow(next.show_window);
-    // Ready to record depends on the recording shortcut (R13).
-    void onRefresh();
-  };
 
-  const askForMicrophone = async () => {
-    setAsking(true);
-    // The plugin passes a nil completion handler to AVCaptureDevice, so this
-    // resolves before the user answers the system dialog. Poll instead.
-    await requestMicrophonePermission();
-    for (let i = 0; i < 120; i++) {
-      if (await checkMicrophonePermission()) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    setAsking(false);
-    await onRefresh();
-  };
-
-  const missing = readiness.missing_models.length;
   // Only the Updates group, which shows on macOS only, uses it.
   const readOnly = isMac() ? readOnlyReason(settings) : null;
 
   return (
     <Pane title="General">
+      <SetupGroup readiness={readiness} settings={settings} onRefresh={onRefresh} onNavigate={onNavigate} />
+
       <Group header="Window" footer={`${closeBehaviour(settings.hide_from_dock)} ${SHOW_SHORTCUT_TEXT}`}>
         <LoginItem />
         {isMac() && <HideFromDock settings={settings} onSettings={onSettings} />}
@@ -91,96 +189,8 @@ export function StatusPane({
               <StatusText tone="negative">{showWindow.error ?? "Not registered"}</StatusText>
             )
           }
-          onChanged={onShortcutsChanged}
+          onChanged={(next) => setShowWindow(next.show_window)}
         />
-      </Group>
-
-      <Group
-        header="Recording"
-        footer={
-          !readiness.armed
-            ? "Set these up ahead of time, so a new note never stops to ask a question."
-            : recording.registered
-              ? "The shortcut starts recording immediately, with nothing to answer first."
-              : "New Note starts recording immediately, with nothing to answer first."
-        }
-      >
-        <Row
-          label="Ready to record"
-          detail={readiness.armed ? "Everything below is set up" : "Not yet — finish the steps below"}
-        >
-          <StatusText tone={readiness.armed ? "positive" : "caution"}>
-            {readiness.armed ? "Ready" : "Not ready"}
-          </StatusText>
-        </Row>
-        <ShortcutField
-          kind="recording"
-          label="Recording shortcut"
-          status={recording}
-          resetTo={DEFAULT_SHORTCUT}
-          detail={
-            !recording.chord ? (
-              <StatusText tone="neutral">Off — New Note still starts a recording</StatusText>
-            ) : recording.registered ? (
-              "Starts and stops a recording from any app"
-            ) : (
-              <StatusText tone="negative">{recording.error ?? "Not registered"}</StatusText>
-            )
-          }
-          onChanged={onShortcutsChanged}
-        />
-        <Row
-          label="Microphone"
-          detail={readiness.microphone_authorized ? "Access granted" : "Longhand needs permission to hear the room"}
-        >
-          {readiness.microphone_authorized ? (
-            <StatusText tone="positive">Allowed</StatusText>
-          ) : (
-            isMac() && (
-              <Button prominent disabled={asking} onClick={askForMicrophone}>
-                {asking ? "Waiting…" : "Allow…"}
-              </Button>
-            )
-          )}
-        </Row>
-        {features.systemAudio && <SystemAudioRow permission={readiness.system_audio} onRefresh={onRefresh} />}
-        <Row label="Storage"detail={<StatusText tone={destination.tone}>{destination.text}</StatusText>}>
-          {readiness.destination.kind !== "ready" && (
-            <GoTo pane="destination" onNavigate={onNavigate}>
-              Fix…
-            </GoTo>
-          )}
-        </Row>
-      </Group>
-
-      <Group
-        header="Processing"
-        footer="Recording never waits on these. A note recorded before they are ready is processed once they are."
-      >
-        <Row
-          label="Models"
-          detail={missing === 0 ? "All downloaded" : `${missing} still to download`}
-        >
-          {missing === 0 ? (
-            <StatusText tone="positive">Ready</StatusText>
-          ) : (
-            <GoTo pane="recognition" onNavigate={onNavigate}>
-              Download…
-            </GoTo>
-          )}
-        </Row>
-        <Row
-          label="Summaries"
-          detail={readiness.endpoint_configured ? "Endpoint configured" : "No endpoint yet — summaries wait until one is set up"}
-        >
-          {readiness.endpoint_configured ? (
-            <StatusText tone="positive">Ready</StatusText>
-          ) : (
-            <GoTo pane="summarization" onNavigate={onNavigate}>
-              Set Up…
-            </GoTo>
-          )}
-        </Row>
       </Group>
 
       {isMac() && (
@@ -195,15 +205,13 @@ export function StatusPane({
           <AutomaticUpdates settings={settings} onSettings={onSettings} />
         </Group>
       )}
-
-      <AlertSound />
     </Pane>
   );
 }
 
 /// A switch for one Boolean setting. A failed change keeps the previous
 /// value.
-function SettingSwitch({
+export function SettingSwitch({
   label,
   detail,
   checked,
@@ -273,79 +281,5 @@ function AutomaticUpdates({ settings, onSettings }: { settings: Settings; onSett
       onSettings={onSettings}
       disabled={readOnlyReason(settings) !== null}
     />
-  );
-}
-
-/// The system audio permission, in the "Computer audio" row (R9, KTD12,
-/// KTD15). It follows the Microphone row: a status and at most one button.
-function SystemAudioRow({
-  permission,
-  onRefresh,
-}: {
-  permission: SystemAudioPermission;
-  onRefresh: () => Promise<void>;
-}) {
-  const [asking, setAsking] = useState(false);
-
-  const ask = async () => {
-    setAsking(true);
-    // The short tap shows the macOS prompt, and the prompt does not wait
-    // for the tap. Poll until the user answers.
-    let state = await commands.requestSystemAudioPermission();
-    for (let i = 0; i < 120 && state.status === "ok" && state.data === "not_asked"; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      state = await commands.systemAudioPermission();
-    }
-    setAsking(false);
-    await onRefresh();
-  };
-
-  const openSettings = () => void commands.openSystemAudioSettings();
-
-  const detail =
-    permission === "allowed" ? (
-      "Records what this computer plays while Computer audio is on"
-    ) : permission === "not_asked" ? (
-      <StatusText tone="neutral">Not allowed yet</StatusText>
-    ) : permission === "denied" ? (
-      <StatusText tone="negative">Not allowed</StatusText>
-    ) : (
-      <StatusText tone="caution">Cannot check</StatusText>
-    );
-
-  return (
-    <Row label="Computer audio" detail={detail}>
-      {permission === "allowed" ? (
-        <StatusText tone="positive">Allowed</StatusText>
-      ) : permission === "not_asked" ? (
-        <Button prominent disabled={asking} onClick={() => void ask()}>
-          {asking ? "Waiting…" : "Allow…"}
-        </Button>
-      ) : (
-        <Button onClick={openSettings}>Open System Settings</Button>
-      )}
-    </Row>
-  );
-}
-
-/// The failed-capture sound (R18, KTD16). The user can play it, and no test
-/// is asked for.
-function AlertSound() {
-  const [error, setError] = useState<string | null>(null);
-
-  const play = async () => {
-    const result = await commands.playAlertSound();
-    setError(result.status === "error" ? result.error : null);
-  };
-
-  return (
-    <Group header="Alerts">
-      <Row
-        label="Alert sound"
-        detail={error ?? "Plays when recording stops and cannot restart"}
-      >
-        <Button onClick={() => void play()}>Play Sound</Button>
-      </Row>
-    </Group>
   );
 }
