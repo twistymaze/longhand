@@ -698,7 +698,7 @@ export function SessionPage({
         // The header shows its bottom line only while content is under it.
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
       >
-        <div className="mx-auto max-w-[44rem] px-8 pt-6 pb-1">
+        <div className="note-column pt-6 pb-1">
           <TitleField
             ref={title}
             sessionId={id}
@@ -751,7 +751,7 @@ export function SessionPage({
           )}
         </div>
         {tab !== "notes" && (
-          <div role="tabpanel" className="mx-auto max-w-[44rem] px-8 pt-5 pb-12">
+          <div role="tabpanel" className="note-column pt-5 pb-12">
             {content(tab)}
           </div>
         )}

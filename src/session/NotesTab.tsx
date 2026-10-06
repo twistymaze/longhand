@@ -234,7 +234,7 @@ export function NotesTab({
 
   return (
     <div
-      className="mx-auto max-w-[44rem] px-8 pt-5 pb-12 [&_.prosemirror-editor]:min-h-[50vh]"
+      className="note-column pt-5 pb-12 [&_.prosemirror-editor]:min-h-[50vh]"
       onKeyDownCapture={() => (lastInput.current = performance.now())}
       onInputCapture={() => (lastInput.current = performance.now())}
     >
