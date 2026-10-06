@@ -82,12 +82,12 @@ const NOTES: &str = "# Plan\n\n- the decision\n- and why\n";
 fn each_chunk_request_contains_the_notes_document_once() {
     let all = turns(2_000);
     let allowance = prompt_allowance(4_096, reply_reserve(4_096));
-    let notes = prompts::fit_notes(NOTES, allowance, &topic());
+    let notes = prompts::fit_notes(NOTES, allowance, &topic(), "");
     assert_eq!(notes, NOTES);
-    let chunks = chunk(&all, allowance - prompts::overhead(&notes, &topic()));
+    let chunks = chunk(&all, allowance - prompts::overhead(&notes, &topic(), ""));
     assert!(chunks.len() > 2);
     for (i, c) in chunks.iter().enumerate() {
-        let messages = prompts::part(c, i, chunks.len(), &notes);
+        let messages = prompts::part(c, i, chunks.len(), &notes, "");
         let user = &messages[1].content;
         assert_eq!(user.matches(NOTES).count(), 1, "{user}");
         assert_eq!(user.matches("<notes>").count(), 1);
@@ -103,7 +103,7 @@ fn a_notes_document_longer_than_the_allowance_is_cut_with_a_marker_and_the_reque
         .map(|i| format!("- note {i} about something the user found important\n"))
         .collect();
     assert!(estimate(&long) > allowance);
-    let notes = prompts::fit_notes(&long, allowance, &topic());
+    let notes = prompts::fit_notes(&long, allowance, &topic(), "");
     assert!(notes.len() < long.len());
     assert!(
         notes.ends_with(prompts::NOTES_CUT),
@@ -114,15 +114,15 @@ fn a_notes_document_longer_than_the_allowance_is_cut_with_a_marker_and_the_reque
     let kept = notes.strip_suffix(prompts::NOTES_CUT).unwrap();
     assert!(long.starts_with(kept) && kept.ends_with('\n'));
     // Room remains for the transcript.
-    let room = allowance - prompts::overhead(&notes, &topic());
+    let room = allowance - prompts::overhead(&notes, &topic(), "");
     assert!(room >= allowance / 3, "{room} of {allowance}");
     let chunks = chunk(&all, room);
     for (i, c) in chunks.iter().enumerate() {
-        let messages = prompts::part(c, i, chunks.len(), &notes);
+        let messages = prompts::part(c, i, chunks.len(), &notes, "");
         assert!(messages[1].content.contains(prompts::NOTES_CUT));
         assert!(request_cost(&messages) <= allowance);
     }
-    assert!(request_cost(&prompts::merge(&[], true, &notes, &topic())) <= allowance);
+    assert!(request_cost(&prompts::merge(&[], true, &notes, &topic(), "")) <= allowance);
 }
 
 /// The default prompt text: the final call reserves room for it.

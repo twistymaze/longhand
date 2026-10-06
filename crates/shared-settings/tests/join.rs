@@ -28,6 +28,7 @@ fn titled(id: &str, name: &str, text: &str, title_text: &str) -> Prompt {
         name: name.into(),
         text: text.into(),
         title_text: title_text.into(),
+        background: String::new(),
     }
 }
 
@@ -38,6 +39,7 @@ fn cache_of_b(source: &Path, prompts: Vec<Prompt>) -> Cache {
         settings: apply_patch(&default_settings(), &[SharedValue::LiveTranscript(false)]),
         prompts,
         active_prompt: None,
+        background: String::new(),
     }
 }
 
@@ -485,6 +487,7 @@ fn a_settings_file_that_names_a_prompt_that_has_not_arrived_uses_the_cached_text
         settings: apply_patch(&default_settings(), &[]),
         prompts: vec![standup.clone()],
         active_prompt: None,
+        background: String::new(),
     };
     // The settings file arrives and names "Standup". Its file has not.
     let settings = apply_patch(
@@ -774,4 +777,168 @@ fn a_change_of_folder_keeps_the_audio_removal_value_of_a_folder_with_settings() 
     assert!(!joined.written.settings_file);
     assert_eq!(settings_on_disk(root.path())["audio_removal"], json!(200));
     assert_eq!(joined.view.audio_removal_days(), Some(200));
+}
+
+// The Background file (U1, KTD2): a join writes `background.md` only with
+// a new settings file, or after a change of folder into a folder that has
+// no `background.md`. It never writes an empty file and never replaces a
+// file.
+
+fn background_path(root: &Path) -> PathBuf {
+    root.join(".longhand").join("background.md")
+}
+
+fn with_background(cache: Cache, background: &str) -> Cache {
+    Cache {
+        background: background.into(),
+        ..cache
+    }
+}
+
+#[test]
+fn a_same_folder_join_into_a_folder_with_settings_writes_no_background() {
+    let root = folder_of_a();
+    let cache = with_background(cache_of_b(root.path(), Vec::new()), "B's Background.");
+    let before = snapshot(root.path());
+    let joined = join(root.path(), Some(&cache), JoinKind::SameFolder).unwrap();
+    assert!(!joined.written.background_file);
+    assert_eq!(snapshot(root.path()), before);
+    // The folder has settings and no file: the Background is empty.
+    assert_eq!(joined.view.background, "");
+}
+
+#[test]
+fn a_join_with_no_cache_into_an_empty_folder_writes_no_background() {
+    let root = tempfile::tempdir().unwrap();
+    let joined = join(root.path(), None, JoinKind::SameFolder).unwrap();
+    assert!(joined.written.settings_file);
+    assert!(!joined.written.background_file);
+    assert!(!background_path(root.path()).exists());
+    assert_eq!(joined.view.background, "");
+}
+
+#[test]
+fn a_join_that_fills_an_empty_folder_writes_the_cached_background() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(root.path(), Vec::new()), "B's Background.");
+    let joined = join(root.path(), Some(&cache), JoinKind::SameFolder).unwrap();
+    assert!(joined.written.settings_file);
+    assert!(joined.written.background_file);
+    assert_eq!(
+        fs::read_to_string(background_path(root.path())).unwrap(),
+        "B's Background."
+    );
+    assert_eq!(joined.view.background, "B's Background.");
+}
+
+#[test]
+fn a_join_that_fills_an_empty_folder_with_an_empty_background_writes_no_file() {
+    let old = tempfile::tempdir().unwrap();
+    for background in ["", " \n\t"] {
+        let root = tempfile::tempdir().unwrap();
+        let cache = with_background(cache_of_b(old.path(), Vec::new()), background);
+        let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+        assert!(joined.written.settings_file);
+        assert!(!joined.written.background_file);
+        assert!(!background_path(root.path()).exists());
+    }
+}
+
+#[test]
+fn a_change_of_folder_writes_the_cached_background_into_a_folder_with_no_file() {
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(old.path(), Vec::new()), "B's Background.");
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!joined.written.settings_file);
+    assert!(joined.written.background_file);
+    assert_eq!(
+        fs::read_to_string(background_path(root.path())).unwrap(),
+        "B's Background."
+    );
+    assert_eq!(joined.view.background, "B's Background.");
+    assert_eq!(joined.cache.unwrap().background, "B's Background.");
+    // A second join writes nothing.
+    let before = snapshot(root.path());
+    let again = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!again.written.background_file);
+    assert_eq!(snapshot(root.path()), before);
+}
+
+#[test]
+fn a_change_of_folder_keeps_the_background_file_of_the_folder() {
+    let root = folder_of_a();
+    fs::write(background_path(root.path()), "A's Background.").unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(old.path(), Vec::new()), "B's Background.");
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!joined.written.background_file);
+    assert_eq!(
+        fs::read_to_string(background_path(root.path())).unwrap(),
+        "A's Background."
+    );
+    assert_eq!(joined.view.background, "A's Background.");
+}
+
+#[test]
+fn a_change_of_folder_keeps_an_empty_background_file_of_the_folder() {
+    // A user who clears the text saves an empty file. A join does not
+    // fill it again.
+    let root = folder_of_a();
+    fs::write(background_path(root.path()), "").unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(old.path(), Vec::new()), "B's Background.");
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!joined.written.background_file);
+    assert_eq!(fs::read(background_path(root.path())).unwrap(), b"");
+    assert_eq!(joined.view.background, "");
+}
+
+#[test]
+fn a_change_of_folder_never_replaces_a_background_file_that_cannot_be_used() {
+    let root = folder_of_a();
+    fs::write(background_path(root.path()), [0xff, 0xfe]).unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(old.path(), Vec::new()), "B's Background.");
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!joined.written.background_file);
+    assert_eq!(
+        fs::read(background_path(root.path())).unwrap(),
+        [0xff, 0xfe]
+    );
+    assert!(!joined.view.background_writable());
+}
+
+#[test]
+fn a_join_into_a_folder_whose_settings_do_not_parse_writes_no_background() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join(".longhand")).unwrap();
+    fs::write(root.path().join(".longhand").join("settings.json"), "{").unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(old.path(), Vec::new()), "B's Background.");
+    let before = snapshot(root.path());
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(!joined.written.background_file);
+    assert_eq!(snapshot(root.path()), before);
+    assert_eq!(joined.view.background, "B's Background.");
+    assert!(!joined.view.background_writable());
+}
+
+#[test]
+fn a_conflict_copy_of_the_background_does_not_stop_the_join() {
+    let root = folder_of_a();
+    fs::write(
+        root.path().join(".longhand").join("background 2.md"),
+        "A copy.",
+    )
+    .unwrap();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(cache_of_b(old.path(), Vec::new()), "B's Background.");
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert!(joined.written.background_file);
+    assert_eq!(joined.view.background, "B's Background.");
+    assert_eq!(
+        fs::read_to_string(root.path().join(".longhand").join("background 2.md")).unwrap(),
+        "A copy."
+    );
 }

@@ -43,9 +43,10 @@ pub const PROMPT: &str = "prompt";
 /// other (KTD5).
 pub const WHOLE: &str = "whole";
 /// The error when the fixed parts of the final call and the prompt text
-/// leave too little of the model's context for the transcript (KTD8).
+/// leave too little of the model's context for the transcript (KTD8). The
+/// prompt text and the Background both count (KTD11).
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
-shorten the prompt in Settings or choose a model with a larger context";
+shorten the prompt or the Background in Settings, or choose a model with a larger context";
 /// The proposed title, a string, once the title turn has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
@@ -490,6 +491,7 @@ pub fn produce(
         notes: &notes,
         text: &prompt.text,
         title_text: &prompt.title_text,
+        background: &prompt.background,
         progress: &mut *progress,
     };
     let done = if turns.is_empty() {
@@ -658,6 +660,9 @@ struct Calls<'a> {
     /// The title text of the run's prompt snapshot. Every call that can be
     /// the final call keeps room for the title turn with it (KTD4).
     title_text: &'a str,
+    /// The Background of the run's prompt snapshot. Every call carries it,
+    /// so every budget counts it (KTD11).
+    background: &'a str,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
@@ -671,12 +676,14 @@ struct Final {
 
 impl Calls<'_> {
     fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<Final, Outcome> {
-        let (text, title_text) = (self.text, self.title_text);
+        let (text, title_text, background) = (self.text, self.title_text, self.background);
         let room = plan.room(0);
         // The final call's fixed parts and the prompt text must leave at
         // least half of the prompt allowance for the transcript (KTD8). The
         // title reserve is not part of this check (KTD4).
-        if prompts::overhead("", text) * 2 > tokens::prompt_allowance(room.limit, room.reserve) {
+        if prompts::overhead("", text, background) * 2
+            > tokens::prompt_allowance(room.limit, room.reserve)
+        {
             // Remove the plan, so that the next run takes the budget from
             // the endpoint again. A model with a larger context can then
             // run the same prompt.
@@ -685,9 +692,9 @@ impl Calls<'_> {
                 .map_err(StageError::from)?;
             return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
         }
-        let notes = fit_notes(room, self.notes, text, title_text);
-        let whole = prompts::whole(turns, &notes, text);
-        let title_reserve = prompts::title_reserve(title_text);
+        let notes = fit_notes(room, self.notes, text, title_text, background);
+        let whole = prompts::whole(turns, &notes, text, background);
+        let title_reserve = prompts::title_reserve(title_text, background);
         if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
             <= room.limit as usize
         {
@@ -700,12 +707,18 @@ impl Calls<'_> {
         }
 
         // Too long for one call: parts, then merges until one remains.
-        let allowance = chunk_allowance(room, &notes, text, title_text);
+        let allowance = chunk_allowance(room, &notes, text, title_text, background);
         let chunks: Vec<Chunk> = chunk::chunk(turns, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
         for (i, c) in chunks.iter().enumerate() {
-            summaries.push(self.call(0, i, &prompts::part(c, i, total, &notes), room, total)?);
+            summaries.push(self.call(
+                0,
+                i,
+                &prompts::part(c, i, total, &notes, background),
+                room,
+                total,
+            )?);
         }
         let mut layer = 1;
         if summaries.len() == 1 {
@@ -713,8 +726,8 @@ impl Calls<'_> {
             // its notes still need the summary's shape.
             let only = [summaries[0].as_str()];
             let room = plan.room(1);
-            let notes = fit_notes(room, self.notes, text, title_text);
-            let messages = prompts::merge(&only, true, &notes, text);
+            let notes = fit_notes(room, self.notes, text, title_text, background);
+            let messages = prompts::merge(&only, true, &notes, text, background);
             let reply = self.call(1, 0, &messages, room, 1)?;
             return Ok(Final {
                 messages,
@@ -724,14 +737,14 @@ impl Calls<'_> {
         }
         while summaries.len() > 1 {
             let room = plan.room(layer);
-            let notes = fit_notes(room, self.notes, text, title_text);
-            let allowance = chunk_allowance(room, &notes, text, title_text);
+            let notes = fit_notes(room, self.notes, text, title_text, background);
+            let allowance = chunk_allowance(room, &notes, text, title_text, background);
             let costs: Vec<usize> = summaries.iter().map(|s| tokens::estimate(s) + 8).collect();
             let groups = chunk::merge_groups(&costs, allowance);
             if groups.len() == 1 {
                 // The last merge: one group holds every summary.
                 let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
-                let messages = prompts::merge(&parts, true, &notes, text);
+                let messages = prompts::merge(&parts, true, &notes, text, background);
                 let reply = self.call(layer, 0, &messages, room, 1)?;
                 return Ok(Final {
                     messages,
@@ -749,7 +762,7 @@ impl Calls<'_> {
                 next.push(self.call(
                     layer,
                     i,
-                    &prompts::merge(&parts, false, &notes, text),
+                    &prompts::merge(&parts, false, &notes, text, background),
                     room,
                     groups.len(),
                 )?);
@@ -787,7 +800,12 @@ impl Calls<'_> {
         if proposed || user_title || again {
             return delete_title_request(self.store, self.session_id);
         }
-        let messages = prompts::title_turn(&done.messages, &done.reply, self.title_text);
+        let messages = prompts::title_turn(
+            &done.messages,
+            &done.reply,
+            self.title_text,
+            self.background,
+        );
         let used = tokens::with_margin(cost(&messages));
         let cap = (done.room.limit as usize)
             .saturating_sub(used)
@@ -874,24 +892,31 @@ fn cost(messages: &[Message]) -> usize {
 }
 
 /// The notes document, cut when it would take too much of what `room`
-/// lets a prompt use with the prompt `text`, after the room for the title
-/// turn with `title_text` (KTD4).
-fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str) -> String {
+/// lets a prompt use with the prompt `text` and the `background`, after the
+/// room for the title turn with `title_text` (KTD4, KTD11).
+fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str, background: &str) -> String {
     prompts::fit_notes(
         notes,
         tokens::prompt_allowance(room.limit, room.reserve)
-            .saturating_sub(prompts::title_reserve(title_text)),
+            .saturating_sub(prompts::title_reserve(title_text, background)),
         text,
+        background,
     )
 }
 
 /// What is left for the transcript or the summaries in one call, after the
-/// prompt's fixed parts, the notes, the prompt `text` and the room for the
-/// title turn with `title_text` (KTD4).
-fn chunk_allowance(room: Room, notes: &str, text: &str, title_text: &str) -> usize {
+/// prompt's fixed parts, the notes, the prompt `text`, the `background` and
+/// the room for the title turn with `title_text` (KTD4, KTD11).
+fn chunk_allowance(
+    room: Room,
+    notes: &str,
+    text: &str,
+    title_text: &str,
+    background: &str,
+) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
-        .saturating_sub(prompts::overhead(notes, text))
-        .saturating_sub(prompts::title_reserve(title_text))
+        .saturating_sub(prompts::overhead(notes, text, background))
+        .saturating_sub(prompts::title_reserve(title_text, background))
         .max(1)
 }
 

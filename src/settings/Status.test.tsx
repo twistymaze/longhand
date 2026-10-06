@@ -44,6 +44,9 @@ const baseSettings: Settings = {
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  background: "",
+  background_limit: 4000,
+  background_read_only: null,
 };
 
 /// The pane with the settings state that the Settings window holds. A

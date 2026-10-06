@@ -95,6 +95,11 @@ pub trait EngineProvider: Send + Sync {
     /// note that recorded its prompt at the start uses that prompt instead
     /// (KTD15). Summarize Again always uses this prompt.
     fn summary_prompt(&self) -> summarize::Prompt;
+    /// The Background text that the next summary uses, read fresh when a
+    /// summary starts like the prompt (KTD6). It is the cached text when
+    /// the Background file cannot be used (KTD3), and empty when the user
+    /// has none.
+    fn background(&self) -> String;
     /// Remember that `model` at `base_url` takes no more than `limit` tokens.
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
     /// The destination folder chosen now. It is read when the session is saved,
@@ -457,12 +462,17 @@ impl Runner {
             control.proceed()?;
             let endpoint = endpoint(&env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
+            // Regenerate uses the current Background (R10, KTD6).
+            let active = summarize::Prompt {
+                background: env.engines.background(),
+                ..env.engines.summary_prompt()
+            };
             save::regenerate_summary(
                 &env.store,
                 &id,
                 &env.working_root,
                 endpoint,
-                env.engines.summary_prompt(),
+                active,
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 &control,
                 &mut |done, total| {
@@ -1319,8 +1329,12 @@ fn execute(
         Stage::Summarize => {
             let endpoint = endpoint(env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
-            let prompt = first_summary_prompt(&env.store, id)?
+            let mut prompt = first_summary_prompt(&env.store, id)?
                 .unwrap_or_else(|| env.engines.summary_prompt());
+            // The summary uses the Background of the time that it starts
+            // (KTD6). A resumed summary uses the Background of its saved
+            // PROMPT checkpoint, which `summarize::produce` reads first.
+            prompt.background = env.engines.background();
             summarize::run(
                 &env.store,
                 id,
@@ -1425,6 +1439,8 @@ fn first_summary_prompt(
         name: p.name,
         text: p.text,
         title_text: p.title_text,
+        // The caller sets the Background when the summary starts (KTD6).
+        background: String::new(),
     }))
 }
 
@@ -1750,6 +1766,9 @@ mod tests {
             unreachable!()
         }
         fn summary_prompt(&self) -> summarize::Prompt {
+            unreachable!()
+        }
+        fn background(&self) -> String {
             unreachable!()
         }
         fn learn_limit(&self, _: &str, _: &str, _: u32) {

@@ -12,6 +12,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use summarize::prompts::Prompt;
 
+use crate::background::{BackgroundRead, BackgroundUnavailable, read_background};
 use crate::cache::{Cache, read_cache, write_cache};
 use crate::file::{
     AudioRemoval, Field, FileRead, SharedFields, Unavailable, default_settings, read_settings,
@@ -66,6 +67,13 @@ pub struct SharedView {
     /// The custom prompts, in the order that Settings shows them.
     pub prompts: Vec<Prompt>,
     pub active: ActivePrompt,
+    /// The Background text that summaries use. It is the cached text when
+    /// the view comes from the cache or the Background file cannot be
+    /// used (KTD3).
+    pub background: String,
+    /// Why the Background file cannot be used, when the rest of the view
+    /// comes from the storage folder. The Background is then read-only.
+    pub background_unavailable: Option<BackgroundUnavailable>,
 }
 
 impl SharedView {
@@ -73,6 +81,11 @@ impl SharedView {
     /// settings are read-only in every other case (R16).
     pub fn writable(&self) -> bool {
         self.availability == Availability::Available
+    }
+
+    /// Whether a save of the Background can write now (R5, KTD3).
+    pub fn background_writable(&self) -> bool {
+        self.writable() && self.background_unavailable.is_none()
     }
 
     /// The delay in whole days after which the removal pass removes the
@@ -133,6 +146,13 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
     };
     let active = active_from_folder(&file.fields.active_summary_prompt, &scan, cache);
     let prompts: Vec<Prompt> = scan.prompts.iter().map(Prompt::from).collect();
+    // A missing file in a folder with a settings file is an empty
+    // Background. A file that cannot be used keeps the cached text.
+    let (background, background_unavailable) = match read_background(root) {
+        BackgroundRead::Text(text) => (text, None),
+        BackgroundRead::Missing => (String::new(), None),
+        BackgroundRead::NotAvailable(cause) => (cached_background(cache), Some(cause)),
+    };
     let new_cache = Cache {
         source: root.to_path_buf(),
         settings: file.raw.clone(),
@@ -141,6 +161,7 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
             ActivePrompt::Custom { prompt, .. } => Some(prompt.clone()),
             ActivePrompt::BuiltIn(_) | ActivePrompt::Missing(_) => None,
         },
+        background: background.clone(),
     };
     let view = SharedView {
         availability: Availability::Available,
@@ -148,6 +169,8 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         fields: file.fields,
         prompts,
         active,
+        background,
+        background_unavailable,
     };
     let changed = cache != Some(&new_cache);
     Loaded {
@@ -199,9 +222,17 @@ fn from_cache(cache: Option<&Cache>, availability: Availability) -> Loaded {
             fields,
             prompts,
             active,
+            background: cached_background(cache),
+            background_unavailable: None,
         },
         cache: None,
     }
+}
+
+/// The Background text of `cache`, or an empty text when there is no
+/// cache.
+fn cached_background(cache: Option<&Cache>) -> String {
+    cache.map(|c| c.background.clone()).unwrap_or_default()
 }
 
 /// The id that the active field names. An absent field is the default.

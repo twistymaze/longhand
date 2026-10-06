@@ -4,46 +4,17 @@
 // prompt text and the title text as the user types: one second after the
 // last change, and at once on blur or a change of prompt or pane. The two
 // texts are separate fields: each has its own draft, base, save error and
-// notice of a change on another computer (KTD10).
+// notice of a change on another computer (KTD10). Each text shows in the
+// Markdown editor of My Notes (KTD7).
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
-import { log, logText } from "../lib/log";
-import { Button, CommitField, ErrorText, Group, Row, fieldClass, useConfirm } from "./ui";
+import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
+import { MarkdownField } from "./MarkdownField";
+import { Button, ChangedElsewhereNotice, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
 const saveDelay = 1000;
-
-/// The longest time that a window close waits for the save, in
-/// milliseconds. A save that does not complete must not keep the window
-/// open.
-const defaultCloseSaveLimit = 2000;
-
-/// The longest time that a window close waits for each later step (the
-/// listener removal, the destroy), in milliseconds.
-const stepLimit = 1000;
-
-type Outcome<T> = { kind: "done"; value: T } | { kind: "error"; error: unknown } | { kind: "timeout" };
-
-/// The result of `promise`, or a timeout when it does not settle in `ms`.
-function within<T>(promise: Promise<T>, ms: number): Promise<Outcome<T>> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ kind: "timeout" }), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve({ kind: "done", value });
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        resolve({ kind: "error", error });
-      },
-    );
-  });
-}
-
-const format = (n: number) => n.toLocaleString("en-US");
 
 function CheckIcon() {
   return (
@@ -245,80 +216,17 @@ export function SummaryPrompts({
     [cancel, load],
   );
 
-  // A pane change unmounts the pane, and the save then runs with no wait.
-  // A window close destroys the page but does not unmount the pane, so the
-  // close waits for the save, for at most `closeSaveLimit`. The window
-  // closes also if the save fails or does not complete, and the close asks
-  // nothing. When the app quits, the page events start the save, but
-  // nothing waits for it. Each close step goes to the app log.
+  // A pane change unmounts the pane, and the save of the pending text then
+  // starts. The registration stays until that save is complete, so that a
+  // window close during the save waits for it. A window close and the page
+  // events go through the close coordinator (KTD9).
   useEffect(() => {
-    const onHide = () => void flush();
-    window.addEventListener("pagehide", onHide);
-    window.addEventListener("beforeunload", onHide);
-    const win = getCurrentWindow();
-    let stop: (() => unknown) | undefined;
-    let gone = false;
-    let closing = false;
-    const close = async () => {
-      log("info", "close requested");
-      const saved = await within(flush(), closeSaveLimit);
-      if (saved.kind === "timeout") log("warn", `the save did not complete in ${closeSaveLimit} ms; the window closes`);
-      else if (saved.kind === "error") log("error", `the save failed: ${logText(saved.error)}`);
-      else if (saved.value) log("info", "the save is complete");
-      else log("error", "the save failed; the window closes with prompt text that is not saved");
-      // Remove the listener before the destroy. Tauri keeps the listener
-      // record of a destroyed webview, and that record stops the close of
-      // the next Settings window.
-      const removed = await within(Promise.resolve(stop?.()), stepLimit);
-      if (removed.kind !== "done") log("warn", `the close listener was not removed (${removed.kind})`);
-      stop = undefined;
-      log("info", "destroy called");
-      const destroyed = await within(win.destroy(), stepLimit);
-      if (destroyed.kind === "done") return;
-      log(
-        "error",
-        destroyed.kind === "error"
-          ? `destroy failed: ${logText(destroyed.error)}`
-          : `destroy did not complete in ${stepLimit} ms`,
-      );
-      // The backend destroys the window with no window permission and no
-      // close request.
-      const closed = await within(commands.closeSettingsWindow(), stepLimit);
-      if (closed.kind === "done" && closed.value.status === "ok") return;
-      const why =
-        closed.kind === "timeout"
-          ? `no answer in ${stepLimit} ms`
-          : closed.kind === "error"
-            ? logText(closed.error)
-            : closed.value.status === "error"
-              ? closed.value.error
-              : "";
-      log("error", `the backend close failed: ${why}`);
-    };
-    win
-      .onCloseRequested(async (event) => {
-        event.preventDefault();
-        // A second request while the window closes changes nothing.
-        if (closing) return;
-        closing = true;
-        try {
-          await close();
-        } finally {
-          closing = false;
-        }
-      })
-      .then((f) => {
-        // The pane can unmount before the listener is registered.
-        if (gone) f();
-        else stop = f;
-      })
-      .catch((e: unknown) => log("error", `the close listener could not be registered: ${logText(e)}`));
+    const remove = registerCloseSave(() => flush(), closeSaveLimit);
     return () => {
-      gone = true;
-      stop?.();
-      window.removeEventListener("pagehide", onHide);
-      window.removeEventListener("beforeunload", onHide);
-      void flush();
+      const starts = pending.current !== null;
+      const saved = flush();
+      if (starts) void saved.finally(remove);
+      else remove();
     };
   }, [flush, closeSaveLimit]);
 
@@ -353,6 +261,29 @@ export function SummaryPrompts({
       return Object.keys(kept).length === Object.keys(m).length ? m : kept;
     });
   }, [drafts]);
+
+  // The editor of a field gets a new key only on a new document (KTD10): a
+  // change of prompt or field, Reload, and a change from another computer
+  // while the field has no draft. An own save, the notice of a change on
+  // another computer and a read-only change keep the editor.
+  const [generations, setGenerations] = useState<Record<string, number>>({});
+  const bump = (key: string) => setGenerations((m) => ({ ...m, [key]: (m[key] ?? 0) + 1 }));
+  // The saved text of each field at the last check.
+  const shownSaved = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const p of list?.prompts ?? []) {
+      for (const field of ["text", "title"] as const) {
+        const key = keyOf(p.id, field);
+        const saved = savedOf(p, field);
+        const before = shownSaved.current.get(key);
+        shownSaved.current.set(key, saved);
+        if (before === undefined || before === saved) continue;
+        if (!(key in drafts) && !sentTexts.current.get(key)?.has(saved)) bump(key);
+      }
+    }
+    // Only a new list is a change of the saved texts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list]);
 
   // A selection that is gone (a deleted prompt) goes back to the prompt in use.
   const selected =
@@ -470,6 +401,7 @@ export function SummaryPrompts({
     if (waitingKey() === key) cancel();
     setDrafts((m) => without(m, key));
     setSaveErrors((m) => without(m, key));
+    bump(key);
   };
   // Keep My Text saves the unsaved text over the text of the other computer.
   const keep = (field: Field) => {
@@ -487,6 +419,9 @@ export function SummaryPrompts({
   const fieldProps = (field: Field) => ({
     field,
     inputId: `prompt-${field}-${id}`,
+    // The key holds the prompt id and the field, so a change of prompt
+    // mounts a new editor. The editor mounts from the draft when one exists.
+    editorKey: `${keyOf(id, field)}\n${generations[keyOf(id, field)] ?? 0}`,
     value: draftOf(selected, field),
     limit: limits[field],
     readOnly: selected.built_in || locked,
@@ -576,12 +511,13 @@ export function SummaryPrompts({
   );
 }
 
-/// One text of the selected prompt: its label, the text area, the count,
+/// One text of the selected prompt: its label, the Markdown editor, the count,
 /// the notice of a change on another computer and the save error. The
 /// notice and the error name the field.
 function PromptField({
   field,
   inputId,
+  editorKey,
   label,
   detail,
   rows,
@@ -598,6 +534,8 @@ function PromptField({
 }: {
   field: Field;
   inputId: string;
+  /// The key of the editor (KTD10).
+  editorKey: string;
   label: string;
   detail: string;
   rows: number;
@@ -612,8 +550,6 @@ function PromptField({
   onKeep: () => void;
   onReload: () => void;
 }) {
-  const count = [...value].length;
-  const detailId = `${inputId}-detail`;
   // The summary buttons keep their short names. The title buttons add the
   // field name for screen readers, because the two notices can show at the
   // same time.
@@ -622,51 +558,23 @@ function PromptField({
     <>
       <div className="settings-row px-4">
         <div className="py-3">
-          <div className="mb-2 flex items-end gap-3">
-            <div className="min-w-0 flex-1">
-              <label htmlFor={inputId} className="font-medium">
-                {label}
-              </label>
-              <p id={detailId} className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">
-                {detail}
-              </p>
-            </div>
-            {showCount && (
-              <span
-                className={`shrink-0 text-[0.85rem] tabular-nums ${count > limit ? "text-negative" : "text-label-secondary"}`}
-              >
-                {`${format(count)} / ${format(limit)}`}
-              </span>
-            )}
-          </div>
-          <textarea
+          <MarkdownField
+            key={editorKey}
             id={inputId}
-            aria-describedby={detailId}
+            label={label}
+            hint={detail}
             value={value}
+            count={[...value].length}
+            limit={limit}
+            showCount={showCount}
             readOnly={readOnly}
             rows={rows}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={onChange}
             onBlur={onBlur}
-            className={`${fieldClass} block w-full resize-y py-1.5 leading-[1.45] read-only:text-label-secondary`}
           />
         </div>
       </div>
-      {changed && (
-        <div className="settings-row px-4">
-          <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
-            <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-              <p className="font-medium text-caution">{`The ${fieldName[field]} changed on another computer.`}</p>
-              <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
-            </div>
-            <Button onClick={onKeep}>
-              Keep My Text{suffix}
-            </Button>
-            <Button prominent onClick={onReload}>
-              Reload{suffix}
-            </Button>
-          </div>
-        </div>
-      )}
+      {changed && <ChangedElsewhereNotice name={fieldName[field]} suffix={suffix} onKeep={onKeep} onReload={onReload} />}
       {saveError && <ErrorText>{saveError}</ErrorText>}
     </>
   );

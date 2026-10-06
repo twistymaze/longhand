@@ -5,6 +5,7 @@ import { mockWindows } from "@tauri-apps/api/mocks";
 import type { Readiness, Settings, SummaryPrompt } from "../bindings";
 import { type CommandHandler, type TauriMock, mockTauri, shortcutStatuses } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
+import { Background } from "./Background";
 import { SummaryPrompts } from "./SummaryPrompts";
 
 const baseSettings: Settings = {
@@ -34,6 +35,9 @@ const baseSettings: Settings = {
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  background: "",
+  background_limit: 4000,
+  background_read_only: null,
 };
 
 const readiness: Readiness = {
@@ -116,17 +120,31 @@ const logLines = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "log_from_webview").map((c) => `${c.args.level}: ${c.args.message}`);
 
 const row = (name: string) => screen.getByRole("radio", { name: new RegExp(`^${name}`) });
-const textArea = () => screen.getByRole("textbox", { name: "Prompt text" }) as HTMLTextAreaElement;
+// The two prompt editors, found by their accessible names.
+const textArea = () => screen.getByRole("textbox", { name: "Prompt text" });
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
 const textCalls = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "set_summary_prompt_text").map((c) => c.args);
-const titleArea = () => screen.getByRole("textbox", { name: "Title instructions" }) as HTMLTextAreaElement;
+const titleArea = () => screen.getByRole("textbox", { name: "Title instructions" });
+
+const selectAll = /Mac/.test(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}";
+/// Replaces the whole text of an editor: a click, select all, then a paste
+/// of `text`, or a delete when `text` is empty. A paste gives one change, as
+/// one value change of the old text area did.
+async function setText(box: HTMLElement, text: string) {
+  const user = userEvent.setup();
+  await user.click(box);
+  await user.keyboard(selectAll);
+  if (text === "") await user.keyboard("{Backspace}");
+  else await user.paste(text);
+}
+const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 const titleCalls = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "set_summary_prompt_title_text").map((c) => c.args);
 
 async function selectCustom(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole("radio", { name: /^Team sync/ }));
-  await waitFor(() => expect(textArea().value).toBe("Sync text"));
+  await waitFor(() => expect(textArea().textContent).toBe("Sync text"));
 }
 
 describe("SummaryPrompts", () => {
@@ -149,9 +167,9 @@ describe("SummaryPrompts", () => {
   test("a built-in prompt shows read-only text and Duplicate, with no Delete or count", async () => {
     backend();
     renderPrompts();
-    await waitFor(() => expect(textArea().value).toBe("Topic text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Topic text"));
     expect(row("Topic summary").getAttribute("aria-checked")).toBe("true");
-    expect(textArea().readOnly).toBe(true);
+    expect(textArea().getAttribute("aria-readonly")).toBe("true");
     expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).disabled).toBe(true);
     expect(screen.getByText(/Built-in prompts can’t be changed/)).toBeTruthy();
     expect(button("Duplicate")).toBeTruthy();
@@ -167,7 +185,7 @@ describe("SummaryPrompts", () => {
     await waitFor(() => expect(row("New prompt").getAttribute("aria-checked")).toBe("true"));
     expect(tauri.calls.some((c) => c.cmd === "create_summary_prompt")).toBe(true);
     expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("New prompt");
-    expect(textArea().readOnly).toBe(false);
+    expect(textArea().getAttribute("aria-readonly")).toBeNull();
     expect(onSettings).toHaveLength(1);
   });
 
@@ -175,7 +193,7 @@ describe("SummaryPrompts", () => {
     const tauri = backend();
     renderPrompts();
     const user = userEvent.setup();
-    await waitFor(() => expect(textArea().value).toBe("Topic text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Topic text"));
     await user.click(button("Duplicate"));
     await waitFor(() => expect(row("Topic summary copy").getAttribute("aria-checked")).toBe("true"));
     expect(tauri.calls.find((c) => c.cmd === "duplicate_summary_prompt")?.args).toEqual({ id: "topic-summary" });
@@ -186,14 +204,14 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Short" } });
-    fireEvent.change(textArea(), { target: { value: "Short re" } });
-    fireEvent.change(textArea(), { target: { value: "Short note" } });
+    await setText(textArea(), "Short");
+    await setText(textArea(), "Short re");
+    await setText(textArea(), "Short note");
     await act(() => new Promise((r) => setTimeout(r, 500)));
     expect(textCalls(tauri)).toEqual([]);
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1), { timeout: 3000 });
     expect(textCalls(tauri)[0]).toEqual({ id: "c1", text: "Short note" });
-    expect(textArea().value).toBe("Short note");
+    expect(textArea().textContent).toBe("Short note");
   });
 
   test("blur saves the text at once", async () => {
@@ -201,7 +219,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Short note" } });
+    await setText(textArea(), "Short note");
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]), { timeout: 500 });
   });
@@ -211,14 +229,14 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     await user.click(row("Topic summary"));
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    await waitFor(() => expect(textArea().value).toBe("Topic text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Topic text"));
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]), { timeout: 500 });
 
     await user.click(row("Team sync"));
-    await waitFor(() => expect(textArea().value).toBe("Changed"));
+    await waitFor(() => expect(textArea().textContent).toBe("Changed"));
   });
 
   test("empty text is not saved and the editor says why", async () => {
@@ -227,17 +245,17 @@ describe("SummaryPrompts", () => {
     const user = userEvent.setup();
     await selectCustom(user);
     expect(screen.queryByText("A prompt can’t be empty.")).toBeNull();
-    fireEvent.change(textArea(), { target: { value: "   " } });
+    await setText(textArea(), "   ");
     expect(screen.getByText("A prompt can’t be empty.")).toBeTruthy();
     fireEvent.blur(textArea());
     await act(() => new Promise((r) => setTimeout(r, 50)));
     expect(textCalls(tauri)).toEqual([]);
-    expect(textArea().value).toBe("   ");
+    expect(textArea().textContent).toBe("   ");
 
     // A change of prompt drops the text that is not valid.
     await user.click(row("Topic summary"));
     await user.click(row("Team sync"));
-    await waitFor(() => expect(textArea().value).toBe("Sync text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Sync text"));
   });
 
   test("a save error shows inline and keeps the edit", async () => {
@@ -249,10 +267,10 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Short note" } });
+    await setText(textArea(), "Short note");
     fireEvent.blur(textArea());
     expect(await screen.findByText("The prompt text cannot be saved.")).toBeTruthy();
-    expect(textArea().value).toBe("Short note");
+    expect(textArea().textContent).toBe("Short note");
   });
 
   test("a failed save on a change of prompt keeps the text and the error with its prompt", async () => {
@@ -266,20 +284,20 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     await user.click(row("Topic summary"));
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
     await act(() => new Promise((r) => setTimeout(r, 10)));
-    expect(textArea().value).toBe("Topic text");
+    expect(textArea().textContent).toBe("Topic text");
     expect(screen.queryByText("The prompt text cannot be saved.")).toBeNull();
 
     await user.click(row("Team sync"));
-    expect(textArea().value).toBe("Changed");
+    expect(textArea().textContent).toBe("Changed");
     expect(screen.getByText("The prompt text cannot be saved.")).toBeTruthy();
 
     // A later edit saves again.
     fail = false;
-    fireEvent.change(textArea(), { target: { value: "Changed again" } });
+    await setText(textArea(), "Changed again");
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)[1]).toEqual({ id: "c1", text: "Changed again" }));
     await waitFor(() => expect(screen.queryByText("The prompt text cannot be saved.")).toBeNull());
@@ -294,7 +312,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     await user.click(screen.getByRole("button", { name: "New Prompt" }));
     expect(await screen.findByText("The prompt text cannot be saved.")).toBeTruthy();
     await user.click(button("Duplicate"));
@@ -302,7 +320,7 @@ describe("SummaryPrompts", () => {
     expect(tauri.calls.some((c) => c.cmd === "create_summary_prompt")).toBe(false);
     expect(tauri.calls.some((c) => c.cmd === "duplicate_summary_prompt")).toBe(false);
     expect(row("Team sync").getAttribute("aria-checked")).toBe("true");
-    expect(textArea().value).toBe("Changed");
+    expect(textArea().textContent).toBe("Changed");
   });
 
   test("pagehide saves the text before the timer", async () => {
@@ -310,7 +328,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Short note" } });
+    await setText(textArea(), "Short note");
     act(() => void window.dispatchEvent(new Event("pagehide")));
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]), { timeout: 500 });
   });
@@ -320,7 +338,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Short note" } });
+    await setText(textArea(), "Short note");
     act(() => void window.dispatchEvent(new Event("beforeunload")));
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]), { timeout: 500 });
   });
@@ -339,7 +357,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     // The mock handles `plugin:event|listen` itself, so the call is not in
     // `calls`. Let the listener register.
     await act(() => new Promise((r) => setTimeout(r, 10)));
@@ -364,7 +382,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     await act(() => new Promise((r) => setTimeout(r, 10)));
 
     await tauri.emit("tauri://close-requested");
@@ -382,7 +400,7 @@ describe("SummaryPrompts", () => {
     renderPrompts(50);
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     await act(() => new Promise((r) => setTimeout(r, 10)));
 
     await tauri.emit("tauri://close-requested");
@@ -446,6 +464,49 @@ describe("SummaryPrompts", () => {
     expect(lines).toHaveLength(4);
   });
 
+  test("a window close waits for a Background save and a prompt save that are both pending", async () => {
+    let finishPrompt: () => void = () => {};
+    const promptHeld = new Promise<void>((r) => (finishPrompt = r));
+    let finishBackground: () => void = () => {};
+    const backgroundHeld = new Promise<void>((r) => (finishBackground = r));
+    const tauri = backend({
+      set_summary_prompt_text: async () => {
+        await promptHeld;
+        return baseSettings;
+      },
+      set_background: async ({ text }) => {
+        await backgroundHeld;
+        return { ...baseSettings, background: text as string };
+      },
+      "plugin:window|destroy": () => null,
+      log_from_webview: () => null,
+    });
+    mockWindows("settings");
+    render(
+      <>
+        <Background settings={baseSettings} onSettings={() => {}} />
+        <SummaryPrompts onSettings={() => {}} />
+      </>,
+    );
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await setText(textArea(), "Changed");
+    await user.click(screen.getByRole("textbox", { name: "Background" }));
+    await user.keyboard("Erv");
+    await act(() => new Promise((r) => setTimeout(r, 10)));
+
+    await tauri.emit("tauri://close-requested");
+    await waitFor(() => expect(called(tauri, "set_background")).toBe(1));
+    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]));
+    await act(async () => finishBackground());
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(called(tauri, "plugin:window|destroy")).toBe(0);
+    await act(async () => finishPrompt());
+    await waitFor(() => expect(called(tauri, "plugin:window|destroy")).toBe(1));
+    expect(called(tauri, "set_background")).toBe(1);
+    expect(logLines(tauri)).toEqual(["info: close requested", "info: the save is complete", "info: destroy called"]);
+  });
+
   test("a log failure does not stop the close", async () => {
     // With no log handler, each log call fails.
     const tauri = backend({ "plugin:window|destroy": () => null });
@@ -477,7 +538,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Changed" } });
+    await setText(textArea(), "Changed");
     fireEvent.blur(textArea());
     await user.click(button("Delete"));
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
@@ -517,9 +578,9 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "First" } });
+    await setText(textArea(), "First");
     fireEvent.blur(textArea());
-    fireEvent.change(textArea(), { target: { value: "First, then second" } });
+    await setText(textArea(), "First, then second");
     fireEvent.blur(textArea());
     await act(() => new Promise((r) => setTimeout(r, 50)));
     // The second save waits for the first.
@@ -529,7 +590,7 @@ describe("SummaryPrompts", () => {
     await waitFor(() => expect(done).toEqual(["First", "First, then second"]));
     expect(textCalls(tauri)[1]).toEqual({ id: "c1", text: "First, then second" });
     await waitFor(() => expect(text).toBe("First, then second"));
-    expect(textArea().value).toBe("First, then second");
+    expect(textArea().textContent).toBe("First, then second");
   });
 
   test("text typed while a save runs stays in the editor and the next save saves it", async () => {
@@ -557,17 +618,17 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "Short note" } });
+    await setText(textArea(), "Short note");
     fireEvent.blur(textArea());
-    fireEvent.change(textArea(), { target: { value: "Short note, longer" } });
+    await setText(textArea(), "Short note, longer");
     await act(async () => finish());
     await waitFor(() => expect(text).toBe("Short note"));
     await act(() => new Promise((r) => setTimeout(r, 10)));
-    expect(textArea().value).toBe("Short note, longer");
+    expect(textArea().textContent).toBe("Short note, longer");
 
     fireEvent.blur(textArea());
     await waitFor(() => expect(text).toBe("Short note, longer"));
-    expect(textArea().value).toBe("Short note, longer");
+    expect(textArea().textContent).toBe("Short note, longer");
   });
 
   test("a list read error shows inline", async () => {
@@ -611,13 +672,13 @@ describe("SummaryPrompts", () => {
     backend();
     renderPrompts();
     const user = userEvent.setup();
-    await waitFor(() => expect(textArea().value).toBe("Topic text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Topic text"));
     row("Play-by-play summary").focus();
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(textArea().value).toBe("Play text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Play text"));
     row("Team sync").focus();
     await user.keyboard(" ");
-    await waitFor(() => expect(textArea().value).toBe("Sync text"));
+    await waitFor(() => expect(textArea().textContent).toBe("Sync text"));
   });
 
   test("Delete asks for confirmation, then calls delete", async () => {
@@ -670,14 +731,14 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "a".repeat(4001) } });
+    await setText(textArea(), "a".repeat(4001));
     expect(screen.getByText("4,001 / 4,000").className).toContain("text-negative");
     fireEvent.blur(textArea());
     await act(() => new Promise((r) => setTimeout(r, 50)));
     expect(textCalls(tauri)).toEqual([]);
-    expect(textArea().value).toHaveLength(4001);
+    expect(textArea().textContent).toHaveLength(4001);
 
-    fireEvent.change(textArea(), { target: { value: "a".repeat(4000) } });
+    await setText(textArea(), "a".repeat(4000));
     expect(screen.getByText("4,000 / 4,000").className).not.toContain("text-negative");
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
@@ -688,7 +749,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "😀".repeat(4000) } });
+    await setText(textArea(), "😀".repeat(4000));
     expect(screen.getByText("4,000 / 4,000")).toBeTruthy();
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
@@ -697,8 +758,8 @@ describe("SummaryPrompts", () => {
   test("a built-in prompt shows its title text read-only, with no count", async () => {
     backend();
     renderPrompts();
-    await waitFor(() => expect(titleArea().value).toBe("Built-in title text"));
-    expect(titleArea().readOnly).toBe(true);
+    await waitFor(() => expect(titleArea().textContent).toBe("Built-in title text"));
+    expect(titleArea().getAttribute("aria-readonly")).toBe("true");
     expect(screen.queryByText(/ \/ 1,000$/)).toBeNull();
   });
 
@@ -707,13 +768,13 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    expect(titleArea().value).toBe("Sync title");
+    expect(titleArea().textContent).toBe("Sync title");
     expect(screen.getByText("10 / 1,000")).toBeTruthy();
-    fireEvent.change(titleArea(), { target: { value: "Type: topics" } });
+    await setText(titleArea(), "Type: topics");
     await waitFor(() => expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "Type: topics" }]), { timeout: 3000 });
     expect(textCalls(tauri)).toEqual([]);
-    expect(titleArea().value).toBe("Type: topics");
-    expect(textArea().value).toBe("Sync text");
+    expect(titleArea().textContent).toBe("Type: topics");
+    expect(textArea().textContent).toBe("Sync text");
   });
 
   test("an empty title field saves and shows no error", async () => {
@@ -721,7 +782,7 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "" } });
+    await setText(titleArea(), "");
     fireEvent.blur(titleArea());
     await waitFor(() => expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "" }]), { timeout: 500 });
     expect(screen.queryByText("A prompt can’t be empty.")).toBeNull();
@@ -733,13 +794,13 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "a".repeat(1001) } });
+    await setText(titleArea(), "a".repeat(1001));
     expect(screen.getByText("1,001 / 1,000").className).toContain("text-negative");
     fireEvent.blur(titleArea());
     await act(() => new Promise((r) => setTimeout(r, 50)));
     expect(titleCalls(tauri)).toEqual([]);
 
-    fireEvent.change(titleArea(), { target: { value: "a".repeat(1000) } });
+    await setText(titleArea(), "a".repeat(1000));
     expect(screen.getByText("1,000 / 1,000").className).not.toContain("text-negative");
     fireEvent.blur(titleArea());
     await waitFor(() => expect(titleCalls(tauri)).toHaveLength(1));
@@ -754,14 +815,14 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "New title text" } });
+    await setText(titleArea(), "New title text");
     fireEvent.blur(titleArea());
     expect(
       await screen.findByText("The title instructions could not be saved. The prompt file cannot be written: disk full"),
     ).toBeTruthy();
-    expect(titleArea().value).toBe("New title text");
+    expect(titleArea().textContent).toBe("New title text");
 
-    fireEvent.change(textArea(), { target: { value: "New summary text" } });
+    await setText(textArea(), "New summary text");
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "New summary text" }]));
     expect(screen.getByText(/^The title instructions could not be saved/)).toBeTruthy();
@@ -772,8 +833,8 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "New title text" } });
-    fireEvent.change(textArea(), { target: { value: "New summary text" } });
+    await setText(titleArea(), "New title text");
+    await setText(textArea(), "New summary text");
     await waitFor(
       () => {
         expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "New title text" }]);
@@ -788,17 +849,127 @@ describe("SummaryPrompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "a".repeat(1001) } });
+    await setText(titleArea(), "a".repeat(1001));
     await user.click(row("Topic summary"));
     await user.click(row("Team sync"));
-    await waitFor(() => expect(titleArea().value).toBe("Sync title"));
+    await waitFor(() => expect(titleArea().textContent).toBe("Sync title"));
     expect(titleCalls(tauri)).toEqual([]);
 
-    fireEvent.change(titleArea(), { target: { value: "Changed title" } });
+    await setText(titleArea(), "Changed title");
     await user.click(row("Topic summary"));
     await waitFor(() => expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "Changed title" }]), { timeout: 500 });
   });
+
+  test("a built-in prompt shows its formatted text in a read-only editor with no toolbar (AE6)", async () => {
+    const tauri = backend({
+      summary_prompts: () => ({
+        prompts: [
+          { id: "topic-summary", name: "Topic summary", text: "## Topics\n\n- one\n- two", title_text: "Built-in title text", built_in: true },
+          { id: "c1", name: "Team sync", text: "Sync text", title_text: "Sync title", built_in: false },
+        ],
+        active: "topic-summary",
+        text_limit: 4000,
+        title_text_limit: 1000,
+      }),
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await waitFor(() => expect(textArea().querySelector("h2")?.textContent).toBe("Topics"));
+    expect(textArea().querySelectorAll("li")).toHaveLength(2);
+    expect(textArea().getAttribute("aria-readonly")).toBe("true");
+    await user.click(textArea());
+    await user.keyboard(selectAll);
+    expect(screen.queryByRole("toolbar", { name: "Format selection" })).toBeNull();
+    await user.keyboard("x");
+    act(() => void fireEvent.blur(textArea()));
+    await pause(20);
+    expect(textArea().textContent).not.toContain("x");
+    expect(textCalls(tauri)).toEqual([]);
+  });
+
+  test("selecting another prompt shows that prompt's texts", async () => {
+    backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await waitFor(() => expect(textArea().textContent).toBe("Topic text"));
+    await selectCustom(user);
+    expect(titleArea().textContent).toBe("Sync title");
+    await user.click(row("Play-by-play summary"));
+    await waitFor(() => expect(textArea().textContent).toBe("Play text"));
+    expect(titleArea().textContent).toBe("Built-in title text");
+    expect(textArea().getAttribute("aria-readonly")).toBe("true");
+  });
+
+  test("a title text whose save failed comes back when the user selects its prompt again", async () => {
+    const tauri = backend({
+      set_summary_prompt_title_text: () => {
+        throw "disk full";
+      },
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await setText(titleArea(), "Changed title");
+    await user.click(row("Topic summary"));
+    await waitFor(() => expect(titleCalls(tauri)).toHaveLength(1));
+    await pause(10);
+    expect(titleArea().textContent).toBe("Built-in title text");
+
+    await user.click(row("Team sync"));
+    await waitFor(() => expect(titleArea().textContent).toBe("Changed title"));
+    expect(screen.getByText("The title instructions could not be saved. disk full")).toBeTruthy();
+    expect(textArea().textContent).toBe("Sync text");
+  });
+
+  test("the title marker line in the prompt text shows the backend error and keeps the text", async () => {
+    const marker = "<!-- longhand: title instructions -->";
+    const error = `The prompt text can't contain the line ${marker}.`;
+    // The backend refuses a summary text with the marker line.
+    const tauri = backend({
+      set_summary_prompt_text: ({ text }) => {
+        if ((text as string).split("\n").some((line) => line.trim() === marker)) throw error;
+        return baseSettings;
+      },
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await user.click(textArea());
+    await user.keyboard(selectAll);
+    await user.keyboard(`Summary.{Enter}${marker}`);
+    act(() => void fireEvent.blur(textArea()));
+    expect(await screen.findByText(error)).toBeTruthy();
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: `Summary.\n\n${marker}` }]);
+    expect(textArea().textContent).toBe(`Summary.${marker}`);
+  });
+
+  test("an own save does not remount the editor, and the focus stays in the field", async () => {
+    const tauri = backend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    const before = textArea();
+    await setText(before, "Short note");
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1), { timeout: 3000 });
+    await pause(20);
+    expect(textArea()).toBe(before);
+    expect(document.activeElement).toBe(before);
+    expect(textArea().textContent).toBe("Short note");
+  });
+
+  test("a change to the read-only state does not remount the editor", async () => {
+    backend();
+    mockWindows("settings");
+    const view = render(<SummaryPrompts onSettings={() => {}} />);
+    await selectCustom(userEvent.setup());
+    const before = textArea();
+    expect(before.getAttribute("aria-readonly")).toBeNull();
+    view.rerender(<SummaryPrompts onSettings={() => {}} readOnly="The storage folder is not available." />);
+    expect(textArea()).toBe(before);
+    expect(textArea().getAttribute("aria-readonly")).toBe("true");
+  });
 });
+
 
 test("a pane change in the Settings window saves the prompt text and asks nothing", async () => {
   mockWindows("settings");
@@ -814,7 +985,7 @@ test("a pane change in the Settings window saves the prompt text and asks nothin
   const user = userEvent.setup();
   await user.click(await screen.findByRole("tab", { name: "Summaries" }));
   await selectCustom(user);
-  fireEvent.change(textArea(), { target: { value: "Changed" } });
+  await setText(textArea(), "Changed");
   await user.click(screen.getByRole("tab", { name: "Transcription" }));
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.getByRole("tab", { name: "Transcription" }).getAttribute("aria-selected")).toBe("true");
@@ -870,7 +1041,7 @@ describe("shared prompts", () => {
     renderPrompts();
     await selectCustom(userEvent.setup());
     await remote({ text: "Text from the other computer" });
-    await waitFor(() => expect(textArea().value).toBe("Text from the other computer"));
+    await waitFor(() => expect(textArea().textContent).toBe("Text from the other computer"));
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
   });
 
@@ -879,17 +1050,17 @@ describe("shared prompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "My unsaved text" } });
+    await setText(textArea(), "My unsaved text");
     await remote({ text: "Text from the other computer" });
     expect(await screen.findByText("The prompt text changed on another computer.")).toBeTruthy();
-    expect(textArea().value).toBe("My unsaved text");
+    expect(textArea().textContent).toBe("My unsaved text");
     // The unsaved text does not replace the text of the other computer.
     await new Promise((r) => setTimeout(r, 1200));
     fireEvent.blur(textArea());
     await new Promise((r) => setTimeout(r, 20));
     expect(textCalls(tauri)).toEqual([]);
     await user.click(button("Reload"));
-    expect(textArea().value).toBe("Text from the other computer");
+    expect(textArea().textContent).toBe("Text from the other computer");
     expect(screen.queryByText("The prompt text changed on another computer.")).toBeNull();
     expect(textCalls(tauri)).toEqual([]);
   });
@@ -899,10 +1070,10 @@ describe("shared prompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "My unsaved text" } });
+    await setText(textArea(), "My unsaved text");
     await remote({ text: "Text from the other computer" });
     expect(await screen.findByText("The prompt text changed on another computer.")).toBeTruthy();
-    fireEvent.change(textArea(), { target: { value: "My unsaved text and more" } });
+    await setText(textArea(), "My unsaved text and more");
     expect(screen.getByText("The prompt text changed on another computer.")).toBeTruthy();
     await new Promise((r) => setTimeout(r, 1200));
     fireEvent.blur(textArea());
@@ -918,26 +1089,26 @@ describe("shared prompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(textArea(), { target: { value: "My unsaved text" } });
+    await setText(textArea(), "My unsaved text");
     await remote({ text: "Text from the other computer" });
     await user.click(await screen.findByRole("button", { name: "Keep My Text" }));
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "My unsaved text" }]));
     await waitFor(() => expect(screen.queryByText("The prompt text changed on another computer.")).toBeNull());
-    expect(textArea().value).toBe("My unsaved text");
+    expect(textArea().textContent).toBe("My unsaved text");
   });
 
   test("text typed after this computer's own save shows no notice", async () => {
     const { tauri } = sharedBackend();
     renderPrompts();
     await selectCustom(userEvent.setup());
-    fireEvent.change(textArea(), { target: { value: "First" } });
+    await setText(textArea(), "First");
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
-    fireEvent.change(textArea(), { target: { value: "First and more" } });
+    await setText(textArea(), "First and more");
     await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
-    expect(textArea().value).toBe("First and more");
+    expect(textArea().textContent).toBe("First and more");
   });
 
   test("a change from another computer to the title text shows the notice for the title field only", async () => {
@@ -945,14 +1116,14 @@ describe("shared prompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "My title text" } });
+    await setText(titleArea(), "My title text");
     await remote({ title_text: "Title from the other computer" });
     expect(await screen.findByText("The title instructions changed on another computer.")).toBeTruthy();
     expect(screen.queryByText("The prompt text changed on another computer.")).toBeNull();
-    expect(titleArea().value).toBe("My title text");
+    expect(titleArea().textContent).toBe("My title text");
 
     // An edit in the summary field still saves.
-    fireEvent.change(textArea(), { target: { value: "New summary text" } });
+    await setText(textArea(), "New summary text");
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "New summary text" }]));
     fireEvent.blur(titleArea());
@@ -970,10 +1141,10 @@ describe("shared prompts", () => {
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
-    fireEvent.change(titleArea(), { target: { value: "My title text" } });
+    await setText(titleArea(), "My title text");
     await remote({ title_text: "Title from the other computer" });
     await user.click(await screen.findByRole("button", { name: "Reload title instructions" }));
-    expect(titleArea().value).toBe("Title from the other computer");
+    expect(titleArea().textContent).toBe("Title from the other computer");
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
     expect(titleCalls(tauri)).toEqual([]);
   });
@@ -984,8 +1155,8 @@ describe("shared prompts", () => {
     render(<SummaryPrompts onSettings={() => {}} readOnly="The storage folder is not available." />);
     await selectCustom(userEvent.setup());
     expect(screen.getByText("The storage folder is not available. Prompts can’t be changed now.")).toBeTruthy();
-    expect(textArea().readOnly).toBe(true);
-    expect(titleArea().readOnly).toBe(true);
+    expect(textArea().getAttribute("aria-readonly")).toBe("true");
+    expect(titleArea().getAttribute("aria-readonly")).toBe("true");
     expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).disabled).toBe(true);
     expect((button("New Prompt") as HTMLButtonElement).disabled).toBe(true);
     expect((button("Use Team sync") as HTMLButtonElement).disabled).toBe(true);

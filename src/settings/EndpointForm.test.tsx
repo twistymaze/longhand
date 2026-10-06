@@ -43,6 +43,9 @@ const baseSettings: Settings = {
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  background: "",
+  background_limit: 4000,
+  background_read_only: null,
 };
 
 const listed = (...ids: string[]): EndpointModels => ({ kind: "listed", ids });
@@ -138,6 +141,16 @@ describe("the Summaries pane", () => {
     for (let i = 1; i < nodes.length; i++) {
       expect(nodes[i - 1].compareDocumentPosition(nodes[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
+  });
+
+  test("the Background is after the Model status line and before the summary prompts", async () => {
+    const b = backend({ settings: { background: "I am Erv." } });
+    render(<Harness initial={b.initial} />);
+    const prompts = await screen.findByRole("radiogroup", { name: "Summary prompts" });
+    const background = screen.getByRole("textbox", { name: "Background" });
+    expect(background.textContent).toBe("I am Erv.");
+    expect(status().compareDocumentPosition(background) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(background.compareDocumentPosition(prompts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   test("a key save requests the list again and shows the picker", async () => {

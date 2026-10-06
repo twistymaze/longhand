@@ -512,6 +512,12 @@ impl EngineProvider for Models {
         settings::get_settings(&self.app).active_summary_prompt_snapshot()
     }
 
+    /// The Background of the shared view. It is the cached text while the
+    /// Background file or the storage folder is not available (KTD3).
+    fn background(&self) -> String {
+        settings::get_background(&self.app)
+    }
+
     fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {
         let key = settings::learned_limit_key(base_url, model);
         if let Err(e) = settings::update_settings(&self.app, |s| {

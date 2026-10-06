@@ -76,6 +76,8 @@ struct Script {
     capturing: AtomicBool,
     /// The active summary prompt; unset is the "Topic summary" built-in.
     prompt: Mutex<Option<summarize::Prompt>>,
+    /// The Background text; unset is empty.
+    background: Mutex<String>,
     /// Named sentences that the recognizer hears: when set, each window
     /// decodes the name of each sentence once for each time it finds the
     /// sentence in the window's audio (see [`heard`]).
@@ -440,6 +442,9 @@ impl EngineProvider for Provider {
         self.0.prompt.lock().unwrap().clone().unwrap_or_else(|| {
             summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
         })
+    }
+    fn background(&self) -> String {
+        self.0.background.lock().unwrap().clone()
     }
     fn learn_limit(&self, _: &str, _: &str, limit: u32) {
         self.0.learned.lock().unwrap().push(limit);
@@ -1838,6 +1843,7 @@ fn custom_prompt(name: &str, marker: &str) -> summarize::Prompt {
         name: name.into(),
         text: format!("Write the summary as a short list. {marker}"),
         title_text: String::new(),
+        background: String::new(),
     }
 }
 
@@ -1867,6 +1873,11 @@ fn summarize_keys(r: &Rig) -> Vec<String> {
 
 /// A long session whose fifth part note fails, so it is saved with a stub.
 async fn stub_after_part_five(r: &Rig) -> (http::Mock, std::path::PathBuf) {
+    stub_after_part_five_at(r, 2_048).await
+}
+
+/// [`stub_after_part_five`] with a context of `limit` tokens.
+async fn stub_after_part_five_at(r: &Rig, limit: u32) -> (http::Mock, std::path::PathBuf) {
     let n = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&n);
     let reply = http::Reply::With(Arc::new(move |_| {
@@ -1876,7 +1887,7 @@ async fn stub_after_part_five(r: &Rig) -> (http::Mock, std::path::PathBuf) {
             (200, http::completion("Notes on a part."))
         }
     }));
-    let mock = summaries_from(r, reply, Some(2_048)).await;
+    let mock = summaries_from(r, reply, Some(limit)).await;
     long_session(r);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(chat_calls(&mock).len(), 5);
@@ -2310,6 +2321,7 @@ async fn a_prompt_too_long_for_the_context_fails_the_summary_before_any_call() {
             name: "Long".into(),
             text,
             title_text: String::new(),
+            background: String::new(),
         },
     );
     let mock = summaries_from(
@@ -2348,6 +2360,7 @@ async fn regenerating_a_prompt_too_long_stub_after_a_larger_context_is_set_finis
             name: "Long".into(),
             text,
             title_text: String::new(),
+            background: String::new(),
         },
     );
     let mock = summaries_from(
@@ -2367,6 +2380,245 @@ async fn regenerating_a_prompt_too_long_stub_after_a_larger_context_is_set_finis
     let path = r.runner.regenerate_summary("s").await.unwrap();
     assert!(!chat_calls(&mock).is_empty(), "the summary calls are made");
     assert_eq!(prompt_name(&path), Some("Long".into()));
+}
+
+// ---------------------------------------------------- the Background (U4)
+
+/// A context that splits [`long_session`] into parts with room for a short
+/// Background. The 2,048-token floor has no room for the Background rules.
+const BACKGROUND_CONTEXT: u32 = 4_096;
+
+fn use_background(r: &Rig, text: &str) {
+    *r.script.background.lock().unwrap() = text.to_string();
+}
+
+fn saved_prompt(r: &Rig) -> summarize::Prompt {
+    checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PROMPT)
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_a_snapshot_is_summarized_with_the_background_at_summary_start() {
+    let r = rig().await;
+    use_background(&r, "Pria is spelled Priya. BACKGROUND-MARKER");
+    let started = custom_prompt("Team sync", "FIRST-MARKER");
+    let (mock, _) = note_started_with(&r, &started, &started).await;
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, _) in &calls {
+        assert!(system.contains("BACKGROUND-MARKER"), "{system}");
+        assert!(system.contains("FIRST-MARKER"), "{system}");
+    }
+    let saved = saved_prompt(&r);
+    assert_eq!(saved.id, started.id);
+    assert_eq!(saved.background, "Pria is spelled Priya. BACKGROUND-MARKER");
+    // The title request carries the Background too.
+    let request = pipeline::summarize::pending_title_request(&r.store, "s")
+        .unwrap()
+        .expect("a title request");
+    assert!(request.messages[0].content.contains("BACKGROUND-MARKER"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_no_snapshot_uses_the_active_prompt_and_the_same_background() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    use_prompt(&r, &custom_prompt("Business meeting", "ACTIVE-MARKER"));
+    use_background(&r, "BACKGROUND-MARKER");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, _) in &calls {
+        assert!(system.contains("ACTIVE-MARKER"), "{system}");
+        assert!(system.contains("BACKGROUND-MARKER"), "{system}");
+    }
+    assert_eq!(saved_prompt(&r).background, "BACKGROUND-MARKER");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_uses_the_background_at_its_summary_start() {
+    let r = rig().await;
+    use_background(&r, "FIRST-BACKGROUND");
+    let started = custom_prompt("Team sync", "FIRST-MARKER");
+    let (mock, _) = note_started_with(&r, &started, &started).await;
+    let before = chat_messages(&mock).len();
+    use_background(&r, "SECOND-BACKGROUND");
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(calls.len() > before);
+    for (system, _) in &calls[before..] {
+        assert!(system.contains("SECOND-BACKGROUND"), "{system}");
+        assert!(!system.contains("FIRST-BACKGROUND"), "{system}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_resumed_after_the_background_changes_keeps_the_saved_background() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    let first = rig_with(Arc::clone(&store), root, Arc::default());
+    use_background(&first, "FIRST-BACKGROUND");
+    // The process stops after two part notes.
+    let runner = Arc::clone(&first.runner);
+    let count = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        if count.fetch_add(1, Ordering::SeqCst) == 1 {
+            runner.cancel("s");
+        }
+        (200, http::completion("Notes on a part."))
+    }));
+    let first_mock = summaries_from(&first, reply, Some(BACKGROUND_CONTEXT)).await;
+    long_session(&first);
+    assert_eq!(first.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+    assert_eq!(chat_calls(&first_mock).len(), 2);
+
+    let Rig { _root, .. } = first;
+    let second = rig_with(Arc::clone(&store), _root, Arc::default());
+    use_background(&second, "SECOND-BACKGROUND");
+    let mock = summaries_from(
+        &second,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(BACKGROUND_CONTEXT),
+    )
+    .await;
+    assert_eq!(
+        second
+            .runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        vec!["s".to_string()]
+    );
+    assert_eq!(second.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, _) in &calls {
+        assert!(system.contains("FIRST-BACKGROUND"), "{system}");
+        assert!(!system.contains("SECOND-BACKGROUND"), "{system}");
+    }
+    // The two part notes made before the stop are not made again.
+    for done in ["<transcript part=\"1\">", "<transcript part=\"2\">"] {
+        assert!(calls.iter().all(|(_, u)| !u.contains(done)), "{done}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_the_background_changes_makes_every_call_again() {
+    let r = rig().await;
+    use_background(&r, "FIRST-BACKGROUND");
+    let (mock, path) = stub_after_part_five_at(&r, BACKGROUND_CONTEXT).await;
+    use_background(&r, "SECOND-BACKGROUND");
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_messages(&mock);
+    assert!(
+        calls[5].1.contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[5].1[..80]
+    );
+    for (system, _) in &calls[5..] {
+        assert!(system.contains("SECOND-BACKGROUND"), "{system}");
+    }
+    assert_eq!(saved_prompt(&r).background, "SECOND-BACKGROUND");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_with_the_same_background_reuses_its_part_notes() {
+    let r = rig().await;
+    use_background(&r, "SAME-BACKGROUND");
+    let (mock, path) = stub_after_part_five_at(&r, BACKGROUND_CONTEXT).await;
+    // Only white space at the ends changes.
+    use_background(&r, "\n SAME-BACKGROUND \n");
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"5\">"),
+        "{}",
+        &calls[5][..80]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_background_stops_the_summary_and_a_shorter_one_regenerates_it() {
+    let r = rig().await;
+    let text: String = "Keep every detail that was said. "
+        .repeat(200)
+        .chars()
+        .take(summarize::prompts::PROMPT_TEXT_LIMIT)
+        .collect();
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            id: "custom-long".into(),
+            name: "Long".into(),
+            text,
+            title_text: String::new(),
+            background: String::new(),
+        },
+    );
+    let background: String = "Priya Raman leads the budget team. "
+        .repeat(200)
+        .chars()
+        .take(summarize::prompts::BACKGROUND_TEXT_LIMIT)
+        .collect();
+    use_background(&r, &background);
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("A summary.")),
+        Some(8_192),
+    )
+    .await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(chat_calls(&mock).is_empty(), "no call is made");
+    let path = saved_folder(&r, "s").join("summary.md");
+    let stub =
+        session_core::folder::Summary::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(
+        stub.body
+            .contains("the summary prompt is too long for this model's context"),
+        "{}",
+        stub.body
+    );
+    assert!(stub.body.contains("Background"), "{}", stub.body);
+    // The same prompt, with a shorter Background.
+    use_background(&r, "Priya Raman leads the budget team.");
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert!(!chat_calls(&mock).is_empty(), "the summary calls are made");
+    assert_eq!(prompt_name(&path), Some("Long".into()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_transcript_sends_the_background_in_each_part_call() {
+    // AE5, AE7 at the message level.
+    let r = rig().await;
+    use_background(&r, "Speaker 2 is Sam. BACKGROUND-MARKER");
+    let mock = summaries_from(
+        &r,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(BACKGROUND_CONTEXT),
+    )
+    .await;
+    long_session(&r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(calls.len() > 2, "{} calls", calls.len());
+    let parts = calls
+        .iter()
+        .filter(|(_, u)| u.contains("<transcript part="))
+        .count();
+    assert!(parts > 1, "{parts} part calls");
+    for (system, _) in &calls {
+        assert!(system.contains("BACKGROUND-MARKER"), "{system}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4239,7 +4491,7 @@ async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split
     let whole = &request.messages[..request.messages.len() - 2];
     let cost = cost_of(whole);
     let reserve =
-        summarize::prompts::title_reserve(&summarize::prompts::topic_summary().title_text);
+        summarize::prompts::title_reserve(&summarize::prompts::topic_summary().title_text, "");
     // The smallest context that holds the whole call without the title
     // reserve. It does not hold the whole call with it.
     let limit = (2_048..)
@@ -4296,7 +4548,7 @@ async fn the_title_reply_cap_is_what_the_context_has_left() {
     let title_text = topic_summary().title_text;
     let cap_with = |words: usize| {
         cap_for(
-            &title_turn(final_call, &"word ".repeat(words), &title_text),
+            &title_turn(final_call, &"word ".repeat(words), &title_text, ""),
             LIMIT,
         )
     };

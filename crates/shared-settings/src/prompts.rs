@@ -117,6 +117,8 @@ impl From<&PromptFile> for summarize::Prompt {
             name: prompt.name.clone(),
             text: prompt.text.clone(),
             title_text: prompt.title_text.clone(),
+            // A prompt file never holds the Background (KTD6).
+            background: String::new(),
         }
     }
 }
@@ -935,7 +937,7 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
 }
 
 /// `4000` as "4,000", for UI text.
-fn format_count(n: usize) -> String {
+pub(crate) fn format_count(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {

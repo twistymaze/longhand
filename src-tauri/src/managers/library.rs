@@ -17,8 +17,9 @@
 //! own writes cause scans too, but the refresh changes nothing for them
 //! (KTD3), so they emit nothing.
 //!
-//! An event on the shared settings file or in the prompts folder of the
-//! storage folder (`.longhand/settings.json`, `.longhand/prompts/`) starts
+//! An event on the shared settings file, the Background file or in the
+//! prompts folder of the storage folder (`.longhand/settings.json`,
+//! `.longhand/background.md`, `.longhand/prompts/`) starts
 //! no note scan. It asks the shared settings manager to read the shared
 //! files again. The full scan each minute asks for that read too, because a
 //! sync can deliver a change with no event (KTD13).
@@ -35,6 +36,7 @@ use notify::event::{EventKind, ModifyKind, RenameMode};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 use serde::Serialize;
+use shared_settings::background::BACKGROUND_FILE;
 use shared_settings::file::{LONGHAND_FOLDER, SETTINGS_FILE};
 use shared_settings::prompts::PROMPTS_FOLDER;
 use specta::Type;
@@ -93,9 +95,10 @@ pub type EmitFn = Box<dyn Fn(LibraryChanged) + Send + 'static>;
 pub type SharedFn = Box<dyn FnMut() + Send + 'static>;
 
 /// Whether `relative`, a path in the storage folder, is a shared settings
-/// path: the `.longhand/` folder itself, its `settings.json`, or a path in
-/// its `prompts/` folder. The library marker and other `.longhand/` paths
-/// are not.
+/// path: the `.longhand/` folder itself, its `settings.json`, its
+/// `background.md`, or a path in its `prompts/` folder. The library marker
+/// and other `.longhand/` paths are not. Only the exact file names count:
+/// a conflict copy such as `background 2.md` is not a shared path.
 fn is_shared_path(relative: &Path) -> bool {
     let mut components = relative.components();
     if components.next() != Some(Component::Normal(LONGHAND_FOLDER.as_ref())) {
@@ -103,7 +106,9 @@ fn is_shared_path(relative: &Path) -> bool {
     }
     match components.next() {
         None => true,
-        Some(Component::Normal(name)) if name == SETTINGS_FILE => components.next().is_none(),
+        Some(Component::Normal(name)) if name == SETTINGS_FILE || name == BACKGROUND_FILE => {
+            components.next().is_none()
+        }
         Some(Component::Normal(name)) => name == PROMPTS_FOLDER,
         Some(_) => false,
     }
@@ -570,6 +575,7 @@ mod tests {
         let w = watched("/var/notes");
         for path in [
             "/var/notes/.longhand/settings.json",
+            "/var/notes/.longhand/background.md",
             "/private/var/notes/.longhand/prompts/Recap.md",
             "/var/notes/.longhand/prompts/Recap 2.md",
             "/var/notes/.longhand/prompts",
@@ -588,6 +594,8 @@ mod tests {
             "/var/notes/.longhand/library",
             "/var/notes/.longhand/settings 2.json",
             "/var/notes/.longhand/settings.json/x",
+            "/var/notes/.longhand/background 2.md",
+            "/var/notes/.longhand/background.md/x",
             "/var/notes/.longhand/.tmpA1B2",
             "/var/notes/.longhand/prompts/.tmpA1B2",
             "/var/notes/.longhand/prompts/.DS_Store",
@@ -1170,6 +1178,23 @@ mod tests {
         assert_eq!(*reads.lock().unwrap(), [true, true]);
         let prompts = b.manager.snapshot().view.prompts;
         assert_eq!(prompts[0].text, "New recap text.");
+    }
+
+    #[test]
+    fn a_new_background_from_another_computer_changes_the_settings() {
+        let root = marked_root();
+        let (a, b) = (computer(root.path()), computer(root.path()));
+        let (mut worker, targets, reads) = worker_of(root.path(), &b);
+
+        a.manager.set_background("From A.").unwrap();
+        deliver(&mut worker, root.path(), ".longhand/background.md");
+        assert!(targets.lock().unwrap().is_empty(), "no note scan");
+        assert_eq!(*reads.lock().unwrap(), [true]);
+        assert_eq!(b.manager.snapshot().view.background, "From A.");
+
+        // A conflict copy starts no read.
+        deliver(&mut worker, root.path(), ".longhand/background 2.md");
+        assert_eq!(reads.lock().unwrap().len(), 1);
     }
 
     #[test]

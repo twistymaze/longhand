@@ -50,7 +50,24 @@ export type NoteEditorProps = {
   /** False while the notes cannot change, for example while they wait for
    * the sync. The editor then shows the document and takes no input. */
   editable?: boolean;
+  /** The id of the element that names the editor. Without it, the name is
+   * "My Notes". */
+  labelledBy?: string;
+  /** The id of the element that describes the editor, for example a hint. */
+  describedBy?: string;
+  /** The text of an empty editor. The default is the My Notes text. Null
+   * shows no placeholder. */
+  placeholder?: string | null;
+  /** Call `onChange` at each change, with no delay. The parent then sets its
+   * own save delay. The editor reads this value at mount only. */
+  immediate?: boolean;
+  /** Called when the focus leaves the editor, after a pending change is sent. */
+  onBlur?: () => void;
+  /** More classes for the editable element. */
+  className?: string;
 };
+
+const NOTES_PLACEHOLDER = "Take notes. Type / for headings, lists and more.";
 
 const nodeViews = {
   taskItem: TaskItemView as ComponentType<NodeViewComponentProps>,
@@ -64,9 +81,24 @@ function createDoc(markdown: string): PMNode {
   }
 }
 
-export function NoteEditor({ markdown, onChange, autoFocus = false, editable = true }: NoteEditorProps) {
+export function NoteEditor({
+  markdown,
+  onChange,
+  autoFocus = false,
+  editable = true,
+  labelledBy,
+  describedBy,
+  placeholder = NOTES_PLACEHOLDER,
+  immediate = false,
+  onBlur,
+  className,
+}: NoteEditorProps) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onBlurRef = useRef(onBlur);
+  onBlurRef.current = onBlur;
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
 
   // The document that is not yet sent, and the two timers that send it: one
   // restarts on each change, the other starts at the first change only.
@@ -91,6 +123,10 @@ export function NoteEditor({ markdown, onChange, autoFocus = false, editable = t
     const schedule = (doc: PMNode) => {
       const p = pending.current;
       p.doc = doc;
+      if (immediate) {
+        flush();
+        return;
+      }
       clearTimeout(p.debounce);
       p.debounce = setTimeout(flush, SAVE_DEBOUNCE_MS);
       p.maxWait ??= setTimeout(flush, SAVE_MAX_WAIT_MS);
@@ -100,31 +136,44 @@ export function NoteEditor({ markdown, onChange, autoFocus = false, editable = t
         handleDOMEvents: {
           blur: () => {
             flush();
+            onBlurRef.current?.();
             return false;
           },
         },
       },
     });
+    // A view that is not editable still lets a task checkbox send a change.
+    // This plugin stops each change to the document while the editor is not
+    // editable.
+    const readOnlyGuard = new Plugin({
+      filterTransaction: (tr) => editableRef.current || !tr.docChanged,
+    });
     return EditorState.create({
       doc: createDoc(markdown),
       plugins: [
         reactKeys(),
+        readOnlyGuard,
         docChangeListenerPlugin(schedule),
         buildInputRules(),
         buildKeymap(),
         history(),
         dropCursor(),
         gapCursor(),
-        placeholderPlugin(undefined, ({ doc, pos }) =>
-          pos === 0 && doc.childCount === 1 ? "Take notes. Type / for headings, lists and more." : "",
-        ),
+        ...(placeholder === null
+          ? []
+          : [
+              placeholderPlugin(undefined, ({ doc, pos }) =>
+                pos === 0 && doc.childCount === 1 ? placeholder : "",
+              ),
+            ]),
         clearMarksOnEnterPlugin(),
         autolinkPlugin(),
         linkBoundaryGuardPlugin(),
         flushOnBlur,
       ],
     });
-    // The editor reads `markdown` at mount only (see NoteEditorProps).
+    // The editor reads `markdown`, `placeholder` and `immediate` at mount
+    // only (see NoteEditorProps).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -147,14 +196,18 @@ export function NoteEditor({ markdown, onChange, autoFocus = false, editable = t
         spellCheck: "true",
         role: "textbox",
         "aria-multiline": "true",
-        "aria-label": "My Notes",
-        class: "prosemirror-editor note-typography",
+        ...(labelledBy ? { "aria-labelledby": labelledBy } : { "aria-label": "My Notes" }),
+        ...(describedBy ? { "aria-describedby": describedBy } : {}),
+        ...(editable ? {} : { "aria-readonly": "true" }),
+        class: `prosemirror-editor note-typography${className ? ` ${className}` : ""}`,
       }}
     >
       <ProseMirrorDoc />
       {autoFocus && <FocusAtEnd />}
-      <FormatToolbar />
-      <SlashCommandMenu />
+      {/* The toolbar and the `/` menu change the text, so they do not show
+          while the editor is not editable. */}
+      {editable && <FormatToolbar />}
+      {editable && <SlashCommandMenu />}
     </ProseMirror>
   );
 }

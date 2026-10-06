@@ -25,7 +25,9 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
 use tauri_specta::Event;
 
-use crate::managers::shared::{SharedSettingsManager, SharedSnapshot, SharedState};
+use crate::managers::shared::{
+    SharedAvailability, SharedSettingsManager, SharedSnapshot, SharedState,
+};
 
 /// Relative, so `tauri-plugin-store` resolves it under the app data directory.
 pub const SETTINGS_STORE_PATH: &str = "settings.json";
@@ -195,6 +197,8 @@ impl From<&SummaryPrompt> for summarize::Prompt {
             name: prompt.name.clone(),
             text: prompt.text.clone(),
             title_text: prompt.title_text.clone(),
+            // A stored prompt never holds the Background (KTD6).
+            background: String::new(),
         }
     }
 }
@@ -513,11 +517,37 @@ pub struct Settings {
     /// Whether this computer can change the shared settings now, and the
     /// values that this version does not know (R16, R17).
     pub shared: SharedState,
+    /// A shared setting. The Background text that each summary uses (R1,
+    /// R7). It is the cached text while the Background file or the storage
+    /// folder is not available (KTD3).
+    pub background: String,
+    /// The most characters the Background can have (R6).
+    pub background_limit: u32,
+    /// Why the Background cannot change now, as UI text. `None` when
+    /// this computer can change it (R5, KTD3).
+    pub background_read_only: Option<String>,
     /// The last copy of the active custom prompt that this computer read.
     /// A summary uses it while the prompt's file is missing or has a
     /// conflict copy (R14).
     #[serde(skip)]
     pub cached_active_prompt: Option<summarize::Prompt>,
+}
+
+/// The most characters the Background can have (R6).
+const BACKGROUND_LIMIT: u32 = summarize::prompts::BACKGROUND_TEXT_LIMIT as u32;
+
+/// Why the Background cannot change now, as UI text, or `None` when
+/// this computer can change it. The shared settings are read-only, or the
+/// Background file cannot be used (R5, KTD3).
+fn background_read_only(shared: &SharedSnapshot) -> Option<String> {
+    match &shared.availability {
+        SharedAvailability::ReadOnly { cause } => Some(cause.message().to_string()),
+        SharedAvailability::Available => shared
+            .view
+            .background_unavailable
+            .as_ref()
+            .map(ToString::to_string),
+    }
 }
 
 /// The settings changed without a command from the surface, for example
@@ -648,6 +678,9 @@ impl Default for Settings {
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
             shared: SharedState::default(),
+            background: String::new(),
+            background_limit: BACKGROUND_LIMIT,
+            background_read_only: background_read_only(&SharedSnapshot::default()),
             cached_active_prompt: None,
         }
     }
@@ -705,6 +738,9 @@ impl Settings {
                 defaults.active_summary_prompt,
             ),
             shared: shared.state(),
+            background: shared.view.background.clone(),
+            background_limit: BACKGROUND_LIMIT,
+            background_read_only: background_read_only(shared),
             cached_active_prompt: match &shared.view.active {
                 ActivePrompt::Custom {
                     prompt,
@@ -1149,6 +1185,8 @@ impl LegacyShared {
             settings: self.settings,
             prompts: self.prompts,
             active_prompt,
+            // A local store from before shared settings has no Background.
+            background: String::new(),
         }
     }
 }
@@ -1320,6 +1358,13 @@ fn shared_snapshot(app: &AppHandle) -> SharedSnapshot {
     app.try_state::<Arc<SharedSettingsManager>>()
         .map(|manager| manager.snapshot())
         .unwrap_or_default()
+}
+
+/// The Background text of the shared view: the value of
+/// `Settings::background`. It is the cached text while the Background file
+/// or the storage folder is not available (KTD3).
+pub fn get_background(app: &AppHandle) -> String {
+    shared_snapshot(app).view.background
 }
 
 /// The local settings. A first run writes the defaults, and an old store
@@ -2170,6 +2215,7 @@ mod tests {
                 name: "Team sync".into(),
                 text: "Recap.".into(),
                 title_text: String::new(),
+                background: String::new(),
             }]
         );
     }
@@ -2296,6 +2342,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            background: String::new(),
         };
         let shared = SharedSnapshot {
             view: view::cached(Some(&cache), Availability::Available),
@@ -2381,6 +2428,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            background: String::new(),
         };
         let shared = SharedSnapshot {
             view: view::cached(Some(&cache), Availability::Available),
@@ -2461,6 +2509,7 @@ mod tests {
                 name: "Team sync".into(),
                 text: "Write a recap.".into(),
                 title_text: String::new(),
+                background: String::new(),
             }
         );
 
@@ -2480,6 +2529,7 @@ mod tests {
             name: "Team sync".into(),
             text: "The last text read.".into(),
             title_text: String::new(),
+            background: String::new(),
         };
         let mut settings = Settings {
             active_summary_prompt: "g".into(),

@@ -6,6 +6,7 @@ import {
   type Result,
   type Settings,
 } from "../bindings";
+import { Background } from "./Background";
 import { ModelPicker } from "./ModelPicker";
 import { SummaryPrompts } from "./SummaryPrompts";
 import { readOnlyReason } from "./shared";
@@ -365,6 +366,8 @@ export function EndpointForm({
         </Row>
         {modelError && <ErrorText>{modelError}</ErrorText>}
       </Group>
+
+      <Background settings={settings} onSettings={onSettings} />
 
       <SummaryPrompts onSettings={onSettings} readOnly={readOnlyReason(settings)} />
 
