@@ -11,9 +11,15 @@ export function zoomAction(event: KeyboardEvent, isMac: boolean): ZoomAction | n
   return null;
 }
 
-export function useInterfaceZoom(isMac = navigator.userAgent.includes("Mac")) {
+/// `enabled` is false in a window that has no interface zoom. There, the zoom
+/// keys do nothing.
+export function useInterfaceZoom({
+  isMac = navigator.userAgent.includes("Mac"),
+  enabled = true,
+}: { isMac?: boolean; enabled?: boolean } = {}) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (!enabled) return;
     let calls: Promise<unknown> = Promise.resolve();
     const handle = (event: KeyboardEvent) => {
       if (document.querySelector('[data-shortcut-capture="true"]')) return;
@@ -27,6 +33,6 @@ export function useInterfaceZoom(isMac = navigator.userAgent.includes("Mac")) {
     };
     window.addEventListener("keydown", handle, true);
     return () => window.removeEventListener("keydown", handle, true);
-  }, [isMac]);
+  }, [isMac, enabled]);
   return { error, dismiss: () => setError(null) };
 }

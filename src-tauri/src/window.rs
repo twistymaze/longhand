@@ -255,25 +255,22 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
     let existing = app.get_webview_window(UPDATE_WINDOW);
     match (visible, existing) {
         (true, None) => {
-            let built = crate::interface_zoom::build(app, |percent| {
-                // The page then sets the size that fits its content.
-                let scale = f64::from(percent) / 100.0;
-                WebviewWindowBuilder::new(
-                    app,
-                    UPDATE_WINDOW,
-                    WebviewUrl::App("index.html?window=update".into()),
-                )
-                .visible(false)
-                .zoom_hotkeys_enabled(false)
-                .initialization_script(crate::interface_zoom::initialization(percent))
-                .title("Software Update")
-                .inner_size(480.0 * scale, 200.0 * scale)
-                .resizable(false)
-                .maximizable(false)
-                .minimizable(false)
-                .center()
-                .build()
-            });
+            // As a macOS alert, the window has no interface zoom. The page
+            // then sets the size that fits its content.
+            let built = WebviewWindowBuilder::new(
+                app,
+                UPDATE_WINDOW,
+                WebviewUrl::App("index.html?window=update".into()),
+            )
+            .visible(false)
+            .zoom_hotkeys_enabled(false)
+            .title("Software Update")
+            .inner_size(480.0, 200.0)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .center()
+            .build();
             match built {
                 Ok(window) => front(app, &window),
                 Err(e) => log::error!("failed to open the update window: {e}"),
