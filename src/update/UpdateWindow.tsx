@@ -74,37 +74,41 @@ function progressText({ downloaded, total }: { downloaded: number; total: number
   return total ? `${formatBytes(downloaded)} of ${formatBytes(total)}` : formatBytes(downloaded);
 }
 
-/// The window size that shows all of the page. The webview zoom scales CSS
-/// pixels, so one CSS pixel is `scale` logical pixels.
-export function windowSize(width: number, height: number, scale: number): LogicalSize {
-  return new LogicalSize(Math.ceil(width * scale), Math.ceil(height * scale));
-}
-
-function interfaceScale(): number {
-  const scale = Number((window as { __interfaceScale?: string }).__interfaceScale);
-  return Number.isFinite(scale) && scale > 0 ? scale : 1;
-}
-
-/// Size the window to the page, as a macOS alert sizes to its text. The page
-/// sets the size again when its content or the interface zoom changes.
+/// Size the window to the page, as a macOS alert sizes to its text. The
+/// window has no interface zoom, so one CSS pixel is one logical pixel.
+///
+/// On macOS the window can show less than the requested size. The page
+/// requests the content size plus an offset. After each window resize, the
+/// offset is the last request minus the viewport. The page reads the
+/// viewport only then, because before the resize it shows the old size.
 function useWindowFitsContent(content: RefObject<HTMLElement | null>, shown: boolean) {
   useLayoutEffect(() => {
     const element = content.current;
     if (!element) return;
+    let requested: { width: number; height: number } | null = null;
+    let offset = { width: 0, height: 0 };
     const fit = () => {
-      const { width, height } = element.getBoundingClientRect();
-      if (width === 0 || height === 0) return;
-      getCurrentWindow().setSize(windowSize(width, height, interfaceScale())).catch(() => {});
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const width = Math.ceil(rect.width) + offset.width;
+      const height = Math.ceil(rect.height) + offset.height;
+      if (requested?.width === width && requested.height === height) return;
+      requested = { width, height };
+      getCurrentWindow().setSize(new LogicalSize(width, height)).catch(() => {});
+    };
+    const windowResized = () => {
+      if (requested) {
+        offset = { width: requested.width - window.innerWidth, height: requested.height - window.innerHeight };
+      }
+      fit();
     };
     fit();
-    const resized = new ResizeObserver(fit);
-    resized.observe(element);
-    // A zoom change sets the scale property on the root element.
-    const zoomed = new MutationObserver(fit);
-    zoomed.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+    const contentResized = new ResizeObserver(fit);
+    contentResized.observe(element);
+    window.addEventListener("resize", windowResized);
     return () => {
-      resized.disconnect();
-      zoomed.disconnect();
+      contentResized.disconnect();
+      window.removeEventListener("resize", windowResized);
     };
   }, [content, shown]);
 }

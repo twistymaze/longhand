@@ -64,6 +64,7 @@ pub fn change(app: &AppHandle, action: ZoomAction) -> Result<u16, String> {
                     let errors: Vec<_> = app
                         .webview_windows()
                         .values()
+                        .filter(|window| has_zoom(window.label()))
                         .filter_map(|window| apply(window, percent).err())
                         .collect();
                     if errors.is_empty() {
@@ -75,6 +76,11 @@ pub fn change(app: &AppHandle, action: ZoomAction) -> Result<u16, String> {
             )
         },
     )
+}
+
+/// The update window has no interface zoom, as a macOS alert.
+fn has_zoom(label: &str) -> bool {
+    label != crate::window::UPDATE_WINDOW
 }
 
 /// Hold the same operation lock while creating a hidden window at its saved scale.
@@ -272,5 +278,11 @@ mod tests {
             .unwrap(),
             120
         );
+    }
+
+    #[test]
+    fn a_zoom_change_skips_the_update_window() {
+        assert!(!has_zoom(crate::window::UPDATE_WINDOW));
+        assert!(has_zoom(crate::window::MAIN_WINDOW));
     }
 }

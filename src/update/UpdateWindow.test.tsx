@@ -4,7 +4,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UpdateState } from "../bindings";
 import { mockTauri } from "../test/tauri";
-import { UpdateWindow, windowSize } from "./UpdateWindow";
+import { UpdateWindow } from "./UpdateWindow";
 
 const CURRENT = "0.1.0-preview.20260928143012";
 const NEW = "0.1.0-preview.20260929080000";
@@ -84,32 +84,43 @@ describe("the update window", () => {
 });
 
 describe("the update window size", () => {
-  test("the window fits the content at the interface zoom", async () => {
+  // The visible page is the window's viewport. The test sets it directly.
+  function setViewport(width: number, height: number) {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
+  }
+
+  test("a window that shows less than the content grows by the part that does not show", async () => {
     mockWindows("update");
-    const scaled = window as { __interfaceScale?: string };
-    scaled.__interfaceScale = "1.5";
     const measure = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
-      DOMRect.fromRect({ width: 480, height: 171 }),
+      DOMRect.fromRect({ width: 480, height: 132.2 }),
     );
+    const viewport = [window.innerWidth, window.innerHeight] as const;
+    setViewport(480, 200);
     try {
       const tauri = mockTauri({
-        update_state: () => ({ state: "offered", version: NEW, current: CURRENT }),
+        update_state: () => ({ state: "up_to_date", current: CURRENT }),
         "plugin:window|set_size": () => null,
       });
+      const sizes = () =>
+        tauri.calls.filter((c) => c.cmd === "plugin:window|set_size").map((c) => JSON.stringify(c.args));
       render(<UpdateWindow />);
-      await screen.findByText("A new version of Longhand is available");
-      await waitFor(() => {
-        const sizes = tauri.calls.filter((c) => c.cmd === "plugin:window|set_size").map((c) => JSON.stringify(c.args));
-        expect(sizes[sizes.length - 1]).toContain('"width":720,"height":257');
-      });
+      await screen.findByText("Longhand is up to date");
+      await waitFor(() => expect(sizes().slice(-1)[0]).toContain('"width":480,"height":133'));
+
+      // The title bar takes 32 points of the requested height.
+      setViewport(480, 101);
+      act(() => void window.dispatchEvent(new Event("resize")));
+      await waitFor(() => expect(sizes().slice(-1)[0]).toContain('"width":480,"height":165'));
+
+      // All of the content shows, so the window keeps its size.
+      const count = sizes().length;
+      setViewport(480, 133);
+      act(() => void window.dispatchEvent(new Event("resize")));
+      expect(sizes().length).toBe(count);
     } finally {
       measure.mockRestore();
-      delete scaled.__interfaceScale;
+      setViewport(...viewport);
     }
-  });
-
-  test("one CSS pixel is the scale in logical pixels, rounded up", () => {
-    const size = windowSize(480, 170.2, 1.3);
-    expect([size.width, size.height]).toEqual([624, 222]);
   });
 });

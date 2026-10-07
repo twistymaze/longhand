@@ -163,8 +163,8 @@ function MainWindow() {
 }
 
 export default function App() {
-  const zoom = useInterfaceZoom();
   const which = new URLSearchParams(window.location.search).get("window");
+  const zoom = useInterfaceZoom({ enabled: which !== "update" });
   return <>
     {which === "settings" ? (
       <SettingsWindow />
