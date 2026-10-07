@@ -185,8 +185,41 @@ describe("SessionPage", () => {
     expect(selected()).toBe(true);
     await user.click(tab("Transcript"));
     await user.click(tab("My Notes"));
-    expect(editor.contains(window.getSelection()!.anchorNode)).toBe(true);
+    // The editor puts its cursor back a short time after it gets the focus.
+    await waitFor(() => expect(editor.contains(window.getSelection()!.anchorNode)).toBe(true));
     expect(selected()).toBe(true);
+  });
+
+  // WebKit puts typed text into the text selection, also when a tab button
+  // has the focus. Text typed then went to the hidden notes, or to the
+  // editor's earlier cursor, and Enter and Space went to the tab button.
+  test("a tab change takes the selection out of My Notes, and a click on My Notes gives the editor the focus again", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0, found_speakers: null });
+    mockPage(e, {}, { load_session_notes: () => ({ markdown: "first\n\nsecond", fingerprint: "f0" }) });
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await screen.findByText("first");
+    const user = userEvent.setup();
+    await user.keyboard(/Mac/.test(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}");
+    expect(document.activeElement).toBe(editor);
+    await user.click(tab("Transcript"));
+    expect(editor.contains(window.getSelection()!.anchorNode)).toBe(false);
+    await user.click(tab("My Notes"));
+    expect(document.activeElement).toBe(editor);
+    await waitFor(() => expect(window.getSelection()!.isCollapsed).toBe(false));
+  });
+
+  test("an arrow key to My Notes keeps the focus on the tab", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0, found_speakers: null });
+    mockPage(e, {}, { load_session_notes: () => ({ markdown: "first", fingerprint: "f0" }) });
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    await screen.findByText("first");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("textbox", { name: "My Notes" }));
+    await user.click(tab("Transcript"));
+    await user.keyboard("{ArrowLeft}");
+    expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tab("My Notes"));
   });
 
   test("a recording that the list knows before the capture status opens on My Notes and stays there", async () => {

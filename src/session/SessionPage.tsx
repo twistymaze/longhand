@@ -10,7 +10,7 @@
 // open tab (R17) and the "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
 
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   commands,
   type MicrophoneChoice,
@@ -89,7 +89,8 @@ function Tabs({
 }: {
   items: TabItem[];
   tab: Tab;
-  onTab: (t: Tab) => void;
+  /// `click` is true for a click, false for an arrow key.
+  onTab: (t: Tab, click: boolean) => void;
   meter: ReactNode;
 }) {
   return (
@@ -102,7 +103,7 @@ function Tabs({
         e.preventDefault();
         const at = items.findIndex((t) => t.value === tab);
         const next = items[(at + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
-        onTab(next.value);
+        onTab(next.value, false);
         e.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.value}"]`)?.focus();
       }}
     >
@@ -114,7 +115,7 @@ function Tabs({
           data-tab={t.value}
           aria-selected={tab === t.value}
           tabIndex={tab === t.value ? 0 : -1}
-          onClick={() => onTab(t.value)}
+          onClick={() => onTab(t.value, true)}
           className={`flex items-center justify-center gap-1.5 rounded-[5px] px-4 py-[3px] whitespace-nowrap ${
             tab === t.value
               ? "bg-group text-label shadow-[0_0.5px_1.5px_rgb(0_0_0/0.18),0_0_0_0.5px_rgb(0_0_0/0.04)] dark:bg-white/[0.2] dark:shadow-[0_0.5px_1px_rgb(0_0_0/0.4)]"
@@ -247,6 +248,43 @@ export function SessionPage({
   const title = useRef<TitleFieldHandle>(null);
   const notesPanel = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLElement>(null);
+
+  // WebKit puts typed text into the text selection, also when a tab button
+  // has the focus. When My Notes hides, the selection leaves the editor, so
+  // that text typed on another tab does not go into the hidden notes. A
+  // click on My Notes then puts the selection back and gives the editor the
+  // focus again. WebKit puts the cursor at the start of an editor that gets
+  // the focus with no selection in it.
+  const notesSelection = useRef<Range | null>(null);
+  const focusNotes = useRef(false);
+  useLayoutEffect(() => {
+    const selection = window.getSelection();
+    const panel = notesPanel.current;
+    if (!selection || !panel) return;
+    if (tab === "notes") {
+      const range = notesSelection.current;
+      const editor = panel.querySelector<HTMLElement>('[role="textbox"]');
+      if (focusNotes.current && range && editor) {
+        // A new document in the editor replaces the nodes of the range.
+        if (editor.contains(range.startContainer) && editor.contains(range.endContainer)) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        editor.focus();
+      }
+      focusNotes.current = false;
+      notesSelection.current = null;
+      return;
+    }
+    if (selection.rangeCount > 0 && panel.contains(selection.anchorNode)) {
+      notesSelection.current = selection.getRangeAt(0).cloneRange();
+      selection.removeAllRanges();
+    }
+  }, [tab]);
+  const showTab = (next: Tab, click: boolean) => {
+    focusNotes.current = click && next === "notes";
+    setChosen(next);
+  };
 
   // A recording shows My Notes (R11). Stop shows Summary, where the
   // processing stages show. A session that completes shows Summary (F2),
@@ -650,7 +688,7 @@ export function SessionPage({
           <Tabs
             items={visibleTabs}
             tab={tab}
-            onTab={setChosen}
+            onTab={showTab}
             meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
           />
         ) : (
