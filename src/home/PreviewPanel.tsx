@@ -27,11 +27,14 @@ export function PreviewPanel({
   stage,
   revision,
   now,
+  processingWaits = false,
 }: {
   entry: SessionEntry;
   stage: string | null;
   revision: number;
   now?: Date;
+  /// Processing waits for a recording to finish (KTD20).
+  processingWaits?: boolean;
 }) {
   const id = entry.id;
   const saved = entry.state === "saved";
@@ -87,7 +90,7 @@ export function PreviewPanel({
       <p className="mt-1 text-[0.85rem] text-label-secondary">{startedAt(entry.started)}</p>
       {(!saved || entry.remote) && (
         <p className="mt-3 text-[0.85rem]">
-          <Status tone={tone}>{entry.remote ? remoteLabels[entry.remote] : entryStatus(entry, stage)}</Status>
+          <Status tone={tone}>{entry.remote ? remoteLabels[entry.remote] : entryStatus(entry, stage, processingWaits)}</Status>
         </p>
       )}
 

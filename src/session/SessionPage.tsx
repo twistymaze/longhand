@@ -544,7 +544,7 @@ export function SessionPage({
         detail={detail}
         live={live}
         speakers={sessions.speakers[id]}
-        waitsForRecording={capture.status?.recording ?? false}
+        waitsForRecording={capture.status?.processing_waits ?? false}
         onChanged={changed}
       />
     ) : null;

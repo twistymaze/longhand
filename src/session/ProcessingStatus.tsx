@@ -193,7 +193,7 @@ export function ProcessingStatus({
   live: Live | undefined;
   /// The latest speaker progress event.
   speakers?: SpeakerProgressView;
-  /// Another session records, and processing waits for it to stop.
+  /// Processing waits for a recording to finish (KTD20).
   waitsForRecording: boolean;
   onChanged: () => void;
 }) {
@@ -202,7 +202,7 @@ export function ProcessingStatus({
   return (
     <div className="grid gap-5">
       {waiting && waitsForRecording && (
-        <p className="text-label-secondary">Processing starts when the current recording stops.</p>
+        <p className="text-label-secondary">Processing waits for the current recording to finish.</p>
       )}
       <Exception detail={detail} onDone={onChanged} />
       <Group>

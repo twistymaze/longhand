@@ -1620,6 +1620,11 @@ export type RecordingStatus = {
  */
 session_id: string | null; state: string | null; recording: boolean; 
 /**
+ * Processing waits: a note records, or a live worker saves its last
+ * part after Stop (KTD9, KTD20). The same test as the runner's.
+ */
+processing_waits: boolean; 
+/**
  * The microphone went away and is being reopened (U14); the session
  * still counts as recording.
  */

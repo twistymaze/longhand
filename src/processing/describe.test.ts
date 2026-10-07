@@ -113,6 +113,15 @@ describe("wording", () => {
     expect(entryStatus({ ...entry, state: "processing_failed" }, null)).toBe("Needs a retry");
   });
 
+  test("a session that waits for a recording to finish says so, not its stage", () => {
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "assemble", title: null, found_speakers: null, storage_unavailable: false, remote: null };
+    expect(entryStatus(entry, null, true)).toBe("Waiting for the recording");
+    expect(entryStatus({ ...entry, state: "queued" }, null, true)).toBe("Waiting for the recording");
+    expect(entryStatus(entry, null, false)).toBe("Preparing the audio");
+    // Only processing waits; a session that needs an action says what it needs.
+    expect(entryStatus({ ...entry, state: "blocked" }, null, true)).toBe("Needs the keychain");
+  });
+
   test("backend messages read as sentences", () => {
     expect(sentence("the destination folder is missing")).toBe("The destination folder is missing.");
     expect(sentence("Locked.")).toBe("Locked.");
