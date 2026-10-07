@@ -146,6 +146,7 @@ function MainWindow() {
           revisions={sessions.version}
           stages={sessions.stages}
           recording={recording}
+          processingWaits={capture.status?.processing_waits ?? false}
           readiness={readiness}
           chord={
             !settings ? "the shortcut" : settings.shortcut ? formatChord(settings.shortcut, isMac) : null

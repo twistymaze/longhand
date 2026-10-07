@@ -66,6 +66,7 @@ const document = (body: string): SessionDocument => ({
 function renderHome({
   entries = [] as SessionEntry[],
   recording = null as RecordingNow | null,
+  processingWaits = false,
   chord = "⌥⇧L" as string | null,
   onOpen = (_id: string) => {},
   onChanged = () => {},
@@ -75,6 +76,7 @@ function renderHome({
       entries={entries}
       stages={{}}
       recording={recording}
+      processingWaits={processingWaits}
       readiness={null}
       chord={chord}
       onOpen={onOpen}
@@ -295,6 +297,19 @@ describe("Home", () => {
     expect(screen.getByRole("region", { name: "Preview" })).toBeTruthy();
     await userEvent.setup().dblClick(recording);
     expect(onOpen).toHaveBeenCalledWith("rec");
+  });
+
+  test("while processing waits for a recording, a processing row and its preview say so", () => {
+    mockTauri({
+      session_document: () => document("Text."),
+      session_detail: () => detail(entry("p"), null),
+    });
+    renderHome({
+      entries: [entry("p", { state: "processing", stage: "assemble", title: "Budget review" })],
+      processingWaits: true,
+    });
+    expect(within(row("Budget review")).getByText("Waiting for the recording")).toBeTruthy();
+    expect(screen.queryByText("Preparing the audio")).toBeNull();
   });
 
   // Covers AE5.

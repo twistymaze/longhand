@@ -38,9 +38,11 @@ export function sentence(message: string): string {
 }
 
 /// A session's status on Home. `live` is the stage an event
-/// named since the list was read.
-export function entryStatus(entry: SessionEntry, live: string | null): string {
+/// named since the list was read. `waits` is true while processing waits
+/// for a recording to finish (KTD20).
+export function entryStatus(entry: SessionEntry, live: string | null, waits = false): string {
   const stage = live ?? entry.stage;
+  if (waits && (entry.state === "queued" || entry.state === "processing")) return "Waiting for the recording";
   switch (entry.state) {
     case "queued":
       return "Waiting to process";

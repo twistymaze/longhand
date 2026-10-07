@@ -30,6 +30,7 @@ const idle: RecordingStatus = {
   session_id: null,
   state: null,
   recording: false,
+  processing_waits: false,
   reconnecting: false,
   interruption: null,
   working_free_bytes: null,
@@ -260,6 +261,18 @@ describe("SessionPage", () => {
     view.rerenderWith(captureOf(), sessionsOf([{ ...e, state: "processing", stage: "transcribe" }]));
     expect(tabNames()).toEqual(["Summary", "My Notes", "Transcript"]);
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("a processing note says it waits while processing waits, also after the other recording stops", async () => {
+    const e = entry("prev", { state: "processing", stage: "assemble" });
+    mockPage(e, { current: "assemble" });
+    const notice = "Processing waits for the current recording to finish.";
+    // The other note stopped, but its live transcript still saves its last part.
+    const finishing = captureOf({ status: { ...idle, recording: false, processing_waits: true } });
+    const view = renderPage({ id: "prev", capture: finishing, sessions: sessionsOf([e]) });
+    expect(await screen.findByText(notice)).toBeTruthy();
+    view.rerenderWith(captureOf(), sessionsOf([e]));
+    expect(screen.queryByText(notice)).toBeNull();
   });
 
   test("Resume hides Summary and moves the page to My Notes, and Stop shows it again", async () => {

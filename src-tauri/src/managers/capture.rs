@@ -130,6 +130,9 @@ pub struct RecordingStatus {
     pub session_id: Option<String>,
     pub state: Option<String>,
     pub recording: bool,
+    /// Processing waits: a note records, or a live worker saves its last
+    /// part after Stop (KTD9, KTD20). The same test as the runner's.
+    pub processing_waits: bool,
     /// The microphone went away and is being reopened (U14); the session
     /// still counts as recording.
     pub reconnecting: bool,
@@ -1933,6 +1936,10 @@ impl CaptureManager {
             session_id: open.as_ref().map(|(id, _)| id.clone()),
             state: open.as_ref().map(|(_, state)| state.name().to_string()),
             recording,
+            processing_waits: recording
+                || app
+                    .try_state::<Arc<LiveManager>>()
+                    .is_some_and(|live| live.busy()),
             reconnecting,
             interruption,
             working_free_bytes: recorder::storage::available_space(
