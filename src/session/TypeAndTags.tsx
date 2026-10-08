@@ -85,10 +85,14 @@ export function TypeAndTags({
   }, [present, noteType, tagsKey, recording]);
 
   const [types, setTypes] = useState<NoteTypeEntry[]>([]);
+  // Reads can end out of order. Each read and a new type from New Type…
+  // take a number, and only the newest number changes the list.
+  const typeRequest = useRef(0);
   const loadTypes = useCallback(async () => {
+    const current = ++typeRequest.current;
     try {
       const result = await commands.noteTypes();
-      if (result.status === "ok") setTypes(result.data.types);
+      if (current === typeRequest.current && result.status === "ok") setTypes(result.data.types);
     } catch (e) {
       console.error("The note types could not be read:", e);
     }
@@ -237,6 +241,7 @@ export function TypeAndTags({
             }}
             onCreated={(name, list) => {
               setCreating(false);
+              typeRequest.current++;
               setTypes(list.types);
               typeButton.current?.focus();
               void chooseType(name);

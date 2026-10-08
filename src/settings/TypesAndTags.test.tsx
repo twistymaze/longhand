@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import type { NoteTypeEntry, NoteTypeList, TagEntry } from "../bindings";
@@ -286,5 +286,68 @@ describe("TypesAndTags", () => {
     expect(typeField("Projects").disabled).toBe(true);
     expect((screen.getByRole("radio", { name: "Projects" }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "Add Type" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+const typesNamed = (...names: string[]): NoteTypeList => ({
+  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0 })),
+  default_type: null,
+});
+const settle = () => act(() => new Promise((r) => setTimeout(r, 20)));
+
+describe("TypesAndTags reads", () => {
+  test("a read that ends after a newer read does not replace the newer list", async () => {
+    const reads: ((l: NoteTypeList) => void)[] = [];
+    const tauri = backend({ note_types: () => new Promise<NoteTypeList>((r) => reads.push(r)) });
+    renderPane();
+    await waitFor(() => expect(reads).toHaveLength(1));
+    await act(() => tauri.emit("settings-changed", null));
+    await waitFor(() => expect(reads).toHaveLength(2));
+    await act(async () => reads[1](typesNamed("New")));
+    await waitFor(() => expect(typeNames()).toEqual(["New"]));
+    await act(async () => reads[0](typesNamed("Old")));
+    await settle();
+    expect(typeNames()).toEqual(["New"]);
+  });
+
+  test("a read that started before a command does not replace the command result", async () => {
+    const reads: ((l: NoteTypeList) => void)[] = [];
+    const tauri = backend({
+      note_types: () => new Promise<NoteTypeList>((r) => reads.push(r)),
+      rename_note_type: () => ({ changed: 0, list: typesNamed("Work") }),
+    });
+    renderPane();
+    await waitFor(() => expect(reads).toHaveLength(1));
+    await act(async () => reads[0](typesNamed("Projects")));
+    await waitFor(() => expect(typeNames()).toEqual(["Projects"]));
+    await act(() => tauri.emit("settings-changed", null));
+    await waitFor(() => expect(reads).toHaveLength(2));
+    await rename(typeField("Projects"), "Work");
+    await waitFor(() => expect(typeNames()).toEqual(["Work"]));
+    await act(async () => reads[1](typesNamed("Projects")));
+    await settle();
+    expect(typeNames()).toEqual(["Work"]);
+  });
+
+  test("a read error goes away after a later good read", async () => {
+    let failed = 0;
+    const tauri = backend({
+      note_types: () => {
+        if (failed++ === 0) throw "The types could not be found.";
+        return typesNamed("Projects");
+      },
+      list_tags: () => {
+        if (failed < 2) throw "The tags could not be found.";
+        return [];
+      },
+    });
+    renderPane();
+    expect(await screen.findByText("The types could not be found.")).toBeTruthy();
+    expect(await screen.findByText("The tags could not be found.")).toBeTruthy();
+    await act(() => tauri.emit("settings-changed", null));
+    await waitFor(() => expect(typeNames()).toEqual(["Projects"]));
+    await settle();
+    expect(screen.queryByText("The types could not be found.")).toBeNull();
+    expect(screen.queryByText("The tags could not be found.")).toBeNull();
   });
 });

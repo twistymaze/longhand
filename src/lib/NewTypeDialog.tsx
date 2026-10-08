@@ -29,17 +29,31 @@ export function NewTypeDialog({
   const field = useRef<HTMLInputElement>(null);
   const cancelled = useRef(onCancel);
   cancelled.current = onCancel;
+  // The user closed the dialog. A create that ends after this does not
+  // call `onCreated`. The type can still be in the list.
+  const closed = useRef(false);
+  const cancel = () => {
+    closed.current = true;
+    cancelled.current();
+  };
   const errorId = useId();
 
   // The field takes the focus. WKWebView does not move the focus on the
   // click that opened the dialog.
   useEffect(() => {
+    closed.current = false;
     field.current?.focus();
     const outside = (event: PointerEvent) => {
-      if (!panel.current?.contains(event.target as Node)) cancelled.current();
+      if (!panel.current?.contains(event.target as Node)) {
+        closed.current = true;
+        cancelled.current();
+      }
     };
     document.addEventListener("pointerdown", outside);
-    return () => document.removeEventListener("pointerdown", outside);
+    return () => {
+      closed.current = true;
+      document.removeEventListener("pointerdown", outside);
+    };
   }, []);
 
   const create = async () => {
@@ -48,6 +62,7 @@ export function NewTypeDialog({
     setBusy(true);
     try {
       const result = await commands.addNoteType(text);
+      if (closed.current) return;
       if (result.status === "error") {
         setError(sentence(result.error));
         field.current?.focus();
@@ -73,7 +88,7 @@ export function NewTypeDialog({
         e.stopPropagation();
         if (e.key === "Escape") {
           e.preventDefault();
-          onCancel();
+          cancel();
         }
       }}
     >
@@ -104,7 +119,7 @@ export function NewTypeDialog({
         </p>
       )}
       <div className="mt-3 flex justify-end gap-2">
-        <button type="button" onClick={onCancel} className={`${button} bg-fill text-label active:bg-fill-pressed`}>
+        <button type="button" onClick={cancel}className={`${button} bg-fill text-label active:bg-fill-pressed`}>
           Cancel
         </button>
         <button

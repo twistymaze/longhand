@@ -4,7 +4,7 @@
 // reads both again, because a folder or a tag edit can change them. Home
 // also reads both when it shows again, after the note page changed a note.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type NoteTypeList, type TagEntry } from "../bindings";
 import { useReloadOn } from "../lib/useReloadOn";
 
@@ -12,22 +12,34 @@ export function useTypesAndTags(active: boolean) {
   // Null until the first read. A failed read keeps the last list.
   const [types, setTypes] = useState<NoteTypeList | null>(null);
   const [tags, setTags] = useState<TagEntry[] | null>(null);
+  // Reads can end out of order. Each read takes a number, and only the
+  // newest read changes a list.
+  const typeRequest = useRef(0);
+  const tagRequest = useRef(0);
 
   const readTypes = useCallback(async () => {
+    const current = ++typeRequest.current;
     try {
       const result = await commands.noteTypes();
-      if (result.status === "ok") setTypes(result.data);
+      if (current === typeRequest.current && result.status === "ok") setTypes(result.data);
     } catch {
       // The list stays as it is. The next event reads it again.
     }
   }, []);
   const readTags = useCallback(async () => {
+    const current = ++tagRequest.current;
     try {
       const result = await commands.listTags();
-      if (result.status === "ok") setTags(result.data);
+      if (current === tagRequest.current && result.status === "ok") setTags(result.data);
     } catch {
       // As above.
     }
+  }, []);
+
+  // A list from a command is newer than each read that started before it.
+  const giveTypes = useCallback((list: NoteTypeList) => {
+    typeRequest.current++;
+    setTypes(list);
   }, []);
 
   useEffect(() => {
@@ -42,5 +54,5 @@ export function useTypesAndTags(active: boolean) {
   }, [readTypes, readTags]);
   useReloadOn(readTypes, readBoth);
 
-  return { types, tags, setTypes };
+  return { types, tags, setTypes: giveTypes };
 }

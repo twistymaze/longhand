@@ -290,4 +290,40 @@ describe("TypeAndTags", () => {
     await user.click(typeButton());
     expect(await screen.findByRole("menuitemradio", { name: "Standup" })).toBeTruthy();
   });
+
+  test("a type read that ends after a newer read does not replace the newer list", async () => {
+    const reads: ((l: NoteTypeList) => void)[] = [];
+    const tauri = mockRow({ note_types: () => new Promise<NoteTypeList>((r) => reads.push(r)) });
+    const { user } = renderRow({ noteType: null, tags: [] });
+    await waitFor(() => expect(reads).toHaveLength(1));
+    await act(() => tauri.emit("settings-changed", { settings: {} }));
+    await waitFor(() => expect(reads).toHaveLength(2));
+    const one = (name: string): NoteTypeList => ({ types: [{ name, valid: true, shared: true, notes: 0 }], default_type: null });
+    await act(async () => reads[1](one("New")));
+    await act(async () => reads[0](one("Old")));
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    // The click reads the list again; that read stays open here.
+    await user.click(typeButton());
+    const menu = await screen.findByRole("menu");
+    expect([...menu.querySelectorAll("button")].map((i) => i.textContent)).toEqual(["New", "No type", "New Type…"]);
+  });
+
+  test("Escape while the type is created does not give the type to the note", async () => {
+    let finish: (l: NoteTypeList) => void = () => {};
+    const tauri = mockRow({ add_note_type: () => new Promise<NoteTypeList>((r) => (finish = r)) });
+    const { user, onChanged } = renderRow({ noteType: null, tags: [] });
+    await user.click(typeButton());
+    await user.click(await screen.findByRole("menuitem", { name: "New Type…" }));
+    await user.keyboard("Customer Call{Enter}");
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "add_note_type")).toBe(true));
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () =>
+      finish({ ...typeList, types: [...typeList.types, { name: "Customer Call", valid: true, shared: true, notes: 0 }] }),
+    );
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(tauri.calls.some((c) => c.cmd === "set_note_type")).toBe(false);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(typeButton().textContent).toContain("No type");
+  });
 });

@@ -4,7 +4,7 @@
 // for one confirmation that says how many notes change. A rename onto
 // another type or tag merges the two, and the pane says so.
 
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { commands, type NoteTypeEntry, type NoteTypeList, type Result, type TagEntry } from "../bindings";
 import { sameType, tagKey } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
@@ -131,15 +131,30 @@ export function TypesAndTags({
   const [newType, setNewType] = useState("");
   const { ask, dialog } = useConfirm();
 
+  // Reads can end out of order. Each read and each command result takes a
+  // number, and only the newest number changes a list.
+  const typeRequest = useRef(0);
+  const tagRequest = useRef(0);
+
   const load = useCallback(async () => {
+    const typeAt = ++typeRequest.current;
+    const tagAt = ++tagRequest.current;
     const [t, g] = await Promise.all([
       attempt(() => commands.noteTypes(), "The types could not be read."),
       attempt(() => commands.listTags(), "The tags could not be read."),
     ]);
-    if (t.status === "ok") setTypes(t.data);
-    else setTypeError(t.error);
-    if (g.status === "ok") setTags(g.data);
-    else setTagError(g.error);
+    if (typeAt === typeRequest.current) {
+      if (t.status === "ok") {
+        setTypes(t.data);
+        setTypeError(null);
+      } else setTypeError(t.error);
+    }
+    if (tagAt === tagRequest.current) {
+      if (g.status === "ok") {
+        setTags(g.data);
+        setTagError(null);
+      } else setTagError(g.error);
+    }
   }, []);
 
   // A change on another computer, on a note page or in the library reads
@@ -158,6 +173,8 @@ export function TypesAndTags({
       return false;
     }
     setTypeError(null);
+    // The command result is newer than each read that started before it.
+    typeRequest.current++;
     setTypes(listOf(result.data));
     return true;
   };
@@ -170,6 +187,7 @@ export function TypesAndTags({
       return false;
     }
     setTagError(null);
+    tagRequest.current++;
     setTags(result.data.tags);
     return true;
   };
