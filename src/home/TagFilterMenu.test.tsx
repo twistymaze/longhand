@@ -93,6 +93,46 @@ describe("TagFilterMenu", () => {
     expect(chosen()).toBe("");
   });
 
+  // R10.
+  test("ArrowUp with no active tag goes to the last tag, and the keys stop at each end", async () => {
+    const { user, button } = setup();
+    await user.click(button);
+    await user.keyboard("{ArrowUp}{ArrowDown}{Enter}");
+    expect(chosen()).toBe("topic::roadmap");
+    await user.keyboard("{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{ArrowUp}{Enter}");
+    expect(chosen()).toBe("topic::roadmap,daily");
+  });
+
+  // R10.
+  test("typing clears the active tag, so Return does nothing until a key moves to a tag", async () => {
+    const { user, button } = setup();
+    await user.click(button);
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    await user.keyboard("dana");
+    expect(field().getAttribute("aria-activedescendant")).toBeNull();
+    await user.keyboard("{Enter}");
+    expect(chosen()).toBe("");
+  });
+
+  test("Tab closes the menu and gives the focus to the Tags button", async () => {
+    const { user, button } = setup();
+    await user.click(button);
+    await user.keyboard("{Tab}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement).toBe(button);
+  });
+
+  test("a press on the field keeps its default, so it can move the caret", async () => {
+    const { user, button } = setup();
+    await user.click(button);
+    const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    field().dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(false);
+    const rowPress = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    screen.getByRole("option", { name: "daily" }).dispatchEvent(rowPress);
+    expect(rowPress.defaultPrevented).toBe(true);
+  });
+
   // R10, KTD4.
   test("Escape closes the menu, clears the text, and gives the focus to the Tags button", async () => {
     const { user, button } = setup();

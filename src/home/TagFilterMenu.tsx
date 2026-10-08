@@ -122,8 +122,12 @@ export function TagFilterMenu({
         onClick={(e) => {
           // WKWebView does not focus a clicked button.
           e.currentTarget.focus();
-          if (wasOpen.current) {
-            wasOpen.current = false;
+          // A click from the keyboard has no pointer press (detail 0). A
+          // press that was released off the button leaves wasOpen set, so
+          // only a pointer click reads it.
+          const pressedOpen = wasOpen.current && e.detail > 0;
+          wasOpen.current = false;
+          if (pressedOpen) {
             if (open) close(false);
             return;
           }
@@ -143,8 +147,11 @@ export function TagFilterMenu({
             className="fixed z-50 flex max-h-[min(24rem,calc(100vh-8rem))] w-max min-w-[240px] max-w-[360px] flex-col rounded-md bg-group p-1 text-label shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)]"
             style={{ top: 0, left: 0 }}
             // A press on the popup keeps the focus in the field, so the field
-            // does not blur and close the menu before the click.
-            onMouseDown={(e) => e.preventDefault()}
+            // does not blur and close the menu before the click. A press on
+            // the field itself keeps its default, so it can move the caret.
+            onMouseDown={(e) => {
+              if (e.target !== inputRef.current) e.preventDefault();
+            }}
           >
             <input
               ref={inputRef}
@@ -178,6 +185,12 @@ export function TagFilterMenu({
                   // The Escape closes the menu only, not the page around it.
                   e.preventDefault();
                   e.stopPropagation();
+                  close(true);
+                } else if (e.key === "Tab") {
+                  // The field is in a portal at the end of the page, so Tab
+                  // would move the focus out of the bar. The focus goes back
+                  // to the Tags button, and the next Tab continues from there.
+                  e.preventDefault();
                   close(true);
                 }
               }}
