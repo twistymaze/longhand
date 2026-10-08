@@ -2668,6 +2668,100 @@ async fn a_resumed_run_with_no_saved_prompt_makes_its_calls_again() {
     );
 }
 
+// ---------------------------------------------------------- the note details
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_is_summarized_with_its_shown_type_its_tags_and_its_user_title() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    {
+        let guard = r.store.lock().unwrap();
+        // The type changes while the note processes: the pending type shows.
+        guard.set_pending_type("s", Some(&pending_type())).unwrap();
+        guard
+            .set_tags("s", &["Person::Nathan".into(), "Budget".into()])
+            .unwrap();
+    }
+    set_title(&r.store, "s", "Budget review");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, user) in &calls {
+        assert!(
+            system.contains(summarize::prompts::DETAILS_RULE),
+            "{system}"
+        );
+        assert!(
+            user.starts_with(
+                "<session_details>\nType: One on One\nTitle: Budget review\n\
+                 Tag: Person::Nathan\nTag: Budget\n</session_details>\n"
+            ),
+            "{user}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proposed_title_is_not_a_note_detail() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.store
+        .lock()
+        .unwrap()
+        .set_title("s", "A proposed title", session_core::TitleSource::Proposed)
+        .unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, user) in &calls {
+        assert!(!system.contains("session_details"), "{system}");
+        assert!(!user.contains("session_details"), "{user}");
+        assert!(!user.contains("A proposed title"), "{user}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_sends_the_type_and_the_tags_that_the_note_has_now() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    let folder = saved_session(&r, None).await;
+    let before = chat_messages(&mock).len();
+    // A tag edit writes `session.md`, which the run reads first.
+    edit_session_md(&folder, |doc| doc.tags = vec!["Person::Nathan".into()]);
+    r.store
+        .lock()
+        .unwrap()
+        .set_note_type("s", Some("Pathfinder"))
+        .unwrap();
+    r.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_messages(&mock);
+    assert!(calls.len() > before);
+    for (_, user) in &calls[before..] {
+        assert!(
+            user.starts_with(
+                "<session_details>\nType: Pathfinder\nTag: Person::Nathan\n</session_details>\n"
+            ),
+            "{user}"
+        );
+    }
+}
+
 // -------------------------------------------------------------- saving (U11)
 
 const NOTES: &str = "- [00:00:01] the rules changed\n- bring snacks\n";

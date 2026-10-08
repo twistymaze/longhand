@@ -7,9 +7,11 @@
 //! learns it for the endpoint, and re-chunks that layer.
 //!
 //! The notes document goes whole with every call (KTD6), as it was when the
-//! run started (R36). After the final summary, the stage stores the title
-//! turn as a pending title request, unless the user set a title, and sends
-//! no title call (KTD3). The title job sends the request after the save.
+//! run started (R36). The note details (the shown type, the tags and a
+//! title that the user typed) go with every call in the same way. After the
+//! final summary, the stage stores the title turn as a pending title
+//! request, unless the user set a title, and sends no title call (KTD3).
+//! The title job sends the request after the save.
 //!
 //! A run takes a snapshot of the active summary prompt before its first
 //! call and keeps it to the end, also after a resume (KTD4). The snapshot's
@@ -24,6 +26,7 @@ use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Turn};
 use summarize::client::Message;
+use summarize::prompts::{Details, UserText};
 use summarize::{Budget, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
 use crate::join::TRANSCRIPT_FILE;
@@ -290,14 +293,45 @@ fn turns_of(folder: &Path, text: &str) -> Result<Vec<Turn>, StageError> {
         .collect())
 }
 
-/// The fingerprint of the input to the calls: the transcript text and the
-/// notes document.
-fn input_fingerprint(transcript: &str, notes: &str) -> String {
+/// The fingerprint of the input to the calls: the transcript text, the
+/// notes document and the note details. A note with no details has the
+/// fingerprint of its transcript and notes only.
+fn input_fingerprint(
+    transcript: &str,
+    notes: &str,
+    details: &Details,
+) -> Result<String, StageError> {
     let mut bytes = Vec::with_capacity(transcript.len() + notes.len() + 1);
     bytes.extend_from_slice(transcript.as_bytes());
     bytes.push(0);
     bytes.extend_from_slice(notes.as_bytes());
-    session_core::folder::fingerprint(&bytes)
+    if !details.is_empty() {
+        bytes.push(0);
+        bytes.extend_from_slice(
+            &serde_json::to_vec(details).map_err(|e| StageError::Failed(e.to_string()))?,
+        );
+    }
+    Ok(session_core::folder::fingerprint(&bytes))
+}
+
+/// The note details as they are now: the type that the app shows, which
+/// can be a pending type (KTD3), the tags, and the title when the user
+/// typed it. A title that processing proposed is not a detail. A run reads
+/// them once, when it starts, and sends that copy with every call.
+fn note_details(store: &SharedStore, session_id: &str) -> Result<Details, StageError> {
+    let Some(record) = lock(store).session(session_id)? else {
+        return Err(StageError::Failed(format!(
+            "the note {session_id} is not in the store"
+        )));
+    };
+    Ok(Details {
+        note_type: crate::type_move::shown_type(&record).0,
+        title: record
+            .title
+            .filter(|t| t.source == TitleSource::User)
+            .map(|t| t.text),
+        tags: record.tags,
+    })
 }
 
 /// The notes document as it is now. A run reads it once, when it starts,
@@ -419,10 +453,12 @@ pub fn produce(
         "source-notes",
         &session_core::folder::fingerprint(raw_notes.as_bytes()),
     )?;
-    // Cached calls stand only for the transcript and the notes that they
-    // were made from. Another computer can replace `transcript.md`, and
-    // the notes can change, between a failed run and a regeneration.
-    let input = input_fingerprint(&transcript, &notes);
+    let details = note_details(store, session_id)?;
+    // Cached calls stand only for the transcript, the notes and the note
+    // details that they were made from. Another computer can replace
+    // `transcript.md`, and the notes and the details can change, between a
+    // failed run and a regeneration.
+    let input = input_fingerprint(&transcript, &notes, &details)?;
     let saved = checkpoint::get::<String>(store, session_id, Stage::Summarize, INPUT)?;
     if saved.as_deref() != Some(input.as_str()) {
         forget_calls(store, session_id)?;
@@ -492,6 +528,7 @@ pub fn produce(
         text: &prompt.text,
         title_text: &prompt.title_text,
         background: &prompt.background,
+        details: &details,
         progress: &mut *progress,
     };
     let done = if turns.is_empty() {
@@ -663,6 +700,9 @@ struct Calls<'a> {
     /// The Background of the run's prompt snapshot. Every call carries it,
     /// so every budget counts it (KTD11).
     background: &'a str,
+    /// The note details as they were when the run started. Every call
+    /// carries them, so every budget counts them.
+    details: &'a Details,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
@@ -674,14 +714,24 @@ struct Final {
     room: Room,
 }
 
-impl Calls<'_> {
+impl<'a> Calls<'a> {
+    /// The user's own texts that every call carries: the Background of the
+    /// prompt snapshot and the note details.
+    fn user(&self) -> UserText<'a> {
+        UserText {
+            background: self.background,
+            details: self.details,
+        }
+    }
+
     fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<Final, Outcome> {
-        let (text, title_text, background) = (self.text, self.title_text, self.background);
+        let (text, title_text) = (self.text, self.title_text);
+        let user = self.user();
         let room = plan.room(0);
         // The final call's fixed parts and the prompt text must leave at
         // least half of the prompt allowance for the transcript (KTD8). The
         // title reserve is not part of this check (KTD4).
-        if prompts::overhead("", text, background) * 2
+        if prompts::overhead("", text, user) * 2
             > tokens::prompt_allowance(room.limit, room.reserve)
         {
             // Remove the plan, so that the next run takes the budget from
@@ -692,9 +742,9 @@ impl Calls<'_> {
                 .map_err(StageError::from)?;
             return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
         }
-        let notes = fit_notes(room, self.notes, text, title_text, background);
-        let whole = prompts::whole(turns, &notes, text, background);
-        let title_reserve = prompts::title_reserve(title_text, background);
+        let notes = fit_notes(room, self.notes, text, title_text, user);
+        let whole = prompts::whole(turns, &notes, text, user);
+        let title_reserve = prompts::title_reserve(title_text, user);
         if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
             <= room.limit as usize
         {
@@ -707,7 +757,7 @@ impl Calls<'_> {
         }
 
         // Too long for one call: parts, then merges until one remains.
-        let allowance = chunk_allowance(room, &notes, text, title_text, background);
+        let allowance = chunk_allowance(room, &notes, text, title_text, user);
         let chunks: Vec<Chunk> = chunk::chunk(turns, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
@@ -715,7 +765,7 @@ impl Calls<'_> {
             summaries.push(self.call(
                 0,
                 i,
-                &prompts::part(c, i, total, &notes, background),
+                &prompts::part(c, i, total, &notes, user),
                 room,
                 total,
             )?);
@@ -726,8 +776,8 @@ impl Calls<'_> {
             // its notes still need the summary's shape.
             let only = [summaries[0].as_str()];
             let room = plan.room(1);
-            let notes = fit_notes(room, self.notes, text, title_text, background);
-            let messages = prompts::merge(&only, true, &notes, text, background);
+            let notes = fit_notes(room, self.notes, text, title_text, user);
+            let messages = prompts::merge(&only, true, &notes, text, user);
             let reply = self.call(1, 0, &messages, room, 1)?;
             return Ok(Final {
                 messages,
@@ -737,14 +787,14 @@ impl Calls<'_> {
         }
         while summaries.len() > 1 {
             let room = plan.room(layer);
-            let notes = fit_notes(room, self.notes, text, title_text, background);
-            let allowance = chunk_allowance(room, &notes, text, title_text, background);
+            let notes = fit_notes(room, self.notes, text, title_text, user);
+            let allowance = chunk_allowance(room, &notes, text, title_text, user);
             let costs: Vec<usize> = summaries.iter().map(|s| tokens::estimate(s) + 8).collect();
             let groups = chunk::merge_groups(&costs, allowance);
             if groups.len() == 1 {
                 // The last merge: one group holds every summary.
                 let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
-                let messages = prompts::merge(&parts, true, &notes, text, background);
+                let messages = prompts::merge(&parts, true, &notes, text, user);
                 let reply = self.call(layer, 0, &messages, room, 1)?;
                 return Ok(Final {
                     messages,
@@ -762,7 +812,7 @@ impl Calls<'_> {
                 next.push(self.call(
                     layer,
                     i,
-                    &prompts::merge(&parts, false, &notes, text, background),
+                    &prompts::merge(&parts, false, &notes, text, user),
                     room,
                     groups.len(),
                 )?);
@@ -800,12 +850,8 @@ impl Calls<'_> {
         if proposed || user_title || again {
             return delete_title_request(self.store, self.session_id);
         }
-        let messages = prompts::title_turn(
-            &done.messages,
-            &done.reply,
-            self.title_text,
-            self.background,
-        );
+        let messages =
+            prompts::title_turn(&done.messages, &done.reply, self.title_text, self.user());
         let used = tokens::with_margin(cost(&messages));
         let cap = (done.room.limit as usize)
             .saturating_sub(used)
@@ -892,31 +938,27 @@ fn cost(messages: &[Message]) -> usize {
 }
 
 /// The notes document, cut when it would take too much of what `room`
-/// lets a prompt use with the prompt `text` and the `background`, after the
-/// room for the title turn with `title_text` (KTD4, KTD11).
-fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str, background: &str) -> String {
+/// lets a prompt use with the prompt `text` and the `user` text (the
+/// Background and the note details), after the room for the title turn
+/// with `title_text` (KTD4, KTD11).
+fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str, user: UserText) -> String {
     prompts::fit_notes(
         notes,
         tokens::prompt_allowance(room.limit, room.reserve)
-            .saturating_sub(prompts::title_reserve(title_text, background)),
+            .saturating_sub(prompts::title_reserve(title_text, user)),
         text,
-        background,
+        user,
     )
 }
 
 /// What is left for the transcript or the summaries in one call, after the
-/// prompt's fixed parts, the notes, the prompt `text`, the `background` and
-/// the room for the title turn with `title_text` (KTD4, KTD11).
-fn chunk_allowance(
-    room: Room,
-    notes: &str,
-    text: &str,
-    title_text: &str,
-    background: &str,
-) -> usize {
+/// prompt's fixed parts, the notes, the prompt `text`, the `user` text (the
+/// Background and the note details) and the room for the title turn with
+/// `title_text` (KTD4, KTD11).
+fn chunk_allowance(room: Room, notes: &str, text: &str, title_text: &str, user: UserText) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
-        .saturating_sub(prompts::overhead(notes, text, background))
-        .saturating_sub(prompts::title_reserve(title_text, background))
+        .saturating_sub(prompts::overhead(notes, text, user))
+        .saturating_sub(prompts::title_reserve(title_text, user))
         .max(1)
 }
 
