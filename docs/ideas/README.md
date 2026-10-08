@@ -64,7 +64,9 @@ Private material for an idea, such as screenshots with real names, goes in a git
 
 ### How this relates to the compound-engineering folders
 
-- `docs/ideation/` is where `ce-ideate` writes each ranked ideation session. An idea that survives one of those sessions and isn't acted on belongs here.
+- `docs/ideation/` is where `ce-ideate` writes each ranked ideation session. `ce-ideate` does not read this folder, and it does not file its survivors here. For each run:
+  - **Before the run,** run `bun scripts/ideas.ts someday next parked done` and give the output to `ce-ideate` as context. Tell it that these ideas are known, and that it must not suggest them again unless it adds something new. Tell it that a parked idea stays parked for the reason in its file.
+  - **After the run,** give each survivor that is not brainstormed its own file in `someday/`, with `source:` set to the path of the ideation file. If a survivor extends an existing idea, add a note to that file.
 - `docs/plans/` is where `ce-brainstorm` writes the requirements it produces, as a requirements-only plan, and where `ce-plan` adds the implementation plan. Picking an idea up usually means brainstorming it, which creates that plan; link it from the idea's `plan:` field.
 - `docs/brainstorms/` is a legacy location that current compound-engineering skills only read old `*-requirements` files from. Don't put idea briefs there; an idea's brief lives in its file here.
 - `docs/solutions/` holds learnings from solved problems.
