@@ -37,6 +37,7 @@ import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu }
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
+import { TypeAndTags } from "./TypeAndTags";
 import { useTranscribeAgain } from "./TranscribeAgain";
 import { LiveTranscript, type LiveMode } from "./LiveTranscript";
 import type { Sessions } from "./useSessions";
@@ -701,6 +702,18 @@ export function SessionPage({
             }}
           />
           <p className="mt-1 text-[0.85rem] text-label-secondary tabular-nums">{subtitle}</p>
+          {!deleted && phase !== "missing" && (
+            <TypeAndTags
+              sessionId={id}
+              present={entry !== undefined}
+              noteType={entry?.note_type ?? null}
+              tags={entry?.tags ?? []}
+              moveWaits={entry?.type_move_waits ?? false}
+              recording={phase === "recording"}
+              onNotice={setNotice}
+              onChanged={() => void sessions.refresh()}
+            />
+          )}
           {syncLines.map((line) => (
             <p key={line} role="status" className="mt-1 text-[0.85rem] text-label-secondary">
               {line}

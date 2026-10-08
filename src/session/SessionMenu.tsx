@@ -82,6 +82,7 @@ export function Menu({
   submenu = false,
   focusFirst = true,
   width = "w-52",
+  align = "right",
 }: {
   items: MenuEntry[];
   onClose: () => void;
@@ -89,6 +90,9 @@ export function Menu({
   /// The width classes of a top menu. A menu with long labels sets a
   /// width that fits them.
   width?: string;
+  /// The edge of its button that a top menu aligns to. A button at the
+  /// left of the page opens its menu to the right.
+  align?: "left" | "right";
   /// A submenu that the pointer opens keeps the focus on its item.
   focusFirst?: boolean;
 }) {
@@ -156,7 +160,7 @@ export function Menu({
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       className={`absolute z-10 rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)] ${
-        submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full right-0 mt-1 ${width}`
+        submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full ${align === "left" ? "left-0" : "right-0"} mt-1 ${width}`
       } ${scrolls ? "max-h-[min(24rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain" : ""}`}
     >
       {items.map((entry) => {
