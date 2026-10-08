@@ -12,7 +12,7 @@ import {
 } from "./describe";
 
 const detail = (over: Partial<SessionDetail>): SessionDetail => ({
-  entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing", stage: null, title: null, found_speakers: null, storage_unavailable: false, remote: null },
+  entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing", stage: null, title: null, found_speakers: null, storage_unavailable: false, remote: null, note_type: null, type_move_waits: false, tags: [] },
   done: [],
   current: null,
   windows_done: null,
@@ -48,7 +48,7 @@ describe("stage rows", () => {
   test("a failed verify names the stage and runs nothing", () => {
     const rows = stageRows(
       detail({
-        entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing_failed", stage: "verify", title: null, found_speakers: null, storage_unavailable: false, remote: null },
+        entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing_failed", stage: "verify", title: null, found_speakers: null, storage_unavailable: false, remote: null, note_type: null, type_move_waits: false, tags: [] },
         done: ["assemble", "diarize", "transcribe", "join"],
         current: "verify",
         failed_stage: "verify",
@@ -95,26 +95,26 @@ describe("speaker meter", () => {
 
 describe("wording", () => {
   test("the speaker stage finds speakers and does not name people", () => {
-    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "diarize", title: null, found_speakers: null, storage_unavailable: false, remote: null };
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "diarize", title: null, found_speakers: null, storage_unavailable: false, remote: null, note_type: null, type_move_waits: false, tags: [] };
     expect(entryStatus(entry, null)).toBe("Finding speakers");
     expect(stoppedAt("diarize")).toBe("Stopped while finding speakers");
   });
 
   test("a blocked session says what it needs, not that it failed", () => {
-    const status = entryStatus({ id: "s", started: "", duration_ms: 0, state: "blocked", stage: null, title: null, found_speakers: null, storage_unavailable: false, remote: null }, null);
+    const status = entryStatus({ id: "s", started: "", duration_ms: 0, state: "blocked", stage: null, title: null, found_speakers: null, storage_unavailable: false, remote: null, note_type: null, type_move_waits: false, tags: [] }, null);
     expect(status).toBe("Needs the keychain");
     expect(status.toLowerCase()).not.toContain("fail");
   });
 
   test("a failed session says where it stopped, and a reload keeps the stage", () => {
     expect(stoppedAt("verify")).toBe("Stopped while checking the transcript");
-    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "transcribe", title: null, found_speakers: null, storage_unavailable: false, remote: null };
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "transcribe", title: null, found_speakers: null, storage_unavailable: false, remote: null, note_type: null, type_move_waits: false, tags: [] };
     expect(entryStatus(entry, null)).toBe("Transcribing");
     expect(entryStatus({ ...entry, state: "processing_failed" }, null)).toBe("Needs a retry");
   });
 
   test("a session that waits for a recording to finish says so, not its stage", () => {
-    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "assemble", title: null, found_speakers: null, storage_unavailable: false, remote: null };
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "assemble", title: null, found_speakers: null, storage_unavailable: false, remote: null, note_type: null, type_move_waits: false, tags: [] };
     expect(entryStatus(entry, null, true)).toBe("Waiting for the recording");
     expect(entryStatus({ ...entry, state: "queued" }, null, true)).toBe("Waiting for the recording");
     expect(entryStatus(entry, null, false)).toBe("Preparing the audio");

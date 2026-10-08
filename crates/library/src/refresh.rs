@@ -4,8 +4,8 @@
 //! The refresh reads `session.md`, `notes.md` and the fingerprints of
 //! `transcript.md` and `summary.md`, and asks whether each segment's
 //! removal marker exists. It updates the title, title source, recognition
-//! model, speakers found, speaker count, segments, removed flags and notes
-//! of the row. It never writes to the folder. It is idempotent: a row that
+//! model, speakers found, speaker count, segments, removed flags, notes,
+//! tags and pending type of the row. It never writes to the folder. It is idempotent: a row that
 //! already matches its folder changes nothing.
 //!
 //! A `transcript.md` with another fingerprint than the one the row stores
@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use session_core::folder::{SessionDoc, fingerprint};
+use session_core::folder::{PendingType, SessionDoc, fingerprint};
 use session_core::{Segment, SpeakerCount, Store, StoreError, Title, TitleSource};
 
 use crate::scan::{NoteFolder, Read, read_notes, read_timed, removed_audio};
@@ -140,16 +140,17 @@ pub enum Scope {
     /// Every part, and the transcript fingerprint (KTD12). For a Saved row
     /// that no stage has claimed.
     All,
-    /// Only a title that a user set, and the notes. For a writer inside
+    /// Only a title that a user set, the notes and the user fields (the
+    /// tags and the pending type, KTD2). For a writer inside
     /// its own run (Resume, Transcribe Again): the run's recognition
     /// results, model, speakers found, segments and title proposal belong
     /// to the run, and its new transcript and summary replace the folder's
     /// (KTD3).
     TitleAndNotes,
-    /// Only the notes. For a row that records, processes or waits on this
-    /// computer, so that a notes edit from another computer shows in My
-    /// Notes during that work (R22, KTD6). The work owns the rest of the
-    /// row.
+    /// Only the notes and the user fields. For a row that records,
+    /// processes or waits on this computer, so that a notes, tag or type
+    /// edit from another computer shows during that work (R22, KTD6, R18).
+    /// The work owns the rest of the row.
     Notes,
 }
 
@@ -220,10 +221,14 @@ fn scoped(updates: Updates, scope: Scope) -> Updates {
                     .is_some_and(|title| title.source == TitleSource::User)
             }),
             notes: updates.notes,
+            tags: updates.tags,
+            pending_type: updates.pending_type,
             ..Updates::default()
         },
         Scope::Notes => Updates {
             notes: updates.notes,
+            tags: updates.tags,
+            pending_type: updates.pending_type,
             ..Updates::default()
         },
     }
@@ -263,6 +268,8 @@ struct Updates {
     /// markers differ from them.
     removed_audio: Option<Vec<String>>,
     notes: Option<String>,
+    tags: Option<Vec<String>>,
+    pending_type: Option<Option<PendingType>>,
     transcript: Option<TranscriptChange>,
 }
 
@@ -281,6 +288,8 @@ impl Updates {
             || self.stereo_from.is_some()
             || self.removed_audio.is_some()
             || self.notes.is_some()
+            || self.tags.is_some()
+            || self.pending_type.is_some()
             || matches!(self.transcript, Some(TranscriptChange::Replace(_)))
     }
 }
@@ -335,6 +344,12 @@ fn updates(store: &Store, id: &str, contents: &FolderContents) -> Result<Updates
         && *notes != store.notes(id)?
     {
         updates.notes = Some(notes.clone());
+    }
+    if doc.tags != record.tags {
+        updates.tags = Some(doc.tags.clone());
+    }
+    if doc.pending_type != record.pending_type {
+        updates.pending_type = Some(doc.pending_type.clone());
     }
 
     if let Some(actual) = &contents.transcript_fingerprint {
@@ -395,6 +410,12 @@ fn write(store: &mut Store, id: &str, updates: Updates) -> Result<Refresh, Store
     }
     if let Some(notes) = &updates.notes {
         store.set_notes(id, notes)?;
+    }
+    if let Some(tags) = &updates.tags {
+        store.set_tags(id, tags)?;
+    }
+    if let Some(pending) = &updates.pending_type {
+        store.set_pending_type(id, pending.as_ref())?;
     }
     let mut cleared_recognition_results = false;
     match &updates.transcript {

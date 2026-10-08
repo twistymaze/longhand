@@ -46,6 +46,15 @@ pub struct SessionEntry {
     /// found it (KTD5). `None` when no other computer works on the note,
     /// and always for a note that is not Saved on this computer.
     pub remote: Option<RemoteView>,
+    /// The note type that the app shows (KTD3): a type change that waits
+    /// for its move, else the type folder that holds the home folder.
+    /// `None` is General.
+    pub note_type: Option<String>,
+    /// The home folder moves to the folder of `note_type` later, when no
+    /// computer works on the note (R5).
+    pub type_move_waits: bool,
+    /// The tags of the note, as their exact texts (R9, R11).
+    pub tags: Vec<String>,
 }
 
 /// Work on a note on another computer (KTD5). Record, Resume, Transcribe
@@ -447,6 +456,7 @@ fn entry(
         SessionState::Processing { .. } => stage,
         _ => None,
     };
+    let (note_type, type_move_waits) = pipeline::type_move::shown_type(record);
     SessionEntry {
         id: record.id.clone(),
         started: record.start(segments).to_rfc3339(),
@@ -457,6 +467,9 @@ fn entry(
         found_speakers: record.found_speakers,
         storage_unavailable: storage_unavailable(status, record),
         remote: status.remote(record).map(RemoteView::from),
+        note_type,
+        type_move_waits,
+        tags: record.tags.clone(),
     }
 }
 
@@ -821,6 +834,135 @@ pub async fn rename_session(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// What a type change did (R5). The note has the new type in every case
+/// but `Unchanged`.
+#[derive(Serialize, Type, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TypeChangeResult {
+    /// The note has this type already. A waiting change back to the type
+    /// of its folder is cleared.
+    Unchanged,
+    /// The home folder is in the folder of the new type, or is made there
+    /// when the note writes its folder.
+    Done,
+    /// A computer records or processes the note: its folder moves when the
+    /// note is free.
+    Later,
+    /// The folder could not move now. It moves later. The text says why.
+    Kept { message: String },
+}
+
+impl From<pipeline::type_move::TypeChange> for TypeChangeResult {
+    fn from(change: pipeline::type_move::TypeChange) -> Self {
+        use pipeline::type_move::TypeChange;
+        match change {
+            TypeChange::Unchanged => Self::Unchanged,
+            TypeChange::NoFolder | TypeChange::Moved(_) => Self::Done,
+            TypeChange::Later => Self::Later,
+            TypeChange::Kept(message) => Self::Kept { message },
+        }
+    }
+}
+
+/// Change the type of a note to `note_type`, or to General for `None`
+/// (R5). The type must be a valid type of the effective list (KTD8,
+/// KTD9). The app shows the new type at once. The folder of a note that no
+/// computer works on moves now, and any other folder moves later. The
+/// change runs off the main thread, since it can reach a synced folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_type(
+    app: AppHandle,
+    processing: State<'_, Arc<ProcessingManager>>,
+    shared: State<'_, Arc<crate::managers::shared::SharedSettingsManager>>,
+    session_id: String,
+    note_type: Option<String>,
+) -> Result<TypeChangeResult, String> {
+    let to = match note_type {
+        None => None,
+        Some(name) => {
+            let folders = crate::commands::settings::storage_folders(&app)?;
+            Some(crate::commands::capture::named_type(
+                &shared.note_types(&folders),
+                &name,
+            )?)
+        }
+    };
+    let processing = Arc::clone(&processing);
+    tauri::async_runtime::spawn_blocking(move || {
+        processing
+            .change_note_type(&session_id, to.as_deref())
+            .map(TypeChangeResult::from)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Add the tags `add` to a note and remove the tags `remove` (R10, R15).
+/// This works during a recording and during processing. A tag of `add`
+/// whose key the note has already changes nothing, and `remove` removes the
+/// tags with the same key (R30). Returns the tags of the note after the
+/// edit. The edit runs off the main thread, since it can reach a synced
+/// folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_tags(
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let add = add
+        .iter()
+        .map(|tag| pipeline::tags::check_tag(tag))
+        .collect::<Result<Vec<_>, _>>()?;
+    let processing = Arc::clone(&processing);
+    tauri::async_runtime::spawn_blocking(move || {
+        processing.set_note_tags(&session_id, &add, &remove)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One tag of the tag list (R12, KTD10).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type)]
+pub struct TagEntry {
+    /// The spelling on the note with the earliest start that has the tag
+    /// (R30).
+    pub text: String,
+    /// The key of the tag: the text with no spaces at its ends or around
+    /// `::`, in lower case. Two tags with one key are the same tag.
+    pub key: String,
+    /// The number of notes with the tag (R31).
+    pub count: u32,
+}
+
+impl From<pipeline::tags::TagCount> for TagEntry {
+    fn from(tag: pipeline::tags::TagCount) -> Self {
+        Self {
+            text: tag.text,
+            key: tag.key,
+            count: u32::try_from(tag.count).unwrap_or(u32::MAX),
+        }
+    }
+}
+
+/// The tag list (R12): each tag that is on at least one note, sorted by its
+/// text. This reads the store only.
+#[tauri::command]
+#[specta::specta]
+pub fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry>, String> {
+    tag_entries(&capture.shared_store())
+}
+
+/// The tag list of the store `store`.
+pub fn tag_entries(store: &pipeline::SharedStore) -> Result<Vec<TagEntry>, String> {
+    let store = pipeline::lock(store);
+    pipeline::tags::tag_list(&store)
+        .map(|list| list.into_iter().map(TagEntry::from).collect())
+        .map_err(|e| e.to_string())
 }
 
 /// The live transcript of a note so far: its saved parts and the text of
@@ -1792,6 +1934,9 @@ mod entry_tests {
             live_transcript: None,
             transcribe_again_model: None,
             started_at: None,
+            note_type: None,
+            tags: Vec::new(),
+            pending_type: None,
         };
         let status: Arc<LibraryStatus> = Arc::default();
         let e = entry(&record, &[], None, &status);
@@ -1826,6 +1971,79 @@ mod entry_tests {
         assert!(e.storage_unavailable);
         assert_eq!(e.title, None);
         assert_eq!(e.found_speakers, None);
+    }
+
+    // KTD3: the entry shows a waiting type change while the folder is still
+    // in the `from` folder, else the type of the folder.
+    #[test]
+    fn an_entry_shows_the_waiting_type_while_the_folder_is_in_the_old_type_folder() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-07T14:00:00+00:00").unwrap();
+        let record = SessionRecord {
+            id: "s".into(),
+            created_at: at,
+            state: SessionState::Saved,
+            queue_seq: None,
+            speaker_count: None,
+            asr_model: None,
+            recognition_snapshot: None,
+            home_path: None,
+            title: None,
+            found_speakers: None,
+            live_transcript: None,
+            transcribe_again_model: None,
+            started_at: None,
+            note_type: Some("Pathfinder".into()),
+            tags: vec!["Person::Nathan".into(), "follow-up".into()],
+            pending_type: Some(session_core::folder::PendingType {
+                to: Some("D&D".into()),
+                from: Some("pathfinder".into()),
+                by: "computer-b".into(),
+                at,
+            }),
+        };
+        let status: Arc<LibraryStatus> = Arc::default();
+        let e = entry(&record, &[], None, &status);
+        assert_eq!(
+            (e.note_type.as_deref(), e.type_move_waits),
+            (Some("D&D"), true)
+        );
+        assert_eq!(
+            e.tags,
+            vec!["Person::Nathan".to_string(), "follow-up".into()]
+        );
+        // A person moved the folder: the folder wins.
+        let moved = SessionRecord {
+            note_type: Some("Board".into()),
+            ..record
+        };
+        let e = entry(&moved, &[], None, &status);
+        assert_eq!(
+            (e.note_type.as_deref(), e.type_move_waits),
+            (Some("Board"), false)
+        );
+    }
+
+    #[test]
+    fn a_type_change_result_names_what_the_move_did() {
+        use pipeline::type_move::TypeChange;
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::Moved("/x".into())),
+            TypeChangeResult::Done
+        );
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::NoFolder),
+            TypeChangeResult::Done
+        );
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::Later),
+            TypeChangeResult::Later
+        );
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::Kept("in use".into())),
+            TypeChangeResult::Kept {
+                message: "in use".into()
+            }
+        );
     }
 
     // Covers R12, R20, R23 (KTD5): the entry carries what the latest scan

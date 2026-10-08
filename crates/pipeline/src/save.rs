@@ -558,7 +558,7 @@ fn stage_publication(
         .transpose()?;
     let changed = match expected {
         Some((path, hash)) if path == home => {
-            folder::fingerprint(&std::fs::read(home.join(SESSION_FILE))?) != hash
+            folder::session_fingerprint(&std::fs::read(home.join(SESSION_FILE))?) != hash
         }
         Some(_) => {
             return Err(StageError::Failed(
@@ -771,6 +771,10 @@ pub fn session_doc(
     }
     doc.title = record.title.as_ref().map(|t| t.text.clone());
     doc.title_source = record.title.as_ref().map(|t| t.source);
+    // The user fields of the row (KTD2). A writer that replaces a
+    // `session.md` takes them from that file instead.
+    doc.tags = record.tags.clone();
+    doc.pending_type = record.pending_type.clone();
     // A Transcribe Again run saves its transcript before the store records
     // its model as `asr_model`: the run's model made the transcript.
     doc.asr_model = record
@@ -1268,7 +1272,8 @@ fn summarize_again(
     }
     // The transcript comes from `transcript.md`, so a computer with no
     // recognition results for the note summarizes the same text (KTD4).
-    let expected = folder::fingerprint(&std::fs::read(home.join(SESSION_FILE))?);
+    // A tag or type edit in the meantime does not count (KTD2).
+    let expected = folder::session_fingerprint(&std::fs::read(home.join(SESSION_FILE))?);
     let source_notes = folder::fingerprint(lock(store).notes(session_id)?.as_bytes());
     let summary = summarize::produce(
         store, session_id, &home, endpoint, active, learn, control, progress,
@@ -1295,7 +1300,7 @@ fn summarize_again(
             return Err(changed());
         }
         keep_folder_user_title(&guard, session_id, &path)?;
-        if folder::fingerprint(&std::fs::read(path.join(SESSION_FILE))?) != expected {
+        if folder::session_fingerprint(&std::fs::read(path.join(SESSION_FILE))?) != expected {
             return Err(changed());
         }
         // A computer that has not recorded has no working folder yet.

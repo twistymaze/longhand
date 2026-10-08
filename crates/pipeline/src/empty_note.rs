@@ -317,7 +317,11 @@ impl Removal<'_> {
                     Target::Nothing
                 }))
             }
-            Some(EarlyState::Filled { root, folder_name }) => {
+            Some(EarlyState::Filled {
+                root,
+                folder_name,
+                note_type,
+            }) => {
                 if session_save::check_destination(&root).is_err() {
                     return Ok(Err(Kept::Unavailable));
                 }
@@ -327,7 +331,11 @@ impl Removal<'_> {
                 }
                 // The rename to the final name happened and its record did
                 // not. This step only finds the folder; it writes nothing.
-                let filled = EarlyState::Filled { root, folder_name };
+                let filled = EarlyState::Filled {
+                    root,
+                    folder_name,
+                    note_type,
+                };
                 let next = early_home::step(
                     self.store,
                     id,
@@ -414,10 +422,14 @@ fn check_folder(
     now: DateTime<FixedOffset>,
 ) -> Result<Vec<PathBuf>, Kept> {
     let earlier: Vec<String> = earlier_runs.iter().map(|run| marker_name(run)).collect();
-    let Some(root) = folder.parent() else {
+    // `parent` is the storage folder, or a type folder in it (KTD4 of the
+    // note types plan). The check of the storage folder goes to the
+    // storage folder itself, so it writes nothing in a type folder.
+    let Some(parent) = folder.parent() else {
         return Err(Kept::OtherFiles);
     };
-    if session_save::check_destination(root).is_err() {
+    let storage = library::scan::storage_place(folder).map_or(parent.to_path_buf(), |p| p.root);
+    if session_save::check_destination(&storage).is_err() {
         return Err(Kept::Unavailable);
     }
     // A real folder at its path in the storage folder. A link, for example
@@ -428,10 +440,10 @@ fn check_folder(
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(Kept::Changed),
         Err(_) => return Err(Kept::Unavailable),
     }
-    let (Ok(real), Ok(real_root)) = (folder.canonicalize(), root.canonicalize()) else {
+    let (Ok(real), Ok(real_parent)) = (folder.canonicalize(), parent.canonicalize()) else {
         return Err(Kept::Unavailable);
     };
-    if folder.file_name().map(|name| real_root.join(name)) != Some(real) {
+    if folder.file_name().map(|name| real_parent.join(name)) != Some(real) {
         return Err(Kept::OtherFiles);
     }
     remove_marker(folder, run_id).map_err(|_| Kept::Unavailable)?;
@@ -506,10 +518,11 @@ fn remove_folder(folder: &Path, files: &[PathBuf]) -> Result<(), StageError> {
             folder.display()
         );
     }
-    if let Some(root) = folder.parent()
-        && let Err(e) = fsync::sync_dir(root)
+    // The folder that held the note: the storage folder or a type folder.
+    if let Some(parent) = folder.parent()
+        && let Err(e) = fsync::sync_dir(parent)
     {
-        log::warn!("could not sync {}: {e}", root.display());
+        log::warn!("could not sync {}: {e}", parent.display());
     }
     Ok(())
 }

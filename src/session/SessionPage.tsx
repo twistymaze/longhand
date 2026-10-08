@@ -10,7 +10,7 @@
 // open tab (R17) and the "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
 
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   commands,
   type MicrophoneChoice,
@@ -22,6 +22,7 @@ import {
 } from "../bindings";
 import { rowTitle } from "../home/group";
 import { features } from "../lib/features";
+import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
 import { formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
 import { Button } from "../settings/ui";
@@ -36,13 +37,14 @@ import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu }
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
 import { TranscriptTab } from "./TranscriptTab";
+import { TypeAndTags } from "./TypeAndTags";
 import { useTranscribeAgain } from "./TranscribeAgain";
 import { LiveTranscript, type LiveMode } from "./LiveTranscript";
 import type { Sessions } from "./useSessions";
 
 type Tab = "summary" | "transcript" | "notes";
 
-type TabItem = { value: Tab; label: string };
+type TabItem = Segment<Tab>;
 
 // Summary is first, because a reader who returns to a note wants the summary.
 /// The time after a recording starts before Stop is available.
@@ -76,58 +78,6 @@ const partName = (part: WaitingPart) => partNames[part];
 function listOf(items: string[]): string {
   if (items.length <= 1) return items.join("");
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-}
-
-/// A segmented control. The segments have one width, so the control keeps
-/// its shape when the level bars show on Transcript. The arrow keys move
-/// through `items`, the tabs that show.
-function Tabs({
-  items,
-  tab,
-  onTab,
-  meter,
-}: {
-  items: TabItem[];
-  tab: Tab;
-  /// `click` is true for a click, false for an arrow key.
-  onTab: (t: Tab, click: boolean) => void;
-  meter: ReactNode;
-}) {
-  return (
-    <div
-      role="tablist"
-      aria-label="Show"
-      className="inline-grid auto-cols-fr grid-flow-col gap-0.5 rounded-[7px] bg-fill p-[2px]"
-      onKeyDown={(e) => {
-        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-        e.preventDefault();
-        const at = items.findIndex((t) => t.value === tab);
-        const next = items[(at + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
-        onTab(next.value, false);
-        e.currentTarget.querySelector<HTMLElement>(`[data-tab="${next.value}"]`)?.focus();
-      }}
-    >
-      {items.map((t) => (
-        <button
-          key={t.value}
-          type="button"
-          role="tab"
-          data-tab={t.value}
-          aria-selected={tab === t.value}
-          tabIndex={tab === t.value ? 0 : -1}
-          onClick={() => onTab(t.value, true)}
-          className={`flex items-center justify-center gap-1.5 rounded-[5px] px-4 py-[3px] whitespace-nowrap ${
-            tab === t.value
-              ? "bg-group text-label shadow-[0_0.5px_1.5px_rgb(0_0_0/0.18),0_0_0_0.5px_rgb(0_0_0/0.04)] dark:bg-white/[0.2] dark:shadow-[0_0.5px_1px_rgb(0_0_0/0.4)]"
-              : "text-label-secondary hover:text-label active:bg-fill-pressed"
-          } outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
-        >
-          {t.label}
-          {t.value === "transcript" && meter}
-        </button>
-      ))}
-    </div>
-  );
 }
 
 /// The one line that shows in place of a tab body, for a note that is no longer in the list.
@@ -685,11 +635,15 @@ export function SessionPage({
         </div>
         {/* A note with only My Notes needs no tabs. */}
         {visibleTabs.length > 1 ? (
-          <Tabs
-            items={visibleTabs}
-            tab={tab}
-            onTab={showTab}
-            meter={open && capture.status?.recording ? <LevelBars levels={capture.levels} input={capture.input} /> : null}
+          <SegmentedControl
+            label="Show"
+            items={visibleTabs.map((t) =>
+              t.value === "transcript" && open && capture.status?.recording
+                ? { ...t, accessory: <LevelBars levels={capture.levels} input={capture.input} /> }
+                : t,
+            )}
+            value={tab}
+            onChange={showTab}
           />
         ) : (
           // The placeholder has the height of the tabs, so the page does
@@ -748,6 +702,18 @@ export function SessionPage({
             }}
           />
           <p className="mt-1 text-[0.85rem] text-label-secondary tabular-nums">{subtitle}</p>
+          {!deleted && phase !== "missing" && (
+            <TypeAndTags
+              sessionId={id}
+              present={entry !== undefined}
+              noteType={entry?.note_type ?? null}
+              tags={entry?.tags ?? []}
+              moveWaits={entry?.type_move_waits ?? false}
+              recording={phase === "recording"}
+              onNotice={setNotice}
+              onChanged={() => void sessions.refresh()}
+            />
+          )}
           {syncLines.map((line) => (
             <p key={line} role="status" className="mt-1 text-[0.85rem] text-label-secondary">
               {line}

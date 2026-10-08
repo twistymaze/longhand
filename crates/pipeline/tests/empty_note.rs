@@ -106,6 +106,120 @@ fn an_empty_notes_only_note_is_removed_with_its_home_folder_when_the_user_leaves
     );
 }
 
+/// Move the home folder of `id` to `to`, as a person or another computer
+/// does, and record the new home path when `follow` is true, as the
+/// library scan does.
+fn move_home(store: &SharedStore, id: &str, from: &Path, to: &Path, follow: bool) {
+    std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+    std::fs::rename(from, to).unwrap();
+    if follow {
+        store
+            .lock()
+            .unwrap()
+            .set_home_path(id, &to.to_string_lossy())
+            .unwrap();
+    }
+}
+
+// KTD4: an empty note in a type folder is removed like one at the root.
+#[test]
+fn an_empty_note_in_a_type_folder_is_removed() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    let typed = dest
+        .path()
+        .join("Pathfinder")
+        .join(home.file_name().unwrap());
+    move_home(&store, "n", &home, &typed, true);
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Removed);
+    assert!(!typed.exists());
+    assert!(!row_exists(&store, "n"));
+    assert_eq!(names(&dest.path().join("Pathfinder")), Vec::<String>::new());
+}
+
+// U7: a note that starts with a type and stays empty is removed from its
+// type folder when the user leaves it.
+#[test]
+fn an_empty_note_that_started_with_a_type_is_removed() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    notes_only_note(&store, "n");
+    store
+        .lock()
+        .unwrap()
+        .set_note_type("n", Some("Pathfinder"))
+        .unwrap();
+    let home = early_home::write(&store, "n", Some(dest.path()), RUN, &RealFs)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        home.parent(),
+        Some(dest.path().join("Pathfinder").as_path())
+    );
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Removed);
+    assert!(!home.exists());
+    assert!(!row_exists(&store, "n"));
+}
+
+// U7: the folder that a crash lost the record of is found in its type
+// folder and removed.
+#[test]
+fn a_typed_folder_whose_record_a_crash_lost_is_found_and_removed() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    notes_only_note(&store, "n");
+    store
+        .lock()
+        .unwrap()
+        .set_note_type("n", Some("Pathfinder"))
+        .unwrap();
+    let filled = early_home::step(
+        &store,
+        "n",
+        &EarlyState::Begun,
+        Some(dest.path()),
+        RUN,
+        &RealFs,
+    )
+    .unwrap();
+    early_home::record(&store, "n", &filled).unwrap();
+    let done = early_home::step(&store, "n", &filled, Some(dest.path()), RUN, &RealFs).unwrap();
+    let EarlyState::Done { path } = done else {
+        panic!("expected Done, got {done:?}");
+    };
+    assert_eq!(
+        path.parent(),
+        Some(dest.path().join("Pathfinder").as_path())
+    );
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Removed);
+    assert!(!path.exists());
+    assert!(!row_exists(&store, "n"));
+}
+
+// KTD4: `locate` finds the typed folder at another name.
+#[test]
+fn an_empty_note_whose_typed_folder_has_another_name_is_found_and_removed() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = placed_note(&store, "n", dest.path());
+    let typed = dest
+        .path()
+        .join("Pathfinder")
+        .join(home.file_name().unwrap());
+    move_home(&store, "n", &home, &typed, true);
+    let renamed = dest.path().join("Pathfinder/Renamed");
+    move_home(&store, "n", &typed, &renamed, false);
+
+    assert_eq!(leave(&store, dest.path(), "n"), Leave::Removed);
+    assert!(!renamed.exists());
+    assert!(!row_exists(&store, "n"));
+    assert!(!dest.path().join("Pathfinder/.longhand").exists());
+}
+
 #[test]
 fn a_recording_discarded_with_no_notes_text_and_no_earlier_note_is_removed() {
     // R19: the note started with this recording. This run's in-use marker

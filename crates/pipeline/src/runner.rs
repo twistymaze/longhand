@@ -25,6 +25,7 @@ use crate::reprocess::{self, Guards, Readiness, Refusal};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
 use crate::transcribe::{self, TurnCuts};
+use crate::type_move::{self, TypeChange};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
 use diarize::{DiarizeError, SpeakerAnalyzer};
 use library::reconcile::{Changes, Reconciler, Target};
@@ -678,6 +679,92 @@ impl Runner {
             &|id| self.claims.busy(id),
             &session_save::RealFs,
         )
+    }
+
+    /// The user changes the type of a note (R5): the app shows the new type
+    /// at once. The folder of a note that no computer works on moves now,
+    /// and any other folder moves later (KTD5, KTD6). `own_runs` are this
+    /// computer's runs. The caller checks that `to` is a type of the
+    /// effective list.
+    pub fn change_note_type(
+        &self,
+        session_id: &str,
+        to: Option<&str>,
+        own_runs: &[String],
+    ) -> Result<TypeChange, StageError> {
+        // The change waits while the Move holds the note (KTD9).
+        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, session_id);
+        type_move::change_type_locked(
+            &mut store,
+            session_id,
+            to,
+            false,
+            &self.type_context(own_runs, &session_save::RealFs),
+        )
+    }
+
+    /// Run the type moves that this computer owes, and take over the moves
+    /// that waited for 7 days (KTD5, KTD13). Returns the ids of the notes
+    /// that changed.
+    pub fn run_type_moves(&self, own_runs: &[String]) -> Result<Vec<String>, StageError> {
+        type_move::run_owed(
+            &self.env.store,
+            &self.type_context(own_runs, &session_save::RealFs),
+        )
+    }
+
+    /// One pass of the per-note part of a type rename, merge or delete in
+    /// the storage folder `root` (KTD7).
+    pub fn apply_type_edit(
+        &self,
+        root: &std::path::Path,
+        edit_id: i64,
+        edit: &session_core::BulkEdit,
+        notes: &[String],
+        own_runs: &[String],
+    ) -> Result<type_move::EditPass, StageError> {
+        type_move::apply_recorded(
+            &self.env.store,
+            root,
+            edit_id,
+            edit,
+            notes,
+            &self.type_context(own_runs, &session_save::RealFs),
+        )
+    }
+
+    /// The user adds and removes tags of a note (R10): see
+    /// [`crate::tags::set_note_tags`]. Returns the tags of the note.
+    pub fn set_note_tags(
+        &self,
+        session_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<Vec<String>, StageError> {
+        crate::tags::set_note_tags(&self.env.store, &self.claims, session_id, add, remove)
+    }
+
+    /// One pass of a tag rename or delete over the recorded notes `notes`
+    /// (KTD11).
+    pub fn apply_tag_edit(
+        &self,
+        edit: &session_core::BulkEdit,
+        notes: &[String],
+    ) -> Result<crate::tags::TagPass, StageError> {
+        crate::tags::apply_recorded(&self.env.store, &self.claims, edit, notes)
+    }
+
+    fn type_context<'a>(
+        &'a self,
+        own_runs: &'a [String],
+        fs: &'a dyn session_save::Fs,
+    ) -> type_move::Context<'a> {
+        type_move::Context {
+            own_runs,
+            claims: &self.claims,
+            now: now(),
+            fs,
+        }
     }
 
     /// At launch, before the library scan: settle the folder renames that a

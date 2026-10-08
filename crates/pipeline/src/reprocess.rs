@@ -267,10 +267,11 @@ pub fn queue(
     }
     let (spec, home) = resolve_run(store, session_id, guards, settings, Some(model_id), ready)?;
     // The save compares `session.md` with this value. A change that another
-    // computer makes during the run then keeps the previous result.
+    // computer makes during the run then keeps the previous result. A tag
+    // or type edit does not count (KTD2).
     let baseline = match home {
         Some(home) => {
-            let hash = session_core::folder::fingerprint(&std::fs::read(
+            let hash = session_core::folder::session_fingerprint(&std::fs::read(
                 Path::new(&home).join(save::SESSION_FILE),
             )?);
             Some(serde_json::to_value((home, hash))?)

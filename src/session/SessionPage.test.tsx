@@ -61,6 +61,9 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   found_speakers: 3,
   storage_unavailable: false,
   remote: null,
+  note_type: null,
+  type_move_waits: false,
+  tags: [],
   ...over,
 });
 
@@ -129,6 +132,14 @@ function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Rec
     save_session_notes: () => ({ kind: "saved", fingerprint: "f1" }),
     session_detail: () => detail(e, over),
     session_document: () => doc,
+    note_types: () => ({
+      types: [
+        { name: "One on One", valid: true, shared: true, notes: 1, general: false },
+        { name: "Pathfinder", valid: true, shared: true, notes: 0, general: false },
+      ],
+      default_type: null,
+    }),
+    list_tags: () => [],
     ...extra,
   });
 }
@@ -1562,6 +1573,85 @@ function Synced({ id }: { id: string }) {
   const sessions = useSessions();
   return <SessionPage id={id} capture={captureOf()} sessions={sessions} readiness={readiness} onBack={() => {}} />;
 }
+
+describe("SessionPage type and tags row", () => {
+  const typeRow = () => screen.getByRole("group", { name: "Type and tags" });
+
+  test("the row under the title shows the type and the tags on a recording, a processing and a saved note", async () => {
+    const tagged = { note_type: "One on One", tags: ["Person::Nathan"] };
+    const rec = entry("s", { ...tagged, state: "capturing", duration_ms: 0 });
+    mockPage(rec);
+    const view = renderPage({ id: "s", capture: recordingCapture("s"), sessions: sessionsOf([rec]) });
+    for (const [capture, e] of [
+      [recordingCapture("s"), rec],
+      [captureOf(), { ...rec, state: "processing", stage: "transcribe" }],
+      [captureOf(), { ...rec, state: "saved" }],
+    ] as const) {
+      view.rerenderWith(capture, sessionsOf([e]));
+      expect(within(typeRow()).getByRole("button", { name: "Type: One on One" })).toBeTruthy();
+      expect(within(typeRow()).getByRole("button", { name: "Remove Person: Nathan" })).toBeTruthy();
+      expect(within(typeRow()).getByRole("button", { name: "Add Tag" })).toBeTruthy();
+    }
+  });
+
+  test("during a recording, a capture tick does not change the row", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0, note_type: "One on One", tags: ["urgent"] });
+    mockPage(e);
+    const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    await screen.findByRole("textbox", { name: "My Notes" });
+    const before = typeRow().outerHTML;
+    view.rerenderWith(recordingCapture("rec", { recordedMs: 9 * 60_000, levels: [0.4, 0.9, 0.1] }), sessionsOf([e]));
+    view.rerenderWith(recordingCapture("rec", { input: "quiet", levels: [0, 0, 0] }), sessionsOf([{ ...e }]));
+    expect(typeRow().outerHTML).toBe(before);
+  });
+
+  test("during a recording, a tag edit from another computer shows only after the recording stops", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0, tags: ["urgent"] });
+    mockPage(e);
+    const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    const before = typeRow().outerHTML;
+    const synced = { ...e, tags: ["urgent", "Person::Ana"], note_type: "Pathfinder" };
+    view.rerenderWith(recordingCapture("rec"), sessionsOf([synced]));
+    expect(typeRow().outerHTML).toBe(before);
+    view.rerenderWith(captureOf(), sessionsOf([{ ...synced, state: "processing", stage: "transcribe" }]));
+    expect(within(typeRow()).getByRole("button", { name: "Remove Person: Ana" })).toBeTruthy();
+    expect(within(typeRow()).getByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();
+  });
+
+  test("a type change on a busy note shows the new type and says that the folder moves later", async () => {
+    const e = entry("p", { state: "processing", stage: "transcribe" });
+    const tauri = mockPage(e, {}, { set_note_type: () => ({ kind: "later" }) });
+    const sessions = sessionsOf([e]);
+    renderPage({ id: "p", sessions });
+    const user = userEvent.setup();
+    await user.click(within(typeRow()).getByRole("button", { name: "Type: General" }));
+    await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
+    expect(await screen.findByText("The type changed. The folder moves when the note is free.")).toBeTruthy();
+    expect(within(typeRow()).getByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();
+    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "p", noteType: "Pathfinder" });
+    expect(sessions.refresh).toHaveBeenCalled();
+  });
+
+  test("text typed in + Tag never reaches My Notes", async () => {
+    const e = entry("rec", { state: "capturing", duration_ms: 0 });
+    const tauri = mockPage(e, {}, {
+      load_session_notes: () => ({ markdown: "first", fingerprint: "f0" }),
+      set_note_tags: (args) => args.add,
+    });
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    const editor = await screen.findByRole("textbox", { name: "My Notes" });
+    await screen.findByText("first");
+    const user = userEvent.setup();
+    expect(editor.contains(document.activeElement)).toBe(true);
+    await user.click(within(typeRow()).getByRole("button", { name: "Add Tag" }));
+    expect(editor.contains(window.getSelection()?.anchorNode ?? null)).toBe(false);
+    expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Tag" }));
+    await user.keyboard("Follow up{Enter}");
+    expect(await within(typeRow()).findByRole("button", { name: "Remove Follow up" })).toBeTruthy();
+    expect(editor.textContent).toBe("first");
+    expect(tauri.calls.some((c) => c.cmd === "save_session_notes")).toBe(false);
+  });
+});
 
 describe("SessionPage and the synced library", () => {
   test("a loaded note uses its saved speaker mode and updates the notice when its transcript changes", async () => {

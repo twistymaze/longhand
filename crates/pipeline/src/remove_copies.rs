@@ -214,12 +214,10 @@ where
 {
     /// Stop the step when the note folder or its storage folder is not
     /// reachable: a removed disk, a lost share or a signed-out sync client.
+    /// The storage folder is the parent folder, or the parent of a type
+    /// folder (KTD4 of the note types plan), with its library marker.
     fn reachable(&self) -> Result<(), RemoveAudioError> {
-        let reachable = self.home.is_dir()
-            && self
-                .home
-                .parent()
-                .is_some_and(|root| root.is_dir() && library::scan::marker(root).exists());
+        let reachable = self.home.is_dir() && library::scan::storage_place(self.home).is_some();
         if reachable {
             Ok(())
         } else {

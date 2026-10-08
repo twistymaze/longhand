@@ -143,9 +143,12 @@ fn stop_reason(inputs: &PassInputs) -> Option<PassEnd> {
 }
 
 /// Whether the folder of the note is available now: the latest scan can
-/// read it, and its Destination is a folder with its library marker.
+/// read it, and its Destination is a folder with its library marker. The
+/// Destination is the parent folder, or the parent of a type folder (KTD4
+/// of the note types plan).
 fn note_available(inputs: &PassInputs, id: &str, home: &Path) -> bool {
-    (inputs.note_readable)(id, home) && home.parent().is_some_and(root_reachable)
+    (inputs.note_readable)(id, home)
+        && library::scan::storage_place(home).is_some_and(|place| root_reachable(&place.root))
 }
 
 /// The saved notes that have a home folder, sorted by id.
@@ -866,6 +869,22 @@ mod tests {
         assert!(has_marker(&home));
         assert_eq!(documents(&home), before);
         assert_eq!(*env.changed.borrow(), vec!["20260831-0900-aaaa"]);
+    }
+
+    // KTD4: a note in a type folder loses its old audio like any note.
+    #[test]
+    fn the_old_audio_of_a_note_in_a_type_folder_goes() {
+        let library = library();
+        let home = library.saved_note("20260831-0900-aaaa", "Pathfinder/Planning", 31);
+        let before = documents(&home);
+        let env = Env::new(&library, Some(30));
+
+        let report = env.pass();
+
+        assert_eq!(report.removed, vec!["20260831-0900-aaaa"]);
+        assert!(!has_audio(&home));
+        assert!(has_marker(&home));
+        assert_eq!(documents(&home), before);
     }
 
     #[test]

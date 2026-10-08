@@ -1322,7 +1322,76 @@ fn adoption(id: &str, home: &str) -> session_core::Adoption {
         home_path: home.to_string(),
         transcript_fingerprint: Some("abc123".to_string()),
         removed_audio: Vec::new(),
+        note_type: None,
+        tags: Vec::new(),
+        pending_type: None,
     }
+}
+
+// ---------------------------------------------------------------- note type and tags
+
+fn pending(to: Option<&str>) -> session_core::folder::PendingType {
+    session_core::folder::PendingType {
+        to: to.map(str::to_string),
+        from: None,
+        by: "computer-b".to_string(),
+        at: t(5_000),
+    }
+}
+
+#[test]
+fn an_adopted_note_has_the_type_tags_and_pending_type_of_its_folder() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut note = adoption("s1", "/notes/Pathfinder/Budget");
+    note.note_type = Some("Pathfinder".to_string());
+    note.tags = vec!["Person::Nathan".to_string(), "follow-up".to_string()];
+    note.pending_type = Some(pending(Some("One on One")));
+    store.adopt(&note).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(record.tags, note.tags);
+    assert_eq!(record.pending_type, note.pending_type);
+}
+
+#[test]
+fn a_new_note_has_no_type_no_tags_and_no_pending_type() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type, None);
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}
+
+#[test]
+fn the_store_records_the_type_tags_and_pending_type() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.set_note_type("s1", Some("One on One")).unwrap();
+    store
+        .set_tags("s1", &["Topic::Security".to_string()])
+        .unwrap();
+    store.set_pending_type("s1", Some(&pending(None))).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type.as_deref(), Some("One on One"));
+    assert_eq!(record.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(record.pending_type, Some(pending(None)));
+
+    store.set_note_type("s1", None).unwrap();
+    store.set_tags("s1", &[]).unwrap();
+    store.set_pending_type("s1", None).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type, None);
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}
+
+#[test]
+fn the_type_tags_and_pending_type_of_an_unknown_note_are_an_error() {
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.set_note_type("nope", None).is_err());
+    assert!(store.set_tags("nope", &[]).is_err());
+    assert!(store.set_pending_type("nope", None).is_err());
 }
 
 // ---------------------------------------------------------------- removed audio (U2)
@@ -1812,6 +1881,27 @@ fn a_save_into_the_old_folder_is_found_until_the_note_is_saved() {
     assert!(store.saves_into(old).unwrap().is_empty());
 }
 
+// KTD4 of the note types plan: a save into a home folder in a type folder
+// is a save into the storage folder.
+#[test]
+fn a_save_into_a_type_folder_of_the_old_folder_is_found() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s", t(0), None).unwrap();
+    store
+        .put_checkpoint(
+            "s",
+            Stage::Save,
+            "state",
+            r#"{"step":"done","path":"/notes/old/Pathfinder/2027-01-15 0800 Note"}"#,
+        )
+        .unwrap();
+    assert_eq!(
+        store.saves_into(Path::new("/notes/old")).unwrap(),
+        vec!["s".to_string()]
+    );
+    assert!(store.saves_into(Path::new("/notes")).unwrap().is_empty());
+}
+
 /// KTD15: a note keeps the active prompt from when it started.
 #[test]
 fn a_note_keeps_the_prompt_snapshot_from_its_start() {
@@ -2046,4 +2136,133 @@ fn the_last_written_fingerprints_update_on_each_write_and_read_back() {
         store.set_written_notes_fingerprint("absent", Some("x")),
         Err(StoreError::NoSuchSession(_))
     ));
+}
+
+#[test]
+fn a_type_move_is_kept_until_it_is_cleared() {
+    use session_core::TypeMove;
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.create_session("s2", t(1), None).unwrap();
+    assert_eq!(store.type_move("s1").unwrap(), None);
+    let first = TypeMove {
+        to: Some("One on One".into()),
+        from: None,
+        changed_at: t(5),
+        taken_over_at: None,
+        remove_empty_from: false,
+        field_written: false,
+    };
+    store.set_type_move("s1", &first).unwrap();
+    assert_eq!(store.type_move("s1").unwrap(), Some(first.clone()));
+    // A second record for the session replaces the first.
+    let second = TypeMove {
+        to: None,
+        from: Some("Pathfinder".into()),
+        changed_at: t(6),
+        taken_over_at: Some(t(7)),
+        remove_empty_from: true,
+        field_written: true,
+    };
+    store.set_type_move("s1", &second).unwrap();
+    store.set_type_move("s2", &first).unwrap();
+    assert_eq!(
+        store.type_moves().unwrap(),
+        [
+            ("s1".to_string(), second.clone()),
+            ("s2".to_string(), first)
+        ]
+    );
+    store.clear_type_move("s2").unwrap();
+    assert_eq!(store.type_move("s2").unwrap(), None);
+    assert!(store.set_type_move("nobody", &second).is_err());
+}
+
+#[test]
+fn a_bulk_edit_is_kept_in_order_until_it_is_removed() {
+    use session_core::BulkEdit;
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.bulk_edits().unwrap().is_empty());
+    let rename = BulkEdit::RenameType {
+        from: "1 on 1".into(),
+        to: "One on One".into(),
+    };
+    let delete = BulkEdit::DeleteType {
+        name: "Pathfinder".into(),
+    };
+    let first = store.add_bulk_edit(&rename, &[]).unwrap();
+    let second = store.add_bulk_edit(&delete, &[]).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!(open.len(), 2);
+    assert_eq!(
+        (open[0].id, &open[0].edit, open[0].shared_saved),
+        (first, &rename, false)
+    );
+    assert_eq!((open[1].id, &open[1].edit), (second, &delete));
+    store.set_bulk_edit_shared_saved(first).unwrap();
+    assert!(store.bulk_edits().unwrap()[0].shared_saved);
+    store.remove_bulk_edit(first).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].edit, delete);
+}
+
+#[test]
+fn a_bulk_edit_keeps_its_notes_after_a_reopen() {
+    use session_core::BulkEdit;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("longhand.db");
+    let delete = BulkEdit::DeleteTag {
+        name: "follow-up".into(),
+    };
+    let id = {
+        let store = Store::open(&db).unwrap();
+        let id = store
+            .add_bulk_edit(&delete, &["a".into(), "b".into()])
+            .unwrap();
+        assert_eq!(store.bulk_edits().unwrap()[0].notes, ["a", "b"]);
+        store.set_bulk_edit_notes(id, &["b".into()]).unwrap();
+        id
+    };
+    let store = Store::open(&db).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        (open[0].id, &open[0].edit, open[0].notes.as_slice()),
+        (id, &delete, ["b".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn a_tag_edit_is_kept_with_its_texts() {
+    use session_core::BulkEdit;
+    let store = Store::open_in_memory().unwrap();
+    let rename = BulkEdit::RenameTag {
+        from: "Customer::Mayo".into(),
+        to: "Customer::Mayo Clinic".into(),
+    };
+    let delete = BulkEdit::DeleteTag {
+        name: "follow-up".into(),
+    };
+    store.add_bulk_edit(&rename, &[]).unwrap();
+    store.add_bulk_edit(&delete, &[]).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!((&open[0].edit, &open[1].edit), (&rename, &delete));
+    assert!(open.iter().all(|o| o.edit.is_tag_edit()));
+    assert!(
+        !BulkEdit::DeleteType {
+            name: "Pathfinder".into()
+        }
+        .is_tag_edit()
+    );
+}
+
+#[test]
+fn the_computer_id_stays_the_same_and_differs_between_databases() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let id = Store::open(&path).unwrap().computer_id().unwrap();
+    assert_eq!(id.len(), 32);
+    assert_eq!(Store::open(&path).unwrap().computer_id().unwrap(), id);
+    assert_ne!(Store::open_in_memory().unwrap().computer_id().unwrap(), id);
 }

@@ -7,6 +7,7 @@ import { useInterfaceZoom } from "./lib/useInterfaceZoom";
 import { commands, events } from "./bindings";
 import { Home } from "./home/Home";
 import { LicencesWindow } from "./licences/LicencesWindow";
+import { ScopeTonesProvider } from "./lib/Labels";
 import { notesSaved } from "./lib/notesSaves";
 import { formatChord } from "./lib/timeline";
 import { useCapture } from "./recording/useCapture";
@@ -168,13 +169,19 @@ export default function App() {
   const zoom = useInterfaceZoom({ enabled: which !== "update" });
   return <>
     {which === "settings" ? (
-      <SettingsWindow />
+      // The Settings window and the main window show tag labels, with the
+      // same scope colours.
+      <ScopeTonesProvider>
+        <SettingsWindow />
+      </ScopeTonesProvider>
     ) : which === "licences" ? (
       <LicencesWindow />
     ) : which === "update" ? (
       <UpdateWindow />
     ) : (
-      <MainWindow />
+      <ScopeTonesProvider>
+        <MainWindow />
+      </ScopeTonesProvider>
     )}
     {zoom.error && <div role="alert" className="fixed inset-x-3 bottom-3 z-50 rounded-lg bg-group p-3 text-label shadow-lg">
       <p>Could not change the interface size: {zoom.error}</p>

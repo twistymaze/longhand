@@ -8,9 +8,17 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { SessionDetail, SessionDocument, SessionEntry } from "../bindings";
+import type {
+  NoteTypeList,
+  Readiness,
+  SessionDetail,
+  SessionDocument,
+  SessionEntry,
+  TagEntry,
+} from "../bindings";
+import { tagKey } from "../lib/Labels";
 import { sessionTitle } from "../processing/describe";
-import { mockTauri } from "../test/tauri";
+import { type CommandHandler, mockTauri } from "../test/tauri";
 import { Home, type RecordingNow } from "./Home";
 import { useSessions } from "../session/useSessions";
 
@@ -26,6 +34,9 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   found_speakers: 3,
   storage_unavailable: false,
   remote: null,
+  note_type: null,
+  type_move_waits: false,
+  tags: [],
   ...over,
 });
 
@@ -171,6 +182,7 @@ describe("Home", () => {
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
       record: true,
       config: null,
+      noteType: null,
     });
     // The saved default configuration applies; no override is set.
     expect(tauri.calls.some((c) => c.cmd === "set_recognition_override")).toBe(false);
@@ -1067,6 +1079,7 @@ describe("Home: notes with no audio and other computers", () => {
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
       record: false,
       config: null,
+      noteType: null,
     });
     expect(started).toEqual(["n"]);
     expect(changed).toBeGreaterThan(0);
@@ -1163,5 +1176,238 @@ describe("Home: notes with no audio and other computers", () => {
     expect(dialog.textContent).toContain("The recording that another computer did not save is lost.");
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
     expect(tauri.calls.some((c) => c.cmd === "delete_session")).toBe(true);
+  });
+});
+
+describe("Home: filter by type and tags", () => {
+  const typeList = (...names: string[]): NoteTypeList => ({
+    types: [
+      { name: "General", valid: true, shared: false, notes: 1, general: true },
+      ...names.map((name) => ({ name, valid: true, shared: true, notes: 1, general: false })),
+    ],
+    default_type: null,
+  });
+  const tagList = (...texts: string[]): TagEntry[] =>
+    texts.map((text) => ({ text, key: tagKey(text), count: 1 }));
+  const ready: Readiness = {
+    armed: true,
+    microphone_authorized: true,
+    destination: { kind: "ready", path: "/notes", free_bytes: null },
+    shortcut: { chord: null, registered: false, error: null },
+    system_audio: "allowed",
+    missing_models: [],
+    endpoint_configured: true,
+    can_start_note: true,
+    note_start_refusal: null,
+  };
+  const notes = [
+    entry("a", { title: "1:1 with Nathan", note_type: "One on One", tags: ["Person::Nathan"] }),
+    entry("b", { title: "1:1 with Sarah", note_type: "One on One", tags: ["Person :: Sarah"] }),
+    entry("c", { title: "Session 12", note_type: "Pathfinder", tags: ["person::nathan", "Topic::Loot"] }),
+    entry("d", { title: "Standup", note_type: null, tags: [] }),
+  ];
+  const titles = () =>
+    screen.queryAllByRole("option").map((o) => o.querySelector(".font-medium")?.textContent ?? "");
+
+  function setup({
+    types = typeList("Pathfinder", "One on One"),
+    tags = tagList("Person::Nathan", "Person::Sarah", "Topic::Loot"),
+    entries = notes,
+    handlers = {} as Record<string, CommandHandler>,
+  } = {}) {
+    const state = { types, tags };
+    const tauri = mockTauri({
+      note_types: () => state.types,
+      list_tags: () => state.tags,
+      ...handlers,
+    });
+    const props = {
+      entries,
+      stages: {},
+      recording: null,
+      readiness: ready,
+      chord: null,
+      onOpen: () => {},
+      onChanged: () => {},
+      now,
+    };
+    const view = render(<Home {...props} />);
+    return { tauri, state, view, props };
+  }
+
+  type User = ReturnType<typeof userEvent.setup>;
+  const chooseType = async (user: User, name: string) => user.click(await screen.findByRole("radio", { name }));
+  const addTag = async (user: User, text: string) => {
+    await user.click(screen.getByRole("button", { name: "Tags" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: text }));
+  };
+
+  // F3, R19, R20.
+  test("a type and a tag show only the notes with both, and removing the tag label shows the type again", async () => {
+    setup();
+    const user = userEvent.setup();
+    await chooseType(user, "One on One");
+    expect(titles()).toEqual(["1:1 with Nathan", "1:1 with Sarah"]);
+    await addTag(user, "Person::Nathan");
+    expect(titles()).toEqual(["1:1 with Nathan"]);
+    const chosen = screen.getByRole("list", { name: "Chosen tags" });
+    await user.click(within(chosen).getByRole("button", { name: "Remove Person: Nathan" }));
+    expect(titles()).toEqual(["1:1 with Nathan", "1:1 with Sarah"]);
+    expect(screen.queryByRole("list", { name: "Chosen tags" })).toBeNull();
+    // The focus stays in the bar. WKWebView does not move it by itself.
+    expect(globalThis.document.activeElement).toBe(screen.getByRole("button", { name: "Tags" }));
+  });
+
+  test("a tag matches without regard to case and spaces around ::, and every chosen tag must match", async () => {
+    setup();
+    const user = userEvent.setup();
+    await addTag(user, "Person::Nathan");
+    expect(titles()).toEqual(["1:1 with Nathan", "Session 12"]);
+    await addTag(user, "Topic::Loot");
+    expect(titles()).toEqual(["Session 12"]);
+  });
+
+  test("General shows only the notes at the top of the storage folder", async () => {
+    setup();
+    await chooseType(userEvent.setup(), "General");
+    expect(titles()).toEqual(["Standup"]);
+  });
+
+  test("with no note in General, General is not a choice", async () => {
+    setup({ entries: notes.filter((n) => n.note_type !== null) });
+    await screen.findByRole("radio", { name: "Pathfinder" });
+    expect(screen.queryByRole("radio", { name: "General" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "All" })).toBeTruthy();
+  });
+
+  test("a chosen General drops out of the filter when no note is in General any more", async () => {
+    const { view, props } = setup();
+    await chooseType(userEvent.setup(), "General");
+    expect(titles()).toEqual(["Standup"]);
+    const typed = notes.map((n) => (n.note_type === null ? { ...n, note_type: "Pathfinder" } : n));
+    view.rerender(<Home {...props} entries={typed} />);
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "General" })).toBeNull());
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    expect(titles()).toHaveLength(4);
+  });
+
+  // AE5, R21.
+  test("a recording note of another type stays visible", async () => {
+    setup({
+      entries: [...notes, entry("r", { state: "capturing", note_type: "Internal Meeting", duration_ms: 1000 })],
+      types: typeList("Pathfinder", "One on One", "Internal Meeting"),
+    });
+    await chooseType(userEvent.setup(), "Pathfinder");
+    expect(screen.getByRole("option", { name: /Recording/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /Session 12/ })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: /Standup/ })).toBeNull();
+  });
+
+  // R32.
+  test("with no match, Home says so, and Clear Filter shows all notes again", async () => {
+    setup();
+    const user = userEvent.setup();
+    await chooseType(user, "General");
+    await addTag(user, "Topic::Loot");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(screen.getByText("No notes match the filter.")).toBeTruthy();
+    expect(screen.queryByText("No notes yet")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Clear Filter" }));
+    expect(titles()).toHaveLength(4);
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  // R33.
+  test("the filter stays when the user opens a note and comes back", async () => {
+    const { view, props } = setup();
+    await chooseType(userEvent.setup(), "Pathfinder");
+    view.rerender(<Home {...props} active={false} />);
+    view.rerender(<Home {...props} active />);
+    await waitFor(() => expect(titles()).toEqual(["Session 12"]));
+    expect(screen.getByRole("radio", { name: "Pathfinder" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("a type that Settings deletes drops out of the filter, and the chosen tags stay", async () => {
+    const { tauri, state } = setup();
+    const user = userEvent.setup();
+    await chooseType(user, "Pathfinder");
+    await addTag(user, "Person::Nathan");
+    expect(titles()).toEqual(["Session 12"]);
+    state.types = typeList("One on One");
+    await act(() => tauri.emit("settings-changed", { settings: {} }));
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "Pathfinder" })).toBeNull());
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    expect(titles()).toEqual(["1:1 with Nathan", "Session 12"]);
+  });
+
+  test("a tag that is on no note any more drops out of the filter", async () => {
+    const { tauri, state } = setup();
+    const user = userEvent.setup();
+    await addTag(user, "Topic::Loot");
+    expect(titles()).toEqual(["Session 12"]);
+    state.tags = tagList("Person::Nathan", "Person::Sarah");
+    await act(() => tauri.emit("library-changed", { changed: [], removed: [] }));
+    await waitFor(() => expect(titles()).toHaveLength(4));
+    expect(screen.queryByRole("list", { name: "Chosen tags" })).toBeNull();
+  });
+
+  // R19.
+  test("with many types, one menu replaces the segmented control", async () => {
+    setup({ types: typeList("A", "B", "C", "D", "E", "F", "G") });
+    const user = userEvent.setup();
+    const menuButton = await screen.findByRole("button", { name: "Note Type: All Types" });
+    expect(screen.queryByRole("radiogroup", { name: "Note Type" })).toBeNull();
+    await user.click(menuButton);
+    const items = screen.getAllByRole("menuitemradio").map((i) => i.textContent);
+    expect(items).toEqual(["All Types", "General", "A", "B", "C", "D", "E", "F", "G"]);
+    await user.click(screen.getByRole("menuitemradio", { name: "General" }));
+    expect(titles()).toEqual(["Standup"]);
+    expect(screen.getByRole("button", { name: "Note Type: General" })).toBeTruthy();
+  });
+
+  // R22, KTD3.
+  test("a row shows the type, a pending type as the type, and the tags", () => {
+    setup({
+      entries: [
+        entry("p", { title: "Planning", note_type: "One on One", type_move_waits: true, tags: ["Person::Nathan", "follow-up"] }),
+      ],
+    });
+    const planning = row("Planning");
+    expect(within(planning).getByText("One on One").closest('[data-label="type"]')).toBeTruthy();
+    expect(within(planning).getByText("Person: Nathan")).toBeTruthy();
+    expect(within(planning).getByText("follow-up")).toBeTruthy();
+  });
+
+  // R22: General is the usual type, so a row of General shows no type label.
+  test("a row of General shows no type label", () => {
+    setup({ entries: [entry("g", { title: "Standup", note_type: null, tags: ["follow-up"] })] });
+    const standup = row("Standup");
+    expect(standup.querySelector('[data-label="type"]')).toBeNull();
+    expect(within(standup).queryByText("General")).toBeNull();
+    expect(within(standup).getByText("follow-up")).toBeTruthy();
+  });
+
+  // R22.
+  test("a recording row shows the type and the tags", () => {
+    setup({
+      entries: [entry("r", { state: "capturing", note_type: "Internal Meeting", tags: ["follow-up"], duration_ms: 1000 })],
+    });
+    const recording = screen.getByRole("option", { name: /Recording/ });
+    expect(within(recording).getByText("Internal Meeting").closest('[data-label="type"]')).toBeTruthy();
+    expect(within(recording).getByText("follow-up")).toBeTruthy();
+  });
+
+  // F1, R24.
+  test("choosing a type in the New Note menu starts a note of that type", async () => {
+    const { tauri } = setup({ handlers: { start_recording: () => "s" } });
+    const user = userEvent.setup();
+    await screen.findByRole("radio", { name: "Pathfinder" });
+    await user.click(screen.getByRole("button", { name: "New Note Options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Pathfinder" }));
+    expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
+      record: true,
+      config: null,
+      noteType: { kind: "named", name: "Pathfinder" },
+    });
   });
 });

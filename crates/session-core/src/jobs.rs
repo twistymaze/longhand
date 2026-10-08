@@ -10,7 +10,7 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::folder::{SessionDoc, SpeakerCount};
+use crate::folder::{PendingType, SessionDoc, SpeakerCount};
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
 
@@ -62,6 +62,13 @@ pub struct SessionRecord {
     /// note from another computer that has segments, and a row from
     /// [`Store::create_session`]: see [`SessionRecord::start`].
     pub started_at: Option<DateTime<FixedOffset>>,
+    /// The note type: the type folder that holds the home folder (KTD1).
+    /// `None` is General. The library scan sets it from the path.
+    pub note_type: Option<String>,
+    /// The tags of the note: `longhand_tags` of `session.md` (KTD2).
+    pub tags: Vec<String>,
+    /// `longhand_pending_type` of `session.md` (KTD2, KTD3).
+    pub pending_type: Option<PendingType>,
 }
 
 impl SessionRecord {
@@ -165,6 +172,13 @@ pub struct Adoption {
     /// (KTD9 of the audio removal plan). `session.md` does not record them,
     /// so [`Adoption::from_doc`] gives none, and the scan adds them.
     pub removed_audio: Vec<String>,
+    /// The note type that the path of the folder gives (KTD1).
+    /// [`Adoption::from_doc`] gives none, and the scan sets it.
+    pub note_type: Option<String>,
+    /// `longhand_tags` of `session.md` (KTD2).
+    pub tags: Vec<String>,
+    /// `longhand_pending_type` of `session.md` (KTD2).
+    pub pending_type: Option<PendingType>,
 }
 
 impl Adoption {
@@ -190,6 +204,9 @@ impl Adoption {
             home_path,
             transcript_fingerprint,
             removed_audio: Vec::new(),
+            note_type: None,
+            tags: doc.tags.clone(),
+            pending_type: doc.pending_type.clone(),
         }
     }
 }
@@ -247,6 +264,76 @@ pub struct RenameIntent {
     /// The temporary name of a change of case alone, which moves the
     /// folder in two steps: `from` to `temp`, then `temp` to `to`.
     pub temp: Option<String>,
+}
+
+/// A type change whose move this computer owes (KTD5, KTD13 of the note
+/// types and tags plan). It holds no path: the move finds the home folder
+/// by session id at move time. `None` as a type is General.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeMove {
+    /// The new type.
+    pub to: Option<String>,
+    /// The type folder that the home folder was in when the user changed
+    /// the type.
+    pub from: Option<String>,
+    /// The time of the change.
+    pub changed_at: DateTime<FixedOffset>,
+    /// The time that this computer took over the move of another computer
+    /// (KTD13). A taken-over move waits before it moves the folder.
+    pub taken_over_at: Option<DateTime<FixedOffset>>,
+    /// A type rename, merge or delete made the move: the old type folder
+    /// goes when it holds nothing else (KTD7).
+    pub remove_empty_from: bool,
+    /// This computer wrote the pending type into `session.md`.
+    pub field_written: bool,
+}
+
+/// A Settings edit that changes many notes (KTD7, KTD11 of the note types
+/// and tags plan).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BulkEdit {
+    /// A type rename. When `to` is the name of another type, the two types
+    /// merge.
+    RenameType { from: String, to: String },
+    /// A type delete: the notes of the type go to General.
+    DeleteType { name: String },
+    /// A tag rename (KTD11): each note with the key of `from` gets `to`.
+    /// When a note has a tag with the key of `to`, the two tags merge.
+    RenameTag { from: String, to: String },
+    /// A tag delete (KTD11): each note loses the tags with the key of
+    /// `name`.
+    DeleteTag { name: String },
+}
+
+impl BulkEdit {
+    /// The edit changes tags. A tag edit has no shared-settings part.
+    pub fn is_tag_edit(&self) -> bool {
+        matches!(self, Self::RenameTag { .. } | Self::DeleteTag { .. })
+    }
+}
+
+/// A [`BulkEdit`] that is not done yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenBulkEdit {
+    pub id: i64,
+    pub edit: BulkEdit,
+    /// The notes that the edit still changes: the notes that matched when
+    /// the user made the edit, less the notes that are done. A note that
+    /// matches only after that keeps its tag or type: that is the user's
+    /// new choice.
+    pub notes: Vec<String>,
+    /// The shared settings have the change.
+    pub shared_saved: bool,
+}
+
+/// The JSON of the `edit` column of `bulk_edits`: the edit and its notes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredBulkEdit {
+    #[serde(flatten)]
+    edit: BulkEdit,
+    #[serde(default)]
+    notes: Vec<String>,
 }
 
 /// The step of one note in a Move (KTD9). The Move records each step
@@ -338,7 +425,7 @@ fn stage_key(stage: Stage) -> String {
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
      home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot, \
-     started_at";
+     started_at, note_type, tags, pending_type";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -779,9 +866,9 @@ impl Store {
         let inserted = tx.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, home_path,
                title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint, recognition_snapshot,
-               started_at)
+               started_at, note_type, tags, pending_type)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-               CASE WHEN ?14 THEN ?2 END)
+               CASE WHEN ?14 THEN ?2 END, ?15, ?16, ?17)
              ON CONFLICT (id) DO NOTHING",
             params![
                 note.id,
@@ -801,6 +888,9 @@ impl Store {
                 note.recognition_snapshot.as_ref().map(serde_json::to_string).transpose()?,
                 // A note with no segments starts at `started` (R16).
                 note.segments.is_empty(),
+                note.note_type,
+                serde_json::to_string(&note.tags)?,
+                note.pending_type.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         if inserted == 0 {
@@ -1318,11 +1408,184 @@ impl Store {
         Ok(ids)
     }
 
+    // ------------------------------------------------------------ type moves
+
+    /// The ID of this computer (KTD13 of the note types and tags plan).
+    pub fn computer_id(&self) -> Result<String> {
+        Ok(self
+            .conn
+            .query_row("SELECT computer_id FROM computer WHERE id = 1", [], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /// Record that this computer owes the session a type move (KTD5). A
+    /// second record for the session replaces the first.
+    pub fn set_type_move(&self, id: &str, type_move: &TypeMove) -> Result<()> {
+        self.require(id)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO type_moves
+             (session_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
+              field_written)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                type_move.to,
+                type_move.from,
+                type_move.changed_at.to_rfc3339(),
+                type_move.taken_over_at.map(|at| at.to_rfc3339()),
+                type_move.remove_empty_from,
+                type_move.field_written,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn type_move(&self, id: &str) -> Result<Option<TypeMove>> {
+        Ok(self
+            .type_moves_where("WHERE session_id = ?1", [id])?
+            .pop()
+            .map(|(_, type_move)| type_move))
+    }
+
+    /// Every type move that this computer owes, with its session id.
+    pub fn type_moves(&self) -> Result<Vec<(String, TypeMove)>> {
+        self.type_moves_where("", [])
+    }
+
+    fn type_moves_where<P: rusqlite::Params>(
+        &self,
+        filter: &str,
+        values: P,
+    ) -> Result<Vec<(String, TypeMove)>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT session_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
+                 field_written
+             FROM type_moves {filter} ORDER BY session_id"
+        ))?;
+        let rows = stmt
+            .query_map(values, |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, bool>(5)?,
+                    r.get::<_, bool>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(
+                |(id, to, from, changed_at, taken_over_at, remove_empty_from, field_written)| {
+                    Ok((
+                        id,
+                        TypeMove {
+                            to,
+                            from,
+                            changed_at: parse_time(&changed_at)?,
+                            taken_over_at: taken_over_at.as_deref().map(parse_time).transpose()?,
+                            remove_empty_from,
+                            field_written,
+                        },
+                    ))
+                },
+            )
+            .collect()
+    }
+
+    pub fn clear_type_move(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM type_moves WHERE session_id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ bulk edits
+
+    /// Record a Settings edit that changes the notes `notes` (KTD7, KTD11),
+    /// before the first change. Returns its id.
+    pub fn add_bulk_edit(&self, edit: &BulkEdit, notes: &[String]) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO bulk_edits (edit) VALUES (?1)",
+            [serde_json::to_string(&StoredBulkEdit {
+                edit: edit.clone(),
+                notes: notes.to_vec(),
+            })?],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Record that the edit `id` still changes only the notes `notes`.
+    pub fn set_bulk_edit_notes(&self, id: i64, notes: &[String]) -> Result<()> {
+        let edit: String =
+            self.conn
+                .query_row("SELECT edit FROM bulk_edits WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+        let mut stored: StoredBulkEdit = serde_json::from_str(&edit)?;
+        stored.notes = notes.to_vec();
+        self.conn.execute(
+            "UPDATE bulk_edits SET edit = ?1 WHERE id = ?2",
+            rusqlite::params![serde_json::to_string(&stored)?, id],
+        )?;
+        Ok(())
+    }
+
+    /// The edits that are not done, oldest first. An edit that this build
+    /// cannot read is left out and logged.
+    pub fn bulk_edits(&self) -> Result<Vec<OpenBulkEdit>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, edit, shared_saved FROM bulk_edits ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, edit, shared_saved)| {
+                match serde_json::from_str::<StoredBulkEdit>(&edit) {
+                    Ok(StoredBulkEdit { edit, notes }) => Some(OpenBulkEdit {
+                        id,
+                        edit,
+                        notes,
+                        shared_saved,
+                    }),
+                    Err(e) => {
+                        log::warn!("the bulk edit {id} cannot be read: {e}");
+                        None
+                    }
+                }
+            })
+            .collect())
+    }
+
+    /// Record that the shared settings have the change of the edit `id`.
+    pub fn set_bulk_edit_shared_saved(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE bulk_edits SET shared_saved = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// The edit `id` is done.
+    pub fn remove_bulk_edit(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM bulk_edits WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ move journal
 
     /// Open the Move journal from `old` to `new` (KTD9), with a Pending row
-    /// for each note whose home folder is in `old`. Returns false and
-    /// changes nothing when a journal is open.
+    /// for each note whose home folder is in `old`, directly or in a type
+    /// folder (KTD14 of the note types plan). Returns false and changes
+    /// nothing when a journal is open.
     pub fn open_move(&mut self, old: &Path, new: &Path) -> Result<bool> {
         let ids: Vec<String> = self
             .sessions()?
@@ -1330,7 +1593,7 @@ impl Store {
             .filter(|r| {
                 r.home_path
                     .as_deref()
-                    .is_some_and(|home| Path::new(home).parent() == Some(old))
+                    .is_some_and(|home| crate::folder::note_type_in(old, Path::new(home)).is_some())
             })
             .map(|r| r.id)
             .collect();
@@ -1489,7 +1752,8 @@ impl Store {
 
     /// The sessions that are not Saved and whose save has put, or will put,
     /// the session in `folder`: the save state names a staging directory or
-    /// a folder there. A Move from `folder` waits for them (KTD10).
+    /// a folder there, directly or in a type folder (KTD4 of the note
+    /// types plan). A Move from `folder` waits for them (KTD10).
     pub fn saves_into(&self, folder: &Path) -> Result<Vec<String>> {
         #[derive(serde::Deserialize)]
         struct Paths {
@@ -1510,7 +1774,7 @@ impl Store {
                     p.staging
                         .iter()
                         .chain(&p.path)
-                        .any(|path| path.parent() == Some(folder))
+                        .any(|path| crate::folder::note_type_in(folder, path).is_some())
                 });
             if into {
                 ids.push(record.id);
@@ -1538,6 +1802,42 @@ impl Store {
             params![id, document],
         )?;
         if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ note type and tags
+
+    /// Record the note type that the path of the home folder gives (KTD1).
+    pub fn set_note_type(&self, id: &str, note_type: Option<&str>) -> Result<()> {
+        self.update_one(
+            id,
+            "UPDATE sessions SET note_type = ?2 WHERE id = ?1",
+            note_type,
+        )
+    }
+
+    /// Record the tags of `session.md` (KTD2).
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<()> {
+        let tags = serde_json::to_string(tags)?;
+        self.update_one(id, "UPDATE sessions SET tags = ?2 WHERE id = ?1", tags)
+    }
+
+    /// Record the pending type of `session.md` (KTD2).
+    pub fn set_pending_type(&self, id: &str, pending: Option<&PendingType>) -> Result<()> {
+        let pending = pending.map(serde_json::to_string).transpose()?;
+        self.update_one(
+            id,
+            "UPDATE sessions SET pending_type = ?2 WHERE id = ?1",
+            pending,
+        )
+    }
+
+    /// Run the update `sql` with `id` as `?1` and `value` as `?2`. An `id`
+    /// with no row is an error.
+    fn update_one(&self, id: &str, sql: &str, value: impl rusqlite::ToSql) -> Result<()> {
+        if self.conn.execute(sql, params![id, value])? == 0 {
             return Err(StoreError::NoSuchSession(id.to_string()));
         }
         Ok(())
@@ -1886,6 +2186,9 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let transcribe_again_model: Option<String> = r.get(11)?;
     let recognition_snapshot: Option<String> = r.get(12)?;
     let started_at: Option<String> = r.get(13)?;
+    let note_type: Option<String> = r.get(14)?;
+    let tags: String = r.get(15)?;
+    let pending_type: Option<String> = r.get(16)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -1914,6 +2217,9 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
                 .map(|v| serde_json::from_str(&v))
                 .transpose()?,
             started_at: started_at.as_deref().map(parse_time).transpose()?,
+            note_type,
+            tags: serde_json::from_str(&tags)?,
+            pending_type: pending_type.map(|v| serde_json::from_str(&v)).transpose()?,
         })
     })())
 }

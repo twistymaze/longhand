@@ -50,6 +50,9 @@ const recordingEntry: SessionEntry = {
   found_speakers: null,
   storage_unavailable: false,
   remote: null,
+  note_type: null,
+  type_move_waits: false,
+  tags: [],
 };
 
 function mockApp(

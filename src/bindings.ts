@@ -353,6 +353,97 @@ async setBackground(text: string) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * The note types and the default type (R2, R7, R34, KTD9): the shared
+ * list plus each type folder that holds a note. This never writes.
+ */
+async noteTypes() : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_types") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add a note type to the shared list (R3). The name goes through the type
+ * name check (R28), and a name that the list has is refused.
+ */
+async addNoteType(name: string) : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_note_type", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Make a note type the default type, or General for `None` (R7, R23).
+ */
+async setDefaultNoteType(name: string | null) : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_default_note_type", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Rename a note type (R6). A new name of another type merges the two
+ * types: the notes go into the folder of that type. The default type
+ * follows the rename. The name goes through the type name check (R28).
+ * The folder of each note moves now, or later when a computer works on
+ * the note.
+ */
+async renameNoteType(name: string, newName: string) : Promise<Result<NoteTypeEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_note_type", { name, newName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a note type (R6): its notes get the type General, and their
+ * folders go directly in the storage folder. When it is the default type,
+ * the default becomes General (R7). The surface asks for a confirmation
+ * with the number of notes first (R31).
+ */
+async deleteNoteType(name: string) : Promise<Result<NoteTypeEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_note_type", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Rename the tag `name` to `new_name` on every note (R13), also on a note
+ * that another computer records or processes. A new name with the key of
+ * another tag merges the two tags, and a note with both keeps one. A note
+ * whose folder is not available now changes later.
+ */
+async renameTag(name: string, newName: string) : Promise<Result<TagEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_tag", { name, newName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the tag `name` from every note (R13). The surface asks for a
+ * confirmation with the number of notes first (R31): the count of the tag
+ * in the tag list.
+ */
+async deleteTag(name: string) : Promise<Result<TagEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_tag", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Pick a folder with the system dialog and return its path. Nothing
  * changes: the surface then asks what to do with the notes in the old
  * folder, and calls [`change_storage_folder`] (R4). `None` when the user
@@ -548,12 +639,14 @@ async openSystemAudioSettings() : Promise<Result<null, string>> {
  * Start a new note (R7, KTD2). With `record`, the note records at once;
  * without it, the note opens with no recording, and a recording that runs
  * continues. Refused while the storage folder is not available, for both
- * choices. `config` applies to a recording start only. Returns the id of
- * the new note.
+ * choices. `config` applies to a recording start only. `note_type` is the
+ * type of the note; no choice is the default type (R23, R24). A named type
+ * that is not a valid type of the list is refused. Returns the id of the
+ * new note.
  */
-async startRecording(record: boolean, config: RecognitionConfig | null) : Promise<Result<string, string>> {
+async startRecording(record: boolean, config: RecognitionConfig | null, noteType: NewNoteType | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_recording", { record, config }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_recording", { record, config, noteType }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -804,6 +897,49 @@ async saveSessionNotes(sessionId: string, markdown: string, loadedFingerprint: s
 async renameSession(sessionId: string, title: string) : Promise<Result<FolderRenameResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("rename_session", { sessionId, title }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Change the type of a note to `note_type`, or to General for `None`
+ * (R5). The type must be a valid type of the effective list (KTD8,
+ * KTD9). The app shows the new type at once. The folder of a note that no
+ * computer works on moves now, and any other folder moves later. The
+ * change runs off the main thread, since it can reach a synced folder.
+ */
+async setNoteType(sessionId: string, noteType: string | null) : Promise<Result<TypeChangeResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_type", { sessionId, noteType }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add the tags `add` to a note and remove the tags `remove` (R10, R15).
+ * This works during a recording and during processing. A tag of `add`
+ * whose key the note has already changes nothing, and `remove` removes the
+ * tags with the same key (R30). Returns the tags of the note after the
+ * edit. The edit runs off the main thread, since it can reach a synced
+ * folder.
+ */
+async setNoteTags(sessionId: string, add: string[], remove: string[]) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_tags", { sessionId, add, remove }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The tag list (R12): each tag that is on at least one note, sorted by its
+ * text. This reads the store only.
+ */
+async listTags() : Promise<Result<TagEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_tags") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1391,6 +1527,75 @@ export type MoveState =
  */
 export type MoveStatus = { old_folder: string; new_folder: string; moved: number; total: number; state: MoveState; cause: MovePauseCause | null }
 /**
+ * The note type of a new note (R23, R24 of the note types plan).
+ */
+export type NewNoteType = 
+/**
+ * The default type from the shared settings (R7).
+ */
+{ kind: "default" } | 
+/**
+ * The built-in type General: the home folder is directly in the
+ * storage folder.
+ */
+{ kind: "general" } | 
+/**
+ * A type of the effective type list.
+ */
+{ kind: "named"; name: string }
+/**
+ * What a type rename, merge or delete did (R6, R31).
+ */
+export type NoteTypeEdit = { 
+/**
+ * The number of notes that changed their type.
+ */
+changed: number; 
+/**
+ * The note types and the default type after the edit.
+ */
+list: NoteTypeList }
+/**
+ * One note type of the effective type list, for the surface (R3, KTD9).
+ */
+export type NoteTypeEntry = { name: string; 
+/**
+ * The name passes the type name check. Only a valid type is offered
+ * for a new note or a type change. Settings offers only a rename or a
+ * delete for a type that is not valid.
+ */
+valid: boolean; 
+/**
+ * The shared list has the type. False for a type that comes only from
+ * a folder in the storage folder (R34).
+ */
+shared: boolean; 
+/**
+ * The number of notes of the type.
+ */
+notes: number; 
+/**
+ * The built-in type General: the notes whose home folder is directly
+ * in the storage folder. It is first in the list. It cannot be renamed
+ * or deleted, and a note of General has the type `None`.
+ */
+general: boolean }
+/**
+ * The effective type list and the default type (R2, R7, KTD9).
+ */
+export type NoteTypeList = { 
+/**
+ * General, then the types of the shared list and the folder-only
+ * types in name order that ignores case.
+ */
+types: NoteTypeEntry[]; 
+/**
+ * The type of a new note from the New Note button and the shortcut.
+ * `None` is General. A shared default that names no valid type of the
+ * list is General.
+ */
+default_type: string | null }
+/**
  * What a notes save did.
  */
 export type NotesSaveResult = 
@@ -1867,7 +2072,22 @@ storage_unavailable: boolean;
  * found it (KTD5). `None` when no other computer works on the note,
  * and always for a note that is not Saved on this computer.
  */
-remote: RemoteView | null }
+remote: RemoteView | null; 
+/**
+ * The note type that the app shows (KTD3): a type change that waits
+ * for its move, else the type folder that holds the home folder.
+ * `None` is General.
+ */
+note_type: string | null; 
+/**
+ * The home folder moves to the folder of `note_type` later, when no
+ * computer works on the note (R5).
+ */
+type_move_waits: boolean; 
+/**
+ * The tags of the note, as their exact texts (R9, R11).
+ */
+tags: string[] }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds
@@ -2162,6 +2382,36 @@ export type SystemAudioPermission = "allowed" | "denied" |
  */
 "unknown"
 /**
+ * What a tag rename or delete did (R13, R31).
+ */
+export type TagEdit = { 
+/**
+ * The number of notes that had the tag.
+ */
+changed: number; 
+/**
+ * The tag list after the edit.
+ */
+tags: TagEntry[] }
+/**
+ * One tag of the tag list (R12, KTD10).
+ */
+export type TagEntry = { 
+/**
+ * The spelling on the note with the earliest start that has the tag
+ * (R30).
+ */
+text: string; 
+/**
+ * The key of the tag: the text with no spaces at its ends or around
+ * `::`, in lower case. Two tags with one key are the same tag.
+ */
+key: string; 
+/**
+ * The number of notes with the tag (R31).
+ */
+count: number }
+/**
  * The update track of a build. Each track has its own update manifest.
  */
 export type Track = "preview"
@@ -2174,6 +2424,30 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * What a type change did (R5). The note has the new type in every case
+ * but `Unchanged`.
+ */
+export type TypeChangeResult = 
+/**
+ * The note has this type already. A waiting change back to the type
+ * of its folder is cleared.
+ */
+{ kind: "unchanged" } | 
+/**
+ * The home folder is in the folder of the new type, or is made there
+ * when the note writes its folder.
+ */
+{ kind: "done" } | 
+/**
+ * A computer records or processes the note: its folder moves when the
+ * note is free.
+ */
+{ kind: "later" } | 
+/**
+ * The folder could not move now. It moves later. The text says why.
+ */
+{ kind: "kept"; message: string }
 /**
  * A value in the shared settings file that this version does not know.
  * Longhand keeps it in the file (R17).

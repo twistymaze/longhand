@@ -4,12 +4,16 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use serde::Deserialize;
+use shared_settings::note_types::NoteTypeError;
+use specta::Type;
+use tauri::{AppHandle, Manager, State};
 
 use crate::managers::capture::{CaptureManager, RecordingStatus, StopOutcome};
 use crate::managers::destination;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
+use crate::managers::shared::{NoteTypeList, SharedSettingsManager};
 use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
 
 async fn blocking<T: Send + 'static>(
@@ -20,17 +24,74 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| e.to_string())?
 }
 
+/// The note type of a new note (R23, R24 of the note types plan).
+#[derive(Deserialize, Type, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NewNoteType {
+    /// The default type from the shared settings (R7).
+    Default,
+    /// The built-in type General: the home folder is directly in the
+    /// storage folder.
+    General,
+    /// A type of the effective type list.
+    Named { name: String },
+}
+
+/// The type of a new note from `choice` and the effective type list
+/// `types`, with the spelling of the list. `None` is General. No choice is
+/// the default type. A named type must be a valid type of the list (KTD8,
+/// KTD9).
+pub fn chosen_type(
+    choice: Option<&NewNoteType>,
+    types: &NoteTypeList,
+) -> Result<Option<String>, String> {
+    match choice {
+        None | Some(NewNoteType::Default) => Ok(types.default_type.clone()),
+        Some(NewNoteType::General) => Ok(None),
+        Some(NewNoteType::Named { name }) => named_type(types, name).map(Some),
+    }
+}
+
+/// The valid type of the list `types` that has the name `name`, with the
+/// spelling of the list (KTD8, KTD9). General has no type folder, so its
+/// name is refused: the caller uses `None` for General.
+pub fn named_type(types: &NoteTypeList, name: &str) -> Result<String, String> {
+    types
+        .types
+        .iter()
+        .find(|t| t.valid && !t.general && session_save::naming::same_type_name(&t.name, name))
+        .map(|t| t.name.clone())
+        .ok_or_else(|| NoteTypeError::NoSuchType.to_string())
+}
+
+/// The type of a new note from `choice`, with the type list of the
+/// storage folder now. The shortcut and the New Note button give no
+/// choice, so they use the default type (R23).
+pub fn type_of_new_note(
+    app: &AppHandle,
+    choice: Option<&NewNoteType>,
+) -> Result<Option<String>, String> {
+    let Some(shared) = app.try_state::<Arc<SharedSettingsManager>>() else {
+        return chosen_type(choice, &NoteTypeList::default());
+    };
+    let folders = crate::commands::settings::storage_folders(app)?;
+    chosen_type(choice, &shared.note_types(&folders))
+}
+
 /// Start a new note (R7, KTD2). With `record`, the note records at once;
 /// without it, the note opens with no recording, and a recording that runs
 /// continues. Refused while the storage folder is not available, for both
-/// choices. `config` applies to a recording start only. Returns the id of
-/// the new note.
+/// choices. `config` applies to a recording start only. `note_type` is the
+/// type of the note; no choice is the default type (R23, R24). A named type
+/// that is not a valid type of the list is refused. Returns the id of the
+/// new note.
 #[tauri::command]
 #[specta::specta]
 pub async fn start_recording(
     app: AppHandle,
     record: bool,
     config: Option<models::recognition::RecognitionConfig>,
+    note_type: Option<NewNoteType>,
     manager: State<'_, Arc<CaptureManager>>,
 ) -> Result<String, String> {
     let manager = Arc::clone(&manager);
@@ -42,10 +103,11 @@ pub async fn start_recording(
         if let Some(reason) = destination::note_start_refusal(&destination::status(&folder)) {
             return Err(reason.to_string());
         }
+        let note_type = type_of_new_note(&app, note_type.as_ref())?;
         let started = if record {
-            manager.start_session_with_config(&app, count, config)
+            manager.start_session_with_config(&app, count, config, note_type.as_deref())
         } else {
-            manager.open_note(&app)
+            manager.open_note(&app, note_type.as_deref())
         };
         started.map_err(|e| e.to_string())
     })
@@ -242,4 +304,85 @@ pub async fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
         Ok(())
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::managers::shared::{NoteTypeEntry, NoteTypeList};
+
+    fn entry(name: &str, valid: bool) -> NoteTypeEntry {
+        NoteTypeEntry {
+            name: name.into(),
+            valid,
+            shared: true,
+            notes: 0,
+            general: false,
+        }
+    }
+
+    fn list(default_type: Option<&str>) -> NoteTypeList {
+        NoteTypeList {
+            types: vec![
+                NoteTypeEntry {
+                    general: true,
+                    shared: false,
+                    ..entry("General", true)
+                },
+                entry("Pathfinder", true),
+                entry("Bad:Name", false),
+            ],
+            default_type: default_type.map(String::from),
+        }
+    }
+
+    // R7, R23: no choice is the default type, a shared setting. The
+    // shortcut and the New Note button use it.
+    #[test]
+    fn no_choice_and_the_default_choice_use_the_default_type() {
+        let types = list(Some("Pathfinder"));
+        assert_eq!(chosen_type(None, &types), Ok(Some("Pathfinder".into())));
+        assert_eq!(
+            chosen_type(Some(&NewNoteType::Default), &types),
+            Ok(Some("Pathfinder".into()))
+        );
+    }
+
+    // R7: a default that names no valid type of the effective list is
+    // General (the list gives `None`).
+    #[test]
+    fn a_default_type_that_is_gone_starts_the_note_in_general() {
+        assert_eq!(chosen_type(None, &list(None)), Ok(None));
+    }
+
+    // R24: the New Note menu starts a note of a named type, or of General.
+    #[test]
+    fn a_named_type_uses_the_spelling_of_the_list() {
+        let types = list(Some("Pathfinder"));
+        assert_eq!(chosen_type(Some(&NewNoteType::General), &types), Ok(None));
+        assert_eq!(
+            chosen_type(
+                Some(&NewNoteType::Named {
+                    name: " pathfinder".into()
+                }),
+                &types
+            ),
+            Ok(Some("Pathfinder".into()))
+        );
+    }
+
+    // KTD8, KTD9: a type that is not in the list, or that is not valid, is
+    // refused. General is chosen only as `NewNoteType::General`, so a type
+    // name never makes a folder named "General".
+    #[test]
+    fn a_type_that_is_not_a_valid_type_of_the_list_is_refused() {
+        let types = list(None);
+        for name in ["Gone", "Bad:Name", "General"] {
+            assert_eq!(
+                chosen_type(Some(&NewNoteType::Named { name: name.into() }), &types),
+                Err("That type no longer exists.".to_string()),
+                "{name}"
+            );
+        }
+    }
 }

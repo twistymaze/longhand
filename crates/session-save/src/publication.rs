@@ -217,14 +217,17 @@ impl Publication {
         Ok(Outcome::Committed)
     }
 
-    /// The staged `session.md` with the title of `current`: the title
-    /// belongs to the title and rename writers (KTD2). With
-    /// [`WriteSet::Summary`], the recognition references also come from
-    /// `current` (KTD5).
+    /// The staged `session.md` with the title, the tags and the pending
+    /// type of `current`: the title belongs to the title and rename writers
+    /// (KTD2), and the tags and the pending type are user fields (KTD2 of
+    /// the note types and tags plan). With [`WriteSet::Summary`], the
+    /// recognition references also come from `current` (KTD5).
     fn patch(&self, home: &Path, current: &SessionDoc) -> SessionDoc {
         let mut doc = self.after.clone();
         doc.title = current.title.clone();
         doc.title_source = current.title_source;
+        doc.tags = current.tags.clone();
+        doc.pending_type = current.pending_type.clone();
         if self.set == WriteSet::Summary {
             let present = home.join(ARTIFACT_FILE).is_file();
             doc.recognition_artifact = current.recognition_artifact.clone().filter(|_| present);

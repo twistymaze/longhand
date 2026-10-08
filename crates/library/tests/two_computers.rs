@@ -11,9 +11,9 @@ use chrono::{DateTime, FixedOffset};
 use library::reconcile::{Changes, Coverage, DELETE_WAIT, HAND_EDIT_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
 use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
-use library::status::NoteStatus;
+use library::status::{NoteStatus, OTHER_VERSION_WAIT};
 use pipeline::SharedStore;
-use session_core::folder::{AudioState, ResultFlag, SessionDoc, fingerprint};
+use session_core::folder::{AudioState, PendingType, ResultFlag, SessionDoc, fingerprint};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
 use session_save::in_use_marker::FRESH_FOR;
 
@@ -314,9 +314,309 @@ fn a_rename_delivered_as_a_removed_folder_and_a_new_one_keeps_the_row_and_follow
     assert!(a.record("n1").is_some());
 }
 
+// ---------------------------------------------------------------- type folders (note types U3)
+
+/// Move the home folder `folder` into the type folder `name` of `root`, as
+/// a person does in Finder. Returns the new home folder.
+fn into_type(folder: &Path, root: &Path, name: &str) -> PathBuf {
+    let type_folder = root.join(name);
+    fs::create_dir_all(&type_folder).unwrap();
+    let moved = type_folder.join(folder.file_name().unwrap());
+    fs::rename(folder, &moved).unwrap();
+    moved
+}
+
+fn note_type(c: &Computer, id: &str) -> Option<String> {
+    c.record(id).unwrap().note_type
+}
+
+/// Every file in `dir` and its time of change, to show that no file was
+/// written.
+fn files(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(files(&path));
+        } else {
+            out.push((
+                path.clone(),
+                fs::metadata(&path).unwrap().modified().unwrap(),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+// Covers R8 (KTD1, KTD4).
+#[test]
+fn a_note_in_a_type_folder_is_adopted_with_its_type() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    b.save_note("n2", &root, user_title("Standup"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    assert_eq!(a.sync(&root, Instant::now()), changed(&["n1", "n2"]));
+    assert_eq!(a.home("n1"), typed);
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+    assert_eq!(note_type(&a, "n2"), None);
+}
+
+// Covers R29 (KTD1).
+#[test]
+fn a_home_folder_that_a_person_moves_to_another_type_folder_gets_that_type_and_no_write() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    let now = Instant::now();
+    a.sync(&root, now);
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+
+    let moved = into_type(&typed, &root, "One on One");
+    let before = files(&root);
+    assert_eq!(a.sync(&root, now), changed(&["n1"]));
+    assert_eq!(a.home("n1"), moved);
+    assert_eq!(note_type(&a, "n1"), Some("One on One".into()));
+    assert_eq!(files(&root), before, "the reconcile wrote a file");
+
+    // Back to the storage folder: no type.
+    let top = root.join(moved.file_name().unwrap());
+    fs::rename(&moved, &top).unwrap();
+    assert_eq!(a.sync(&root, now), changed(&["n1"]));
+    assert_eq!(note_type(&a, "n1"), None);
+}
+
+#[test]
+fn a_type_folder_that_a_person_renames_gives_each_note_the_new_type() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let first = b.save_note("n1", &root, user_title("Session 12"), "");
+    let second = b.save_note("n2", &root, user_title("Session 13"), "");
+    into_type(&first, &root, "Pathfinder");
+    into_type(&second, &root, "Pathfinder");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    fs::rename(root.join("Pathfinder"), root.join("D&D")).unwrap();
+    assert_eq!(a.sync(&root, now), changed(&["n1", "n2"]));
+    for id in ["n1", "n2"] {
+        assert_eq!(note_type(&a, id), Some("D&D".into()));
+        assert_eq!(a.home(id).parent(), Some(root.join("D&D").as_path()));
+    }
+    // A targeted scan of the renamed type folder, as the watcher runs it,
+    // follows the notes too.
+    fs::rename(root.join("D&D"), root.join("Pathfinder")).unwrap();
+    let changes = a.sync_folders(&root, &[&root.join("D&D"), &root.join("Pathfinder")]);
+    assert_eq!(changes, changed(&["n1", "n2"]));
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+}
+
+// Covers R26 (KTD12).
+#[test]
+fn a_type_move_that_the_sync_delivers_90_seconds_late_keeps_the_row() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "- mine\n");
+    let now = Instant::now();
+    a.sync(&root, now);
+    let before = a.record("n1").unwrap();
+
+    // The sync delivers the removal of the old folder first.
+    let away = take_away(&saved, dir.path());
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert!(a.reconciler.is_pending("n1"));
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(60)),
+        Changes::default()
+    );
+
+    // The new folder arrives 90 seconds later.
+    let typed = into_type(&away, &root, "Pathfinder");
+    let later = now + Duration::from_secs(90);
+    assert_eq!(a.sync(&root, later), changed(&["n1"]));
+    assert!(!a.reconciler.is_pending("n1"));
+    let after = a.record("n1").unwrap();
+    assert_eq!(after.home_path.as_deref().map(PathBuf::from), Some(typed));
+    assert_eq!(after.note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(after.created_at, before.created_at);
+    assert_eq!(after.title, before.title);
+    assert_eq!(a.notes("n1"), "- mine\n");
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 3), Changes::default());
+    assert!(a.record("n1").is_some());
+}
+
+#[test]
+fn a_type_move_that_arrives_after_3_minutes_is_forgotten_then_adopted_again_by_id() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    let away = take_away(&saved, dir.path());
+    a.sync(&root, now);
+    assert_eq!(a.sync(&root, now + DELETE_WAIT), removed(&["n1"]));
+    assert!(a.record("n1").is_none());
+
+    let typed = into_type(&away, &root, "Pathfinder");
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(180)),
+        changed(&["n1"])
+    );
+    let rows = a.store.lock().unwrap().sessions().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(a.home("n1"), typed);
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+}
+
+#[test]
+fn the_wait_before_a_forget_is_2_minutes() {
+    assert_eq!(DELETE_WAIT, Duration::from_secs(120));
+}
+
+#[test]
+fn a_typed_note_in_a_partial_sync_with_no_session_md_keeps_its_id_and_nothing_is_written() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    // The folder arrives at its new place without its session.md.
+    let away = take_away(&saved, dir.path());
+    let session = fs::read(away.join("session.md")).unwrap();
+    fs::remove_file(away.join("session.md")).unwrap();
+    let typed = into_type(&away, &root, "Pathfinder");
+    let before = files(&root);
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(30)),
+        Changes::default()
+    );
+    assert_eq!(files(&root), before, "the reconcile wrote a file");
+    assert!(a.record("n1").is_some());
+
+    fs::write(typed.join("session.md"), session).unwrap();
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(60)),
+        changed(&["n1"])
+    );
+    assert_eq!(a.home("n1"), typed);
+    assert_eq!(a.store.lock().unwrap().sessions().unwrap().len(), 1);
+}
+
+#[test]
+fn typed_notes_stay_when_the_storage_folder_loses_its_marker() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let first = b.save_note("n1", &root, user_title("Session 12"), "");
+    let second = b.save_note("n2", &root, user_title("Session 13"), "");
+    into_type(&first, &root, "Pathfinder");
+    into_type(&second, &root, "One on One");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    // A sign-out of the sync client removes the files and the marker.
+    let away = dir.path().join("away");
+    fs::create_dir(&away).unwrap();
+    for name in ["Pathfinder", "One on One", ".longhand"] {
+        fs::rename(root.join(name), away.join(name)).unwrap();
+    }
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 3), Changes::default());
+    assert!(a.record("n1").is_some());
+    assert!(a.record("n2").is_some());
+    assert!(!library::scan::marker(&root).exists());
+}
+
+// Covers R26 (KTD12): only a full scan can forget.
+#[test]
+fn a_targeted_scan_never_forgets_a_row_and_a_full_scan_does_after_the_wait() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    a.sync_roots(&[&root]);
+
+    take_away(&typed, dir.path());
+    let now = Instant::now();
+    let target = Target::Folders {
+        root: root.clone(),
+        folders: [typed.clone()].into_iter().collect(),
+    };
+    let claimed = never_claimed;
+    a.reconciler
+        .run_at(&a.store, &target, &claimed, now)
+        .unwrap();
+    assert!(a.reconciler.is_pending("n1"));
+    let later = now + DELETE_WAIT * 2;
+    let changes = a
+        .reconciler
+        .run_at(&a.store, &target, &claimed, later)
+        .unwrap();
+    assert_eq!(changes, Changes::default());
+    assert!(a.record("n1").is_some());
+
+    let full = Target::Full(vec![root.clone()]);
+    let changes = a
+        .reconciler
+        .run_at(&a.store, &full, &claimed, later)
+        .unwrap();
+    assert_eq!(changes, removed(&["n1"]));
+}
+
+/// A `session.md` that is not valid in a type folder does not hide the
+/// notes in it, so a full scan never forgets them (KTD12, R26).
+#[test]
+fn a_type_folder_with_an_invalid_session_md_keeps_the_rows_of_its_notes() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    let now = Instant::now();
+    a.sync(&root, now);
+    assert_eq!(note_type(&a, "n1").as_deref(), Some("Pathfinder"));
+
+    fs::write(root.join("Pathfinder/session.md"), "not a session document").unwrap();
+    a.sync(&root, now);
+    let after = a.sync(&root, now + DELETE_WAIT * 2);
+    assert!(after.removed.is_empty(), "{after:?}");
+    assert!(!a.reconciler.is_pending("n1"));
+    assert_eq!(a.home("n1"), typed);
+}
+
+#[test]
+fn forget_outside_keeps_typed_notes_in_a_root() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    into_type(&saved, &root, "Pathfinder");
+    a.sync(&root, Instant::now());
+    let removed = library::reconcile::forget_outside(
+        &mut a.store.lock().unwrap(),
+        std::slice::from_ref(&root),
+        &never_claimed,
+    )
+    .unwrap();
+    assert!(removed.is_empty(), "{removed:?}");
+    assert!(a.record("n1").is_some());
+}
+
 // Covers AE6.
 #[test]
-fn a_folder_removed_from_an_available_root_is_forgotten_after_30_seconds() {
+fn a_folder_removed_from_an_available_root_is_forgotten_after_the_wait() {
     let (dir, root) = shared_root();
     let a = computer();
     let mut b = computer();
@@ -515,7 +815,7 @@ fn an_existing_row_whose_session_md_is_not_valid_keeps_its_row() {
 }
 
 #[test]
-fn the_last_note_of_a_marked_root_removed_on_b_is_forgotten_by_a_after_30_seconds() {
+fn the_last_note_of_a_marked_root_removed_on_b_is_forgotten_by_a_after_the_wait() {
     let (_dir, root) = shared_root();
     let mut a = computer();
     let mut b = computer();
@@ -973,6 +1273,170 @@ fn a_refresh_inside_a_run_takes_a_users_title_and_the_notes_and_keeps_the_runs_r
     assert_eq!(s.transcript_fingerprint("n1").unwrap(), stored);
 }
 
+// ---------------------------------------------------------------- user fields (KTD2 of the note types and tags plan)
+
+fn pending_type() -> PendingType {
+    PendingType {
+        to: Some("One on One".into()),
+        from: None,
+        by: "computer-b".into(),
+        at: started(),
+    }
+}
+
+/// Write a tag and a pending type into `session.md` in `folder`, as the
+/// other computer's tag and type edit does.
+fn edit_user_fields(folder: &Path) {
+    edit_doc(folder, |doc| {
+        doc.tags = vec!["Topic::Security".into()];
+        doc.pending_type = Some(pending_type());
+    });
+}
+
+fn assert_user_fields(record: &SessionRecord) {
+    assert_eq!(record.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(record.pending_type, Some(pending_type()));
+}
+
+#[test]
+fn an_adopted_note_has_the_tags_and_the_pending_type_of_its_session_md() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    edit_user_fields(&folder);
+    assert_eq!(b.sync(&root, Instant::now()), changed(&["n1"]));
+    let record = b.record("n1").unwrap();
+    assert_user_fields(&record);
+    // The scan sets the note type from the path (U3).
+    assert_eq!(record.note_type, None);
+}
+
+// Covers R13, R18 and the verification of U6: tag edits from one computer
+// show on the other after a sync, and no note has two tags with one key.
+#[test]
+fn tag_edits_on_b_show_on_a_after_a_sync_and_a_keeps_one_tag_for_each_key() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let mut b = computer();
+    a.save_note("n1", &root, None, "");
+    a.save_note("n2", &root, None, "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    let claims = session_core::jobs::Claims::default();
+    let tags = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+
+    pipeline::tags::set_note_tags(&b.store, &claims, "n1", &tags(&["Customer::Mayo"]), &[])
+        .unwrap();
+    // A adds the same tag with another spelling to n1 and to n2, after the
+    // edit of B has synced.
+    a.sync(&root, now);
+    assert_eq!(a.record("n1").unwrap().tags, tags(&["Customer::Mayo"]));
+    for id in ["n1", "n2"] {
+        pipeline::tags::set_note_tags(&a.store, &claims, id, &tags(&["customer :: MAYO"]), &[])
+            .unwrap();
+    }
+    assert_eq!(a.record("n1").unwrap().tags, tags(&["Customer::Mayo"]));
+
+    // B renames the tag in Settings. A sees the new tag on both notes.
+    b.sync(&root, now);
+    let pass = pipeline::tags::apply_edit(
+        &b.store,
+        &claims,
+        &session_core::BulkEdit::RenameTag {
+            from: "Customer::Mayo".into(),
+            to: "Customer::Mayo Clinic".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!((pass.matched, pass.done), (2, true));
+    assert_eq!(a.sync(&root, now), changed(&["n1", "n2"]));
+    for id in ["n1", "n2"] {
+        assert_eq!(
+            a.record(id).unwrap().tags,
+            tags(&["Customer::Mayo Clinic"]),
+            "{id}"
+        );
+    }
+    let list = pipeline::tags::tag_list(&a.store.lock().unwrap()).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(
+        (list[0].text.as_str(), list[0].count),
+        ("Customer::Mayo Clinic", 2)
+    );
+}
+
+#[test]
+fn a_tag_edit_from_the_other_computer_refreshes_a_saved_row() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    edit_user_fields(&folder);
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    assert_user_fields(&b.record("n1").unwrap());
+
+    // A removal of the fields also refreshes the row.
+    edit_doc(&folder, |doc| {
+        doc.tags.clear();
+        doc.pending_type = None;
+    });
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    let record = b.record("n1").unwrap();
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}
+
+#[test]
+fn a_busy_rows_reconcile_takes_a_tag_edit_from_the_other_computer() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    // On B, Transcribe Again queues the note: the row is busy.
+    b.store
+        .lock()
+        .unwrap()
+        .transcribe_again(
+            "n1",
+            "tdt",
+            &Event::UserTranscribeAgain {
+                at: started(),
+                audio_intact: true,
+                capture_active: false,
+                regenerating: false,
+            },
+        )
+        .unwrap();
+    assert!(matches!(b.state("n1"), SessionState::Queued { .. }));
+
+    edit_user_fields(&folder);
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    assert_user_fields(&b.record("n1").unwrap());
+}
+
+#[test]
+fn a_refresh_inside_a_run_takes_the_tags_and_the_pending_type() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    edit_user_fields(&folder);
+    let refreshed = refresh::refresh_scoped(
+        &mut a.store.lock().unwrap(),
+        "n1",
+        &folder,
+        options().read_timeout,
+        refresh::Scope::TitleAndNotes,
+    )
+    .unwrap();
+    assert!(refreshed.changed);
+    assert_user_fields(&a.record("n1").unwrap());
+}
+
 #[test]
 fn a_refresh_inside_a_run_keeps_the_runs_title_over_a_proposal_in_the_folder() {
     let (_dir, root) = shared_root();
@@ -1008,20 +1472,32 @@ fn a_refresh_inside_a_run_keeps_the_runs_title_over_a_proposal_in_the_folder() {
 impl Computer {
     /// A targeted scan of `folders` in `root`, as the watcher runs it (U6).
     fn sync_folders(&mut self, root: &Path, folders: &[&Path]) -> Changes {
+        self.sync_folders_at(root, folders, Instant::now())
+    }
+
+    fn sync_folders_at(&mut self, root: &Path, folders: &[&Path], now: Instant) -> Changes {
         let target = Target::Folders {
             root: root.to_path_buf(),
             folders: folders.iter().map(|f| f.to_path_buf()).collect(),
         };
         self.reconciler
-            .run(&self.store, &target, &never_claimed)
+            .run_at(&self.store, &target, &never_claimed, now)
             .unwrap()
     }
 
     fn sync_roots(&mut self, roots: &[&Path]) -> Changes {
+        self.sync_roots_at(roots, Instant::now())
+    }
+
+    fn sync_roots_at(&mut self, roots: &[&Path], now: Instant) -> Changes {
         let target = Target::Full(roots.iter().map(|r| r.to_path_buf()).collect());
         self.reconciler
-            .run(&self.store, &target, &never_claimed)
+            .run_at(&self.store, &target, &never_claimed, now)
             .unwrap()
+    }
+
+    fn other_versions(&self, id: &str) -> Vec<PathBuf> {
+        self.reconciler.status().note(id).other_versions
     }
 }
 
@@ -1076,14 +1552,23 @@ fn a_targeted_scan_of_a_duplicate_folder_keeps_the_home_folder() {
             fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
         }
     }
-    // The row does not change, but the note now has another version (R15).
-    assert_eq!(a.sync_folders(&root, &[&copy]), changed(&["n1"]));
-    assert_eq!(a.home("n1"), folder);
+    // The row does not change. The other version shows only after the
+    // wait, because a move of the note can give two folders for a short
+    // time (R15).
+    let start = Instant::now();
     assert_eq!(
-        a.reconciler.status().note("n1").other_versions,
-        std::slice::from_ref(&copy)
+        a.sync_folders_at(&root, &[&copy], start),
+        Changes::default()
     );
-    assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
+    assert_eq!(a.home("n1"), folder);
+    assert!(a.other_versions("n1").is_empty());
+    let later = start + OTHER_VERSION_WAIT;
+    assert_eq!(a.sync_folders_at(&root, &[&copy], later), changed(&["n1"]));
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+    assert_eq!(
+        a.sync_folders_at(&root, &[&copy], later),
+        Changes::default()
+    );
 }
 
 // Covers R8 (U6).
@@ -1125,15 +1610,15 @@ fn a_conflict_copy_that_syncs_first_gives_way_to_the_real_folder() {
     a.sync(&root, Instant::now());
     assert_eq!(a.home("n1"), copy);
 
-    // The real folder arrives: A moves to it and lists the copy as another
-    // version.
+    // The real folder arrives: A moves to it, and after the wait lists the
+    // copy as another version.
     fs::rename(&away, &folder).unwrap();
-    a.sync_roots(&[&root]);
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
     assert_eq!(a.home("n1"), folder);
-    assert_eq!(
-        a.reconciler.status().note("n1").other_versions,
-        std::slice::from_ref(&copy)
-    );
+    assert!(a.other_versions("n1").is_empty());
+    a.sync_roots_at(&[&root], start + OTHER_VERSION_WAIT);
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
 }
 
 fn copy_files(from: &Path, to: &Path) {
@@ -1180,17 +1665,159 @@ fn a_conflict_copy_reports_the_note_and_names_the_file() {
     let folder = b.save_note("n1", &root, user_title("Planning"), "");
     a.sync_roots(&[&root]);
 
+    // A conflict copy also shows only after the wait: a sync service can
+    // remove a copy that it made for a short time.
     let copy = folder.join("notes (1).md");
     fs::write(&copy, "Other notes\n").unwrap();
-    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    let start = Instant::now();
     assert_eq!(
-        a.reconciler.status().note("n1").other_versions,
-        std::slice::from_ref(&copy)
+        a.sync_folders_at(&root, &[&folder], start),
+        changed(&["n1"])
     );
+    assert!(a.other_versions("n1").is_empty());
+    let later = start + OTHER_VERSION_WAIT;
+    assert_eq!(
+        a.sync_folders_at(&root, &[&folder], later),
+        changed(&["n1"])
+    );
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
 
     fs::remove_file(&copy).unwrap();
-    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
-    assert!(a.reconciler.status().note("n1").other_versions.is_empty());
+    assert_eq!(a.sync_roots_at(&[&root], later), changed(&["n1"]));
+    assert!(a.other_versions("n1").is_empty());
+}
+
+/// A folder that the scans see in two places for a short time, as during a
+/// move, is never another version.
+#[test]
+fn a_duplicate_folder_that_goes_away_before_the_wait_is_never_reported() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
+
+    let copy = duplicate(&folder, &root, "Planning old");
+    assert_eq!(a.sync_roots_at(&[&root], start), Changes::default());
+    assert!(a.other_versions("n1").is_empty());
+    assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
+
+    fs::remove_dir_all(&copy).unwrap();
+    let almost = start + OTHER_VERSION_WAIT - Duration::from_secs(1);
+    assert_eq!(a.sync_roots_at(&[&root], almost), Changes::default());
+    assert_eq!(a.reconciler.next_due(), None);
+    assert_eq!(
+        a.sync_roots_at(&[&root], start + OTHER_VERSION_WAIT),
+        Changes::default()
+    );
+    assert!(a.other_versions("n1").is_empty());
+}
+
+/// A targeted scan of the home folder does not read the other folder. The
+/// wait of that folder continues, and a later full scan reports it.
+#[test]
+fn a_targeted_scan_of_the_home_folder_keeps_the_wait_of_a_duplicate_folder() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
+    let copy = duplicate(&folder, &root, "Planning old");
+    a.sync_roots_at(&[&root], start);
+
+    let soon = start + Duration::from_secs(30);
+    a.sync_folders_at(&root, &[&folder], soon);
+    assert!(a.other_versions("n1").is_empty());
+
+    let later = start + OTHER_VERSION_WAIT;
+    assert_eq!(a.sync_roots_at(&[&root], later), changed(&["n1"]));
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+    // A targeted scan of the home folder keeps the other version.
+    a.sync_folders_at(&root, &[&folder], later);
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+}
+
+/// A full scan without the Destination of a note drops the wait of its
+/// other version: no scan can read that folder now, so no deadline stays.
+#[test]
+fn a_full_scan_without_the_destination_of_a_waiting_other_version_drops_the_wait() {
+    let (_dir, root) = shared_root();
+    let (_other_dir, other) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root, &other], start);
+    duplicate(&folder, &root, "Planning old");
+    a.sync_roots_at(&[&root, &other], start);
+    assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
+
+    a.sync_roots_at(&[&other], start);
+    assert_eq!(a.reconciler.next_due(), None);
+    a.sync_roots_at(&[&other], start + OTHER_VERSION_WAIT);
+    assert!(a.other_versions("n1").is_empty());
+}
+
+/// A full scan without the Destination of a note drops the wait for the
+/// sync of its documents.
+#[test]
+fn a_full_scan_without_the_destination_of_a_mismatch_drops_the_wait() {
+    let (_dir, root) = shared_root();
+    let (_other_dir, other) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root, &other], start);
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    a.sync_roots_at(&[&root, &other], start);
+    assert_eq!(a.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+
+    a.sync_roots_at(&[&other], start);
+    assert_eq!(a.reconciler.next_due(), None);
+}
+
+/// While this computer renames the folder of a note, a second folder of
+/// the note is not another version. The wait starts when the rename ends.
+#[test]
+fn a_duplicate_folder_during_a_rename_on_this_computer_waits_again_after_it() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
+    let copy = duplicate(&folder, &root, "Planning old");
+    let intent = session_core::RenameIntent {
+        from: folder.to_string_lossy().into_owned(),
+        to: copy.to_string_lossy().into_owned(),
+        temp: None,
+    };
+    a.store
+        .lock()
+        .unwrap()
+        .set_rename_intent("n1", &intent)
+        .unwrap();
+    a.sync_roots_at(&[&root], start);
+    a.sync_roots_at(&[&root], start + OTHER_VERSION_WAIT);
+    assert!(a.other_versions("n1").is_empty());
+
+    a.store.lock().unwrap().clear_rename_intent("n1").unwrap();
+    let ended = start + OTHER_VERSION_WAIT + Duration::from_secs(1);
+    a.sync_roots_at(&[&root], ended);
+    assert!(a.other_versions("n1").is_empty());
+    a.sync_roots_at(&[&root], ended + OTHER_VERSION_WAIT);
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+}
+
+/// A copy of the note folder `folder` at `name` in `root`.
+fn duplicate(folder: &Path, root: &Path, name: &str) -> PathBuf {
+    let copy = root.join(name);
+    fs::create_dir(&copy).unwrap();
+    copy_files(folder, &copy);
+    copy
 }
 
 // Covers AE6, R16 (U7).
@@ -1209,6 +1836,28 @@ fn a_root_that_goes_away_and_comes_back_reports_its_notes() {
     assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
     assert!(status.storage_unavailable("n1", Some(&folder)));
     assert_eq!(a.sync_roots(&[&root]), Changes::default());
+
+    fs::rename(&unmounted, &root).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(!status.storage_unavailable("n1", Some(&folder)));
+}
+
+// KTD4: the status of a note in a type folder follows its storage folder.
+#[test]
+fn a_root_that_goes_away_and_comes_back_reports_its_typed_notes() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Planning"), "");
+    let folder = into_type(&saved, &root, "Pathfinder");
+    a.sync_roots(&[&root]);
+    let status = Arc::clone(a.reconciler.status());
+    assert!(!status.storage_unavailable("n1", Some(&folder)));
+
+    let unmounted = dir.path().join("unmounted");
+    fs::rename(&root, &unmounted).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(status.storage_unavailable("n1", Some(&folder)));
 
     fs::rename(&unmounted, &root).unwrap();
     assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));

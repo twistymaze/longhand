@@ -471,8 +471,16 @@ fn a_note_that_the_move_placed_shows_no_other_version() {
         let moved = assert_moved(&f, "a");
         let copy = f.new.join("Budget copy");
         copy_folder(&moved, &copy);
+        // The other version shows after the scans found it for the wait.
+        let start = std::time::Instant::now();
+        let target = Target::Full(f.roots());
         reconciler
-            .run(&f.store, &Target::Full(f.roots()), &|_| false)
+            .run_at(&f.store, &target, &|_| false, start)
+            .unwrap();
+        assert_eq!(status.note("a").other_versions, Vec::<PathBuf>::new());
+        let later = start + library::status::OTHER_VERSION_WAIT;
+        reconciler
+            .run_at(&f.store, &target, &|_| false, later)
             .unwrap();
         assert_eq!(status.note("a").other_versions, [copy]);
     }
@@ -902,6 +910,125 @@ fn a_name_that_is_taken_in_the_new_folder_gives_a_free_name() {
             std::fs::read_to_string(taken.join("mine.txt")).unwrap(),
             "keep"
         );
+    }
+}
+
+// ---------------------------------------------------------------- type folders (KTD14)
+
+impl Folders {
+    /// [`Folders::save_note`], then move the home folder into the type
+    /// folder `note_type` of the old folder, and record the new home path,
+    /// as the library scan does.
+    fn save_typed_note(&self, id: &str, title: &str, note_type: &str) -> PathBuf {
+        let saved = self.save_note(id, title);
+        let folder = self.old.join(note_type);
+        std::fs::create_dir_all(&folder).unwrap();
+        let typed = folder.join(saved.file_name().unwrap());
+        std::fs::rename(&saved, &typed).unwrap();
+        self.store
+            .lock()
+            .unwrap()
+            .set_home_path(id, &typed.to_string_lossy())
+            .unwrap();
+        typed
+    }
+}
+
+/// The note `id` has one complete copy, in the type folder `note_type` of
+/// the new folder, and the library lists it one time.
+fn assert_moved_typed(f: &Folders, id: &str, note_type: &str) -> PathBuf {
+    let home = f.home(id);
+    let folder = f.new.join(note_type);
+    assert_eq!(home.parent(), Some(folder.as_path()), "{id}");
+    assert_eq!(folders_of(&folder, id), vec![home.clone()], "{id}");
+    assert!(folders_of(&f.old.join(note_type), id).is_empty(), "{id}");
+    assert!(folders_of(&f.new, id).is_empty(), "{id}");
+    for file in ["session.md", "transcript.md", "notes.md"] {
+        assert!(home.join(file).is_file(), "{id}: {file}");
+    }
+    assert_eq!(
+        std::fs::read(home.join("audio/segment-01.opus")).unwrap(),
+        vec![7u8; 50_000]
+    );
+    assert!(!home.join(MARKER).exists(), "{id}");
+    assert!(staging_left(&f.new).is_empty());
+    assert!(staging_left(&folder).is_empty());
+    assert_eq!(f.listed(id), 1, "{id}");
+    home
+}
+
+// Covers R8, R27 (KTD14).
+#[test]
+fn a_note_in_a_type_folder_moves_into_the_same_type_folder() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let typed = f.save_typed_note("a", "Budget", "Pathfinder");
+        f.save_note("b", "Planning");
+        f.open();
+        finish(&mover(&f, &fs));
+        let home = assert_moved_typed(&f, "a", "Pathfinder");
+        assert_eq!(home.file_name(), typed.file_name());
+        assert_moved(&f, "b");
+        assert!(f.store.lock().unwrap().move_journal().unwrap().is_none());
+    }
+}
+
+#[test]
+fn a_name_that_is_taken_in_the_new_type_folder_gives_a_free_name() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        let source = f.save_typed_note("a", "Budget", "Pathfinder");
+        let name = source.file_name().unwrap();
+        let taken = f.new.join("Pathfinder").join(name);
+        std::fs::create_dir_all(&taken).unwrap();
+        std::fs::write(taken.join("mine.txt"), "keep").unwrap();
+        f.open();
+        finish(&mover(&f, &fs));
+        let home = assert_moved_typed(&f, "a", "Pathfinder");
+        assert_eq!(
+            home.file_name().unwrap().to_string_lossy(),
+            format!("{}-2", name.to_string_lossy())
+        );
+        assert_eq!(
+            std::fs::read_to_string(taken.join("mine.txt")).unwrap(),
+            "keep"
+        );
+    }
+}
+
+/// A cross-volume flag, the step before the crash, and its label.
+type LostStep = (bool, fn(&MoveStep) -> bool, &'static str);
+
+#[test]
+fn a_lost_record_after_each_step_of_a_typed_note_gives_one_copy() {
+    let steps: [LostStep; 6] = [
+        (false, is_pending, "the rename"),
+        (false, is_placed, "the home change"),
+        (true, is_pending, "the copy"),
+        (true, is_copied, "the rename into place"),
+        (true, is_placed, "the home change"),
+        (true, is_homed, "the source removal"),
+    ];
+    for (cross, before, label) in steps {
+        let f = folders();
+        let fs = Volumes::of(&f, cross);
+        f.save_typed_note("a", "Budget", "Pathfinder");
+        f.open();
+        let m = mover(&f, &fs);
+        let j = journal(&m);
+        let recorded = drive(&f, &m, &j, "a", &|s| before(s));
+        let after = m.step(&j, "a", &recorded).unwrap();
+        assert_eq!(f.listed("a"), 1, "{label}");
+        let again = m.step(&j, "a", &recorded).unwrap();
+        assert_eq!(again, after, "{label}, cross-volume: {cross}");
+        let Taken::Next(next) = again else {
+            panic!("{label}: {again:?}");
+        };
+        f.store.lock().unwrap().set_move_step("a", &next).unwrap();
+        finish(&m);
+        assert_moved_typed(&f, "a", "Pathfinder");
     }
 }
 

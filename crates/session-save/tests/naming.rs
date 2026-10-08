@@ -96,3 +96,83 @@ fn a_reserved_title_gives_a_safe_name() {
         "2026-09-24 1405 Con planning"
     );
 }
+
+/// Type names (R28, KTD8). A type name becomes a folder name, so the check
+/// refuses each hostile name with a reason.
+mod type_names {
+    use session_save::naming::{MAX_TITLE_CHARS, TypeNameError, check_type_name, same_type_name};
+
+    #[test]
+    fn usual_names_pass() {
+        for name in [
+            "Pathfinder",
+            "One on One",
+            "Customer calls",
+            "Café 2026",
+            "1-1s",
+            // Only "General" is kept for the built-in type.
+            "No type",
+            "General Meetings",
+        ] {
+            assert_eq!(check_type_name(name).as_deref(), Ok(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn spaces_at_the_ends_are_removed() {
+        assert_eq!(
+            check_type_name("  Pathfinder ").as_deref(),
+            Ok("Pathfinder")
+        );
+    }
+
+    #[test]
+    fn unusable_names_are_refused_with_a_reason() {
+        let table: &[(&str, TypeNameError)] = &[
+            ("", TypeNameError::Empty),
+            ("   ", TypeNameError::Empty),
+            ("\t\n", TypeNameError::Empty),
+            ("1:1s", TypeNameError::ForbiddenCharacter(':')),
+            ("a/b", TypeNameError::ForbiddenCharacter('/')),
+            ("a\\b", TypeNameError::ForbiddenCharacter('\\')),
+            ("a|b?", TypeNameError::ForbiddenCharacter('|')),
+            (".", TypeNameError::StartsWithDot),
+            ("..", TypeNameError::StartsWithDot),
+            ("../x", TypeNameError::StartsWithDot),
+            (".hidden", TypeNameError::StartsWithDot),
+            (".longhand", TypeNameError::StartsWithDot),
+            (".LONGHAND", TypeNameError::StartsWithDot),
+            ("Notes.", TypeNameError::EndsWithDot),
+            ("a\u{0}b", TypeNameError::ControlCharacter),
+            ("a\tb", TypeNameError::ControlCharacter),
+            ("con", TypeNameError::Reserved),
+            ("CON", TypeNameError::Reserved),
+            ("com1.txt", TypeNameError::Reserved),
+            ("desktop.ini", TypeNameError::Reserved),
+            ("General", TypeNameError::General),
+            ("general", TypeNameError::General),
+            (" GENERAL ", TypeNameError::General),
+        ];
+        for (name, expected) in table {
+            let refused = check_type_name(name).unwrap_err();
+            assert_eq!(&refused, expected, "{name:?}");
+            assert!(!refused.to_string().is_empty(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_longer_than_the_title_limit_is_refused() {
+        let at_limit = "é".repeat(MAX_TITLE_CHARS);
+        assert_eq!(check_type_name(&at_limit).as_deref(), Ok(at_limit.as_str()));
+        let over = "é".repeat(MAX_TITLE_CHARS + 1);
+        assert_eq!(check_type_name(&over), Err(TypeNameError::TooLong));
+    }
+
+    #[test]
+    fn names_compare_without_regard_to_case() {
+        assert!(same_type_name("pathfinder", "Pathfinder"));
+        assert!(same_type_name(" One on One", "ONE ON ONE "));
+        assert!(same_type_name("Café", "CAFÉ"));
+        assert!(!same_type_name("Pathfinder", "Pathfinders"));
+    }
+}

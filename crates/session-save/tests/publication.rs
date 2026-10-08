@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use session_core::folder::{SessionDoc, fingerprint};
+use session_core::folder::{PendingType, SessionDoc, fingerprint};
 use session_core::recognition::{ARTIFACT_FILE, ARTIFACT_VERSION, ArtifactReference};
 use session_save::publication::{self, Outcome, Publication, WriteSet};
 
@@ -174,6 +174,68 @@ fn a_title_change_between_two_writes_stays() {
     assert_eq!(doc.title.as_deref(), Some("Renamed"));
     assert_eq!(doc.summary_fingerprint, Some(fingerprint(b"new summary")));
     assert_eq!(read(&home, "summary.md"), "new summary");
+}
+
+fn pending_type() -> PendingType {
+    PendingType {
+        to: Some("One on One".into()),
+        from: None,
+        by: "computer-b".into(),
+        at: chrono::DateTime::parse_from_rfc3339("2026-09-27T01:00:00Z").unwrap(),
+    }
+}
+
+/// Covers AE1: computer B writes the user fields into `session.md` while
+/// computer A writes its result files. A's `session.md` keeps them, and
+/// the publication reports no conflict.
+fn user_fields_written_during_the_writes_stay(set: WriteSet) {
+    let (_root, home, local, publication) = fixture(set);
+    publication.record(&local).unwrap();
+    let outcome = publication
+        .publish_with(&home, &local, &mut |name| {
+            if name == "summary.md" {
+                let mut edited = SessionDoc::read(&home).unwrap();
+                edited.tags = vec!["Topic::Security".into()];
+                edited.pending_type = Some(pending_type());
+                std::fs::write(home.join("session.md"), edited.render()).unwrap();
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outcome, Outcome::Committed);
+    let doc = SessionDoc::read(&home).unwrap();
+    assert_eq!(doc.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(doc.pending_type, Some(pending_type()));
+    assert_eq!(doc.summary_fingerprint, Some(fingerprint(b"new summary")));
+}
+
+#[test]
+fn user_fields_written_during_the_result_writes_stay() {
+    user_fields_written_during_the_writes_stay(WriteSet::Result);
+}
+
+#[test]
+fn user_fields_written_during_the_summary_writes_stay() {
+    user_fields_written_during_the_writes_stay(WriteSet::Summary);
+}
+
+#[test]
+fn user_fields_that_another_computer_removed_stay_removed() {
+    let (_root, home, local, _) = fixture(WriteSet::Result);
+    // The staged result was made while the note had a tag and a pending
+    // type. Another computer then removed both.
+    let mut after = result_doc(&local, "Title");
+    after.tags = vec!["follow-up".into()];
+    after.pending_type = Some(pending_type());
+    let publication = Publication::new(&home, after, WriteSet::Result).unwrap();
+    publication.record(&local).unwrap();
+    assert_eq!(
+        publication.publish(&home, &local).unwrap(),
+        Outcome::Committed
+    );
+    let doc = SessionDoc::read(&home).unwrap();
+    assert!(doc.tags.is_empty());
+    assert_eq!(doc.pending_type, None);
 }
 
 #[test]

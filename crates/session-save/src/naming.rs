@@ -65,6 +65,83 @@ pub fn sanitize_title(title: &str) -> Option<String> {
     Some(title)
 }
 
+/// The name of the built-in note type of the notes whose home folder is
+/// directly in the storage folder. No type folder can use it.
+pub const GENERAL: &str = "General";
+
+/// Why a note type name is refused (R28). The text is for the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TypeNameError {
+    #[error("Enter a name.")]
+    Empty,
+    #[error("General is a built-in type.")]
+    General,
+    #[error("A type name cannot start with a dot.")]
+    StartsWithDot,
+    #[error("A type name cannot end with a dot.")]
+    EndsWithDot,
+    #[error("A type name cannot contain control characters.")]
+    ControlCharacter,
+    #[error("A type name cannot contain \"{0}\".")]
+    ForbiddenCharacter(char),
+    #[error("Windows uses this name for its own files.")]
+    Reserved,
+    #[error("A type name can have at most {MAX_TITLE_CHARS} characters.")]
+    TooLong,
+}
+
+/// The note type name with the spaces at its ends removed, or the reason
+/// that it cannot be a type folder name on macOS or on Windows (R28, KTD8).
+/// Every place that accepts a type name uses this check. The caller also
+/// refuses a name that an existing home folder in the storage folder has,
+/// because only the caller knows the storage folder.
+pub fn check_type_name(name: &str) -> Result<String, TypeNameError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(TypeNameError::Empty);
+    }
+    if same_type_name(name, GENERAL) {
+        return Err(TypeNameError::General);
+    }
+    // This also refuses `.`, `..` and `.longhand`.
+    if name.starts_with('.') {
+        return Err(TypeNameError::StartsWithDot);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(TypeNameError::ControlCharacter);
+    }
+    if let Some(c) = name.chars().find(|c| FORBIDDEN.contains(c)) {
+        return Err(TypeNameError::ForbiddenCharacter(c));
+    }
+    // Windows removes a dot at the end of a folder name.
+    if name.ends_with('.') {
+        return Err(TypeNameError::EndsWithDot);
+    }
+    if is_reserved(name) {
+        return Err(TypeNameError::Reserved);
+    }
+    if name.chars().count() > MAX_TITLE_CHARS {
+        return Err(TypeNameError::TooLong);
+    }
+    Ok(name.to_string())
+}
+
+/// Whether two note type names name the same type. The comparison ignores
+/// case and the spaces at the ends, because macOS and Windows find a folder
+/// without regard to case.
+pub fn same_type_name(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// Whether two optional note types are one type. `None` is General.
+pub fn same_optional_type(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => same_type_name(a, b),
+        _ => false,
+    }
+}
+
 /// Whether `name` is a name that some Destination keeps for itself.
 pub fn is_reserved(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name);

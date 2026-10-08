@@ -452,6 +452,15 @@ fn leave_shown(app: &AppHandle, manager: &CaptureManager) {
     }
 }
 
+/// The type of a note that a shortcut starts: the default type (R23). When
+/// the type list cannot be read, the note is in General.
+fn default_type(app: &AppHandle) -> Option<String> {
+    crate::commands::capture::type_of_new_note(app, None).unwrap_or_else(|e| {
+        log::warn!("the shortcut could not read the default type, so the note is in General: {e}");
+        None
+    })
+}
+
 /// Do one press of the recording shortcut (R1a, R1c, R10). A recording
 /// start needs an authorized microphone; without it, a press does nothing.
 async fn toggle(app: AppHandle) {
@@ -493,7 +502,7 @@ async fn toggle(app: AppHandle) {
         }
         ShortcutAction::NewRecordingNote => {
             leave_shown(&app, &manager);
-            match manager.start_session(&app, count) {
+            match manager.start_session(&app, count, default_type(&app).as_deref()) {
                 // The main window comes forward and opens the new note's
                 // page on the recording-changed event (KTD2).
                 Ok(_) => crate::window::show_main_window(&app),
@@ -506,7 +515,7 @@ async fn toggle(app: AppHandle) {
         },
         ShortcutAction::NewNote => {
             leave_shown(&app, &manager);
-            match manager.open_note(&app) {
+            match manager.open_note(&app, default_type(&app).as_deref()) {
                 Ok(session_id) => {
                     crate::window::show_main_window(&app);
                     let _ =

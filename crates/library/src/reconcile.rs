@@ -11,9 +11,13 @@
 //!   not finished (KTD10), keeps its row as it is: this computer moves that
 //!   folder itself.
 //! - A row whose folder is gone from an available Destination gets a
-//!   pending delete. After [`DELETE_WAIT`] with no folder for its id, the
-//!   row is forgotten, if it is Saved, unclaimed and has no rename intent
-//!   (R10). Forget changes no folder.
+//!   pending delete. After [`DELETE_WAIT`] with no folder for its id, a
+//!   full scan forgets the row, if it is Saved, unclaimed and has no rename
+//!   intent (R10). A targeted scan never forgets a row (KTD12 of the note
+//!   types plan). Forget changes no folder.
+//! - The note type of a row is the type folder that holds its home folder
+//!   (KTD1 of the note types plan). Each scan sets it from the path, also
+//!   for a busy row, and writes no file.
 //! - Rows in an unavailable Destination stay as they are (KD7, R16).
 //! - A scan of some Destinations, or of some note folders (the watcher's
 //!   targeted scan, KTD7), changes no pending delete of a row outside them.
@@ -38,9 +42,10 @@ use crate::scan::{self, DocumentState, Known, LibraryScan, NoteFolder, ScanOptio
 use crate::status::LibraryStatus;
 
 /// How long a row stays after its folder is gone from an available
-/// Destination (R10). A sync can deliver a rename as a removed folder and
-/// then a new one (AE4).
-pub const DELETE_WAIT: Duration = Duration::from_secs(30);
+/// Destination (R10). A sync can deliver a rename or a type change as a
+/// removed folder and then a new one (AE4), up to 2 minutes later (R26 and
+/// KTD12 of the note types plan).
+pub const DELETE_WAIT: Duration = Duration::from_secs(120);
 
 /// How long `transcript.md` or `summary.md` can differ from `session.md`,
 /// or be missing, before the note counts as a hand edit (R8, KTD7). A sync
@@ -58,22 +63,41 @@ pub enum Coverage {
 }
 
 impl Coverage {
+    /// Whether the scan read the home folder `home`. A targeted scan of a
+    /// type folder also covers the home folders in it (KTD4).
     pub(crate) fn covers(&self, home: &Path) -> bool {
         match self {
             Coverage::Full => true,
-            Coverage::Folders(folders) => folders.contains(home),
+            Coverage::Folders(folders) => {
+                folders.contains(home) || home.parent().is_some_and(|p| folders.contains(p))
+            }
         }
     }
 
     /// Whether `scan`, with this coverage, read the note folder `folder`.
     pub(crate) fn read(&self, scan: &LibraryScan, folder: &Path) -> bool {
         match self {
-            Coverage::Full => folder
-                .parent()
-                .is_some_and(|root| scan.roots.iter().any(|r| r.root == root)),
+            Coverage::Full => scan::place_in(folder, &scan_roots(scan)).is_some(),
             Coverage::Folders(_) => self.covers(folder),
         }
     }
+
+    /// Whether a wait for the note folder `folder`, which `scan` did not
+    /// find, stays after the scan. A targeted scan keeps the wait of a
+    /// folder that it did not read. A full scan keeps no such wait: it read
+    /// each folder in its Destinations, and a folder in no Destination of
+    /// the scan cannot give a note now.
+    pub(crate) fn keeps_wait(&self, scan: &LibraryScan, folder: &Path) -> bool {
+        match self {
+            Coverage::Full => false,
+            Coverage::Folders(_) => !self.read(scan, folder),
+        }
+    }
+}
+
+/// The Destinations of `scan`.
+fn scan_roots(scan: &LibraryScan) -> Vec<PathBuf> {
+    scan.roots.iter().map(|r| r.root.clone()).collect()
 }
 
 /// The folders that one reconcile reads.
@@ -214,10 +238,11 @@ impl Reconciler {
         self.pending.contains_key(id)
     }
 
-    /// The earliest time at which a pending delete can complete, or at
-    /// which the wait for the sync of a note ends. A reconcile at or after
-    /// this time, with a new scan, forgets that row or reports that note as
-    /// a hand edit (KTD7).
+    /// The earliest time at which a pending delete can complete, at which
+    /// the wait for the sync of a note ends, or at which the status can
+    /// report another version of a note. A reconcile at or after this time,
+    /// with a new scan, forgets that row, reports that note as a hand edit
+    /// (KTD7) or reports the other version.
     pub fn next_due(&self) -> Option<Instant> {
         let deletes = self.pending.values().map(|since| *since + DELETE_WAIT);
         let hand_edits = self
@@ -225,7 +250,10 @@ impl Reconciler {
             .values()
             .filter(|mismatch| !mismatch.expired && mismatch.key.can_expire())
             .map(|mismatch| mismatch.since + HAND_EDIT_WAIT);
-        deletes.chain(hand_edits).min()
+        deletes
+            .chain(hand_edits)
+            .chain(self.status.next_due())
+            .min()
     }
 
     /// Scan `target` without the store lock, then apply the scan to the
@@ -272,11 +300,18 @@ impl Reconciler {
         let rereads = self.read_again(stale);
         let mut store = lock();
         let mut changes = self.apply(&mut store, &result, &coverage, now, claimed, &rereads)?;
-        let moving: HashSet<String> = store.moving_notes()?.into_iter().collect();
+        // A note that this computer moves or renames now can be in two
+        // folders: the other folder is not another version.
+        let moving = moved_here(&store)?;
         let hand_edits = self.track_mismatches(&result, &coverage, now);
-        let noted = self
-            .status
-            .apply(&result, &coverage, &store.sessions()?, &moving, &hand_edits);
+        let noted = self.status.apply(
+            &result,
+            &coverage,
+            &store.sessions()?,
+            &moving,
+            &hand_edits,
+            now,
+        );
         // A file that changed in a note folder can leave the row as it is,
         // for example a new summary.md. The note is reported as changed, so
         // an open note page reads its documents again.
@@ -316,7 +351,7 @@ impl Reconciler {
             .map(|note| note.doc.session_id.as_str())
             .collect();
         self.mismatches.retain(|id, mismatch| {
-            found.contains(id.as_str()) || !coverage.read(scan, &mismatch.folder)
+            found.contains(id.as_str()) || coverage.keeps_wait(scan, &mismatch.folder)
         });
         let mut hand_edits = HashSet::new();
         for note in &scan.notes {
@@ -390,13 +425,14 @@ impl Reconciler {
                 .home_path
                 .as_deref()
                 .is_some_and(|home| Path::new(home) != note.path);
+            let retyped = record.note_type != note.note_type;
             let refreshes = match refresh_scope(&record, claimed) {
                 Some(scope) => {
                     refresh::differs(store, id, &FolderContents::from_scan(note), scope)?
                 }
                 None => false,
             };
-            let changes = moved || refreshes;
+            let changes = moved || retyped || refreshes;
             if !changes {
                 continue;
             }
@@ -474,6 +510,7 @@ impl Reconciler {
                     .filter_map(|problem| problem.known_id.as_deref()),
             )
             .collect();
+        let roots = scan_roots(scan);
         let mut removed = Vec::new();
         for record in records.values() {
             let Some(home) = record.home_path.as_deref().map(Path::new) else {
@@ -483,17 +520,20 @@ impl Reconciler {
                 continue;
             }
             // A scan of some Destinations says nothing about the others.
-            let root = home.parent();
-            if !scan.roots.iter().any(|r| Some(r.root.as_path()) == root) {
+            let Some(place) = scan::place_in(home, &roots) else {
                 continue;
-            }
-            if !root.is_some_and(|root| scan.is_available(root)) {
+            };
+            if !scan.is_available(&place.root) {
                 self.pending.remove(&record.id);
                 continue;
             }
             let since = *self.pending.entry(record.id.clone()).or_insert(now);
             let due = now.saturating_duration_since(since) >= DELETE_WAIT;
+            // Only a full scan that misses the id can forget the row, and
+            // only while the Destination still has its marker (KTD12).
             if due
+                && *coverage == Coverage::Full
+                && scan::marker(&place.root).exists()
                 && !busy(record, claimed(&record.id))
                 && !intents.contains(&record.id)
                 && store.forget(&record.id)?
@@ -614,15 +654,26 @@ fn follow(
         log::info!("library: the folder of {id} is now {}", note.path.display());
         store.set_home_path(id, &note.path.to_string_lossy())?;
     }
+    // The folder decides the type (KTD1, R29). The Destination must still
+    // have its marker at the time of the change.
+    let retyped = record.note_type != note.note_type && scan::marker(&note.root).exists();
+    if retyped {
+        log::info!(
+            "library: the type of {id} is now {}",
+            note.note_type.as_deref().unwrap_or("General")
+        );
+        store.set_note_type(id, note.note_type.as_deref())?;
+    }
+    let changed = moved || retyped;
     let Some(scope) = refresh_scope(record, claimed) else {
-        return Ok(moved);
+        return Ok(changed);
     };
     match refresh::apply_scoped(store, id, contents, scope) {
-        Ok(refreshed) => Ok(moved || refreshed.changed),
+        Ok(refreshed) => Ok(changed || refreshed.changed),
         Err(RefreshError::Store(e)) => Err(e),
         Err(e) => {
             log::warn!("library: cannot refresh {id}: {e}");
-            Ok(moved)
+            Ok(changed)
         }
     }
 }
@@ -648,6 +699,7 @@ fn refresh_scope(record: &SessionRecord, claimed: bool) -> Option<Scope> {
 fn adopt(store: &mut Store, note: &NoteFolder) -> Result<bool, StoreError> {
     let adoption = Adoption {
         removed_audio: note.removed_audio.clone(),
+        note_type: note.note_type.clone(),
         ..Adoption::from_doc(
             &note.doc,
             note.notes.clone().unwrap_or_default(),
@@ -684,10 +736,7 @@ pub fn forget_outside(
         let Some(home) = record.home_path.as_deref().map(Path::new) else {
             continue;
         };
-        if roots
-            .iter()
-            .any(|root| home.parent() == Some(root.as_path()))
-        {
+        if scan::place_in(home, roots).is_some() {
             continue;
         }
         if !busy(&record, claimed(&record.id)) && store.forget(&record.id)? {

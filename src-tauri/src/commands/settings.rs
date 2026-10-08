@@ -21,7 +21,7 @@ use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
     self, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
 };
-use crate::managers::shared::SharedSettingsManager;
+use crate::managers::shared::{NoteTypeList, SharedSettingsManager, StorageFolders};
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -530,6 +530,184 @@ pub fn set_background(
 ) -> Result<Settings, String> {
     shared.set_background(&text)?;
     Ok(settings::get_settings(&app))
+}
+
+/// The type folders and the home folders of the storage folder, from the
+/// store rows that the library scan keeps (KTD4, KTD9). The old folder of a
+/// type rename, merge or delete that is not done is leaving (KTD7). This
+/// reads no folder.
+pub(crate) fn storage_folders(app: &AppHandle) -> Result<StorageFolders, String> {
+    let Some(root) = settings::get_settings(app).storage_folder() else {
+        return Ok(StorageFolders::default());
+    };
+    let Some(capture) = app.try_state::<Arc<CaptureManager>>() else {
+        return Ok(StorageFolders::default());
+    };
+    let store = capture.shared_store();
+    let store = pipeline::lock(&store);
+    let records = store.sessions().map_err(|e| e.to_string())?;
+    drop(store);
+    let mut folders = StorageFolders::from_records(&root, &records);
+    if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+        folders.mark_leaving(processing.leaving_types().iter().map(String::as_str));
+    }
+    Ok(folders)
+}
+
+/// The note types and the default type (R2, R7, R34, KTD9): the shared
+/// list plus each type folder that holds a note. This never writes.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn note_types(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+) -> Result<NoteTypeList, String> {
+    Ok(shared.note_types(&storage_folders(&app)?))
+}
+
+/// Add a note type to the shared list (R3). The name goes through the type
+/// name check (R28), and a name that the list has is refused.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn add_note_type(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    name: String,
+) -> Result<NoteTypeList, String> {
+    let folders = storage_folders(&app)?;
+    shared.add_note_type(&name, &folders)?;
+    settings::emit_settings_changed(&app);
+    Ok(shared.note_types(&folders))
+}
+
+/// Make a note type the default type, or General for `None` (R7, R23).
+#[tauri::command(async)]
+#[specta::specta]
+pub fn set_default_note_type(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    name: Option<String>,
+) -> Result<NoteTypeList, String> {
+    let folders = storage_folders(&app)?;
+    shared.set_default_note_type(name.as_deref(), &folders)?;
+    settings::emit_settings_changed(&app);
+    Ok(shared.note_types(&folders))
+}
+
+/// What a type rename, merge or delete did (R6, R31).
+#[derive(Serialize, Type)]
+pub struct NoteTypeEdit {
+    /// The number of notes that changed their type.
+    pub changed: u32,
+    /// The note types and the default type after the edit.
+    pub list: NoteTypeList,
+}
+
+/// Rename a note type (R6). A new name of another type merges the two
+/// types: the notes go into the folder of that type. The default type
+/// follows the rename. The name goes through the type name check (R28).
+/// The folder of each note moves now, or later when a computer works on
+/// the note.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_note_type(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+    new_name: String,
+) -> Result<NoteTypeEdit, String> {
+    let (shared, processing) = (Arc::clone(&shared), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let folders = storage_folders(&app)?;
+        let changed = processing.rename_note_type(&shared, &folders, &name, &new_name)?;
+        Ok(NoteTypeEdit {
+            changed,
+            list: shared.note_types(&storage_folders(&app)?),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete a note type (R6): its notes get the type General, and their
+/// folders go directly in the storage folder. When it is the default type,
+/// the default becomes General (R7). The surface asks for a confirmation
+/// with the number of notes first (R31).
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_note_type(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+) -> Result<NoteTypeEdit, String> {
+    let (shared, processing) = (Arc::clone(&shared), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let folders = storage_folders(&app)?;
+        let changed = processing.delete_note_type(&shared, &folders, &name)?;
+        Ok(NoteTypeEdit {
+            changed,
+            list: shared.note_types(&storage_folders(&app)?),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What a tag rename or delete did (R13, R31).
+#[derive(Serialize, Type)]
+pub struct TagEdit {
+    /// The number of notes that had the tag.
+    pub changed: u32,
+    /// The tag list after the edit.
+    pub tags: Vec<crate::commands::session::TagEntry>,
+}
+
+/// Rename the tag `name` to `new_name` on every note (R13), also on a note
+/// that another computer records or processes. A new name with the key of
+/// another tag merges the two tags, and a note with both keeps one. A note
+/// whose folder is not available now changes later.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_tag(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+    new_name: String,
+) -> Result<TagEdit, String> {
+    let (store, processing) = (capture.shared_store(), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = processing.rename_tag(&name, &new_name)?;
+        Ok(TagEdit {
+            changed,
+            tags: crate::commands::session::tag_entries(&store)?,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete the tag `name` from every note (R13). The surface asks for a
+/// confirmation with the number of notes first (R31): the count of the tag
+/// in the tag list.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_tag(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+) -> Result<TagEdit, String> {
+    let (store, processing) = (capture.shared_store(), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = processing.delete_tag(&name)?;
+        Ok(TagEdit {
+            changed,
+            tags: crate::commands::session::tag_entries(&store)?,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Pick a folder with the system dialog and return its path. Nothing

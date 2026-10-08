@@ -744,6 +744,10 @@ pub struct ProcessingManager {
     audio_removal: Arc<AudioRemovalManager>,
     /// The early writes of the home folders of new notes (KTD4).
     early_homes: Arc<EarlyHomes>,
+    /// Held by each pass of the bulk edits: the type rename, merge and
+    /// delete edits (KTD7) and the tag rename and delete edits (KTD11), so
+    /// two passes of one edit do not run at the same time.
+    bulk_edits: std::sync::Mutex<()>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -795,6 +799,9 @@ impl ProcessingManager {
                 ) && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
                 {
                     processing.in_use_changed();
+                    // A type move that waited for the work can run now
+                    // (R5).
+                    processing.run_type_moves_soon();
                 }
                 match Sent::from(event) {
                     Sent::Processing(update) => {
@@ -864,6 +871,7 @@ impl ProcessingManager {
             library: std::sync::Mutex::default(),
             library_status,
             mover: MoveWorker::default(),
+            bulk_edits: std::sync::Mutex::default(),
         }
     }
 
@@ -1043,6 +1051,10 @@ impl ProcessingManager {
             if let Err(e) = self.runner.reconcile_folders() {
                 log::error!("launch reconcile of folder names failed: {e}");
             }
+            // The type moves, the type edits and the tag edits that a quit
+            // or a crash stopped continue (KTD5, KTD7, KTD11).
+            let changed = self.run_type_moves();
+            self.emit_changed(changed);
         }
         // After the library scan, so the rows and the removed flags come
         // from the folders. The pass at launch runs only with the instance
@@ -1357,6 +1369,12 @@ impl ProcessingManager {
                 let mut changes = reconciler
                     .run(&store, target, &claimed)
                     .map_err(|e| e.to_string())?;
+                // Each scan tries the type moves that wait (KTD6).
+                if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+                    changes.changed.extend(processing.run_type_moves());
+                    changes.changed.sort();
+                    changes.changed.dedup();
+                }
                 let removed = forget_outside(&app, &store, &claimed);
                 if !removed.is_empty() {
                     changes.changed.retain(|id| !removed.contains(id));
@@ -1515,6 +1533,346 @@ impl ProcessingManager {
         self.runner
             .rename_session(session_id, title)
             .map_err(|e| e.to_string())
+    }
+
+    /// Change the type of a note (R5). The app shows the new type at once;
+    /// see [`Runner::change_note_type`] for the folder. The caller checks
+    /// that `to` is a type of the effective list. This can reach a synced
+    /// folder, so call it off the main thread.
+    pub fn change_note_type(
+        &self,
+        session_id: &str,
+        to: Option<&str>,
+    ) -> Result<pipeline::type_move::TypeChange, String> {
+        let changed = self
+            .runner
+            .change_note_type(session_id, to, &self.own_runs)
+            .map_err(|e| e.to_string())?;
+        emit_library_changed(
+            &self.app,
+            LibraryChanged {
+                changed: vec![session_id.to_string()],
+                removed: Vec::new(),
+            },
+        );
+        Ok(changed)
+    }
+
+    /// Rename the note type `name` to `new_name`, or merge it into the type
+    /// with that name (R6), and change each note of the type (KTD7).
+    /// Returns the number of notes that changed.
+    pub fn rename_note_type(
+        &self,
+        shared: &SharedSettingsManager,
+        folders: &crate::managers::shared::StorageFolders,
+        name: &str,
+        new_name: &str,
+    ) -> Result<u32, String> {
+        self.edit_note_types(|before_save| {
+            shared.rename_note_type(name, new_name, folders, before_save)
+        })
+    }
+
+    /// Delete the note type `name` (R6): each note of the type gets General,
+    /// and its folder goes to the storage folder (KTD7). Returns the number
+    /// of notes that changed.
+    pub fn delete_note_type(
+        &self,
+        shared: &SharedSettingsManager,
+        folders: &crate::managers::shared::StorageFolders,
+        name: &str,
+    ) -> Result<u32, String> {
+        self.edit_note_types(|before_save| {
+            shared
+                .delete_note_type(name, folders, before_save)
+                .map(Some)
+        })
+    }
+
+    /// A type rename, merge or delete (KTD7): record the edit with the
+    /// notes that show the old type, change the shared list with `save`,
+    /// then change each of these notes. The record goes when every note has
+    /// moved or has its pending type. Otherwise each launch and scan
+    /// continues the edit with the notes that are not done.
+    fn edit_note_types(
+        &self,
+        save: impl FnOnce(
+            &dyn Fn(&session_core::BulkEdit) -> Result<(), String>,
+        ) -> Result<Option<session_core::BulkEdit>, String>,
+    ) -> Result<u32, String> {
+        let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let recorded: std::sync::Mutex<Option<(i64, Vec<String>)>> = std::sync::Mutex::default();
+        let record = |edit: &session_core::BulkEdit| {
+            let store = pipeline::lock(&self.store);
+            let mut recorded = recorded.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((id, _)) = recorded.take() {
+                store.remove_bulk_edit(id).map_err(|e| e.to_string())?;
+            }
+            let notes =
+                pipeline::type_move::matching_notes(&store, edit).map_err(|e| e.to_string())?;
+            let id = store
+                .add_bulk_edit(edit, &notes)
+                .map_err(|e| e.to_string())?;
+            *recorded = Some((id, notes));
+            Ok(())
+        };
+        let saved = save(&record);
+        let id = recorded.into_inner().unwrap_or_else(|e| e.into_inner());
+        let edit = match saved {
+            Ok(Some(edit)) => edit,
+            Ok(None) => return Ok(0),
+            Err(e) => {
+                if let Some((id, _)) = id {
+                    self.remove_bulk_edit(id);
+                }
+                return Err(e);
+            }
+        };
+        let Some((id, notes)) = id else {
+            return Err("The change of the note types was not recorded.".into());
+        };
+        pipeline::lock(&self.store)
+            .set_bulk_edit_shared_saved(id)
+            .map_err(|e| e.to_string())?;
+        settings::emit_settings_changed(&self.app);
+        let changed = self.continue_type_edit(id, &edit, &notes);
+        let count = u32::try_from(changed.len()).unwrap_or(u32::MAX);
+        self.emit_changed(changed);
+        Ok(count)
+    }
+
+    /// One pass of the per-note part of the type edit `id` over its
+    /// recorded notes `notes` (KTD7). The record goes when the edit is
+    /// done. Otherwise it keeps the notes that are not done. Returns the
+    /// notes that changed.
+    fn continue_type_edit(
+        &self,
+        id: i64,
+        edit: &session_core::BulkEdit,
+        notes: &[String],
+    ) -> Vec<String> {
+        let Some(root) = self.storage_folder() else {
+            return Vec::new();
+        };
+        match self
+            .runner
+            .apply_type_edit(&root, id, edit, notes, &self.own_runs)
+        {
+            Ok(pass) => {
+                self.save_bulk_pass(id, pass.done, &pass.left);
+                pass.changed
+            }
+            Err(e) => {
+                log::warn!("the type edit {id} continues later: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Add the tags `add` to a note and remove the tags `remove` (R10). This
+    /// works during a recording and during processing. Returns the tags of
+    /// the note. This can reach a synced folder, so call it off the main
+    /// thread.
+    pub fn set_note_tags(
+        &self,
+        session_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<Vec<String>, String> {
+        let tags = self
+            .runner
+            .set_note_tags(session_id, add, remove)
+            .map_err(|e| e.to_string())?;
+        self.emit_changed(vec![session_id.to_string()]);
+        Ok(tags)
+    }
+
+    /// Rename the tag `name` to `new_name` on every note (R13). A new name
+    /// with the key of another tag merges the two tags. Returns the number
+    /// of notes that have the tag (R31).
+    pub fn rename_tag(&self, name: &str, new_name: &str) -> Result<u32, String> {
+        let new_name = pipeline::tags::check_tag(new_name)?;
+        let name = name.trim();
+        if name == new_name {
+            return Ok(0);
+        }
+        self.edit_tags(session_core::BulkEdit::RenameTag {
+            from: name.to_string(),
+            to: new_name,
+        })
+    }
+
+    /// Delete the tag `name` from every note (R13). Returns the number of
+    /// notes that had the tag (R31).
+    pub fn delete_tag(&self, name: &str) -> Result<u32, String> {
+        self.edit_tags(session_core::BulkEdit::DeleteTag {
+            name: name.trim().to_string(),
+        })
+    }
+
+    /// A tag rename or delete (KTD11): record the edit with the notes that
+    /// have the tag, before the first note changes, then change each of
+    /// these notes. The record goes when every note is done. Otherwise each
+    /// launch and scan continues the edit with the notes that are not done.
+    fn edit_tags(&self, edit: session_core::BulkEdit) -> Result<u32, String> {
+        let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let (id, notes) = {
+            let store = pipeline::lock(&self.store);
+            let notes = pipeline::tags::matching_notes(&store, &edit).map_err(|e| e.to_string())?;
+            let id = store
+                .add_bulk_edit(&edit, &notes)
+                .map_err(|e| e.to_string())?;
+            // A tag edit has no shared-settings part.
+            store
+                .set_bulk_edit_shared_saved(id)
+                .map_err(|e| e.to_string())?;
+            (id, notes)
+        };
+        let pass = self.continue_tag_edit(id, &edit, &notes);
+        self.emit_changed(pass.changed);
+        Ok(u32::try_from(pass.matched).unwrap_or(u32::MAX))
+    }
+
+    /// One pass of the tag edit `id` over its recorded notes `notes`
+    /// (KTD11). The record goes when the edit is done. Otherwise it keeps
+    /// the notes that are not done.
+    fn continue_tag_edit(
+        &self,
+        id: i64,
+        edit: &session_core::BulkEdit,
+        notes: &[String],
+    ) -> pipeline::tags::TagPass {
+        match self.runner.apply_tag_edit(edit, notes) {
+            Ok(pass) => {
+                self.save_bulk_pass(id, pass.done, &pass.left);
+                pass
+            }
+            Err(e) => {
+                log::warn!("the tag edit {id} continues later: {e}");
+                pipeline::tags::TagPass::default()
+            }
+        }
+    }
+
+    /// After a pass of the bulk edit `id`: remove its record when the edit
+    /// is `done`, else record that only the notes `left` are not done. A
+    /// failure goes to the log.
+    fn save_bulk_pass(&self, id: i64, done: bool, left: &[String]) {
+        if done {
+            self.remove_bulk_edit(id);
+        } else if let Err(e) = pipeline::lock(&self.store).set_bulk_edit_notes(id, left) {
+            log::error!("could not record the notes of the bulk edit {id}: {e}");
+        }
+    }
+
+    /// Remove the record of the bulk edit `id`. A failure goes to the log.
+    fn remove_bulk_edit(&self, id: i64) {
+        if let Err(e) = pipeline::lock(&self.store).remove_bulk_edit(id) {
+            log::error!("could not remove the bulk edit {id}: {e}");
+        }
+    }
+
+    /// Continue the type and tag edits that are not done (KTD7, KTD11),
+    /// then run the type moves that this computer owes and take over the
+    /// moves that waited for 7 days (KTD5, KTD13). Returns the notes that
+    /// changed. Only with the instance lock held, so no other run moves the
+    /// same folders.
+    pub fn run_type_moves(&self) -> Vec<String> {
+        if !matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
+            return Vec::new();
+        }
+        let mut changed = Vec::new();
+        {
+            let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
+            let open = pipeline::lock(&self.store).bulk_edits();
+            for open in open.unwrap_or_else(|e| {
+                log::error!("could not read the bulk edits: {e}");
+                Vec::new()
+            }) {
+                // A tag edit has no shared-settings part (KTD11).
+                if open.edit.is_tag_edit() {
+                    changed.extend(
+                        self.continue_tag_edit(open.id, &open.edit, &open.notes)
+                            .changed,
+                    );
+                    continue;
+                }
+                if !open.shared_saved {
+                    let Some(shared) = self.app.try_state::<Arc<SharedSettingsManager>>() else {
+                        continue;
+                    };
+                    if let Err(e) = shared.finish_type_edit(&open.edit) {
+                        log::warn!("the type edit {} continues later: {e}", open.id);
+                        continue;
+                    }
+                    settings::emit_settings_changed(&self.app);
+                    let store = pipeline::lock(&self.store);
+                    if let Err(e) = store.set_bulk_edit_shared_saved(open.id) {
+                        log::error!("could not record the type edit {}: {e}", open.id);
+                        continue;
+                    }
+                }
+                changed.extend(self.continue_type_edit(open.id, &open.edit, &open.notes));
+            }
+        }
+        match self.runner.run_type_moves(&self.own_runs) {
+            Ok(moved) => changed.extend(moved),
+            Err(e) => log::error!("could not run the type moves: {e}"),
+        }
+        changed.sort();
+        changed.dedup();
+        changed
+    }
+
+    /// Run the type moves on another thread, for example after the work on
+    /// a note ended, and tell the surface what changed.
+    fn run_type_moves_soon(self: &Arc<Self>) {
+        let manager = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("type-moves".into())
+            .spawn(move || {
+                let changed = manager.run_type_moves();
+                manager.emit_changed(changed);
+            });
+        if let Err(e) = spawned {
+            log::error!("could not start the type moves: {e}");
+        }
+    }
+
+    /// Tell the surface that the notes `changed` changed.
+    fn emit_changed(&self, changed: Vec<String>) {
+        if !changed.is_empty() {
+            emit_library_changed(
+                &self.app,
+                LibraryChanged {
+                    changed,
+                    removed: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// The names of the type folders that a type rename, merge or delete
+    /// of this computer still empties (KTD7). The effective type list does
+    /// not show them.
+    pub fn leaving_types(&self) -> Vec<String> {
+        let store = pipeline::lock(&self.store);
+        store
+            .bulk_edits()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|open| match open.edit {
+                session_core::BulkEdit::RenameType { from, to }
+                    if !session_save::naming::same_type_name(&from, &to) =>
+                {
+                    Some(from)
+                }
+                session_core::BulkEdit::RenameType { .. } => None,
+                session_core::BulkEdit::DeleteType { name } => Some(name),
+                session_core::BulkEdit::RenameTag { .. }
+                | session_core::BulkEdit::DeleteTag { .. } => None,
+            })
+            .collect()
     }
 
     /// Check if Transcribe Again can start on a saved note now, with the

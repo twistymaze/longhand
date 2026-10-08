@@ -2221,6 +2221,33 @@ async fn regenerating_a_stub_with_a_changed_text_under_the_same_id_makes_every_c
     assert!(calls.last().unwrap().0.contains("EDITED-MARKER"));
 }
 
+/// The note details are input to every call, so a change of a detail makes
+/// the part notes of the stub not valid. The change is in `session.md`, and
+/// the regeneration reads it into the row first. The 2,048-token floor has
+/// no room for the rule of the details.
+async fn regenerate_after_a_detail_change(change: impl FnOnce(&mut SessionDoc)) {
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five_at(&r, BACKGROUND_CONTEXT).await;
+    edit_session_md(path.parent().unwrap(), change);
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[5][..80]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_a_tag_change_makes_every_call_again() {
+    regenerate_after_a_detail_change(|doc| doc.tags = vec!["Topic::Security".into()]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_a_change_of_the_pending_type_makes_every_call_again() {
+    regenerate_after_a_detail_change(|doc| doc.pending_type = Some(pending_type())).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn regenerating_a_stub_with_no_saved_prompt_makes_every_call_again() {
     let r = rig().await;
@@ -2666,6 +2693,100 @@ async fn a_resumed_run_with_no_saved_prompt_makes_its_calls_again() {
         !summarize_keys(&r).iter().any(|k| k == "l00-00000"),
         "the old part note is gone"
     );
+}
+
+// ---------------------------------------------------------- the note details
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_is_summarized_with_its_shown_type_its_tags_and_its_user_title() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    {
+        let guard = r.store.lock().unwrap();
+        // The type changes while the note processes: the pending type shows.
+        guard.set_pending_type("s", Some(&pending_type())).unwrap();
+        guard
+            .set_tags("s", &["Person::Nathan".into(), "Budget".into()])
+            .unwrap();
+    }
+    set_title(&r.store, "s", "Budget review");
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, user) in &calls {
+        assert!(
+            system.contains(summarize::prompts::DETAILS_RULE),
+            "{system}"
+        );
+        assert!(
+            user.starts_with(
+                "<session_details>\nType: One on One\nTitle: Budget review\n\
+                 Tag: Person::Nathan\nTag: Budget\n</session_details>\n"
+            ),
+            "{user}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proposed_title_is_not_a_note_detail() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.store
+        .lock()
+        .unwrap()
+        .set_title("s", "A proposed title", session_core::TitleSource::Proposed)
+        .unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(!calls.is_empty());
+    for (system, user) in &calls {
+        assert!(!system.contains("session_details"), "{system}");
+        assert!(!user.contains("session_details"), "{user}");
+        assert!(!user.contains("A proposed title"), "{user}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_sends_the_type_and_the_tags_that_the_note_has_now() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    let folder = saved_session(&r, None).await;
+    let before = chat_messages(&mock).len();
+    // A tag edit writes `session.md`, which the run reads first.
+    edit_session_md(&folder, |doc| doc.tags = vec!["Person::Nathan".into()]);
+    r.store
+        .lock()
+        .unwrap()
+        .set_note_type("s", Some("Pathfinder"))
+        .unwrap();
+    r.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_messages(&mock);
+    assert!(calls.len() > before);
+    for (_, user) in &calls[before..] {
+        assert!(
+            user.starts_with(
+                "<session_details>\nType: Pathfinder\nTag: Person::Nathan\n</session_details>\n"
+            ),
+            "{user}"
+        );
+    }
 }
 
 // -------------------------------------------------------------- saving (U11)
@@ -5500,6 +5621,102 @@ async fn a_save_refused_because_another_computer_changed_session_md_keeps_the_pr
         SessionState::ProcessingFailed { .. }
     ));
     assert!(r.root.join("s").exists());
+}
+
+// ------------------------------------------------------------- user fields (KTD2 of the note types and tags plan)
+
+fn pending_type() -> session_core::folder::PendingType {
+    session_core::folder::PendingType {
+        to: Some("One on One".into()),
+        from: None,
+        by: "computer-b".into(),
+        at: chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap(),
+    }
+}
+
+/// Another computer writes a tag and a pending type into `session.md`.
+fn edit_user_fields(folder: &std::path::Path) {
+    edit_session_md(folder, |doc| {
+        doc.tags = vec!["Topic::Security".into()];
+        doc.pending_type = Some(pending_type());
+    });
+}
+
+fn assert_user_fields(folder: &std::path::Path) {
+    let doc = session_md(folder);
+    assert_eq!(doc.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(doc.pending_type, Some(pending_type()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tag_and_type_edit_during_transcribe_again_keeps_the_new_result_and_the_edit() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let summary = read(&home, "summary.md");
+    confirm_again(&r).unwrap();
+    // Another computer edits the tags and the type while the run waits.
+    edit_user_fields(&home);
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_folder(&r, "s"), home);
+    assert_ne!(read(&home, "summary.md"), summary);
+    assert_fingerprints_match(&home);
+    assert_user_fields(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tag_and_type_edit_during_regenerate_summary_keeps_the_new_summary_and_the_edit() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let before = read(&home, "summary.md");
+    // Another computer edits the tags and the type while the model works.
+    let edited = home.clone();
+    let summary: http::Responder = Arc::new(move |_| {
+        edit_user_fields(&edited);
+        (200, http::completion("A new summary."))
+    });
+    let title = title_reply("Plan");
+    let _mock = summaries_and_titles(&r, summary, &title, None).await;
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert_ne!(read(&home, "summary.md"), before);
+    assert_fingerprints_match(&home);
+    assert_user_fields(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_keeps_the_tags_and_the_pending_type() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    edit_user_fields(&old);
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_user_fields(&new);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_writes_the_tags_and_the_pending_type_of_the_row() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    {
+        let s = r.store.lock().unwrap();
+        s.set_tags("s", &["Topic::Security".to_string()]).unwrap();
+        s.set_pending_type("s", Some(&pending_type())).unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_user_fields(&saved_folder(&r, "s"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

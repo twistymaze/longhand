@@ -1,0 +1,299 @@
+// The labels for a note's type and tags (R14). A tag with a scope ("Person
+// :: Nathan") shows in two parts: the scope, then the value. A tag with no
+// scope shows in one neutral part. Each scope in the library has its own
+// colour on every screen. The colour is the fill of the value part, under
+// white or near-black text. A tint of the colour is the fill of the scope
+// part, under a deep or pale shade of the colour. So the two parts read as
+// one label, and the value is the stronger part. A type label is neutral:
+// a flat grey fill and a folder symbol, because the type is the
+// note's folder. The labels do not move or change by themselves, so they
+// keep the attention budget of the recording page (R17).
+
+import { createContext, type CSSProperties, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { commands, type NoteTypeEntry } from "../bindings";
+import { useReloadOn } from "./useReloadOn";
+
+/// The text of a tag in its parts. The scope is the text before the first
+/// `::`. A tag with an empty scope or an empty value has no scope.
+export function tagParts(text: string): { scope: string | null; value: string } {
+  const trimmed = text.trim();
+  const at = trimmed.indexOf("::");
+  if (at >= 0) {
+    const scope = trimmed.slice(0, at).trim();
+    const value = trimmed.slice(at + 2).trim();
+    if (scope && value) return { scope, value };
+  }
+  return { scope: null, value: trimmed };
+}
+
+/// The key that matches two tags (R30, KTD10): the trimmed text, with no
+/// spaces around `::`, in lower case.
+/// This must match `session_core::tags::tag_key`.
+export function tagKey(text: string): string {
+  return text.trim().replace(/\s*::\s*/g, "::").toLowerCase();
+}
+
+/// Type names compare without regard to case (KTD8).
+export const sameType = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+/// The name of the built-in type General: the notes at the top of the
+/// storage folder. A note of General has the type `null`.
+export const GENERAL = "General";
+
+/// The type list with General first. The list from `note_types` has
+/// General; a list that is not read yet does not.
+export function withGeneral(types: NoteTypeEntry[]): NoteTypeEntry[] {
+  if (types.some((t) => t.general)) return types;
+  return [{ name: GENERAL, valid: true, shared: false, notes: 0, general: true }, ...types];
+}
+
+/// The text that VoiceOver reads for a tag, such as "Person: Nathan".
+export function tagName(text: string): string {
+  const { scope, value } = tagParts(text);
+  return scope ? `${scope}: ${value}` : value;
+}
+
+/// The text that VoiceOver reads for a note type, such as "Type: 1:1".
+export function typeName(name: string): string {
+  return `Type: ${name}`;
+}
+
+/// The fill of the value part, the colour of its text, and the colour of
+/// the scope text on the tint, for light and dark.
+export type ScopeTone = {
+  light: string;
+  lightText: string;
+  lightScopeText: string;
+  dark: string;
+  darkText: string;
+  darkScopeText: string;
+};
+
+/// The text colours on a scope fill. Text on a fill is never a colour.
+export const WHITE_TEXT = "#ffffff";
+export const DARK_TEXT = "#1d1b18";
+
+/// The percentage of the scope colour in the tint of the scope part, over
+/// the surface under the label. Dark has more, because a dark surface
+/// makes a tint weaker.
+export const SCOPE_TINT_LIGHT = 20;
+export const SCOPE_TINT_DARK = 30;
+
+/// The scope colours, for light and dark. Each colour is the fill of the
+/// value part, and a tint of it is the fill of the scope part.
+///
+/// The fills start from the macOS system colours, with about 18% less
+/// saturation, so that a row with many labels is calm. Each fill has white
+/// or near-black text, the one that suits the fill. The fill is then
+/// moved away from mid-lightness, with the same hue and saturation, so
+/// that the text is easy to read: a fill with white text is darker, until
+/// the text meets 6:1, and a fill with near-black text is lighter, until
+/// the text meets 8:1.
+///
+/// The scope text is the fill mixed with black (light) or white (dark),
+/// until it meets 5.5:1 on the tint over each surface: the window, a group,
+/// the Home list and the sidebar, also under the row hover. The minimum is
+/// 4.5:1. So the scope text has the hue of the fill.
+///
+/// Yellow and brown are not in the set: yellow is too near to orange, and
+/// brown is not a clear colour. Two colours that are next to each other in
+/// the list have very different hues, because a scope whose colour is in
+/// use gets the next free colour.
+export const scopeTones: ScopeTone[] = [
+  { light: "#c4131a", lightText: WHITE_TEXT, lightScopeText: "#7d0c11", dark: "#c01f22", darkText: WHITE_TEXT, darkScopeText: "#eab5b6" }, // red
+  { light: "#066c7e", lightText: WHITE_TEXT, lightScopeText: "#044753", dark: "#036c7d", darkText: WHITE_TEXT, darkScopeText: "#a9cdd3" }, // teal
+  { light: "#f69e2d", lightText: DARK_TEXT, lightScopeText: "#674213", dark: "#f0a12c", darkText: DARK_TEXT, darkScopeText: "#fceed9" }, // orange
+  { light: "#015fc5", lightText: WHITE_TEXT, lightScopeText: "#013e80", dark: "#0061bf", darkText: WHITE_TEXT, darkScopeText: "#a8c9e9" }, // blue
+  { light: "#52c96e", lightText: DARK_TEXT, lightScopeText: "#22542e", dark: "#46ca65", darkText: DARK_TEXT, darkScopeText: "#dcf5e2" }, // green
+  { light: "#c50044", lightText: WHITE_TEXT, lightScopeText: "#7c002b", dark: "#c40548", darkText: WHITE_TEXT, darkScopeText: "#ecadc3" }, // pink
+  { light: "#5abded", lightText: DARK_TEXT, lightScopeText: "#264f64", dark: "#72ccf1", darkText: DARK_TEXT, darkScopeText: "#c4eaf9" }, // cyan
+  { light: "#8d3eb2", lightText: WHITE_TEXT, lightScopeText: "#5d2975", dark: "#8f3ab6", darkText: WHITE_TEXT, darkScopeText: "#dabee7" }, // purple
+  { light: "#33c5be", lightText: DARK_TEXT, lightScopeText: "#155350", dark: "#6fdad7", darkText: DARK_TEXT, darkScopeText: "#c4f0ef" }, // mint
+  { light: "#5855bc", lightText: WHITE_TEXT, lightScopeText: "#3a387c", dark: "#5853c3", darkText: WHITE_TEXT, darkScopeText: "#c6c5eb" }, // indigo
+];
+
+/// The position of the hash colour of a scope key in `scopeTones`. A 32-bit
+/// FNV-1a hash of the key chooses it, so the result is the same on every
+/// computer.
+function hashIndex(key: string): number {
+  let hash = 0x811c9dc5;
+  for (const char of key) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % scopeTones.length;
+}
+
+/// The hash colour of a scope. Two scopes can have the same hash colour.
+/// `TagLabel` uses it for a scope that is not in the library list yet, and
+/// when no `ScopeTonesProvider` is above it.
+export function scopeTone(scope: string): ScopeTone {
+  return scopeTones[hashIndex(tagKey(scope))];
+}
+
+/// The colours of the scopes in the library, by scope key. The function
+/// sorts the keys. In that order, each scope gets its hash colour when no
+/// other scope has it. Then each scope that did not get a colour gets the
+/// next free colour after its hash colour, in the order of `scopeTones`.
+/// Two scopes have the same colour only when there are more scopes than
+/// colours. The same scopes, in any order, give the same colours.
+export function assignScopeTones(scopes: Iterable<string>): Map<string, ScopeTone> {
+  const keys = [...new Set([...scopes].map(tagKey))].sort();
+  const used = new Set<number>();
+  const result = new Map<string, ScopeTone>();
+  const waiting: string[] = [];
+  for (const key of keys) {
+    const index = hashIndex(key);
+    if (used.has(index)) {
+      waiting.push(key);
+    } else {
+      used.add(index);
+      result.set(key, scopeTones[index]);
+    }
+  }
+  for (const key of waiting) {
+    // All colours are in use: a new round starts, and colours repeat.
+    if (used.size === scopeTones.length) used.clear();
+    let index = hashIndex(key);
+    while (used.has(index)) index = (index + 1) % scopeTones.length;
+    used.add(index);
+    result.set(key, scopeTones[index]);
+  }
+  return result;
+}
+
+const ScopeTonesContext = createContext<Map<string, ScopeTone> | null>(null);
+
+const ignore = () => {};
+
+/// Gives the library scope colours to each `TagLabel` in the window. It
+/// reads the tag list once, and again at each library change, because a
+/// tag edit can add or remove a scope.
+export function ScopeTonesProvider({ children }: { children: ReactNode }) {
+  const [tones, setTones] = useState<Map<string, ScopeTone>>(() => new Map());
+  // Reads can end out of order. Each read takes a number, and only the
+  // newest read changes the colours.
+  const request = useRef(0);
+  const read = useCallback(async () => {
+    const current = ++request.current;
+    try {
+      const result = await commands.listTags();
+      if (current !== request.current || result.status !== "ok") return;
+      const scopes = result.data.flatMap((t) => tagParts(t.text).scope ?? []);
+      setTones(assignScopeTones(scopes));
+    } catch {
+      // The colours stay as they are. The next library change reads again.
+    }
+  }, []);
+  useEffect(() => {
+    void read();
+  }, [read]);
+  useReloadOn(ignore, read);
+  return <ScopeTonesContext.Provider value={tones}>{children}</ScopeTonesContext.Provider>;
+}
+
+/// The colour of a scope: the library colour, or the hash colour when the
+/// library list does not have the scope.
+function useScopeTone(scope: string | null): ScopeTone | null {
+  const tones = useContext(ScopeTonesContext);
+  if (scope === null) return null;
+  return tones?.get(tagKey(scope)) ?? scopeTone(scope);
+}
+
+// About 11.4 px text in a 20 px label. The remove control is 16 px.
+const labelText = "text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap";
+const part = "px-[6px] py-[2px]";
+
+function RemoveButton({ name, onRemove, onFill = false }: { name: string; onRemove: () => void; onFill?: boolean }) {
+  // On a scope fill, the control has the full text colour, and the pressed
+  // state and the focus ring use the text colour, so they show on every
+  // fill.
+  const hover = onFill
+    ? "hover:bg-[color-mix(in_srgb,currentColor_22%,transparent)] focus-visible:outline-current"
+    : "opacity-70 hover:bg-fill-pressed focus-visible:outline-accent";
+  return (
+    <button
+      type="button"
+      aria-label={`Remove ${name}`}
+      onClick={onRemove}
+      className={`flex size-[16px] shrink-0 items-center justify-center rounded-[4px] text-current ${hover} hover:opacity-100 outline-offset-0 focus-visible:opacity-100 focus-visible:outline-2`}
+    >
+      <svg aria-hidden viewBox="0 0 8 8" className="size-[8px]" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <path d="M1.5 1.5l5 5M6.5 1.5l-5 5" strokeLinecap="round" />
+      </svg>
+    </button>
+  );
+}
+
+/// A tag label. With `onRemove`, the label ends with a control that removes
+/// the tag.
+export function TagLabel({ text, onRemove }: { text: string; onRemove?: () => void }) {
+  const { scope, value } = tagParts(text);
+  const tone = useScopeTone(scope);
+  const name = tagName(text);
+  if (!scope || !tone) {
+    const remove = onRemove && <RemoveButton name={name} onRemove={onRemove} />;
+    return (
+      <span
+        data-label="tag"
+        className={`inline-flex max-w-full items-center rounded-[5px] bg-fill text-label-secondary ${labelText}`}
+      >
+        <span className={`min-w-0 truncate ${part} ${remove ? "pr-[2px]" : ""}`}>{value}</span>
+        {remove && <span className="flex items-center pr-[2px]">{remove}</span>}
+      </span>
+    );
+  }
+  // The scope colour is the fill of the value part and the remove control.
+  // The text on it is white or near-black, as the tone gives.
+  const remove = onRemove && <RemoveButton name={name} onRemove={onRemove} onFill />;
+  const filled =
+    "bg-[var(--scope-light)] text-[color:var(--scope-text-light)] dark:bg-[var(--scope-dark)] dark:text-[color:var(--scope-text-dark)]";
+  // The tint lets the surface show through, so it matches the row under it.
+  // The class names must be literal for Tailwind: they use SCOPE_TINT_LIGHT
+  // and SCOPE_TINT_DARK.
+  const tinted =
+    "bg-[color-mix(in_srgb,var(--scope-light)_20%,transparent)] text-[color:var(--scope-tint-text-light)] dark:bg-[color-mix(in_srgb,var(--scope-dark)_30%,transparent)] dark:text-[color:var(--scope-tint-text-dark)]";
+  return (
+    <span
+      data-label="tag"
+      style={
+        {
+          "--scope-light": tone.light,
+          "--scope-text-light": tone.lightText,
+          "--scope-tint-text-light": tone.lightScopeText,
+          "--scope-dark": tone.dark,
+          "--scope-text-dark": tone.darkText,
+          "--scope-tint-text-dark": tone.darkScopeText,
+        } as CSSProperties
+      }
+      className={`inline-flex max-w-full items-stretch overflow-hidden rounded-[5px] ${labelText}`}
+    >
+      <span className="sr-only">{name}</span>
+      <span aria-hidden className="inline-flex min-w-0">
+        <span data-scope className={`shrink-0 ${tinted} ${part}`}>
+          {scope}
+        </span>
+        <span data-value className={`min-w-0 truncate ${filled} ${part} ${remove ? "pr-[2px]" : ""}`}>
+          {value}
+        </span>
+      </span>
+      {remove && <span className={`flex items-center pr-[2px] ${filled}`}>{remove}</span>}
+    </span>
+  );
+}
+
+/// A note type label: a flat grey fill, a folder symbol and the type name.
+export function TypeLabel({ name }: { name: string }) {
+  return (
+    <span
+      data-label="type"
+      className={`inline-flex max-w-full items-center gap-[4px] rounded-[5px] ${part} bg-fill-pressed text-label ${labelText}`}
+    >
+      <span className="sr-only">Type: </span>
+      <svg aria-hidden viewBox="0 0 12 10" className="h-[9px] w-[11px] shrink-0" fill="none" stroke="currentColor" strokeWidth="1.2">
+        <path d="M1 2.2c0-.6.4-1 1-1h2.4l1 1.2H10c.6 0 1 .4 1 1v4.4c0 .6-.4 1-1 1H2c-.6 0-1-.4-1-1z" strokeLinejoin="round" />
+      </svg>
+      <span className="min-w-0 truncate">{name}</span>
+    </span>
+  );
+}
