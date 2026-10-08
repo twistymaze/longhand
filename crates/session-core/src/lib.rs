@@ -10,6 +10,7 @@ pub mod lock;
 pub mod recognition;
 pub mod schema;
 pub mod state;
+pub mod tags;
 pub mod timeline;
 
 pub use folder::SpeakerCount;
