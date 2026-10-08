@@ -4,8 +4,8 @@
 // colour on every screen. The colour is the fill of the value part, under
 // white or near-black text. A tint of the colour is the fill of the scope
 // part, under a deep or pale shade of the colour. So the two parts read as
-// one label, and the value is the stronger part. A
-// type label has an outline and a folder symbol, because the type is the
+// one label, and the value is the stronger part. A type label is neutral:
+// a grey fill, an outline and a folder symbol, because the type is the
 // note's folder. The labels do not move or change by themselves, so they
 // keep the attention budget of the recording page (R17).
 
@@ -279,12 +279,13 @@ export function TagLabel({ text, onRemove }: { text: string; onRemove?: () => vo
   );
 }
 
-/// A note type label: an outline, a folder symbol and the type name.
+/// A note type label: a grey fill, an outline, a folder symbol and the type
+/// name.
 export function TypeLabel({ name }: { name: string }) {
   return (
     <span
       data-label="type"
-      className={`inline-flex max-w-full items-center gap-[4px] rounded-[5px] ${part} text-label-secondary shadow-[inset_0_0_0_1px_var(--control-border)] ${labelText}`}
+      className={`inline-flex max-w-full items-center gap-[4px] rounded-[5px] ${part} bg-fill-pressed text-label shadow-[inset_0_0_0_1px_var(--control-border)] ${labelText}`}
     >
       <span className="sr-only">Type: </span>
       <svg aria-hidden viewBox="0 0 12 10" className="h-[9px] w-[11px] shrink-0" fill="none" stroke="currentColor" strokeWidth="1.2">
