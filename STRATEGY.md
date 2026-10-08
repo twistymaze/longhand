@@ -11,7 +11,7 @@ Sometimes you're in a meeting or a group situation where you want to engage in t
 
 ## Positioning
 
-The transcript is the system of record, so the notes can stay lazy: a scratchpad with basic markdown editor tooling, combined with a solid local transcript that supplies the details you didn't type. The store stays on your machine — inference is a swappable endpoint you point at something you trust, and local ASR is the default because local models are good enough and cloud ASR isn't worth the bandwidth or cost, not because audio may never leave. Complexity is allowed; it lives outside the app, reached through your vault or the plain files in the storage folder rather than built into the UI.
+The transcript is the system of record, so the notes can stay lazy: a scratchpad with basic markdown editor tooling, combined with a solid local transcript that supplies the details you didn't type. The store stays on your machine — inference is a swappable endpoint you point at something you trust, and local ASR is the default because local models are good enough and cloud ASR isn't worth the bandwidth or cost, not because audio may never leave. Complexity is allowed; it lives outside the app, reached through your vault or the plain files in the storage folder rather than built into the UI. The one exception is a small amount of organization: note types and tags, kept in those same plain files.
 
 ## Users
 
@@ -24,7 +24,7 @@ The transcript is the system of record, so the notes can stay lazy: a scratchpad
 - **No provider is forced on you.** The system of record — audio, transcripts, and notes — is held on your machine, and no feature depends on a third party holding it. Which providers see your data is your choice, made per stage and visible in the app: local by default, pointable at an endpoint you trust. A cloud recognition or summarization option is consistent with this boundary; a default that quietly ships your data somewhere is not.
 - **No calendar integration.** Not auto-start, not prefill. Calendar access inside an enterprise is complicated; revisit only if a genuinely simple path appears.
 - **No speaker identity.** Diarization marks that the speaker changed so an LLM can follow the turn-taking. No voiceprints, no enrollment, no names.
-- **No note-organization scheme.** Folders, and that's it. No inter-note linking, no graph, no tag system — Obsidian already exists and Longhand hands off to it.
+- **Organization stays small.** A note has one note type, which is also its folder on disk, and any number of tags. The app can apply, create, show, rename, delete and filter them, and nothing more. No inter-note linking, no graph, no tag pages or other views across notes — Obsidian already exists and Longhand hands off to it.
 - **Nothing writes into Longhand.** The only inputs are what you record and what you type. A recording you made on another device counts as what you record. The plain files in the storage folder move data out to your agents and notes, for example through a storage folder inside an Obsidian vault; no integration pulls outside context in.
 - **No distribution machinery until someone asks.** Cross-platform correctness from day one; installers and update paths only when a real person wants one.
 - **No time limits.** A four-hour session is a supported case, not an edge case.
@@ -62,4 +62,4 @@ _Why it serves the approach:_ Engaging in the conversation is the whole point, s
 
 Finding the note from three weeks ago, plus getting data out — plain files in the storage folder that an agent or an Obsidian vault can read directly.
 
-_Why it serves the approach:_ This is the escape hatch that lets the app stay simple: complicated things happen outside, on your data.
+_Why it serves the approach:_ This is the escape hatch that lets the app stay simple: complicated things happen outside, on your data. Note types and tags help you find a group of notes in the app and on disk; anything beyond that happens in your vault.
