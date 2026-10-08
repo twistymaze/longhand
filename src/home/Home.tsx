@@ -246,7 +246,7 @@ export function Home({
   const showFilter = listed.length > 0 || isFiltered(filter);
   const clearFilter = () => {
     setFilter(noFilter);
-    // The Clear Filter button goes. The chosen row takes the focus.
+    // The Clear Filters button goes. The chosen row takes the focus.
     requestAnimationFrame(() =>
       list.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]')?.focus(),
     );
@@ -362,7 +362,7 @@ export function Home({
                   No notes match the filter.
                 </p>
                 <div className="mt-3">
-                  <Button onClick={clearFilter}>Clear Filter</Button>
+                  <Button onClick={clearFilter}>Clear Filters</Button>
                 </div>
               </div>
             )}

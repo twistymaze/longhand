@@ -4,7 +4,7 @@
 // than General (R1, R2). When the segments do not fit, one menu replaces the
 // control. The Tags menu adds a tag to the filter. It shows only when a note
 // has a tag (R5). Each chosen tag shows as a label with a control that
-// removes it. While a filter is set, "Clear Filter" shows at the end of the
+// removes it. While a filter is set, "Clear Filters" shows at the end of the
 // bar (R12). The bar changes at once, with no motion: it is used many times
 // a day.
 
@@ -73,7 +73,7 @@ export function FilterBar({
 
   // A copy of the control that is not shown gives its full width. The
   // control shows when that width fits beside the Tags button and the
-  // Clear Filter button. The room for Clear Filter is always kept, so the
+  // Clear Filters button. The room for Clear Filters is always kept, so the
   // control does not change when a filter is set.
   useLayoutEffect(() => {
     const el = bar.current;
@@ -132,7 +132,7 @@ export function FilterBar({
         {showTags && <TagFilterMenu ref={tagsButton} tags={tags} chosen={filter.tags} onToggle={toggleTag} />}
         {filtered && (
           <button type="button" onClick={onClear} className={`ml-auto ${clearClass}`}>
-            Clear Filter
+            Clear Filters
           </button>
         )}
         {showTypes && types.length <= MAX_SEGMENT_TYPES && (
@@ -142,7 +142,7 @@ export function FilterBar({
               <SegmentedControl kind="radio" label="" items={segments} value={value} onChange={() => {}} />
             </div>
             <button ref={clearCopy} type="button" tabIndex={-1} className={clearClass}>
-              Clear Filter
+              Clear Filters
             </button>
           </div>
         )}
@@ -168,7 +168,7 @@ export function FilterBar({
   );
 }
 
-/// The look of Clear Filter: a plain text button with the accent colour,
+/// The look of Clear Filters: a plain text button with the accent colour,
 /// like a link in a macOS filter bar.
 const clearClass =
   "shrink-0 rounded-[6px] px-2 py-[3px] text-accent hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent";
