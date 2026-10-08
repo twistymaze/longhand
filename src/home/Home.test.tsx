@@ -1238,7 +1238,8 @@ describe("Home: filter by type and tags", () => {
   type User = ReturnType<typeof userEvent.setup>;
   const chooseType = async (user: User, name: string) => user.click(await screen.findByRole("radio", { name }));
   const addTag = async (user: User, text: string) => {
-    await user.click(screen.getByRole("button", { name: "Tags" }));
+    // The Tags button shows after the tag list is read (R5).
+    await user.click(await screen.findByRole("button", { name: "Tags" }));
     await user.click(await screen.findByRole("menuitemcheckbox", { name: text }));
   };
 
@@ -1273,22 +1274,77 @@ describe("Home: filter by type and tags", () => {
     expect(titles()).toEqual(["Standup"]);
   });
 
-  test("with no note in General, General is not a choice", async () => {
+  // R2: General is a choice when types are in use, also with no note in it.
+  test("with no note in General, General is still a choice", async () => {
     setup({ entries: notes.filter((n) => n.note_type !== null) });
     await screen.findByRole("radio", { name: "Pathfinder" });
-    expect(screen.queryByRole("radio", { name: "General" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "General" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "All" })).toBeTruthy();
   });
 
-  test("a chosen General drops out of the filter when no note is in General any more", async () => {
-    const { view, props } = setup();
+  // R3: the type filter goes when the last other type goes, and so does its choice.
+  test("a chosen General drops out of the filter when no other type is left", async () => {
+    const { tauri, state } = setup();
     await chooseType(userEvent.setup(), "General");
     expect(titles()).toEqual(["Standup"]);
-    const typed = notes.map((n) => (n.note_type === null ? { ...n, note_type: "Pathfinder" } : n));
-    view.rerender(<Home {...props} entries={typed} />);
-    await waitFor(() => expect(screen.queryByRole("radio", { name: "General" })).toBeNull());
-    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    state.types = typeList();
+    await act(() => tauri.emit("settings-changed", { settings: {} }));
+    await waitFor(() => expect(screen.queryByRole("radiogroup", { name: "Note Type" })).toBeNull());
     expect(titles()).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: "Clear Filter" })).toBeNull();
+  });
+
+  // AE1, R1, R5.
+  test("with only General and no tags, Home shows no filter bar", async () => {
+    const { tauri } = setup({ types: typeList(), tags: [], entries: [entry("d", { title: "Standup" })] });
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "list_tags")).toBe(true));
+    await act(() => Promise.resolve());
+    expect(screen.queryByRole("radiogroup", { name: "Note Type" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Note Type/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Tags" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Filter" })).toBeNull();
+  });
+
+  // AE2, R1, R2.
+  test("a type made in Settings shows the type filter with All, General and the type", async () => {
+    const { tauri, state } = setup({ types: typeList(), tags: [], entries: [entry("d", { title: "Standup" })] });
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "note_types")).toBe(true));
+    state.types = { ...typeList("Pathfinder"), types: typeList("Pathfinder").types.map((t) => ({ ...t, notes: t.general ? 1 : 0 })) };
+    await act(() => tauri.emit("settings-changed", { settings: {} }));
+    await screen.findByRole("radio", { name: "Pathfinder" });
+    expect(screen.getAllByRole("radio").map((r) => r.textContent)).toEqual(["All", "General", "Pathfinder"]);
+    expect(screen.queryByRole("button", { name: "Tags" })).toBeNull();
+  });
+
+  // AE4, R3, R5.
+  test("when the last tag goes, the Tags menu and the chosen tag go", async () => {
+    const { tauri, state } = setup({
+      tags: tagList("follow-up"),
+      entries: [entry("a", { title: "Planning", note_type: "Pathfinder", tags: ["follow-up"] }), entry("d", { title: "Standup" })],
+    });
+    await addTag(userEvent.setup(), "follow-up");
+    expect(titles()).toEqual(["Planning"]);
+    state.tags = [];
+    await act(() => tauri.emit("library-changed", { changed: [], removed: [] }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Tags" })).toBeNull());
+    expect(screen.queryByRole("list", { name: "Chosen tags" })).toBeNull();
+    expect(titles()).toHaveLength(2);
+  });
+
+  // AE7, R12.
+  test("Clear Filter in the filter bar shows every note and goes away", async () => {
+    setup();
+    const user = userEvent.setup();
+    const bar = await screen.findByRole("group", { name: "Filter" });
+    expect(within(bar).queryByRole("button", { name: "Clear Filter" })).toBeNull();
+    await chooseType(user, "One on One");
+    await addTag(user, "Person::Nathan");
+    expect(titles()).toEqual(["1:1 with Nathan"]);
+    await user.click(within(bar).getByRole("button", { name: "Clear Filter" }));
+    expect(titles()).toHaveLength(4);
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("list", { name: "Chosen tags" })).toBeNull();
+    expect(within(bar).queryByRole("button", { name: "Clear Filter" })).toBeNull();
   });
 
   // AE5, R21.
@@ -1312,7 +1368,11 @@ describe("Home: filter by type and tags", () => {
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByText("No notes match the filter.")).toBeTruthy();
     expect(screen.queryByText("No notes yet")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Clear Filter" }));
+    // The filter bar has its own Clear Filter button too (R12).
+    const bar = screen.getByRole("group", { name: "Filter" });
+    expect(within(bar).getByRole("button", { name: "Clear Filter" })).toBeTruthy();
+    const empty = screen.getByText("No notes match the filter.").parentElement as HTMLElement;
+    await user.click(within(empty).getByRole("button", { name: "Clear Filter" }));
     expect(titles()).toHaveLength(4);
     expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
   });

@@ -1,9 +1,12 @@
-// The filter bar under the "Notes" heading (R19). A segmented control
-// chooses "All", "General" or one other note type. "General" shows only
-// when a listed note is in General. When the segments do not fit, one menu
-// replaces the control. The Tags menu adds a tag to the filter, and
-// each chosen tag shows as a label with a control that removes it. The bar
-// changes at once, with no motion: it is used many times a day.
+// The filter bar under the "Notes" heading (R19). Each control shows only
+// when it gives information. A segmented control chooses "All", "General"
+// or one other note type. It shows only when the type list has a type other
+// than General (R1, R2). When the segments do not fit, one menu replaces the
+// control. The Tags menu adds a tag to the filter. It shows only when a note
+// has a tag (R5). Each chosen tag shows as a label with a control that
+// removes it. While a filter is set, "Clear Filter" shows at the end of the
+// bar (R12). The bar changes at once, with no motion: it is used many times
+// a day.
 
 import { type ReactNode, type Ref, type RefObject, useLayoutEffect, useRef, useState } from "react";
 import type { NoteTypeEntry, TagEntry } from "../bindings";
@@ -11,7 +14,7 @@ import { GENERAL, TagLabel } from "../lib/Labels";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
 import { Menu, type MenuEntry } from "../session/SessionMenu";
 import { ChevronIcon } from "../settings/icons";
-import type { NoteFilter, TypeChoice } from "./filter";
+import { isFiltered, type NoteFilter, type TypeChoice, typesInUse } from "./filter";
 
 /// With more types than this, the type choice is always one menu.
 export const MAX_SEGMENT_TYPES = 6;
@@ -33,43 +36,51 @@ const choiceOf = (value: string): TypeChoice =>
 export function FilterBar({
   filter,
   types: allTypes,
-  general,
   tags,
   onChange,
+  onClear,
 }: {
   filter: NoteFilter;
-  /// The type list. The filter shows every entry (KTD9). General shows
-  /// only when `general` is true.
+  /// The type list. The filter shows every entry (KTD9), also a type with
+  /// no notes. An empty list is not read yet.
   types: NoteTypeEntry[];
-  /// At least one listed note is in General, so General is a choice.
-  general: boolean;
-  /// The tag list (`list_tags`).
+  /// The tag list (`list_tags`). An empty list has no tags, or is not read
+  /// yet.
   tags: TagEntry[];
   onChange: (filter: NoteFilter) => void;
+  /// Sets the filter to no filter (R12).
+  onClear: () => void;
 }) {
   const bar = useRef<HTMLDivElement>(null);
   const tagsButton = useRef<HTMLButtonElement>(null);
   const natural = useRef<HTMLDivElement>(null);
+  const clearCopy = useRef<HTMLButtonElement>(null);
   const [overflows, setOverflows] = useState(false);
+  const showTypes = typesInUse(allTypes);
+  const showTags = tags.length > 0;
+  const filtered = isFiltered(filter);
   // General is a choice of its own, before the other types.
   const types = allTypes.filter((t) => !t.general);
 
   const segments: Segment<string>[] = [
     { value: ALL, label: "All" },
-    ...(general ? [{ value: GENERAL_VALUE, label: GENERAL }] : []),
+    { value: GENERAL_VALUE, label: GENERAL },
     ...types.map((t) => ({ value: `${NAMED}${t.name}`, label: t.name })),
   ];
   const value = valueOf(filter.type);
   const asMenu = types.length > MAX_SEGMENT_TYPES || overflows;
 
   // A copy of the control that is not shown gives its full width. The
-  // control shows when that width fits beside the Tags button.
+  // control shows when that width fits beside the Tags button and the
+  // Clear Filter button. The room for Clear Filter is always kept, so the
+  // control does not change when a filter is set.
   useLayoutEffect(() => {
     const el = bar.current;
-    if (!el || types.length > MAX_SEGMENT_TYPES) return;
+    if (!el || !showTypes || types.length > MAX_SEGMENT_TYPES) return;
     const measure = () => {
       const full = natural.current?.offsetWidth ?? 0;
-      const room = el.clientWidth - (tagsButton.current?.offsetWidth ?? 0) - 8;
+      const others = (tagsButton.current?.offsetWidth ?? 0) + (clearCopy.current?.offsetWidth ?? 0);
+      const room = el.clientWidth - others - 16;
       setOverflows(full > 0 && room > 0 && full > room);
     };
     measure();
@@ -77,7 +88,9 @@ export function FilterBar({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [general, types.map((t) => t.name).join("\n")]);
+  }, [showTypes, showTags, types.map((t) => t.name).join("\n")]);
+
+  if (!showTypes && !showTags && !filtered) return null;
 
   const setType = (type: TypeChoice) => onChange({ ...filter, type });
   const toggleTag = (key: string) =>
@@ -91,48 +104,57 @@ export function FilterBar({
     filter.type.kind === "all" ? "All Types" : filter.type.kind === "general" ? GENERAL : filter.type.name;
 
   return (
-    <div className="shrink-0 px-[24px] pb-2 select-none">
+    <div role="group" aria-label="Filter" className="shrink-0 px-[24px] pb-2 select-none">
       <div ref={bar} className="relative flex min-w-0 items-center gap-2">
-        {asMenu ? (
+        {showTypes &&
+          (asMenu ? (
+            <PopUpMenu
+              label={`Note Type: ${typeLabel}`}
+              content={typeLabel}
+              items={segments.map((s) => ({
+                key: s.value,
+                label: s.value === ALL ? "All Types" : s.label,
+                checked: s.value === value,
+                radio: true,
+                onSelect: () => setType(choiceOf(s.value)),
+              }))}
+            />
+          ) : (
+            <SegmentedControl
+              kind="radio"
+              label="Note Type"
+              items={segments}
+              value={value}
+              onChange={(v) => setType(choiceOf(v))}
+            />
+          ))}
+        {showTags && (
           <PopUpMenu
-            label={`Note Type: ${typeLabel}`}
-            content={typeLabel}
-            items={segments.map((s) => ({
-              key: s.value,
-              label: s.value === ALL ? "All Types" : s.label,
-              checked: s.value === value,
-              radio: true,
-              onSelect: () => setType(choiceOf(s.value)),
+            ref={tagsButton}
+            label="Tags"
+            content="Tags"
+            items={tags.map((t) => ({
+              key: t.key,
+              label: t.text,
+              checked: filter.tags.includes(t.key),
+              onSelect: () => toggleTag(t.key),
             }))}
           />
-        ) : (
-          <SegmentedControl
-            kind="radio"
-            label="Note Type"
-            items={segments}
-            value={value}
-            onChange={(v) => setType(choiceOf(v))}
-          />
         )}
-        <PopUpMenu
-          ref={tagsButton}
-          label="Tags"
-          content="Tags"
-          items={
-            tags.length === 0
-              ? [{ label: "No tags", disabled: true, reason: "No note has a tag.", onSelect: () => {} }]
-              : tags.map((t) => ({
-                  key: t.key,
-                  label: t.text,
-                  checked: filter.tags.includes(t.key),
-                  onSelect: () => toggleTag(t.key),
-                }))
-          }
-        />
-        {types.length <= MAX_SEGMENT_TYPES && (
-          // The measured copy: not shown, not in the tab order, not read.
-          <div ref={natural} aria-hidden inert className="pointer-events-none invisible absolute top-0 left-0 w-max">
-            <SegmentedControl kind="radio" label="" items={segments} value={value} onChange={() => {}} />
+        {filtered && (
+          <button type="button" onClick={onClear} className={`ml-auto ${clearClass}`}>
+            Clear Filter
+          </button>
+        )}
+        {showTypes && types.length <= MAX_SEGMENT_TYPES && (
+          // The measured copies: not shown, not in the tab order, not read.
+          <div aria-hidden inert className="pointer-events-none invisible absolute top-0 left-0 flex w-max">
+            <div ref={natural}>
+              <SegmentedControl kind="radio" label="" items={segments} value={value} onChange={() => {}} />
+            </div>
+            <button ref={clearCopy} type="button" tabIndex={-1} className={clearClass}>
+              Clear Filter
+            </button>
           </div>
         )}
       </div>
@@ -156,6 +178,11 @@ export function FilterBar({
     </div>
   );
 }
+
+/// The look of Clear Filter: a plain text button with the accent colour,
+/// like a link in a macOS filter bar.
+const clearClass =
+  "shrink-0 rounded-[6px] px-2 py-[3px] text-accent hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent";
 
 /// A button that opens a menu under its left edge. The menu items close the
 /// menu before they act. Escape gives the focus back to the button.
