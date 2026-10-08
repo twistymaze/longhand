@@ -740,6 +740,56 @@ fn a_targeted_scan_of_a_type_folder_reads_its_notes() {
     assert!(!folder.join(".longhand").exists());
 }
 
+/// A type folder whose own `session.md` is not valid still holds notes.
+/// The scan reports the problem and reads the notes in it (KTD12).
+#[test]
+fn a_type_folder_with_an_invalid_session_md_still_lists_its_notes() {
+    let root = marked_root();
+    let folder = root.path().join("Pathfinder");
+    note(&folder, "Session 12", "A1");
+    fs::write(folder.join("session.md"), "not a session document").unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(root_state(&result), &RootState::Available);
+    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(result.invalid.len(), 1);
+    assert_eq!(result.invalid[0].path, folder);
+}
+
+/// As above, when the `session.md` of the type folder cannot be read.
+#[cfg(unix)]
+#[test]
+fn a_type_folder_with_an_unreadable_session_md_still_lists_its_notes() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = marked_root();
+    let folder = root.path().join("Pathfinder");
+    note(&folder, "Session 12", "A1");
+    let session = folder.join("session.md");
+    fs::write(&session, doc("X1").render()).unwrap();
+    fs::set_permissions(&session, fs::Permissions::from_mode(0o000)).unwrap();
+    let result = run(root.path(), &Known::default());
+    fs::set_permissions(&session, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(result.unreadable.len(), 1);
+    assert_eq!(result.unreadable[0].path, folder);
+}
+
+#[test]
+fn a_targeted_scan_of_a_type_folder_with_an_invalid_session_md_reads_its_notes() {
+    let root = marked_root();
+    let folder = root.path().join("Pathfinder");
+    let home = note(&folder, "Session 12", "A1");
+    fs::write(folder.join("session.md"), "not a session document").unwrap();
+    let (result, read) = scan_folders(
+        root.path(),
+        &folders(&[&folder]),
+        &Known::default(),
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(read, folders(&[&folder, &home]));
+}
+
 #[test]
 fn the_place_of_a_home_folder_gives_its_root_and_type() {
     use library::scan::{Place, place_in, storage_place};

@@ -575,6 +575,27 @@ fn a_targeted_scan_never_forgets_a_row_and_a_full_scan_does_after_the_wait() {
     assert_eq!(changes, removed(&["n1"]));
 }
 
+/// A `session.md` that is not valid in a type folder does not hide the
+/// notes in it, so a full scan never forgets them (KTD12, R26).
+#[test]
+fn a_type_folder_with_an_invalid_session_md_keeps_the_rows_of_its_notes() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    let now = Instant::now();
+    a.sync(&root, now);
+    assert_eq!(note_type(&a, "n1").as_deref(), Some("Pathfinder"));
+
+    fs::write(root.join("Pathfinder/session.md"), "not a session document").unwrap();
+    a.sync(&root, now);
+    let after = a.sync(&root, now + DELETE_WAIT * 2);
+    assert!(after.removed.is_empty(), "{after:?}");
+    assert!(!a.reconciler.is_pending("n1"));
+    assert_eq!(a.home("n1"), typed);
+}
+
 #[test]
 fn forget_outside_keeps_typed_notes_in_a_root() {
     let (_dir, root) = shared_root();

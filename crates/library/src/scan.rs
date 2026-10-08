@@ -6,6 +6,8 @@
 //! the documents of each one. A top-level folder with no `session.md` is a
 //! type folder when it holds note folders: the scan also reads the folders
 //! in it, and gives their notes that type (KTD4 of the note types plan).
+//! It also reads the folders in a top-level folder whose `session.md`
+//! cannot be read or is not valid, so that no note in it is forgotten.
 //! Hidden folders and anything deeper are not read. It never opens audio: it only asks whether
 //! each segment's audio file exists, so an online-only audio file is not
 //! downloaded (R12). It also asks whether each segment's removal marker
@@ -354,9 +356,10 @@ pub fn scan_folders(
         }
         match folder::note_type_in(root, path) {
             // A top-level folder: a home folder, or else a type folder,
-            // whose notes are read (KTD4).
+            // whose notes are read (KTD4). A folder whose `session.md` gives
+            // no note can still hold notes, so they are read too.
             Some(None) => {
-                if !reads.read(root, path, None, known, options)
+                if reads.read(root, path, None, known, options) != FolderKind::Note
                     && let Ok(inside) = reads.read_type_folder(root, path, known, options)
                 {
                     read.extend(inside);
@@ -461,11 +464,14 @@ fn scan_root(
         let path = entry.path();
         match std::fs::metadata(&path) {
             Ok(m) if m.is_dir() => {
-                if reads.read(root, &path, None, known, options) {
+                if reads.read(root, &path, None, known, options) == FolderKind::Note {
                     continue;
                 }
                 // A top-level folder with no `session.md` can be a type
-                // folder (KTD4). Its list must be complete too.
+                // folder (KTD4). Its list must be complete too. A folder
+                // whose `session.md` cannot be read or is not valid can
+                // also hold notes: they are read, so a full scan does not
+                // forget them (KTD12).
                 match reads.read_type_folder(root, &path, known, options) {
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -509,6 +515,16 @@ fn scan_root(
     )
 }
 
+/// What one folder is, from its `session.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FolderKind {
+    /// No `session.md`.
+    NotANote,
+    Note,
+    /// The `session.md` cannot be read or is not valid.
+    Problem,
+}
+
 /// The folders that one scan read, by kind.
 #[derive(Default)]
 struct Reads {
@@ -519,8 +535,7 @@ struct Reads {
 
 impl Reads {
     /// Read the folder at `path` in `root`, which is in the type folder
-    /// `note_type` or directly in `root`. Returns false when the folder has
-    /// no `session.md`: it is not a note folder.
+    /// `note_type` or directly in `root`. Returns what the folder is.
     fn read(
         &mut self,
         root: &Path,
@@ -528,7 +543,7 @@ impl Reads {
         note_type: Option<&str>,
         known: &Known,
         options: &ScanOptions,
-    ) -> bool {
+    ) -> FolderKind {
         let problem = |reason: String| ProblemFolder {
             root: root.to_path_buf(),
             known_id: known.id_at(path).map(str::to_string),
@@ -536,23 +551,26 @@ impl Reads {
             reason,
         };
         match read_folder(path, options) {
-            FolderRead::NotANote => return false,
-            FolderRead::Note(note) => self.notes.push(Found {
-                root: root.to_path_buf(),
-                note_type: note_type.map(str::to_string),
-                ..*note
-            }),
+            FolderRead::NotANote => return FolderKind::NotANote,
+            FolderRead::Note(note) => {
+                self.notes.push(Found {
+                    root: root.to_path_buf(),
+                    note_type: note_type.map(str::to_string),
+                    ..*note
+                });
+                return FolderKind::Note;
+            }
             FolderRead::Unreadable(reason) => {
                 log::warn!("library: cannot read {}: {reason}", path.display());
                 self.unreadable.push(problem(reason));
             }
             FolderRead::Invalid(reason) => self.invalid.push(problem(reason)),
         }
-        true
+        FolderKind::Problem
     }
 
     /// Read each folder in the top-level folder `folder` of `root`, which
-    /// has no `session.md`: a type folder (KTD4). Hidden names are skipped,
+    /// gives no note: a type folder (KTD4). Hidden names are skipped,
     /// and nothing deeper is read. Returns the folders that it read, or the
     /// error when the folder cannot be listed completely.
     fn read_type_folder(
