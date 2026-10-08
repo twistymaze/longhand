@@ -1,6 +1,6 @@
 // One session in Home's list (R5, R7): the title, the start time, the
 // duration, the speaker count, and a status while the session is not
-// ready. A click selects the note. A double-click opens it. The row menu holds Rename and Delete.
+// ready, then the labels of the note type and tags. A click selects the note. A double-click opens it. The row menu holds Rename and Delete.
 // Hover, selection and the menu change at once, with no motion: a list is
 // moved through many times a day.
 
@@ -11,6 +11,7 @@ import { canDelete, Menu, remoteLabels, remoteReasons } from "../session/Session
 import { MoreIcon, NoteIcon } from "../settings/icons";
 import { Status } from "../settings/ui";
 import { speakerCount } from "./group";
+import { NoteLabels } from "./NoteLabels";
 
 function TitleField({
   initial,
@@ -158,7 +159,11 @@ export function SessionRow({
         ) : (
           <div className="truncate font-medium tracking-[-0.005em]">{title}</div>
         )}
-        <div className={`truncate text-[0.8rem] ${secondary}`}>{details}</div>
+        {/* The type and tag labels follow the details (R22). */}
+        <div className="flex min-w-0 items-center gap-2">
+          <div className={`min-w-0 shrink-0 truncate text-[0.8rem] ${secondary}`}>{details}</div>
+          <NoteLabels noteType={entry.note_type} tags={entry.tags} onAccent={selected} />
+        </div>
       </div>
       {status && (
         <span

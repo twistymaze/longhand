@@ -3,8 +3,9 @@
 
 import { formatPosition } from "../lib/timeline";
 import { ChevronIcon, WaveformIcon } from "../settings/icons";
+import { NoteLabels } from "./NoteLabels";
 
-export type RecordingNow = { sessionId: string; elapsedMs: number; interrupted: boolean };
+export type RecordingNow = { sessionId: string; elapsedMs: number; interrupted: boolean; noteType?: string | null; tags?: string[] };
 
 export function RecordingRow({ recording, selected, onSelect, onOpen }: { recording: RecordingNow; selected: boolean; onSelect: () => void; onOpen: (id: string) => void }) {
   const tint = recording.interrupted ? "text-caution bg-caution/12" : "text-negative bg-negative/12";
@@ -29,8 +30,12 @@ export function RecordingRow({ recording, selected, onSelect, onOpen }: { record
         <span className="block truncate font-medium">
           {recording.interrupted ? "Recording interrupted" : "Recording"}
         </span>
-        <span className="block truncate text-[0.8rem] text-label-secondary">
-          {recording.interrupted ? "Open to resume or stop" : "In progress"}
+        {/* The type and tag labels follow the details (R22). */}
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 shrink-0 truncate text-[0.8rem] text-label-secondary">
+            {recording.interrupted ? "Open to resume or stop" : "In progress"}
+          </span>
+          <NoteLabels noteType={recording.noteType ?? null} tags={recording.tags ?? []} />
         </span>
       </span>
       <span className="shrink-0 font-medium tabular-nums tracking-tight">{formatPosition(recording.elapsedMs)}</span>

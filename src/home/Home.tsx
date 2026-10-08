@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   commands,
+  type NewNoteType,
   type Readiness,
   type SessionEntry,
 } from "../bindings";
@@ -22,11 +23,14 @@ import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
+import { FilterBar } from "./FilterBar";
+import { isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
 import { groupByDay, rowTitle } from "./group";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
+import { useTypesAndTags } from "./useTypesAndTags";
 
 export type { RecordingNow };
 
@@ -95,7 +99,20 @@ export function Home({
     () => entries.filter((e) => !deleted.has(e.id)),
     [entries, deleted],
   );
-  const groups = useMemo(() => groupByDay(listed, now), [listed, now]);
+  // The filter stays while Home is mounted, so it stays when the user opens
+  // a note and comes back (R33). A type or a tag that no longer exists drops
+  // out of it.
+  const lists = useTypesAndTags(active);
+  const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
+  const filter = keepExisting(chosenFilter, lists.types?.types ?? null, lists.tags);
+  useEffect(() => {
+    if (filter !== chosenFilter) setFilter(filter);
+  }, [filter, chosenFilter]);
+  const filtered = useMemo(
+    () => (isFiltered(filter) ? listed.filter((e) => matches(e, filter)) : listed),
+    [listed, filter],
+  );
+  const groups = useMemo(() => groupByDay(filtered, now), [filtered, now]);
   const order = useMemo(() => groups.flatMap((g) => g.entries), [groups]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -192,10 +209,10 @@ export function Home({
 
   // Home shows no note, so no note is left here: the view change to Home
   // already left the note that the page showed (R18).
-  const start = async (record: boolean) => {
+  const start = async (record: boolean, noteType?: NewNoteType) => {
     setStarting(true);
     try {
-      const result = await commands.startRecording(record, null, null);
+      const result = await commands.startRecording(record, null, noteType ?? null);
       setNotice(
         result.status === "error"
           ? { tone: "negative", text: sentence(result.error) }
@@ -218,7 +235,15 @@ export function Home({
   };
 
   const missing = readiness ? missingPreconditions(readiness) : "";
-  const count = listed.length;
+  const count = filtered.length;
+  const showFilter = listed.length > 0 || isFiltered(filter);
+  const clearFilter = () => {
+    setFilter(noFilter);
+    // The Clear Filter button goes. The chosen row takes the focus.
+    requestAnimationFrame(() =>
+      list.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]')?.focus(),
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -239,7 +264,9 @@ export function Home({
             records={newNoteRecords}
             readiness={readiness}
             busy={starting}
-            onStart={(record) => void start(record)}
+            types={lists.types?.types}
+            onStart={(record, noteType) => void start(record, noteType)}
+            onTypesChanged={lists.setTypes}
           />
         )}
       </header>
@@ -255,6 +282,14 @@ export function Home({
               </span>
             )}
           </div>
+          {showFilter && (
+            <FilterBar
+              filter={filter}
+              types={lists.types?.types ?? []}
+              tags={lists.tags ?? []}
+              onChange={setFilter}
+            />
+          )}
 
           {readiness && !readiness.can_start_note && !recording && (
             <CautionBanner>
@@ -309,8 +344,19 @@ export function Home({
                   Loading notes…
                 </p>
               )}
-            {loaded && order.length === 0 && !pendingCapture && (
+            {loaded && listed.length === 0 && !pendingCapture && (
               <EmptyState chord={chord} />
+            )}
+            {loaded && listed.length > 0 && order.length === 0 && (
+              // No note matches the filter (R32).
+              <div className="flex flex-col items-center px-6 pt-16 pb-10 text-center">
+                <p role="status" className="text-label-secondary">
+                  No notes match the filter.
+                </p>
+                <div className="mt-3">
+                  <Button onClick={clearFilter}>Clear Filter</Button>
+                </div>
+              </div>
             )}
             {order.length > 0 && (
               <div
@@ -346,6 +392,8 @@ export function Home({
                                   ? recording.elapsedMs
                                   : entry.duration_ms,
                               interrupted: entry.state === "interrupted",
+                              noteType: entry.note_type,
+                              tags: entry.tags,
                             }}
                             selected={entry.id === selected?.id}
                             onSelect={() => setSelectedId(entry.id)}

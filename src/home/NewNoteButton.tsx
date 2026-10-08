@@ -1,13 +1,17 @@
 // New Note as a split button (R9, KTD10). The main part does the default
 // that Settings > Recording sets, and its label says which default that is.
-// The menu part offers the other choice. Both parts are unavailable, with
-// the reason, while a note cannot start (R7). The menu opens and closes at
-// once, with no motion: the button is used many times a day.
+// The main part starts a note of the default type (R23). The menu part
+// lists the note types and "No type", the other choice, and "New Type…"
+// (R24). Each type item starts a note of that type in the same way as the
+// main part. Both parts are unavailable, with the reason, while a note
+// cannot start (R7). The menu opens and closes at once, with no motion: the
+// button is used many times a day.
 
 import { type Ref, useRef, useState } from "react";
-import type { Readiness } from "../bindings";
+import type { NewNoteType, NoteTypeEntry, NoteTypeList, Readiness } from "../bindings";
+import { NewTypeDialog } from "../lib/NewTypeDialog";
 import { missingPreconditions } from "../processing/describe";
-import { Menu } from "../session/SessionMenu";
+import { Menu, type MenuEntry, separator } from "../session/SessionMenu";
 import { ChevronIcon, PlusIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 
@@ -37,20 +41,28 @@ function refusal(readiness: Readiness, record: boolean): string | null {
 export function NewNoteButton({
   records,
   readiness,
+  types = [],
   busy = false,
   onStart,
+  onTypesChanged,
   ref,
 }: {
   /// The default of Settings > Recording: true when New Note records.
   records: boolean;
   readiness: Readiness;
+  /// The effective type list. The menu offers only the valid types.
+  types?: NoteTypeEntry[];
   /// A start is in progress: both parts wait.
   busy?: boolean;
-  onStart: (record: boolean) => void;
+  /// Starts a note. With no `noteType`, the note gets the default type.
+  onStart: (record: boolean, noteType?: NewNoteType) => void;
+  /// "New Type…" added a type. Gives the list after the change.
+  onTypesChanged?: (list: NoteTypeList) => void;
   /// The main part, which Home focuses after the last note goes.
   ref?: Ref<HTMLButtonElement>;
 }) {
   const [open, setOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
   const menuPart = useRef<HTMLButtonElement>(null);
   const mainLabel = records ? labels.record.main : labels.note.main;
   const mainRefusal = refusal(readiness, records);
@@ -59,6 +71,49 @@ export function NewNoteButton({
     setOpen(false);
     menuPart.current?.focus();
   };
+  const startAs = (noteType: NewNoteType) => () => {
+    setOpen(false);
+    onStart(records, noteType);
+  };
+
+  const items: MenuEntry[] = [
+    ...types
+      .filter((t) => t.valid)
+      .map((t) => ({
+        key: `type:${t.name}`,
+        label: t.name,
+        disabled: mainRefusal !== null,
+        reason: mainRefusal ?? undefined,
+        onSelect: startAs({ kind: "named", name: t.name }),
+      })),
+    {
+      key: "no-type",
+      label: "No type",
+      disabled: mainRefusal !== null,
+      reason: mainRefusal ?? undefined,
+      onSelect: startAs({ kind: "no_type" }),
+    },
+    separator("other"),
+    {
+      label: records ? labels.note.menu : labels.record.menu,
+      disabled: otherRefusal !== null,
+      reason: otherRefusal ?? undefined,
+      onSelect: () => {
+        setOpen(false);
+        onStart(!records);
+      },
+    },
+    separator("new-type"),
+    {
+      label: "New Type…",
+      disabled: mainRefusal !== null,
+      reason: mainRefusal ?? undefined,
+      onSelect: () => {
+        setOpen(false);
+        setNaming(true);
+      },
+    },
+  ];
 
   return (
     <div className="relative inline-flex gap-px">
@@ -82,6 +137,7 @@ export function NewNoteButton({
             // WKWebView does not focus a clicked button. The focus must be
             // here, so that Escape in the menu gives it back to this part.
             e.currentTarget.focus();
+            setNaming(false);
             setOpen((o) => !o);
           }}
         >
@@ -93,17 +149,22 @@ export function NewNoteButton({
           onClose={close}
           // The menu is as wide as its label, so the label shows in full.
           width="w-max min-w-52 max-w-80"
-          items={[
-            {
-              label: records ? labels.note.menu : labels.record.menu,
-              disabled: otherRefusal !== null,
-              reason: otherRefusal ?? undefined,
-              onSelect: () => {
-                setOpen(false);
-                onStart(!records);
-              },
-            },
-          ]}
+          items={items}
+        />
+      )}
+      {naming && (
+        <NewTypeDialog
+          // The button is at the right edge of the window.
+          className="top-full right-0 mt-1"
+          onCancel={() => {
+            setNaming(false);
+            menuPart.current?.focus();
+          }}
+          onCreated={(name, list) => {
+            setNaming(false);
+            onTypesChanged?.(list);
+            onStart(records, { kind: "named", name });
+          }}
         />
       )}
     </div>
