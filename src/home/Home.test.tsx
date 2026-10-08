@@ -16,7 +16,7 @@ import type {
   SessionEntry,
   TagEntry,
 } from "../bindings";
-import { tagKey } from "../lib/Labels";
+import { tagKey, tagName } from "../lib/Labels";
 import { sessionTitle } from "../processing/describe";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { Home, type RecordingNow } from "./Home";
@@ -1206,8 +1206,11 @@ describe("Home: filter by type and tags", () => {
     entry("c", { title: "Session 12", note_type: "Pathfinder", tags: ["person::nathan", "Topic::Loot"] }),
     entry("d", { title: "Standup", note_type: null, tags: [] }),
   ];
-  const titles = () =>
-    screen.queryAllByRole("option").map((o) => o.querySelector(".font-medium")?.textContent ?? "");
+  // The rows of the notes list. An open Tags menu has options too.
+  const titles = () => {
+    const list = screen.queryByRole("listbox", { name: "Notes" });
+    return list ? within(list).queryAllByRole("option").map((o) => o.querySelector(".font-medium")?.textContent ?? "") : [];
+  };
 
   function setup({
     types = typeList("Pathfinder", "One on One"),
@@ -1238,9 +1241,12 @@ describe("Home: filter by type and tags", () => {
   type User = ReturnType<typeof userEvent.setup>;
   const chooseType = async (user: User, name: string) => user.click(await screen.findByRole("radio", { name }));
   const addTag = async (user: User, text: string) => {
-    // The Tags button shows after the tag list is read (R5).
-    await user.click(await screen.findByRole("button", { name: "Tags" }));
-    await user.click(await screen.findByRole("menuitemcheckbox", { name: text }));
+    // The Tags button shows after the tag list is read (R5). The menu
+    // stays open after a choice (R9).
+    const button = await screen.findByRole("button", { name: "Tags" });
+    if (button.getAttribute("aria-expanded") !== "true") await user.click(button);
+    const menu = await screen.findByRole("listbox", { name: "Tags" });
+    await user.click(within(menu).getByRole("option", { name: tagName(text) }));
   };
 
   // F3, R19, R20.
@@ -1365,7 +1371,7 @@ describe("Home: filter by type and tags", () => {
     const user = userEvent.setup();
     await chooseType(user, "General");
     await addTag(user, "Topic::Loot");
-    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(titles()).toHaveLength(0);
     expect(screen.getByText("No notes match the filter.")).toBeTruthy();
     expect(screen.queryByText("No notes yet")).toBeNull();
     // The filter bar has its own Clear Filter button too (R12).

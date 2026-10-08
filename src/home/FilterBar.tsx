@@ -15,6 +15,7 @@ import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
 import { Menu, type MenuEntry } from "../session/SessionMenu";
 import { ChevronIcon } from "../settings/icons";
 import { isFiltered, type NoteFilter, type TypeChoice, typesInUse } from "./filter";
+import { TagFilterMenu } from "./TagFilterMenu";
 
 /// With more types than this, the type choice is always one menu.
 export const MAX_SEGMENT_TYPES = 6;
@@ -128,19 +129,7 @@ export function FilterBar({
               onChange={(v) => setType(choiceOf(v))}
             />
           ))}
-        {showTags && (
-          <PopUpMenu
-            ref={tagsButton}
-            label="Tags"
-            content="Tags"
-            items={tags.map((t) => ({
-              key: t.key,
-              label: t.text,
-              checked: filter.tags.includes(t.key),
-              onSelect: () => toggleTag(t.key),
-            }))}
-          />
-        )}
+        {showTags && <TagFilterMenu ref={tagsButton} tags={tags} chosen={filter.tags} onToggle={toggleTag} />}
         {filtered && (
           <button type="button" onClick={onClear} className={`ml-auto ${clearClass}`}>
             Clear Filter
