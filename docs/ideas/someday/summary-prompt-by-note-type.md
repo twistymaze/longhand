@@ -12,7 +12,7 @@ related: [summary-prompts, note-folders]
 ## Idea
 Each note has a type, and the type chooses one of the saved summary prompts. For example, a Pathfinder note gets a recap of the session, and a work note gets decisions and follow-ups.
 
-The note type of [Note types and tags](../next/note-folders.md) gives a note its type. This idea stays separate from that idea so that each idea stays small.
+The note type of [Note types and tags](../done/note-folders.md) gives a note its type. This idea stays separate from that idea so that each idea stays small.
 
 ## Why
 One summary shape does not fit every kind of note. The walking skeleton used one shape because that got to a usable app faster.

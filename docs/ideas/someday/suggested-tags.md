@@ -16,5 +16,5 @@ The summary model gets the existing tag list, and possibly the note type list, w
 Tagging every note by hand is work that the user can forget. The model already reads the whole session to write the summary.
 
 ## Notes / Current state
-- Depends on [Note types and tags](../next/note-folders.md) (plan: `docs/plans/2026-10-07-1940-feat-note-types-and-tags-plan.md`).
+- Depends on [Note types and tags](../done/note-folders.md) (plan: `docs/plans/2026-10-07-1940-feat-note-types-and-tags-plan.md`).
 - Open questions: whether the model can suggest a new tag or only existing tags; whether it can suggest the note type; how the note page shows a suggestion that the user has not accepted yet.
