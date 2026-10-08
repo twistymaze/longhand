@@ -293,4 +293,4 @@ No Rust code changes, so the Rust checks, `scripts/check-windows.sh` and `script
 - The tests that U2 and U3 replace are rewritten, not deleted.
 - The U5 review and a signed-build manual test are done.
 - No preview page, screenshot or experimental code is in the diff.
-- The idea file `docs/ideas/next/type-and-tag-filter-refinements.md` moves to `done/` with the PR number when the PR merges.
+- When the PR merges, the idea file moves to `done/` (now `docs/ideas/done/type-and-tag-filter-refinements.md`) with the PR number.

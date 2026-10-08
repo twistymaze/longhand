@@ -18,3 +18,4 @@ A user who keeps every note in General sees a type filter whose choices show the
 
 ## Notes / Current state
 - Refines R19 and R22 of `docs/plans/2026-10-07-1940-feat-note-types-and-tags-plan.md`.
+- Shipped in PR #46. The button that clears the type and tag filters is named "Clear Filters".
