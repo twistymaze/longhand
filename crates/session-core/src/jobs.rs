@@ -296,7 +296,7 @@ pub enum BulkEdit {
     /// A type rename. When `to` is the name of another type, the two types
     /// merge.
     RenameType { from: String, to: String },
-    /// A type delete: the notes of the type get no type.
+    /// A type delete: the notes of the type go to General.
     DeleteType { name: String },
     /// A tag rename (KTD11): each note with the key of `from` gets `to`.
     /// When a note has a tag with the key of `to`, the two tags merge.

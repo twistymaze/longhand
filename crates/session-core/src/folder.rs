@@ -428,7 +428,7 @@ pub const REMOVAL_MARKER_TEXT: &str = "Longhand removed the audio of this segmen
 
 /// The note type that the position of the home folder `home` in the
 /// storage folder `root` gives (KTD1, KTD4). `Some(None)` is a home folder
-/// directly in `root`: it has no type. `Some(Some(name))` is a home folder
+/// directly in `root`: it is in General. `Some(Some(name))` is a home folder
 /// in the type folder `name` in `root`. `None` is a home folder that is not
 /// at depth 0 or 1 of `root`, or that is in a hidden folder. This reads no
 /// file.

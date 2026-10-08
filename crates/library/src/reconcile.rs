@@ -81,6 +81,18 @@ impl Coverage {
             Coverage::Folders(_) => self.covers(folder),
         }
     }
+
+    /// Whether a wait for the note folder `folder`, which `scan` did not
+    /// find, stays after the scan. A targeted scan keeps the wait of a
+    /// folder that it did not read. A full scan keeps no such wait: it read
+    /// each folder in its Destinations, and a folder in no Destination of
+    /// the scan cannot give a note now.
+    pub(crate) fn keeps_wait(&self, scan: &LibraryScan, folder: &Path) -> bool {
+        match self {
+            Coverage::Full => false,
+            Coverage::Folders(_) => !self.read(scan, folder),
+        }
+    }
 }
 
 /// The Destinations of `scan`.
@@ -339,7 +351,7 @@ impl Reconciler {
             .map(|note| note.doc.session_id.as_str())
             .collect();
         self.mismatches.retain(|id, mismatch| {
-            found.contains(id.as_str()) || !coverage.read(scan, &mismatch.folder)
+            found.contains(id.as_str()) || coverage.keeps_wait(scan, &mismatch.folder)
         });
         let mut hand_edits = HashSet::new();
         for note in &scan.notes {
@@ -648,7 +660,7 @@ fn follow(
     if retyped {
         log::info!(
             "library: the type of {id} is now {}",
-            note.note_type.as_deref().unwrap_or("no type")
+            note.note_type.as_deref().unwrap_or("General")
         );
         store.set_note_type(id, note.note_type.as_deref())?;
     }

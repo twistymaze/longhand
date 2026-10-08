@@ -1011,7 +1011,26 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_title, read_transcript};
+    use super::{Details, clean_title, input_fingerprint, read_transcript};
+
+    /// A note with no details has the fingerprint of an earlier build, so a
+    /// checkpoint from that build stays valid.
+    #[test]
+    fn a_note_with_no_details_has_the_fingerprint_of_an_earlier_build() {
+        let earlier = session_core::folder::fingerprint(b"# Transcript\n\0My notes\n");
+        assert_eq!(
+            input_fingerprint("# Transcript\n", "My notes\n", &Details::default()).unwrap(),
+            earlier
+        );
+        let typed = Details {
+            note_type: Some("Pathfinder".into()),
+            ..Details::default()
+        };
+        assert_ne!(
+            input_fingerprint("# Transcript\n", "My notes\n", &typed).unwrap(),
+            earlier
+        );
+    }
 
     #[test]
     fn the_transcript_is_read_from_the_note_files_only() {

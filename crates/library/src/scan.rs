@@ -42,7 +42,7 @@ pub fn marker(root: &Path) -> PathBuf {
 
 /// The position of a home folder in its storage folder (KTD4 of the note
 /// types plan): the storage folder, and the note type that the type
-/// folder gives. A home folder directly in the storage folder has no type.
+/// folder gives. A home folder directly in the storage folder is in General.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub root: PathBuf,

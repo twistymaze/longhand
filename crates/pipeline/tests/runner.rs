@@ -2221,6 +2221,33 @@ async fn regenerating_a_stub_with_a_changed_text_under_the_same_id_makes_every_c
     assert!(calls.last().unwrap().0.contains("EDITED-MARKER"));
 }
 
+/// The note details are input to every call, so a change of a detail makes
+/// the part notes of the stub not valid. The change is in `session.md`, and
+/// the regeneration reads it into the row first. The 2,048-token floor has
+/// no room for the rule of the details.
+async fn regenerate_after_a_detail_change(change: impl FnOnce(&mut SessionDoc)) {
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five_at(&r, BACKGROUND_CONTEXT).await;
+    edit_session_md(path.parent().unwrap(), change);
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[5].contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[5][..80]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_a_tag_change_makes_every_call_again() {
+    regenerate_after_a_detail_change(|doc| doc.tags = vec!["Topic::Security".into()]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_after_a_change_of_the_pending_type_makes_every_call_again() {
+    regenerate_after_a_detail_change(|doc| doc.pending_type = Some(pending_type())).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn regenerating_a_stub_with_no_saved_prompt_makes_every_call_again() {
     let r = rig().await;

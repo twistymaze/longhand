@@ -160,8 +160,8 @@ fn flag_for(store: &Store, record: &SessionRecord) -> Result<Option<ResultFlag>,
 
 /// The type of the home folder of `record`, from its row (U7 of the note
 /// types plan). A name that fails the type name check never becomes a path
-/// (KTD8): the row then gets no type, and the folder goes directly in the
-/// storage folder.
+/// (KTD8): the row then has General as its type, and the folder goes
+/// directly in the storage folder.
 fn row_type(store: &Store, record: &SessionRecord) -> Result<Option<String>, StageError> {
     let Some(name) = &record.note_type else {
         return Ok(None);
@@ -393,7 +393,7 @@ pub fn step(
                     Ok(folder) => Some(folder),
                     Err(e) if is_refused(&e) => {
                         // A file has the name of the type folder: the note
-                        // goes directly in the storage folder, with no type.
+                        // goes directly in the storage folder, in General.
                         log::warn!("the folder of {id} cannot go in the type folder {name}: {e}");
                         lock(store).set_note_type(id, None)?;
                         Some(root.clone())

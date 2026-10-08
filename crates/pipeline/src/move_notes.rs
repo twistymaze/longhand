@@ -259,7 +259,7 @@ fn find_placed(new: &Path, name: &str, session_id: &str) -> Option<PathBuf> {
 
 /// The folder in `new` that takes the note whose folder is `source` in
 /// `old`: the type folder with the same name, or `new` itself for a note
-/// with no type (KTD14 of the note types plan). `None` when `source` is
+/// of General (KTD14 of the note types plan). `None` when `source` is
 /// not in `old`, directly or in a type folder.
 fn target_folder(old: &Path, new: &Path, source: &Path) -> Option<PathBuf> {
     folder::note_type_in(old, source).map(|note_type| match note_type {
@@ -631,7 +631,7 @@ impl Mover<'_> {
             } => {
                 let name = folder_name(source);
                 // A source that is not in the old folder came from a record
-                // of a step before type folders: it has no type.
+                // of a step before type folders: it is in General.
                 let target = target_folder(old, new, source).unwrap_or_else(|| new.clone());
                 if !exists(staging) {
                     // The rename into place happened and its record did not:

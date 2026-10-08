@@ -296,12 +296,14 @@ impl Details {
     }
 
     /// One line for each detail with text: the type, the title, then each
-    /// tag. A control character in a value becomes a space, so a value
-    /// cannot start a line.
+    /// tag. A control character, a line separator (U+2028) or a paragraph
+    /// separator (U+2029) in a value becomes a space, so no part of a value
+    /// starts a line.
     fn all_lines(&self) -> Vec<String> {
+        let breaks_line = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
         let clean = |text: &str| {
             text.chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
+                .map(|c| if breaks_line(c) { ' ' } else { c })
                 .collect::<String>()
                 .trim()
                 .to_string()

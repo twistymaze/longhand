@@ -1739,6 +1739,46 @@ fn a_targeted_scan_of_the_home_folder_keeps_the_wait_of_a_duplicate_folder() {
     assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
 }
 
+/// A full scan without the Destination of a note drops the wait of its
+/// other version: no scan can read that folder now, so no deadline stays.
+#[test]
+fn a_full_scan_without_the_destination_of_a_waiting_other_version_drops_the_wait() {
+    let (_dir, root) = shared_root();
+    let (_other_dir, other) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root, &other], start);
+    duplicate(&folder, &root, "Planning old");
+    a.sync_roots_at(&[&root, &other], start);
+    assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
+
+    a.sync_roots_at(&[&other], start);
+    assert_eq!(a.reconciler.next_due(), None);
+    a.sync_roots_at(&[&other], start + OTHER_VERSION_WAIT);
+    assert!(a.other_versions("n1").is_empty());
+}
+
+/// A full scan without the Destination of a note drops the wait for the
+/// sync of its documents.
+#[test]
+fn a_full_scan_without_the_destination_of_a_mismatch_drops_the_wait() {
+    let (_dir, root) = shared_root();
+    let (_other_dir, other) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root, &other], start);
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    a.sync_roots_at(&[&root, &other], start);
+    assert_eq!(a.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+
+    a.sync_roots_at(&[&other], start);
+    assert_eq!(a.reconciler.next_due(), None);
+}
+
 /// While this computer renames the folder of a note, a second folder of
 /// the note is not another version. The wait starts when the rename ends.
 #[test]
