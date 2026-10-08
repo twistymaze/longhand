@@ -195,7 +195,7 @@ export function Home({
   const start = async (record: boolean) => {
     setStarting(true);
     try {
-      const result = await commands.startRecording(record, null);
+      const result = await commands.startRecording(record, null, null);
       setNotice(
         result.status === "error"
           ? { tone: "negative", text: sentence(result.error) }

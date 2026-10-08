@@ -52,10 +52,10 @@ use library::scan::{self, Known, READ_TIMEOUT, Read, ScanOptions, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{self, ResultFlag, SessionDoc};
 use session_core::{SessionRecord, SessionState, Store};
-use session_save::{Fs, RealFs, fsync, home_write, naming, rename};
+use session_save::{Fs, RealFs, fsync, home_write, naming, rename, rename_home};
 
 use crate::save::{NOTES_FILE, SESSION_FILE, note_started};
-use crate::{SharedStore, StageError, in_use, lock};
+use crate::{SharedStore, StageError, in_use, lock, type_move};
 
 /// The `result_state` key of the early write.
 pub use session_core::jobs::EARLY_HOME as STATE;
@@ -75,8 +75,15 @@ pub enum EarlyState {
     /// there, can be partial.
     Begun,
     /// The staging folder `.longhand-staging-<id>` in `root` is complete.
-    /// The final name is `folder_name` or one of its candidates.
-    Filled { root: PathBuf, folder_name: String },
+    /// The final name is `folder_name` or one of its candidates, in the
+    /// folder of the type `note_type` in `root`, or directly in `root` for
+    /// `None` (U7 of the note types plan).
+    Filled {
+        root: PathBuf,
+        folder_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note_type: Option<String>,
+    },
     /// The folder is at `path`, and the store records it as the home path.
     Done { path: PathBuf },
 }
@@ -149,6 +156,82 @@ fn flag_for(store: &Store, record: &SessionRecord) -> Result<Option<ResultFlag>,
         _ if crate::save::begun(store, &record.id)? => None,
         _ => Some(ResultFlag::NotSaved),
     })
+}
+
+/// The type of the home folder of `record`, from its row (U7 of the note
+/// types plan). A name that fails the type name check never becomes a path
+/// (KTD8): the row then gets no type, and the folder goes directly in the
+/// storage folder.
+fn row_type(store: &Store, record: &SessionRecord) -> Result<Option<String>, StageError> {
+    let Some(name) = &record.note_type else {
+        return Ok(None);
+    };
+    match naming::check_type_name(name) {
+        Ok(checked) if &checked == name => Ok(Some(checked)),
+        _ => {
+            log::warn!(
+                "the type of {} is not a valid type name, so its folder goes in the storage folder",
+                record.id
+            );
+            store.set_note_type(&record.id, None)?;
+            Ok(None)
+        }
+    }
+}
+
+/// Whether two types are one type. `None` is "No type".
+fn same_type(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => naming::same_type_name(a, b),
+        _ => false,
+    }
+}
+
+/// Whether the type folder cannot be made or used for a reason that a
+/// retry does not fix.
+fn is_refused(e: &rename_home::RenameError) -> bool {
+    matches!(e, rename_home::RenameError::Io(io) if io.kind() == io::ErrorKind::InvalidInput)
+}
+
+/// The user changed the type of the note of `record` to the type of the
+/// row after the early write read it, and the home folder is in the folder
+/// of the type `placed` (U7 of the note types plan). The change becomes a type
+/// move that this computer owes (KTD5), and the app shows the new type
+/// while the move waits (KTD3). The caller holds the store lock.
+fn owe_type_move(
+    store: &Store,
+    record: &SessionRecord,
+    placed: Option<String>,
+) -> Result<(), StageError> {
+    let now = Local::now().fixed_offset();
+    let to = record.note_type.clone();
+    log::info!(
+        "the type of {} changed while its folder was written, so the folder moves later",
+        record.id
+    );
+    store.set_type_move(
+        &record.id,
+        &session_core::TypeMove {
+            to: to.clone(),
+            from: placed.clone(),
+            changed_at: now,
+            taken_over_at: None,
+            remove_empty_from: false,
+            field_written: false,
+        },
+    )?;
+    store.set_pending_type(
+        &record.id,
+        Some(&folder::PendingType {
+            to,
+            from: placed.clone(),
+            by: store.computer_id()?,
+            at: now,
+        }),
+    )?;
+    store.set_note_type(&record.id, placed.as_deref())?;
+    Ok(())
 }
 
 // ------------------------------------------------------------ the note guard
@@ -247,9 +330,10 @@ pub fn step(
             let root = destination
                 .ok_or_else(|| StageError::NoDestination("no storage folder is set".into()))?;
             check_root(root)?;
-            let (doc, notes, folder_name, records) = {
+            let (doc, notes, folder_name, records, note_type) = {
                 let guard = lock(store);
                 let record = guard.session(id)?.ok_or(StageError::Cancelled)?;
+                let note_type = row_type(&guard, &record)?;
                 let flag = flag_for(&guard, &record)?.ok_or(StageError::Cancelled)?;
                 let segments = guard.segments(id)?;
                 let started = note_started(&record, &segments);
@@ -262,7 +346,7 @@ pub fn step(
                 let title = record.title.as_ref().map(|t| t.text.as_str());
                 let name = naming::folder_name(started, title);
                 let notes = folder::render_notes(&guard.notes(id)?);
-                (doc, notes, name, flag == ResultFlag::NotSaved)
+                (doc, notes, name, flag == ResultFlag::NotSaved, note_type)
             };
             let staging = root.join(naming::staging_name(id));
             match std::fs::create_dir(&staging) {
@@ -297,16 +381,46 @@ pub fn step(
             Ok(EarlyState::Filled {
                 root: root.to_path_buf(),
                 folder_name,
+                note_type,
             })
         }
-        EarlyState::Filled { root, folder_name } => {
+        EarlyState::Filled {
+            root,
+            folder_name,
+            note_type,
+        } => {
             // Only a storage folder that is there can tell a rename that
             // happened from a staging folder that is gone.
             check_root(root)?;
             let staging = root.join(naming::staging_name(id));
-            let candidates =
-                (1..=MAX_NAMES).map(|attempt| root.join(naming::candidate(folder_name, attempt)));
-            if !exists(&staging) {
+            let staged = exists(&staging);
+            // The final name is in the type folder. The search after a
+            // crash makes no type folder.
+            let parent = match note_type {
+                None => Some(root.clone()),
+                Some(name) if staged => match type_move::type_folder(root, name) {
+                    Ok(folder) => Some(folder),
+                    Err(e) if is_refused(&e) => {
+                        // A file has the name of the type folder: the note
+                        // goes directly in the storage folder, with no type.
+                        log::warn!("the folder of {id} cannot go in the type folder {name}: {e}");
+                        lock(store).set_note_type(id, None)?;
+                        Some(root.clone())
+                    }
+                    Err(e) => return Err(storage(root, io::Error::other(e.to_string()))),
+                },
+                Some(name) => match type_move::existing_type_folder(root, name) {
+                    Ok(folder) => folder,
+                    // The rename went directly in the storage folder, as
+                    // above.
+                    Err(e) if is_refused(&e) => Some(root.clone()),
+                    Err(e) => return Err(storage(root, io::Error::other(e.to_string()))),
+                },
+            };
+            let candidates = parent.iter().flat_map(|parent| {
+                (1..=MAX_NAMES).map(|attempt| parent.join(naming::candidate(folder_name, attempt)))
+            });
+            if !staged {
                 // The rename happened and its record did not: the folder's
                 // `session.md` names the note.
                 let mut unreadable = None;
@@ -365,10 +479,19 @@ pub fn step(
 /// has its home path. A row that is gone ends the write.
 pub fn record(store: &SharedStore, id: &str, state: &EarlyState) -> Result<(), StageError> {
     let guard = lock(store);
-    if guard.session(id)?.is_none() {
+    let Some(record) = guard.session(id)? else {
         return Err(StageError::Cancelled);
-    }
+    };
     if let EarlyState::Done { path } = state {
+        // A type change after the first step does not reach the folder:
+        // the folder moves later.
+        if let Some(EarlyState::Filled { root, .. }) = self::state(&guard, id)?
+            && path.file_name() != Some(std::ffi::OsStr::new(&naming::staging_name(id)))
+            && let Some(placed) = folder::note_type_in(&root, path)
+            && !same_type(&placed, &record.note_type)
+        {
+            owe_type_move(&guard, &record, placed)?;
+        }
         guard.set_home_path(id, &path.to_string_lossy())?;
     }
     guard.set_result_state(id, STATE, &serde_json::to_value(state)?)?;

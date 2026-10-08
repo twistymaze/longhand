@@ -996,6 +996,7 @@ mod early_home {
         set(&EarlyState::Filled {
             root: root.path().to_path_buf(),
             folder_name: name.into(),
+            note_type: None,
         });
         let target = Target::Full(vec![root.path().to_path_buf()]);
         let mut reconciler = Reconciler::new(&options());

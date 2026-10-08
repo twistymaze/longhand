@@ -1881,6 +1881,27 @@ fn a_save_into_the_old_folder_is_found_until_the_note_is_saved() {
     assert!(store.saves_into(old).unwrap().is_empty());
 }
 
+// KTD4 of the note types plan: a save into a home folder in a type folder
+// is a save into the storage folder.
+#[test]
+fn a_save_into_a_type_folder_of_the_old_folder_is_found() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s", t(0), None).unwrap();
+    store
+        .put_checkpoint(
+            "s",
+            Stage::Save,
+            "state",
+            r#"{"step":"done","path":"/notes/old/Pathfinder/2027-01-15 0800 Note"}"#,
+        )
+        .unwrap();
+    assert_eq!(
+        store.saves_into(Path::new("/notes/old")).unwrap(),
+        vec!["s".to_string()]
+    );
+    assert!(store.saves_into(Path::new("/notes")).unwrap().is_empty());
+}
+
 /// KTD15: a note keeps the active prompt from when it started.
 #[test]
 fn a_note_keeps_the_prompt_snapshot_from_its_start() {

@@ -317,7 +317,11 @@ impl Removal<'_> {
                     Target::Nothing
                 }))
             }
-            Some(EarlyState::Filled { root, folder_name }) => {
+            Some(EarlyState::Filled {
+                root,
+                folder_name,
+                note_type,
+            }) => {
                 if session_save::check_destination(&root).is_err() {
                     return Ok(Err(Kept::Unavailable));
                 }
@@ -327,7 +331,11 @@ impl Removal<'_> {
                 }
                 // The rename to the final name happened and its record did
                 // not. This step only finds the folder; it writes nothing.
-                let filled = EarlyState::Filled { root, folder_name };
+                let filled = EarlyState::Filled {
+                    root,
+                    folder_name,
+                    note_type,
+                };
                 let next = early_home::step(
                     self.store,
                     id,

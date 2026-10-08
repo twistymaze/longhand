@@ -557,10 +557,13 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     Ok(true)
 }
 
-/// The folder of the type `name` in `root`: the folder whose name is the
-/// same type, with the spelling of the disk, or a new folder `name`. The
-/// name goes through the type name check (KTD8).
-fn type_folder(root: &Path, name: &str) -> Result<PathBuf, RenameError> {
+/// The folder in `root` whose name is the same type as `name`, with the
+/// spelling of the disk, or `None` when `root` has no such folder. This
+/// makes no folder. The name goes through the type name check (KTD8).
+pub(crate) fn existing_type_folder(
+    root: &Path,
+    name: &str,
+) -> Result<Option<PathBuf>, RenameError> {
     let refused = |why: String| RenameError::Io(io::Error::new(io::ErrorKind::InvalidInput, why));
     let checked = check_type_name(name).map_err(|e| refused(e.to_string()))?;
     if checked != name {
@@ -573,13 +576,23 @@ fn type_folder(root: &Path, name: &str) -> Result<PathBuf, RenameError> {
         };
         if same_type_name(found, name) {
             return if entry.file_type()?.is_dir() {
-                Ok(entry.path())
+                Ok(Some(entry.path()))
             } else {
                 Err(refused(format!(
                     "a file has the name of the type folder {found}"
                 )))
             };
         }
+    }
+    Ok(None)
+}
+
+/// The folder of the type `name` in `root`: the folder whose name is the
+/// same type, with the spelling of the disk, or a new folder `name`. The
+/// name goes through the type name check (KTD8).
+pub(crate) fn type_folder(root: &Path, name: &str) -> Result<PathBuf, RenameError> {
+    if let Some(folder) = existing_type_folder(root, name)? {
+        return Ok(folder);
     }
     let folder = root.join(name);
     match std::fs::create_dir(&folder) {

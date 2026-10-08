@@ -639,12 +639,14 @@ async openSystemAudioSettings() : Promise<Result<null, string>> {
  * Start a new note (R7, KTD2). With `record`, the note records at once;
  * without it, the note opens with no recording, and a recording that runs
  * continues. Refused while the storage folder is not available, for both
- * choices. `config` applies to a recording start only. Returns the id of
- * the new note.
+ * choices. `config` applies to a recording start only. `note_type` is the
+ * type of the note; no choice is the default type (R23, R24). A named type
+ * that is not a valid type of the list is refused. Returns the id of the
+ * new note.
  */
-async startRecording(record: boolean, config: RecognitionConfig | null) : Promise<Result<string, string>> {
+async startRecording(record: boolean, config: RecognitionConfig | null, noteType: NewNoteType | null) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("start_recording", { record, config }) };
+    return { status: "ok", data: await TAURI_INVOKE("start_recording", { record, config, noteType }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1524,6 +1526,22 @@ export type MoveState =
  * The open Move, for Settings > Storage.
  */
 export type MoveStatus = { old_folder: string; new_folder: string; moved: number; total: number; state: MoveState; cause: MovePauseCause | null }
+/**
+ * The note type of a new note (R23, R24 of the note types plan).
+ */
+export type NewNoteType = 
+/**
+ * The default type from the shared settings (R7).
+ */
+{ kind: "default" } | 
+/**
+ * "No type": the home folder is directly in the storage folder.
+ */
+{ kind: "no_type" } | 
+/**
+ * A type of the effective type list.
+ */
+{ kind: "named"; name: string }
 /**
  * What a type rename, merge or delete did (R6, R31).
  */

@@ -174,6 +174,7 @@ describe("Home", () => {
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
       record: true,
       config: null,
+      noteType: null,
     });
     // The saved default configuration applies; no override is set.
     expect(tauri.calls.some((c) => c.cmd === "set_recognition_override")).toBe(false);
@@ -1070,6 +1071,7 @@ describe("Home: notes with no audio and other computers", () => {
     expect(tauri.calls.find((c) => c.cmd === "start_recording")?.args).toEqual({
       record: false,
       config: null,
+      noteType: null,
     });
     expect(started).toEqual(["n"]);
     expect(changed).toBeGreaterThan(0);

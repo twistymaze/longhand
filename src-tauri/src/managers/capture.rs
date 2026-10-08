@@ -257,20 +257,36 @@ fn stop_note(
     })
 }
 
+/// Put the type `note_type` in the new row of `id`, and begin its early
+/// write. The early write reads the type from the row and makes the home
+/// folder in the type folder (U7 of the note types plan). The caller holds
+/// the store lock that made the row. The early write begins also when the
+/// type cannot be recorded: the note then has no type.
+fn begin_home(store: &Store, id: &str, note_type: Option<&str>) -> Result<(), CaptureError> {
+    let typed = match note_type {
+        Some(_) => store.set_note_type(id, note_type),
+        None => Ok(()),
+    };
+    pipeline::early_home::begin(store, id).map_err(|e| CaptureError::Other(e.to_string()))?;
+    typed?;
+    Ok(())
+}
+
 /// Make the row of the note `id` that opened at `opened` with no recording,
-/// and begin its early write in the same store lock (KTD2, KTD4). The job
-/// of `early_homes` then writes the home folder; the call does not wait
-/// for it.
+/// with the type `note_type`, and begin its early write in the same store
+/// lock (KTD2, KTD4). The job of `early_homes` then writes the home
+/// folder; the call does not wait for it.
 fn open_notes_only(
     store: &pipeline::SharedStore,
     early_homes: Option<&Arc<pipeline::early_home::EarlyHomes>>,
     id: &str,
     opened: DateTime<FixedOffset>,
+    note_type: Option<&str>,
 ) -> Result<(), CaptureError> {
     {
         let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
         store.create_notes_only(id, opened, None)?;
-        pipeline::early_home::begin(&store, id).map_err(|e| CaptureError::Other(e.to_string()))?;
+        begin_home(&store, id, note_type)?;
     }
     if let Some(homes) = early_homes {
         homes.start(id);
@@ -1305,22 +1321,26 @@ impl CaptureManager {
         true
     }
 
-    /// Start a new session recording (R1, R6c). A session already recording
-    /// is closed first and then stopped and queued by the store.
+    /// Start a new session recording (R1, R6c), of the type `note_type`
+    /// (`None` is "No type"). A session already recording is closed first
+    /// and then stopped and queued by the store.
     pub fn start_session(
         &self,
         app: &AppHandle,
         speaker_count: Option<SpeakerCount>,
+        note_type: Option<&str>,
     ) -> Result<String, CaptureError> {
-        self.start_session_with_config(app, speaker_count, None)
+        self.start_session_with_config(app, speaker_count, None, note_type)
     }
 
     /// Apply the choices to this start request only. Other starts use defaults.
+    /// The note gets the type `note_type`, which the caller checked.
     pub fn start_session_with_config(
         &self,
         app: &AppHandle,
         speaker_count: Option<SpeakerCount>,
         config: Option<models::recognition::RecognitionConfig>,
+        note_type: Option<&str>,
     ) -> Result<String, CaptureError> {
         let mut inner = self.inner();
         if inner.restart_claimed {
@@ -1419,7 +1439,9 @@ impl CaptureManager {
             };
             // The early write of the home folder begins with the row, so
             // a crash before its first step still gets one folder (KTD4).
-            if let Err(e) = pipeline::early_home::begin(&store, &id) {
+            // The row has the type first: the folder goes in the type
+            // folder.
+            if let Err(e) = begin_home(&store, &id, note_type) {
                 log::error!("could not begin the folder write of {id}: {e}");
             }
             stopped
@@ -1454,13 +1476,18 @@ impl CaptureManager {
 
     /// Open a new note that does not record (KTD2): a note with no audio,
     /// whose home folder is written in the background (R1). A recording
-    /// that runs continues. Returns the id of the note.
-    pub fn open_note(&self, app: &AppHandle) -> Result<String, CaptureError> {
+    /// that runs continues. The note gets the type `note_type` (`None` is
+    /// "No type"), which the caller checked. Returns the id of the note.
+    pub fn open_note(
+        &self,
+        app: &AppHandle,
+        note_type: Option<&str>,
+    ) -> Result<String, CaptureError> {
         let id = uuid::Uuid::new_v4().to_string();
         let early_homes = app
             .try_state::<Arc<ProcessingManager>>()
             .map(|processing| Arc::clone(processing.early_homes()));
-        open_notes_only(&self.store, early_homes.as_ref(), &id, now())?;
+        open_notes_only(&self.store, early_homes.as_ref(), &id, now(), note_type)?;
         log::info!("note {id} opened with no recording");
         Ok(id)
     }
@@ -4444,7 +4471,7 @@ mod tests {
             Box::new(|_| {}),
         );
 
-        open_notes_only(&store, Some(&homes), "n", at(0)).unwrap();
+        open_notes_only(&store, Some(&homes), "n", at(0), None).unwrap();
         homes.wait("n");
 
         let s = store.lock().unwrap();
@@ -4456,6 +4483,51 @@ mod tests {
         let home = PathBuf::from(record.home_path.unwrap());
         assert!(home.join("session.md").is_file());
         assert!(home.join("notes.md").is_file());
+    }
+
+    // Covers F1, R4 (U7 of the note types plan): a note that opens with a
+    // type has the type in its row, and its home folder is in the type
+    // folder from the first write.
+    #[test]
+    fn a_note_that_opens_with_a_type_gets_its_home_folder_in_the_type_folder() {
+        let dest = tempfile::tempdir().unwrap();
+        let store: pipeline::SharedStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+        let target = dest.path().to_path_buf();
+        let homes = pipeline::early_home::EarlyHomes::new(
+            Arc::clone(&store),
+            "run-1",
+            Box::new(move || Some(target.clone())),
+            Box::new(|_| {}),
+        );
+
+        open_notes_only(&store, Some(&homes), "n", at(0), Some("Pathfinder")).unwrap();
+        homes.wait("n");
+
+        let record = store.lock().unwrap().session("n").unwrap().unwrap();
+        assert_eq!(record.note_type.as_deref(), Some("Pathfinder"));
+        let home = PathBuf::from(record.home_path.unwrap());
+        assert_eq!(
+            home.parent(),
+            Some(dest.path().join("Pathfinder").as_path())
+        );
+        assert!(home.join("session.md").is_file());
+    }
+
+    // U7 of the note types plan: a recording start puts the type in the
+    // row in the lock that begins the early write.
+    #[test]
+    fn a_recording_start_puts_the_type_in_the_row_with_the_early_write() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s", at(0), None).unwrap();
+
+        begin_home(&store, "s", Some("Pathfinder")).unwrap();
+
+        let record = store.session("s").unwrap().unwrap();
+        assert_eq!(record.note_type.as_deref(), Some("Pathfinder"));
+        assert_eq!(
+            pipeline::early_home::state(&store, "s").unwrap(),
+            Some(pipeline::early_home::EarlyState::Begun)
+        );
     }
 
     #[test]

@@ -1718,7 +1718,8 @@ impl Store {
 
     /// The sessions that are not Saved and whose save has put, or will put,
     /// the session in `folder`: the save state names a staging directory or
-    /// a folder there. A Move from `folder` waits for them (KTD10).
+    /// a folder there, directly or in a type folder (KTD4 of the note
+    /// types plan). A Move from `folder` waits for them (KTD10).
     pub fn saves_into(&self, folder: &Path) -> Result<Vec<String>> {
         #[derive(serde::Deserialize)]
         struct Paths {
@@ -1739,7 +1740,7 @@ impl Store {
                     p.staging
                         .iter()
                         .chain(&p.path)
-                        .any(|path| path.parent() == Some(folder))
+                        .any(|path| crate::folder::note_type_in(folder, path).is_some())
                 });
             if into {
                 ids.push(record.id);

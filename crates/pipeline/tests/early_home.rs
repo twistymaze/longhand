@@ -887,3 +887,208 @@ fn a_typed_home_folder_that_another_computer_removed_is_deleted() {
     assert!(early_home::home_deleted(&store, "n").unwrap());
     assert!(!dest.path().join("Pathfinder/.longhand").exists());
 }
+
+// ---------------------------------------------------------------- note types (U7)
+
+/// [`recording_note`] with the type `name` in its row, as a start with a
+/// type makes it.
+fn typed_note(store: &SharedStore, id: &str, name: &str) {
+    recording_note(store, id, "");
+    store.lock().unwrap().set_note_type(id, Some(name)).unwrap();
+}
+
+fn note_type(store: &SharedStore, id: &str) -> Option<String> {
+    store
+        .lock()
+        .unwrap()
+        .session(id)
+        .unwrap()
+        .unwrap()
+        .note_type
+}
+
+// Covers F1, R4: a note of a type gets its home folder in the type folder,
+// and the write makes the type folder when it is missing.
+#[test]
+fn a_note_of_a_type_gets_its_home_folder_in_the_type_folder() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    typed_note(&store, "s", "Pathfinder");
+
+    let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert_eq!(
+        path,
+        dest.path()
+            .join("Pathfinder")
+            .join("2027-01-15 0800 Longhand session")
+    );
+    assert_eq!(SessionDoc::read(&path).unwrap().session_id, "s");
+    assert_eq!(home(&store, "s"), Some(path.clone()));
+    assert_eq!(note_type(&store, "s"), Some("Pathfinder".to_string()));
+    assert_eq!(folders(dest.path()), vec!["Pathfinder"]);
+    assert!(!dest.path().join(staging_name("s")).exists());
+    // The library marker is in the storage folder, never in the type
+    // folder.
+    assert!(library::scan::marker(dest.path()).exists());
+    assert!(!dest.path().join("Pathfinder/.longhand").exists());
+    assert_eq!(early(&store, "s"), Some(EarlyState::Done { path }));
+}
+
+#[test]
+fn a_note_of_a_type_uses_the_type_folder_that_is_there() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    std::fs::create_dir_all(
+        dest.path()
+            .join("Pathfinder/2027-01-15 0800 Longhand session"),
+    )
+    .unwrap();
+    typed_note(&store, "s", "Pathfinder");
+
+    let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert_eq!(
+        path,
+        dest.path()
+            .join("Pathfinder")
+            .join("2027-01-15 0800 Longhand session-2")
+    );
+}
+
+// The crash recovery searches the type folder (KTD4).
+#[test]
+fn a_crash_after_the_rename_into_a_type_folder_finds_the_folder_there() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    typed_note(&store, "s", "Pathfinder");
+    let filled = step(&store, "s", dest.path());
+    assert!(matches!(filled, EarlyState::Filled { .. }), "{filled:?}");
+    // The rename happened; its record was lost.
+    let placed = early_home::step(&store, "s", &filled, Some(dest.path()), RUN, &RealFs).unwrap();
+    let EarlyState::Done { path } = &placed else {
+        panic!("{placed:?}");
+    };
+    assert_eq!(
+        path.parent(),
+        Some(dest.path().join("Pathfinder").as_path())
+    );
+    assert_eq!(home(&store, "s"), None);
+
+    let again = early_home::step(&store, "s", &filled, Some(dest.path()), RUN, &RealFs).unwrap();
+    assert_eq!(again, placed);
+    let written = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert_eq!(&written, path);
+    assert_eq!(folders(&dest.path().join("Pathfinder")).len(), 1);
+}
+
+// Covers R5 before the folder exists: a type change while the storage
+// folder is not available changes only the row, and the write puts the
+// home folder in the folder of the new type.
+#[test]
+fn a_type_change_while_the_write_waits_puts_the_folder_in_the_new_type_folder() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    typed_note(&store, "s", "Pathfinder");
+    let gone = dest.path().join("storage");
+    assert!(write(&store, "s", Some(&gone)).is_err());
+
+    store
+        .lock()
+        .unwrap()
+        .set_note_type("s", Some("One on One"))
+        .unwrap();
+    std::fs::create_dir(&gone).unwrap();
+    let path = write(&store, "s", Some(&gone)).unwrap().unwrap();
+
+    assert_eq!(path.parent(), Some(gone.join("One on One").as_path()));
+    assert_eq!(folders(&gone), vec!["One on One"]);
+    assert_eq!(note_type(&store, "s"), Some("One on One".to_string()));
+}
+
+// A type change after the staging step and before the rename: the folder
+// goes to the type of the staging step, and the change becomes a type move
+// that this computer owes (KTD5), so the change is not lost.
+#[test]
+fn a_type_change_during_the_rename_becomes_an_owed_type_move() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    typed_note(&store, "s", "Pathfinder");
+    step(&store, "s", dest.path());
+    store
+        .lock()
+        .unwrap()
+        .set_note_type("s", Some("One on One"))
+        .unwrap();
+
+    let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert_eq!(
+        path.parent(),
+        Some(dest.path().join("Pathfinder").as_path())
+    );
+    let s = store.lock().unwrap();
+    let owed = s.type_move("s").unwrap().expect("a type move");
+    assert_eq!(owed.to.as_deref(), Some("One on One"));
+    assert_eq!(owed.from.as_deref(), Some("Pathfinder"));
+    let record = s.session("s").unwrap().unwrap();
+    assert_eq!(record.note_type.as_deref(), Some("Pathfinder"));
+    // The app shows the new type while the move waits (KTD3).
+    assert_eq!(
+        pipeline::type_move::shown_type(&record),
+        (Some("One on One".to_string()), true)
+    );
+}
+
+// KTD8: a type name that is not valid never becomes a path. The note gets
+// no type.
+#[test]
+fn a_row_type_that_is_not_a_valid_name_puts_the_folder_in_the_storage_folder() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    typed_note(&store, "s", "../outside");
+
+    let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert_eq!(path.parent(), Some(dest.path()));
+    assert_eq!(note_type(&store, "s"), None);
+    assert_eq!(
+        folders(dest.path()),
+        vec!["2027-01-15 0800 Longhand session"]
+    );
+}
+
+// A file with the name of the type folder: the folder goes in the storage
+// folder, and the note has no type. A retry would not fix it.
+#[test]
+fn a_file_with_the_type_name_puts_the_folder_in_the_storage_folder() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    std::fs::write(dest.path().join("Pathfinder"), b"").unwrap();
+    typed_note(&store, "s", "Pathfinder");
+
+    let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    assert_eq!(path.parent(), Some(dest.path()));
+    assert_eq!(note_type(&store, "s"), None);
+    assert!(store.lock().unwrap().type_move("s").unwrap().is_none());
+}
+
+// A Filled state from a build before note types has no type: the folder
+// goes in the storage folder.
+#[test]
+fn a_filled_state_with_no_type_reads_as_the_storage_folder() {
+    let state: EarlyState = serde_json::from_value(
+        serde_json::json!({"step": "filled", "root": "/r", "folder_name": "n"}),
+    )
+    .unwrap();
+    assert_eq!(
+        state,
+        EarlyState::Filled {
+            root: PathBuf::from("/r"),
+            folder_name: "n".into(),
+            note_type: None,
+        }
+    );
+}
