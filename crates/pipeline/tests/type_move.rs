@@ -582,6 +582,96 @@ fn a_rename_that_changes_only_the_case_renames_the_type_folder() {
     assert_eq!(b.home("s"), renamed);
 }
 
+/// The visible names in `root`, with the case of the disk.
+fn type_folders(root: &Path) -> Vec<String> {
+    entries(root)
+}
+
+fn case_rename() -> BulkEdit {
+    BulkEdit::RenameType {
+        from: "pathfinder".into(),
+        to: "Pathfinder".into(),
+    }
+}
+
+#[test]
+fn a_case_rename_waits_while_a_note_in_the_folder_is_busy() {
+    // KTD6, KTD7.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_typed("s", &root, "pathfinder", "Session 12");
+    in_use_elsewhere(&home);
+    let pass = type_move::apply_edit(&b.store, &root, 7, &case_rename(), &b.ctx(now())).unwrap();
+    assert!(!pass.done);
+    assert!(pass.changed.is_empty());
+    assert_eq!(type_folders(&root), ["pathfinder"]);
+    assert_eq!(b.home("s"), home);
+    assert_eq!(b.record("s").note_type.as_deref(), Some("pathfinder"));
+
+    in_use_ended(&home);
+    let pass = type_move::apply_edit(&b.store, &root, 7, &case_rename(), &b.ctx(now())).unwrap();
+    assert!(pass.done);
+    assert_eq!(type_folders(&root), ["Pathfinder"]);
+}
+
+#[test]
+fn a_case_rename_that_a_crash_stopped_at_the_temporary_name_is_finished() {
+    // KTD7: a crash after the first rename leaves the type folder at the
+    // temporary name, and the rows at the old name.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_typed("s", &root, "pathfinder", "Session 12");
+    let temp = root.join(session_save::rename_home::temp_name("type-7"));
+    fs::rename(root.join("pathfinder"), &temp).unwrap();
+
+    let pass = type_move::apply_edit(&b.store, &root, 7, &case_rename(), &b.ctx(now())).unwrap();
+    assert!(pass.done);
+    assert_eq!(pass.changed, ["s"]);
+    assert!(!temp.exists());
+    assert_eq!(type_folders(&root), ["Pathfinder"]);
+    assert_eq!(b.home("s"), root.join("Pathfinder").join(name_of(&home)));
+    assert_eq!(b.record("s").note_type.as_deref(), Some("Pathfinder"));
+}
+
+/// A volume whose rename from the temporary name to the new name fails.
+struct SecondRenameFails(std::sync::atomic::AtomicUsize);
+
+impl session_save::Fs for SecondRenameFails {
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            return Err(std::io::Error::other("the second rename failed"));
+        }
+        RealFs.rename_new(from, to)
+    }
+}
+
+#[test]
+fn a_case_rename_whose_second_rename_fails_gives_back_the_old_folder_name() {
+    // KTD7: the folder never stays at the temporary name.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_typed("s", &root, "pathfinder", "Session 12");
+    let fails = SecondRenameFails(std::sync::atomic::AtomicUsize::new(0));
+    let ctx = Context {
+        fs: &fails,
+        ..b.ctx(now())
+    };
+    assert!(type_move::apply_edit(&b.store, &root, 7, &case_rename(), &ctx).is_err());
+    assert_eq!(fails.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(type_folders(&root), ["pathfinder"]);
+    assert!(
+        !root
+            .join(session_save::rename_home::temp_name("type-7"))
+            .exists()
+    );
+    assert!(home.join("session.md").exists());
+    assert_eq!(b.home("s"), home);
+    assert_eq!(b.record("s").note_type.as_deref(), Some("pathfinder"));
+}
+
 #[test]
 fn a_busy_note_of_a_renamed_type_stays_and_shows_the_new_type() {
     // R6, KTD7, KTD9.
@@ -615,6 +705,85 @@ fn a_busy_note_of_a_renamed_type_stays_and_shows_the_new_type() {
     assert_eq!(b.run(now()), ["busy"]);
     assert!(!root.join("Pathfinder").exists());
     assert_eq!(entries(&root.join("D&D")).len(), 2);
+}
+
+/// One pass of the recorded type edit `id` of the store of `b`, as a
+/// launch or a scan runs it: the notes come from the record, and the
+/// record keeps the notes that are not done.
+fn continue_recorded(b: &Computer, root: &Path, id: i64) -> type_move::EditPass {
+    let open = b.store.lock().unwrap().bulk_edits().unwrap();
+    let open = open.into_iter().find(|o| o.id == id).unwrap();
+    let pass =
+        type_move::apply_recorded(&b.store, root, id, &open.edit, &open.notes, &b.ctx(now()))
+            .unwrap();
+    let store = b.store.lock().unwrap();
+    if pass.done {
+        store.remove_bulk_edit(id).unwrap();
+    } else {
+        store.set_bulk_edit_notes(id, &pass.left).unwrap();
+    }
+    pass
+}
+
+/// A type edit of "Pathfinder" waits for a note whose session.md cannot
+/// be read. A note that the user puts in "Pathfinder" after the edit keeps
+/// the type, also after a relaunch.
+fn a_type_edit_that_waits_keeps_a_later_type_change(edit: BulkEdit) {
+    let (dir, root) = storage();
+    let db = dir.path().join("longhand.db");
+    let mut b = computer_with(Store::open(&db).unwrap(), "run-b");
+    let stuck = b.save_typed("stuck", &root, "Pathfinder", "Session 12");
+    b.save_typed("later", &root, "Standup", "Standup");
+    let text = fs::read(stuck.join("session.md")).unwrap();
+    fs::write(stuck.join("session.md"), b"not a session file").unwrap();
+
+    let id = {
+        let store = b.store.lock().unwrap();
+        let notes = type_move::matching_notes(&store, &edit).unwrap();
+        assert_eq!(notes, ["stuck"]);
+        store.add_bulk_edit(&edit, &notes).unwrap()
+    };
+    let pass = continue_recorded(&b, &root, id);
+    assert!(!pass.done);
+    assert_eq!(pass.left, ["stuck"]);
+
+    // A relaunch.
+    b.store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
+    let later = b.change("later", Some("Pathfinder"));
+    assert!(matches!(later, TypeChange::Moved(_)), "{later:?}");
+    assert!(!continue_recorded(&b, &root, id).done);
+    assert_eq!(b.record("later").note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(
+        b.home("later").parent(),
+        Some(root.join("Pathfinder").as_path())
+    );
+
+    fs::write(stuck.join("session.md"), &text).unwrap();
+    let pass = continue_recorded(&b, &root, id);
+    assert!(pass.done);
+    assert_eq!(pass.changed, ["stuck"]);
+    assert_ne!(b.record("stuck").note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(b.record("later").note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(
+        b.home("later").parent(),
+        Some(root.join("Pathfinder").as_path())
+    );
+    assert!(b.store.lock().unwrap().bulk_edits().unwrap().is_empty());
+}
+
+#[test]
+fn a_type_delete_that_waits_keeps_a_later_type_change() {
+    a_type_edit_that_waits_keeps_a_later_type_change(BulkEdit::DeleteType {
+        name: "Pathfinder".into(),
+    });
+}
+
+#[test]
+fn a_type_rename_that_waits_keeps_a_later_type_change() {
+    a_type_edit_that_waits_keeps_a_later_type_change(BulkEdit::RenameType {
+        from: "Pathfinder".into(),
+        to: "D&D".into(),
+    });
 }
 
 /// The pending type of another computer, `age` old, on the note in `home`.
@@ -825,4 +994,51 @@ fn an_empty_type_folder_is_removed_only_with_system_files_in_it() {
     assert!(!type_move::remove_empty_type_folder(root, "../x"));
     assert!(!type_move::remove_empty_type_folder(root, ".longhand"));
     assert!(root.join("Full/note").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_move_whose_session_file_does_not_download_waits_and_does_not_block() {
+    // A named pipe blocks its read until a writer opens it, as an
+    // online-only file blocks its read until it downloads.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("s", &root, "Standup");
+    in_use_elsewhere(&home);
+    assert_eq!(b.change("s", Some("One on One")), TypeChange::Later);
+    in_use_ended(&home);
+    let file = home.join("session.md");
+    let text = fs::read(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+    let status = std::process::Command::new("mkfifo")
+        .arg(&file)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let (store, own_runs, claims) = (b.store.clone(), b.own_runs.clone(), b.claims.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ctx = Context {
+            own_runs: &own_runs,
+            claims: &claims,
+            now: now(),
+            fs: &RealFs,
+        };
+        let _ = tx.send(run_owed(&store, &ctx).unwrap());
+    });
+    let moved = rx.recv_timeout(std::time::Duration::from_secs(30));
+    // The file downloads: this also ends the read that waits.
+    fs::write(&file, &text).unwrap();
+    assert_eq!(
+        moved.expect("the move waits on the read"),
+        Vec::<String>::new()
+    );
+    assert!(b.owes("s"));
+    assert!(home.exists());
+
+    // The next run moves the folder.
+    fs::remove_file(&file).unwrap();
+    fs::write(&file, &text).unwrap();
+    assert_eq!(b.run(now()), ["s"]);
 }

@@ -426,6 +426,7 @@ fn a_rename_changes_every_note_including_one_that_another_computer_processes() {
         tags::TagPass {
             matched: 0,
             changed: Vec::new(),
+            left: Vec::new(),
             done: true
         }
     );
@@ -524,6 +525,70 @@ fn a_rename_while_the_storage_folder_is_unavailable_continues_later() {
             texts(&["Customer::Mayo Clinic", "Topic::Security"])
         );
     }
+}
+
+/// One pass of the recorded edit `id` of the store of `b`, as a launch or
+/// a scan runs it: the notes come from the record, and the record keeps
+/// the notes that are not done.
+fn continue_recorded(b: &Computer, id: i64) -> tags::TagPass {
+    let open = b.store.lock().unwrap().bulk_edits().unwrap();
+    let open = open.into_iter().find(|o| o.id == id).unwrap();
+    let pass = tags::apply_recorded(&b.store, &b.claims, &open.edit, &open.notes).unwrap();
+    let store = b.store.lock().unwrap();
+    if pass.done {
+        store.remove_bulk_edit(id).unwrap();
+    } else {
+        store.set_bulk_edit_notes(id, &pass.left).unwrap();
+    }
+    pass
+}
+
+#[test]
+fn a_tag_edit_that_waits_keeps_the_tag_that_the_user_adds_after_the_edit() {
+    // A tag delete waits for a note whose session.md cannot be read. A tag
+    // that the user adds to another note after the delete stays, also
+    // after a relaunch.
+    let (dir, root) = storage();
+    let db = dir.path().join("longhand.db");
+    let mut b = computer();
+    b.store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
+    let stuck = b.save_note("stuck", &root, started(), &["follow-up"]);
+    b.save_note("later", &root, started(), &[]);
+    let text = fs::read(stuck.join("session.md")).unwrap();
+    fs::remove_file(stuck.join("session.md")).unwrap();
+
+    let edit = BulkEdit::DeleteTag {
+        name: "follow-up".into(),
+    };
+    let id = {
+        let store = b.store.lock().unwrap();
+        let notes = tags::matching_notes(&store, &edit).unwrap();
+        assert_eq!(notes, ["stuck"]);
+        store.add_bulk_edit(&edit, &notes).unwrap()
+    };
+    let pass = continue_recorded(&b, id);
+    assert_eq!((pass.matched, pass.done), (1, false));
+    assert_eq!(pass.left, ["stuck"]);
+
+    // A relaunch.
+    b.store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
+    assert_eq!(
+        b.set("later", &["follow-up"], &[]),
+        Ok(texts(&["follow-up"]))
+    );
+    let pass = continue_recorded(&b, id);
+    assert!(!pass.done);
+    assert_eq!(b.record("later").tags, texts(&["follow-up"]));
+
+    fs::write(stuck.join("session.md"), &text).unwrap();
+    let pass = continue_recorded(&b, id);
+    assert_eq!(
+        (pass.changed.as_slice(), pass.done),
+        (["stuck".to_string()].as_slice(), true)
+    );
+    assert!(b.record("stuck").tags.is_empty());
+    assert_eq!(b.record("later").tags, texts(&["follow-up"]));
+    assert!(b.store.lock().unwrap().bulk_edits().unwrap().is_empty());
 }
 
 #[test]

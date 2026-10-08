@@ -720,13 +720,15 @@ impl Runner {
         root: &std::path::Path,
         edit_id: i64,
         edit: &session_core::BulkEdit,
+        notes: &[String],
         own_runs: &[String],
     ) -> Result<type_move::EditPass, StageError> {
-        type_move::apply_edit(
+        type_move::apply_recorded(
             &self.env.store,
             root,
             edit_id,
             edit,
+            notes,
             &self.type_context(own_runs, &session_save::RealFs),
         )
     }
@@ -742,12 +744,14 @@ impl Runner {
         crate::tags::set_note_tags(&self.env.store, &self.claims, session_id, add, remove)
     }
 
-    /// One pass of a tag rename or delete over every note (KTD11).
+    /// One pass of a tag rename or delete over the recorded notes `notes`
+    /// (KTD11).
     pub fn apply_tag_edit(
         &self,
         edit: &session_core::BulkEdit,
+        notes: &[String],
     ) -> Result<crate::tags::TagPass, StageError> {
-        crate::tags::apply_edit(&self.env.store, &self.claims, edit)
+        crate::tags::apply_recorded(&self.env.store, &self.claims, edit, notes)
     }
 
     fn type_context<'a>(

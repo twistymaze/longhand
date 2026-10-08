@@ -1589,10 +1589,11 @@ impl ProcessingManager {
         })
     }
 
-    /// A type rename, merge or delete (KTD7): record the edit, change the
-    /// shared list with `save`, then change each note. The record goes when
-    /// every note has moved or has its pending type. Otherwise each launch
-    /// and scan continues the edit.
+    /// A type rename, merge or delete (KTD7): record the edit with the
+    /// notes that show the old type, change the shared list with `save`,
+    /// then change each of these notes. The record goes when every note has
+    /// moved or has its pending type. Otherwise each launch and scan
+    /// continues the edit with the notes that are not done.
     fn edit_note_types(
         &self,
         save: impl FnOnce(
@@ -1600,14 +1601,19 @@ impl ProcessingManager {
         ) -> Result<Option<session_core::BulkEdit>, String>,
     ) -> Result<u32, String> {
         let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
-        let recorded: std::sync::Mutex<Option<i64>> = std::sync::Mutex::default();
+        let recorded: std::sync::Mutex<Option<(i64, Vec<String>)>> = std::sync::Mutex::default();
         let record = |edit: &session_core::BulkEdit| {
             let store = pipeline::lock(&self.store);
             let mut recorded = recorded.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(id) = recorded.take() {
+            if let Some((id, _)) = recorded.take() {
                 store.remove_bulk_edit(id).map_err(|e| e.to_string())?;
             }
-            *recorded = Some(store.add_bulk_edit(edit).map_err(|e| e.to_string())?);
+            let notes =
+                pipeline::type_move::matching_notes(&store, edit).map_err(|e| e.to_string())?;
+            let id = store
+                .add_bulk_edit(edit, &notes)
+                .map_err(|e| e.to_string())?;
+            *recorded = Some((id, notes));
             Ok(())
         };
         let saved = save(&record);
@@ -1616,36 +1622,44 @@ impl ProcessingManager {
             Ok(Some(edit)) => edit,
             Ok(None) => return Ok(0),
             Err(e) => {
-                if let Some(id) = id {
+                if let Some((id, _)) = id {
                     self.remove_bulk_edit(id);
                 }
                 return Err(e);
             }
         };
-        let Some(id) = id else {
+        let Some((id, notes)) = id else {
             return Err("The change of the note types was not recorded.".into());
         };
         pipeline::lock(&self.store)
             .set_bulk_edit_shared_saved(id)
             .map_err(|e| e.to_string())?;
         settings::emit_settings_changed(&self.app);
-        let changed = self.continue_type_edit(id, &edit);
+        let changed = self.continue_type_edit(id, &edit, &notes);
         let count = u32::try_from(changed.len()).unwrap_or(u32::MAX);
         self.emit_changed(changed);
         Ok(count)
     }
 
-    /// One pass of the per-note part of the type edit `id` (KTD7). The
-    /// record goes when the edit is done. Returns the notes that changed.
-    fn continue_type_edit(&self, id: i64, edit: &session_core::BulkEdit) -> Vec<String> {
+    /// One pass of the per-note part of the type edit `id` over its
+    /// recorded notes `notes` (KTD7). The record goes when the edit is
+    /// done. Otherwise it keeps the notes that are not done. Returns the
+    /// notes that changed.
+    fn continue_type_edit(
+        &self,
+        id: i64,
+        edit: &session_core::BulkEdit,
+        notes: &[String],
+    ) -> Vec<String> {
         let Some(root) = self.storage_folder() else {
             return Vec::new();
         };
-        match self.runner.apply_type_edit(&root, id, edit, &self.own_runs) {
+        match self
+            .runner
+            .apply_type_edit(&root, id, edit, notes, &self.own_runs)
+        {
             Ok(pass) => {
-                if pass.done {
-                    self.remove_bulk_edit(id);
-                }
+                self.save_bulk_pass(id, pass.done, &pass.left);
                 pass.changed
             }
             Err(e) => {
@@ -1696,39 +1710,58 @@ impl ProcessingManager {
         })
     }
 
-    /// A tag rename or delete (KTD11): record the edit before the first
-    /// note changes, then change each note. The record goes when every note
-    /// is done. Otherwise each launch and scan continues the edit.
+    /// A tag rename or delete (KTD11): record the edit with the notes that
+    /// have the tag, before the first note changes, then change each of
+    /// these notes. The record goes when every note is done. Otherwise each
+    /// launch and scan continues the edit with the notes that are not done.
     fn edit_tags(&self, edit: session_core::BulkEdit) -> Result<u32, String> {
         let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
-        let id = {
+        let (id, notes) = {
             let store = pipeline::lock(&self.store);
-            let id = store.add_bulk_edit(&edit).map_err(|e| e.to_string())?;
+            let notes = pipeline::tags::matching_notes(&store, &edit).map_err(|e| e.to_string())?;
+            let id = store
+                .add_bulk_edit(&edit, &notes)
+                .map_err(|e| e.to_string())?;
             // A tag edit has no shared-settings part.
             store
                 .set_bulk_edit_shared_saved(id)
                 .map_err(|e| e.to_string())?;
-            id
+            (id, notes)
         };
-        let pass = self.continue_tag_edit(id, &edit);
+        let pass = self.continue_tag_edit(id, &edit, &notes);
         self.emit_changed(pass.changed);
         Ok(u32::try_from(pass.matched).unwrap_or(u32::MAX))
     }
 
-    /// One pass of the tag edit `id` (KTD11). The record goes when the edit
-    /// is done.
-    fn continue_tag_edit(&self, id: i64, edit: &session_core::BulkEdit) -> pipeline::tags::TagPass {
-        match self.runner.apply_tag_edit(edit) {
+    /// One pass of the tag edit `id` over its recorded notes `notes`
+    /// (KTD11). The record goes when the edit is done. Otherwise it keeps
+    /// the notes that are not done.
+    fn continue_tag_edit(
+        &self,
+        id: i64,
+        edit: &session_core::BulkEdit,
+        notes: &[String],
+    ) -> pipeline::tags::TagPass {
+        match self.runner.apply_tag_edit(edit, notes) {
             Ok(pass) => {
-                if pass.done {
-                    self.remove_bulk_edit(id);
-                }
+                self.save_bulk_pass(id, pass.done, &pass.left);
                 pass
             }
             Err(e) => {
                 log::warn!("the tag edit {id} continues later: {e}");
                 pipeline::tags::TagPass::default()
             }
+        }
+    }
+
+    /// After a pass of the bulk edit `id`: remove its record when the edit
+    /// is `done`, else record that only the notes `left` are not done. A
+    /// failure goes to the log.
+    fn save_bulk_pass(&self, id: i64, done: bool, left: &[String]) {
+        if done {
+            self.remove_bulk_edit(id);
+        } else if let Err(e) = pipeline::lock(&self.store).set_bulk_edit_notes(id, left) {
+            log::error!("could not record the notes of the bulk edit {id}: {e}");
         }
     }
 
@@ -1758,7 +1791,10 @@ impl ProcessingManager {
             }) {
                 // A tag edit has no shared-settings part (KTD11).
                 if open.edit.is_tag_edit() {
-                    changed.extend(self.continue_tag_edit(open.id, &open.edit).changed);
+                    changed.extend(
+                        self.continue_tag_edit(open.id, &open.edit, &open.notes)
+                            .changed,
+                    );
                     continue;
                 }
                 if !open.shared_saved {
@@ -1776,7 +1812,7 @@ impl ProcessingManager {
                         continue;
                     }
                 }
-                changed.extend(self.continue_type_edit(open.id, &open.edit));
+                changed.extend(self.continue_type_edit(open.id, &open.edit, &open.notes));
             }
         }
         match self.runner.run_type_moves(&self.own_runs) {

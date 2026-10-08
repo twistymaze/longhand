@@ -26,7 +26,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
-use library::scan::{self, Place};
+use library::scan::{self, Place, READ_TIMEOUT, Read, read_timed};
 use session_core::folder::{PendingType, ResultFlag, SessionDoc};
 use session_core::jobs::{Claims, busy};
 use session_core::{BulkEdit, MoveStep, SessionRecord, SessionState, Store, TypeMove};
@@ -656,17 +656,44 @@ pub fn remove_empty_type_folder(root: &Path, name: &str) -> bool {
 pub struct EditPass {
     /// The notes that the pass changed.
     pub changed: Vec<String>,
+    /// The notes that are not done. The next pass changes only these
+    /// notes.
+    pub left: Vec<String>,
     /// Every note of the old type has moved, or has its pending type and
     /// its row: the edit is done.
     pub done: bool,
 }
 
-/// The per-note part of a type rename, merge or delete in the storage
-/// folder `root` (KTD7, R6): each note that shows the old type changes to
-/// the new type, or to "No type" for a delete, as a user's type change
-/// does. The shared list changes before this. A pass can run again: a note
-/// that shows the new type is done. `edit_id` names the temporary folder of
-/// a rename that changes the case alone.
+/// The old type and the new type of the type edit `edit`. The new type is
+/// `None` for a delete.
+fn type_edit(edit: &BulkEdit) -> Result<(&str, Option<&str>), StageError> {
+    match edit {
+        BulkEdit::RenameType { from, to } => Ok((from.as_str(), Some(to.as_str()))),
+        BulkEdit::DeleteType { name } => Ok((name.as_str(), None)),
+        BulkEdit::RenameTag { .. } | BulkEdit::DeleteTag { .. } => {
+            Err(StageError::Failed(format!("{edit:?} is not a type edit")))
+        }
+    }
+}
+
+/// The ids of the notes that the type rename, merge or delete `edit`
+/// changes now: the notes that are not discarded and show the old type.
+/// The caller records them with the edit, before the first note changes.
+pub fn matching_notes(store: &Store, edit: &BulkEdit) -> Result<Vec<String>, StageError> {
+    let old = Some(type_edit(edit)?.0.to_string());
+    Ok(store
+        .sessions()?
+        .into_iter()
+        .filter(|r| {
+            r.state != SessionState::Discarded && same_optional_type(&shown_type(r).0, &old)
+        })
+        .map(|r| r.id)
+        .collect())
+}
+
+/// One pass of the type rename, merge or delete `edit` over the notes that
+/// show the old type now ([`matching_notes`]). A Settings edit records its
+/// notes, and uses [`apply_recorded`].
 pub fn apply_edit(
     store: &SharedStore,
     root: &Path,
@@ -674,13 +701,30 @@ pub fn apply_edit(
     edit: &BulkEdit,
     ctx: &Context,
 ) -> Result<EditPass, StageError> {
-    let (from, to) = match edit {
-        BulkEdit::RenameType { from, to } => (from.as_str(), Some(to.as_str())),
-        BulkEdit::DeleteType { name } => (name.as_str(), None),
-        BulkEdit::RenameTag { .. } | BulkEdit::DeleteTag { .. } => {
-            return Err(StageError::Failed(format!("{edit:?} is not a type edit")));
-        }
-    };
+    let notes = matching_notes(&lock(store), edit)?;
+    apply_recorded(store, root, edit_id, edit, &notes, ctx)
+}
+
+/// The per-note part of a type rename, merge or delete in the storage
+/// folder `root` (KTD7, R6), for the recorded notes `notes`: each of them
+/// that still shows the old type changes to the new type, or to "No type"
+/// for a delete, as a user's type change does. The shared list changes
+/// before this. A note that is gone, is discarded, is not in `root` or
+/// shows another type is done. A note that cannot change now stays in
+/// [`EditPass::left`]: the caller runs the pass again later with these
+/// notes. A note that gets the old type after the user made the edit is
+/// not in `notes`, so it keeps the type. `edit_id` names the temporary
+/// folder of a rename that changes the case alone. That rename renames the
+/// type folder, so it does not use `notes`.
+pub fn apply_recorded(
+    store: &SharedStore,
+    root: &Path,
+    edit_id: i64,
+    edit: &BulkEdit,
+    notes: &[String],
+    ctx: &Context,
+) -> Result<EditPass, StageError> {
+    let (from, to) = type_edit(edit)?;
     if let Some(to) = to
         && same_type_name(from, to)
     {
@@ -696,38 +740,29 @@ pub fn apply_edit(
                 .is_some_and(|home| scan::place_in(Path::new(home), &roots).is_some())
             && same_optional_type(&shown_type(record).0, &old)
     };
-    let ids: Vec<String> = lock(store)
-        .sessions()?
-        .into_iter()
-        .filter(|r| shows_old(r))
-        .map(|r| r.id)
-        .collect();
-    let mut pass = EditPass {
-        done: true,
-        ..EditPass::default()
-    };
-    for id in ids {
-        let mut guard = crate::move_notes::lock_unheld(store, ctx.claims, &id);
-        // The row can change before the lock.
-        if !guard.session(&id)?.is_some_and(|r| shows_old(&r)) {
+    let mut pass = EditPass::default();
+    for id in notes {
+        let mut guard = crate::move_notes::lock_unheld(store, ctx.claims, id);
+        if !guard.session(id)?.is_some_and(|r| shows_old(&r)) {
             continue;
         }
-        match change_type_locked(&mut guard, &id, to, true, ctx) {
+        match change_type_locked(&mut guard, id, to, true, ctx) {
             Ok(change) => {
                 pass.changed.push(id.clone());
-                let waits = guard.type_move(&id)?;
+                let waits = guard.type_move(id)?;
                 if matches!(change, TypeChange::Later | TypeChange::Kept(_))
                     && !waits.is_some_and(|w| w.field_written)
                 {
-                    pass.done = false;
+                    pass.left.push(id.clone());
                 }
             }
             Err(e) => {
                 log::warn!("could not change the type of {id}: {e}");
-                pass.done = false;
+                pass.left.push(id.clone());
             }
         }
     }
+    pass.done = pass.left.is_empty();
     remove_empty_type_folder(root, from);
     Ok(pass)
 }
@@ -765,7 +800,20 @@ fn rename_case(
         return Ok(EditPass {
             changed: Vec::new(),
             done: true,
+            ..EditPass::default()
         });
+    };
+    let resumed = folder == temp;
+    // After a crash at the temporary name, the rows still have the old
+    // folder name.
+    let in_folder = |parent: &Path| {
+        parent == folder
+            || resumed
+                && parent.parent() == Some(root)
+                && parent
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| same_type_name(n, from))
     };
     let notes: Vec<SessionRecord> = guard
         .sessions()?
@@ -773,10 +821,11 @@ fn rename_case(
         .filter(|r| {
             r.home_path
                 .as_deref()
-                .is_some_and(|home| Path::new(home).parent() == Some(folder.as_path()))
+                .and_then(|home| Path::new(home).parent())
+                .is_some_and(in_folder)
         })
         .collect();
-    if folder != temp {
+    if !resumed {
         for record in &notes {
             let home = Path::new(record.home_path.as_deref().unwrap_or_default());
             let free = match read_document(home) {
@@ -787,6 +836,7 @@ fn rename_case(
                 return Ok(EditPass {
                     changed: Vec::new(),
                     done: false,
+                    ..EditPass::default()
                 });
             }
         }
@@ -795,7 +845,8 @@ fn rename_case(
     }
     if let Err(e) = ctx.fs.rename_new(&temp, &target) {
         // The folder never stays under the hidden name.
-        ctx.fs.rename_new(&temp, &folder)?;
+        let old = if resumed { root.join(from) } else { folder };
+        ctx.fs.rename_new(&temp, &old)?;
         return Err(e.into());
     }
     session_save::fsync::sync_dir(root)?;
@@ -816,13 +867,20 @@ fn rename_case(
     Ok(EditPass {
         changed,
         done: true,
+        ..EditPass::default()
     })
 }
 
+/// The `session.md` in `folder`, or `None` when it cannot be read. The
+/// read stops after [`READ_TIMEOUT`]: the store lock is held, and a file
+/// that does not download must not stop each user of the store.
 fn read_document(folder: &Path) -> Option<SessionDoc> {
-    std::fs::read_to_string(folder.join(SESSION_FILE))
+    let Read::Bytes(bytes) = read_timed(folder.join(SESSION_FILE), READ_TIMEOUT) else {
+        return None;
+    };
+    std::str::from_utf8(&bytes)
         .ok()
-        .and_then(|text| SessionDoc::parse(&text).ok())
+        .and_then(|text| SessionDoc::parse(text).ok())
 }
 
 fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {

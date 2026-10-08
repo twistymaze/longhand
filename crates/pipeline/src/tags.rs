@@ -9,8 +9,10 @@
 //! equal ([`tag_key`]). A note never keeps two tags with one key.
 //!
 //! A Settings rename or delete of a tag is a [`BulkEdit`]. The caller
-//! records it before the first note changes, and each launch and scan runs
-//! [`apply_edit`] again until every note is done (KTD11).
+//! records it with the notes that have the tag ([`matching_notes`]) before
+//! the first note changes, and each launch and scan runs
+//! [`apply_recorded`] again on the notes that are not done, until every
+//! note is done (KTD11).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -216,44 +218,77 @@ pub struct TagPass {
     pub matched: usize,
     /// The notes that the pass changed.
     pub changed: Vec<String>,
+    /// The notes that the pass could not change. The next pass changes
+    /// only these notes.
+    pub left: Vec<String>,
     /// Every note that had the tag is changed: the edit is done.
     pub done: bool,
 }
 
-/// One pass of the tag rename or delete `edit` over every note of the
-/// store (KTD11, R13). A note that another computer records or processes
-/// changes too. A note whose `session.md` cannot be read or written now
-/// stays, and the pass is not done: the caller runs it again later. A pass
-/// can run again: a note that has the result already is not in it.
+/// The ids of the notes that the tag rename or delete `edit` changes now:
+/// the notes that are not discarded and have the tag. The caller records
+/// them with the edit, before the first note changes.
+pub fn matching_notes(store: &Store, edit: &BulkEdit) -> Result<Vec<String>, StageError> {
+    if !edit.is_tag_edit() {
+        return Err(StageError::Failed(format!("{edit:?} is not a tag edit")));
+    }
+    Ok(store
+        .sessions()?
+        .into_iter()
+        .filter(|r| {
+            r.state != SessionState::Discarded && edited(&r.tags, edit) != Some(r.tags.clone())
+        })
+        .map(|r| r.id)
+        .collect())
+}
+
+/// One pass of the tag rename or delete `edit` over the notes that have
+/// the tag now ([`matching_notes`]). A Settings edit records its notes,
+/// and uses [`apply_recorded`].
 pub fn apply_edit(
     store: &SharedStore,
     claims: &Claims,
     edit: &BulkEdit,
 ) -> Result<TagPass, StageError> {
+    let notes = matching_notes(&lock(store), edit)?;
+    apply_recorded(store, claims, edit, &notes)
+}
+
+/// One pass of the tag rename or delete `edit` over the recorded notes
+/// `notes` (KTD11, R13). A note that another computer records or processes
+/// changes too. A note that is gone, is discarded or does not have the tag
+/// any more is done. A note whose `session.md` cannot be read or written
+/// now stays in [`TagPass::left`], and the pass is not done: the caller
+/// runs it again later with these notes. A note that gets the tag after
+/// the user made the edit is not in `notes`, so it keeps the tag.
+pub fn apply_recorded(
+    store: &SharedStore,
+    claims: &Claims,
+    edit: &BulkEdit,
+    notes: &[String],
+) -> Result<TagPass, StageError> {
     if !edit.is_tag_edit() {
         return Err(StageError::Failed(format!("{edit:?} is not a tag edit")));
     }
     let apply = |tags: &[String]| edited(tags, edit).unwrap_or_else(|| tags.to_vec());
-    let ids: Vec<String> = lock(store)
-        .sessions()?
-        .into_iter()
-        .filter(|r| r.state != SessionState::Discarded && apply(&r.tags) != r.tags)
-        .map(|r| r.id)
-        .collect();
-    let mut pass = TagPass {
-        matched: ids.len(),
-        changed: Vec::new(),
-        done: true,
-    };
-    for id in ids {
-        match write_tags(store, claims, &id, &apply) {
-            Ok(_) => pass.changed.push(id),
+    let mut pass = TagPass::default();
+    for id in notes {
+        let has_tag = lock(store)
+            .session(id)?
+            .is_some_and(|r| r.state != SessionState::Discarded && apply(&r.tags) != r.tags);
+        if !has_tag {
+            continue;
+        }
+        pass.matched += 1;
+        match write_tags(store, claims, id, &apply) {
+            Ok(_) => pass.changed.push(id.clone()),
             Err(e) => {
                 log::warn!("the tag edit of {id} continues later: {e}");
-                pass.done = false;
+                pass.left.push(id.clone());
             }
         }
     }
+    pass.done = pass.left.is_empty();
     Ok(pass)
 }
 

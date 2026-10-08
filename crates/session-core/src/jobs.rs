@@ -318,8 +318,22 @@ impl BulkEdit {
 pub struct OpenBulkEdit {
     pub id: i64,
     pub edit: BulkEdit,
+    /// The notes that the edit still changes: the notes that matched when
+    /// the user made the edit, less the notes that are done. A note that
+    /// matches only after that keeps its tag or type: that is the user's
+    /// new choice.
+    pub notes: Vec<String>,
     /// The shared settings have the change.
     pub shared_saved: bool,
+}
+
+/// The JSON of the `edit` column of `bulk_edits`: the edit and its notes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredBulkEdit {
+    #[serde(flatten)]
+    edit: BulkEdit,
+    #[serde(default)]
+    notes: Vec<String>,
 }
 
 /// The step of one note in a Move (KTD9). The Move records each step
@@ -1489,14 +1503,33 @@ impl Store {
 
     // ------------------------------------------------------------ bulk edits
 
-    /// Record a Settings edit that changes many notes (KTD7, KTD11), before
-    /// the first change. Returns its id.
-    pub fn add_bulk_edit(&self, edit: &BulkEdit) -> Result<i64> {
+    /// Record a Settings edit that changes the notes `notes` (KTD7, KTD11),
+    /// before the first change. Returns its id.
+    pub fn add_bulk_edit(&self, edit: &BulkEdit, notes: &[String]) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO bulk_edits (edit) VALUES (?1)",
-            [serde_json::to_string(edit)?],
+            [serde_json::to_string(&StoredBulkEdit {
+                edit: edit.clone(),
+                notes: notes.to_vec(),
+            })?],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Record that the edit `id` still changes only the notes `notes`.
+    pub fn set_bulk_edit_notes(&self, id: i64, notes: &[String]) -> Result<()> {
+        let edit: String =
+            self.conn
+                .query_row("SELECT edit FROM bulk_edits WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+        let mut stored: StoredBulkEdit = serde_json::from_str(&edit)?;
+        stored.notes = notes.to_vec();
+        self.conn.execute(
+            "UPDATE bulk_edits SET edit = ?1 WHERE id = ?2",
+            rusqlite::params![serde_json::to_string(&stored)?, id],
+        )?;
+        Ok(())
     }
 
     /// The edits that are not done, oldest first. An edit that this build
@@ -1516,19 +1549,20 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows
             .into_iter()
-            .filter_map(
-                |(id, edit, shared_saved)| match serde_json::from_str(&edit) {
-                    Ok(edit) => Some(OpenBulkEdit {
+            .filter_map(|(id, edit, shared_saved)| {
+                match serde_json::from_str::<StoredBulkEdit>(&edit) {
+                    Ok(StoredBulkEdit { edit, notes }) => Some(OpenBulkEdit {
                         id,
                         edit,
+                        notes,
                         shared_saved,
                     }),
                     Err(e) => {
                         log::warn!("the bulk edit {id} cannot be read: {e}");
                         None
                     }
-                },
-            )
+                }
+            })
             .collect())
     }
 

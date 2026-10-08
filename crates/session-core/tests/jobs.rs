@@ -2190,8 +2190,8 @@ fn a_bulk_edit_is_kept_in_order_until_it_is_removed() {
     let delete = BulkEdit::DeleteType {
         name: "Pathfinder".into(),
     };
-    let first = store.add_bulk_edit(&rename).unwrap();
-    let second = store.add_bulk_edit(&delete).unwrap();
+    let first = store.add_bulk_edit(&rename, &[]).unwrap();
+    let second = store.add_bulk_edit(&delete, &[]).unwrap();
     let open = store.bulk_edits().unwrap();
     assert_eq!(open.len(), 2);
     assert_eq!(
@@ -2208,6 +2208,32 @@ fn a_bulk_edit_is_kept_in_order_until_it_is_removed() {
 }
 
 #[test]
+fn a_bulk_edit_keeps_its_notes_after_a_reopen() {
+    use session_core::BulkEdit;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("longhand.db");
+    let delete = BulkEdit::DeleteTag {
+        name: "follow-up".into(),
+    };
+    let id = {
+        let store = Store::open(&db).unwrap();
+        let id = store
+            .add_bulk_edit(&delete, &["a".into(), "b".into()])
+            .unwrap();
+        assert_eq!(store.bulk_edits().unwrap()[0].notes, ["a", "b"]);
+        store.set_bulk_edit_notes(id, &["b".into()]).unwrap();
+        id
+    };
+    let store = Store::open(&db).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        (open[0].id, &open[0].edit, open[0].notes.as_slice()),
+        (id, &delete, ["b".to_string()].as_slice())
+    );
+}
+
+#[test]
 fn a_tag_edit_is_kept_with_its_texts() {
     use session_core::BulkEdit;
     let store = Store::open_in_memory().unwrap();
@@ -2218,8 +2244,8 @@ fn a_tag_edit_is_kept_with_its_texts() {
     let delete = BulkEdit::DeleteTag {
         name: "follow-up".into(),
     };
-    store.add_bulk_edit(&rename).unwrap();
-    store.add_bulk_edit(&delete).unwrap();
+    store.add_bulk_edit(&rename, &[]).unwrap();
+    store.add_bulk_edit(&delete, &[]).unwrap();
     let open = store.bulk_edits().unwrap();
     assert_eq!((&open[0].edit, &open[1].edit), (&rename, &delete));
     assert!(open.iter().all(|o| o.edit.is_tag_edit()));
