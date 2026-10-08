@@ -37,7 +37,7 @@ A user with note types who sometimes uses General sees no type label on General 
 ### Key Decisions
 
 - **Note types are in use when the type list has a type other than General.** A type that the user made in Settings and that has no notes counts. A user who makes a type intends to use more than one type. (session-settled: user-directed — chosen over a rule that hides the filter when the choices give the same notes: the user wants the filter as soon as they make a type.) Governs R1, R2, R4.
-- **The Tags menu is a grouped list with a filter field and the real tag labels.** (session-settled: user-directed — chosen over a grouped list with scope headings and over one submenu for each scope, after a sketch of all three.) Governs R6, R7, R8, R9.
+- **The Tags menu is a grouped list with a filter field and the real tag labels.** (session-settled: user-directed — chosen over a grouped list with scope headings and over one submenu for each scope, after a sketch of all three.) Governs R6, R7, R8, R9, R11.
 - **The General label looks like the other type labels.** One look for all types is easier to read than a special case, although General has no type folder. Governs R4.
 - **Tag colours do not change.** A tag with no scope is a neutral label, and each scope has its own colour. This already works for users with no scoped tags, only scoped tags, or a mix.
 
@@ -56,9 +56,10 @@ A user with note types who sometimes uses General sees no type label on General 
 **Tags menu**
 
 - R5. Home shows the Tags menu only when at least one note has a tag.
-- R6. The Tags menu starts with a text field. Typing in the field shows only the tags whose scope or value contains the text, without regard to case.
+- R6. The Tags menu starts with a text field. Typing in the field shows only the tags whose text contains the typed text, without regard to case and to spaces around `::`, as the "+ Tag" picker matches.
 - R7. The menu lists the tags with no scope first, then the scoped tags. Scopes sort A–Z, and the values in each scope sort A–Z. Tags with no scope sort A–Z.
 - R8. Each menu item shows the tag as the same label that Home rows show, with the scope colour, and a check mark when the tag is chosen.
+- R11. The Tags menu is wide enough for typical labels, up to a maximum width. A label longer than that is cut off, and its full text shows on hover and to VoiceOver.
 - R9. The menu stays open after the user chooses or clears a tag, so the user can choose several tags in turn.
 - R10. The menu works from the keyboard: the field has the focus when the menu opens, the arrow keys move through the shown tags, Return chooses or clears the tag that has the focus, and Escape closes the menu.
 
@@ -68,7 +69,7 @@ A user with note types who sometimes uses General sees no type label on General 
 - AE2. **Covers R1, R2.** **Given** every note is in General, **when** the user adds the type "Pathfinder" in Settings, **then** Home shows the type filter with "All", "General" and "Pathfinder".
 - AE3. **Covers R4.** **Given** the type list has "One-on-One" and a note is in General, **when** the user looks at Home, **then** that note's row shows a General type label.
 - AE4. **Covers R3.** **Given** `follow-up` is the only tag in the library and the filter shows it, **when** the user removes `follow-up` from the only note that has it, **then** the Tags menu and the chosen-tag label go away, and Home shows every note for the chosen type.
-- AE5. **Covers R6, R7.** **Given** the tags `draft`, `Person::Dana Ortiz` and `Topic::Roadmap`, **when** the user types "da" in the field, **then** the menu shows `draft` and then `Person::Dana Ortiz`.
+- AE5. **Covers R6, R7.** **Given** the tags `daily`, `Person::Dana Ortiz` and `Topic::Roadmap`, **when** the user types "da" in the field, **then** the menu shows `daily` and then `Person::Dana Ortiz`.
 - AE6. **Covers R9.** **Given** the Tags menu is open, **when** the user chooses two tags in turn, **then** the menu stays open, both show a check mark, and Home shows only the notes that have both tags.
 
 ### Scope Boundaries
@@ -83,7 +84,7 @@ A user with note types who sometimes uses General sees no type label on General 
 **Deferred to Planning**
 
 - What the menu shows when the field text matches no tag.
-- Whether the menu needs more width than 240 px for long labels, or the labels cut off with an ellipsis.
+- The maximum width of the Tags menu (R11).
 
 ### Sources / Research
 
