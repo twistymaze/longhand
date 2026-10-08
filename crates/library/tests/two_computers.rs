@@ -11,7 +11,7 @@ use chrono::{DateTime, FixedOffset};
 use library::reconcile::{Changes, Coverage, DELETE_WAIT, HAND_EDIT_WAIT, Reconciler, Target};
 use library::refresh::{self, Refresh};
 use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
-use library::status::NoteStatus;
+use library::status::{NoteStatus, OTHER_VERSION_WAIT};
 use pipeline::SharedStore;
 use session_core::folder::{AudioState, PendingType, ResultFlag, SessionDoc, fingerprint};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
@@ -1472,20 +1472,32 @@ fn a_refresh_inside_a_run_keeps_the_runs_title_over_a_proposal_in_the_folder() {
 impl Computer {
     /// A targeted scan of `folders` in `root`, as the watcher runs it (U6).
     fn sync_folders(&mut self, root: &Path, folders: &[&Path]) -> Changes {
+        self.sync_folders_at(root, folders, Instant::now())
+    }
+
+    fn sync_folders_at(&mut self, root: &Path, folders: &[&Path], now: Instant) -> Changes {
         let target = Target::Folders {
             root: root.to_path_buf(),
             folders: folders.iter().map(|f| f.to_path_buf()).collect(),
         };
         self.reconciler
-            .run(&self.store, &target, &never_claimed)
+            .run_at(&self.store, &target, &never_claimed, now)
             .unwrap()
     }
 
     fn sync_roots(&mut self, roots: &[&Path]) -> Changes {
+        self.sync_roots_at(roots, Instant::now())
+    }
+
+    fn sync_roots_at(&mut self, roots: &[&Path], now: Instant) -> Changes {
         let target = Target::Full(roots.iter().map(|r| r.to_path_buf()).collect());
         self.reconciler
-            .run(&self.store, &target, &never_claimed)
+            .run_at(&self.store, &target, &never_claimed, now)
             .unwrap()
+    }
+
+    fn other_versions(&self, id: &str) -> Vec<PathBuf> {
+        self.reconciler.status().note(id).other_versions
     }
 }
 
@@ -1540,14 +1552,23 @@ fn a_targeted_scan_of_a_duplicate_folder_keeps_the_home_folder() {
             fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
         }
     }
-    // The row does not change, but the note now has another version (R15).
-    assert_eq!(a.sync_folders(&root, &[&copy]), changed(&["n1"]));
-    assert_eq!(a.home("n1"), folder);
+    // The row does not change. The other version shows only after the
+    // wait, because a move of the note can give two folders for a short
+    // time (R15).
+    let start = Instant::now();
     assert_eq!(
-        a.reconciler.status().note("n1").other_versions,
-        std::slice::from_ref(&copy)
+        a.sync_folders_at(&root, &[&copy], start),
+        Changes::default()
     );
-    assert_eq!(a.sync_folders(&root, &[&copy]), Changes::default());
+    assert_eq!(a.home("n1"), folder);
+    assert!(a.other_versions("n1").is_empty());
+    let later = start + OTHER_VERSION_WAIT;
+    assert_eq!(a.sync_folders_at(&root, &[&copy], later), changed(&["n1"]));
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+    assert_eq!(
+        a.sync_folders_at(&root, &[&copy], later),
+        Changes::default()
+    );
 }
 
 // Covers R8 (U6).
@@ -1589,15 +1610,15 @@ fn a_conflict_copy_that_syncs_first_gives_way_to_the_real_folder() {
     a.sync(&root, Instant::now());
     assert_eq!(a.home("n1"), copy);
 
-    // The real folder arrives: A moves to it and lists the copy as another
-    // version.
+    // The real folder arrives: A moves to it, and after the wait lists the
+    // copy as another version.
     fs::rename(&away, &folder).unwrap();
-    a.sync_roots(&[&root]);
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
     assert_eq!(a.home("n1"), folder);
-    assert_eq!(
-        a.reconciler.status().note("n1").other_versions,
-        std::slice::from_ref(&copy)
-    );
+    assert!(a.other_versions("n1").is_empty());
+    a.sync_roots_at(&[&root], start + OTHER_VERSION_WAIT);
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
 }
 
 fn copy_files(from: &Path, to: &Path) {
@@ -1644,17 +1665,119 @@ fn a_conflict_copy_reports_the_note_and_names_the_file() {
     let folder = b.save_note("n1", &root, user_title("Planning"), "");
     a.sync_roots(&[&root]);
 
+    // A conflict copy also shows only after the wait: a sync service can
+    // remove a copy that it made for a short time.
     let copy = folder.join("notes (1).md");
     fs::write(&copy, "Other notes\n").unwrap();
-    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    let start = Instant::now();
     assert_eq!(
-        a.reconciler.status().note("n1").other_versions,
-        std::slice::from_ref(&copy)
+        a.sync_folders_at(&root, &[&folder], start),
+        changed(&["n1"])
     );
+    assert!(a.other_versions("n1").is_empty());
+    let later = start + OTHER_VERSION_WAIT;
+    assert_eq!(
+        a.sync_folders_at(&root, &[&folder], later),
+        changed(&["n1"])
+    );
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
 
     fs::remove_file(&copy).unwrap();
-    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
-    assert!(a.reconciler.status().note("n1").other_versions.is_empty());
+    assert_eq!(a.sync_roots_at(&[&root], later), changed(&["n1"]));
+    assert!(a.other_versions("n1").is_empty());
+}
+
+/// A folder that the scans see in two places for a short time, as during a
+/// move, is never another version.
+#[test]
+fn a_duplicate_folder_that_goes_away_before_the_wait_is_never_reported() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
+
+    let copy = duplicate(&folder, &root, "Planning old");
+    assert_eq!(a.sync_roots_at(&[&root], start), Changes::default());
+    assert!(a.other_versions("n1").is_empty());
+    assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
+
+    fs::remove_dir_all(&copy).unwrap();
+    let almost = start + OTHER_VERSION_WAIT - Duration::from_secs(1);
+    assert_eq!(a.sync_roots_at(&[&root], almost), Changes::default());
+    assert_eq!(a.reconciler.next_due(), None);
+    assert_eq!(
+        a.sync_roots_at(&[&root], start + OTHER_VERSION_WAIT),
+        Changes::default()
+    );
+    assert!(a.other_versions("n1").is_empty());
+}
+
+/// A targeted scan of the home folder does not read the other folder. The
+/// wait of that folder continues, and a later full scan reports it.
+#[test]
+fn a_targeted_scan_of_the_home_folder_keeps_the_wait_of_a_duplicate_folder() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
+    let copy = duplicate(&folder, &root, "Planning old");
+    a.sync_roots_at(&[&root], start);
+
+    let soon = start + Duration::from_secs(30);
+    a.sync_folders_at(&root, &[&folder], soon);
+    assert!(a.other_versions("n1").is_empty());
+
+    let later = start + OTHER_VERSION_WAIT;
+    assert_eq!(a.sync_roots_at(&[&root], later), changed(&["n1"]));
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+    // A targeted scan of the home folder keeps the other version.
+    a.sync_folders_at(&root, &[&folder], later);
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+}
+
+/// While this computer renames the folder of a note, a second folder of
+/// the note is not another version. The wait starts when the rename ends.
+#[test]
+fn a_duplicate_folder_during_a_rename_on_this_computer_waits_again_after_it() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let folder = b.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    a.sync_roots_at(&[&root], start);
+    let copy = duplicate(&folder, &root, "Planning old");
+    let intent = session_core::RenameIntent {
+        from: folder.to_string_lossy().into_owned(),
+        to: copy.to_string_lossy().into_owned(),
+        temp: None,
+    };
+    a.store
+        .lock()
+        .unwrap()
+        .set_rename_intent("n1", &intent)
+        .unwrap();
+    a.sync_roots_at(&[&root], start);
+    a.sync_roots_at(&[&root], start + OTHER_VERSION_WAIT);
+    assert!(a.other_versions("n1").is_empty());
+
+    a.store.lock().unwrap().clear_rename_intent("n1").unwrap();
+    let ended = start + OTHER_VERSION_WAIT + Duration::from_secs(1);
+    a.sync_roots_at(&[&root], ended);
+    assert!(a.other_versions("n1").is_empty());
+    a.sync_roots_at(&[&root], ended + OTHER_VERSION_WAIT);
+    assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
+}
+
+/// A copy of the note folder `folder` at `name` in `root`.
+fn duplicate(folder: &Path, root: &Path, name: &str) -> PathBuf {
+    let copy = root.join(name);
+    fs::create_dir(&copy).unwrap();
+    copy_files(folder, &copy);
+    copy
 }
 
 // Covers AE6, R16 (U7).

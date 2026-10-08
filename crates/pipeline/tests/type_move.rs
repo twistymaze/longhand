@@ -236,6 +236,33 @@ fn an_idle_note_moves_into_the_new_type_folder_at_once() {
     assert!(!b.owes("s"));
 }
 
+/// The watcher gives the new type folder and the home folder in it to one
+/// targeted scan. The note has no other version, also after the wait.
+#[test]
+fn a_move_into_a_new_type_folder_shows_no_other_version() {
+    use library::reconcile::Target;
+    use library::status::OTHER_VERSION_WAIT;
+    let (_dir, root) = storage();
+    let mut b = computer();
+    let home = b.save_note("s", &root, "Standup");
+    b.change("s", Some("Work"));
+    let folder = root.join("Work");
+    let moved = folder.join(name_of(&home));
+
+    let target = Target::Folders {
+        root: root.clone(),
+        folders: [folder, moved].into_iter().collect(),
+    };
+    let start = Instant::now();
+    for at in [start, start + OTHER_VERSION_WAIT] {
+        b.reconciler
+            .run_at(&b.store, &target, &|_| false, at)
+            .unwrap();
+        let status = b.reconciler.status().note("s");
+        assert!(status.other_versions.is_empty(), "{status:?}");
+    }
+}
+
 #[test]
 fn a_note_in_use_on_another_computer_moves_after_the_marker_is_gone() {
     // Covers AE1 and R5.

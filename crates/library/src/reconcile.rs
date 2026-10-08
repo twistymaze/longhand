@@ -226,10 +226,11 @@ impl Reconciler {
         self.pending.contains_key(id)
     }
 
-    /// The earliest time at which a pending delete can complete, or at
-    /// which the wait for the sync of a note ends. A reconcile at or after
-    /// this time, with a new scan, forgets that row or reports that note as
-    /// a hand edit (KTD7).
+    /// The earliest time at which a pending delete can complete, at which
+    /// the wait for the sync of a note ends, or at which the status can
+    /// report another version of a note. A reconcile at or after this time,
+    /// with a new scan, forgets that row, reports that note as a hand edit
+    /// (KTD7) or reports the other version.
     pub fn next_due(&self) -> Option<Instant> {
         let deletes = self.pending.values().map(|since| *since + DELETE_WAIT);
         let hand_edits = self
@@ -237,7 +238,10 @@ impl Reconciler {
             .values()
             .filter(|mismatch| !mismatch.expired && mismatch.key.can_expire())
             .map(|mismatch| mismatch.since + HAND_EDIT_WAIT);
-        deletes.chain(hand_edits).min()
+        deletes
+            .chain(hand_edits)
+            .chain(self.status.next_due())
+            .min()
     }
 
     /// Scan `target` without the store lock, then apply the scan to the
@@ -284,11 +288,18 @@ impl Reconciler {
         let rereads = self.read_again(stale);
         let mut store = lock();
         let mut changes = self.apply(&mut store, &result, &coverage, now, claimed, &rereads)?;
-        let moving: HashSet<String> = store.moving_notes()?.into_iter().collect();
+        // A note that this computer moves or renames now can be in two
+        // folders: the other folder is not another version.
+        let moving = moved_here(&store)?;
         let hand_edits = self.track_mismatches(&result, &coverage, now);
-        let noted = self
-            .status
-            .apply(&result, &coverage, &store.sessions()?, &moving, &hand_edits);
+        let noted = self.status.apply(
+            &result,
+            &coverage,
+            &store.sessions()?,
+            &moving,
+            &hand_edits,
+            now,
+        );
         // A file that changed in a note folder can leave the row as it is,
         // for example a new summary.md. The note is reported as changed, so
         // an open note page reads its documents again.

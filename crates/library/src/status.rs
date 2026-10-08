@@ -7,11 +7,21 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use session_core::{SessionRecord, SessionState};
 
 use crate::reconcile::Coverage;
 use crate::scan::{DocumentState, LibraryScan, NoteFolder, RemoteState, RootState, Waiting};
+
+/// How long the scans must find another version of a note before the
+/// status reports it (R15). A move of the note can show two folders for a
+/// short time: a scan that runs during a rename or a type move, or a sync
+/// that delivers the new folder before it removes the old one. A sync can
+/// take up to 2 minutes for that, as for [`crate::reconcile::DELETE_WAIT`].
+/// A sync service can also remove a conflict copy that it made for a short
+/// time, so a conflict copy gets the same wait.
+pub const OTHER_VERSION_WAIT: Duration = Duration::from_secs(120);
 
 /// Whether the home folder `home` is in one of `roots`, directly or in a
 /// type folder (KTD4 of the note types plan).
@@ -27,7 +37,8 @@ pub struct NoteStatus {
     /// The parts that the sync has not delivered yet (R6).
     pub waiting: Vec<Waiting>,
     /// Conflict copies of the documents, then other folders with the same
-    /// note id (R15).
+    /// note id (R15). Each is here only after the scans found it for
+    /// [`OTHER_VERSION_WAIT`].
     pub other_versions: Vec<PathBuf>,
     /// `session.md` exists but cannot be read (KTD5): the note waits as if
     /// its Destination were unavailable.
@@ -65,11 +76,80 @@ fn waiting(note: &NoteFolder, hand_edit: bool) -> Vec<Waiting> {
         .collect()
 }
 
+/// Another version of a note that the scans found.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    /// When a scan first found it.
+    since: Instant,
+    /// A duplicate folder, not a conflict copy.
+    folder: bool,
+    /// The status reports it.
+    reported: bool,
+}
+
 #[derive(Debug, Default)]
 struct Inner {
     /// Each note with something to show, and the folder that the scan read.
     notes: HashMap<String, (PathBuf, NoteStatus)>,
     unavailable: HashSet<PathBuf>,
+    /// The other versions of each note, reported or not yet, and the
+    /// folder of the note that the scan read.
+    seen: HashMap<String, (PathBuf, HashMap<PathBuf, Seen>)>,
+}
+
+/// The other versions of `note` that the scan found at `now`, and the
+/// duplicate folders that the scan did not read (`unread`), each with the
+/// time when a scan first found it. `before` holds the earlier times.
+/// `held` is a note that this computer moves now: its other folders are
+/// not other versions. Each version that waited for
+/// [`OTHER_VERSION_WAIT`] is marked as reported.
+fn track(
+    note: &NoteFolder,
+    held: bool,
+    before: Option<&HashMap<PathBuf, Seen>>,
+    unread: &dyn Fn(&Path) -> bool,
+    now: Instant,
+) -> HashMap<PathBuf, Seen> {
+    let entry = |path: &PathBuf, folder: bool| {
+        let since = before.and_then(|b| b.get(path)).map_or(now, |s| s.since);
+        let reported = now.saturating_duration_since(since) >= OTHER_VERSION_WAIT;
+        Seen {
+            since,
+            folder,
+            reported,
+        }
+    };
+    let mut seen = HashMap::new();
+    for path in &note.conflict_copies {
+        seen.insert(path.clone(), entry(path, false));
+    }
+    if held {
+        return seen;
+    }
+    for path in &note.duplicate_folders {
+        seen.insert(path.clone(), entry(path, true));
+    }
+    // A targeted scan reads only some folders. A folder that it did not
+    // read keeps its time, so its wait continues.
+    for (path, old) in before.into_iter().flatten() {
+        if old.folder && *path != note.path && unread(path) {
+            seen.entry(path.clone())
+                .or_insert_with(|| entry(path, true));
+        }
+    }
+    seen
+}
+
+/// The reported paths in `seen`: the conflict copies, then the duplicate
+/// folders, each sorted.
+fn reported(seen: &HashMap<PathBuf, Seen>) -> Vec<PathBuf> {
+    let mut due: Vec<(bool, &PathBuf)> = seen
+        .iter()
+        .filter(|(_, s)| s.reported)
+        .map(|(path, s)| (s.folder, path))
+        .collect();
+    due.sort();
+    due.into_iter().map(|(_, path)| path.clone()).collect()
 }
 
 /// The status of the library, shared by the reconciler that writes it and
@@ -117,9 +197,23 @@ impl LibraryStatus {
         root_gone || inner.notes.get(id).is_some_and(|(_, s)| s.unreadable)
     }
 
-    /// Apply a scan. `records` are the rows after the reconcile of the
-    /// scan. `moving` holds the notes that the Move has not finished
-    /// (KTD10): such a note can be in the old and the new folder, and that
+    /// The earliest time at which another version that the status does
+    /// not report yet reaches [`OTHER_VERSION_WAIT`]. A scan at or after
+    /// this time reports it.
+    pub fn next_due(&self) -> Option<Instant> {
+        self.lock()
+            .seen
+            .values()
+            .flat_map(|(_, versions)| versions.values())
+            .filter(|s| !s.reported)
+            .map(|s| s.since + OTHER_VERSION_WAIT)
+            .min()
+    }
+
+    /// Apply a scan made at `now`. `records` are the rows after the
+    /// reconcile of the scan. `moving` holds the notes that the Move has
+    /// not finished (KTD10), and the notes whose folder this computer
+    /// renames: such a note can be in the old and the new folder, and that
     /// other folder is not another version (R6). `hand_edits` holds the
     /// notes whose wait for the sync ended (KTD7). Returns the ids whose
     /// status changed, sorted.
@@ -130,6 +224,7 @@ impl LibraryStatus {
         records: &[SessionRecord],
         moving: &HashSet<String>,
         hand_edits: &HashSet<String>,
+        now: Instant,
     ) -> Vec<String> {
         let mut inner = self.lock();
         let mut changed = HashSet::new();
@@ -154,25 +249,23 @@ impl LibraryStatus {
             }
         }
 
+        let unread = |path: &Path| !coverage.read(scan, path);
         let mut found: HashMap<String, (PathBuf, NoteStatus)> = HashMap::new();
+        let mut seen = HashMap::new();
         for note in &scan.notes {
-            let duplicates: &[PathBuf] = if moving.contains(&note.doc.session_id) {
-                &[]
-            } else {
-                &note.duplicate_folders
-            };
+            let id = &note.doc.session_id;
+            let before = inner.seen.get(id).map(|(_, versions)| versions);
+            let versions = track(note, moving.contains(id), before, &unread, now);
             let status = NoteStatus {
-                waiting: waiting(note, hand_edits.contains(&note.doc.session_id)),
-                other_versions: note
-                    .conflict_copies
-                    .iter()
-                    .chain(duplicates)
-                    .cloned()
-                    .collect(),
+                waiting: waiting(note, hand_edits.contains(id)),
+                other_versions: reported(&versions),
                 unreadable: false,
                 remote: note.remote,
             };
-            found.insert(note.doc.session_id.clone(), (note.path.clone(), status));
+            found.insert(id.clone(), (note.path.clone(), status));
+            if !versions.is_empty() {
+                seen.insert(id.clone(), (note.path.clone(), versions));
+            }
         }
         for problem in &scan.unreadable {
             if let Some(id) = &problem.known_id {
@@ -185,7 +278,8 @@ impl LibraryStatus {
         }
 
         // A folder that the scan read and that gave no note has nothing to
-        // show now.
+        // show now. A note that the scan found, or that cannot be read, has
+        // the other versions of this scan only.
         inner.notes.retain(|id, (path, _)| {
             let keep = found.contains_key(id) || !coverage.read(scan, path);
             if !keep {
@@ -193,6 +287,10 @@ impl LibraryStatus {
             }
             keep
         });
+        inner
+            .seen
+            .retain(|id, (path, _)| !found.contains_key(id) && !coverage.read(scan, path));
+        inner.seen.extend(seen);
         for (id, (path, status)) in found {
             let before = inner
                 .notes

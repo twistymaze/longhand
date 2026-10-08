@@ -740,6 +740,24 @@ fn a_targeted_scan_of_a_type_folder_reads_its_notes() {
     assert!(!folder.join(".longhand").exists());
 }
 
+/// A type change into a new type folder gives events on the type folder
+/// and on the home folder in it. The targeted scan reads the home folder
+/// one time, so the note is not another version of itself.
+#[test]
+fn a_targeted_scan_of_a_type_folder_and_its_home_folder_reads_the_note_once() {
+    let root = marked_root();
+    let folder = root.path().join("Work");
+    let home = note(&folder, "Session 12", "A1");
+    let mut known = Known::default();
+    known.add("A1", &home);
+    let (result, read) =
+        scan_folders(root.path(), &folders(&[&folder, &home]), &known, &options()).unwrap();
+    assert_eq!(types(&result), [typed("A1", Some("Work"))]);
+    assert_eq!(result.notes[0].path, home);
+    assert!(result.notes[0].duplicate_folders.is_empty());
+    assert_eq!(read, folders(&[&folder, &home]));
+}
+
 /// A type folder whose own `session.md` is not valid still holds notes.
 /// The scan reports the problem and reads the notes in it (KTD12).
 #[test]

@@ -344,10 +344,16 @@ pub fn scan_folders(
     }
     let mut read: HashSet<PathBuf> = HashSet::new();
     let mut reads = Reads::default();
+    // A type folder sorts before the home folders in it. When the scan
+    // reads the type folder, it reads those home folders too, and it does
+    // not read them again: a second read gives the note as a duplicate
+    // folder of itself.
     let mut sorted: Vec<&PathBuf> = folders.iter().collect();
     sorted.sort();
     for path in sorted {
-        read.insert(path.clone());
+        if !read.insert(path.clone()) {
+            continue;
+        }
         let hidden = path
             .file_name()
             .is_none_or(|name| is_hidden(&name.to_string_lossy()));

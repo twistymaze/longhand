@@ -471,8 +471,16 @@ fn a_note_that_the_move_placed_shows_no_other_version() {
         let moved = assert_moved(&f, "a");
         let copy = f.new.join("Budget copy");
         copy_folder(&moved, &copy);
+        // The other version shows after the scans found it for the wait.
+        let start = std::time::Instant::now();
+        let target = Target::Full(f.roots());
         reconciler
-            .run(&f.store, &Target::Full(f.roots()), &|_| false)
+            .run_at(&f.store, &target, &|_| false, start)
+            .unwrap();
+        assert_eq!(status.note("a").other_versions, Vec::<PathBuf>::new());
+        let later = start + library::status::OTHER_VERSION_WAIT;
+        reconciler
+            .run_at(&f.store, &target, &|_| false, later)
             .unwrap();
         assert_eq!(status.note("a").other_versions, [copy]);
     }
