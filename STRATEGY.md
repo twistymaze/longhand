@@ -25,7 +25,7 @@ The transcript is the system of record, so the notes can stay lazy: a scratchpad
 - **No calendar integration.** Not auto-start, not prefill. Calendar access inside an enterprise is complicated; revisit only if a genuinely simple path appears.
 - **No speaker identity.** Diarization marks that the speaker changed so an LLM can follow the turn-taking. No voiceprints, no enrollment, no names.
 - **Organization stays small.** A note has one note type, which is also its folder on disk, and any number of tags. The app can apply, create, show, rename, delete and filter them, and nothing more. No inter-note linking, no graph, no tag pages or other views across notes — Obsidian already exists and Longhand hands off to it.
-- **Nothing writes into Longhand.** The only inputs are what you record and what you type. A recording you made on another device counts as what you record. The plain files in the storage folder move data out to your agents and notes, for example through a storage folder inside an Obsidian vault; no integration pulls outside context in.
+- **Nothing writes into Longhand.** The only inputs are what you record and what you type. A recording you made on another device counts as what you record. An edit that you ask an agent to make to your notes, such as tags on old notes, counts as what you type. The plain files in the storage folder move data out to your agents and notes, for example through a storage folder inside an Obsidian vault; no integration pulls outside context in.
 - **No distribution machinery until someone asks.** Cross-platform correctness from day one; installers and update paths only when a real person wants one.
 - **No time limits.** A four-hour session is a supported case, not an edge case.
 

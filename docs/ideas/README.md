@@ -80,4 +80,4 @@ These conflict with a boundary in `STRATEGY.md`.
 - **Speaker identity:** enrollment, voiceprints, names attached to speakers. Turn boundaries are the requirement; generic labels that drift across a long session are acceptable.
 - **Calendar integration,** including auto-start and prefill. Revisit only if a genuinely simple path appears inside an enterprise.
 - **Any organization beyond note types and tags:** no linking, no graph, no tag pages or other views across notes. Obsidian exists.
-- **Anything that writes into Longhand from outside:** the only inputs are what you record (in Longhand or on another device) and what you type.
+- **Anything that writes into Longhand from outside:** the only inputs are what you record (in Longhand or on another device) and what you type. An edit that you ask an agent to make counts as what you type; an integration that pulls in outside context does not.

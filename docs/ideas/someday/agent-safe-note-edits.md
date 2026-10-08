@@ -50,4 +50,4 @@ The storage folder is plain files so that agents can do complicated work outside
 - Some sync services do not keep symbolic links (OneDrive, Google Drive). Resilio Sync was not tested. A second copy of the skill, or a small `CLAUDE.md` with `@AGENTS.md`, can replace the link.
 - Does Longhand also write an `AGENTS.md` for read-only questions? The user has one by hand in their storage folder now.
 
-**Strategy check:** `STRATEGY.md` says "Nothing writes into Longhand. The only inputs are what you record and what you type." This idea lets an agent change notes at the user's request. Before work starts, decide whether this conflicts with that boundary. A possible reading: an agent edit that the user asks for counts as the user's input, and the boundary is about outside context that an integration pulls in. If the decision is no, this idea goes to Ruled out in the README.
+**Strategy check:** done on 2026-10-08. The user agreed that an agent edit that the user asks for counts as what the user types. The boundary "Nothing writes into Longhand" in `STRATEGY.md` is about outside context that an integration pulls in. `STRATEGY.md` now says this.
