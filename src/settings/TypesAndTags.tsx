@@ -6,7 +6,7 @@
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { commands, type NoteTypeEntry, type NoteTypeList, type Result, type TagEntry } from "../bindings";
-import { sameType, tagKey } from "../lib/Labels";
+import { GENERAL, sameType, tagKey } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
 import { Button, CommitField, ErrorText, fieldClass, Group, Pane, notes, useConfirm } from "./ui";
 
@@ -106,8 +106,7 @@ function DeleteButton({ what, name, disabled, onClick }: { what: string; name: s
 function typeDeleteMessage(t: NoteTypeEntry): string {
   if (t.notes === 0) return "No notes have this type.";
   const verb = t.notes === 1 ? "moves" : "move";
-  const rest = t.notes === 1 ? "has no type" : "have no type";
-  return `${notes(t.notes)} ${verb} out of the ${t.name} folder and ${rest} after that.`;
+  return `${notes(t.notes)} ${verb} from the ${t.name} folder to ${GENERAL}.`;
 }
 
 /// What a tag delete does, for the confirmation.
@@ -222,7 +221,10 @@ export function TypesAndTags({
   };
 
   const locked = readOnly !== null;
-  const choices: (string | null)[] = [null, ...(types?.types.filter((t) => t.valid).map((t) => t.name) ?? [])];
+  // General is the built-in type, first in the list. Its default is null.
+  const general = types?.types.find((t) => t.general);
+  const named = types?.types.filter((t) => !t.general) ?? [];
+  const choices: (string | null)[] = [null, ...named.filter((t) => t.valid).map((t) => t.name)];
   const setDefault = (name: string | null) =>
     void runType(() => commands.setDefaultNoteType(name), (l) => l);
 
@@ -253,22 +255,31 @@ export function TypesAndTags({
       >
         {types && (
           <div role="radiogroup" aria-label="Default type" onKeyDown={onRadioKey}>
-            <ListRow>
+            <ListRow
+              detail={
+                <p className="mt-0.5 pl-[27px] text-[0.85rem] leading-[1.4] text-label-secondary">
+                  Notes at the top of the storage folder.
+                </p>
+              }
+            >
               <Radio
-                label="No type"
+                label={GENERAL}
                 checked={types.default_type === null}
                 disabled={locked}
                 onChoose={() => setDefault(null)}
               />
-              <span className="min-w-0 flex-1 truncate">No type</span>
+              <span className="min-w-0 flex-1 truncate">{GENERAL}</span>
+              <Count n={general?.notes ?? 0} />
             </ListRow>
-            {types.types.map((t) => (
+            {named.map((t) => (
               <ListRow
                 key={t.name}
                 detail={
                   !t.valid && (
                     <p className="mt-1 pl-[27px] text-[0.85rem] leading-[1.4] text-caution">
-                      This name can’t be a folder name. Rename the type.
+                      {sameType(t.name, GENERAL)
+                        ? "General is a built-in type. Rename this type."
+                        : "This name can’t be a folder name. Rename the type."}
                     </p>
                   )
                 }

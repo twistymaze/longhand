@@ -5,7 +5,7 @@ import type { TagEntry } from "../bindings";
 import { mockTauri } from "../test/tauri";
 import {
   assignScopeTones,
-  SCOPE_TINT,
+  DARK_TEXT,
   ScopeTonesProvider,
   scopeTone,
   scopeTones,
@@ -13,6 +13,7 @@ import {
   tagKey,
   tagParts,
   TypeLabel,
+  WHITE_TEXT,
 } from "./Labels";
 
 const tagList = (...texts: string[]): TagEntry[] => texts.map((text) => ({ text, key: tagKey(text), count: 1 }));
@@ -32,11 +33,18 @@ const contrast = (a: number[], b: number[]) => {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 };
-const over = (top: number[], bottom: number[], alpha: number) => top.map((v, i) => v * alpha + bottom[i] * (1 - alpha));
-
-// The window, group and hover backgrounds of index.css, as opaque colours.
-const lightBackgrounds = ["#f3f1ec", "#fffdfa", "#e9e6df"];
-const darkBackgrounds = ["#1d1b18", "#2c2925", "#36332e"];
+// The hue of an sRGB colour, in degrees.
+const hue = (hex: string) => {
+  const [r, g, b] = rgb(hex).map((v) => v / 255);
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+};
+const hueDistance = (a: string, b: string) => {
+  const d = Math.abs(hue(a) - hue(b));
+  return Math.min(d, 360 - d);
+};
 
 describe("tag text", () => {
   test("the part before the first :: is the scope, and spaces at its ends are removed", () => {
@@ -73,12 +81,12 @@ describe("scope colour", () => {
     expect(used.size).toBeGreaterThan(2);
   });
 
-  test("Person and Vendor have the same hash colour, but different library colours", () => {
-    expect(scopeTone("Person")).toBe(scopeTone("Vendor"));
-    const tones = assignScopeTones(["Person", "Vendor"]);
+  test("Person and Project have the same hash colour, but different library colours", () => {
+    expect(scopeTone("Person")).toBe(scopeTone("Project"));
+    const tones = assignScopeTones(["Person", "Project"]);
     expect(tones.get("person")).toBeTruthy();
-    expect(tones.get("vendor")).toBeTruthy();
-    expect(tones.get("person")).not.toBe(tones.get("vendor"));
+    expect(tones.get("project")).toBeTruthy();
+    expect(tones.get("person")).not.toBe(tones.get("project"));
   });
 
   test("the same scopes in any order, case or count give the same colours", () => {
@@ -89,11 +97,11 @@ describe("scope colour", () => {
   });
 
   test("a scope keeps its hash colour when that colour is free, and a collision takes the next free colour", () => {
-    const tones = assignScopeTones(["Vendor", "Person", "Topic"]);
+    const tones = assignScopeTones(["Project", "Person", "Topic"]);
     expect(tones.get("person")).toBe(scopeTone("Person"));
     expect(tones.get("topic")).toBe(scopeTone("Topic"));
-    const next = scopeTones[(scopeTones.indexOf(scopeTone("Vendor")) + 1) % scopeTones.length];
-    expect(tones.get("vendor")).toBe(next);
+    const next = scopeTones[(scopeTones.indexOf(scopeTone("Project")) + 1) % scopeTones.length];
+    expect(tones.get("project")).toBe(next);
   });
 
   test("up to one scope for each colour, no two scopes share a colour", () => {
@@ -104,7 +112,7 @@ describe("scope colour", () => {
     expect(new Set(more.values()).size).toBe(scopeTones.length);
   });
 
-  test("with the provider, tags in Person and Vendor show different colours, and a new scope updates the colours", async () => {
+  test("with the provider, tags in Person and Project show different colours, and a new scope updates the colours", async () => {
     const state = { tags: tagList("Person::Nathan", "Topic::Loot") };
     const tauri = mockTauri({ list_tags: () => state.tags });
     const { container } = render(
@@ -112,33 +120,46 @@ describe("scope colour", () => {
         <span data-testid="person">
           <TagLabel text="Person::Nathan" />
         </span>
-        <span data-testid="vendor">
-          <TagLabel text="Vendor::Acme" />
+        <span data-testid="project">
+          <TagLabel text="Project::Acme" />
         </span>
       </ScopeTonesProvider>,
     );
     const person = () => toneOf(screen.getByTestId("person"));
-    const vendor = () => toneOf(screen.getByTestId("vendor"));
+    const project = () => toneOf(screen.getByTestId("project"));
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "list_tags")).toBe(true));
-    // "Vendor" is not in the library yet: it has its hash colour, as "Person" has.
-    await waitFor(() => expect(person()).toBe(vendor()));
-    state.tags = tagList("Person::Nathan", "Topic::Loot", "Vendor::Acme");
+    // "Project" is not in the library yet: it has its hash colour, as "Person" has.
+    await waitFor(() => expect(person()).toBe(project()));
+    state.tags = tagList("Person::Nathan", "Topic::Loot", "Project::Acme");
     await act(() => tauri.emit("library-changed", { changed: [], removed: [] }));
-    await waitFor(() => expect(person()).not.toBe(vendor()));
+    await waitFor(() => expect(person()).not.toBe(project()));
     expect(container.textContent).toContain("Acme");
   });
 
-  test("each colour meets 4.5:1 on its tint in light and dark", () => {
+  test("there are 10 colours, and each one is different", () => {
+    expect(scopeTones).toHaveLength(10);
+    expect(new Set(scopeTones.map((t) => t.light)).size).toBe(10);
+    expect(new Set(scopeTones.map((t) => t.dark)).size).toBe(10);
+  });
+
+  test("the text on each fill is white or near-black and meets 4.5:1, in light and dark", () => {
     for (const tone of scopeTones) {
-      for (const bg of lightBackgrounds) {
-        const back = over(rgb(tone.light), rgb(bg), SCOPE_TINT);
-        expect(contrast(rgb(tone.light), back)).toBeGreaterThanOrEqual(4.5);
-      }
-      for (const bg of darkBackgrounds) {
-        const back = over(rgb(tone.dark), rgb(bg), SCOPE_TINT);
-        expect(contrast(rgb(tone.dark), back)).toBeGreaterThanOrEqual(4.5);
+      for (const [fill, text] of [
+        [tone.light, tone.lightText],
+        [tone.dark, tone.darkText],
+      ]) {
+        expect([WHITE_TEXT, DARK_TEXT]).toContain(text);
+        expect(contrast(rgb(text), rgb(fill))).toBeGreaterThanOrEqual(4.5);
       }
     }
+  });
+
+  test("two colours next to each other in the list have very different hues", () => {
+    scopeTones.forEach((tone, i) => {
+      const next = scopeTones[(i + 1) % scopeTones.length];
+      expect(hueDistance(tone.light, next.light)).toBeGreaterThanOrEqual(45);
+      expect(hueDistance(tone.dark, next.dark)).toBeGreaterThanOrEqual(45);
+    });
   });
 });
 
@@ -159,8 +180,29 @@ describe("labels", () => {
     expect(scope?.className).toContain("text-label-secondary");
     expect(scope?.className).not.toContain("--scope-");
     expect(value?.textContent).toBe("Nathan");
-    expect(value?.className).toContain("text-[color:var(--scope-light)]");
-    expect(value?.className).toContain("bg-[color-mix(in_srgb,var(--scope-light)_14%,transparent)]");
+    // The scope colour is the fill of the value, under white or near-black text.
+    expect(value?.className).toContain("bg-[var(--scope-light)]");
+    expect(value?.className).toContain("dark:bg-[var(--scope-dark)]");
+    expect(value?.className).toContain("text-[color:var(--scope-text-light)]");
+    expect(value?.className).toContain("dark:text-[color:var(--scope-text-dark)]");
+    const style = container.querySelector<HTMLElement>("[data-label='tag']")?.style;
+    const tone = scopeTone("Person");
+    expect(style?.getPropertyValue("--scope-light")).toBe(tone.light);
+    expect(style?.getPropertyValue("--scope-text-light")).toBe(tone.lightText);
+    expect(style?.getPropertyValue("--scope-dark")).toBe(tone.dark);
+    expect(style?.getPropertyValue("--scope-text-dark")).toBe(tone.darkText);
+  });
+
+  test("the remove control of a scoped tag has the text colour of the fill", () => {
+    const { container } = render(<TagLabel text="Person::Nathan" onRemove={() => {}} />);
+    const button = screen.getByRole("button", { name: "Remove Person: Nathan" });
+    expect(button.className).toContain("text-current");
+    // The pressed state uses the text colour, so it shows on every fill.
+    expect(button.className).toContain("hover:bg-[color-mix(in_srgb,currentColor_22%,transparent)]");
+    const holder = button.parentElement;
+    expect(holder?.className).toContain("bg-[var(--scope-light)]");
+    expect(holder?.className).toContain("text-[color:var(--scope-text-light)]");
+    expect(container.querySelector("[data-value]")).toBeTruthy();
   });
 
   test("a tag with no scope shows one part", () => {

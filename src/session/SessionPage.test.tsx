@@ -134,8 +134,8 @@ function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Rec
     session_document: () => doc,
     note_types: () => ({
       types: [
-        { name: "One on One", valid: true, shared: true, notes: 1 },
-        { name: "Pathfinder", valid: true, shared: true, notes: 0 },
+        { name: "One on One", valid: true, shared: true, notes: 1, general: false },
+        { name: "Pathfinder", valid: true, shared: true, notes: 0, general: false },
       ],
       default_type: null,
     }),
@@ -1624,7 +1624,7 @@ describe("SessionPage type and tags row", () => {
     const sessions = sessionsOf([e]);
     renderPage({ id: "p", sessions });
     const user = userEvent.setup();
-    await user.click(within(typeRow()).getByRole("button", { name: "Type: No type" }));
+    await user.click(within(typeRow()).getByRole("button", { name: "Type: General" }));
     await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
     expect(await screen.findByText("The type changed. The folder moves when the note is free.")).toBeTruthy();
     expect(within(typeRow()).getByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();

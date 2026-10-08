@@ -24,7 +24,7 @@ import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
-import { hasNoTypeNote, isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
+import { hasGeneralNote, isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
 import { groupByDay, rowTitle } from "./group";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
@@ -101,11 +101,11 @@ export function Home({
   );
   // The filter stays while Home is mounted, so it stays when the user opens
   // a note and comes back (R33). A type or a tag that no longer exists drops
-  // out of it. "No type" drops out when every listed note has a type.
+  // out of it. General drops out when no listed note is in General.
   const lists = useTypesAndTags(active);
   const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
-  const noType = hasNoTypeNote(listed);
-  const filter = keepExisting(chosenFilter, lists.types?.types ?? null, lists.tags, noType);
+  const general = hasGeneralNote(listed);
+  const filter = keepExisting(chosenFilter, lists.types?.types ?? null, lists.tags, general);
   useEffect(() => {
     if (filter !== chosenFilter) setFilter(filter);
   }, [filter, chosenFilter]);
@@ -287,7 +287,7 @@ export function Home({
             <FilterBar
               filter={filter}
               types={lists.types?.types ?? []}
-              noType={noType}
+              general={general}
               tags={lists.tags ?? []}
               onChange={setFilter}
             />

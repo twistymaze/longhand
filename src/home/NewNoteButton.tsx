@@ -1,14 +1,15 @@
 // New Note as a split button (R9, KTD10). The main part does the default
 // that Settings > Recording sets, and its label says which default that is.
 // The main part starts a note of the default type (R23). The menu part
-// lists the note types and "No type", the other choice, and "New Type…"
-// (R24). Each type item starts a note of that type in the same way as the
-// main part. Both parts are unavailable, with the reason, while a note
+// lists General and the other note types, the other choice, and "New
+// Type…" (R24). Each type item starts a note of that type in the same way
+// as the main part. Both parts are unavailable, with the reason, while a note
 // cannot start (R7). The menu opens and closes at once, with no motion: the
 // button is used many times a day.
 
 import { type Ref, useRef, useState } from "react";
 import type { NewNoteType, NoteTypeEntry, NoteTypeList, Readiness } from "../bindings";
+import { withGeneral } from "../lib/Labels";
 import { NewTypeDialog } from "../lib/NewTypeDialog";
 import { missingPreconditions } from "../processing/describe";
 import { Menu, type MenuEntry, separator } from "../session/SessionMenu";
@@ -50,7 +51,7 @@ export function NewNoteButton({
   /// The default of Settings > Recording: true when New Note records.
   records: boolean;
   readiness: Readiness;
-  /// The effective type list. The menu offers only the valid types.
+  /// The type list. The menu offers General and the valid types.
   types?: NoteTypeEntry[];
   /// A start is in progress: both parts wait.
   busy?: boolean;
@@ -77,22 +78,15 @@ export function NewNoteButton({
   };
 
   const items: MenuEntry[] = [
-    ...types
+    ...withGeneral(types)
       .filter((t) => t.valid)
       .map((t) => ({
-        key: `type:${t.name}`,
+        key: t.general ? "general" : `type:${t.name}`,
         label: t.name,
         disabled: mainRefusal !== null,
         reason: mainRefusal ?? undefined,
-        onSelect: startAs({ kind: "named", name: t.name }),
+        onSelect: startAs(t.general ? { kind: "general" } : { kind: "named", name: t.name }),
       })),
-    {
-      key: "no-type",
-      label: "No type",
-      disabled: mainRefusal !== null,
-      reason: mainRefusal ?? undefined,
-      onSelect: startAs({ kind: "no_type" }),
-    },
     separator("other"),
     {
       label: records ? labels.note.menu : labels.record.menu,

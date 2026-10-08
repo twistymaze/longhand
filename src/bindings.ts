@@ -377,7 +377,7 @@ async addNoteType(name: string) : Promise<Result<NoteTypeList, string>> {
 }
 },
 /**
- * Make a note type the default type, or "No type" for `None` (R7, R23).
+ * Make a note type the default type, or General for `None` (R7, R23).
  */
 async setDefaultNoteType(name: string | null) : Promise<Result<NoteTypeList, string>> {
     try {
@@ -403,9 +403,9 @@ async renameNoteType(name: string, newName: string) : Promise<Result<NoteTypeEdi
 }
 },
 /**
- * Delete a note type (R6): its notes get no type, and their folders go
- * directly in the storage folder. When it is the default type, the
- * default becomes "No type" (R7). The surface asks for a confirmation
+ * Delete a note type (R6): its notes get the type General, and their
+ * folders go directly in the storage folder. When it is the default type,
+ * the default becomes General (R7). The surface asks for a confirmation
  * with the number of notes first (R31).
  */
 async deleteNoteType(name: string) : Promise<Result<NoteTypeEdit, string>> {
@@ -903,7 +903,7 @@ async renameSession(sessionId: string, title: string) : Promise<Result<FolderRen
 }
 },
 /**
- * Change the type of a note to `note_type`, or to "No type" for `None`
+ * Change the type of a note to `note_type`, or to General for `None`
  * (R5). The type must be a valid type of the effective list (KTD8,
  * KTD9). The app shows the new type at once. The folder of a note that no
  * computer works on moves now, and any other folder moves later. The
@@ -1535,9 +1535,10 @@ export type NewNoteType =
  */
 { kind: "default" } | 
 /**
- * "No type": the home folder is directly in the storage folder.
+ * The built-in type General: the home folder is directly in the
+ * storage folder.
  */
-{ kind: "no_type" } | 
+{ kind: "general" } | 
 /**
  * A type of the effective type list.
  */
@@ -1572,20 +1573,26 @@ shared: boolean;
 /**
  * The number of notes of the type.
  */
-notes: number }
+notes: number; 
+/**
+ * The built-in type General: the notes whose home folder is directly
+ * in the storage folder. It is first in the list. It cannot be renamed
+ * or deleted, and a note of General has the type `None`.
+ */
+general: boolean }
 /**
  * The effective type list and the default type (R2, R7, KTD9).
  */
 export type NoteTypeList = { 
 /**
- * The types of the shared list in their order, then the folder-only
- * types in name order.
+ * General, then the types of the shared list in their order, then the
+ * folder-only types in name order.
  */
 types: NoteTypeEntry[]; 
 /**
  * The type of a new note from the New Note button and the shortcut.
- * `None` is "No type". A shared default that names no valid type of
- * the list is "No type".
+ * `None` is General. A shared default that names no valid type of the
+ * list is General.
  */
 default_type: string | null }
 /**
@@ -2069,7 +2076,7 @@ remote: RemoteView | null;
 /**
  * The note type that the app shows (KTD3): a type change that waits
  * for its move, else the type folder that holds the home folder.
- * `None` is "No type".
+ * `None` is General.
  */
 note_type: string | null; 
 /**

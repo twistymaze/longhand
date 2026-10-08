@@ -110,6 +110,9 @@ mod type_names {
             "Customer calls",
             "Café 2026",
             "1-1s",
+            // Only "General" is kept for the built-in type.
+            "No type",
+            "General Meetings",
         ] {
             assert_eq!(check_type_name(name).as_deref(), Ok(name), "{name}");
         }
@@ -146,9 +149,9 @@ mod type_names {
             ("CON", TypeNameError::Reserved),
             ("com1.txt", TypeNameError::Reserved),
             ("desktop.ini", TypeNameError::Reserved),
-            ("No type", TypeNameError::NoType),
-            ("no TYPE", TypeNameError::NoType),
-            (" No type ", TypeNameError::NoType),
+            ("General", TypeNameError::General),
+            ("general", TypeNameError::General),
+            (" GENERAL ", TypeNameError::General),
         ];
         for (name, expected) in table {
             let refused = check_type_name(name).unwrap_err();

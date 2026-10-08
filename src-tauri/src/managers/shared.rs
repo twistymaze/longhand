@@ -628,17 +628,21 @@ pub struct NoteTypeEntry {
     pub shared: bool,
     /// The number of notes of the type.
     pub notes: u32,
+    /// The built-in type General: the notes whose home folder is directly
+    /// in the storage folder. It is first in the list. It cannot be renamed
+    /// or deleted, and a note of General has the type `None`.
+    pub general: bool,
 }
 
 /// The effective type list and the default type (R2, R7, KTD9).
 #[derive(Serialize, Type, Debug, Clone, PartialEq, Eq, Default)]
 pub struct NoteTypeList {
-    /// The types of the shared list in their order, then the folder-only
-    /// types in name order.
+    /// General, then the types of the shared list in their order, then the
+    /// folder-only types in name order.
     pub types: Vec<NoteTypeEntry>,
     /// The type of a new note from the New Note button and the shortcut.
-    /// `None` is "No type". A shared default that names no valid type of
-    /// the list is "No type".
+    /// `None` is General. A shared default that names no valid type of the
+    /// list is General.
     pub default_type: Option<String>,
 }
 
@@ -735,7 +739,7 @@ fn fields_in_file(root: &Path) -> Result<file::SharedFields, Failure> {
     }
 }
 
-/// The default type of the shared fields `fields`. `None` is "No type".
+/// The default type of the shared fields `fields`. `None` is General.
 fn default_type(fields: &file::SharedFields) -> Option<String> {
     fields.default_note_type.known().cloned().flatten()
 }
@@ -756,23 +760,31 @@ fn edit_patch(
 }
 
 impl SharedSettingsManager {
-    /// The effective type list and the default type, from the shared view
-    /// in memory and `folders` (KTD9). This does no file I/O and never
-    /// writes.
+    /// General and the effective type list, and the default type, from the
+    /// shared view in memory and `folders` (KTD9). This does no file I/O
+    /// and never writes.
     pub fn note_types(&self, folders: &StorageFolders) -> NoteTypeList {
         let fields = self.snapshot().view.fields;
         let types = note_types::effective_types(&shared_types(&fields), &folders.types);
         let default = default_type(&fields);
+        let count = |notes: usize| u32::try_from(notes).unwrap_or(u32::MAX);
+        let general = NoteTypeEntry {
+            name: session_save::naming::GENERAL.to_string(),
+            valid: true,
+            shared: false,
+            notes: count(folders.homes.len()),
+            general: true,
+        };
         NoteTypeList {
             default_type: note_types::effective_default(default.as_deref(), &types),
-            types: types
-                .into_iter()
-                .map(|t| NoteTypeEntry {
+            types: std::iter::once(general)
+                .chain(types.into_iter().map(|t| NoteTypeEntry {
                     name: t.name,
                     valid: t.valid,
                     shared: t.shared,
-                    notes: u32::try_from(t.notes).unwrap_or(u32::MAX),
-                })
+                    notes: count(t.notes),
+                    general: false,
+                }))
                 .collect(),
         }
     }
@@ -791,7 +803,7 @@ impl SharedSettingsManager {
         })
     }
 
-    /// Make `name` the default type, or "No type" for `None` (R7). The
+    /// Make `name` the default type, or General for `None` (R7). The
     /// type must be a valid type of the effective list. A folder-only type
     /// goes into the shared list in the same save (KTD9).
     pub fn set_default_note_type(
@@ -847,7 +859,7 @@ impl SharedSettingsManager {
     }
 
     /// Delete the note type `name` (R6). When it is the default type, the
-    /// default becomes "No type" in the same save (R7). `before_save`
+    /// default becomes General in the same save (R7). `before_save`
     /// receives the edit before the list changes (KTD7).
     pub fn delete_note_type(
         &self,
@@ -1939,17 +1951,32 @@ mod tests {
 
         let folders = StorageFolders {
             types: vec![type_folder("Customer Calls", 2, false)],
-            homes: Vec::new(),
+            homes: vec!["2026-10-07 0900 Standup".into()],
         };
         let list = manager.note_types(&folders);
-        assert_eq!(type_names(&list), ["One on One", "Customer Calls"]);
         assert_eq!(
-            list.types[1],
+            type_names(&list),
+            ["General", "One on One", "Customer Calls"]
+        );
+        // General is first: the notes at the top of the storage folder.
+        assert_eq!(
+            list.types[0],
+            NoteTypeEntry {
+                name: "General".into(),
+                valid: true,
+                shared: false,
+                notes: 1,
+                general: true,
+            }
+        );
+        assert_eq!(
+            list.types[2],
             NoteTypeEntry {
                 name: "Customer Calls".into(),
                 valid: true,
                 shared: false,
                 notes: 2,
+                general: false,
             }
         );
         assert_eq!(list.default_type, None);
@@ -2007,12 +2034,15 @@ mod tests {
         );
         // "con" is listed but is not valid, and "Old" is leaving.
         let list = manager.note_types(&folders);
-        assert_eq!(type_names(&list), ["Customer Calls", "Pathfinder", "con"]);
-        assert!(!list.types[2].valid);
+        assert_eq!(
+            type_names(&list),
+            ["General", "Customer Calls", "Pathfinder", "con"]
+        );
+        assert!(!list.types[3].valid);
     }
 
     #[test]
-    fn the_default_type_is_saved_and_no_type_clears_it() {
+    fn the_default_type_is_saved_and_general_clears_it() {
         // R7, R23.
         let folder = TempDir::new().unwrap();
         let computer = Computer::new();
@@ -2047,6 +2077,38 @@ mod tests {
         manager.set_default_note_type(None, &folders).unwrap();
         assert_eq!(file_of(folder.path())["default_note_type"], Value::Null);
         assert_eq!(manager.note_types(&folders).default_type, None);
+        // The name of the built-in type also clears the default.
+        manager
+            .set_default_note_type(Some("Pathfinder"), &folders)
+            .unwrap();
+        manager
+            .set_default_note_type(Some("general"), &folders)
+            .unwrap();
+        assert_eq!(file_of(folder.path())["default_note_type"], Value::Null);
+    }
+
+    #[test]
+    fn a_folder_named_general_is_an_invalid_type_beside_the_built_in_general() {
+        // A folder that a user made in Finder. It cannot be the built-in
+        // type, so Settings offers only a rename or a delete for it.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let folders = StorageFolders {
+            types: vec![type_folder("General", 2, false)],
+            homes: Vec::new(),
+        };
+        let list = manager.note_types(&folders);
+        assert_eq!(type_names(&list), ["General", "General"]);
+        assert!(list.types[0].general && list.types[0].valid);
+        assert_eq!(list.types[0].notes, 0);
+        assert!(!list.types[1].general && !list.types[1].valid);
+        assert_eq!(list.types[1].notes, 2);
+        assert_eq!(
+            manager.add_note_type("general", &folders).unwrap_err(),
+            "General is a built-in type."
+        );
     }
 
     #[test]
@@ -2065,7 +2127,7 @@ mod tests {
         // The list comes from the cache, and the read wrote nothing.
         assert_eq!(
             type_names(&manager.note_types(&StorageFolders::default())),
-            ["Pathfinder"]
+            ["General", "Pathfinder"]
         );
         assert!(
             manager
@@ -2103,7 +2165,7 @@ mod tests {
         assert_eq!(on_disk["note_types"], json!(["Pathfinder"]));
         assert_eq!(on_disk["default_note_type"], json!("Pathfinder"));
         let list = manager.note_types(&StorageFolders::default());
-        assert_eq!(type_names(&list), ["Pathfinder"]);
+        assert_eq!(type_names(&list), ["General", "Pathfinder"]);
         assert_eq!(list.default_type.as_deref(), Some("Pathfinder"));
     }
 
@@ -2132,7 +2194,7 @@ mod tests {
         );
         assert_eq!(
             type_names(&manager.note_types(&StorageFolders::default())),
-            ["Customer Calls"]
+            ["General", "Customer Calls"]
         );
     }
 
@@ -2151,7 +2213,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_default_type_makes_the_default_no_type_in_the_same_save() {
+    fn deleting_the_default_type_makes_the_default_general_in_the_same_save() {
         // Covers AE2 (the default) and R7.
         let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
         manager
@@ -2272,6 +2334,9 @@ mod tests {
         folders.mark_leaving(["pathfinder"]);
         assert!(folders.types[0].leaving);
         let (_folder, _computer, manager) = with_types(&["D&D"]);
-        assert_eq!(type_names(&manager.note_types(&folders)), ["D&D"]);
+        assert_eq!(
+            type_names(&manager.note_types(&folders)),
+            ["General", "D&D"]
+        );
     }
 }

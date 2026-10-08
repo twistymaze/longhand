@@ -1,13 +1,13 @@
 // The filter bar under the "Notes" heading (R19). A segmented control
-// chooses "All", "No type" or one note type. "No type" shows only when a
-// listed note has no type. When the segments do not fit,
-// one menu replaces the control. The Tags menu adds a tag to the filter, and
+// chooses "All", "General" or one other note type. "General" shows only
+// when a listed note is in General. When the segments do not fit, one menu
+// replaces the control. The Tags menu adds a tag to the filter, and
 // each chosen tag shows as a label with a control that removes it. The bar
 // changes at once, with no motion: it is used many times a day.
 
 import { type ReactNode, type Ref, type RefObject, useLayoutEffect, useRef, useState } from "react";
 import type { NoteTypeEntry, TagEntry } from "../bindings";
-import { TagLabel } from "../lib/Labels";
+import { GENERAL, TagLabel } from "../lib/Labels";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
 import { Menu, type MenuEntry } from "../session/SessionMenu";
 import { ChevronIcon } from "../settings/icons";
@@ -17,27 +17,32 @@ import type { NoteFilter, TypeChoice } from "./filter";
 export const MAX_SEGMENT_TYPES = 6;
 
 const ALL = "all";
-const NO_TYPE = "no_type";
+const GENERAL_VALUE = "general";
 const NAMED = "type:";
 
 const valueOf = (choice: TypeChoice) =>
-  choice.kind === "named" ? `${NAMED}${choice.name}` : choice.kind === "all" ? ALL : NO_TYPE;
+  choice.kind === "named" ? `${NAMED}${choice.name}` : choice.kind === "all" ? ALL : GENERAL_VALUE;
 
 const choiceOf = (value: string): TypeChoice =>
-  value === ALL ? { kind: "all" } : value === NO_TYPE ? { kind: "no_type" } : { kind: "named", name: value.slice(NAMED.length) };
+  value === ALL
+    ? { kind: "all" }
+    : value === GENERAL_VALUE
+      ? { kind: "general" }
+      : { kind: "named", name: value.slice(NAMED.length) };
 
 export function FilterBar({
   filter,
-  types,
-  noType,
+  types: allTypes,
+  general,
   tags,
   onChange,
 }: {
   filter: NoteFilter;
-  /// The effective type list. The filter shows every entry (KTD9).
+  /// The type list. The filter shows every entry (KTD9). General shows
+  /// only when `general` is true.
   types: NoteTypeEntry[];
-  /// At least one listed note has no type, so "No type" is a choice.
-  noType: boolean;
+  /// At least one listed note is in General, so General is a choice.
+  general: boolean;
   /// The tag list (`list_tags`).
   tags: TagEntry[];
   onChange: (filter: NoteFilter) => void;
@@ -46,10 +51,12 @@ export function FilterBar({
   const tagsButton = useRef<HTMLButtonElement>(null);
   const natural = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
+  // General is a choice of its own, before the other types.
+  const types = allTypes.filter((t) => !t.general);
 
   const segments: Segment<string>[] = [
     { value: ALL, label: "All" },
-    ...(noType ? [{ value: NO_TYPE, label: "No type" }] : []),
+    ...(general ? [{ value: GENERAL_VALUE, label: GENERAL }] : []),
     ...types.map((t) => ({ value: `${NAMED}${t.name}`, label: t.name })),
   ];
   const value = valueOf(filter.type);
@@ -70,7 +77,7 @@ export function FilterBar({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [noType, types.map((t) => t.name).join("\n")]);
+  }, [general, types.map((t) => t.name).join("\n")]);
 
   const setType = (type: TypeChoice) => onChange({ ...filter, type });
   const toggleTag = (key: string) =>
@@ -81,7 +88,7 @@ export function FilterBar({
   const textOf = (key: string) => tags.find((t) => t.key === key)?.text ?? key;
 
   const typeLabel =
-    filter.type.kind === "all" ? "All Types" : filter.type.kind === "no_type" ? "No type" : filter.type.name;
+    filter.type.kind === "all" ? "All Types" : filter.type.kind === "general" ? GENERAL : filter.type.name;
 
   return (
     <div className="shrink-0 px-[24px] pb-2 select-none">

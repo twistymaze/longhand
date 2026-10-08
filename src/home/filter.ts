@@ -6,9 +6,9 @@ import type { NoteTypeEntry, SessionEntry, TagEntry } from "../bindings";
 import { isOpen } from "../processing/describe";
 import { sameType, tagKey } from "../lib/Labels";
 
-/// The type choice of the filter: every note, the notes with no type, or
-/// the notes of one type.
-export type TypeChoice = { kind: "all" } | { kind: "no_type" } | { kind: "named"; name: string };
+/// The type choice of the filter: every note, the notes of General (at the
+/// top of the storage folder), or the notes of one other type.
+export type TypeChoice = { kind: "all" } | { kind: "general" } | { kind: "named"; name: string };
 
 /// `tags` holds tag keys (KTD10), in the order the user chose them.
 export type NoteFilter = { type: TypeChoice; tags: string[] };
@@ -22,31 +22,31 @@ export const isFiltered = (filter: NoteFilter) => filter.type.kind !== "all" || 
 export function matches(entry: SessionEntry, filter: NoteFilter): boolean {
   if (isOpen(entry.state)) return true;
   const { type } = filter;
-  if (type.kind === "no_type" && entry.note_type !== null) return false;
+  if (type.kind === "general" && entry.note_type !== null) return false;
   if (type.kind === "named" && (entry.note_type === null || !sameType(entry.note_type, type.name))) return false;
   if (filter.tags.length === 0) return true;
   const keys = new Set(entry.tags.map(tagKey));
   return filter.tags.every((key) => keys.has(key));
 }
 
-/// True when "No type" is a choice: at least one listed note has no type.
-export const hasNoTypeNote = (entries: SessionEntry[]) => entries.some((e) => e.note_type === null);
+/// True when General is a choice: at least one listed note is in General.
+export const hasGeneralNote = (entries: SessionEntry[]) => entries.some((e) => e.note_type === null);
 
-/// The filter without a type or a tag that no longer exists. "No type"
-/// drops out when `noType` is false. A null list is not read yet, so its
+/// The filter without a type or a tag that no longer exists. General drops
+/// out when `general` is false. A null list is not read yet, so its
 /// choices stay. A type that changed only its case keeps its place with the
 /// new spelling. Returns the same object when nothing changes.
 export function keepExisting(
   filter: NoteFilter,
   types: NoteTypeEntry[] | null,
   tags: TagEntry[] | null,
-  noType: boolean,
+  general: boolean,
 ): NoteFilter {
   let type = filter.type;
-  if (!noType && type.kind === "no_type") type = { kind: "all" };
+  if (!general && type.kind === "general") type = { kind: "all" };
   if (types && type.kind === "named") {
     const name = type.name;
-    const found = types.find((t) => sameType(t.name, name));
+    const found = types.find((t) => !t.general && sameType(t.name, name));
     if (!found) type = { kind: "all" };
     else if (found.name !== name) type = { kind: "named", name: found.name };
   }

@@ -186,7 +186,7 @@ pub struct SharedFields {
     /// [`crate::note_types`]).
     pub note_types: Field<Vec<String>>,
     /// The type of a new note from the New Note button and the shortcut
-    /// (R7, R23). `Known(None)` and an absent field are "No type".
+    /// (R7, R23). `Known(None)` and an absent field are General.
     pub default_note_type: Field<Option<String>>,
 }
 

@@ -30,34 +30,36 @@ async fn blocking<T: Send + 'static>(
 pub enum NewNoteType {
     /// The default type from the shared settings (R7).
     Default,
-    /// "No type": the home folder is directly in the storage folder.
-    NoType,
+    /// The built-in type General: the home folder is directly in the
+    /// storage folder.
+    General,
     /// A type of the effective type list.
     Named { name: String },
 }
 
 /// The type of a new note from `choice` and the effective type list
-/// `types`, with the spelling of the list. `None` is "No type". No choice
-/// is the default type. A named type must be a valid type of the list
-/// (KTD8, KTD9).
+/// `types`, with the spelling of the list. `None` is General. No choice is
+/// the default type. A named type must be a valid type of the list (KTD8,
+/// KTD9).
 pub fn chosen_type(
     choice: Option<&NewNoteType>,
     types: &NoteTypeList,
 ) -> Result<Option<String>, String> {
     match choice {
         None | Some(NewNoteType::Default) => Ok(types.default_type.clone()),
-        Some(NewNoteType::NoType) => Ok(None),
+        Some(NewNoteType::General) => Ok(None),
         Some(NewNoteType::Named { name }) => named_type(types, name).map(Some),
     }
 }
 
 /// The valid type of the list `types` that has the name `name`, with the
-/// spelling of the list (KTD8, KTD9).
+/// spelling of the list (KTD8, KTD9). General has no type folder, so its
+/// name is refused: the caller uses `None` for General.
 pub fn named_type(types: &NoteTypeList, name: &str) -> Result<String, String> {
     types
         .types
         .iter()
-        .find(|t| t.valid && session_save::naming::same_type_name(&t.name, name))
+        .find(|t| t.valid && !t.general && session_save::naming::same_type_name(&t.name, name))
         .map(|t| t.name.clone())
         .ok_or_else(|| NoteTypeError::NoSuchType.to_string())
 }
@@ -315,12 +317,21 @@ mod tests {
             valid,
             shared: true,
             notes: 0,
+            general: false,
         }
     }
 
     fn list(default_type: Option<&str>) -> NoteTypeList {
         NoteTypeList {
-            types: vec![entry("Pathfinder", true), entry("Bad:Name", false)],
+            types: vec![
+                NoteTypeEntry {
+                    general: true,
+                    shared: false,
+                    ..entry("General", true)
+                },
+                entry("Pathfinder", true),
+                entry("Bad:Name", false),
+            ],
             default_type: default_type.map(String::from),
         }
     }
@@ -337,18 +348,18 @@ mod tests {
         );
     }
 
-    // R7: a default that names no valid type of the effective list is "No
-    // type" (the list gives `None`).
+    // R7: a default that names no valid type of the effective list is
+    // General (the list gives `None`).
     #[test]
-    fn a_default_type_that_is_gone_starts_the_note_with_no_type() {
+    fn a_default_type_that_is_gone_starts_the_note_in_general() {
         assert_eq!(chosen_type(None, &list(None)), Ok(None));
     }
 
-    // R24: the New Note menu starts a note of a named type, or of no type.
+    // R24: the New Note menu starts a note of a named type, or of General.
     #[test]
     fn a_named_type_uses_the_spelling_of_the_list() {
         let types = list(Some("Pathfinder"));
-        assert_eq!(chosen_type(Some(&NewNoteType::NoType), &types), Ok(None));
+        assert_eq!(chosen_type(Some(&NewNoteType::General), &types), Ok(None));
         assert_eq!(
             chosen_type(
                 Some(&NewNoteType::Named {
@@ -361,11 +372,12 @@ mod tests {
     }
 
     // KTD8, KTD9: a type that is not in the list, or that is not valid, is
-    // refused.
+    // refused. General is chosen only as `NewNoteType::General`, so a type
+    // name never makes a folder named "General".
     #[test]
     fn a_type_that_is_not_a_valid_type_of_the_list_is_refused() {
         let types = list(None);
-        for name in ["Gone", "Bad:Name"] {
+        for name in ["Gone", "Bad:Name", "General"] {
             assert_eq!(
                 chosen_type(Some(&NewNoteType::Named { name: name.into() }), &types),
                 Err("That type no longer exists.".to_string()),

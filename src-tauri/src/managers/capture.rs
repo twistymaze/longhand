@@ -261,7 +261,7 @@ fn stop_note(
 /// write. The early write reads the type from the row and makes the home
 /// folder in the type folder (U7 of the note types plan). The caller holds
 /// the store lock that made the row. The early write begins also when the
-/// type cannot be recorded: the note then has no type.
+/// type cannot be recorded: the note is then in General.
 fn begin_home(store: &Store, id: &str, note_type: Option<&str>) -> Result<(), CaptureError> {
     let typed = match note_type {
         Some(_) => store.set_note_type(id, note_type),
@@ -1322,7 +1322,7 @@ impl CaptureManager {
     }
 
     /// Start a new session recording (R1, R6c), of the type `note_type`
-    /// (`None` is "No type"). A session already recording is closed first
+    /// (`None` is General). A session already recording is closed first
     /// and then stopped and queued by the store.
     pub fn start_session(
         &self,
@@ -1477,7 +1477,7 @@ impl CaptureManager {
     /// Open a new note that does not record (KTD2): a note with no audio,
     /// whose home folder is written in the background (R1). A recording
     /// that runs continues. The note gets the type `note_type` (`None` is
-    /// "No type"), which the caller checked. Returns the id of the note.
+    /// General), which the caller checked. Returns the id of the note.
     pub fn open_note(
         &self,
         app: &AppHandle,

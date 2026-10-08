@@ -107,8 +107,8 @@ describe("NewNoteButton", () => {
     renderButton(true);
     fireEvent.click(choices());
     expect(choices().getAttribute("aria-expanded")).toBe("true");
-    // The first item: with no types, "No type".
-    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "No type" }));
+    // The first item: with no types read, General.
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "General" }));
     await userEvent.setup().keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement).toBe(choices());
@@ -130,9 +130,10 @@ describe("NewNoteButton", () => {
 
 describe("NewNoteButton: note types (R24)", () => {
   const types: NoteTypeEntry[] = [
-    { name: "Pathfinder", valid: true, shared: true, notes: 3 },
-    { name: "One on One", valid: true, shared: true, notes: 2 },
-    { name: "Bad:Name", valid: false, shared: false, notes: 1 },
+    { name: "General", valid: true, shared: false, notes: 4, general: true },
+    { name: "Pathfinder", valid: true, shared: true, notes: 3, general: false },
+    { name: "One on One", valid: true, shared: true, notes: 2, general: false },
+    { name: "Bad:Name", valid: false, shared: false, notes: 1, general: false },
   ];
 
   function renderTyped(records = true) {
@@ -144,7 +145,7 @@ describe("NewNoteButton: note types (R24)", () => {
     return { onStart, onTypesChanged };
   }
 
-  test("the menu lists the valid types in order, No type, the other choice and New Type…", async () => {
+  test("the menu lists General, the valid types in order, the other choice and New Type…", async () => {
     mockTauri();
     renderTyped();
     await userEvent.setup().click(choices());
@@ -152,7 +153,7 @@ describe("NewNoteButton: note types (R24)", () => {
     const entries = [...menu.querySelectorAll('[role="menuitem"], [role="separator"]')].map((el) =>
       el.getAttribute("role") === "separator" ? "—" : el.textContent,
     );
-    expect(entries).toEqual(["Pathfinder", "One on One", "No type", "—", "New Note Without Recording", "—", "New Type…"]);
+    expect(entries).toEqual(["General", "Pathfinder", "One on One", "—", "New Note Without Recording", "—", "New Type…"]);
   });
 
   test("a type item starts a note of that type in the same way as the main part", async () => {
@@ -162,10 +163,10 @@ describe("NewNoteButton: note types (R24)", () => {
     await user.click(choices());
     await user.click(screen.getByRole("menuitem", { name: "Pathfinder" }));
     await user.click(choices());
-    await user.click(screen.getByRole("menuitem", { name: "No type" }));
+    await user.click(screen.getByRole("menuitem", { name: "General" }));
     expect(onStart.mock.calls).toEqual([
       [false, { kind: "named", name: "Pathfinder" }],
-      [false, { kind: "no_type" }],
+      [false, { kind: "general" }],
     ]);
   });
 
@@ -203,7 +204,7 @@ describe("NewNoteButton: note types (R24)", () => {
 
   test("Create adds the type and starts a note of that type", async () => {
     const added: NoteTypeList = {
-      types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0 }],
+      types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false }],
       default_type: null,
     };
     mockTauri({ add_note_type: () => added });
@@ -230,7 +231,7 @@ describe("NewNoteButton: note types (R24)", () => {
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "add_note_type")).toBe(true));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    await act(async () => finish({ types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0 }], default_type: null }));
+    await act(async () => finish({ types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false }], default_type: null }));
     await act(() => new Promise((r) => setTimeout(r, 20)));
     expect(onStart).not.toHaveBeenCalled();
   });

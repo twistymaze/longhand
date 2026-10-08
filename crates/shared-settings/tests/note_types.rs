@@ -70,9 +70,9 @@ fn a_folder_that_differs_only_in_case_is_the_shared_type_with_the_shared_spellin
 }
 
 #[test]
-fn a_shared_name_that_fails_the_check_or_repeats_gives_no_type() {
+fn a_shared_name_that_fails_the_check_or_repeats_is_not_listed() {
     let types = effective_types(
-        &shared(&["Pathfinder", "1:1s", "PATHFINDER", " ", "No type"]),
+        &shared(&["Pathfinder", "1:1s", "PATHFINDER", " ", "General"]),
         &[],
     );
     assert_eq!(names(&types), ["Pathfinder"]);
@@ -152,9 +152,55 @@ fn an_add_of_1_1s_is_refused_with_the_reason_of_the_name_check() {
         TypeNameError::ForbiddenCharacter(':').to_string()
     );
     assert_eq!(
-        add_type(&[], &[], &[], "no TYPE"),
-        Err(NoteTypeError::Name(TypeNameError::NoType))
+        add_type(&[], &[], &[], "general"),
+        Err(NoteTypeError::Name(TypeNameError::General))
     );
+    assert_eq!(
+        add_type(&[], &[], &[], "General").unwrap_err().to_string(),
+        "General is a built-in type."
+    );
+}
+
+#[test]
+fn a_rename_to_general_is_refused() {
+    // General is the built-in type of the notes at the top of the storage
+    // folder. No type folder can have its name.
+    assert_eq!(
+        rename_type(
+            &shared(&["Pathfinder"]),
+            &[],
+            &[],
+            "Pathfinder",
+            " GENERAL "
+        ),
+        Err(NoteTypeError::Name(TypeNameError::General))
+    );
+}
+
+#[test]
+fn a_folder_named_general_is_listed_but_not_valid_and_can_be_renamed() {
+    // A folder that a user made in Finder. Its notes keep their folder, and
+    // Settings offers a rename to a valid name or a delete (KTD9).
+    let folders = [folder("general", 2)];
+    let types = effective_types(&shared(&["General"]), &folders);
+    assert_eq!(names(&types), ["general"]);
+    assert!(!types[0].valid);
+    assert_eq!(types[0].notes, 2);
+    assert!(list_to_save(&shared(&["General"]), &folders).is_empty());
+    let renamed = rename_type(&[], &folders, &[], "general", "Team").unwrap();
+    assert_eq!(renamed.list, shared(&["Team"]));
+    assert_eq!(renamed.from, "general");
+}
+
+#[test]
+fn a_default_of_general_is_no_type_folder() {
+    // The default `None` is General.
+    assert_eq!(
+        default_to_save(&shared(&["Pathfinder"]), &[], Some(" general ")),
+        Ok((None, None))
+    );
+    let types = effective_types(&shared(&["Pathfinder"]), &[]);
+    assert_eq!(effective_default(Some("General"), &types), None);
 }
 
 #[test]
@@ -185,7 +231,7 @@ fn an_add_with_the_name_of_a_home_folder_in_the_storage_folder_is_refused() {
 }
 
 #[test]
-fn the_default_is_the_spelling_of_the_list_or_no_type() {
+fn the_default_is_the_spelling_of_the_list_or_general() {
     // R7, R23.
     let types = effective_types(&shared(&["Pathfinder"]), &[]);
     assert_eq!(
@@ -193,7 +239,7 @@ fn the_default_is_the_spelling_of_the_list_or_no_type() {
         Some("Pathfinder")
     );
     assert_eq!(effective_default(None, &types), None);
-    // A default that names no type is "No type".
+    // A default that names no type is General.
     assert_eq!(effective_default(Some("Board"), &types), None);
 }
 
@@ -333,7 +379,7 @@ fn a_delete_removes_the_type_and_writes_the_folder_only_types() {
 }
 
 #[test]
-fn the_default_follows_a_rename_and_is_no_type_after_a_delete() {
+fn the_default_follows_a_rename_and_is_general_after_a_delete() {
     // R7.
     assert_eq!(
         default_after(Some("pathfinder"), "Pathfinder", Some("D&D")),

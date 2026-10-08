@@ -13,10 +13,15 @@
 //!   list, so its notes keep their type and Home can filter them, but it is
 //!   not offered for a new note or a type change.
 //!
+//! General is the built-in type of the notes whose home folder is directly
+//! in the storage folder. It has no type folder, so it is not in this list,
+//! and the type name check refuses its name. A folder named "General" is
+//! therefore a type that is not valid.
+//!
 //! Nothing here reads a file. The caller gives the type folders from the
 //! store.
 
-use session_save::naming::{TypeNameError, check_type_name, same_type_name};
+use session_save::naming::{GENERAL, TypeNameError, check_type_name, same_type_name};
 
 /// A type folder in the storage folder: a folder that holds at least one
 /// home folder (KTD4).
@@ -260,8 +265,8 @@ pub fn list_after_edit(shared: &[String], from: &str, to: Option<&str>) -> Optio
 }
 
 /// The type that a new note gets from the shared default (R7, R23): the
-/// spelling of the effective list, or `None` for "No type". A default that
-/// names no valid type of the effective list is "No type".
+/// spelling of the effective list, or `None` for General. A default that
+/// names no valid type of the effective list is General.
 pub fn effective_default(default: Option<&str>, types: &[NoteType]) -> Option<String> {
     let default = default?;
     types
@@ -272,13 +277,14 @@ pub fn effective_default(default: Option<&str>, types: &[NoteType]) -> Option<St
 
 /// What a change of the default type to `name` writes (R7): the default,
 /// with the spelling of the effective list, and the shared list when the
-/// type is not in it yet (a folder-only type). `None` is "No type".
+/// type is not in it yet (a folder-only type). `None` and the name
+/// "General" are General: the default is no type folder.
 pub fn default_to_save(
     shared: &[String],
     folders: &[TypeFolder],
     name: Option<&str>,
 ) -> Result<(Option<String>, Option<Vec<String>>), NoteTypeError> {
-    let Some(name) = name else {
+    let Some(name) = name.filter(|name| !same_type_name(name, GENERAL)) else {
         return Ok((None, None));
     };
     let types = effective_types(shared, folders);

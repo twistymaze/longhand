@@ -63,7 +63,7 @@ pub struct SessionRecord {
     /// [`Store::create_session`]: see [`SessionRecord::start`].
     pub started_at: Option<DateTime<FixedOffset>>,
     /// The note type: the type folder that holds the home folder (KTD1).
-    /// `None` is "No type". The library scan sets it from the path.
+    /// `None` is General. The library scan sets it from the path.
     pub note_type: Option<String>,
     /// The tags of the note: `longhand_tags` of `session.md` (KTD2).
     pub tags: Vec<String>,
@@ -268,7 +268,7 @@ pub struct RenameIntent {
 
 /// A type change whose move this computer owes (KTD5, KTD13 of the note
 /// types and tags plan). It holds no path: the move finds the home folder
-/// by session id at move time. `None` as a type is "No type".
+/// by session id at move time. `None` as a type is General.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeMove {
     /// The new type.

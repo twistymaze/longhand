@@ -453,10 +453,10 @@ fn leave_shown(app: &AppHandle, manager: &CaptureManager) {
 }
 
 /// The type of a note that a shortcut starts: the default type (R23). When
-/// the type list cannot be read, the note has no type.
+/// the type list cannot be read, the note is in General.
 fn default_type(app: &AppHandle) -> Option<String> {
     crate::commands::capture::type_of_new_note(app, None).unwrap_or_else(|e| {
-        log::warn!("the shortcut could not read the default type, so the note has no type: {e}");
+        log::warn!("the shortcut could not read the default type, so the note is in General: {e}");
         None
     })
 }

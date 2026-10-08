@@ -580,7 +580,7 @@ pub fn add_note_type(
     Ok(shared.note_types(&folders))
 }
 
-/// Make a note type the default type, or "No type" for `None` (R7, R23).
+/// Make a note type the default type, or General for `None` (R7, R23).
 #[tauri::command(async)]
 #[specta::specta]
 pub fn set_default_note_type(
@@ -630,9 +630,9 @@ pub async fn rename_note_type(
     .map_err(|e| e.to_string())?
 }
 
-/// Delete a note type (R6): its notes get no type, and their folders go
-/// directly in the storage folder. When it is the default type, the
-/// default becomes "No type" (R7). The surface asks for a confirmation
+/// Delete a note type (R6): its notes get the type General, and their
+/// folders go directly in the storage folder. When it is the default type,
+/// the default becomes General (R7). The surface asks for a confirmation
 /// with the number of notes first (R31).
 #[tauri::command]
 #[specta::specta]

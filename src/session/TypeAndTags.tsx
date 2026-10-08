@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type NoteTypeEntry } from "../bindings";
-import { TagLabel, TypeLabel } from "../lib/Labels";
+import { GENERAL, TagLabel, TypeLabel, withGeneral } from "../lib/Labels";
 import { NewTypeDialog } from "../lib/NewTypeDialog";
 import { TagPicker } from "../lib/TagPicker";
 import { useReloadOn } from "../lib/useReloadOn";
@@ -156,20 +156,21 @@ export function TypeAndTags({
 
   if (!shown) return <div data-testid="type-and-tags" className="mt-2 min-h-5" />;
 
-  const valid = types.filter((t) => t.valid);
+  // General is first. A note of General has the type null.
+  const valid = withGeneral(types).filter((t) => t.valid);
   const items: MenuEntry[] = valid.map((t) => ({
-    key: `type:${t.name}`,
+    key: t.general ? "general" : `type:${t.name}`,
     label: t.name,
-    checked: t.name === shown.noteType,
+    checked: t.general ? shown.noteType === null : t.name === shown.noteType,
     radio: true,
     onSelect: () => {
       setMenuOpen(false);
       typeButton.current?.focus();
-      void chooseType(t.name);
+      void chooseType(t.general ? null : t.name);
     },
   }));
   // A type that is not valid can be the note's type, but not a choice.
-  if (shown.noteType !== null && !valid.some((t) => t.name === shown.noteType)) {
+  if (shown.noteType !== null && !valid.some((t) => !t.general && t.name === shown.noteType)) {
     items.push({
       key: "current",
       label: shown.noteType,
@@ -181,17 +182,6 @@ export function TypeAndTags({
     });
   }
   items.push(
-    {
-      key: "none",
-      label: "No type",
-      checked: shown.noteType === null,
-      radio: true,
-      onSelect: () => {
-        setMenuOpen(false);
-        typeButton.current?.focus();
-        void chooseType(null);
-      },
-    },
     separator("new"),
     {
       key: "new",
@@ -227,9 +217,9 @@ export function TypeAndTags({
           }}
           className={`-mx-0.5 inline-flex items-center gap-1 rounded-[5px] px-0.5 py-px hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent ${
             menuOpen ? "bg-fill" : ""
-          } ${shown.noteType === null ? "opacity-70" : ""}`}
+          }`}
         >
-          <TypeLabel name={shown.noteType ?? "No type"} />
+          <TypeLabel name={shown.noteType ?? GENERAL} />
           <DownChevron />
         </button>
         {menuOpen && <Menu items={items} onClose={closeMenu} align="left" />}

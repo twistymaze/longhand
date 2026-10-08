@@ -164,7 +164,7 @@ pub struct SessionDoc {
 
 /// The `longhand_pending_type` field of `session.md` (KTD2, KTD3, KTD13):
 /// the user changed the note type, and the home folder waits for its move.
-/// `None` as a type is "No type": the home folder is directly in the
+/// `None` as a type is General: the home folder is directly in the
 /// storage folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingType {

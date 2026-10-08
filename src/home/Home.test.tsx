@@ -1181,7 +1181,10 @@ describe("Home: notes with no audio and other computers", () => {
 
 describe("Home: filter by type and tags", () => {
   const typeList = (...names: string[]): NoteTypeList => ({
-    types: names.map((name) => ({ name, valid: true, shared: true, notes: 1 })),
+    types: [
+      { name: "General", valid: true, shared: false, notes: 1, general: true },
+      ...names.map((name) => ({ name, valid: true, shared: true, notes: 1, general: false })),
+    ],
     default_type: null,
   });
   const tagList = (...texts: string[]): TagEntry[] =>
@@ -1264,26 +1267,26 @@ describe("Home: filter by type and tags", () => {
     expect(titles()).toEqual(["Session 12"]);
   });
 
-  test("No type shows only the notes with no type", async () => {
+  test("General shows only the notes at the top of the storage folder", async () => {
     setup();
-    await chooseType(userEvent.setup(), "No type");
+    await chooseType(userEvent.setup(), "General");
     expect(titles()).toEqual(["Standup"]);
   });
 
-  test("with no note that has no type, No type is not a choice", async () => {
+  test("with no note in General, General is not a choice", async () => {
     setup({ entries: notes.filter((n) => n.note_type !== null) });
     await screen.findByRole("radio", { name: "Pathfinder" });
-    expect(screen.queryByRole("radio", { name: "No type" })).toBeNull();
+    expect(screen.queryByRole("radio", { name: "General" })).toBeNull();
     expect(screen.getByRole("radio", { name: "All" })).toBeTruthy();
   });
 
-  test("a chosen No type drops out of the filter when no note has no type any more", async () => {
+  test("a chosen General drops out of the filter when no note is in General any more", async () => {
     const { view, props } = setup();
-    await chooseType(userEvent.setup(), "No type");
+    await chooseType(userEvent.setup(), "General");
     expect(titles()).toEqual(["Standup"]);
     const typed = notes.map((n) => (n.note_type === null ? { ...n, note_type: "Pathfinder" } : n));
     view.rerender(<Home {...props} entries={typed} />);
-    await waitFor(() => expect(screen.queryByRole("radio", { name: "No type" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "General" })).toBeNull());
     expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
     expect(titles()).toHaveLength(4);
   });
@@ -1304,7 +1307,7 @@ describe("Home: filter by type and tags", () => {
   test("with no match, Home says so, and Clear Filter shows all notes again", async () => {
     setup();
     const user = userEvent.setup();
-    await chooseType(user, "No type");
+    await chooseType(user, "General");
     await addTag(user, "Topic::Loot");
     expect(screen.queryAllByRole("option")).toHaveLength(0);
     expect(screen.getByText("No notes match the filter.")).toBeTruthy();
@@ -1356,10 +1359,10 @@ describe("Home: filter by type and tags", () => {
     expect(screen.queryByRole("radiogroup", { name: "Note Type" })).toBeNull();
     await user.click(menuButton);
     const items = screen.getAllByRole("menuitemradio").map((i) => i.textContent);
-    expect(items).toEqual(["All Types", "No type", "A", "B", "C", "D", "E", "F", "G"]);
-    await user.click(screen.getByRole("menuitemradio", { name: "No type" }));
+    expect(items).toEqual(["All Types", "General", "A", "B", "C", "D", "E", "F", "G"]);
+    await user.click(screen.getByRole("menuitemradio", { name: "General" }));
     expect(titles()).toEqual(["Standup"]);
-    expect(screen.getByRole("button", { name: "Note Type: No type" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Note Type: General" })).toBeTruthy();
   });
 
   // R22, KTD3.
@@ -1373,6 +1376,15 @@ describe("Home: filter by type and tags", () => {
     expect(within(planning).getByText("One on One").closest('[data-label="type"]')).toBeTruthy();
     expect(within(planning).getByText("Person: Nathan")).toBeTruthy();
     expect(within(planning).getByText("follow-up")).toBeTruthy();
+  });
+
+  // R22: General is the usual type, so a row of General shows no type label.
+  test("a row of General shows no type label", () => {
+    setup({ entries: [entry("g", { title: "Standup", note_type: null, tags: ["follow-up"] })] });
+    const standup = row("Standup");
+    expect(standup.querySelector('[data-label="type"]')).toBeNull();
+    expect(within(standup).queryByText("General")).toBeNull();
+    expect(within(standup).getByText("follow-up")).toBeTruthy();
   });
 
   // R22.

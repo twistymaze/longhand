@@ -1573,7 +1573,7 @@ impl ProcessingManager {
         })
     }
 
-    /// Delete the note type `name` (R6): each note of the type gets no type,
+    /// Delete the note type `name` (R6): each note of the type gets General,
     /// and its folder goes to the storage folder (KTD7). Returns the number
     /// of notes that changed.
     pub fn delete_note_type(

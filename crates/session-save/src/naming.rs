@@ -65,16 +65,17 @@ pub fn sanitize_title(title: &str) -> Option<String> {
     Some(title)
 }
 
-/// The name that means a note has no type. No note type can use it.
-pub const NO_TYPE: &str = "No type";
+/// The name of the built-in note type of the notes whose home folder is
+/// directly in the storage folder. No type folder can use it.
+pub const GENERAL: &str = "General";
 
 /// Why a note type name is refused (R28). The text is for the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TypeNameError {
     #[error("Enter a name.")]
     Empty,
-    #[error("\"No type\" is not available as a name.")]
-    NoType,
+    #[error("General is a built-in type.")]
+    General,
     #[error("A type name cannot start with a dot.")]
     StartsWithDot,
     #[error("A type name cannot end with a dot.")]
@@ -99,8 +100,8 @@ pub fn check_type_name(name: &str) -> Result<String, TypeNameError> {
     if name.is_empty() {
         return Err(TypeNameError::Empty);
     }
-    if same_type_name(name, NO_TYPE) {
-        return Err(TypeNameError::NoType);
+    if same_type_name(name, GENERAL) {
+        return Err(TypeNameError::General);
     }
     // This also refuses `.`, `..` and `.longhand`.
     if name.starts_with('.') {
@@ -132,7 +133,7 @@ pub fn same_type_name(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
-/// Whether two optional note types are one type. `None` is "No type".
+/// Whether two optional note types are one type. `None` is General.
 pub fn same_optional_type(a: &Option<String>, b: &Option<String>) -> bool {
     match (a, b) {
         (None, None) => true,

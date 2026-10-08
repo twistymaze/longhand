@@ -445,7 +445,7 @@ fn both_computers_show_the_same_note_types_and_the_same_default_type() {
     assert_eq!(types_of(&on_a, &folders), expected);
     assert_eq!(types_of(&on_b, &folders), expected);
 
-    // B sets "No type". A shows it after the sync.
+    // B sets General. A shows it after the sync.
     b.save(folder.path(), &[SharedValue::DefaultNoteType(None)]);
     assert_eq!(types_of(&a.refresh(folder.path()), &folders).1, None);
 }

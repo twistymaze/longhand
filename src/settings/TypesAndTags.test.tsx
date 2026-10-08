@@ -13,9 +13,10 @@ const key = (text: string) => text.trim().replace(/\s*::\s*/g, "::").toLowerCase
 /// backend does. A rename onto another type or tag merges the two.
 function backend(over: Record<string, CommandHandler> = {}) {
   let types: NoteTypeEntry[] = [
-    { name: "Pathfinder", valid: true, shared: true, notes: 30 },
-    { name: "Projects", valid: true, shared: true, notes: 4 },
-    { name: "Bad:Name", valid: false, shared: false, notes: 2 },
+    { name: "General", valid: true, shared: false, notes: 5, general: true },
+    { name: "Pathfinder", valid: true, shared: true, notes: 30, general: false },
+    { name: "Projects", valid: true, shared: true, notes: 4, general: false },
+    { name: "Bad:Name", valid: false, shared: false, notes: 2, general: false },
   ];
   let defaultType: string | null = null;
   let tags: TagEntry[] = [
@@ -29,7 +30,7 @@ function backend(over: Record<string, CommandHandler> = {}) {
     add_note_type: ({ name }) => {
       const n = name as string;
       if (types.some((t) => same(t.name, n))) throw "A type with this name already exists.";
-      types = [...types, { name: n, valid: true, shared: true, notes: 0 }];
+      types = [...types, { name: n, valid: true, shared: true, notes: 0, general: false }];
       return list();
     },
     set_default_note_type: ({ name }) => {
@@ -105,15 +106,45 @@ describe("TypesAndTags", () => {
     const group = screen.getByRole("radiogroup", { name: "Default type" });
     // A type that is not valid is never offered as the default.
     expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual([
-      "No type",
+      "General",
       "Pathfinder",
       "Projects",
     ]);
-    expect(within(group).getByRole("radio", { name: "No type" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(group).getByRole("radio", { name: "General" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByText("30 notes")).toBeTruthy();
     expect(screen.getByText(/can’t be a folder name/)).toBeTruthy();
     expect(tagNames()).toEqual(["Person :: Nathan", "urgent"]);
     expect(screen.getByText("12 notes")).toBeTruthy();
+  });
+
+  test("General is first, with its count and a note, and has no rename or delete", async () => {
+    backend();
+    renderPane();
+    await waitFor(() => expect(typeNames()).toHaveLength(3));
+    const group = screen.getByRole("radiogroup", { name: "Default type" });
+    const first = group.firstElementChild as HTMLElement;
+    expect(within(first).getByRole("radio", { name: "General" })).toBeTruthy();
+    expect(within(first).getByText("Notes at the top of the storage folder.")).toBeTruthy();
+    expect(within(first).getByText("5 notes")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Name of type General" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete type General" })).toBeNull();
+  });
+
+  test("a folder named General is a type to rename, beside the built-in General", async () => {
+    backend({
+      note_types: () => ({
+        types: [
+          { name: "General", valid: true, shared: false, notes: 1, general: true },
+          { name: "general", valid: false, shared: false, notes: 2, general: false },
+        ],
+        default_type: null,
+      }),
+    });
+    renderPane();
+    await waitFor(() => expect(typeNames()).toEqual(["general"]));
+    expect(screen.getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["General"]);
+    expect(screen.getByRole("button", { name: "Delete type general" })).toBeTruthy();
+    expect(screen.getByText("General is a built-in type. Rename this type.")).toBeTruthy();
   });
 
   test("adding a type calls the command and refreshes the list", async () => {
@@ -166,7 +197,7 @@ describe("TypesAndTags", () => {
     await user.click(screen.getByRole("button", { name: "Delete type Pathfinder" }));
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog.textContent).toContain("Delete “Pathfinder”?");
-    expect(dialog.textContent).toContain("30 notes move out of the Pathfinder folder");
+    expect(dialog.textContent).toContain("30 notes move from the Pathfinder folder to General.");
     expect(called(tauri, "delete_note_type")).toHaveLength(0);
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(called(tauri, "delete_note_type")).toHaveLength(0);
@@ -188,10 +219,10 @@ describe("TypesAndTags", () => {
     await waitFor(() => expect(radio.getAttribute("aria-checked")).toBe("true"));
     expect(document.activeElement).toBe(radio);
     expect(called(tauri, "set_default_note_type")[0].args).toEqual({ name: "Projects" });
-    expect(screen.getByRole("radio", { name: "No type" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("radio", { name: "General" }).getAttribute("aria-checked")).toBe("false");
 
-    await user.click(screen.getByRole("radio", { name: "No type" }));
-    await waitFor(() => expect(screen.getByRole("radio", { name: "No type" }).getAttribute("aria-checked")).toBe("true"));
+    await user.click(screen.getByRole("radio", { name: "General" }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "General" }).getAttribute("aria-checked")).toBe("true"));
     expect(called(tauri, "set_default_note_type")[1].args).toEqual({ name: null });
 
     // The down arrow on a radio moves the default; in a name field it does not.
@@ -203,7 +234,7 @@ describe("TypesAndTags", () => {
     expect(called(tauri, "set_default_note_type")).toHaveLength(3);
   });
 
-  test("deleting the default type makes the default No type", async () => {
+  test("deleting the default type makes the default General", async () => {
     backend();
     renderPane();
     const user = userEvent.setup();
@@ -212,7 +243,7 @@ describe("TypesAndTags", () => {
     await waitFor(() => expect(screen.getByRole("radio", { name: "Projects" }).getAttribute("aria-checked")).toBe("true"));
     await user.click(screen.getByRole("button", { name: "Delete type Projects" }));
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(screen.getByRole("radio", { name: "No type" }).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "General" }).getAttribute("aria-checked")).toBe("true"));
   });
 
   test("renaming a tag calls the command, and a rename onto a tag merges them", async () => {
@@ -290,7 +321,7 @@ describe("TypesAndTags", () => {
 });
 
 const typesNamed = (...names: string[]): NoteTypeList => ({
-  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0 })),
+  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0, general: false })),
   default_type: null,
 });
 const settle = () => act(() => new Promise((r) => setTimeout(r, 20)));

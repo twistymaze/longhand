@@ -48,7 +48,7 @@ pub struct SessionEntry {
     pub remote: Option<RemoteView>,
     /// The note type that the app shows (KTD3): a type change that waits
     /// for its move, else the type folder that holds the home folder.
-    /// `None` is "No type".
+    /// `None` is General.
     pub note_type: Option<String>,
     /// The home folder moves to the folder of `note_type` later, when no
     /// computer works on the note (R5).
@@ -866,7 +866,7 @@ impl From<pipeline::type_move::TypeChange> for TypeChangeResult {
     }
 }
 
-/// Change the type of a note to `note_type`, or to "No type" for `None`
+/// Change the type of a note to `note_type`, or to General for `None`
 /// (R5). The type must be a valid type of the effective list (KTD8,
 /// KTD9). The app shows the new type at once. The folder of a note that no
 /// computer works on moves now, and any other folder moves later. The

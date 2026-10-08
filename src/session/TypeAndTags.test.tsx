@@ -8,9 +8,10 @@ import { TypeAndTags } from "./TypeAndTags";
 
 const typeList: NoteTypeList = {
   types: [
-    { name: "One on One", valid: true, shared: true, notes: 4 },
-    { name: "Pathfinder", valid: true, shared: true, notes: 30 },
-    { name: "Bad:Name", valid: false, shared: false, notes: 1 },
+    { name: "General", valid: true, shared: false, notes: 2, general: true },
+    { name: "One on One", valid: true, shared: true, notes: 4, general: false },
+    { name: "Pathfinder", valid: true, shared: true, notes: 30, general: false },
+    { name: "Bad:Name", valid: false, shared: false, notes: 1, general: false },
   ],
   default_type: null,
 };
@@ -64,16 +65,16 @@ describe("TypeAndTags", () => {
     expect(screen.getByRole("button", { name: "Add Tag" })).toBeTruthy();
   });
 
-  test("the type menu lists the valid types, No type and New Type…, and the first item has the focus", async () => {
+  test("the type menu lists General, the valid types and New Type…, and the first item has the focus", async () => {
     mockRow();
     const { user } = renderRow({ noteType: "One on One", tags: [] });
     await user.click(typeButton());
     const menu = await screen.findByRole("menu");
     await waitFor(() => expect(within(menu).getAllByRole("menuitemradio").length).toBe(3));
     const labels = [...menu.querySelectorAll("button")].map((i) => i.textContent);
-    expect(labels).toEqual(["One on One", "Pathfinder", "No type", "New Type…"]);
+    expect(labels).toEqual(["General", "One on One", "Pathfinder", "New Type…"]);
     expect(within(menu).getByRole("menuitemradio", { name: "One on One" }).getAttribute("aria-checked")).toBe("true");
-    expect(document.activeElement).toBe(within(menu).getByRole("menuitemradio", { name: "One on One" }));
+    expect(document.activeElement).toBe(within(menu).getByRole("menuitemradio", { name: "General" }));
   });
 
   test("changing the type calls set_note_type and shows the new type", async () => {
@@ -88,12 +89,12 @@ describe("TypeAndTags", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  test("No type calls set_note_type with null", async () => {
+  test("General calls set_note_type with null", async () => {
     const tauri = mockRow();
     const { user } = renderRow({ noteType: "One on One", tags: [] });
     await user.click(typeButton());
-    await user.click(await screen.findByRole("menuitemradio", { name: "No type" }));
-    await waitFor(() => expect(typeButton().textContent).toContain("No type"));
+    await user.click(await screen.findByRole("menuitemradio", { name: "General" }));
+    await waitFor(() => expect(typeButton().textContent).toContain("General"));
     expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "s1", noteType: null });
   });
 
@@ -139,7 +140,7 @@ describe("TypeAndTags", () => {
     const tauri = mockRow({
       add_note_type: (args) => ({
         ...typeList,
-        types: [...typeList.types, { name: args.name as string, valid: true, shared: true, notes: 0 }],
+        types: [...typeList.types, { name: args.name as string, valid: true, shared: true, notes: 0, general: false }],
       }),
     });
     const { user } = renderRow({ noteType: null, tags: [] });
@@ -284,7 +285,7 @@ describe("TypeAndTags", () => {
     const tauri = mockRow({ note_types: () => list });
     const { user } = renderRow({ noteType: null, tags: [] });
     await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "note_types").length).toBe(1));
-    list = { ...typeList, types: [{ name: "Standup", valid: true, shared: true, notes: 0 }] };
+    list = { ...typeList, types: [{ name: "Standup", valid: true, shared: true, notes: 0, general: false }] };
     await act(() => tauri.emit("settings-changed", { settings: {} }));
     await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "note_types").length).toBe(2));
     await user.click(typeButton());
@@ -298,14 +299,14 @@ describe("TypeAndTags", () => {
     await waitFor(() => expect(reads).toHaveLength(1));
     await act(() => tauri.emit("settings-changed", { settings: {} }));
     await waitFor(() => expect(reads).toHaveLength(2));
-    const one = (name: string): NoteTypeList => ({ types: [{ name, valid: true, shared: true, notes: 0 }], default_type: null });
+    const one = (name: string): NoteTypeList => ({ types: [{ name, valid: true, shared: true, notes: 0, general: false }], default_type: null });
     await act(async () => reads[1](one("New")));
     await act(async () => reads[0](one("Old")));
     await act(() => new Promise((r) => setTimeout(r, 20)));
     // The click reads the list again; that read stays open here.
     await user.click(typeButton());
     const menu = await screen.findByRole("menu");
-    expect([...menu.querySelectorAll("button")].map((i) => i.textContent)).toEqual(["New", "No type", "New Type…"]);
+    expect([...menu.querySelectorAll("button")].map((i) => i.textContent)).toEqual(["General", "New", "New Type…"]);
   });
 
   test("Escape while the type is created does not give the type to the note", async () => {
@@ -319,11 +320,11 @@ describe("TypeAndTags", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     await act(async () =>
-      finish({ ...typeList, types: [...typeList.types, { name: "Customer Call", valid: true, shared: true, notes: 0 }] }),
+      finish({ ...typeList, types: [...typeList.types, { name: "Customer Call", valid: true, shared: true, notes: 0, general: false }] }),
     );
     await act(() => new Promise((r) => setTimeout(r, 20)));
     expect(tauri.calls.some((c) => c.cmd === "set_note_type")).toBe(false);
     expect(onChanged).not.toHaveBeenCalled();
-    expect(typeButton().textContent).toContain("No type");
+    expect(typeButton().textContent).toContain("General");
   });
 });

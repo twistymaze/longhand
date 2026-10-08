@@ -707,7 +707,7 @@ pub fn apply_edit(
 
 /// The per-note part of a type rename, merge or delete in the storage
 /// folder `root` (KTD7, R6), for the recorded notes `notes`: each of them
-/// that still shows the old type changes to the new type, or to "No type"
+/// that still shows the old type changes to the new type, or to General
 /// for a delete, as a user's type change does. The shared list changes
 /// before this. A note that is gone, is discarded, is not in `root` or
 /// shows another type is done. A note that cannot change now stays in
