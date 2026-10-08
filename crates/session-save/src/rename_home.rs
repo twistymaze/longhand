@@ -87,23 +87,44 @@ pub fn rename(
     fs: &dyn Fs,
     record: &mut dyn FnMut(&Move) -> Result<(), RenameError>,
 ) -> Result<PathBuf, RenameError> {
+    let Some(parent) = from.parent() else {
+        return Err(RenameError::Missing(from.to_path_buf()));
+    };
+    rename_into(from, parent, name, session_id, fs, record)
+}
+
+/// Move the folder `from` into the folder `parent` with the name `name`,
+/// or the first free name with a suffix (R27 of the note types and tags
+/// plan). The rules of [`rename`] apply: each move is recorded before it
+/// is taken, and no folder is replaced. A `parent` that is the folder of
+/// `from` makes this a [`rename`]. The caller makes `parent`.
+pub fn rename_into(
+    from: &Path,
+    parent: &Path,
+    name: &str,
+    session_id: &str,
+    fs: &dyn Fs,
+    record: &mut dyn FnMut(&Move) -> Result<(), RenameError>,
+) -> Result<PathBuf, RenameError> {
     if !exists_exactly(from) {
         return Err(RenameError::Missing(from.to_path_buf()));
     }
-    let (Some(parent), Some(current)) = (from.parent(), from.file_name().and_then(|n| n.to_str()))
+    let (Some(old_parent), Some(current)) =
+        (from.parent(), from.file_name().and_then(|n| n.to_str()))
     else {
         return Err(RenameError::Missing(from.to_path_buf()));
     };
+    let same_parent = old_parent == parent;
     for attempt in 1..=MAX_NAMES {
         let target = naming::candidate(name, attempt);
-        if target == current {
+        if same_parent && target == current {
             return Ok(from.to_path_buf());
         }
         let to = parent.join(&target);
         if exists_exactly(&to) {
             continue;
         }
-        let case_only = target.to_lowercase() == current.to_lowercase();
+        let case_only = same_parent && target.to_lowercase() == current.to_lowercase();
         let intent = Move {
             from: from.to_path_buf(),
             to: to.clone(),

@@ -317,7 +317,7 @@ pub fn reconcile_saved(store: &SharedStore, fs: &dyn Fs) -> Result<(), StageErro
 /// Settle a recorded intent from disk. Returns the folder's new path when
 /// the move happened; then `session.md` and `home_path` follow it. The
 /// intent is cleared in every case but an error.
-fn settle(
+pub(crate) fn settle(
     store: &Store,
     record: &SessionRecord,
     intent: &RenameIntent,
@@ -465,7 +465,7 @@ fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError>
         .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))
 }
 
-fn to_intent(m: &Move) -> RenameIntent {
+pub(crate) fn to_intent(m: &Move) -> RenameIntent {
     let text = |p: &Path| p.to_string_lossy().into_owned();
     RenameIntent {
         from: text(&m.from),

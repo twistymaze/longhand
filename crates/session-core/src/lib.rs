@@ -15,9 +15,9 @@ pub mod timeline;
 
 pub use folder::SpeakerCount;
 pub use jobs::{
-    Adoption, CaptureChoice, DeleteError, Microphone, MoveJournal, MovePause, MoveStep,
-    PromptSnapshot, RecordingModel, RenameIntent, SessionRecord, Store, StoreError, Title,
-    TitleSource, TranscribeAgainMarks,
+    Adoption, BulkEdit, CaptureChoice, DeleteError, Microphone, MoveJournal, MovePause, MoveStep,
+    OpenBulkEdit, PromptSnapshot, RecordingModel, RenameIntent, SessionRecord, Store, StoreError,
+    Title, TitleSource, TranscribeAgainMarks, TypeMove,
 };
 pub use state::{AUTO_QUEUE_AFTER, Event, IllegalTransition, InterruptReason, SessionState, Stage};
 pub use timeline::{Closed, Location, MIN_SEGMENT_MS, Segment, Timeline, TimelineError};

@@ -334,3 +334,104 @@ fn a_suffixed_folder_already_has_its_name() {
     assert!(!has_name(OLD, NEW));
     assert!(!has_name("2026-09-22 1400 budget review", NEW));
 }
+
+/// Move into `parent` and keep each recorded move.
+fn move_into(
+    from: &Path,
+    parent: &Path,
+    name: &str,
+    fs: &dyn Fs,
+) -> (Result<PathBuf, RenameError>, Vec<Move>) {
+    let mut moves = Vec::new();
+    let result = rename_home::rename_into(from, parent, name, "s1", fs, &mut |m| {
+        moves.push(m.clone());
+        Ok(())
+    });
+    (result, moves)
+}
+
+#[test]
+fn a_move_into_another_folder_keeps_the_name_and_records_the_move() {
+    let dest = tempfile::tempdir().unwrap();
+    let from = home(dest.path(), OLD);
+    let typed = dest.path().join("One on One");
+    std::fs::create_dir(&typed).unwrap();
+
+    let (result, moves) = move_into(&from, &typed, OLD, &RealFs);
+    assert_eq!(result.unwrap(), typed.join(OLD));
+    assert_eq!(entries(&typed), [OLD]);
+    assert_eq!(entries(dest.path()), ["One on One"]);
+    assert_eq!(
+        moves,
+        [Move {
+            from: from.clone(),
+            to: typed.join(OLD),
+            temp: None,
+        }]
+    );
+    assert!(typed.join(OLD).join("audio/segment-01.opus").exists());
+}
+
+#[test]
+fn a_move_into_a_folder_with_the_same_name_takes_the_free_name() {
+    // Covers R27.
+    let dest = tempfile::tempdir().unwrap();
+    let from = home(dest.path(), OLD);
+    let typed = dest.path().join("Pathfinder");
+    home(&typed, OLD);
+
+    let (result, _) = move_into(&from, &typed, OLD, &RealFs);
+    let suffixed = format!("{OLD}-2");
+    assert_eq!(result.unwrap(), typed.join(&suffixed));
+    assert_eq!(entries(&typed), [OLD.to_string(), suffixed]);
+    // The other folder keeps its files.
+    assert!(typed.join(OLD).join("session.md").exists());
+}
+
+#[test]
+fn a_move_out_of_a_type_folder_goes_to_the_parent() {
+    let dest = tempfile::tempdir().unwrap();
+    let typed = dest.path().join("Pathfinder");
+    let from = home(&typed, OLD);
+
+    let (result, _) = move_into(&from, dest.path(), OLD, &RealFs);
+    assert_eq!(result.unwrap(), dest.path().join(OLD));
+    assert!(entries(&typed).is_empty());
+}
+
+#[test]
+fn a_move_into_the_same_folder_is_a_rename() {
+    let dest = tempfile::tempdir().unwrap();
+    let from = home(dest.path(), OLD);
+    let (result, _) = move_into(&from, dest.path(), OLD, &RealFs);
+    assert_eq!(result.unwrap(), from);
+    assert_eq!(entries(dest.path()), [OLD]);
+}
+
+#[test]
+fn a_move_into_another_folder_resolves_from_disk_after_a_crash() {
+    let dest = tempfile::tempdir().unwrap();
+    let from = home(dest.path(), OLD);
+    let typed = dest.path().join("One on One");
+    std::fs::create_dir(&typed).unwrap();
+    let fs = StopsAfter {
+        moves: Cell::new(0),
+    };
+    let mut moves = Vec::new();
+    let stopped = catch_unwind(AssertUnwindSafe(|| {
+        rename_home::rename_into(&from, &typed, OLD, "s1", &fs, &mut |m| {
+            moves.push(m.clone());
+            Ok(())
+        })
+    }));
+    assert!(stopped.is_err());
+    assert_eq!(
+        rename_home::resolve(&moves[0], &RealFs).unwrap(),
+        Resolved::NotMoved
+    );
+    std::fs::rename(&from, typed.join(OLD)).unwrap();
+    assert_eq!(
+        rename_home::resolve(&moves[0], &RealFs).unwrap(),
+        Resolved::Moved(typed.join(OLD))
+    );
+}

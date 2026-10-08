@@ -46,6 +46,13 @@ pub struct SessionEntry {
     /// found it (KTD5). `None` when no other computer works on the note,
     /// and always for a note that is not Saved on this computer.
     pub remote: Option<RemoteView>,
+    /// The note type that the app shows (KTD3): a type change that waits
+    /// for its move, else the type folder that holds the home folder.
+    /// `None` is "No type".
+    pub note_type: Option<String>,
+    /// The home folder moves to the folder of `note_type` later, when no
+    /// computer works on the note (R5).
+    pub type_move_waits: bool,
 }
 
 /// Work on a note on another computer (KTD5). Record, Resume, Transcribe
@@ -447,6 +454,7 @@ fn entry(
         SessionState::Processing { .. } => stage,
         _ => None,
     };
+    let (note_type, type_move_waits) = pipeline::type_move::shown_type(record);
     SessionEntry {
         id: record.id.clone(),
         started: record.start(segments).to_rfc3339(),
@@ -457,6 +465,8 @@ fn entry(
         found_speakers: record.found_speakers,
         storage_unavailable: storage_unavailable(status, record),
         remote: status.remote(record).map(RemoteView::from),
+        note_type,
+        type_move_waits,
     }
 }
 
@@ -818,6 +828,77 @@ pub async fn rename_session(
         processing
             .rename_session(&session_id, &title)
             .map(FolderRenameResult::from)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What a type change did (R5). The note has the new type in every case
+/// but `Unchanged`.
+#[derive(Serialize, Type, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TypeChangeResult {
+    /// The note has this type already. A waiting change back to the type
+    /// of its folder is cleared.
+    Unchanged,
+    /// The home folder is in the folder of the new type, or is made there
+    /// when the note writes its folder.
+    Done,
+    /// A computer records or processes the note: its folder moves when the
+    /// note is free.
+    Later,
+    /// The folder could not move now. It moves later. The text says why.
+    Kept { message: String },
+}
+
+impl From<pipeline::type_move::TypeChange> for TypeChangeResult {
+    fn from(change: pipeline::type_move::TypeChange) -> Self {
+        use pipeline::type_move::TypeChange;
+        match change {
+            TypeChange::Unchanged => Self::Unchanged,
+            TypeChange::NoFolder | TypeChange::Moved(_) => Self::Done,
+            TypeChange::Later => Self::Later,
+            TypeChange::Kept(message) => Self::Kept { message },
+        }
+    }
+}
+
+/// Change the type of a note to `note_type`, or to "No type" for `None`
+/// (R5). The type must be a valid type of the effective list (KTD8,
+/// KTD9). The app shows the new type at once. The folder of a note that no
+/// computer works on moves now, and any other folder moves later. The
+/// change runs off the main thread, since it can reach a synced folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_type(
+    app: AppHandle,
+    processing: State<'_, Arc<ProcessingManager>>,
+    shared: State<'_, Arc<crate::managers::shared::SharedSettingsManager>>,
+    session_id: String,
+    note_type: Option<String>,
+) -> Result<TypeChangeResult, String> {
+    let to = match note_type {
+        None => None,
+        Some(name) => {
+            let folders = crate::commands::settings::storage_folders(&app)?;
+            let listed = shared
+                .note_types(&folders)
+                .types
+                .into_iter()
+                .find(|t| t.valid && session_save::naming::same_type_name(&t.name, &name));
+            match listed {
+                Some(t) => Some(t.name),
+                None => {
+                    return Err(shared_settings::note_types::NoteTypeError::NoSuchType.to_string());
+                }
+            }
+        }
+    };
+    let processing = Arc::clone(&processing);
+    tauri::async_runtime::spawn_blocking(move || {
+        processing
+            .change_note_type(&session_id, to.as_deref())
+            .map(TypeChangeResult::from)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1829,6 +1910,75 @@ mod entry_tests {
         assert!(e.storage_unavailable);
         assert_eq!(e.title, None);
         assert_eq!(e.found_speakers, None);
+    }
+
+    // KTD3: the entry shows a waiting type change while the folder is still
+    // in the `from` folder, else the type of the folder.
+    #[test]
+    fn an_entry_shows_the_waiting_type_while_the_folder_is_in_the_old_type_folder() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-07T14:00:00+00:00").unwrap();
+        let record = SessionRecord {
+            id: "s".into(),
+            created_at: at,
+            state: SessionState::Saved,
+            queue_seq: None,
+            speaker_count: None,
+            asr_model: None,
+            recognition_snapshot: None,
+            home_path: None,
+            title: None,
+            found_speakers: None,
+            live_transcript: None,
+            transcribe_again_model: None,
+            started_at: None,
+            note_type: Some("Pathfinder".into()),
+            tags: Vec::new(),
+            pending_type: Some(session_core::folder::PendingType {
+                to: Some("D&D".into()),
+                from: Some("pathfinder".into()),
+                by: "computer-b".into(),
+                at,
+            }),
+        };
+        let status: Arc<LibraryStatus> = Arc::default();
+        let e = entry(&record, &[], None, &status);
+        assert_eq!(
+            (e.note_type.as_deref(), e.type_move_waits),
+            (Some("D&D"), true)
+        );
+        // A person moved the folder: the folder wins.
+        let moved = SessionRecord {
+            note_type: Some("Board".into()),
+            ..record
+        };
+        let e = entry(&moved, &[], None, &status);
+        assert_eq!(
+            (e.note_type.as_deref(), e.type_move_waits),
+            (Some("Board"), false)
+        );
+    }
+
+    #[test]
+    fn a_type_change_result_names_what_the_move_did() {
+        use pipeline::type_move::TypeChange;
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::Moved("/x".into())),
+            TypeChangeResult::Done
+        );
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::NoFolder),
+            TypeChangeResult::Done
+        );
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::Later),
+            TypeChangeResult::Later
+        );
+        assert_eq!(
+            TypeChangeResult::from(TypeChange::Kept("in use".into())),
+            TypeChangeResult::Kept {
+                message: "in use".into()
+            }
+        );
     }
 
     // Covers R12, R20, R23 (KTD5): the entry carries what the latest scan

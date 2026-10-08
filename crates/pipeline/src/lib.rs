@@ -31,6 +31,7 @@ pub mod runner;
 pub mod save;
 pub mod summarize;
 pub mod transcribe;
+pub mod type_move;
 pub mod verify;
 
 use std::sync::{Arc, Mutex, MutexGuard};

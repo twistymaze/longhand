@@ -388,6 +388,35 @@ async setDefaultNoteType(name: string | null) : Promise<Result<NoteTypeList, str
 }
 },
 /**
+ * Rename a note type (R6). A new name of another type merges the two
+ * types: the notes go into the folder of that type. The default type
+ * follows the rename. The name goes through the type name check (R28).
+ * The folder of each note moves now, or later when a computer works on
+ * the note.
+ */
+async renameNoteType(name: string, newName: string) : Promise<Result<NoteTypeEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_note_type", { name, newName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a note type (R6): its notes get no type, and their folders go
+ * directly in the storage folder. When it is the default type, the
+ * default becomes "No type" (R7). The surface asks for a confirmation
+ * with the number of notes first (R31).
+ */
+async deleteNoteType(name: string) : Promise<Result<NoteTypeEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_note_type", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Pick a folder with the system dialog and return its path. Nothing
  * changes: the surface then asks what to do with the notes in the old
  * folder, and calls [`change_storage_folder`] (R4). `None` when the user
@@ -839,6 +868,21 @@ async saveSessionNotes(sessionId: string, markdown: string, loadedFingerprint: s
 async renameSession(sessionId: string, title: string) : Promise<Result<FolderRenameResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("rename_session", { sessionId, title }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Change the type of a note to `note_type`, or to "No type" for `None`
+ * (R5). The type must be a valid type of the effective list (KTD8,
+ * KTD9). The app shows the new type at once. The folder of a note that no
+ * computer works on moves now, and any other folder moves later. The
+ * change runs off the main thread, since it can reach a synced folder.
+ */
+async setNoteType(sessionId: string, noteType: string | null) : Promise<Result<TypeChangeResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_type", { sessionId, noteType }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1426,6 +1470,18 @@ export type MoveState =
  */
 export type MoveStatus = { old_folder: string; new_folder: string; moved: number; total: number; state: MoveState; cause: MovePauseCause | null }
 /**
+ * What a type rename, merge or delete did (R6, R31).
+ */
+export type NoteTypeEdit = { 
+/**
+ * The number of notes that changed their type.
+ */
+changed: number; 
+/**
+ * The note types and the default type after the edit.
+ */
+list: NoteTypeList }
+/**
  * One note type of the effective type list, for the surface (R3, KTD9).
  */
 export type NoteTypeEntry = { name: string; 
@@ -1936,7 +1992,18 @@ storage_unavailable: boolean;
  * found it (KTD5). `None` when no other computer works on the note,
  * and always for a note that is not Saved on this computer.
  */
-remote: RemoteView | null }
+remote: RemoteView | null; 
+/**
+ * The note type that the app shows (KTD3): a type change that waits
+ * for its move, else the type folder that holds the home folder.
+ * `None` is "No type".
+ */
+note_type: string | null; 
+/**
+ * The home folder moves to the folder of `note_type` later, when no
+ * computer works on the note (R5).
+ */
+type_move_waits: boolean }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds
@@ -2243,6 +2310,30 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * What a type change did (R5). The note has the new type in every case
+ * but `Unchanged`.
+ */
+export type TypeChangeResult = 
+/**
+ * The note has this type already. A waiting change back to the type
+ * of its folder is cleared.
+ */
+{ kind: "unchanged" } | 
+/**
+ * The home folder is in the folder of the new type, or is made there
+ * when the note writes its folder.
+ */
+{ kind: "done" } | 
+/**
+ * A computer records or processes the note: its folder moves when the
+ * note is free.
+ */
+{ kind: "later" } | 
+/**
+ * The folder could not move now. It moves later. The text says why.
+ */
+{ kind: "kept"; message: string }
 /**
  * A value in the shared settings file that this version does not know.
  * Longhand keeps it in the file (R17).

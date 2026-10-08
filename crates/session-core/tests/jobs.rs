@@ -2116,3 +2116,82 @@ fn the_last_written_fingerprints_update_on_each_write_and_read_back() {
         Err(StoreError::NoSuchSession(_))
     ));
 }
+
+#[test]
+fn a_type_move_is_kept_until_it_is_cleared() {
+    use session_core::TypeMove;
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.create_session("s2", t(1), None).unwrap();
+    assert_eq!(store.type_move("s1").unwrap(), None);
+    let first = TypeMove {
+        to: Some("One on One".into()),
+        from: None,
+        changed_at: t(5),
+        taken_over_at: None,
+        remove_empty_from: false,
+        field_written: false,
+    };
+    store.set_type_move("s1", &first).unwrap();
+    assert_eq!(store.type_move("s1").unwrap(), Some(first.clone()));
+    // A second record for the session replaces the first.
+    let second = TypeMove {
+        to: None,
+        from: Some("Pathfinder".into()),
+        changed_at: t(6),
+        taken_over_at: Some(t(7)),
+        remove_empty_from: true,
+        field_written: true,
+    };
+    store.set_type_move("s1", &second).unwrap();
+    store.set_type_move("s2", &first).unwrap();
+    assert_eq!(
+        store.type_moves().unwrap(),
+        [
+            ("s1".to_string(), second.clone()),
+            ("s2".to_string(), first)
+        ]
+    );
+    store.clear_type_move("s2").unwrap();
+    assert_eq!(store.type_move("s2").unwrap(), None);
+    assert!(store.set_type_move("nobody", &second).is_err());
+}
+
+#[test]
+fn a_bulk_edit_is_kept_in_order_until_it_is_removed() {
+    use session_core::BulkEdit;
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.bulk_edits().unwrap().is_empty());
+    let rename = BulkEdit::RenameType {
+        from: "1 on 1".into(),
+        to: "One on One".into(),
+    };
+    let delete = BulkEdit::DeleteType {
+        name: "Pathfinder".into(),
+    };
+    let first = store.add_bulk_edit(&rename).unwrap();
+    let second = store.add_bulk_edit(&delete).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!(open.len(), 2);
+    assert_eq!(
+        (open[0].id, &open[0].edit, open[0].shared_saved),
+        (first, &rename, false)
+    );
+    assert_eq!((open[1].id, &open[1].edit), (second, &delete));
+    store.set_bulk_edit_shared_saved(first).unwrap();
+    assert!(store.bulk_edits().unwrap()[0].shared_saved);
+    store.remove_bulk_edit(first).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].edit, delete);
+}
+
+#[test]
+fn the_computer_id_stays_the_same_and_differs_between_databases() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let id = Store::open(&path).unwrap().computer_id().unwrap();
+    assert_eq!(id.len(), 32);
+    assert_eq!(Store::open(&path).unwrap().computer_id().unwrap(), id);
+    assert_ne!(Store::open_in_memory().unwrap().computer_id().unwrap(), id);
+}

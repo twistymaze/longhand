@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
+use session_core::BulkEdit;
 use session_save::naming::same_type_name;
 use shared_settings::background::{self, BackgroundError};
 use shared_settings::cache::{self, Cache};
@@ -705,14 +706,55 @@ fn shared_types(fields: &file::SharedFields) -> Vec<String> {
     fields.note_types.known().cloned().unwrap_or_default()
 }
 
+impl StorageFolders {
+    /// Mark the type folders of `names` as leaving: a type rename, merge or
+    /// delete of this computer is not done yet, so the old folder does not
+    /// come back as a type (KTD7).
+    pub fn mark_leaving<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        for name in names {
+            for folder in &mut self.types {
+                if same_type_name(&folder.name, name) {
+                    folder.leaving = true;
+                }
+            }
+        }
+    }
+}
+
 /// The note types of the settings file of `root`, read at the time of a
 /// change (R15).
 fn types_in_file(root: &Path) -> Result<Vec<String>, Failure> {
+    Ok(shared_types(&fields_in_file(root)?))
+}
+
+/// The shared fields of the settings file of `root`, read at the time of a
+/// change (R15).
+fn fields_in_file(root: &Path) -> Result<file::SharedFields, Failure> {
     match file::read_settings(root) {
-        file::FileRead::Parsed(settings) => Ok(shared_types(&settings.fields)),
+        file::FileRead::Parsed(settings) => Ok(settings.fields),
         file::FileRead::Missing => Err(Failure::Missing),
         file::FileRead::NotAvailable(cause) => Err(Failure::NotAvailable(cause)),
     }
+}
+
+/// The default type of the shared fields `fields`. `None` is "No type".
+fn default_type(fields: &file::SharedFields) -> Option<String> {
+    fields.default_note_type.known().cloned().flatten()
+}
+
+/// The values that a type rename or delete writes (R6, R7): the list, and
+/// the default type when it names the old type.
+fn edit_patch(
+    fields: &file::SharedFields,
+    list: Vec<String>,
+    from: &str,
+    to: Option<&str>,
+) -> Vec<SharedValue> {
+    let mut patch = vec![SharedValue::NoteTypes(list)];
+    if let Some(default) = note_types::default_after(default_type(fields).as_deref(), from, to) {
+        patch.push(SharedValue::DefaultNoteType(default));
+    }
+    patch
 }
 
 impl SharedSettingsManager {
@@ -766,6 +808,90 @@ impl SharedSettingsManager {
             let mut patch = vec![SharedValue::DefaultNoteType(default)];
             patch.extend(list.map(SharedValue::NoteTypes));
             file::save_settings(root, &patch)?;
+            Ok(())
+        })
+    }
+
+    /// Rename the note type `name` to `new_name` (R6). A new name of
+    /// another type merges the two types. The default type follows the
+    /// rename (R7). `before_save` receives the edit before the list
+    /// changes, so the caller records it first (KTD7). Returns the edit,
+    /// or `None` when the name does not change.
+    pub fn rename_note_type(
+        &self,
+        name: &str,
+        new_name: &str,
+        folders: &StorageFolders,
+        before_save: &dyn Fn(&BulkEdit) -> Result<(), String>,
+    ) -> Result<Option<BulkEdit>, String> {
+        self.change(|root| {
+            let fields = fields_in_file(root)?;
+            let renamed = note_types::rename_type(
+                &shared_types(&fields),
+                &folders.types,
+                &folders.homes,
+                name,
+                new_name,
+            )
+            .map_err(|e| Failure::Refused(e.to_string()))?;
+            if renamed.from == renamed.to {
+                return Ok(None);
+            }
+            let edit = BulkEdit::RenameType {
+                from: renamed.from.clone(),
+                to: renamed.to.clone(),
+            };
+            before_save(&edit).map_err(Failure::Refused)?;
+            let patch = edit_patch(&fields, renamed.list, &renamed.from, Some(&renamed.to));
+            file::save_settings(root, &patch)?;
+            Ok(Some(edit))
+        })
+    }
+
+    /// Delete the note type `name` (R6). When it is the default type, the
+    /// default becomes "No type" in the same save (R7). `before_save`
+    /// receives the edit before the list changes (KTD7).
+    pub fn delete_note_type(
+        &self,
+        name: &str,
+        folders: &StorageFolders,
+        before_save: &dyn Fn(&BulkEdit) -> Result<(), String>,
+    ) -> Result<BulkEdit, String> {
+        self.change(|root| {
+            let fields = fields_in_file(root)?;
+            let (list, name) =
+                note_types::delete_type(&shared_types(&fields), &folders.types, name)
+                    .map_err(|e| Failure::Refused(e.to_string()))?;
+            let edit = BulkEdit::DeleteType { name: name.clone() };
+            before_save(&edit).map_err(Failure::Refused)?;
+            file::save_settings(root, &edit_patch(&fields, list, &name, None))?;
+            Ok(edit)
+        })
+    }
+
+    /// Continue a type rename, merge or delete whose list change a quit or
+    /// a crash stopped (KTD7): write only what the list and the default
+    /// type do not have yet.
+    pub fn finish_type_edit(&self, edit: &BulkEdit) -> Result<(), String> {
+        let (from, to) = match edit {
+            BulkEdit::RenameType { from, to } => (from.as_str(), Some(to.as_str())),
+            BulkEdit::DeleteType { name } => (name.as_str(), None),
+        };
+        self.change(|root| {
+            let fields = fields_in_file(root)?;
+            let mut patch = Vec::new();
+            if let Some(list) = note_types::list_after_edit(&shared_types(&fields), from, to) {
+                patch.push(SharedValue::NoteTypes(list));
+            }
+            if let Some(default) =
+                note_types::default_after(default_type(&fields).as_deref(), from, to)
+                && default.as_deref() != default_type(&fields).as_deref()
+            {
+                patch.push(SharedValue::DefaultNoteType(default));
+            }
+            if !patch.is_empty() {
+                file::save_settings(root, &patch)?;
+            }
             Ok(())
         })
     }
@@ -2008,5 +2134,144 @@ mod tests {
             type_names(&manager.note_types(&StorageFolders::default())),
             ["Customer Calls"]
         );
+    }
+
+    /// A manager on a new storage folder with the types `names`.
+    fn with_types(names: &[&str]) -> (TempDir, Computer, SharedSettingsManager) {
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        for name in names {
+            manager
+                .add_note_type(name, &StorageFolders::default())
+                .unwrap();
+        }
+        (folder, computer, manager)
+    }
+
+    #[test]
+    fn deleting_the_default_type_makes_the_default_no_type_in_the_same_save() {
+        // Covers AE2 (the default) and R7.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        manager
+            .set_default_note_type(Some("Pathfinder"), &StorageFolders::default())
+            .unwrap();
+        let recorded = std::cell::RefCell::new(Vec::new());
+        let edit = manager
+            .delete_note_type("pathfinder", &StorageFolders::default(), &|edit| {
+                // The edit is recorded before the list changes (KTD7).
+                assert_eq!(
+                    file_of(folder.path())["note_types"],
+                    json!(["Pathfinder", "Board"])
+                );
+                recorded.borrow_mut().push(edit.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            edit,
+            BulkEdit::DeleteType {
+                name: "Pathfinder".into()
+            }
+        );
+        assert_eq!(recorded.into_inner(), [edit]);
+        let on_disk = file_of(folder.path());
+        assert_eq!(on_disk["note_types"], json!(["Board"]));
+        assert_eq!(on_disk["default_note_type"], Value::Null);
+        assert_eq!(
+            manager.note_types(&StorageFolders::default()).default_type,
+            None
+        );
+    }
+
+    #[test]
+    fn a_rename_keeps_the_default_on_the_renamed_type() {
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        manager
+            .set_default_note_type(Some("Pathfinder"), &StorageFolders::default())
+            .unwrap();
+        let edit = manager
+            .rename_note_type("Pathfinder", "D&D", &StorageFolders::default(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            edit,
+            Some(BulkEdit::RenameType {
+                from: "Pathfinder".into(),
+                to: "D&D".into()
+            })
+        );
+        let on_disk = file_of(folder.path());
+        assert_eq!(on_disk["note_types"], json!(["D&D", "Board"]));
+        assert_eq!(on_disk["default_note_type"], json!("D&D"));
+    }
+
+    #[test]
+    fn a_rename_to_the_same_name_records_and_writes_nothing() {
+        let (folder, _computer, manager) = with_types(&["Pathfinder"]);
+        let before = std::fs::read_to_string(file::settings_path(folder.path())).unwrap();
+        let edit = manager
+            .rename_note_type(
+                "Pathfinder",
+                " Pathfinder ",
+                &StorageFolders::default(),
+                &|_| panic!("nothing to record"),
+            )
+            .unwrap();
+        assert_eq!(edit, None);
+        assert_eq!(
+            std::fs::read_to_string(file::settings_path(folder.path())).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn a_refused_record_changes_no_list() {
+        let (folder, _computer, manager) = with_types(&["Pathfinder"]);
+        assert!(
+            manager
+                .delete_note_type("Pathfinder", &StorageFolders::default(), &|_| Err(
+                    "no record".into()
+                ))
+                .is_err()
+        );
+        assert_eq!(file_of(folder.path())["note_types"], json!(["Pathfinder"]));
+    }
+
+    #[test]
+    fn a_continued_type_edit_writes_only_what_is_missing() {
+        // KTD7: the quit came after the record and before the list save.
+        let (folder, _computer, manager) = with_types(&["1 on 1", "One on One"]);
+        manager
+            .set_default_note_type(Some("1 on 1"), &StorageFolders::default())
+            .unwrap();
+        let merge = BulkEdit::RenameType {
+            from: "1 on 1".into(),
+            to: "One on One".into(),
+        };
+        manager.finish_type_edit(&merge).unwrap();
+        let on_disk = file_of(folder.path());
+        assert_eq!(on_disk["note_types"], json!(["One on One"]));
+        assert_eq!(on_disk["default_note_type"], json!("One on One"));
+        let before = std::fs::read_to_string(file::settings_path(folder.path())).unwrap();
+        manager.finish_type_edit(&merge).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(file::settings_path(folder.path())).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn an_open_type_edit_keeps_its_old_folder_out_of_the_list() {
+        // KTD7: the old folder does not come back as a type while its
+        // moves are open.
+        let mut folders = StorageFolders {
+            types: vec![type_folder("Pathfinder", 2, false)],
+            homes: Vec::new(),
+        };
+        folders.mark_leaving(["pathfinder"]);
+        assert!(folders.types[0].leaving);
+        let (_folder, _computer, manager) = with_types(&["D&D"]);
+        assert_eq!(type_names(&manager.note_types(&folders)), ["D&D"]);
     }
 }

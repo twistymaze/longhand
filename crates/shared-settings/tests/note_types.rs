@@ -3,8 +3,8 @@
 
 use session_save::naming::TypeNameError;
 use shared_settings::note_types::{
-    NoteType, NoteTypeError, TypeFolder, add_type, default_to_save, effective_default,
-    effective_types, list_to_save,
+    NoteType, NoteTypeError, Renamed, TypeFolder, add_type, default_after, default_to_save,
+    delete_type, effective_default, effective_types, list_after_edit, list_to_save, rename_type,
 };
 
 fn shared(names: &[&str]) -> Vec<String> {
@@ -219,4 +219,173 @@ fn a_default_of_a_folder_only_type_also_writes_the_list() {
         default_to_save(&shared(&["Pathfinder"]), &folders, Some("Board")),
         Err(NoteTypeError::NoSuchType)
     );
+}
+
+#[test]
+fn a_rename_keeps_the_place_of_the_type_in_the_list() {
+    // R6.
+    let renamed = rename_type(
+        &shared(&["Pathfinder", "One on One"]),
+        &[folder("Pathfinder", 3)],
+        &[],
+        "pathfinder",
+        " D&D ",
+    )
+    .unwrap();
+    assert_eq!(
+        renamed,
+        Renamed {
+            list: shared(&["D&D", "One on One"]),
+            from: "Pathfinder".into(),
+            to: "D&D".into(),
+            merged: false,
+        }
+    );
+}
+
+#[test]
+fn a_rename_to_an_existing_type_merges_into_its_spelling() {
+    // R6: "1 on 1" merges into "One on One".
+    let renamed = rename_type(
+        &shared(&["One on One", "1 on 1"]),
+        &[folder("1 on 1", 2), folder("One on One", 1)],
+        &[],
+        "1 on 1",
+        "one on one",
+    )
+    .unwrap();
+    assert_eq!(
+        renamed,
+        Renamed {
+            list: shared(&["One on One"]),
+            from: "1 on 1".into(),
+            to: "One on One".into(),
+            merged: true,
+        }
+    );
+}
+
+#[test]
+fn a_rename_that_changes_only_the_case_is_not_a_merge() {
+    let renamed = rename_type(
+        &shared(&["pathfinder"]),
+        &[folder("pathfinder", 1)],
+        &[],
+        "pathfinder",
+        "Pathfinder",
+    )
+    .unwrap();
+    assert_eq!(renamed.list, shared(&["Pathfinder"]));
+    assert!(!renamed.merged);
+    assert_eq!(
+        (renamed.from.as_str(), renamed.to.as_str()),
+        ("pathfinder", "Pathfinder")
+    );
+}
+
+#[test]
+fn a_rename_is_refused_for_a_bad_name_a_home_folder_or_an_unknown_type() {
+    let list = shared(&["Pathfinder"]);
+    assert_eq!(
+        rename_type(&list, &[], &[], "Pathfinder", "1:1s"),
+        Err(NoteTypeError::Name(TypeNameError::ForbiddenCharacter(':')))
+    );
+    assert_eq!(
+        rename_type(&list, &[], &shared(&["Board"]), "Pathfinder", "board"),
+        Err(NoteTypeError::HomeFolder)
+    );
+    assert_eq!(
+        rename_type(&list, &[], &[], "Board", "Games"),
+        Err(NoteTypeError::NoSuchType)
+    );
+}
+
+#[test]
+fn a_folder_only_type_with_a_bad_name_can_be_renamed_to_a_valid_name() {
+    // KTD9: Settings offers a rename to a valid name.
+    let renamed = rename_type(
+        &shared(&["Pathfinder"]),
+        &[folder("con", 2)],
+        &[],
+        "con",
+        "Console",
+    )
+    .unwrap();
+    assert_eq!(renamed.list, shared(&["Pathfinder", "Console"]));
+    assert_eq!(renamed.from, "con");
+}
+
+#[test]
+fn a_delete_removes_the_type_and_writes_the_folder_only_types() {
+    // R6.
+    let (list, name) = delete_type(
+        &shared(&["Pathfinder", "One on One"]),
+        &[folder("Pathfinder", 30), folder("Board", 1)],
+        "pathfinder",
+    )
+    .unwrap();
+    assert_eq!(list, shared(&["One on One", "Board"]));
+    assert_eq!(name, "Pathfinder");
+    assert_eq!(
+        delete_type(&shared(&["One on One"]), &[], "Pathfinder"),
+        Err(NoteTypeError::NoSuchType)
+    );
+}
+
+#[test]
+fn the_default_follows_a_rename_and_is_no_type_after_a_delete() {
+    // R7.
+    assert_eq!(
+        default_after(Some("pathfinder"), "Pathfinder", Some("D&D")),
+        Some(Some("D&D".to_string()))
+    );
+    assert_eq!(
+        default_after(Some("Pathfinder"), "Pathfinder", None),
+        Some(None)
+    );
+    assert_eq!(default_after(Some("Board"), "Pathfinder", None), None);
+    assert_eq!(default_after(None, "Pathfinder", None), None);
+}
+
+#[test]
+fn a_list_edit_that_is_continued_changes_only_what_is_missing() {
+    // KTD7: a launch continues an edit whose list save was lost.
+    assert_eq!(
+        list_after_edit(&shared(&["Pathfinder", "Board"]), "pathfinder", Some("D&D")),
+        Some(shared(&["D&D", "Board"]))
+    );
+    assert_eq!(
+        list_after_edit(&shared(&["D&D", "Board"]), "Pathfinder", Some("D&D")),
+        None
+    );
+    assert_eq!(
+        list_after_edit(
+            &shared(&["One on One", "1 on 1"]),
+            "1 on 1",
+            Some("One on One")
+        ),
+        Some(shared(&["One on One"]))
+    );
+    assert_eq!(
+        list_after_edit(&shared(&["Pathfinder"]), "Pathfinder", None),
+        Some(shared(&[]))
+    );
+    assert_eq!(
+        list_after_edit(&shared(&["Board"]), "Pathfinder", None),
+        None
+    );
+    assert_eq!(
+        list_after_edit(&shared(&["pathfinder"]), "pathfinder", Some("Pathfinder")),
+        Some(shared(&["Pathfinder"]))
+    );
+}
+
+#[test]
+fn an_add_of_a_leaving_name_makes_a_type_with_no_notes() {
+    // The notes of the leaving folder still move to their new type.
+    let folders = [leaving("Pathfinder", 2)];
+    let (list, _) = add_type(&shared(&["D&D"]), &folders, &[], "Pathfinder").unwrap();
+    let types = effective_types(&list, &folders);
+    assert_eq!(names(&types), ["D&D", "Pathfinder"]);
+    assert_eq!(types[1].notes, 0);
 }

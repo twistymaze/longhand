@@ -744,6 +744,9 @@ pub struct ProcessingManager {
     audio_removal: Arc<AudioRemovalManager>,
     /// The early writes of the home folders of new notes (KTD4).
     early_homes: Arc<EarlyHomes>,
+    /// Held by each pass of the type rename, merge and delete edits
+    /// (KTD7), so two passes of one edit do not run at the same time.
+    type_edits: std::sync::Mutex<()>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -795,6 +798,9 @@ impl ProcessingManager {
                 ) && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
                 {
                     processing.in_use_changed();
+                    // A type move that waited for the work can run now
+                    // (F2).
+                    processing.run_type_moves_soon();
                 }
                 match Sent::from(event) {
                     Sent::Processing(update) => {
@@ -864,6 +870,7 @@ impl ProcessingManager {
             library: std::sync::Mutex::default(),
             library_status,
             mover: MoveWorker::default(),
+            type_edits: std::sync::Mutex::default(),
         }
     }
 
@@ -1043,6 +1050,10 @@ impl ProcessingManager {
             if let Err(e) = self.runner.reconcile_folders() {
                 log::error!("launch reconcile of folder names failed: {e}");
             }
+            // The type moves and the type edits that a quit or a crash
+            // stopped continue (KTD5, KTD7).
+            let changed = self.run_type_moves();
+            self.emit_changed(changed);
         }
         // After the library scan, so the rows and the removed flags come
         // from the folders. The pass at launch runs only with the instance
@@ -1357,6 +1368,12 @@ impl ProcessingManager {
                 let mut changes = reconciler
                     .run(&store, target, &claimed)
                     .map_err(|e| e.to_string())?;
+                // Each scan tries the type moves that wait (KTD6).
+                if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+                    changes.changed.extend(processing.run_type_moves());
+                    changes.changed.sort();
+                    changes.changed.dedup();
+                }
                 let removed = forget_outside(&app, &store, &claimed);
                 if !removed.is_empty() {
                     changes.changed.retain(|id| !removed.contains(id));
@@ -1515,6 +1532,230 @@ impl ProcessingManager {
         self.runner
             .rename_session(session_id, title)
             .map_err(|e| e.to_string())
+    }
+
+    /// Change the type of a note (R5). The app shows the new type at once;
+    /// see [`Runner::change_note_type`] for the folder. The caller checks
+    /// that `to` is a type of the effective list. This can reach a synced
+    /// folder, so call it off the main thread.
+    pub fn change_note_type(
+        &self,
+        session_id: &str,
+        to: Option<&str>,
+    ) -> Result<pipeline::type_move::TypeChange, String> {
+        let changed = self
+            .runner
+            .change_note_type(session_id, to, &self.own_runs)
+            .map_err(|e| e.to_string())?;
+        emit_library_changed(
+            &self.app,
+            LibraryChanged {
+                changed: vec![session_id.to_string()],
+                removed: Vec::new(),
+            },
+        );
+        Ok(changed)
+    }
+
+    /// Rename the note type `name` to `new_name`, or merge it into the type
+    /// with that name (R6), and change each note of the type (KTD7).
+    /// Returns the number of notes that changed.
+    pub fn rename_note_type(
+        &self,
+        shared: &SharedSettingsManager,
+        folders: &crate::managers::shared::StorageFolders,
+        name: &str,
+        new_name: &str,
+    ) -> Result<u32, String> {
+        self.edit_note_types(|before_save| {
+            shared.rename_note_type(name, new_name, folders, before_save)
+        })
+    }
+
+    /// Delete the note type `name` (R6): each note of the type gets no type,
+    /// and its folder goes to the storage folder (KTD7). Returns the number
+    /// of notes that changed.
+    pub fn delete_note_type(
+        &self,
+        shared: &SharedSettingsManager,
+        folders: &crate::managers::shared::StorageFolders,
+        name: &str,
+    ) -> Result<u32, String> {
+        self.edit_note_types(|before_save| {
+            shared
+                .delete_note_type(name, folders, before_save)
+                .map(Some)
+        })
+    }
+
+    /// A type rename, merge or delete (KTD7): record the edit, change the
+    /// shared list with `save`, then change each note. The record goes when
+    /// every note has moved or has its pending type. Otherwise each launch
+    /// and scan continues the edit.
+    fn edit_note_types(
+        &self,
+        save: impl FnOnce(
+            &dyn Fn(&session_core::BulkEdit) -> Result<(), String>,
+        ) -> Result<Option<session_core::BulkEdit>, String>,
+    ) -> Result<u32, String> {
+        let _edits = self.type_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let recorded: std::sync::Mutex<Option<i64>> = std::sync::Mutex::default();
+        let record = |edit: &session_core::BulkEdit| {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let mut recorded = recorded.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(id) = recorded.take() {
+                store.remove_bulk_edit(id).map_err(|e| e.to_string())?;
+            }
+            *recorded = Some(store.add_bulk_edit(edit).map_err(|e| e.to_string())?);
+            Ok(())
+        };
+        let saved = save(&record);
+        let id = recorded.into_inner().unwrap_or_else(|e| e.into_inner());
+        let edit = match saved {
+            Ok(Some(edit)) => edit,
+            Ok(None) => return Ok(0),
+            Err(e) => {
+                if let Some(id) = id {
+                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = store.remove_bulk_edit(id) {
+                        log::error!("could not remove the bulk edit {id}: {e}");
+                    }
+                }
+                return Err(e);
+            }
+        };
+        let Some(id) = id else {
+            return Err("The change of the note types was not recorded.".into());
+        };
+        self.store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_bulk_edit_shared_saved(id)
+            .map_err(|e| e.to_string())?;
+        settings::emit_settings_changed(&self.app);
+        let changed = self.continue_type_edit(id, &edit);
+        let count = u32::try_from(changed.len()).unwrap_or(u32::MAX);
+        self.emit_changed(changed);
+        Ok(count)
+    }
+
+    /// One pass of the per-note part of the type edit `id` (KTD7). The
+    /// record goes when the edit is done. Returns the notes that changed.
+    fn continue_type_edit(&self, id: i64, edit: &session_core::BulkEdit) -> Vec<String> {
+        let Some(root) = self.storage_folder() else {
+            return Vec::new();
+        };
+        match self.runner.apply_type_edit(&root, id, edit, &self.own_runs) {
+            Ok(pass) => {
+                if pass.done {
+                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = store.remove_bulk_edit(id) {
+                        log::error!("could not remove the bulk edit {id}: {e}");
+                    }
+                }
+                pass.changed
+            }
+            Err(e) => {
+                log::warn!("the type edit {id} continues later: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Continue the type edits that are not done (KTD7), then run the type
+    /// moves that this computer owes and take over the moves that waited
+    /// for 7 days (KTD5, KTD13). Returns the notes that changed. Only with
+    /// the instance lock held, so no other run moves the same folders.
+    pub fn run_type_moves(&self) -> Vec<String> {
+        if !matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
+            return Vec::new();
+        }
+        let mut changed = Vec::new();
+        {
+            let _edits = self.type_edits.lock().unwrap_or_else(|e| e.into_inner());
+            let open = self
+                .store
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .bulk_edits();
+            for open in open.unwrap_or_else(|e| {
+                log::error!("could not read the bulk edits: {e}");
+                Vec::new()
+            }) {
+                if !open.shared_saved {
+                    let Some(shared) = self.app.try_state::<Arc<SharedSettingsManager>>() else {
+                        continue;
+                    };
+                    if let Err(e) = shared.finish_type_edit(&open.edit) {
+                        log::warn!("the type edit {} continues later: {e}", open.id);
+                        continue;
+                    }
+                    settings::emit_settings_changed(&self.app);
+                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = store.set_bulk_edit_shared_saved(open.id) {
+                        log::error!("could not record the type edit {}: {e}", open.id);
+                        continue;
+                    }
+                }
+                changed.extend(self.continue_type_edit(open.id, &open.edit));
+            }
+        }
+        match self.runner.run_type_moves(&self.own_runs) {
+            Ok(moved) => changed.extend(moved),
+            Err(e) => log::error!("could not run the type moves: {e}"),
+        }
+        changed.sort();
+        changed.dedup();
+        changed
+    }
+
+    /// Run the type moves on another thread, for example after the work on
+    /// a note ended, and tell the surface what changed.
+    fn run_type_moves_soon(self: &Arc<Self>) {
+        let manager = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("type-moves".into())
+            .spawn(move || {
+                let changed = manager.run_type_moves();
+                manager.emit_changed(changed);
+            });
+        if let Err(e) = spawned {
+            log::error!("could not start the type moves: {e}");
+        }
+    }
+
+    /// Tell the surface that the notes `changed` changed.
+    fn emit_changed(&self, changed: Vec<String>) {
+        if !changed.is_empty() {
+            emit_library_changed(
+                &self.app,
+                LibraryChanged {
+                    changed,
+                    removed: Vec::new(),
+                },
+            );
+        }
+    }
+
+    /// The names of the type folders that a type rename, merge or delete
+    /// of this computer still empties (KTD7). The effective type list does
+    /// not show them.
+    pub fn leaving_types(&self) -> Vec<String> {
+        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .bulk_edits()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|open| match open.edit {
+                session_core::BulkEdit::RenameType { from, to }
+                    if !session_save::naming::same_type_name(&from, &to) =>
+                {
+                    Some(from)
+                }
+                session_core::BulkEdit::RenameType { .. } => None,
+                session_core::BulkEdit::DeleteType { name } => Some(name),
+            })
+            .collect()
     }
 
     /// Check if Transcribe Again can start on a saved note now, with the

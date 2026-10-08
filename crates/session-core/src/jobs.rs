@@ -266,6 +266,49 @@ pub struct RenameIntent {
     pub temp: Option<String>,
 }
 
+/// A type change whose move this computer owes (KTD5, KTD13 of the note
+/// types and tags plan). It holds no path: the move finds the home folder
+/// by session id at move time. `None` as a type is "No type".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeMove {
+    /// The new type.
+    pub to: Option<String>,
+    /// The type folder that the home folder was in when the user changed
+    /// the type.
+    pub from: Option<String>,
+    /// The time of the change.
+    pub changed_at: DateTime<FixedOffset>,
+    /// The time that this computer took over the move of another computer
+    /// (KTD13). A taken-over move waits before it moves the folder.
+    pub taken_over_at: Option<DateTime<FixedOffset>>,
+    /// A type rename, merge or delete made the move: the old type folder
+    /// goes when it holds nothing else (KTD7).
+    pub remove_empty_from: bool,
+    /// This computer wrote the pending type into `session.md`.
+    pub field_written: bool,
+}
+
+/// A Settings edit that changes many notes (KTD7, KTD11 of the note types
+/// and tags plan).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BulkEdit {
+    /// A type rename. When `to` is the name of another type, the two types
+    /// merge.
+    RenameType { from: String, to: String },
+    /// A type delete: the notes of the type get no type.
+    DeleteType { name: String },
+}
+
+/// A [`BulkEdit`] that is not done yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenBulkEdit {
+    pub id: i64,
+    pub edit: BulkEdit,
+    /// The shared settings have the change.
+    pub shared_saved: bool,
+}
+
 /// The step of one note in a Move (KTD9). The Move records each step
 /// before it takes the next one. The paths are absolute.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1336,6 +1379,158 @@ impl Store {
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         Ok(ids)
+    }
+
+    // ------------------------------------------------------------ type moves
+
+    /// The ID of this computer (KTD13 of the note types and tags plan).
+    pub fn computer_id(&self) -> Result<String> {
+        Ok(self
+            .conn
+            .query_row("SELECT computer_id FROM computer WHERE id = 1", [], |r| {
+                r.get(0)
+            })?)
+    }
+
+    /// Record that this computer owes the session a type move (KTD5). A
+    /// second record for the session replaces the first.
+    pub fn set_type_move(&self, id: &str, type_move: &TypeMove) -> Result<()> {
+        self.require(id)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO type_moves
+             (session_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
+              field_written)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                type_move.to,
+                type_move.from,
+                type_move.changed_at.to_rfc3339(),
+                type_move.taken_over_at.map(|at| at.to_rfc3339()),
+                type_move.remove_empty_from,
+                type_move.field_written,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn type_move(&self, id: &str) -> Result<Option<TypeMove>> {
+        Ok(self
+            .type_moves_where("WHERE session_id = ?1", [id])?
+            .pop()
+            .map(|(_, type_move)| type_move))
+    }
+
+    /// Every type move that this computer owes, with its session id.
+    pub fn type_moves(&self) -> Result<Vec<(String, TypeMove)>> {
+        self.type_moves_where("", [])
+    }
+
+    fn type_moves_where<P: rusqlite::Params>(
+        &self,
+        filter: &str,
+        values: P,
+    ) -> Result<Vec<(String, TypeMove)>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT session_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
+                 field_written
+             FROM type_moves {filter} ORDER BY session_id"
+        ))?;
+        let rows = stmt
+            .query_map(values, |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, bool>(5)?,
+                    r.get::<_, bool>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(
+                |(id, to, from, changed_at, taken_over_at, remove_empty_from, field_written)| {
+                    Ok((
+                        id,
+                        TypeMove {
+                            to,
+                            from,
+                            changed_at: parse_time(&changed_at)?,
+                            taken_over_at: taken_over_at.as_deref().map(parse_time).transpose()?,
+                            remove_empty_from,
+                            field_written,
+                        },
+                    ))
+                },
+            )
+            .collect()
+    }
+
+    pub fn clear_type_move(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM type_moves WHERE session_id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ bulk edits
+
+    /// Record a Settings edit that changes many notes (KTD7, KTD11), before
+    /// the first change. Returns its id.
+    pub fn add_bulk_edit(&self, edit: &BulkEdit) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO bulk_edits (edit) VALUES (?1)",
+            [serde_json::to_string(edit)?],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The edits that are not done, oldest first. An edit that this build
+    /// cannot read is left out and logged.
+    pub fn bulk_edits(&self) -> Result<Vec<OpenBulkEdit>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, edit, shared_saved FROM bulk_edits ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(
+                |(id, edit, shared_saved)| match serde_json::from_str(&edit) {
+                    Ok(edit) => Some(OpenBulkEdit {
+                        id,
+                        edit,
+                        shared_saved,
+                    }),
+                    Err(e) => {
+                        log::warn!("the bulk edit {id} cannot be read: {e}");
+                        None
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Record that the shared settings have the change of the edit `id`.
+    pub fn set_bulk_edit_shared_saved(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE bulk_edits SET shared_saved = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// The edit `id` is done.
+    pub fn remove_bulk_edit(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM bulk_edits WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     // ------------------------------------------------------------ move journal

@@ -533,9 +533,10 @@ pub fn set_background(
 }
 
 /// The type folders and the home folders of the storage folder, from the
-/// store rows that the library scan keeps (KTD4, KTD9). This reads no
-/// folder.
-fn storage_folders(app: &AppHandle) -> Result<StorageFolders, String> {
+/// store rows that the library scan keeps (KTD4, KTD9). The old folder of a
+/// type rename, merge or delete that is not done is leaving (KTD7). This
+/// reads no folder.
+pub(crate) fn storage_folders(app: &AppHandle) -> Result<StorageFolders, String> {
     let Some(root) = settings::get_settings(app).storage_folder() else {
         return Ok(StorageFolders::default());
     };
@@ -545,7 +546,12 @@ fn storage_folders(app: &AppHandle) -> Result<StorageFolders, String> {
     let store = capture.shared_store();
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     let records = store.sessions().map_err(|e| e.to_string())?;
-    Ok(StorageFolders::from_records(&root, &records))
+    drop(store);
+    let mut folders = StorageFolders::from_records(&root, &records);
+    if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+        folders.mark_leaving(processing.leaving_types().iter().map(String::as_str));
+    }
+    Ok(folders)
 }
 
 /// The note types and the default type (R2, R7, R34, KTD9): the shared
@@ -586,6 +592,67 @@ pub fn set_default_note_type(
     shared.set_default_note_type(name.as_deref(), &folders)?;
     settings::emit_settings_changed(&app);
     Ok(shared.note_types(&folders))
+}
+
+/// What a type rename, merge or delete did (R6, R31).
+#[derive(Serialize, Type)]
+pub struct NoteTypeEdit {
+    /// The number of notes that changed their type.
+    pub changed: u32,
+    /// The note types and the default type after the edit.
+    pub list: NoteTypeList,
+}
+
+/// Rename a note type (R6). A new name of another type merges the two
+/// types: the notes go into the folder of that type. The default type
+/// follows the rename. The name goes through the type name check (R28).
+/// The folder of each note moves now, or later when a computer works on
+/// the note.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_note_type(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+    new_name: String,
+) -> Result<NoteTypeEdit, String> {
+    let (shared, processing) = (Arc::clone(&shared), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let folders = storage_folders(&app)?;
+        let changed = processing.rename_note_type(&shared, &folders, &name, &new_name)?;
+        Ok(NoteTypeEdit {
+            changed,
+            list: shared.note_types(&storage_folders(&app)?),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete a note type (R6): its notes get no type, and their folders go
+/// directly in the storage folder. When it is the default type, the
+/// default becomes "No type" (R7). The surface asks for a confirmation
+/// with the number of notes first (R31).
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_note_type(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+) -> Result<NoteTypeEdit, String> {
+    let (shared, processing) = (Arc::clone(&shared), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let folders = storage_folders(&app)?;
+        let changed = processing.delete_note_type(&shared, &folders, &name)?;
+        Ok(NoteTypeEdit {
+            changed,
+            list: shared.note_types(&storage_folders(&app)?),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Pick a folder with the system dialog and return its path. Nothing

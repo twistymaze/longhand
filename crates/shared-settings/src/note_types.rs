@@ -62,10 +62,11 @@ pub enum NoteTypeError {
 /// order, then the folder-only types in name order. Two names that differ
 /// only in case are one type, with the spelling of the shared list.
 pub fn effective_types(shared: &[String], folders: &[TypeFolder]) -> Vec<NoteType> {
+    // The notes of a leaving folder have another type now.
     let notes_in = |name: &str| {
         folders
             .iter()
-            .filter(|f| same_type_name(&f.name, name))
+            .filter(|f| !f.leaving && same_type_name(&f.name, name))
             .map(|f| f.notes)
             .sum()
     };
@@ -139,6 +140,123 @@ pub fn add_type(
     let mut list = list_to_save(shared, folders);
     list.push(name.clone());
     Ok((list, name))
+}
+
+/// What a type rename writes (R6, KTD7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Renamed {
+    /// The shared list after the rename.
+    pub list: Vec<String>,
+    /// The renamed type, with the spelling of the effective list.
+    pub from: String,
+    /// The type that the notes get: the new name, or the type that the
+    /// renamed type merges into, with the spelling of the list.
+    pub to: String,
+    /// `to` is another type: the two types merge.
+    pub merged: bool,
+}
+
+/// The type `name` of the effective list, valid or not.
+fn find_type(shared: &[String], folders: &[TypeFolder], name: &str) -> Option<NoteType> {
+    effective_types(shared, folders)
+        .into_iter()
+        .find(|t| same_type_name(&t.name, name))
+}
+
+/// The shared list after the user renames the type `old` to `new` (R6).
+/// The new name goes through the type name check (KTD8). A new name of
+/// another type merges the two types. A new name that differs only in case
+/// is not a merge. `homes` are the names of the home folders directly in
+/// the storage folder.
+pub fn rename_type(
+    shared: &[String],
+    folders: &[TypeFolder],
+    homes: &[String],
+    old: &str,
+    new: &str,
+) -> Result<Renamed, NoteTypeError> {
+    let from = find_type(shared, folders, old)
+        .ok_or(NoteTypeError::NoSuchType)?
+        .name;
+    let new = check_type_name(new)?;
+    let mut list = list_to_save(shared, folders);
+    let place = list.iter().position(|t| same_type_name(t, &from));
+    if !same_type_name(&from, &new)
+        && let Some(other) = effective_types(shared, folders)
+            .into_iter()
+            .find(|t| t.valid && same_type_name(&t.name, &new))
+    {
+        list.retain(|t| !same_type_name(t, &from));
+        return Ok(Renamed {
+            list,
+            from,
+            to: other.name,
+            merged: true,
+        });
+    }
+    if !same_type_name(&from, &new) && homes.iter().any(|home| same_type_name(home, &new)) {
+        return Err(NoteTypeError::HomeFolder);
+    }
+    match place {
+        Some(i) => list[i] = new.clone(),
+        None => list.push(new.clone()),
+    }
+    Ok(Renamed {
+        list,
+        from,
+        to: new,
+        merged: false,
+    })
+}
+
+/// The shared list after the user deletes the type `name` (R6), and the
+/// name with the spelling of the effective list.
+pub fn delete_type(
+    shared: &[String],
+    folders: &[TypeFolder],
+    name: &str,
+) -> Result<(Vec<String>, String), NoteTypeError> {
+    let name = find_type(shared, folders, name)
+        .ok_or(NoteTypeError::NoSuchType)?
+        .name;
+    let mut list = list_to_save(shared, folders);
+    list.retain(|t| !same_type_name(t, &name));
+    Ok((list, name))
+}
+
+/// The default type after a rename of `old` to `new`, or a delete of `old`
+/// for `None` (R7): `Some` when the default names `old`, else `None`.
+pub fn default_after(
+    default: Option<&str>,
+    old: &str,
+    new: Option<&str>,
+) -> Option<Option<String>> {
+    default
+        .is_some_and(|default| same_type_name(default, old))
+        .then(|| new.map(str::to_string))
+}
+
+/// The shared list `shared` with the edit of `from` to `to` (a rename or a
+/// merge), or with `from` removed for `None`. `None` when the list has the
+/// edit. A launch uses this to continue an edit whose save was lost
+/// (KTD7), so it refuses nothing.
+pub fn list_after_edit(shared: &[String], from: &str, to: Option<&str>) -> Option<Vec<String>> {
+    let mut list = shared.to_vec();
+    let place = list.iter().position(|t| same_type_name(t, from));
+    let has_to = |list: &[String]| to.is_none_or(|to| list.iter().any(|t| t == to));
+    match (place, to) {
+        (None, _) if has_to(&list) => return None,
+        (None, Some(to)) => list.push(to.to_string()),
+        (None, None) => return None,
+        (Some(i), Some(to)) if !list.iter().any(|t| t == to) => list[i] = to.to_string(),
+        (Some(i), _) => {
+            if list[i] == to.unwrap_or_default() {
+                return None;
+            }
+            list.remove(i);
+        }
+    }
+    Some(list)
 }
 
 /// The type that a new note gets from the shared default (R7, R23): the

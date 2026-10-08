@@ -13,6 +13,8 @@ const entry = (id: string, started: Date, over: Partial<SessionEntry> = {}): Ses
   found_speakers: null,
   storage_unavailable: false,
   remote: null,
+  note_type: null,
+  type_move_waits: false,
   ...over,
 });
 
