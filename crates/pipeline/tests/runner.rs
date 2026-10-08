@@ -5502,6 +5502,102 @@ async fn a_save_refused_because_another_computer_changed_session_md_keeps_the_pr
     assert!(r.root.join("s").exists());
 }
 
+// ------------------------------------------------------------- user fields (KTD2 of the note types and tags plan)
+
+fn pending_type() -> session_core::folder::PendingType {
+    session_core::folder::PendingType {
+        to: Some("One on One".into()),
+        from: None,
+        by: "computer-b".into(),
+        at: chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap(),
+    }
+}
+
+/// Another computer writes a tag and a pending type into `session.md`.
+fn edit_user_fields(folder: &std::path::Path) {
+    edit_session_md(folder, |doc| {
+        doc.tags = vec!["Topic::Security".into()];
+        doc.pending_type = Some(pending_type());
+    });
+}
+
+fn assert_user_fields(folder: &std::path::Path) {
+    let doc = session_md(folder);
+    assert_eq!(doc.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(doc.pending_type, Some(pending_type()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tag_and_type_edit_during_transcribe_again_keeps_the_new_result_and_the_edit() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let summary = read(&home, "summary.md");
+    confirm_again(&r).unwrap();
+    // Another computer edits the tags and the type while the run waits.
+    edit_user_fields(&home);
+
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_eq!(saved_folder(&r, "s"), home);
+    assert_ne!(read(&home, "summary.md"), summary);
+    assert_fingerprints_match(&home);
+    assert_user_fields(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tag_and_type_edit_during_regenerate_summary_keeps_the_new_summary_and_the_edit() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let before = read(&home, "summary.md");
+    // Another computer edits the tags and the type while the model works.
+    let edited = home.clone();
+    let summary: http::Responder = Arc::new(move |_| {
+        edit_user_fields(&edited);
+        (200, http::completion("A new summary."))
+    });
+    let title = title_reply("Plan");
+    let _mock = summaries_and_titles(&r, summary, &title, None).await;
+
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(path, home.join("summary.md"));
+    assert_ne!(read(&home, "summary.md"), before);
+    assert_fingerprints_match(&home);
+    assert_user_fields(&home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_keeps_the_tags_and_the_pending_type() {
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    edit_user_fields(&old);
+    let renamed = r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    assert_eq!(renamed, FolderRename::Moved(new.clone()));
+    assert_user_fields(&new);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_writes_the_tags_and_the_pending_type_of_the_row() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    {
+        let s = r.store.lock().unwrap();
+        s.set_tags("s", &["Topic::Security".to_string()]).unwrap();
+        s.set_pending_type("s", Some(&pending_type())).unwrap();
+    }
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert_user_fields(&saved_folder(&r, "s"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn changed_processing_audio_during_summary_stops_save_and_retry_verifies_again() {
     use std::io::{Seek, SeekFrom, Write};

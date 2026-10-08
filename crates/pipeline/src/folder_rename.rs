@@ -429,7 +429,7 @@ pub(crate) fn write_document(
 }
 
 /// The `session.md` that the stored record gives, with the result fields
-/// of `previous`. Only the publication and the accept of a hand edit set
+/// and the user fields (the tags and the pending type) of `previous`. Only the publication and the accept of a hand edit set
 /// the result fingerprints (KTD6). A rename or a Move on a computer that
 /// receives a sync thus does not record the fingerprints of files that
 /// are only partly synced.
@@ -446,6 +446,10 @@ fn document(
         doc.recognition_audio = previous.recognition_audio;
         doc.transcript_fingerprint = previous.transcript_fingerprint;
         doc.summary_fingerprint = previous.summary_fingerprint;
+        // The user fields stay as the file has them (KTD2 of the note
+        // types and tags plan).
+        doc.tags = previous.tags;
+        doc.pending_type = previous.pending_type;
         // A note with no segment here can have a recording that another
         // computer has not saved yet (R6).
         if doc.segments.is_empty() && previous.result.is_some() {

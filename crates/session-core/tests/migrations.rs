@@ -550,3 +550,31 @@ fn migration_sixteen_keeps_existing_rows_and_gives_them_no_open_time_owner_or_fi
         session_core::jobs::WrittenFingerprints::default()
     );
 }
+
+#[test]
+fn migration_eighteen_keeps_existing_rows_and_gives_them_no_type_tags_or_pending_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, 17)
+            .unwrap();
+        add_session(&conn, "s1");
+        conn.execute(
+            "UPDATE sessions SET home_path = '/notes/a', notes = '- agenda\n',
+               title = 'Budget', title_source = 'user' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.state, session_core::SessionState::Saved);
+    assert_eq!(record.home_path.as_deref(), Some("/notes/a"));
+    assert_eq!(record.title.map(|t| t.text).as_deref(), Some("Budget"));
+    assert_eq!(store.notes("s1").unwrap(), "- agenda\n");
+    assert_eq!(record.note_type, None);
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}

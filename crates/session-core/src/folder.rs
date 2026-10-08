@@ -116,6 +116,22 @@ pub struct SessionDoc {
     /// none; [`SessionDoc::title_and_source`] then gives the user (R5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_source: Option<TitleSource>,
+    /// The tags of the note, as their exact texts (R11, KTD2). A user
+    /// field: each writer copies it from the file that it replaces.
+    #[serde(
+        rename = "longhand_tags",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub tags: Vec<String>,
+    /// A type change that waits for its move (KTD2, KTD3). A user field:
+    /// each writer copies it from the file that it replaces.
+    #[serde(
+        rename = "longhand_pending_type",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pending_type: Option<PendingType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speaker_count: Option<SpeakerCount>,
     /// The recognition model that made the transcript (R3).
@@ -144,6 +160,45 @@ pub struct SessionDoc {
     /// Empty for a note with no audio. A file with no field has none.
     #[serde(default)]
     pub segments: Vec<SegmentRecord>,
+}
+
+/// The `longhand_pending_type` field of `session.md` (KTD2, KTD3, KTD13):
+/// the user changed the note type, and the home folder waits for its move.
+/// `None` as a type is "No type": the home folder is directly in the
+/// storage folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingType {
+    /// The new type.
+    pub to: Option<String>,
+    /// The type of the folder that the home folder was in when the user
+    /// changed the type. A second change keeps this value.
+    pub from: Option<String>,
+    /// The ID of the computer that does the move.
+    pub by: String,
+    /// The time of the change, or of the takeover of the move (KTD13).
+    pub at: DateTime<FixedOffset>,
+}
+
+/// The keys of the user fields in the frontmatter of `session.md` (KTD2).
+const USER_FIELDS: [&str; 2] = ["longhand_tags", "longhand_pending_type"];
+
+/// The [`fingerprint`] of the bytes of a `session.md`, with the user
+/// fields removed from its frontmatter (KTD2). A check that compares a
+/// whole `session.md` uses it, so a tag or type edit does not fail a run.
+/// The body counts. Bytes that are not a `session.md` with a frontmatter
+/// mapping give the [`fingerprint`] of the bytes.
+pub fn session_fingerprint(bytes: &[u8]) -> String {
+    let without = std::str::from_utf8(bytes).ok().and_then(|text| {
+        let (yaml, body) = split_frontmatter("session.md", text).ok()?;
+        let mut map: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
+        // `shift_remove` keeps the order of the other keys.
+        for key in USER_FIELDS {
+            map.shift_remove(key);
+        }
+        let yaml = serde_yaml::to_string(&map).ok()?;
+        Some(format!("---\n{yaml}---\n{body}"))
+    });
+    fingerprint(without.as_deref().map_or(bytes, str::as_bytes))
 }
 
 /// The `result` field of `session.md` (R6, KTD1): the note has no result
@@ -249,6 +304,8 @@ impl SessionDoc {
             started,
             title: None,
             title_source: None,
+            tags: Vec::new(),
+            pending_type: None,
             speaker_count,
             asr_model: None,
             recognition_snapshot: None,

@@ -81,6 +81,15 @@ pub(super) fn read(
 /// is one (KTD8 of the audio removal plan), so the check reads it too. A
 /// segment with no copy whose home file has a removal marker or is missing
 /// does not match: no prefix is reused, and no error occurs.
+/// The fingerprint of the `session.md` in `home` with the user fields
+/// removed, so a tag or type edit does not change the saved prefix (KTD2
+/// of the note types and tags plan).
+fn session_manifest(home: &Path) -> std::io::Result<String> {
+    Ok(session_core::folder::session_fingerprint(&std::fs::read(
+        home.join("session.md"),
+    )?))
+}
+
 fn same_audio(
     dir: &Path,
     home: &Path,
@@ -149,7 +158,7 @@ fn candidate(
     if route == super::Route::SeparatePyannote && record.speaker_count.is_some() {
         return Ok(None);
     }
-    let manifest = file_digest(&home.join("session.md"))?;
+    let manifest = session_manifest(home)?;
     let doc = session_core::folder::SessionDoc::read(home)?;
     let old = doc.timeline_segments();
     if old.is_empty()
@@ -214,7 +223,7 @@ fn candidate(
     result.coverage = header.coverage;
     result.coverage_limitations = header.limitations;
     super::validate_result(&result, &result.coverage)?;
-    if manifest != file_digest(&home.join("session.md"))? {
+    if manifest != session_manifest(home)? {
         return Ok(None);
     }
     // Check the source again after reading output; publication repeats this proof.
@@ -512,6 +521,25 @@ mod tests {
                 "publication accepted changed {filename}"
             );
         }
+    }
+
+    #[test]
+    fn saved_prefix_accepts_a_tag_or_type_edit_during_processing() {
+        // KTD2 of the note types and tags plan: the user fields are not
+        // part of the saved prefix.
+        let case = Case::new();
+        let prefix = case.read().unwrap().unwrap();
+        retain(&case.store, "s", &prefix).unwrap();
+        let mut doc = session_core::folder::SessionDoc::read(case.temp.path()).unwrap();
+        doc.tags = vec!["Topic::Security".into()];
+        doc.pending_type = Some(session_core::folder::PendingType {
+            to: Some("One on One".into()),
+            from: None,
+            by: "computer-b".into(),
+            at: doc.started,
+        });
+        std::fs::write(case.temp.path().join("session.md"), doc.render()).unwrap();
+        assert!(case.read().unwrap().is_some());
     }
 
     #[test]

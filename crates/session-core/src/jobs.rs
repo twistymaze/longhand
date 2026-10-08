@@ -10,7 +10,7 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::folder::{SessionDoc, SpeakerCount};
+use crate::folder::{PendingType, SessionDoc, SpeakerCount};
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
 
@@ -62,6 +62,13 @@ pub struct SessionRecord {
     /// note from another computer that has segments, and a row from
     /// [`Store::create_session`]: see [`SessionRecord::start`].
     pub started_at: Option<DateTime<FixedOffset>>,
+    /// The note type: the type folder that holds the home folder (KTD1).
+    /// `None` is "No type". The library scan sets it from the path.
+    pub note_type: Option<String>,
+    /// The tags of the note: `longhand_tags` of `session.md` (KTD2).
+    pub tags: Vec<String>,
+    /// `longhand_pending_type` of `session.md` (KTD2, KTD3).
+    pub pending_type: Option<PendingType>,
 }
 
 impl SessionRecord {
@@ -165,6 +172,13 @@ pub struct Adoption {
     /// (KTD9 of the audio removal plan). `session.md` does not record them,
     /// so [`Adoption::from_doc`] gives none, and the scan adds them.
     pub removed_audio: Vec<String>,
+    /// The note type that the path of the folder gives (KTD1).
+    /// [`Adoption::from_doc`] gives none, and the scan sets it.
+    pub note_type: Option<String>,
+    /// `longhand_tags` of `session.md` (KTD2).
+    pub tags: Vec<String>,
+    /// `longhand_pending_type` of `session.md` (KTD2).
+    pub pending_type: Option<PendingType>,
 }
 
 impl Adoption {
@@ -190,6 +204,9 @@ impl Adoption {
             home_path,
             transcript_fingerprint,
             removed_audio: Vec::new(),
+            note_type: None,
+            tags: doc.tags.clone(),
+            pending_type: doc.pending_type.clone(),
         }
     }
 }
@@ -338,7 +355,7 @@ fn stage_key(stage: Stage) -> String {
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
      home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot, \
-     started_at";
+     started_at, note_type, tags, pending_type";
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -779,9 +796,9 @@ impl Store {
         let inserted = tx.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, home_path,
                title, title_source, notes, found_speakers, stereo_from, transcript_fingerprint, recognition_snapshot,
-               started_at)
+               started_at, note_type, tags, pending_type)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-               CASE WHEN ?14 THEN ?2 END)
+               CASE WHEN ?14 THEN ?2 END, ?15, ?16, ?17)
              ON CONFLICT (id) DO NOTHING",
             params![
                 note.id,
@@ -801,6 +818,9 @@ impl Store {
                 note.recognition_snapshot.as_ref().map(serde_json::to_string).transpose()?,
                 // A note with no segments starts at `started` (R16).
                 note.segments.is_empty(),
+                note.note_type,
+                serde_json::to_string(&note.tags)?,
+                note.pending_type.as_ref().map(serde_json::to_string).transpose()?,
             ],
         )?;
         if inserted == 0 {
@@ -1543,6 +1563,42 @@ impl Store {
         Ok(())
     }
 
+    // ------------------------------------------------------------ note type and tags
+
+    /// Record the note type that the path of the home folder gives (KTD1).
+    pub fn set_note_type(&self, id: &str, note_type: Option<&str>) -> Result<()> {
+        self.update_one(
+            id,
+            "UPDATE sessions SET note_type = ?2 WHERE id = ?1",
+            note_type,
+        )
+    }
+
+    /// Record the tags of `session.md` (KTD2).
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<()> {
+        let tags = serde_json::to_string(tags)?;
+        self.update_one(id, "UPDATE sessions SET tags = ?2 WHERE id = ?1", tags)
+    }
+
+    /// Record the pending type of `session.md` (KTD2).
+    pub fn set_pending_type(&self, id: &str, pending: Option<&PendingType>) -> Result<()> {
+        let pending = pending.map(serde_json::to_string).transpose()?;
+        self.update_one(
+            id,
+            "UPDATE sessions SET pending_type = ?2 WHERE id = ?1",
+            pending,
+        )
+    }
+
+    /// Run the update `sql` with `id` as `?1` and `value` as `?2`. An `id`
+    /// with no row is an error.
+    fn update_one(&self, id: &str, sql: &str, value: impl rusqlite::ToSql) -> Result<()> {
+        if self.conn.execute(sql, params![id, value])? == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
     // ------------------------------------------------------------ speakers
 
     /// Record the number of speakers that processing found (KTD11). It is
@@ -1886,6 +1942,9 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
     let transcribe_again_model: Option<String> = r.get(11)?;
     let recognition_snapshot: Option<String> = r.get(12)?;
     let started_at: Option<String> = r.get(13)?;
+    let note_type: Option<String> = r.get(14)?;
+    let tags: String = r.get(15)?;
+    let pending_type: Option<String> = r.get(16)?;
     let title = title.map(|text| Title {
         text,
         // The store writes a title only together with its source. A title
@@ -1914,6 +1973,9 @@ fn read_session(r: &rusqlite::Row) -> rusqlite::Result<Result<SessionRecord>> {
                 .map(|v| serde_json::from_str(&v))
                 .transpose()?,
             started_at: started_at.as_deref().map(parse_time).transpose()?,
+            note_type,
+            tags: serde_json::from_str(&tags)?,
+            pending_type: pending_type.map(|v| serde_json::from_str(&v)).transpose()?,
         })
     })())
 }

@@ -1322,7 +1322,76 @@ fn adoption(id: &str, home: &str) -> session_core::Adoption {
         home_path: home.to_string(),
         transcript_fingerprint: Some("abc123".to_string()),
         removed_audio: Vec::new(),
+        note_type: None,
+        tags: Vec::new(),
+        pending_type: None,
     }
+}
+
+// ---------------------------------------------------------------- note type and tags
+
+fn pending(to: Option<&str>) -> session_core::folder::PendingType {
+    session_core::folder::PendingType {
+        to: to.map(str::to_string),
+        from: None,
+        by: "computer-b".to_string(),
+        at: t(5_000),
+    }
+}
+
+#[test]
+fn an_adopted_note_has_the_type_tags_and_pending_type_of_its_folder() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut note = adoption("s1", "/notes/Pathfinder/Budget");
+    note.note_type = Some("Pathfinder".to_string());
+    note.tags = vec!["Person::Nathan".to_string(), "follow-up".to_string()];
+    note.pending_type = Some(pending(Some("One on One")));
+    store.adopt(&note).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(record.tags, note.tags);
+    assert_eq!(record.pending_type, note.pending_type);
+}
+
+#[test]
+fn a_new_note_has_no_type_no_tags_and_no_pending_type() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type, None);
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}
+
+#[test]
+fn the_store_records_the_type_tags_and_pending_type() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.set_note_type("s1", Some("One on One")).unwrap();
+    store
+        .set_tags("s1", &["Topic::Security".to_string()])
+        .unwrap();
+    store.set_pending_type("s1", Some(&pending(None))).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type.as_deref(), Some("One on One"));
+    assert_eq!(record.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(record.pending_type, Some(pending(None)));
+
+    store.set_note_type("s1", None).unwrap();
+    store.set_tags("s1", &[]).unwrap();
+    store.set_pending_type("s1", None).unwrap();
+    let record = store.session("s1").unwrap().unwrap();
+    assert_eq!(record.note_type, None);
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}
+
+#[test]
+fn the_type_tags_and_pending_type_of_an_unknown_note_are_an_error() {
+    let store = Store::open_in_memory().unwrap();
+    assert!(store.set_note_type("nope", None).is_err());
+    assert!(store.set_tags("nope", &[]).is_err());
+    assert!(store.set_pending_type("nope", None).is_err());
 }
 
 // ---------------------------------------------------------------- removed audio (U2)

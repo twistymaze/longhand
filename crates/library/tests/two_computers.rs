@@ -13,7 +13,7 @@ use library::refresh::{self, Refresh};
 use library::scan::{Known, RemoteState, ScanOptions, Waiting, scan};
 use library::status::NoteStatus;
 use pipeline::SharedStore;
-use session_core::folder::{AudioState, ResultFlag, SessionDoc, fingerprint};
+use session_core::folder::{AudioState, PendingType, ResultFlag, SessionDoc, fingerprint};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, Title, TitleSource};
 use session_save::in_use_marker::FRESH_FOR;
 
@@ -971,6 +971,116 @@ fn a_refresh_inside_a_run_takes_a_users_title_and_the_notes_and_keeps_the_runs_r
     let s = a.store.lock().unwrap();
     assert_eq!(s.checkpoints("n1", Stage::Transcribe).unwrap().len(), 1);
     assert_eq!(s.transcript_fingerprint("n1").unwrap(), stored);
+}
+
+// ---------------------------------------------------------------- user fields (KTD2 of the note types and tags plan)
+
+fn pending_type() -> PendingType {
+    PendingType {
+        to: Some("One on One".into()),
+        from: None,
+        by: "computer-b".into(),
+        at: started(),
+    }
+}
+
+/// Write a tag and a pending type into `session.md` in `folder`, as the
+/// other computer's tag and type edit does.
+fn edit_user_fields(folder: &Path) {
+    edit_doc(folder, |doc| {
+        doc.tags = vec!["Topic::Security".into()];
+        doc.pending_type = Some(pending_type());
+    });
+}
+
+fn assert_user_fields(record: &SessionRecord) {
+    assert_eq!(record.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(record.pending_type, Some(pending_type()));
+}
+
+#[test]
+fn an_adopted_note_has_the_tags_and_the_pending_type_of_its_session_md() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    edit_user_fields(&folder);
+    assert_eq!(b.sync(&root, Instant::now()), changed(&["n1"]));
+    let record = b.record("n1").unwrap();
+    assert_user_fields(&record);
+    // The scan sets the note type from the path (U3).
+    assert_eq!(record.note_type, None);
+}
+
+#[test]
+fn a_tag_edit_from_the_other_computer_refreshes_a_saved_row() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    edit_user_fields(&folder);
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    assert_user_fields(&b.record("n1").unwrap());
+
+    // A removal of the fields also refreshes the row.
+    edit_doc(&folder, |doc| {
+        doc.tags.clear();
+        doc.pending_type = None;
+    });
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    let record = b.record("n1").unwrap();
+    assert!(record.tags.is_empty());
+    assert_eq!(record.pending_type, None);
+}
+
+#[test]
+fn a_busy_rows_reconcile_takes_a_tag_edit_from_the_other_computer() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    // On B, Transcribe Again queues the note: the row is busy.
+    b.store
+        .lock()
+        .unwrap()
+        .transcribe_again(
+            "n1",
+            "tdt",
+            &Event::UserTranscribeAgain {
+                at: started(),
+                audio_intact: true,
+                capture_active: false,
+                regenerating: false,
+            },
+        )
+        .unwrap();
+    assert!(matches!(b.state("n1"), SessionState::Queued { .. }));
+
+    edit_user_fields(&folder);
+    assert_eq!(b.sync(&root, now), changed(&["n1"]));
+    assert_user_fields(&b.record("n1").unwrap());
+}
+
+#[test]
+fn a_refresh_inside_a_run_takes_the_tags_and_the_pending_type() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let folder = a.save_note("n1", &root, None, "");
+    edit_user_fields(&folder);
+    let refreshed = refresh::refresh_scoped(
+        &mut a.store.lock().unwrap(),
+        "n1",
+        &folder,
+        options().read_timeout,
+        refresh::Scope::TitleAndNotes,
+    )
+    .unwrap();
+    assert!(refreshed.changed);
+    assert_user_fields(&a.record("n1").unwrap());
 }
 
 #[test]

@@ -1792,6 +1792,9 @@ mod entry_tests {
             live_transcript: None,
             transcribe_again_model: None,
             started_at: None,
+            note_type: None,
+            tags: Vec::new(),
+            pending_type: None,
         };
         let status: Arc<LibraryStatus> = Arc::default();
         let e = entry(&record, &[], None, &status);

@@ -257,6 +257,8 @@ pub fn step(
                 doc.result = Some(flag);
                 doc.title = record.title.as_ref().map(|t| t.text.clone());
                 doc.title_source = record.title.as_ref().map(|t| t.source);
+                doc.tags = record.tags.clone();
+                doc.pending_type = record.pending_type.clone();
                 let title = record.title.as_ref().map(|t| t.text.as_str());
                 let name = naming::folder_name(started, title);
                 let notes = folder::render_notes(&guard.notes(id)?);

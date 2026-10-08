@@ -121,6 +121,31 @@ fn a_recording_note_gets_a_home_folder_with_its_notes_and_the_pending_flag() {
 }
 
 #[test]
+fn the_early_write_puts_the_tags_and_the_pending_type_of_the_row_in_session_md() {
+    // KTD2 of the note types and tags plan.
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    recording_note(&store, "s", "");
+    let pending = session_core::folder::PendingType {
+        to: Some("One on One".into()),
+        from: None,
+        by: "computer-a".into(),
+        at: at(0),
+    };
+    {
+        let s = store.lock().unwrap();
+        s.set_tags("s", &["Topic::Security".to_string()]).unwrap();
+        s.set_pending_type("s", Some(&pending)).unwrap();
+    }
+
+    let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
+
+    let doc = SessionDoc::read(&path).unwrap();
+    assert_eq!(doc.tags, vec!["Topic::Security".to_string()]);
+    assert_eq!(doc.pending_type, Some(pending));
+}
+
+#[test]
 fn a_notes_only_note_gets_a_home_folder_with_the_no_recording_flag_and_no_marker() {
     let dest = tempfile::tempdir().unwrap();
     let store = store();
