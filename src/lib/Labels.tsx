@@ -84,29 +84,32 @@ export const SCOPE_TINT_DARK = 30;
 ///
 /// The fills start from the macOS system colours, with about 18% less
 /// saturation, so that a row with many labels is calm. Each fill has white
-/// or near-black text, the one that suits the fill. A fill with white text
-/// is darker than that, until the text meets 4.5:1.
+/// or near-black text, the one that suits the fill. The fill is then
+/// moved away from mid-lightness, with the same hue and saturation, so
+/// that the text is easy to read: a fill with white text is darker, until
+/// the text meets 6:1, and a fill with near-black text is lighter, until
+/// the text meets 8:1.
 ///
 /// The scope text is the fill mixed with black (light) or white (dark),
-/// until it meets 4.5:1 on the tint over each surface: the window, a group,
-/// the Home list and the sidebar, also under the row hover. So the scope
-/// text has the hue of the fill.
+/// until it meets 5.5:1 on the tint over each surface: the window, a group,
+/// the Home list and the sidebar, also under the row hover. The minimum is
+/// 4.5:1. So the scope text has the hue of the fill.
 ///
 /// Yellow and brown are not in the set: yellow is too near to orange, and
 /// brown is not a clear colour. Two colours that are next to each other in
 /// the list have very different hues, because a scope whose colour is in
 /// use gets the next free colour.
 export const scopeTones: ScopeTone[] = [
-  { light: "#d42b29", lightText: WHITE_TEXT, lightScopeText: "#901d1c", dark: "#d13431", darkText: WHITE_TEXT, darkScopeText: "#eba8a6" }, // red
-  { light: "#0e7689", lightText: WHITE_TEXT, lightScopeText: "#0a5563", dark: "#0e7789", darkText: WHITE_TEXT, darkScopeText: "#95c3cb" }, // teal
-  { light: "#e89117", lightText: DARK_TEXT, lightScopeText: "#794b0c", dark: "#e99a20", darkText: DARK_TEXT, darkScopeText: "#f6d5a1" }, // orange
-  { light: "#1670dc", lightText: WHITE_TEXT, lightScopeText: "#0f4c96", dark: "#1572d6", darkText: WHITE_TEXT, darkScopeText: "#98c1ed" }, // blue
-  { light: "#41ba60", lightText: DARK_TEXT, lightScopeText: "#226132", dark: "#3ec35f", darkText: DARK_TEXT, darkScopeText: "#ace5ba" }, // green
-  { light: "#d4154d", lightText: WHITE_TEXT, lightScopeText: "#920e35", dark: "#d32354", darkText: WHITE_TEXT, darkScopeText: "#eda3b7" }, // pink
-  { light: "#42a7d6", lightText: DARK_TEXT, lightScopeText: "#235971", dark: "#72ccf1", darkText: DARK_TEXT, darkScopeText: "#c4eaf9" }, // cyan
-  { light: "#a254c8", lightText: WHITE_TEXT, lightScopeText: "#6d3886", dark: "#a551cd", darkText: WHITE_TEXT, darkScopeText: "#d7b2e9" }, // purple
-  { light: "#12b5ae", lightText: DARK_TEXT, lightScopeText: "#095e5a", dark: "#6fdad7", darkText: DARK_TEXT, darkScopeText: "#c4f0ef" }, // mint
-  { light: "#6362ca", lightText: WHITE_TEXT, lightScopeText: "#46468f", dark: "#6a68da", darkText: WHITE_TEXT, darkScopeText: "#bdbdef" }, // indigo
+  { light: "#c4131a", lightText: WHITE_TEXT, lightScopeText: "#7d0c11", dark: "#c01f22", darkText: WHITE_TEXT, darkScopeText: "#eab5b6" }, // red
+  { light: "#066c7e", lightText: WHITE_TEXT, lightScopeText: "#044753", dark: "#036c7d", darkText: WHITE_TEXT, darkScopeText: "#a9cdd3" }, // teal
+  { light: "#f69e2d", lightText: DARK_TEXT, lightScopeText: "#674213", dark: "#f0a12c", darkText: DARK_TEXT, darkScopeText: "#fceed9" }, // orange
+  { light: "#015fc5", lightText: WHITE_TEXT, lightScopeText: "#013e80", dark: "#0061bf", darkText: WHITE_TEXT, darkScopeText: "#a8c9e9" }, // blue
+  { light: "#52c96e", lightText: DARK_TEXT, lightScopeText: "#22542e", dark: "#46ca65", darkText: DARK_TEXT, darkScopeText: "#dcf5e2" }, // green
+  { light: "#c50044", lightText: WHITE_TEXT, lightScopeText: "#7c002b", dark: "#c40548", darkText: WHITE_TEXT, darkScopeText: "#ecadc3" }, // pink
+  { light: "#5abded", lightText: DARK_TEXT, lightScopeText: "#264f64", dark: "#72ccf1", darkText: DARK_TEXT, darkScopeText: "#c4eaf9" }, // cyan
+  { light: "#8d3eb2", lightText: WHITE_TEXT, lightScopeText: "#5d2975", dark: "#8f3ab6", darkText: WHITE_TEXT, darkScopeText: "#dabee7" }, // purple
+  { light: "#33c5be", lightText: DARK_TEXT, lightScopeText: "#155350", dark: "#6fdad7", darkText: DARK_TEXT, darkScopeText: "#c4f0ef" }, // mint
+  { light: "#5855bc", lightText: WHITE_TEXT, lightScopeText: "#3a387c", dark: "#5853c3", darkText: WHITE_TEXT, darkScopeText: "#c6c5eb" }, // indigo
 ];
 
 /// The position of the hash colour of a scope key in `scopeTones`. A 32-bit

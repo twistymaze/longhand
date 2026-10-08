@@ -146,14 +146,14 @@ describe("scope colour", () => {
     expect(new Set(scopeTones.map((t) => t.dark)).size).toBe(10);
   });
 
-  test("the text on each fill is white or near-black and meets 4.5:1, in light and dark", () => {
+  test("the text on each fill is white and meets 6:1, or near-black and meets 8:1, in light and dark", () => {
     for (const tone of scopeTones) {
       for (const [fill, text] of [
         [tone.light, tone.lightText],
         [tone.dark, tone.darkText],
       ]) {
         expect([WHITE_TEXT, DARK_TEXT]).toContain(text);
-        expect(contrast(rgb(text), rgb(fill))).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(rgb(text), rgb(fill))).toBeGreaterThanOrEqual(text === WHITE_TEXT ? 6 : 8);
       }
     }
   });
