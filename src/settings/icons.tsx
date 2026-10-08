@@ -113,6 +113,14 @@ export const TranscriptIcon = ({ className }: IconProps) => (
   </Icon>
 );
 
+/// A tag with a hole: the Types and Tags pane.
+export const TagIcon = ({ className }: IconProps) => (
+  <Icon className={className}>
+    <path d="M2 3.25v3.6a1.5 1.5 0 0 0 .44 1.06l5.4 5.4a1.25 1.25 0 0 0 1.77 0l3.6-3.6a1.25 1.25 0 0 0 0-1.77l-5.4-5.4A1.5 1.5 0 0 0 6.75 2h-3.5A1.25 1.25 0 0 0 2 3.25Z" />
+    <circle cx="5.25" cy="5.25" r="1" />
+  </Icon>
+);
+
 /// A check mark: the selected item in a list.
 export const CheckIcon = ({ className }: IconProps) => (
   <Icon className={className}>

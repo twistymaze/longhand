@@ -21,7 +21,7 @@ function closeBehaviour(hideFromDock: boolean): string {
     : "Closing the window keeps Longhand in the Dock and the menu bar.";
 }
 
-export type PaneId = "status" | "recording" | "destination" | "summarization" | "recognition" | "about";
+export type PaneId = "status" | "recording" | "destination" | "types" | "summarization" | "recognition" | "about";
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;

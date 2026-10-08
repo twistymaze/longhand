@@ -6,12 +6,14 @@ import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, use
 import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
 import { EndpointForm } from "./EndpointForm";
-import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TranscriptIcon } from "./icons";
+import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TagIcon, TranscriptIcon } from "./icons";
 import { About } from "./About";
 import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
+import { readOnlyReason } from "./shared";
 import { type PaneId, StatusPane } from "./Status";
 import { outstandingItems, type SetupItemId } from "./setup";
+import { TypesAndTags } from "./TypesAndTags";
 import { ErrorText, type Tone } from "./ui";
 import { features } from "../lib/features";
 import { useAppSettings, useRecognitionDefaultsSave } from "./useAppSettings";
@@ -29,6 +31,7 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
       { id: "recording", label: "Recording", icon: <MicrophoneIcon /> },
       { id: "recognition", label: "Transcription", icon: <TranscriptIcon /> },
       { id: "summarization", label: "Summaries", icon: <SparkleIcon /> },
+      { id: "types", label: "Types and Tags", icon: <TagIcon /> },
     ],
   },
   {
@@ -56,6 +59,8 @@ export function paneTone(id: PaneId, readiness: Readiness, settings: Settings): 
       return has("storage") ? "caution" : null;
     case "summarization":
       return has("endpoint") ? "neutral" : null;
+    case "types":
+      return null;
     case "recognition":
       return has("models") ? "neutral" : null;
     case "about":
@@ -185,6 +190,7 @@ export function SettingsWindow() {
           {pane === "destination" && (
             <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
           )}
+          {pane === "types" && <TypesAndTags readOnly={readOnlyReason(settings)} />}
           {pane === "summarization" && <EndpointForm settings={settings} onSettings={onSettings} />}
           {pane === "recognition" && (
             <Models models={models} live={live} actions={actions} settings={settings} defaults={defaults} />

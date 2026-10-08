@@ -22,8 +22,8 @@ const settings = {
 const tones = (r: Readiness) => Object.fromEntries(paneOrder.map((id) => [id, paneTone(id, r, settings)]));
 
 describe("the sidebar", () => {
-  test("lists the panes in the order General, Storage, Recording, Transcription, Summaries, About", () => {
-    expect(paneOrder).toEqual(["status", "destination", "recording", "recognition", "summarization", "about"]);
+  test("lists the panes in the order General, Storage, Recording, Transcription, Summaries, Types and Tags, About", () => {
+    expect(paneOrder).toEqual(["status", "destination", "recording", "recognition", "summarization", "types", "about"]);
   });
 
   test("all ready: no pane has a mark", () => {
