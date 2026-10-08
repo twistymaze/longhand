@@ -13,6 +13,7 @@ import {
   type Readiness,
   type SessionEntry,
 } from "../bindings";
+import { GENERAL } from "../lib/Labels";
 import {
   clockTime,
   isOpen,
@@ -23,7 +24,6 @@ import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
-import { GENERAL } from "../lib/Labels";
 import { FilterBar } from "./FilterBar";
 import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
@@ -108,6 +108,8 @@ export function Home({
   const types = lists.types?.types ?? null;
   const filter = keepExisting(chosenFilter, types, lists.tags, generalIsChoice(types));
   // When types are in use, a row of General shows a General label (R4).
+  // A type list that is not read yet shows no General label, though it
+  // keeps a chosen General in the filter.
   const showGeneral = typesInUse(types);
   const rowType = (noteType: string | null) => noteType ?? (showGeneral ? GENERAL : null);
   useEffect(() => {

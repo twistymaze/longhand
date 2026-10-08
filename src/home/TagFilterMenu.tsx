@@ -10,11 +10,11 @@
 // motion: it is used many times a day.
 
 import { autoUpdate, computePosition, flip, offset, shift } from "@floating-ui/dom";
-import { type Ref, type RefObject, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type Ref, type RefObject, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { TagEntry } from "../bindings";
 import { TagLabel, tagKey, tagName } from "../lib/Labels";
-import { ChevronIcon } from "../settings/icons";
+import { CheckIcon, ChevronIcon } from "../settings/icons";
 import { menuOrder } from "./filter";
 
 export function TagFilterMenu({
@@ -45,8 +45,11 @@ export function TagFilterMenu({
   const wasOpen = useRef(false);
   const listId = useId();
 
+  // The bar renders again on each change of Home, so the order is kept
+  // until the tag list changes.
+  const ordered = useMemo(() => menuOrder(tags), [tags]);
   const needle = tagKey(query);
-  const rows = menuOrder(tags).filter((t) => t.key.includes(needle));
+  const rows = open ? ordered.filter((t) => t.key.includes(needle)) : [];
   const selected = new Set(chosen);
 
   // WKWebView does not focus a clicked button, so the field and the button
@@ -207,11 +210,7 @@ export function TagFilterMenu({
                   onClick={() => onToggle(tag.key)}
                 >
                   <span aria-hidden className="flex w-3 shrink-0 justify-center text-accent">
-                    {selected.has(tag.key) && (
-                      <svg viewBox="0 0 12 12" className="size-3" fill="none" stroke="currentColor" strokeWidth="1.75">
-                        <path d="M2.5 6.5 5 9l4.5-6" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
+                    {selected.has(tag.key) && <CheckIcon className="size-3" />}
                   </span>
                   <span className="flex min-w-0">
                     <TagLabel text={tag.text} />

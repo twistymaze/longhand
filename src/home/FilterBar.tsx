@@ -8,7 +8,7 @@
 // bar (R12). The bar changes at once, with no motion: it is used many times
 // a day.
 
-import { type ReactNode, type Ref, type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import type { NoteTypeEntry, TagEntry } from "../bindings";
 import { GENERAL, TagLabel } from "../lib/Labels";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
@@ -179,12 +179,10 @@ function PopUpMenu({
   label,
   content,
   items,
-  ref,
 }: {
   label: string;
   content: ReactNode;
   items: MenuEntry[];
-  ref?: Ref<HTMLButtonElement>;
 }) {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement | null>(null);
@@ -198,11 +196,7 @@ function PopUpMenu({
   return (
     <div className="relative inline-flex min-w-0">
       <button
-        ref={(el) => {
-          button.current = el;
-          if (typeof ref === "function") ref(el);
-          else if (ref) (ref as RefObject<HTMLButtonElement | null>).current = el;
-        }}
+        ref={button}
         type="button"
         aria-label={label}
         aria-haspopup="menu"

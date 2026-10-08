@@ -39,30 +39,31 @@ export const typesInUse = (types: NoteTypeEntry[] | null) => types?.some((t) => 
 /// launch.
 export const generalIsChoice = (types: NoteTypeEntry[] | null) => types === null || typesInUse(types);
 
-const byText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+const byText = new Intl.Collator(undefined, { sensitivity: "base" }).compare;
 
 /// The tags in the order of the Tags menu (R7, KTD6): the tags with no
 /// scope first, then the scopes, each A-Z without regard to case. A scope
 /// that differs only in case is one scope.
 export function menuOrder(tags: TagEntry[]): TagEntry[] {
-  const parts = new Map(tags.map((t) => [t, tagParts(t.text)]));
-  const scopeOf = (t: TagEntry) => parts.get(t)?.scope ?? null;
-  return [...tags].sort((a, b) => {
-    const sa = scopeOf(a);
-    const sb = scopeOf(b);
-    if (sa === null || sb === null) {
-      if (sa !== sb) return sa === null ? -1 : 1;
-    } else {
-      const scope = byText(tagKey(sa), tagKey(sb));
+  const rows = tags.map((tag) => {
+    const { scope, value } = tagParts(tag.text);
+    return { tag, scope: scope === null ? null : tagKey(scope), value };
+  });
+  rows.sort((a, b) => {
+    if (a.scope !== b.scope) {
+      if (a.scope === null) return -1;
+      if (b.scope === null) return 1;
+      const scope = byText(a.scope, b.scope);
       if (scope !== 0) return scope;
     }
-    return byText(parts.get(a)?.value ?? "", parts.get(b)?.value ?? "") || byText(a.text, b.text);
+    return byText(a.value, b.value) || byText(a.tag.text, b.tag.text);
   });
+  return rows.map((row) => row.tag);
 }
 
 /// The filter without a type or a tag that no longer exists. General drops
-/// out when `general` (`generalIsChoice`) is false. A null list is not read yet, so its
-/// choices stay. A type that changed only its case keeps its place with the
+/// out when `general` is false (see `generalIsChoice`). A null list is not
+/// read yet, so its choices stay. A type that changed only its case keeps its place with the
 /// new spelling. Returns the same object when nothing changes.
 export function keepExisting(
   filter: NoteFilter,
