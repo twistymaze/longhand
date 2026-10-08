@@ -14,6 +14,10 @@
 //!   copy). When they are equal, the store's home path changes (Homed).
 //! - Homed: the source is removed with no further check (Done).
 //!
+//! A note in a type folder goes into the type folder with the same name in
+//! the new folder, which the Move makes when it is not there (KTD14 of the
+//! note types plan). Staging folders stay at the top of the new folder.
+//!
 //! The Move records each step before it takes the next one, and each step
 //! first checks its own effect on disk, so a crash at any point resumes
 //! with one complete copy of each note. A marker file in the moved folder
@@ -28,7 +32,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
-use session_core::folder::SessionDoc;
+use session_core::folder::{self, SessionDoc};
 use session_core::jobs::{Claim, Claims};
 use session_core::{MoveJournal, MovePause, MoveStep, SessionState, Store, StoreError};
 use session_save::{Fs, fsync, naming, rename};
@@ -253,6 +257,31 @@ fn find_placed(new: &Path, name: &str, session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_dir() && is_ours(path, session_id))
 }
 
+/// The folder in `new` that takes the note whose folder is `source` in
+/// `old`: the type folder with the same name, or `new` itself for a note
+/// with no type (KTD14 of the note types plan). `None` when `source` is
+/// not in `old`, directly or in a type folder.
+fn target_folder(old: &Path, new: &Path, source: &Path) -> Option<PathBuf> {
+    folder::note_type_in(old, source).map(|note_type| match note_type {
+        Some(name) => new.join(name),
+        None => new.to_path_buf(),
+    })
+}
+
+/// Make the type folder `target` in the new folder when it is not there.
+/// The new folder itself is never made: a new folder that went away
+/// fails here.
+fn make_target(new: &Path, target: &Path) -> io::Result<()> {
+    if target == new || target.is_dir() {
+        return Ok(());
+    }
+    match std::fs::create_dir(target) {
+        Ok(()) => fsync::sync_dir(new),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -441,7 +470,7 @@ impl Mover<'_> {
             let Some(home) = record.home_path.as_deref().map(Path::new) else {
                 continue;
             };
-            if home.parent() == Some(journal.old_folder.as_path())
+            if folder::note_type_in(&journal.old_folder, home).is_some()
                 && home.is_dir()
                 && store.add_move_note(&record.id)?
             {
@@ -601,10 +630,13 @@ impl Mover<'_> {
                 replaces,
             } => {
                 let name = folder_name(source);
+                // A source that is not in the old folder came from a record
+                // of a step before type folders: it has no type.
+                let target = target_folder(old, new, source).unwrap_or_else(|| new.clone());
                 if !exists(staging) {
                     // The rename into place happened and its record did not:
                     // the marker, kept through the rename, finds the folder.
-                    if let Some(path) = find_placed(new, &name, id) {
+                    if let Some(path) = find_placed(&target, &name, id) {
                         return Ok(Taken::Next(MoveStep::Placed {
                             source: Some(source.clone()),
                             path,
@@ -621,9 +653,11 @@ impl Mover<'_> {
                     && is_ours(stale, id)
                 {
                     std::fs::remove_dir_all(stale).map_err(|e| pause_for(&e, new))?;
-                    fsync::sync_dir(new).map_err(|e| pause_for(&e, new))?;
+                    fsync::sync_dir(stale.parent().unwrap_or(new))
+                        .map_err(|e| pause_for(&e, new))?;
                 }
-                let path = self.place(staging, new, &name)?;
+                make_target(new, &target).map_err(|e| pause_for(&e, new))?;
+                let path = self.place(staging, &target, &name)?;
                 Ok(Taken::Next(MoveStep::Placed {
                     source: Some(source.clone()),
                     path,
@@ -659,7 +693,7 @@ impl Mover<'_> {
                 {
                     // An edit reached the source after the copy: copy again.
                     log::info!("move: {id} changed after its copy, so it is copied again");
-                    let staging = self.copy(source, new, id)?;
+                    let staging = self.copy(old, source, new, id)?;
                     return Ok(Taken::Next(MoveStep::Copied {
                         source: source.clone(),
                         staging,
@@ -683,7 +717,9 @@ impl Mover<'_> {
                     && exists(source)
                 {
                     std::fs::remove_dir_all(source).map_err(|e| pause_for(&e, old))?;
-                    fsync::sync_dir(old).map_err(|e| pause_for(&e, old))?;
+                    // The old folder, or the type folder in it.
+                    fsync::sync_dir(source.parent().unwrap_or(old))
+                        .map_err(|e| pause_for(&e, old))?;
                 }
                 Ok(Taken::Next(MoveStep::Done))
             }
@@ -700,20 +736,21 @@ impl Mover<'_> {
         let Some(source) = record.home_path.as_deref().map(PathBuf::from) else {
             return Ok(Taken::Dropped);
         };
-        // Only a note in the old folder moves. A note whose home is in the
-        // new folder already is done.
-        if source.parent() != Some(journal.old_folder.as_path()) {
-            return Ok(if source.parent() == Some(new.as_path()) {
+        // Only a note in the old folder moves, with its type folder (KTD14
+        // of the note types plan). A note whose home is in the new folder
+        // already is done.
+        let Some(target) = target_folder(&journal.old_folder, new, &source) else {
+            return Ok(if folder::note_type_in(new, &source).is_some() {
                 Taken::Next(MoveStep::Done)
             } else {
                 Taken::Dropped
             });
-        }
+        };
         let name = folder_name(&source);
         if !exists(&source) {
             // A rename on one volume happened and its record did not; or
             // another computer moved the note into the new folder.
-            if let Some(path) = find_placed(new, &name, id) {
+            if let Some(path) = find_placed(&target, &name, id) {
                 return Ok(Taken::Next(MoveStep::Placed { source: None, path }));
             }
             check_old(&journal.old_folder)?;
@@ -723,15 +760,16 @@ impl Mover<'_> {
             return Ok(Taken::Busy);
         }
         // The note is in the new folder already: it gets no second copy.
-        if let Some(path) = find_placed(new, &name, id) {
+        if let Some(path) = find_placed(&target, &name, id) {
             return Ok(Taken::Next(MoveStep::Placed {
                 source: Some(source),
                 path,
             }));
         }
         if journal.cross_volume == Some(false) {
+            make_target(new, &target).map_err(|e| pause_for(&e, new))?;
             write_marker(&source, id).map_err(|e| pause_for(&e, &journal.old_folder))?;
-            match self.rename_into(&source, new, &name) {
+            match self.rename_into(&source, &target, &name) {
                 Ok(path) => return Ok(Taken::Next(MoveStep::Placed { source: None, path })),
                 Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
                     log::info!("move: {id} is on another volume, so it is copied");
@@ -742,7 +780,7 @@ impl Mover<'_> {
                 }
             }
         }
-        let staging = self.copy(&source, new, id)?;
+        let staging = self.copy(&journal.old_folder, &source, new, id)?;
         Ok(Taken::Next(MoveStep::Copied {
             source,
             staging,
@@ -752,7 +790,7 @@ impl Mover<'_> {
 
     /// Copy `source` into a new Move staging folder in `new`, verified and
     /// with the marker. A partial copy is removed.
-    fn copy(&self, source: &Path, new: &Path, id: &str) -> Result<PathBuf, MoveError> {
+    fn copy(&self, old: &Path, source: &Path, new: &Path, id: &str) -> Result<PathBuf, MoveError> {
         let staging = new.join(staging_name(id));
         if exists(&staging) {
             std::fs::remove_dir_all(&staging).map_err(|e| pause_for(&e, new))?;
@@ -764,9 +802,10 @@ impl Mover<'_> {
             let _ = std::fs::remove_dir_all(&staging);
             log::warn!("move: the copy of {id} failed: {e}");
             // A read error from an old folder that went away names that
-            // folder.
+            // folder. The source can be in a type folder in it (KTD14).
             let folder = match source.parent() {
-                Some(old) if !old.is_dir() => old,
+                _ if !old.is_dir() => old,
+                Some(parent) if !parent.is_dir() => parent,
                 _ => new,
             };
             return Err(pause_for(&e, folder));

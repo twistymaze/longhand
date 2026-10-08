@@ -613,6 +613,160 @@ fn a_targeted_scan_of_a_root_without_its_marker_gives_no_scan() {
     assert!(scan_folders(&missing, &HashSet::new(), &Known::default(), &options()).is_none());
 }
 
+// ---------------------------------------------------------------- type folders (note types U3)
+
+/// The ids and note types of the notes that `result` lists, sorted by id.
+fn types(result: &LibraryScan) -> Vec<(String, Option<String>)> {
+    let mut types: Vec<(String, Option<String>)> = result
+        .notes
+        .iter()
+        .map(|n| (n.doc.session_id.clone(), n.note_type.clone()))
+        .collect();
+    types.sort();
+    types
+}
+
+fn typed(id: &str, note_type: Option<&str>) -> (String, Option<String>) {
+    (id.to_string(), note_type.map(str::to_string))
+}
+
+// Covers R8 (KTD4).
+#[test]
+fn a_note_in_a_type_folder_and_a_note_at_the_root_both_list_with_their_types() {
+    let root = marked_root();
+    let typed_home = note(
+        &root.path().join("Pathfinder"),
+        "2026-10-02 1900 Session 12",
+        "A1",
+    );
+    let untyped = note(root.path(), "2026-10-07 0900 Standup", "B1");
+    let result = run(root.path(), &Known::default());
+    assert_eq!(root_state(&result), &RootState::Available);
+    assert_eq!(
+        types(&result),
+        [typed("A1", Some("Pathfinder")), typed("B1", None)]
+    );
+    let a1 = result.notes.iter().find(|n| n.path == typed_home).unwrap();
+    assert_eq!(a1.root, root.path());
+    assert!(result.notes.iter().any(|n| n.path == untyped));
+    // No automatic step writes because of a type folder.
+    assert!(!root.path().join("Pathfinder/.longhand").exists());
+}
+
+#[test]
+fn a_folder_with_only_system_files_lists_no_note_and_gets_no_marker() {
+    let root = marked_root();
+    let empty = root.path().join("Pathfinder");
+    fs::create_dir(&empty).unwrap();
+    fs::write(empty.join(".DS_Store"), "").unwrap();
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes.is_empty(), "{:?}", result.notes);
+    assert!(!empty.join(".longhand").exists());
+}
+
+#[test]
+fn a_home_folder_two_levels_deep_or_in_a_hidden_folder_is_ignored() {
+    let root = marked_root();
+    note(&root.path().join("Pathfinder/Archive"), "Session 1", "A1");
+    note(&root.path().join(".hidden"), "Session 2", "B1");
+    // A folder inside a home folder is not a home folder.
+    let home = note(root.path(), "Planning", "C1");
+    note(&home, "Inner", "D1");
+    let result = run(root.path(), &Known::default());
+    assert_eq!(types(&result), [typed("C1", None)]);
+}
+
+// Covers R29 (KTD1).
+#[test]
+fn a_home_folder_that_a_person_moves_to_another_type_folder_gets_that_type() {
+    let root = marked_root();
+    let home = note(&root.path().join("Pathfinder"), "Session 12", "A1");
+    let before = fs::read(home.join("session.md")).unwrap();
+    fs::create_dir(root.path().join("One on One")).unwrap();
+    let moved = root.path().join("One on One/Session 12");
+    fs::rename(&home, &moved).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(types(&result), [typed("A1", Some("One on One"))]);
+    assert_eq!(fs::read(moved.join("session.md")).unwrap(), before);
+}
+
+#[test]
+fn a_root_without_its_marker_and_with_typed_rows_is_unavailable() {
+    let root = tempfile::tempdir().unwrap();
+    let mut known = Known::default();
+    known.add("A1", &root.path().join("Pathfinder/Planning"));
+    let result = run(root.path(), &known);
+    assert_eq!(
+        root_state(&result),
+        &RootState::Unavailable(Unavailable::NoMarker)
+    );
+    assert!(!library::scan::marker(root.path()).exists());
+}
+
+#[test]
+fn a_targeted_scan_reads_a_typed_home_folder() {
+    let root = marked_root();
+    let home = note(&root.path().join("Pathfinder"), "Session 12", "A1");
+    note(&root.path().join("Pathfinder"), "Session 13", "B1");
+    let (result, read) = scan_folders(
+        root.path(),
+        &folders(&[&home]),
+        &Known::default(),
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(read, folders(&[&home]));
+}
+
+#[test]
+fn a_targeted_scan_of_a_type_folder_reads_its_notes() {
+    let root = marked_root();
+    let folder = root.path().join("D&D");
+    let first = note(&folder, "Session 12", "A1");
+    let second = note(&folder, "Session 13", "B1");
+    let (result, read) = scan_folders(
+        root.path(),
+        &folders(&[&folder]),
+        &Known::default(),
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(
+        types(&result),
+        [typed("A1", Some("D&D")), typed("B1", Some("D&D"))]
+    );
+    assert_eq!(read, folders(&[&folder, &first, &second]));
+    assert!(!folder.join(".longhand").exists());
+}
+
+#[test]
+fn the_place_of_a_home_folder_gives_its_root_and_type() {
+    use library::scan::{Place, place_in, storage_place};
+    let root = marked_root();
+    let roots = [root.path().to_path_buf()];
+    let typed_home = root.path().join("Pathfinder/Session 12");
+    let untyped = root.path().join("Standup");
+    let place = |note_type: Option<&str>| Place {
+        root: root.path().to_path_buf(),
+        note_type: note_type.map(str::to_string),
+    };
+    assert_eq!(
+        place_in(&typed_home, &roots),
+        Some(place(Some("Pathfinder")))
+    );
+    assert_eq!(place_in(&untyped, &roots), Some(place(None)));
+    assert_eq!(place_in(&root.path().join("A/B/C"), &roots), None);
+    assert_eq!(place_in(&root.path().join(".hidden/C"), &roots), None);
+    assert_eq!(place_in(Path::new("/elsewhere/C"), &roots), None);
+    // From the library marker, with no list of roots.
+    assert_eq!(storage_place(&typed_home), Some(place(Some("Pathfinder"))));
+    assert_eq!(storage_place(&untyped), Some(place(None)));
+    let unmarked = tempfile::tempdir().unwrap();
+    assert_eq!(storage_place(&unmarked.path().join("T/Session")), None);
+    assert_eq!(storage_place(&unmarked.path().join("Session")), None);
+}
+
 // ---------------------------------------------------------------- removed audio (U2)
 
 const AUDIO: &str = "audio/segment-01.opus";

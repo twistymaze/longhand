@@ -314,9 +314,288 @@ fn a_rename_delivered_as_a_removed_folder_and_a_new_one_keeps_the_row_and_follow
     assert!(a.record("n1").is_some());
 }
 
+// ---------------------------------------------------------------- type folders (note types U3)
+
+/// Move the home folder `folder` into the type folder `name` of `root`, as
+/// a person does in Finder. Returns the new home folder.
+fn into_type(folder: &Path, root: &Path, name: &str) -> PathBuf {
+    let type_folder = root.join(name);
+    fs::create_dir_all(&type_folder).unwrap();
+    let moved = type_folder.join(folder.file_name().unwrap());
+    fs::rename(folder, &moved).unwrap();
+    moved
+}
+
+fn note_type(c: &Computer, id: &str) -> Option<String> {
+    c.record(id).unwrap().note_type
+}
+
+/// Every file in `dir` and its time of change, to show that no file was
+/// written.
+fn files(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(files(&path));
+        } else {
+            out.push((
+                path.clone(),
+                fs::metadata(&path).unwrap().modified().unwrap(),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+// Covers R8 (KTD1, KTD4).
+#[test]
+fn a_note_in_a_type_folder_is_adopted_with_its_type() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    b.save_note("n2", &root, user_title("Standup"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    assert_eq!(a.sync(&root, Instant::now()), changed(&["n1", "n2"]));
+    assert_eq!(a.home("n1"), typed);
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+    assert_eq!(note_type(&a, "n2"), None);
+}
+
+// Covers R29 (KTD1).
+#[test]
+fn a_home_folder_that_a_person_moves_to_another_type_folder_gets_that_type_and_no_write() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    let now = Instant::now();
+    a.sync(&root, now);
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+
+    let moved = into_type(&typed, &root, "One on One");
+    let before = files(&root);
+    assert_eq!(a.sync(&root, now), changed(&["n1"]));
+    assert_eq!(a.home("n1"), moved);
+    assert_eq!(note_type(&a, "n1"), Some("One on One".into()));
+    assert_eq!(files(&root), before, "the reconcile wrote a file");
+
+    // Back to the storage folder: no type.
+    let top = root.join(moved.file_name().unwrap());
+    fs::rename(&moved, &top).unwrap();
+    assert_eq!(a.sync(&root, now), changed(&["n1"]));
+    assert_eq!(note_type(&a, "n1"), None);
+}
+
+#[test]
+fn a_type_folder_that_a_person_renames_gives_each_note_the_new_type() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let first = b.save_note("n1", &root, user_title("Session 12"), "");
+    let second = b.save_note("n2", &root, user_title("Session 13"), "");
+    into_type(&first, &root, "Pathfinder");
+    into_type(&second, &root, "Pathfinder");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    fs::rename(root.join("Pathfinder"), root.join("D&D")).unwrap();
+    assert_eq!(a.sync(&root, now), changed(&["n1", "n2"]));
+    for id in ["n1", "n2"] {
+        assert_eq!(note_type(&a, id), Some("D&D".into()));
+        assert_eq!(a.home(id).parent(), Some(root.join("D&D").as_path()));
+    }
+    // A targeted scan of the renamed type folder, as the watcher runs it,
+    // follows the notes too.
+    fs::rename(root.join("D&D"), root.join("Pathfinder")).unwrap();
+    let changes = a.sync_folders(&root, &[&root.join("D&D"), &root.join("Pathfinder")]);
+    assert_eq!(changes, changed(&["n1", "n2"]));
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+}
+
+// Covers R26 (KTD12).
+#[test]
+fn a_type_move_that_the_sync_delivers_90_seconds_late_keeps_the_row() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "- mine\n");
+    let now = Instant::now();
+    a.sync(&root, now);
+    let before = a.record("n1").unwrap();
+
+    // The sync delivers the removal of the old folder first.
+    let away = take_away(&saved, dir.path());
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert!(a.reconciler.is_pending("n1"));
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(60)),
+        Changes::default()
+    );
+
+    // The new folder arrives 90 seconds later.
+    let typed = into_type(&away, &root, "Pathfinder");
+    let later = now + Duration::from_secs(90);
+    assert_eq!(a.sync(&root, later), changed(&["n1"]));
+    assert!(!a.reconciler.is_pending("n1"));
+    let after = a.record("n1").unwrap();
+    assert_eq!(after.home_path.as_deref().map(PathBuf::from), Some(typed));
+    assert_eq!(after.note_type.as_deref(), Some("Pathfinder"));
+    assert_eq!(after.created_at, before.created_at);
+    assert_eq!(after.title, before.title);
+    assert_eq!(a.notes("n1"), "- mine\n");
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 3), Changes::default());
+    assert!(a.record("n1").is_some());
+}
+
+#[test]
+fn a_type_move_that_arrives_after_3_minutes_is_forgotten_then_adopted_again_by_id() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    let away = take_away(&saved, dir.path());
+    a.sync(&root, now);
+    assert_eq!(a.sync(&root, now + DELETE_WAIT), removed(&["n1"]));
+    assert!(a.record("n1").is_none());
+
+    let typed = into_type(&away, &root, "Pathfinder");
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(180)),
+        changed(&["n1"])
+    );
+    let rows = a.store.lock().unwrap().sessions().unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(a.home("n1"), typed);
+    assert_eq!(note_type(&a, "n1"), Some("Pathfinder".into()));
+}
+
+#[test]
+fn the_wait_before_a_forget_is_2_minutes() {
+    assert_eq!(DELETE_WAIT, Duration::from_secs(120));
+}
+
+#[test]
+fn a_typed_note_in_a_partial_sync_with_no_session_md_keeps_its_id_and_nothing_is_written() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    // The folder arrives at its new place without its session.md.
+    let away = take_away(&saved, dir.path());
+    let session = fs::read(away.join("session.md")).unwrap();
+    fs::remove_file(away.join("session.md")).unwrap();
+    let typed = into_type(&away, &root, "Pathfinder");
+    let before = files(&root);
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(30)),
+        Changes::default()
+    );
+    assert_eq!(files(&root), before, "the reconcile wrote a file");
+    assert!(a.record("n1").is_some());
+
+    fs::write(typed.join("session.md"), session).unwrap();
+    assert_eq!(
+        a.sync(&root, now + Duration::from_secs(60)),
+        changed(&["n1"])
+    );
+    assert_eq!(a.home("n1"), typed);
+    assert_eq!(a.store.lock().unwrap().sessions().unwrap().len(), 1);
+}
+
+#[test]
+fn typed_notes_stay_when_the_storage_folder_loses_its_marker() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let first = b.save_note("n1", &root, user_title("Session 12"), "");
+    let second = b.save_note("n2", &root, user_title("Session 13"), "");
+    into_type(&first, &root, "Pathfinder");
+    into_type(&second, &root, "One on One");
+    let now = Instant::now();
+    a.sync(&root, now);
+
+    // A sign-out of the sync client removes the files and the marker.
+    let away = dir.path().join("away");
+    fs::create_dir(&away).unwrap();
+    for name in ["Pathfinder", "One on One", ".longhand"] {
+        fs::rename(root.join(name), away.join(name)).unwrap();
+    }
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 3), Changes::default());
+    assert!(a.record("n1").is_some());
+    assert!(a.record("n2").is_some());
+    assert!(!library::scan::marker(&root).exists());
+}
+
+// Covers R26 (KTD12): only a full scan can forget.
+#[test]
+fn a_targeted_scan_never_forgets_a_row_and_a_full_scan_does_after_the_wait() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    let typed = into_type(&saved, &root, "Pathfinder");
+    a.sync_roots(&[&root]);
+
+    take_away(&typed, dir.path());
+    let now = Instant::now();
+    let target = Target::Folders {
+        root: root.clone(),
+        folders: [typed.clone()].into_iter().collect(),
+    };
+    let claimed = never_claimed;
+    a.reconciler
+        .run_at(&a.store, &target, &claimed, now)
+        .unwrap();
+    assert!(a.reconciler.is_pending("n1"));
+    let later = now + DELETE_WAIT * 2;
+    let changes = a
+        .reconciler
+        .run_at(&a.store, &target, &claimed, later)
+        .unwrap();
+    assert_eq!(changes, Changes::default());
+    assert!(a.record("n1").is_some());
+
+    let full = Target::Full(vec![root.clone()]);
+    let changes = a
+        .reconciler
+        .run_at(&a.store, &full, &claimed, later)
+        .unwrap();
+    assert_eq!(changes, removed(&["n1"]));
+}
+
+#[test]
+fn forget_outside_keeps_typed_notes_in_a_root() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Session 12"), "");
+    into_type(&saved, &root, "Pathfinder");
+    a.sync(&root, Instant::now());
+    let removed = library::reconcile::forget_outside(
+        &mut a.store.lock().unwrap(),
+        std::slice::from_ref(&root),
+        &never_claimed,
+    )
+    .unwrap();
+    assert!(removed.is_empty(), "{removed:?}");
+    assert!(a.record("n1").is_some());
+}
+
 // Covers AE6.
 #[test]
-fn a_folder_removed_from_an_available_root_is_forgotten_after_30_seconds() {
+fn a_folder_removed_from_an_available_root_is_forgotten_after_the_wait() {
     let (dir, root) = shared_root();
     let a = computer();
     let mut b = computer();
@@ -515,7 +794,7 @@ fn an_existing_row_whose_session_md_is_not_valid_keeps_its_row() {
 }
 
 #[test]
-fn the_last_note_of_a_marked_root_removed_on_b_is_forgotten_by_a_after_30_seconds() {
+fn the_last_note_of_a_marked_root_removed_on_b_is_forgotten_by_a_after_the_wait() {
     let (_dir, root) = shared_root();
     let mut a = computer();
     let mut b = computer();
@@ -1319,6 +1598,28 @@ fn a_root_that_goes_away_and_comes_back_reports_its_notes() {
     assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
     assert!(status.storage_unavailable("n1", Some(&folder)));
     assert_eq!(a.sync_roots(&[&root]), Changes::default());
+
+    fs::rename(&unmounted, &root).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(!status.storage_unavailable("n1", Some(&folder)));
+}
+
+// KTD4: the status of a note in a type folder follows its storage folder.
+#[test]
+fn a_root_that_goes_away_and_comes_back_reports_its_typed_notes() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let saved = b.save_note("n1", &root, user_title("Planning"), "");
+    let folder = into_type(&saved, &root, "Pathfinder");
+    a.sync_roots(&[&root]);
+    let status = Arc::clone(a.reconciler.status());
+    assert!(!status.storage_unavailable("n1", Some(&folder)));
+
+    let unmounted = dir.path().join("unmounted");
+    fs::rename(&root, &unmounted).unwrap();
+    assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));
+    assert!(status.storage_unavailable("n1", Some(&folder)));
 
     fs::rename(&unmounted, &root).unwrap();
     assert_eq!(a.sync_roots(&[&root]), changed(&["n1"]));

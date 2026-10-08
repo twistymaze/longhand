@@ -3,7 +3,10 @@
 //! Destination is available.
 //!
 //! The scan lists the top-level folders of a Destination and reads only
-//! the documents of each one. It never opens audio: it only asks whether
+//! the documents of each one. A top-level folder with no `session.md` is a
+//! type folder when it holds note folders: the scan also reads the folders
+//! in it, and gives their notes that type (KTD4 of the note types plan).
+//! Hidden folders and anything deeper are not read. It never opens audio: it only asks whether
 //! each segment's audio file exists, so an online-only audio file is not
 //! downloaded (R12). It also asks whether each segment's removal marker
 //! exists, and does not open it. Each read has a timeout, so a file that
@@ -33,6 +36,48 @@ pub const MARKER: &str = "library";
 /// The path of the library marker in `root`.
 pub fn marker(root: &Path) -> PathBuf {
     root.join(LONGHAND_FOLDER).join(MARKER)
+}
+
+/// The position of a home folder in its storage folder (KTD4 of the note
+/// types plan): the storage folder, and the note type that the type
+/// folder gives. A home folder directly in the storage folder has no type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub root: PathBuf,
+    pub note_type: Option<String>,
+}
+
+/// The place of the home folder `home` in one of `roots`, at depth 0 or 1.
+/// `None` when `home` is in none of them. This reads no file.
+pub fn place_in(home: &Path, roots: &[PathBuf]) -> Option<Place> {
+    roots.iter().find_map(|root| {
+        folder::note_type_in(root, home).map(|note_type| Place {
+            root: root.clone(),
+            note_type,
+        })
+    })
+}
+
+/// The place of the home folder `home` from the library marker: the parent
+/// folder when it has the marker, else the parent of a type folder when
+/// that folder has the marker. `None` when neither has it: a removed disk,
+/// a lost share or a signed-out sync client. A step that has no list of
+/// storage folders uses this, so it never takes a type folder for a
+/// storage folder.
+pub fn storage_place(home: &Path) -> Option<Place> {
+    let parent = home.parent()?;
+    if marker(parent).exists() {
+        return Some(Place {
+            root: parent.to_path_buf(),
+            note_type: None,
+        });
+    }
+    let root = parent.parent()?;
+    let note_type = folder::note_type_in(root, home)??;
+    marker(root).exists().then(|| Place {
+        root: root.to_path_buf(),
+        note_type: Some(note_type),
+    })
 }
 
 /// The default time limit of one file read.
@@ -94,10 +139,19 @@ impl Known {
         known
     }
 
-    /// Record that the row `id` has its home folder at `home`.
+    /// Record that the row `id` has its home folder at `home`. The home
+    /// folder can be directly in its storage folder or in a type folder
+    /// (KTD4), so both folders above it count as a storage folder with a
+    /// row.
     pub fn add(&mut self, id: &str, home: &Path) {
         self.homes.insert(home.to_path_buf(), id.to_string());
-        if let Some(root) = home.parent() {
+        let Some(parent) = home.parent() else {
+            return;
+        };
+        self.roots.insert(parent.to_path_buf());
+        if let Some(root) = parent.parent()
+            && folder::note_type_in(root, home).is_some()
+        {
             self.roots.insert(root.to_path_buf());
         }
     }
@@ -196,6 +250,9 @@ pub enum RemoteState {
 pub struct NoteFolder {
     pub root: PathBuf,
     pub path: PathBuf,
+    /// The type folder that holds the note folder (KTD1). `None` for a
+    /// note folder directly in `root`.
+    pub note_type: Option<String>,
     pub doc: SessionDoc,
     pub waiting: Vec<Waiting>,
     /// The state of `transcript.md`. A state other than
@@ -292,10 +349,29 @@ pub fn scan_folders(
         let hidden = path
             .file_name()
             .is_none_or(|name| is_hidden(&name.to_string_lossy()));
-        if hidden || path.parent() != Some(root) || !path.is_dir() {
+        if hidden || !path.is_dir() {
             continue;
         }
-        reads.read(root, path, known, options);
+        match folder::note_type_in(root, path) {
+            // A top-level folder: a home folder, or else a type folder,
+            // whose notes are read (KTD4).
+            Some(None) => {
+                if !reads.read(root, path, None, known, options)
+                    && let Ok(inside) = reads.read_type_folder(root, path, known, options)
+                {
+                    read.extend(inside);
+                }
+            }
+            // A folder in a type folder. A folder in a home folder is not
+            // a home folder.
+            Some(Some(note_type)) => {
+                let parent = path.parent().unwrap_or(root);
+                if !exists(&parent.join("session.md")) {
+                    reads.read(root, path, Some(&note_type), known, options);
+                }
+            }
+            None => {}
+        }
     }
     let ids: Vec<String> = reads
         .notes
@@ -309,9 +385,22 @@ pub fn scan_folders(
         if read.contains(home) || !home.is_dir() {
             continue;
         }
+        // The home folder can be in another storage folder, or in a type
+        // folder (KTD4).
+        let place = place_in(home, &[root.to_path_buf()])
+            .or_else(|| storage_place(home))
+            .unwrap_or_else(|| Place {
+                root: home.parent().unwrap_or(root).to_path_buf(),
+                note_type: None,
+            });
         read.insert(home.to_path_buf());
-        let home_root = home.parent().unwrap_or(root).to_path_buf();
-        reads.read(&home_root, home, known, options);
+        reads.read(
+            &place.root,
+            home,
+            place.note_type.as_deref(),
+            known,
+            options,
+        );
     }
     let result = LibraryScan {
         roots: vec![RootScan {
@@ -371,7 +460,21 @@ fn scan_root(
         }
         let path = entry.path();
         match std::fs::metadata(&path) {
-            Ok(m) if m.is_dir() => reads.read(root, &path, known, options),
+            Ok(m) if m.is_dir() => {
+                if reads.read(root, &path, None, known, options) {
+                    continue;
+                }
+                // A top-level folder with no `session.md` can be a type
+                // folder (KTD4). Its list must be complete too.
+                match reads.read_type_folder(root, &path, known, options) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        log::warn!("library: cannot list {}: {e}", path.display());
+                        return unavailable(Unavailable::Unreadable(e.to_string()));
+                    }
+                }
+            }
             Ok(_) => {}
             // Removed since the list, or a link to nothing.
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -415,8 +518,17 @@ struct Reads {
 }
 
 impl Reads {
-    /// Read the folder at `path` in `root`.
-    fn read(&mut self, root: &Path, path: &Path, known: &Known, options: &ScanOptions) {
+    /// Read the folder at `path` in `root`, which is in the type folder
+    /// `note_type` or directly in `root`. Returns false when the folder has
+    /// no `session.md`: it is not a note folder.
+    fn read(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        note_type: Option<&str>,
+        known: &Known,
+        options: &ScanOptions,
+    ) -> bool {
         let problem = |reason: String| ProblemFolder {
             root: root.to_path_buf(),
             known_id: known.id_at(path).map(str::to_string),
@@ -424,9 +536,10 @@ impl Reads {
             reason,
         };
         match read_folder(path, options) {
-            FolderRead::NotANote => {}
+            FolderRead::NotANote => return false,
             FolderRead::Note(note) => self.notes.push(Found {
                 root: root.to_path_buf(),
+                note_type: note_type.map(str::to_string),
                 ..*note
             }),
             FolderRead::Unreadable(reason) => {
@@ -435,6 +548,41 @@ impl Reads {
             }
             FolderRead::Invalid(reason) => self.invalid.push(problem(reason)),
         }
+        true
+    }
+
+    /// Read each folder in the top-level folder `folder` of `root`, which
+    /// has no `session.md`: a type folder (KTD4). Hidden names are skipped,
+    /// and nothing deeper is read. Returns the folders that it read, or the
+    /// error when the folder cannot be listed completely.
+    fn read_type_folder(
+        &mut self,
+        root: &Path,
+        folder: &Path,
+        known: &Known,
+        options: &ScanOptions,
+    ) -> io::Result<Vec<PathBuf>> {
+        let note_type = folder
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let mut read = Vec::new();
+        for entry in std::fs::read_dir(folder)? {
+            let entry = entry?;
+            if is_hidden(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            let path = entry.path();
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_dir() => {
+                    self.read(root, &path, note_type.as_deref(), known, options);
+                    read.push(path);
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(read)
     }
 }
 
@@ -446,6 +594,7 @@ fn is_hidden(name: &str) -> bool {
 struct Found {
     root: PathBuf,
     path: PathBuf,
+    note_type: Option<String>,
     name: String,
     created: Option<SystemTime>,
     doc: SessionDoc,
@@ -537,6 +686,7 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
     FolderRead::Note(Box::new(Found {
         root: PathBuf::new(),
         path: dir.to_path_buf(),
+        note_type: None,
         name: dir
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -693,6 +843,7 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
             NoteFolder {
                 root: real.root,
                 path: real.path,
+                note_type: real.note_type,
                 doc: real.doc,
                 waiting: real.waiting,
                 transcript: real.transcript,

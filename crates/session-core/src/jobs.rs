@@ -1341,8 +1341,9 @@ impl Store {
     // ------------------------------------------------------------ move journal
 
     /// Open the Move journal from `old` to `new` (KTD9), with a Pending row
-    /// for each note whose home folder is in `old`. Returns false and
-    /// changes nothing when a journal is open.
+    /// for each note whose home folder is in `old`, directly or in a type
+    /// folder (KTD14 of the note types plan). Returns false and changes
+    /// nothing when a journal is open.
     pub fn open_move(&mut self, old: &Path, new: &Path) -> Result<bool> {
         let ids: Vec<String> = self
             .sessions()?
@@ -1350,7 +1351,7 @@ impl Store {
             .filter(|r| {
                 r.home_path
                     .as_deref()
-                    .is_some_and(|home| Path::new(home).parent() == Some(old))
+                    .is_some_and(|home| crate::folder::note_type_in(old, Path::new(home)).is_some())
             })
             .map(|r| r.id)
             .collect();

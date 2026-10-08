@@ -469,7 +469,7 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
         };
         (home, flag)
     };
-    let root = home.parent().unwrap_or(&home).to_path_buf();
+    let root = storage_root(&home);
     if !home.is_dir() {
         // A folder that another computer removed is not made again
         // (R23, R24). A storage folder that is not there waits.
@@ -519,11 +519,21 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
     sync_notes(store, id, &home)
 }
 
+/// The storage folder of the home folder `home`, directly or through its
+/// type folder (KTD4 of the note types plan), from the library marker.
+/// With no marker, the parent folder, as before type folders.
+fn storage_root(home: &Path) -> PathBuf {
+    scan::storage_place(home).map_or_else(
+        || home.parent().unwrap_or(home).to_path_buf(),
+        |place| place.root,
+    )
+}
+
 /// Write the notes of the store into `home` when the file differs and is
 /// still the file that this computer last wrote. A notes save during the
 /// write writes the file itself; the loop then sees the new notes.
 fn sync_notes(store: &SharedStore, id: &str, home: &Path) -> Result<(), StageError> {
-    let root = home.parent().unwrap_or(home).to_path_buf();
+    let root = storage_root(home);
     loop {
         let (notes, written) = {
             let guard = lock(store);
@@ -600,7 +610,9 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
     if exists(home) {
         return Ok(Location::There);
     }
-    let Some(root) = home.parent().map(Path::to_path_buf) else {
+    // The home folder can be in a type folder (KTD4 of the note types
+    // plan). With no marker, the storage folder is not available.
+    let Some(root) = scan::storage_place(home).map(|place| place.root) else {
         return Ok(Location::Unknown);
     };
     // With the known rows, a storage folder with no library marker and no
@@ -611,7 +623,9 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
         return Ok(Location::Unknown);
     }
     if let Some(note) = found.notes.iter().find(|note| note.doc.session_id == id) {
-        lock(store).set_home_path(id, &note.path.to_string_lossy())?;
+        let guard = lock(store);
+        guard.set_home_path(id, &note.path.to_string_lossy())?;
+        guard.set_note_type(id, note.note_type.as_deref())?;
         return Ok(Location::Moved);
     }
     Ok(Location::Gone)

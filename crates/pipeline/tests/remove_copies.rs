@@ -144,6 +144,29 @@ fn ae5_the_copies_and_the_transition_file_go_and_the_documents_stay() {
     assert!(!cleanup_due(&note.home, &segments()));
 }
 
+// KTD4: a note in a type folder is reachable through its storage folder.
+#[test]
+fn the_copies_of_a_note_in_a_type_folder_go() {
+    let mut note = note_with_copies();
+    let typed = note.root.join("Pathfinder/Planning");
+    fs::create_dir(note.root.join("Pathfinder")).unwrap();
+    fs::rename(&note.home, &typed).unwrap();
+    note.store
+        .lock()
+        .unwrap()
+        .set_home_path(ID, &typed.to_string_lossy())
+        .unwrap();
+    note.home = typed;
+    let before = documents(&note.home);
+
+    let cleanup = run(&note);
+
+    assert!(!present(&results(&note.home)));
+    assert!(!present(&note.home.join(TRANSITION_FILE)));
+    assert_eq!(documents(&note.home), before);
+    assert!(cleanup.kept.is_empty(), "{:?}", cleanup.kept);
+}
+
 #[test]
 fn a_child_folder_with_finder_data_and_a_write_leftover_and_an_empty_child_folder_go() {
     let note = note_with_copies();

@@ -426,6 +426,27 @@ pub const REMOVAL_MARKER_SUFFIX: &str = ".removed";
 /// A reader does not open a marker: a marker with any content counts.
 pub const REMOVAL_MARKER_TEXT: &str = "Longhand removed the audio of this segment.\n";
 
+/// The note type that the position of the home folder `home` in the
+/// storage folder `root` gives (KTD1, KTD4). `Some(None)` is a home folder
+/// directly in `root`: it has no type. `Some(Some(name))` is a home folder
+/// in the type folder `name` in `root`. `None` is a home folder that is not
+/// at depth 0 or 1 of `root`, or that is in a hidden folder. This reads no
+/// file.
+pub fn note_type_in(root: &Path, home: &Path) -> Option<Option<String>> {
+    let parent = home.parent()?;
+    if parent == root {
+        return Some(None);
+    }
+    if parent.parent()? != root {
+        return None;
+    }
+    let name = parent.file_name()?.to_string_lossy();
+    if name.starts_with('.') {
+        return None;
+    }
+    Some(Some(name.into_owned()))
+}
+
 /// The path of the removal marker of the segment audio file `audio`, in
 /// the same form as `audio`: relative to the note folder.
 pub fn removal_marker(audio: &str) -> String {

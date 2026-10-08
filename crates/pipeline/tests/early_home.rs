@@ -838,3 +838,52 @@ fn a_notes_save_while_the_storage_folder_is_not_available_makes_no_new_note() {
     // The store keeps the edit.
     assert_eq!(s.notes("n").unwrap(), "Second\n");
 }
+
+/// Move the home folder of "n" into the type folder `name` of `dest`, as
+/// a person does in Finder, and record the new home path, as the library
+/// scan does. Returns the new home folder.
+fn into_type(store: &SharedStore, path: &Path, dest: &Path, name: &str) -> PathBuf {
+    let folder = dest.join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let moved = folder.join(path.file_name().unwrap());
+    std::fs::rename(path, &moved).unwrap();
+    store
+        .lock()
+        .unwrap()
+        .set_home_path("n", &moved.to_string_lossy())
+        .unwrap();
+    moved
+}
+
+// KTD4: `locate` finds the storage folder of a note in a type folder.
+#[test]
+fn a_notes_save_follows_a_typed_folder_that_has_another_name() {
+    use pipeline::save::{NotesRescue, NotesSave, rescue_notes, save_notes};
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    let typed = into_type(&store, &path, dest.path(), "Pathfinder");
+    let moved = dest.path().join("Pathfinder/Renamed");
+    std::fs::rename(&typed, &moved).unwrap();
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::FolderGone);
+    assert_eq!(
+        rescue_notes(&store, "n", "m", at(100)).unwrap(),
+        NotesRescue::Moved
+    );
+    assert_eq!(home(&store, "n"), Some(moved));
+    assert!(!dest.path().join("Pathfinder/.longhand").exists());
+}
+
+#[test]
+fn a_typed_home_folder_that_another_computer_removed_is_deleted() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    let typed = into_type(&store, &path, dest.path(), "Pathfinder");
+    assert!(!early_home::home_deleted(&store, "n").unwrap());
+    std::fs::remove_dir_all(&typed).unwrap();
+    assert!(early_home::home_deleted(&store, "n").unwrap());
+    assert!(!dest.path().join("Pathfinder/.longhand").exists());
+}

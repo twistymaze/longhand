@@ -13,6 +13,14 @@ use session_core::{SessionRecord, SessionState};
 use crate::reconcile::Coverage;
 use crate::scan::{DocumentState, LibraryScan, NoteFolder, RemoteState, RootState, Waiting};
 
+/// Whether the home folder `home` is in one of `roots`, directly or in a
+/// type folder (KTD4 of the note types plan).
+fn in_any(home: &Path, roots: &HashSet<PathBuf>) -> bool {
+    roots
+        .iter()
+        .any(|root| session_core::folder::note_type_in(root, home).is_some())
+}
+
 /// What the latest scan found about one note folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NoteStatus {
@@ -102,11 +110,10 @@ impl LibraryStatus {
 
     /// Whether the note with the home folder `home` cannot be read now: its
     /// Destination is unavailable, or its `session.md` cannot be read (R16).
+    /// The home folder can be in a type folder of its Destination (KTD4).
     pub fn storage_unavailable(&self, id: &str, home: Option<&Path>) -> bool {
         let inner = self.lock();
-        let root_gone = home
-            .and_then(Path::parent)
-            .is_some_and(|root| inner.unavailable.contains(root));
+        let root_gone = home.is_some_and(|home| in_any(home, &inner.unavailable));
         root_gone || inner.notes.get(id).is_some_and(|(_, s)| s.unreadable)
     }
 
@@ -141,12 +148,8 @@ impl LibraryStatus {
             }
         }
         for record in records {
-            let root = record
-                .home_path
-                .as_deref()
-                .map(Path::new)
-                .and_then(Path::parent);
-            if root.is_some_and(|root| roots_changed.contains(root)) {
+            let home = record.home_path.as_deref().map(Path::new);
+            if home.is_some_and(|home| in_any(home, &roots_changed)) {
                 changed.insert(record.id.clone());
             }
         }

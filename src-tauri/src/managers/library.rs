@@ -3,8 +3,9 @@
 //!
 //! Each retained Destination that is present gets one recursive watch with
 //! a 900 ms debounce, as anarlog's notify plugin (`plugins/notify/src/ext.rs`)
-//! watches its vault. An event marks only its top-level note folder for a
-//! targeted scan. A rescan event, an event with no usable path and an
+//! watches its vault. An event marks only its note folder for a targeted
+//! scan: the top-level folder, or the folder in a type folder (KTD4 of the
+//! note types plan). A rescan event, an event with no usable path and an
 //! unpaired rename run a full scan of that Destination. A full scan of every
 //! Destination runs each minute, because FSEvents can drop events and File
 //! Provider folders do not always report their changes. That scan also adds
@@ -180,7 +181,20 @@ impl Watched {
         if should_skip_path(relative, path) {
             return Place::Skipped;
         }
-        Place::Folder(self.root.join(first))
+        let folder = self.root.join(first);
+        // A folder with no `session.md` is a type folder (KTD4 of the note
+        // types plan): an event below it marks the home folder in it. An
+        // event on the type folder itself marks the type folder, and the
+        // targeted scan then reads each home folder in it. A folder that is
+        // gone is marked itself.
+        match relative.components().nth(1) {
+            Some(Component::Normal(second))
+                if folder.is_dir() && !folder.join("session.md").exists() =>
+            {
+                Place::Folder(folder.join(second))
+            }
+            _ => Place::Folder(folder),
+        }
     }
 }
 
@@ -767,6 +781,86 @@ mod tests {
         );
         assert!(b.full.is_empty());
         assert_eq!(folders(&b, "/var/notes").len(), 3);
+    }
+
+    /// The storage folder `root`, as a tempdir path gives it.
+    fn watched_dir(root: &Path) -> Watched {
+        Watched::new(root, true)
+    }
+
+    // KTD4: an event in a home folder in a type folder marks the home
+    // folder, not the type folder.
+    #[test]
+    fn an_event_in_a_typed_home_folder_marks_that_home_folder() {
+        let root = marked_root();
+        let home = note(&root.path().join("Pathfinder"), "Session 12", "A1");
+        let w = watched_dir(root.path());
+        let b = batch(
+            &w,
+            vec![
+                event(data(), &[home.join("notes.md").to_str().unwrap()]),
+                event(
+                    EventKind::Create(CreateKind::File),
+                    &[home.join("audio/segment-01.opus").to_str().unwrap()],
+                ),
+            ],
+        );
+        assert!(b.full.is_empty());
+        assert_eq!(
+            folders(&b, root.path().to_str().unwrap()),
+            BTreeSet::from([home.clone()])
+        );
+        // A home folder at the root still marks only itself.
+        let top = note(root.path(), "Standup", "B1");
+        let b = batch(
+            &w,
+            vec![event(
+                data(),
+                &[top.join("audio/segment-01.opus").to_str().unwrap()],
+            )],
+        );
+        assert_eq!(
+            folders(&b, root.path().to_str().unwrap()),
+            BTreeSet::from([top])
+        );
+    }
+
+    // KTD4: a renamed type folder marks both names, and the targeted scan
+    // reads its notes.
+    #[test]
+    fn a_renamed_type_folder_marks_the_type_folder_and_its_notes_follow() {
+        let root = marked_root();
+        let (mut worker, targets, _) = worker(vec![root.path().to_path_buf()], fast());
+        let (sent, emitted) = mpsc::channel();
+        worker.emit = Box::new(move |changes| {
+            let _ = sent.send(changes);
+        });
+        note(&root.path().join("Pathfinder"), "Session 12", "A1");
+        worker.full_scan();
+        assert_eq!(emitted.try_recv().unwrap().changed, ["A1"]);
+
+        let (old, new) = (root.path().join("Pathfinder"), root.path().join("D&D"));
+        std::fs::rename(&old, &new).unwrap();
+        let w = watched_dir(root.path());
+        let both = EventKind::Modify(ModifyKind::Name(RenameMode::Both));
+        let b = batch(
+            &w,
+            vec![event(both, &[old.to_str().unwrap(), new.to_str().unwrap()])],
+        );
+        assert_eq!(
+            folders(&b, root.path().to_str().unwrap()),
+            BTreeSet::from([old, new.clone()])
+        );
+        targets.lock().unwrap().clear();
+        worker.apply(b.targets());
+        assert!(
+            targets
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|t| matches!(t, Target::Folders { .. }))
+        );
+        assert_eq!(emitted.try_recv().unwrap().changed, ["A1"]);
     }
 
     #[test]
