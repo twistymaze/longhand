@@ -6,6 +6,8 @@ import { mockTauri } from "../test/tauri";
 import {
   assignScopeTones,
   DARK_TEXT,
+  SCOPE_TINT_DARK,
+  SCOPE_TINT_LIGHT,
   ScopeTonesProvider,
   scopeTone,
   scopeTones,
@@ -41,6 +43,8 @@ const hue = (hex: string) => {
   const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
   return (h * 60 + 360) % 360;
 };
+// A colour with an alpha over an opaque colour.
+const over = (fg: number[], alpha: number, bg: number[]) => fg.map((v, i) => v * alpha + bg[i] * (1 - alpha));
 const hueDistance = (a: string, b: string) => {
   const d = Math.abs(hue(a) - hue(b));
   return Math.min(d, 360 - d);
@@ -154,6 +158,34 @@ describe("scope colour", () => {
     }
   });
 
+  test("the scope text on the scope tint meets 4.5:1, in light and dark, on each surface and on a row under the pointer", () => {
+    // The surfaces under a label, from index.css: the window, a group, the
+    // Home list and the sidebar, each also under the row hover and the
+    // sidebar selection.
+    const light = ["#f3f1ec", "#fffdfa", "#faf9f6", "#eae6de"].map(rgb).flatMap((b) => [
+      b,
+      over([70, 50, 20], 0.05, b),
+      over([70, 50, 20], 0.085, b),
+    ]);
+    const dark = ["#1d1b18", "#2c2925", "#22201c", "#282521"].map(rgb).flatMap((b) => [
+      b,
+      over([255, 245, 225], 0.055, b),
+      over([255, 245, 225], 0.1, b),
+    ]);
+    for (const tone of scopeTones) {
+      for (const [fill, text, alpha, surfaces] of [
+        [tone.light, tone.lightScopeText, SCOPE_TINT_LIGHT, light],
+        [tone.dark, tone.darkScopeText, SCOPE_TINT_DARK, dark],
+      ] as const) {
+        // The scope text has the hue of the scope colour.
+        expect(hueDistance(text, fill)).toBeLessThan(12);
+        for (const surface of surfaces) {
+          expect(contrast(rgb(text), over(rgb(fill), alpha / 100, surface))).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+
   test("two colours next to each other in the list have very different hues", () => {
     scopeTones.forEach((tone, i) => {
       const next = scopeTones[(i + 1) % scopeTones.length];
@@ -171,14 +203,19 @@ describe("labels", () => {
     expect([...parts].map((p) => p.textContent)).toEqual(["Person", "Nathan"]);
   });
 
-  test("the value has the scope colour, and the scope is neutral", () => {
+  test("the value has the scope colour, and the scope has a tint of the scope colour", () => {
     const { container } = render(<TagLabel text="Person::Nathan" />);
     const scope = container.querySelector("[data-scope]");
     const value = container.querySelector("[data-value]");
     expect(scope?.textContent).toBe("Person");
-    expect(scope?.className).toContain("bg-fill");
-    expect(scope?.className).toContain("text-label-secondary");
-    expect(scope?.className).not.toContain("--scope-");
+    expect(scope?.className).not.toContain("bg-fill");
+    expect(scope?.className).not.toContain("text-label-secondary");
+    // The tint is the scope colour over the surface, under a deep (light)
+    // or pale (dark) shade of the scope colour.
+    expect(scope?.className).toContain(`bg-[color-mix(in_srgb,var(--scope-light)_${SCOPE_TINT_LIGHT}%,transparent)]`);
+    expect(scope?.className).toContain(`dark:bg-[color-mix(in_srgb,var(--scope-dark)_${SCOPE_TINT_DARK}%,transparent)]`);
+    expect(scope?.className).toContain("text-[color:var(--scope-tint-text-light)]");
+    expect(scope?.className).toContain("dark:text-[color:var(--scope-tint-text-dark)]");
     expect(value?.textContent).toBe("Nathan");
     // The scope colour is the fill of the value, under white or near-black text.
     expect(value?.className).toContain("bg-[var(--scope-light)]");
@@ -191,6 +228,16 @@ describe("labels", () => {
     expect(style?.getPropertyValue("--scope-text-light")).toBe(tone.lightText);
     expect(style?.getPropertyValue("--scope-dark")).toBe(tone.dark);
     expect(style?.getPropertyValue("--scope-text-dark")).toBe(tone.darkText);
+    expect(style?.getPropertyValue("--scope-tint-text-light")).toBe(tone.lightScopeText);
+    expect(style?.getPropertyValue("--scope-tint-text-dark")).toBe(tone.darkScopeText);
+  });
+
+  test("a tag with no scope stays neutral", () => {
+    const { container } = render(<TagLabel text="urgent" />);
+    const label = container.querySelector("[data-label='tag']");
+    expect(label?.className).toContain("bg-fill");
+    expect(label?.className).toContain("text-label-secondary");
+    expect(label?.getAttribute("style")).toBeNull();
   });
 
   test("the remove control of a scoped tag has the text colour of the fill", () => {

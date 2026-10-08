@@ -1,8 +1,10 @@
 // The labels for a note's type and tags (R14). A tag with a scope ("Person
-// :: Nathan") shows in two parts: the scope in a neutral colour, then the
-// value in the scope's colour. A tag with no scope shows in one neutral
-// part. Each scope in the library has its own colour on every screen. The
-// colour is the fill of the value part, under white or near-black text. A
+// :: Nathan") shows in two parts: the scope, then the value. A tag with no
+// scope shows in one neutral part. Each scope in the library has its own
+// colour on every screen. The colour is the fill of the value part, under
+// white or near-black text. A tint of the colour is the fill of the scope
+// part, under a deep or pale shade of the colour. So the two parts read as
+// one label, and the value is the stronger part. A
 // type label has an outline and a folder symbol, because the type is the
 // note's folder. The labels do not move or change by themselves, so they
 // keep the attention budget of the recording page (R17).
@@ -56,33 +58,55 @@ export function typeName(name: string): string {
   return `Type: ${name}`;
 }
 
-/// The fill of the value part, and the colour of its text, for light and
-/// dark.
-export type ScopeTone = { light: string; lightText: string; dark: string; darkText: string };
+/// The fill of the value part, the colour of its text, and the colour of
+/// the scope text on the tint, for light and dark.
+export type ScopeTone = {
+  light: string;
+  lightText: string;
+  lightScopeText: string;
+  dark: string;
+  darkText: string;
+  darkScopeText: string;
+};
 
 /// The text colours on a scope fill. Text on a fill is never a colour.
 export const WHITE_TEXT = "#ffffff";
 export const DARK_TEXT = "#1d1b18";
 
-/// The scope colours: the fill of the value part, for light and dark. They
-/// start from the macOS system colours. Each fill has white or near-black
-/// text, the one that suits the fill. A fill with white text is darker than
-/// the system colour, until the text meets 4.5:1. Yellow and brown are not
-/// in the set: yellow is too near to orange, and brown is not a clear
-/// colour. Two colours that are next to each other in the list have very
-/// different hues, because a scope whose colour is in use gets the next
-/// free colour.
+/// The percentage of the scope colour in the tint of the scope part, over
+/// the surface under the label. Dark has more, because a dark surface
+/// makes a tint weaker.
+export const SCOPE_TINT_LIGHT = 20;
+export const SCOPE_TINT_DARK = 30;
+
+/// The scope colours, for light and dark. Each colour is the fill of the
+/// value part, and a tint of it is the fill of the scope part.
+///
+/// The fills start from the macOS system colours, with about 18% less
+/// saturation, so that a row with many labels is calm. Each fill has white
+/// or near-black text, the one that suits the fill. A fill with white text
+/// is darker than that, until the text meets 4.5:1.
+///
+/// The scope text is the fill mixed with black (light) or white (dark),
+/// until it meets 4.5:1 on the tint over each surface: the window, a group,
+/// the Home list and the sidebar, also under the row hover. So the scope
+/// text has the hue of the fill.
+///
+/// Yellow and brown are not in the set: yellow is too near to orange, and
+/// brown is not a clear colour. Two colours that are next to each other in
+/// the list have very different hues, because a scope whose colour is in
+/// use gets the next free colour.
 export const scopeTones: ScopeTone[] = [
-  { light: "#e71916", lightText: WHITE_TEXT, dark: "#e3231f", darkText: WHITE_TEXT }, // red
-  { light: "#008096", lightText: WHITE_TEXT, dark: "#008097", darkText: WHITE_TEXT }, // teal
-  { light: "#ff9500", lightText: DARK_TEXT, dark: "#ff9f0a", darkText: DARK_TEXT }, // orange
-  { light: "#006ef2", lightText: WHITE_TEXT, dark: "#0071eb", darkText: WHITE_TEXT }, // blue
-  { light: "#34c759", lightText: DARK_TEXT, dark: "#30d158", darkText: DARK_TEXT }, // green
-  { light: "#e90044", lightText: WHITE_TEXT, dark: "#e6104c", darkText: WHITE_TEXT }, // pink
-  { light: "#32ade6", lightText: DARK_TEXT, dark: "#64d2ff", darkText: DARK_TEXT }, // cyan
-  { light: "#a749d5", lightText: WHITE_TEXT, dark: "#aa43db", darkText: WHITE_TEXT }, // purple
-  { light: "#00c7be", lightText: DARK_TEXT, dark: "#63e6e2", darkText: DARK_TEXT }, // mint
-  { light: "#5856d6", lightText: WHITE_TEXT, dark: "#5e5ce6", darkText: WHITE_TEXT }, // indigo
+  { light: "#d42b29", lightText: WHITE_TEXT, lightScopeText: "#901d1c", dark: "#d13431", darkText: WHITE_TEXT, darkScopeText: "#eba8a6" }, // red
+  { light: "#0e7689", lightText: WHITE_TEXT, lightScopeText: "#0a5563", dark: "#0e7789", darkText: WHITE_TEXT, darkScopeText: "#95c3cb" }, // teal
+  { light: "#e89117", lightText: DARK_TEXT, lightScopeText: "#794b0c", dark: "#e99a20", darkText: DARK_TEXT, darkScopeText: "#f6d5a1" }, // orange
+  { light: "#1670dc", lightText: WHITE_TEXT, lightScopeText: "#0f4c96", dark: "#1572d6", darkText: WHITE_TEXT, darkScopeText: "#98c1ed" }, // blue
+  { light: "#41ba60", lightText: DARK_TEXT, lightScopeText: "#226132", dark: "#3ec35f", darkText: DARK_TEXT, darkScopeText: "#ace5ba" }, // green
+  { light: "#d4154d", lightText: WHITE_TEXT, lightScopeText: "#920e35", dark: "#d32354", darkText: WHITE_TEXT, darkScopeText: "#eda3b7" }, // pink
+  { light: "#42a7d6", lightText: DARK_TEXT, lightScopeText: "#235971", dark: "#72ccf1", darkText: DARK_TEXT, darkScopeText: "#c4eaf9" }, // cyan
+  { light: "#a254c8", lightText: WHITE_TEXT, lightScopeText: "#6d3886", dark: "#a551cd", darkText: WHITE_TEXT, darkScopeText: "#d7b2e9" }, // purple
+  { light: "#12b5ae", lightText: DARK_TEXT, lightScopeText: "#095e5a", dark: "#6fdad7", darkText: DARK_TEXT, darkScopeText: "#c4f0ef" }, // mint
+  { light: "#6362ca", lightText: WHITE_TEXT, lightScopeText: "#46468f", dark: "#6a68da", darkText: WHITE_TEXT, darkScopeText: "#bdbdef" }, // indigo
 ];
 
 /// The position of the hash colour of a scope key in `scopeTones`. A 32-bit
@@ -221,6 +245,11 @@ export function TagLabel({ text, onRemove }: { text: string; onRemove?: () => vo
   const remove = onRemove && <RemoveButton name={name} onRemove={onRemove} onFill />;
   const filled =
     "bg-[var(--scope-light)] text-[color:var(--scope-text-light)] dark:bg-[var(--scope-dark)] dark:text-[color:var(--scope-text-dark)]";
+  // The tint lets the surface show through, so it matches the row under it.
+  // The class names must be literal for Tailwind: they use SCOPE_TINT_LIGHT
+  // and SCOPE_TINT_DARK.
+  const tinted =
+    "bg-[color-mix(in_srgb,var(--scope-light)_20%,transparent)] text-[color:var(--scope-tint-text-light)] dark:bg-[color-mix(in_srgb,var(--scope-dark)_30%,transparent)] dark:text-[color:var(--scope-tint-text-dark)]";
   return (
     <span
       data-label="tag"
@@ -228,15 +257,17 @@ export function TagLabel({ text, onRemove }: { text: string; onRemove?: () => vo
         {
           "--scope-light": tone.light,
           "--scope-text-light": tone.lightText,
+          "--scope-tint-text-light": tone.lightScopeText,
           "--scope-dark": tone.dark,
           "--scope-text-dark": tone.darkText,
+          "--scope-tint-text-dark": tone.darkScopeText,
         } as CSSProperties
       }
       className={`inline-flex max-w-full items-stretch overflow-hidden rounded-[5px] ${labelText}`}
     >
       <span className="sr-only">{name}</span>
       <span aria-hidden className="inline-flex min-w-0">
-        <span data-scope className={`shrink-0 bg-fill text-label-secondary ${part}`}>
+        <span data-scope className={`shrink-0 ${tinted} ${part}`}>
           {scope}
         </span>
         <span data-value className={`min-w-0 truncate ${filled} ${part} ${remove ? "pr-[2px]" : ""}`}>
