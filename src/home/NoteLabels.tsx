@@ -4,7 +4,7 @@
 // shows. A long first label shows in part.
 
 import { useLayoutEffect, useRef, useState } from "react";
-import { TagLabel, tagName, TypeLabel } from "../lib/Labels";
+import { TagLabel, tagName, TypeLabel, typeName } from "../lib/Labels";
 
 /// The space that "+N" needs after the last label that shows.
 const MORE_WIDTH = 28;
@@ -57,7 +57,7 @@ export function NoteLabels({
 
   if (count === 0) return null;
   const shown = Math.min(fit.shown, count);
-  const names = [...(noteType === null ? [] : [`Type: ${noteType}`]), ...tags.map(tagName)];
+  const names = [...(noteType === null ? [] : [typeName(noteType)]), ...tags.map(tagName)];
   const hidden = names.slice(shown);
   const surface = onAccent ? "rounded-[4px] bg-group" : "";
   const items = [

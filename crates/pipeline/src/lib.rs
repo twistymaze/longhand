@@ -47,7 +47,8 @@ pub use summarize::SummaryEndpoint;
 /// transition is serialized through it.
 pub type SharedStore = Arc<Mutex<Store>>;
 
-pub(crate) fn lock(store: &SharedStore) -> MutexGuard<'_, Store> {
+/// Lock the store. A poisoned lock still gives the store.
+pub fn lock(store: &SharedStore) -> MutexGuard<'_, Store> {
     store.lock().unwrap_or_else(|e| e.into_inner())
 }
 

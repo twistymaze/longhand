@@ -5,7 +5,8 @@
 // also reads both when it shows again, after the note page changed a note.
 
 import { useCallback, useEffect, useState } from "react";
-import { commands, events, type NoteTypeList, type TagEntry } from "../bindings";
+import { commands, type NoteTypeList, type TagEntry } from "../bindings";
+import { useReloadOn } from "../lib/useReloadOn";
 
 export function useTypesAndTags(active: boolean) {
   // Null until the first read. A failed read keeps the last list.
@@ -35,18 +36,11 @@ export function useTypesAndTags(active: boolean) {
     void readTags();
   }, [active, readTypes, readTags]);
 
-  useEffect(() => {
-    const unlisteners = [
-      events.settingsChanged.listen(() => void readTypes()),
-      events.libraryChanged.listen(() => {
-        void readTypes();
-        void readTags();
-      }),
-    ];
-    return () => {
-      for (const u of unlisteners) void u.then((f) => f());
-    };
+  const readBoth = useCallback(() => {
+    void readTypes();
+    void readTags();
   }, [readTypes, readTags]);
+  useReloadOn(readTypes, readBoth);
 
   return { types, tags, setTypes };
 }

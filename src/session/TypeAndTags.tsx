@@ -9,10 +9,11 @@
 // it loads. Nothing in the row moves or flashes.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type NoteTypeEntry } from "../bindings";
+import { commands, type NoteTypeEntry } from "../bindings";
 import { TagLabel, TypeLabel } from "../lib/Labels";
 import { NewTypeDialog } from "../lib/NewTypeDialog";
 import { TagPicker } from "../lib/TagPicker";
+import { useReloadOn } from "../lib/useReloadOn";
 import { sentence } from "../processing/describe";
 import { Menu, type MenuEntry, separator } from "./SessionMenu";
 import type { Notice } from "./TitleField";
@@ -95,14 +96,8 @@ export function TypeAndTags({
   // A type from Settings or a new type folder from a sync changes the list.
   useEffect(() => {
     void loadTypes();
-    const unlisteners = [
-      events.settingsChanged.listen(() => void loadTypes()),
-      events.libraryChanged.listen(() => void loadTypes()),
-    ];
-    return () => {
-      for (const u of unlisteners) void u.then((f) => f());
-    };
   }, [loadTypes]);
+  useReloadOn(loadTypes);
 
   const [tagList, setTagList] = useState<string[]>([]);
   const loadTags = async () => {

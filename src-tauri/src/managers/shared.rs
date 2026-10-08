@@ -698,15 +698,7 @@ impl StorageFolders {
         }
         folders
     }
-}
 
-/// The note types of the shared settings `fields`. A list of a form that
-/// this build does not know gives no types.
-fn shared_types(fields: &file::SharedFields) -> Vec<String> {
-    fields.note_types.known().cloned().unwrap_or_default()
-}
-
-impl StorageFolders {
     /// Mark the type folders of `names` as leaving: a type rename, merge or
     /// delete of this computer is not done yet, so the old folder does not
     /// come back as a type (KTD7).
@@ -719,6 +711,12 @@ impl StorageFolders {
             }
         }
     }
+}
+
+/// The note types of the shared settings `fields`. A list of a form that
+/// this build does not know gives no types.
+fn shared_types(fields: &file::SharedFields) -> Vec<String> {
+    fields.note_types.known().cloned().unwrap_or_default()
 }
 
 /// The note types of the settings file of `root`, read at the time of a
@@ -764,7 +762,7 @@ impl SharedSettingsManager {
     pub fn note_types(&self, folders: &StorageFolders) -> NoteTypeList {
         let fields = self.snapshot().view.fields;
         let types = note_types::effective_types(&shared_types(&fields), &folders.types);
-        let default = fields.default_note_type.known().cloned().flatten();
+        let default = default_type(&fields);
         NoteTypeList {
             default_type: note_types::effective_default(default.as_deref(), &types),
             types: types

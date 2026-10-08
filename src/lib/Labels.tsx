@@ -22,14 +22,23 @@ export function tagParts(text: string): { scope: string | null; value: string } 
 
 /// The key that matches two tags (R30, KTD10): the trimmed text, with no
 /// spaces around `::`, in lower case.
+/// This must match `session_core::tags::tag_key`.
 export function tagKey(text: string): string {
   return text.trim().replace(/\s*::\s*/g, "::").toLowerCase();
 }
+
+/// Type names compare without regard to case (KTD8).
+export const sameType = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /// The text that VoiceOver reads for a tag, such as "Person: Nathan".
 export function tagName(text: string): string {
   const { scope, value } = tagParts(text);
   return scope ? `${scope}: ${value}` : value;
+}
+
+/// The text that VoiceOver reads for a note type, such as "Type: 1:1".
+export function typeName(name: string): string {
+  return `Type: ${name}`;
 }
 
 export type ScopeTone = { light: string; dark: string };

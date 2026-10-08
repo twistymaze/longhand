@@ -132,6 +132,15 @@ pub fn same_type_name(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
+/// Whether two optional note types are one type. `None` is "No type".
+pub fn same_optional_type(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => same_type_name(a, b),
+        _ => false,
+    }
+}
+
 /// Whether `name` is a name that some Destination keeps for itself.
 pub fn is_reserved(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or(name);

@@ -8,6 +8,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { commands, type NoteTypeList } from "../bindings";
 import { sentence } from "../processing/describe";
 import { fieldClass } from "../settings/ui";
+import { sameType } from "./Labels";
 
 export function NewTypeDialog({
   onCreated,
@@ -52,8 +53,7 @@ export function NewTypeDialog({
         field.current?.focus();
         return;
       }
-      const key = text.toLowerCase();
-      const made = result.data.types.find((t) => t.name.toLowerCase() === key)?.name ?? text;
+      const made = result.data.types.find((t) => sameType(t.name, text))?.name ?? text;
       onCreated(made, result.data);
     } finally {
       setBusy(false);

@@ -5,8 +5,9 @@
 // another type or tag merges the two, and the pane says so.
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useState } from "react";
-import { commands, events, type NoteTypeEntry, type NoteTypeList, type Result, type TagEntry } from "../bindings";
-import { tagKey } from "../lib/Labels";
+import { commands, type NoteTypeEntry, type NoteTypeList, type Result, type TagEntry } from "../bindings";
+import { sameType, tagKey } from "../lib/Labels";
+import { useReloadOn } from "../lib/useReloadOn";
 import { Button, CommitField, ErrorText, fieldClass, Group, Pane, notes, useConfirm } from "./ui";
 
 /// Runs a command. A command that does not run gives `fallback` as its
@@ -19,9 +20,6 @@ async function attempt<T>(op: () => Promise<Result<T, string>>, fallback: string
     return { status: "error", error: fallback };
   }
 }
-
-/// Two type names that differ only in case are the same type.
-const sameType = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /// The radio mark of one choice of the default type.
 function RadioMark({ checked }: { checked: boolean }) {
@@ -148,13 +146,8 @@ export function TypesAndTags({
   // the lists again.
   useEffect(() => {
     void load();
-    const unlistenSettings = events.settingsChanged.listen(() => void load());
-    const unlistenLibrary = events.libraryChanged.listen(() => void load());
-    return () => {
-      void unlistenSettings.then((f) => f());
-      void unlistenLibrary.then((f) => f());
-    };
   }, [load]);
+  useReloadOn(load);
 
   // Runs a type command. On success the pane shows the new list.
   const runType = async <T,>(op: () => Promise<Result<T, string>>, listOf: (data: T) => NoteTypeList) => {

@@ -544,7 +544,7 @@ pub(crate) fn storage_folders(app: &AppHandle) -> Result<StorageFolders, String>
         return Ok(StorageFolders::default());
     };
     let store = capture.shared_store();
-    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    let store = pipeline::lock(&store);
     let records = store.sessions().map_err(|e| e.to_string())?;
     drop(store);
     let mut folders = StorageFolders::from_records(&root, &records);

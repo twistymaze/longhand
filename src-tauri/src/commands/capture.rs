@@ -47,13 +47,19 @@ pub fn chosen_type(
     match choice {
         None | Some(NewNoteType::Default) => Ok(types.default_type.clone()),
         Some(NewNoteType::NoType) => Ok(None),
-        Some(NewNoteType::Named { name }) => types
-            .types
-            .iter()
-            .find(|t| t.valid && session_save::naming::same_type_name(&t.name, name))
-            .map(|t| Some(t.name.clone()))
-            .ok_or_else(|| NoteTypeError::NoSuchType.to_string()),
+        Some(NewNoteType::Named { name }) => named_type(types, name).map(Some),
     }
+}
+
+/// The valid type of the list `types` that has the name `name`, with the
+/// spelling of the list (KTD8, KTD9).
+pub fn named_type(types: &NoteTypeList, name: &str) -> Result<String, String> {
+    types
+        .types
+        .iter()
+        .find(|t| t.valid && session_save::naming::same_type_name(&t.name, name))
+        .map(|t| t.name.clone())
+        .ok_or_else(|| NoteTypeError::NoSuchType.to_string())
 }
 
 /// The type of a new note from `choice`, with the type list of the

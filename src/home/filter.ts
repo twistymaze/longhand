@@ -4,7 +4,7 @@
 
 import type { NoteTypeEntry, SessionEntry, TagEntry } from "../bindings";
 import { isOpen } from "../processing/describe";
-import { tagKey } from "../lib/Labels";
+import { sameType, tagKey } from "../lib/Labels";
 
 /// The type choice of the filter: every note, the notes with no type, or
 /// the notes of one type.
@@ -16,9 +16,6 @@ export type NoteFilter = { type: TypeChoice; tags: string[] };
 export const noFilter: NoteFilter = { type: { kind: "all" }, tags: [] };
 
 export const isFiltered = (filter: NoteFilter) => filter.type.kind !== "all" || filter.tags.length > 0;
-
-/// Type names compare without regard to case (KTD8).
-export const sameType = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /// True when the note has the chosen type and every chosen tag. A note that
 /// records, or whose recording was interrupted, always matches (R21).

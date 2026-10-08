@@ -884,17 +884,10 @@ pub async fn set_note_type(
         None => None,
         Some(name) => {
             let folders = crate::commands::settings::storage_folders(&app)?;
-            let listed = shared
-                .note_types(&folders)
-                .types
-                .into_iter()
-                .find(|t| t.valid && session_save::naming::same_type_name(&t.name, &name));
-            match listed {
-                Some(t) => Some(t.name),
-                None => {
-                    return Err(shared_settings::note_types::NoteTypeError::NoSuchType.to_string());
-                }
-            }
+            Some(crate::commands::capture::named_type(
+                &shared.note_types(&folders),
+                &name,
+            )?)
         }
     };
     let processing = Arc::clone(&processing);
@@ -966,7 +959,7 @@ pub fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry
 
 /// The tag list of the store `store`.
 pub fn tag_entries(store: &pipeline::SharedStore) -> Result<Vec<TagEntry>, String> {
-    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    let store = pipeline::lock(store);
     pipeline::tags::tag_list(&store)
         .map(|list| list.into_iter().map(TagEntry::from).collect())
         .map_err(|e| e.to_string())

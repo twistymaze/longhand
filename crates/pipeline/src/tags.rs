@@ -301,12 +301,7 @@ pub fn tag_list(store: &Store) -> Result<Vec<TagCount>, StageError> {
         }
     }
     let mut list: Vec<TagCount> = found.into_values().map(|(tag, _)| tag).collect();
-    list.sort_by(|a, b| {
-        a.text
-            .to_lowercase()
-            .cmp(&b.text.to_lowercase())
-            .then_with(|| a.key.cmp(&b.key))
-    });
+    list.sort_by_cached_key(|tag| (tag.text.to_lowercase(), tag.key.clone()));
     Ok(list)
 }
 

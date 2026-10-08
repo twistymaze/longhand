@@ -744,9 +744,10 @@ pub struct ProcessingManager {
     audio_removal: Arc<AudioRemovalManager>,
     /// The early writes of the home folders of new notes (KTD4).
     early_homes: Arc<EarlyHomes>,
-    /// Held by each pass of the type rename, merge and delete edits
-    /// (KTD7), so two passes of one edit do not run at the same time.
-    type_edits: std::sync::Mutex<()>,
+    /// Held by each pass of the bulk edits: the type rename, merge and
+    /// delete edits (KTD7) and the tag rename and delete edits (KTD11), so
+    /// two passes of one edit do not run at the same time.
+    bulk_edits: std::sync::Mutex<()>,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -799,7 +800,7 @@ impl ProcessingManager {
                 {
                     processing.in_use_changed();
                     // A type move that waited for the work can run now
-                    // (F2).
+                    // (R5).
                     processing.run_type_moves_soon();
                 }
                 match Sent::from(event) {
@@ -870,7 +871,7 @@ impl ProcessingManager {
             library: std::sync::Mutex::default(),
             library_status,
             mover: MoveWorker::default(),
-            type_edits: std::sync::Mutex::default(),
+            bulk_edits: std::sync::Mutex::default(),
         }
     }
 
@@ -1598,10 +1599,10 @@ impl ProcessingManager {
             &dyn Fn(&session_core::BulkEdit) -> Result<(), String>,
         ) -> Result<Option<session_core::BulkEdit>, String>,
     ) -> Result<u32, String> {
-        let _edits = self.type_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
         let recorded: std::sync::Mutex<Option<i64>> = std::sync::Mutex::default();
         let record = |edit: &session_core::BulkEdit| {
-            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let store = pipeline::lock(&self.store);
             let mut recorded = recorded.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(id) = recorded.take() {
                 store.remove_bulk_edit(id).map_err(|e| e.to_string())?;
@@ -1616,10 +1617,7 @@ impl ProcessingManager {
             Ok(None) => return Ok(0),
             Err(e) => {
                 if let Some(id) = id {
-                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Err(e) = store.remove_bulk_edit(id) {
-                        log::error!("could not remove the bulk edit {id}: {e}");
-                    }
+                    self.remove_bulk_edit(id);
                 }
                 return Err(e);
             }
@@ -1627,9 +1625,7 @@ impl ProcessingManager {
         let Some(id) = id else {
             return Err("The change of the note types was not recorded.".into());
         };
-        self.store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        pipeline::lock(&self.store)
             .set_bulk_edit_shared_saved(id)
             .map_err(|e| e.to_string())?;
         settings::emit_settings_changed(&self.app);
@@ -1648,10 +1644,7 @@ impl ProcessingManager {
         match self.runner.apply_type_edit(&root, id, edit, &self.own_runs) {
             Ok(pass) => {
                 if pass.done {
-                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Err(e) = store.remove_bulk_edit(id) {
-                        log::error!("could not remove the bulk edit {id}: {e}");
-                    }
+                    self.remove_bulk_edit(id);
                 }
                 pass.changed
             }
@@ -1707,9 +1700,9 @@ impl ProcessingManager {
     /// note changes, then change each note. The record goes when every note
     /// is done. Otherwise each launch and scan continues the edit.
     fn edit_tags(&self, edit: session_core::BulkEdit) -> Result<u32, String> {
-        let _edits = self.type_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
         let id = {
-            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let store = pipeline::lock(&self.store);
             let id = store.add_bulk_edit(&edit).map_err(|e| e.to_string())?;
             // A tag edit has no shared-settings part.
             store
@@ -1728,10 +1721,7 @@ impl ProcessingManager {
         match self.runner.apply_tag_edit(edit) {
             Ok(pass) => {
                 if pass.done {
-                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Err(e) = store.remove_bulk_edit(id) {
-                        log::error!("could not remove the bulk edit {id}: {e}");
-                    }
+                    self.remove_bulk_edit(id);
                 }
                 pass
             }
@@ -1742,22 +1732,26 @@ impl ProcessingManager {
         }
     }
 
+    /// Remove the record of the bulk edit `id`. A failure goes to the log.
+    fn remove_bulk_edit(&self, id: i64) {
+        if let Err(e) = pipeline::lock(&self.store).remove_bulk_edit(id) {
+            log::error!("could not remove the bulk edit {id}: {e}");
+        }
+    }
+
     /// Continue the type and tag edits that are not done (KTD7, KTD11),
     /// then run the type moves that this computer owes and take over the
-    /// moves that waited for 7 days (KTD5, KTD13). Returns the notes that changed. Only with
-    /// the instance lock held, so no other run moves the same folders.
+    /// moves that waited for 7 days (KTD5, KTD13). Returns the notes that
+    /// changed. Only with the instance lock held, so no other run moves the
+    /// same folders.
     pub fn run_type_moves(&self) -> Vec<String> {
         if !matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
             return Vec::new();
         }
         let mut changed = Vec::new();
         {
-            let _edits = self.type_edits.lock().unwrap_or_else(|e| e.into_inner());
-            let open = self
-                .store
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .bulk_edits();
+            let _edits = self.bulk_edits.lock().unwrap_or_else(|e| e.into_inner());
+            let open = pipeline::lock(&self.store).bulk_edits();
             for open in open.unwrap_or_else(|e| {
                 log::error!("could not read the bulk edits: {e}");
                 Vec::new()
@@ -1776,7 +1770,7 @@ impl ProcessingManager {
                         continue;
                     }
                     settings::emit_settings_changed(&self.app);
-                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    let store = pipeline::lock(&self.store);
                     if let Err(e) = store.set_bulk_edit_shared_saved(open.id) {
                         log::error!("could not record the type edit {}: {e}", open.id);
                         continue;
@@ -1826,7 +1820,7 @@ impl ProcessingManager {
     /// of this computer still empties (KTD7). The effective type list does
     /// not show them.
     pub fn leaving_types(&self) -> Vec<String> {
-        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        let store = pipeline::lock(&self.store);
         store
             .bulk_edits()
             .unwrap_or_default()

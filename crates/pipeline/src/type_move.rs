@@ -30,7 +30,7 @@ use library::scan::{self, Place};
 use session_core::folder::{PendingType, ResultFlag, SessionDoc};
 use session_core::jobs::{Claims, busy};
 use session_core::{BulkEdit, MoveStep, SessionRecord, SessionState, Store, TypeMove};
-use session_save::naming::{check_type_name, same_type_name};
+use session_save::naming::{check_type_name, same_optional_type, same_type_name};
 use session_save::rename_home::{self, RenameError};
 use session_save::{Fs, home_write};
 
@@ -65,7 +65,8 @@ pub enum TypeChange {
     /// of the folder is cleared.
     Unchanged,
     /// The home folder is not written yet. The row has the type, and the
-    /// home folder is made in the folder of the type (U7).
+    /// home folder is made in the folder of the type (U7 of the note types
+    /// and tags plan).
     NoFolder,
     /// The home folder is in the folder of the new type at this path.
     Moved(PathBuf),
@@ -82,17 +83,10 @@ pub enum TypeChange {
 /// in the `from` folder, else the type of the folder.
 pub fn shown_type(record: &SessionRecord) -> (Option<String>, bool) {
     match &record.pending_type {
-        Some(pending) if same_type(&pending.from, &record.note_type) => (pending.to.clone(), true),
+        Some(pending) if same_optional_type(&pending.from, &record.note_type) => {
+            (pending.to.clone(), true)
+        }
         _ => (record.note_type.clone(), false),
-    }
-}
-
-/// Whether two types are one type. `None` is "No type".
-fn same_type(a: &Option<String>, b: &Option<String>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => same_type_name(a, b),
-        _ => false,
     }
 }
 
@@ -118,14 +112,14 @@ pub fn change_type_locked(
     let record = require(store, session_id)?;
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         // A type change before the early write is done changes only the
-        // row (U7).
+        // row (U7 of the note types and tags plan).
         store.set_note_type(session_id, to.as_deref())?;
         return Ok(TypeChange::NoFolder);
     };
     // The type of the folder now. While the storage folder is not
     // available, the row has the type of the last scan.
     let from = scan::storage_place(&home).map_or_else(|| record.note_type.clone(), |p| p.note_type);
-    if same_type(&to, &from) {
+    if same_optional_type(&to, &from) {
         // The note has the type, or a change goes back to the type of the
         // folder: the waiting change goes (KTD3).
         store.clear_type_move(session_id)?;
@@ -265,7 +259,7 @@ fn settle(
             _ => {}
         }
     }
-    if !same_type(&place.note_type, &owed.from) {
+    if !same_optional_type(&place.note_type, &owed.from) {
         // The move is done, or a person moved the folder: the folder wins
         // (KTD3, R29).
         if doc.pending_type.is_some() {
@@ -274,7 +268,7 @@ fn settle(
         store.set_pending_type(session_id, None)?;
         store.set_note_type(session_id, place.note_type.as_deref())?;
         store.clear_type_move(session_id)?;
-        if same_type(&place.note_type, &owed.to) {
+        if same_optional_type(&place.note_type, &owed.to) {
             return Ok(TypeChange::Moved(home));
         }
         log::info!(
@@ -458,7 +452,7 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     if field.by != store.computer_id()? {
         return Ok(false);
     }
-    if same_type(&place.note_type, &field.from) {
+    if same_optional_type(&place.note_type, &field.from) {
         log::info!("this computer owes the type move of {session_id} again");
         store.set_type_move(
             session_id,
@@ -501,7 +495,7 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let Some(place) = scan::storage_place(&home) else {
         return Ok(false);
     };
-    if !same_type(&place.note_type, &seen.from) {
+    if !same_optional_type(&place.note_type, &seen.from) {
         return Ok(false);
     }
     let Some(mut doc) = read_document(&home) else {
@@ -700,7 +694,7 @@ pub fn apply_edit(
                 .home_path
                 .as_deref()
                 .is_some_and(|home| scan::place_in(Path::new(home), &roots).is_some())
-            && same_type(&shown_type(record).0, &old)
+            && same_optional_type(&shown_type(record).0, &old)
     };
     let ids: Vec<String> = lock(store)
         .sessions()?

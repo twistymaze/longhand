@@ -179,15 +179,6 @@ fn row_type(store: &Store, record: &SessionRecord) -> Result<Option<String>, Sta
     }
 }
 
-/// Whether two types are one type. `None` is "No type".
-fn same_type(a: &Option<String>, b: &Option<String>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => naming::same_type_name(a, b),
-        _ => false,
-    }
-}
-
 /// Whether the type folder cannot be made or used for a reason that a
 /// retry does not fix.
 fn is_refused(e: &rename_home::RenameError) -> bool {
@@ -488,7 +479,7 @@ pub fn record(store: &SharedStore, id: &str, state: &EarlyState) -> Result<(), S
         if let Some(EarlyState::Filled { root, .. }) = self::state(&guard, id)?
             && path.file_name() != Some(std::ffi::OsStr::new(&naming::staging_name(id)))
             && let Some(placed) = folder::note_type_in(&root, path)
-            && !same_type(&placed, &record.note_type)
+            && !naming::same_optional_type(&placed, &record.note_type)
         {
             owe_type_move(&guard, &record, placed)?;
         }
