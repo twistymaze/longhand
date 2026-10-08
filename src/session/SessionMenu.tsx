@@ -21,8 +21,18 @@ export type MenuItem = {
   /// With `checked`, the item is one choice of a group: a radio item.
   radio?: boolean;
   /// Items that open to the side of this item. Then `onSelect` is not used.
-  submenu?: MenuItem[];
+  submenu?: MenuEntry[];
 };
+
+/// A line between two groups of items. It is not focusable.
+export type MenuSeparator = { separator: true; key: string };
+
+export type MenuEntry = MenuItem | MenuSeparator;
+
+/// A separator with a React key that is unique in its menu.
+export const separator = (key: string): MenuSeparator => ({ separator: true, key });
+
+const isSeparator = (entry: MenuEntry): entry is MenuSeparator => "separator" in entry;
 
 /// States in which the store refuses a delete (`delete_refusal`, R8).
 export function canDelete(state: string): boolean {
@@ -57,12 +67,15 @@ const itemClass =
 const roleOf = (entry: MenuItem) =>
   entry.checked === undefined ? "menuitem" : entry.radio ? "menuitemradio" : "menuitemcheckbox";
 
-const keyOf = (entry: MenuItem) => entry.key ?? entry.label;
+const keyOf = (entry: MenuEntry) => (isSeparator(entry) ? `separator:${entry.key}` : (entry.key ?? entry.label));
 
 /// The open menu, below its button and aligned to its right edge, or a
 /// submenu to the left of its item. The first enabled item has the focus,
 /// the arrow keys move it, and Escape or a click outside closes the menu.
 /// The right arrow opens a submenu, and the left arrow closes it.
+/// A menu with no submenu has a height limit and scrolls, so a long list
+/// of note types stays in the window. A menu with a submenu does not
+/// scroll, because the scroll area would cut off the submenu.
 export function Menu({
   items,
   onClose,
@@ -70,7 +83,7 @@ export function Menu({
   focusFirst = true,
   width = "w-52",
 }: {
-  items: MenuItem[];
+  items: MenuEntry[];
   onClose: () => void;
   submenu?: boolean;
   /// The width classes of a top menu. A menu with long labels sets a
@@ -117,7 +130,7 @@ export function Menu({
       return;
     }
     const at = document.activeElement;
-    const entry = items.find((e) => buttonOf(keyOf(e)) === at);
+    const entry = items.find((e): e is MenuItem => !isSeparator(e) && buttonOf(keyOf(e)) === at);
     if (event.key === "ArrowRight" && entry?.submenu && !entry.disabled) {
       event.preventDefault();
       openSubmenu(keyOf(entry), true);
@@ -133,7 +146,8 @@ export function Menu({
   };
 
   // A menu with a check mark keeps a column for it, so the labels align.
-  const checks = items.some((e) => e.checked !== undefined);
+  const checks = items.some((e) => !isSeparator(e) && e.checked !== undefined);
+  const scrolls = !items.some((e) => !isSeparator(e) && e.submenu !== undefined);
   return (
     <div
       ref={menu}
@@ -143,10 +157,13 @@ export function Menu({
       onDoubleClick={(e) => e.stopPropagation()}
       className={`absolute z-10 rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)] ${
         submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full right-0 mt-1 ${width}`
-      }`}
+      } ${scrolls ? "max-h-[min(24rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain" : ""}`}
     >
       {items.map((entry) => {
         const key = keyOf(entry);
+        if (isSeparator(entry)) {
+          return <div key={key} role="separator" className="mx-2.5 my-1 h-px bg-separator" />;
+        }
         const open = openKey === key;
         const opens = entry.submenu !== undefined && !entry.disabled;
         return (
@@ -202,22 +219,26 @@ export function Menu({
 
 /// The session page's "…" button and its menu. Each item closes the menu
 /// before it acts, so a dialog or the title field can take the focus.
-export function SessionMenu({ items, onOpen }: { items: MenuItem[]; onOpen?: () => void }) {
+export function SessionMenu({ items, onOpen }: { items: MenuEntry[]; onOpen?: () => void }) {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const close = () => {
     setOpen(false);
     button.current?.focus();
   };
-  const closing = (entries: MenuItem[]): MenuItem[] =>
-    entries.map((entry) => ({
-      ...entry,
-      submenu: entry.submenu && closing(entry.submenu),
-      onSelect: () => {
-        setOpen(false);
-        entry.onSelect();
-      },
-    }));
+  const closing = (entries: MenuEntry[]): MenuEntry[] =>
+    entries.map((entry) =>
+      isSeparator(entry)
+        ? entry
+        : {
+            ...entry,
+            submenu: entry.submenu && closing(entry.submenu),
+            onSelect: () => {
+              setOpen(false);
+              entry.onSelect();
+            },
+          },
+    );
   return (
     <div className="relative">
       <button
