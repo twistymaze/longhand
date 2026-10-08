@@ -13,6 +13,7 @@ import {
   type Readiness,
   type SessionEntry,
 } from "../bindings";
+import { GENERAL } from "../lib/Labels";
 import {
   clockTime,
   isOpen,
@@ -24,7 +25,7 @@ import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
-import { hasGeneralNote, isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
+import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
@@ -101,11 +102,16 @@ export function Home({
   );
   // The filter stays while Home is mounted, so it stays when the user opens
   // a note and comes back (R33). A type or a tag that no longer exists drops
-  // out of it. General drops out when no listed note is in General.
+  // out of it. General drops out when no other type is left (R3).
   const lists = useTypesAndTags(active);
   const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
-  const general = hasGeneralNote(listed);
-  const filter = keepExisting(chosenFilter, lists.types?.types ?? null, lists.tags, general);
+  const types = lists.types?.types ?? null;
+  const filter = keepExisting(chosenFilter, types, lists.tags, generalIsChoice(types));
+  // When types are in use, a row of General shows a General label (R4).
+  // A type list that is not read yet shows no General label, though it
+  // keeps a chosen General in the filter.
+  const showGeneral = typesInUse(types);
+  const rowType = (noteType: string | null) => noteType ?? (showGeneral ? GENERAL : null);
   useEffect(() => {
     if (filter !== chosenFilter) setFilter(filter);
   }, [filter, chosenFilter]);
@@ -240,7 +246,7 @@ export function Home({
   const showFilter = listed.length > 0 || isFiltered(filter);
   const clearFilter = () => {
     setFilter(noFilter);
-    // The Clear Filter button goes. The chosen row takes the focus.
+    // The Clear Filters button goes. The chosen row takes the focus.
     requestAnimationFrame(() =>
       list.current?.querySelector<HTMLElement>('[role="option"][tabindex="0"]')?.focus(),
     );
@@ -286,10 +292,10 @@ export function Home({
           {showFilter && (
             <FilterBar
               filter={filter}
-              types={lists.types?.types ?? []}
-              general={general}
+              types={types ?? []}
               tags={lists.tags ?? []}
               onChange={setFilter}
+              onClear={clearFilter}
             />
           )}
 
@@ -356,7 +362,7 @@ export function Home({
                   No notes match the filter.
                 </p>
                 <div className="mt-3">
-                  <Button onClick={clearFilter}>Clear Filter</Button>
+                  <Button onClick={clearFilter}>Clear Filters</Button>
                 </div>
               </div>
             )}
@@ -396,7 +402,7 @@ export function Home({
                                   ? recording.elapsedMs
                                   : entry.duration_ms,
                               interrupted: entry.state === "interrupted",
-                              noteType: entry.note_type,
+                              noteType: rowType(entry.note_type),
                               tags: entry.tags,
                             }}
                             selected={entry.id === selected?.id}
@@ -407,6 +413,7 @@ export function Home({
                           <SessionRow
                             key={entry.id}
                             entry={entry}
+                            noteType={rowType(entry.note_type)}
                             title={rowTitle(entry, now)}
                             time={clockTime(entry.started)}
                             stage={stages[entry.id] ?? null}

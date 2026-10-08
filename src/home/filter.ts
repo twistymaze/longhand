@@ -4,7 +4,7 @@
 
 import type { NoteTypeEntry, SessionEntry, TagEntry } from "../bindings";
 import { isOpen } from "../processing/describe";
-import { sameType, tagKey } from "../lib/Labels";
+import { sameType, tagKey, tagParts } from "../lib/Labels";
 
 /// The type choice of the filter: every note, the notes of General (at the
 /// top of the storage folder), or the notes of one other type.
@@ -29,12 +29,41 @@ export function matches(entry: SessionEntry, filter: NoteFilter): boolean {
   return filter.tags.every((key) => keys.has(key));
 }
 
-/// True when General is a choice: at least one listed note is in General.
-export const hasGeneralNote = (entries: SessionEntry[]) => entries.some((e) => e.note_type === null);
+/// True when note types are in use: the type list has a type other than
+/// General, also a type with no notes (R1, KTD1). A list that is not read
+/// yet is not in use.
+export const typesInUse = (types: NoteTypeEntry[] | null) => types?.some((t) => !t.general) ?? false;
+
+/// True when General is a choice of the type filter (R2, R3). A list that is
+/// not read yet keeps a chosen General, so the choice does not drop at
+/// launch.
+export const generalIsChoice = (types: NoteTypeEntry[] | null) => types === null || typesInUse(types);
+
+const byText = new Intl.Collator(undefined, { sensitivity: "base" }).compare;
+
+/// The tags in the order of the Tags menu (R7, KTD6): the tags with no
+/// scope first, then the scopes, each A-Z without regard to case. A scope
+/// that differs only in case is one scope.
+export function menuOrder(tags: TagEntry[]): TagEntry[] {
+  const rows = tags.map((tag) => {
+    const { scope, value } = tagParts(tag.text);
+    return { tag, scope: scope === null ? null : tagKey(scope), value };
+  });
+  rows.sort((a, b) => {
+    if (a.scope !== b.scope) {
+      if (a.scope === null) return -1;
+      if (b.scope === null) return 1;
+      const scope = byText(a.scope, b.scope);
+      if (scope !== 0) return scope;
+    }
+    return byText(a.value, b.value) || byText(a.tag.text, b.tag.text);
+  });
+  return rows.map((row) => row.tag);
+}
 
 /// The filter without a type or a tag that no longer exists. General drops
-/// out when `general` is false. A null list is not read yet, so its
-/// choices stay. A type that changed only its case keeps its place with the
+/// out when `general` is false (see `generalIsChoice`). A null list is not
+/// read yet, so its choices stay. A type that changed only its case keeps its place with the
 /// new spelling. Returns the same object when nothing changes.
 export function keepExisting(
   filter: NoteFilter,

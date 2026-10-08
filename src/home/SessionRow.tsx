@@ -53,6 +53,7 @@ function TitleField({
 
 export function SessionRow({
   entry,
+  noteType,
   title,
   time,
   stage,
@@ -67,6 +68,9 @@ export function SessionRow({
   onDelete,
 }: {
   entry: SessionEntry;
+  /// The type that the row's label shows: the note's type, General when
+  /// types are in use (R4), or null for no type label.
+  noteType: string | null;
   title: string;
   /// The start time of day, "14:05".
   time: string;
@@ -162,7 +166,7 @@ export function SessionRow({
         {/* The type and tag labels follow the details (R22). */}
         <div className="flex min-w-0 items-center gap-2">
           <div className={`min-w-0 shrink-0 truncate text-[0.8rem] ${secondary}`}>{details}</div>
-          <NoteLabels noteType={entry.note_type} tags={entry.tags} onAccent={selected} />
+          <NoteLabels noteType={noteType} tags={entry.tags} onAccent={selected} />
         </div>
       </div>
       {status && (
