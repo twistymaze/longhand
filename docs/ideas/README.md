@@ -1,6 +1,6 @@
 # Feature ideas
 
-Feature ideas for Longhand, one file for each idea. The folder of an idea is its status. Nothing outside `next/` is committed.
+Feature ideas for Longhand, one file for each idea. The folder of an idea is its status. Only an idea in `next/` is a promise to do the work. Keep all idea files in git, in all folders.
 
 | Folder | Meaning |
 |---|---|
