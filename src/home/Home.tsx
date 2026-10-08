@@ -23,8 +23,9 @@ import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
+import { GENERAL } from "../lib/Labels";
 import { FilterBar } from "./FilterBar";
-import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
+import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
@@ -106,6 +107,9 @@ export function Home({
   const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
   const types = lists.types?.types ?? null;
   const filter = keepExisting(chosenFilter, types, lists.tags, generalIsChoice(types));
+  // When types are in use, a row of General shows a General label (R4).
+  const showGeneral = typesInUse(types);
+  const rowType = (noteType: string | null) => noteType ?? (showGeneral ? GENERAL : null);
   useEffect(() => {
     if (filter !== chosenFilter) setFilter(filter);
   }, [filter, chosenFilter]);
@@ -396,7 +400,7 @@ export function Home({
                                   ? recording.elapsedMs
                                   : entry.duration_ms,
                               interrupted: entry.state === "interrupted",
-                              noteType: entry.note_type,
+                              noteType: rowType(entry.note_type),
                               tags: entry.tags,
                             }}
                             selected={entry.id === selected?.id}
@@ -407,6 +411,7 @@ export function Home({
                           <SessionRow
                             key={entry.id}
                             entry={entry}
+                            noteType={rowType(entry.note_type)}
                             title={rowTitle(entry, now)}
                             time={clockTime(entry.started)}
                             stage={stages[entry.id] ?? null}

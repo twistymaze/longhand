@@ -1438,13 +1438,31 @@ describe("Home: filter by type and tags", () => {
     expect(within(planning).getByText("follow-up")).toBeTruthy();
   });
 
-  // R22: General is the usual type, so a row of General shows no type label.
-  test("a row of General shows no type label", () => {
+  // AE3, R4: when types are in use, a row of General shows a General label.
+  test("with other types, a row of General shows a General type label", async () => {
     setup({ entries: [entry("g", { title: "Standup", note_type: null, tags: ["follow-up"] })] });
     const standup = row("Standup");
-    expect(standup.querySelector('[data-label="type"]')).toBeNull();
-    expect(within(standup).queryByText("General")).toBeNull();
+    const label = await within(standup).findByText("General");
+    expect(label.closest('[data-label="type"]')).toBeTruthy();
     expect(within(standup).getByText("follow-up")).toBeTruthy();
+  });
+
+  // R4: with only General, a row of General shows no type label.
+  test("with only General, a row of General shows no type label", async () => {
+    const { tauri } = setup({ types: typeList(), entries: [entry("g", { title: "Standup", note_type: null, tags: ["follow-up"] })] });
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "note_types")).toBe(true));
+    await act(() => Promise.resolve());
+    const standup = row("Standup");
+    expect(standup.querySelector('[data-label="type"]')).toBeNull();
+    expect(within(standup).getByText("follow-up")).toBeTruthy();
+  });
+
+  // R4: a recording of a General note shows the General label too.
+  test("with other types, a recording of a General note shows a General label", async () => {
+    setup({ entries: [entry("r", { state: "capturing", note_type: null, duration_ms: 1000 })] });
+    const recording = screen.getByRole("option", { name: /Recording/ });
+    const label = await within(recording).findByText("General");
+    expect(label.closest('[data-label="type"]')).toBeTruthy();
   });
 
   // R22.
