@@ -655,6 +655,61 @@ pub async fn delete_note_type(
     .map_err(|e| e.to_string())?
 }
 
+/// What a tag rename or delete did (R13, R31).
+#[derive(Serialize, Type)]
+pub struct TagEdit {
+    /// The number of notes that had the tag.
+    pub changed: u32,
+    /// The tag list after the edit.
+    pub tags: Vec<crate::commands::session::TagEntry>,
+}
+
+/// Rename the tag `name` to `new_name` on every note (R13), also on a note
+/// that another computer records or processes. A new name with the key of
+/// another tag merges the two tags, and a note with both keeps one. A note
+/// whose folder is not available now changes later.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_tag(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+    new_name: String,
+) -> Result<TagEdit, String> {
+    let (store, processing) = (capture.shared_store(), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = processing.rename_tag(&name, &new_name)?;
+        Ok(TagEdit {
+            changed,
+            tags: crate::commands::session::tag_entries(&store)?,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete the tag `name` from every note (R13). The surface asks for a
+/// confirmation with the number of notes first (R31): the count of the tag
+/// in the tag list.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_tag(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    name: String,
+) -> Result<TagEdit, String> {
+    let (store, processing) = (capture.shared_store(), Arc::clone(&processing));
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = processing.delete_tag(&name)?;
+        Ok(TagEdit {
+            changed,
+            tags: crate::commands::session::tag_entries(&store)?,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Pick a folder with the system dialog and return its path. Nothing
 /// changes: the surface then asks what to do with the notes in the old
 /// folder, and calls [`change_storage_folder`] (R4). `None` when the user

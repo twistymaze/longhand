@@ -731,6 +731,25 @@ impl Runner {
         )
     }
 
+    /// The user adds and removes tags of a note (R10): see
+    /// [`crate::tags::set_note_tags`]. Returns the tags of the note.
+    pub fn set_note_tags(
+        &self,
+        session_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<Vec<String>, StageError> {
+        crate::tags::set_note_tags(&self.env.store, &self.claims, session_id, add, remove)
+    }
+
+    /// One pass of a tag rename or delete over every note (KTD11).
+    pub fn apply_tag_edit(
+        &self,
+        edit: &session_core::BulkEdit,
+    ) -> Result<crate::tags::TagPass, StageError> {
+        crate::tags::apply_edit(&self.env.store, &self.claims, edit)
+    }
+
     fn type_context<'a>(
         &'a self,
         own_runs: &'a [String],

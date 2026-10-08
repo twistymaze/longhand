@@ -1050,8 +1050,8 @@ impl ProcessingManager {
             if let Err(e) = self.runner.reconcile_folders() {
                 log::error!("launch reconcile of folder names failed: {e}");
             }
-            // The type moves and the type edits that a quit or a crash
-            // stopped continue (KTD5, KTD7).
+            // The type moves, the type edits and the tag edits that a quit
+            // or a crash stopped continue (KTD5, KTD7, KTD11).
             let changed = self.run_type_moves();
             self.emit_changed(changed);
         }
@@ -1662,9 +1662,89 @@ impl ProcessingManager {
         }
     }
 
-    /// Continue the type edits that are not done (KTD7), then run the type
-    /// moves that this computer owes and take over the moves that waited
-    /// for 7 days (KTD5, KTD13). Returns the notes that changed. Only with
+    /// Add the tags `add` to a note and remove the tags `remove` (R10). This
+    /// works during a recording and during processing. Returns the tags of
+    /// the note. This can reach a synced folder, so call it off the main
+    /// thread.
+    pub fn set_note_tags(
+        &self,
+        session_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<Vec<String>, String> {
+        let tags = self
+            .runner
+            .set_note_tags(session_id, add, remove)
+            .map_err(|e| e.to_string())?;
+        self.emit_changed(vec![session_id.to_string()]);
+        Ok(tags)
+    }
+
+    /// Rename the tag `name` to `new_name` on every note (R13). A new name
+    /// with the key of another tag merges the two tags. Returns the number
+    /// of notes that have the tag (R31).
+    pub fn rename_tag(&self, name: &str, new_name: &str) -> Result<u32, String> {
+        let new_name = pipeline::tags::check_tag(new_name)?;
+        let name = name.trim();
+        if name == new_name {
+            return Ok(0);
+        }
+        self.edit_tags(session_core::BulkEdit::RenameTag {
+            from: name.to_string(),
+            to: new_name,
+        })
+    }
+
+    /// Delete the tag `name` from every note (R13). Returns the number of
+    /// notes that had the tag (R31).
+    pub fn delete_tag(&self, name: &str) -> Result<u32, String> {
+        self.edit_tags(session_core::BulkEdit::DeleteTag {
+            name: name.trim().to_string(),
+        })
+    }
+
+    /// A tag rename or delete (KTD11): record the edit before the first
+    /// note changes, then change each note. The record goes when every note
+    /// is done. Otherwise each launch and scan continues the edit.
+    fn edit_tags(&self, edit: session_core::BulkEdit) -> Result<u32, String> {
+        let _edits = self.type_edits.lock().unwrap_or_else(|e| e.into_inner());
+        let id = {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let id = store.add_bulk_edit(&edit).map_err(|e| e.to_string())?;
+            // A tag edit has no shared-settings part.
+            store
+                .set_bulk_edit_shared_saved(id)
+                .map_err(|e| e.to_string())?;
+            id
+        };
+        let pass = self.continue_tag_edit(id, &edit);
+        self.emit_changed(pass.changed);
+        Ok(u32::try_from(pass.matched).unwrap_or(u32::MAX))
+    }
+
+    /// One pass of the tag edit `id` (KTD11). The record goes when the edit
+    /// is done.
+    fn continue_tag_edit(&self, id: i64, edit: &session_core::BulkEdit) -> pipeline::tags::TagPass {
+        match self.runner.apply_tag_edit(edit) {
+            Ok(pass) => {
+                if pass.done {
+                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(e) = store.remove_bulk_edit(id) {
+                        log::error!("could not remove the bulk edit {id}: {e}");
+                    }
+                }
+                pass
+            }
+            Err(e) => {
+                log::warn!("the tag edit {id} continues later: {e}");
+                pipeline::tags::TagPass::default()
+            }
+        }
+    }
+
+    /// Continue the type and tag edits that are not done (KTD7, KTD11),
+    /// then run the type moves that this computer owes and take over the
+    /// moves that waited for 7 days (KTD5, KTD13). Returns the notes that changed. Only with
     /// the instance lock held, so no other run moves the same folders.
     pub fn run_type_moves(&self) -> Vec<String> {
         if !matches!(self.liveness, session_core::jobs::Liveness::OnlyInstance) {
@@ -1682,6 +1762,11 @@ impl ProcessingManager {
                 log::error!("could not read the bulk edits: {e}");
                 Vec::new()
             }) {
+                // A tag edit has no shared-settings part (KTD11).
+                if open.edit.is_tag_edit() {
+                    changed.extend(self.continue_tag_edit(open.id, &open.edit).changed);
+                    continue;
+                }
                 if !open.shared_saved {
                     let Some(shared) = self.app.try_state::<Arc<SharedSettingsManager>>() else {
                         continue;
@@ -1754,6 +1839,8 @@ impl ProcessingManager {
                 }
                 session_core::BulkEdit::RenameType { .. } => None,
                 session_core::BulkEdit::DeleteType { name } => Some(name),
+                session_core::BulkEdit::RenameTag { .. }
+                | session_core::BulkEdit::DeleteTag { .. } => None,
             })
             .collect()
     }

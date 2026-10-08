@@ -53,6 +53,8 @@ pub struct SessionEntry {
     /// The home folder moves to the folder of `note_type` later, when no
     /// computer works on the note (R5).
     pub type_move_waits: bool,
+    /// The tags of the note, as their exact texts (R9, R11).
+    pub tags: Vec<String>,
 }
 
 /// Work on a note on another computer (KTD5). Record, Resume, Transcribe
@@ -467,6 +469,7 @@ fn entry(
         remote: status.remote(record).map(RemoteView::from),
         note_type,
         type_move_waits,
+        tags: record.tags.clone(),
     }
 }
 
@@ -902,6 +905,71 @@ pub async fn set_note_type(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Add the tags `add` to a note and remove the tags `remove` (R10, R15).
+/// This works during a recording and during processing. A tag of `add`
+/// whose key the note has already changes nothing, and `remove` removes the
+/// tags with the same key (R30). Returns the tags of the note after the
+/// edit. The edit runs off the main thread, since it can reach a synced
+/// folder.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_note_tags(
+    processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let add = add
+        .iter()
+        .map(|tag| pipeline::tags::check_tag(tag))
+        .collect::<Result<Vec<_>, _>>()?;
+    let processing = Arc::clone(&processing);
+    tauri::async_runtime::spawn_blocking(move || {
+        processing.set_note_tags(&session_id, &add, &remove)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One tag of the tag list (R12, KTD10).
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type)]
+pub struct TagEntry {
+    /// The spelling on the note with the earliest start that has the tag
+    /// (R30).
+    pub text: String,
+    /// The key of the tag: the text with no spaces at its ends or around
+    /// `::`, in lower case. Two tags with one key are the same tag.
+    pub key: String,
+    /// The number of notes with the tag (R31).
+    pub count: u32,
+}
+
+impl From<pipeline::tags::TagCount> for TagEntry {
+    fn from(tag: pipeline::tags::TagCount) -> Self {
+        Self {
+            text: tag.text,
+            key: tag.key,
+            count: u32::try_from(tag.count).unwrap_or(u32::MAX),
+        }
+    }
+}
+
+/// The tag list (R12): each tag that is on at least one note, sorted by its
+/// text. This reads the store only.
+#[tauri::command]
+#[specta::specta]
+pub fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry>, String> {
+    tag_entries(&capture.shared_store())
+}
+
+/// The tag list of the store `store`.
+pub fn tag_entries(store: &pipeline::SharedStore) -> Result<Vec<TagEntry>, String> {
+    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+    pipeline::tags::tag_list(&store)
+        .map(|list| list.into_iter().map(TagEntry::from).collect())
+        .map_err(|e| e.to_string())
 }
 
 /// The live transcript of a note so far: its saved parts and the text of
@@ -1932,7 +2000,7 @@ mod entry_tests {
             transcribe_again_model: None,
             started_at: None,
             note_type: Some("Pathfinder".into()),
-            tags: Vec::new(),
+            tags: vec!["Person::Nathan".into(), "follow-up".into()],
             pending_type: Some(session_core::folder::PendingType {
                 to: Some("D&D".into()),
                 from: Some("pathfinder".into()),
@@ -1945,6 +2013,10 @@ mod entry_tests {
         assert_eq!(
             (e.note_type.as_deref(), e.type_move_waits),
             (Some("D&D"), true)
+        );
+        assert_eq!(
+            e.tags,
+            vec!["Person::Nathan".to_string(), "follow-up".into()]
         );
         // A person moved the folder: the folder wins.
         let moved = SessionRecord {

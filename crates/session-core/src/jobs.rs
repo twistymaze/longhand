@@ -298,6 +298,19 @@ pub enum BulkEdit {
     RenameType { from: String, to: String },
     /// A type delete: the notes of the type get no type.
     DeleteType { name: String },
+    /// A tag rename (KTD11): each note with the key of `from` gets `to`.
+    /// When a note has a tag with the key of `to`, the two tags merge.
+    RenameTag { from: String, to: String },
+    /// A tag delete (KTD11): each note loses the tags with the key of
+    /// `name`.
+    DeleteTag { name: String },
+}
+
+impl BulkEdit {
+    /// The edit changes tags. A tag edit has no shared-settings part.
+    pub fn is_tag_edit(&self) -> bool {
+        matches!(self, Self::RenameTag { .. } | Self::DeleteTag { .. })
+    }
 }
 
 /// A [`BulkEdit`] that is not done yet.

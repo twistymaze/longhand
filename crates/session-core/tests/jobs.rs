@@ -2187,6 +2187,30 @@ fn a_bulk_edit_is_kept_in_order_until_it_is_removed() {
 }
 
 #[test]
+fn a_tag_edit_is_kept_with_its_texts() {
+    use session_core::BulkEdit;
+    let store = Store::open_in_memory().unwrap();
+    let rename = BulkEdit::RenameTag {
+        from: "Customer::Mayo".into(),
+        to: "Customer::Mayo Clinic".into(),
+    };
+    let delete = BulkEdit::DeleteTag {
+        name: "follow-up".into(),
+    };
+    store.add_bulk_edit(&rename).unwrap();
+    store.add_bulk_edit(&delete).unwrap();
+    let open = store.bulk_edits().unwrap();
+    assert_eq!((&open[0].edit, &open[1].edit), (&rename, &delete));
+    assert!(open.iter().all(|o| o.edit.is_tag_edit()));
+    assert!(
+        !BulkEdit::DeleteType {
+            name: "Pathfinder".into()
+        }
+        .is_tag_edit()
+    );
+}
+
+#[test]
 fn the_computer_id_stays_the_same_and_differs_between_databases() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("longhand.db");

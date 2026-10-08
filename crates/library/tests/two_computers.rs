@@ -1291,6 +1291,60 @@ fn an_adopted_note_has_the_tags_and_the_pending_type_of_its_session_md() {
     assert_eq!(record.note_type, None);
 }
 
+// Covers R13, R18 and the verification of U6: tag edits from one computer
+// show on the other after a sync, and no note has two tags with one key.
+#[test]
+fn tag_edits_on_b_show_on_a_after_a_sync_and_a_keeps_one_tag_for_each_key() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let mut b = computer();
+    a.save_note("n1", &root, None, "");
+    a.save_note("n2", &root, None, "");
+    let now = Instant::now();
+    b.sync(&root, now);
+    let claims = session_core::jobs::Claims::default();
+    let tags = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+
+    pipeline::tags::set_note_tags(&b.store, &claims, "n1", &tags(&["Customer::Mayo"]), &[])
+        .unwrap();
+    // A adds the same tag with another spelling to n1 and to n2, after the
+    // edit of B has synced.
+    a.sync(&root, now);
+    assert_eq!(a.record("n1").unwrap().tags, tags(&["Customer::Mayo"]));
+    for id in ["n1", "n2"] {
+        pipeline::tags::set_note_tags(&a.store, &claims, id, &tags(&["customer :: MAYO"]), &[])
+            .unwrap();
+    }
+    assert_eq!(a.record("n1").unwrap().tags, tags(&["Customer::Mayo"]));
+
+    // B renames the tag in Settings. A sees the new tag on both notes.
+    b.sync(&root, now);
+    let pass = pipeline::tags::apply_edit(
+        &b.store,
+        &claims,
+        &session_core::BulkEdit::RenameTag {
+            from: "Customer::Mayo".into(),
+            to: "Customer::Mayo Clinic".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!((pass.matched, pass.done), (2, true));
+    assert_eq!(a.sync(&root, now), changed(&["n1", "n2"]));
+    for id in ["n1", "n2"] {
+        assert_eq!(
+            a.record(id).unwrap().tags,
+            tags(&["Customer::Mayo Clinic"]),
+            "{id}"
+        );
+    }
+    let list = pipeline::tags::tag_list(&a.store.lock().unwrap()).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(
+        (list[0].text.as_str(), list[0].count),
+        ("Customer::Mayo Clinic", 2)
+    );
+}
+
 #[test]
 fn a_tag_edit_from_the_other_computer_refreshes_a_saved_row() {
     let (_dir, root) = shared_root();

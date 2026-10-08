@@ -670,6 +670,9 @@ pub fn apply_edit(
     let (from, to) = match edit {
         BulkEdit::RenameType { from, to } => (from.as_str(), Some(to.as_str())),
         BulkEdit::DeleteType { name } => (name.as_str(), None),
+        BulkEdit::RenameTag { .. } | BulkEdit::DeleteTag { .. } => {
+            return Err(StageError::Failed(format!("{edit:?} is not a type edit")));
+        }
     };
     if let Some(to) = to
         && same_type_name(from, to)

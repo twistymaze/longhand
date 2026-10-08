@@ -63,6 +63,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   remote: null,
   note_type: null,
   type_move_waits: false,
+  tags: [],
   ...over,
 });
 

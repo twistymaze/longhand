@@ -417,6 +417,33 @@ async deleteNoteType(name: string) : Promise<Result<NoteTypeEdit, string>> {
 }
 },
 /**
+ * Rename the tag `name` to `new_name` on every note (R13), also on a note
+ * that another computer records or processes. A new name with the key of
+ * another tag merges the two tags, and a note with both keeps one. A note
+ * whose folder is not available now changes later.
+ */
+async renameTag(name: string, newName: string) : Promise<Result<TagEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("rename_tag", { name, newName }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete the tag `name` from every note (R13). The surface asks for a
+ * confirmation with the number of notes first (R31): the count of the tag
+ * in the tag list.
+ */
+async deleteTag(name: string) : Promise<Result<TagEdit, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_tag", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Pick a folder with the system dialog and return its path. Nothing
  * changes: the surface then asks what to do with the notes in the old
  * folder, and calls [`change_storage_folder`] (R4). `None` when the user
@@ -883,6 +910,34 @@ async renameSession(sessionId: string, title: string) : Promise<Result<FolderRen
 async setNoteType(sessionId: string, noteType: string | null) : Promise<Result<TypeChangeResult, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_note_type", { sessionId, noteType }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add the tags `add` to a note and remove the tags `remove` (R10, R15).
+ * This works during a recording and during processing. A tag of `add`
+ * whose key the note has already changes nothing, and `remove` removes the
+ * tags with the same key (R30). Returns the tags of the note after the
+ * edit. The edit runs off the main thread, since it can reach a synced
+ * folder.
+ */
+async setNoteTags(sessionId: string, add: string[], remove: string[]) : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_tags", { sessionId, add, remove }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The tag list (R12): each tag that is on at least one note, sorted by its
+ * text. This reads the store only.
+ */
+async listTags() : Promise<Result<TagEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_tags") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2003,7 +2058,11 @@ note_type: string | null;
  * The home folder moves to the folder of `note_type` later, when no
  * computer works on the note (R5).
  */
-type_move_waits: boolean }
+type_move_waits: boolean; 
+/**
+ * The tags of the note, as their exact texts (R9, R11).
+ */
+tags: string[] }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds
@@ -2297,6 +2356,36 @@ export type SystemAudioPermission = "allowed" | "denied" |
  * The private check is missing on this macOS.
  */
 "unknown"
+/**
+ * What a tag rename or delete did (R13, R31).
+ */
+export type TagEdit = { 
+/**
+ * The number of notes that had the tag.
+ */
+changed: number; 
+/**
+ * The tag list after the edit.
+ */
+tags: TagEntry[] }
+/**
+ * One tag of the tag list (R12, KTD10).
+ */
+export type TagEntry = { 
+/**
+ * The spelling on the note with the earliest start that has the tag
+ * (R30).
+ */
+text: string; 
+/**
+ * The key of the tag: the text with no spaces at its ends or around
+ * `::`, in lower case. Two tags with one key are the same tag.
+ */
+key: string; 
+/**
+ * The number of notes with the tag (R31).
+ */
+count: number }
 /**
  * The update track of a build. Each track has its own update manifest.
  */

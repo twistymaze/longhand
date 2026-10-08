@@ -876,6 +876,8 @@ impl SharedSettingsManager {
         let (from, to) = match edit {
             BulkEdit::RenameType { from, to } => (from.as_str(), Some(to.as_str())),
             BulkEdit::DeleteType { name } => (name.as_str(), None),
+            // A tag edit has no shared-settings part (KTD11).
+            BulkEdit::RenameTag { .. } | BulkEdit::DeleteTag { .. } => return Ok(()),
         };
         self.change(|root| {
             let fields = fields_in_file(root)?;
