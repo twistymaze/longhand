@@ -353,6 +353,41 @@ async setBackground(text: string) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * The note types and the default type (R2, R7, R34, KTD9): the shared
+ * list plus each type folder that holds a note. This never writes.
+ */
+async noteTypes() : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_types") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add a note type to the shared list (R3). The name goes through the type
+ * name check (R28), and a name that the list has is refused.
+ */
+async addNoteType(name: string) : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_note_type", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Make a note type the default type, or "No type" for `None` (R7, R23).
+ */
+async setDefaultNoteType(name: string | null) : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_default_note_type", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Pick a folder with the system dialog and return its path. Nothing
  * changes: the surface then asks what to do with the notes in the old
  * folder, and calls [`change_storage_folder`] (R4). `None` when the user
@@ -1390,6 +1425,40 @@ export type MoveState =
  * The open Move, for Settings > Storage.
  */
 export type MoveStatus = { old_folder: string; new_folder: string; moved: number; total: number; state: MoveState; cause: MovePauseCause | null }
+/**
+ * One note type of the effective type list, for the surface (R3, KTD9).
+ */
+export type NoteTypeEntry = { name: string; 
+/**
+ * The name passes the type name check. Only a valid type is offered
+ * for a new note or a type change. Settings offers only a rename or a
+ * delete for a type that is not valid.
+ */
+valid: boolean; 
+/**
+ * The shared list has the type. False for a type that comes only from
+ * a folder in the storage folder (R34).
+ */
+shared: boolean; 
+/**
+ * The number of notes of the type.
+ */
+notes: number }
+/**
+ * The effective type list and the default type (R2, R7, KTD9).
+ */
+export type NoteTypeList = { 
+/**
+ * The types of the shared list in their order, then the folder-only
+ * types in name order.
+ */
+types: NoteTypeEntry[]; 
+/**
+ * The type of a new note from the New Note button and the shortcut.
+ * `None` is "No type". A shared default that names no valid type of
+ * the list is "No type".
+ */
+default_type: string | null }
 /**
  * What a notes save did.
  */

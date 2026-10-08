@@ -10,5 +10,6 @@ pub mod background;
 pub mod cache;
 pub mod file;
 pub mod join;
+pub mod note_types;
 pub mod prompts;
 pub mod view;

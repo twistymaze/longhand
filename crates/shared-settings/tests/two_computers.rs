@@ -397,3 +397,82 @@ fn b_keeps_the_cached_background_while_the_folder_is_missing() {
     assert_eq!(on_b.background, "Kept on B.");
     assert!(!on_b.background_writable());
 }
+
+/// The effective type names and the default type of `view`, with the type
+/// folders `folders` that both computers see after the sync.
+fn types_of(
+    view: &SharedView,
+    folders: &[shared_settings::note_types::TypeFolder],
+) -> (Vec<String>, Option<String>) {
+    use shared_settings::note_types::{effective_default, effective_types};
+    let shared = view.fields.note_types.known().cloned().unwrap_or_default();
+    let types = effective_types(&shared, folders);
+    let default = view.fields.default_note_type.known().cloned().flatten();
+    (
+        types.iter().map(|t| t.name.clone()).collect(),
+        effective_default(default.as_deref(), &types),
+    )
+}
+
+#[test]
+fn both_computers_show_the_same_note_types_and_the_same_default_type() {
+    // R2, R7, KTD9.
+    use shared_settings::note_types::{TypeFolder, add_type, default_to_save};
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::ChangeOfFolder);
+    // Both computers see one type folder that is not in the shared list.
+    let folders = [TypeFolder {
+        name: "Customer Calls".into(),
+        notes: 1,
+        leaving: false,
+    }];
+
+    let (list, _) = add_type(&[], &folders, &[], "Pathfinder").unwrap();
+    a.save(folder.path(), &[SharedValue::NoteTypes(list.clone())]);
+    let (default, more) = default_to_save(&list, &folders, Some("pathfinder")).unwrap();
+    assert_eq!(more, None);
+    let on_a = a.save(folder.path(), &[SharedValue::DefaultNoteType(default)]);
+
+    let before = fs::read(settings_path(folder.path())).unwrap();
+    let on_b = b.refresh(folder.path());
+    assert_eq!(fs::read(settings_path(folder.path())).unwrap(), before);
+    let expected = (
+        vec!["Customer Calls".to_string(), "Pathfinder".to_string()],
+        Some("Pathfinder".to_string()),
+    );
+    assert_eq!(types_of(&on_a, &folders), expected);
+    assert_eq!(types_of(&on_b, &folders), expected);
+
+    // B sets "No type". A shows it after the sync.
+    b.save(folder.path(), &[SharedValue::DefaultNoteType(None)]);
+    assert_eq!(types_of(&a.refresh(folder.path()), &folders).1, None);
+}
+
+#[test]
+fn a_change_of_folder_copies_the_note_types_into_a_folder_with_no_settings() {
+    // KTD14: the new folder gets this computer's types and default type.
+    let old = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(old.path(), JoinKind::ChangeOfFolder);
+    a.save(
+        old.path(),
+        &[
+            SharedValue::NoteTypes(vec!["Pathfinder".into(), "One on One".into()]),
+            SharedValue::DefaultNoteType(Some("One on One".into())),
+        ],
+    );
+    let joined = a.join(new.path(), JoinKind::ChangeOfFolder);
+    assert!(joined.written.settings_file);
+    let fields = &joined.view.fields;
+    assert_eq!(
+        fields.note_types,
+        Field::Known(vec!["Pathfinder".to_string(), "One on One".to_string()])
+    );
+    assert_eq!(
+        fields.default_note_type,
+        Field::Known(Some("One on One".to_string()))
+    );
+}

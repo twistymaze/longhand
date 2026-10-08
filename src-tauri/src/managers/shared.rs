@@ -13,10 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
+use session_save::naming::same_type_name;
 use shared_settings::background::{self, BackgroundError};
 use shared_settings::cache::{self, Cache};
 use shared_settings::file::{self, SaveError, SharedValue, Unavailable};
 use shared_settings::join::{self, JoinKind};
+use shared_settings::note_types;
 use shared_settings::prompts::{self, PromptError};
 use shared_settings::view::{self, Availability, SharedView};
 use specta::Type;
@@ -609,6 +611,163 @@ fn snapshot_of(inner: &Inner) -> SharedSnapshot {
     SharedSnapshot {
         view: inner.view.clone(),
         availability,
+    }
+}
+
+/// One note type of the effective type list, for the surface (R3, KTD9).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct NoteTypeEntry {
+    pub name: String,
+    /// The name passes the type name check. Only a valid type is offered
+    /// for a new note or a type change. Settings offers only a rename or a
+    /// delete for a type that is not valid.
+    pub valid: bool,
+    /// The shared list has the type. False for a type that comes only from
+    /// a folder in the storage folder (R34).
+    pub shared: bool,
+    /// The number of notes of the type.
+    pub notes: u32,
+}
+
+/// The effective type list and the default type (R2, R7, KTD9).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq, Default)]
+pub struct NoteTypeList {
+    /// The types of the shared list in their order, then the folder-only
+    /// types in name order.
+    pub types: Vec<NoteTypeEntry>,
+    /// The type of a new note from the New Note button and the shortcut.
+    /// `None` is "No type". A shared default that names no valid type of
+    /// the list is "No type".
+    pub default_type: Option<String>,
+}
+
+/// The type folders and the home folders of the storage folder, from the
+/// store rows (KTD4, KTD9). This reads no file.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StorageFolders {
+    pub types: Vec<note_types::TypeFolder>,
+    /// The names of the home folders directly in the storage folder.
+    pub homes: Vec<String>,
+}
+
+impl StorageFolders {
+    /// The folders of the storage folder `root` that hold the home folders
+    /// of `records`. A discarded note and a note in another folder do not
+    /// count. A type folder is leaving when each of its notes has a pending
+    /// type with that folder as `from` (KTD9).
+    pub fn from_records(root: &Path, records: &[session_core::SessionRecord]) -> Self {
+        let mut folders = Self::default();
+        for record in records {
+            if record.state == session_core::SessionState::Discarded {
+                continue;
+            }
+            let Some(home) = record.home_path.as_deref().map(Path::new) else {
+                continue;
+            };
+            let leaves = |folder: &str| {
+                record.pending_type.as_ref().is_some_and(|pending| {
+                    pending
+                        .from
+                        .as_deref()
+                        .is_some_and(|from| same_type_name(from, folder))
+                })
+            };
+            match session_core::folder::note_type_in(root, home) {
+                Some(None) => {
+                    if let Some(name) = home.file_name() {
+                        folders.homes.push(name.to_string_lossy().into_owned());
+                    }
+                }
+                Some(Some(name)) => {
+                    let leaving = leaves(&name);
+                    match folders.types.iter_mut().find(|f| f.name == name) {
+                        Some(folder) => {
+                            folder.notes += 1;
+                            folder.leaving &= leaving;
+                        }
+                        None => folders.types.push(note_types::TypeFolder {
+                            name,
+                            notes: 1,
+                            leaving,
+                        }),
+                    }
+                }
+                None => {}
+            }
+        }
+        folders
+    }
+}
+
+/// The note types of the shared settings `fields`. A list of a form that
+/// this build does not know gives no types.
+fn shared_types(fields: &file::SharedFields) -> Vec<String> {
+    fields.note_types.known().cloned().unwrap_or_default()
+}
+
+/// The note types of the settings file of `root`, read at the time of a
+/// change (R15).
+fn types_in_file(root: &Path) -> Result<Vec<String>, Failure> {
+    match file::read_settings(root) {
+        file::FileRead::Parsed(settings) => Ok(shared_types(&settings.fields)),
+        file::FileRead::Missing => Err(Failure::Missing),
+        file::FileRead::NotAvailable(cause) => Err(Failure::NotAvailable(cause)),
+    }
+}
+
+impl SharedSettingsManager {
+    /// The effective type list and the default type, from the shared view
+    /// in memory and `folders` (KTD9). This does no file I/O and never
+    /// writes.
+    pub fn note_types(&self, folders: &StorageFolders) -> NoteTypeList {
+        let fields = self.snapshot().view.fields;
+        let types = note_types::effective_types(&shared_types(&fields), &folders.types);
+        let default = fields.default_note_type.known().cloned().flatten();
+        NoteTypeList {
+            default_type: note_types::effective_default(default.as_deref(), &types),
+            types: types
+                .into_iter()
+                .map(|t| NoteTypeEntry {
+                    name: t.name,
+                    valid: t.valid,
+                    shared: t.shared,
+                    notes: u32::try_from(t.notes).unwrap_or(u32::MAX),
+                })
+                .collect(),
+        }
+    }
+
+    /// Add the note type `name` to the shared list (R3). The name goes
+    /// through the type name check (R28, KTD8), and a name that the list
+    /// has is refused. The save also puts the folder-only types into the
+    /// list (KTD9). Returns the name as saved.
+    pub fn add_note_type(&self, name: &str, folders: &StorageFolders) -> Result<String, String> {
+        self.change(|root| {
+            let shared = types_in_file(root)?;
+            let (list, name) = note_types::add_type(&shared, &folders.types, &folders.homes, name)
+                .map_err(|e| Failure::Refused(e.to_string()))?;
+            file::save_settings(root, &[SharedValue::NoteTypes(list)])?;
+            Ok(name)
+        })
+    }
+
+    /// Make `name` the default type, or "No type" for `None` (R7). The
+    /// type must be a valid type of the effective list. A folder-only type
+    /// goes into the shared list in the same save (KTD9).
+    pub fn set_default_note_type(
+        &self,
+        name: Option<&str>,
+        folders: &StorageFolders,
+    ) -> Result<(), String> {
+        self.change(|root| {
+            let shared = types_in_file(root)?;
+            let (default, list) = note_types::default_to_save(&shared, &folders.types, name)
+                .map_err(|e| Failure::Refused(e.to_string()))?;
+            let mut patch = vec![SharedValue::DefaultNoteType(default)];
+            patch.extend(list.map(SharedValue::NoteTypes));
+            file::save_settings(root, &patch)?;
+            Ok(())
+        })
     }
 }
 
@@ -1548,5 +1707,306 @@ mod tests {
         a.set_background("From A.").unwrap();
         assert!(b_manager.reread());
         assert_eq!(settings_of(&b_manager).background, "From A.");
+    }
+
+    // ------------------------------------------------------------ note types
+
+    fn type_folder(name: &str, notes: usize, leaving: bool) -> note_types::TypeFolder {
+        note_types::TypeFolder {
+            name: name.into(),
+            notes,
+            leaving,
+        }
+    }
+
+    fn type_names(list: &NoteTypeList) -> Vec<&str> {
+        list.types.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    fn record(
+        id: &str,
+        home: Option<PathBuf>,
+        pending_from: Option<&str>,
+    ) -> session_core::SessionRecord {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-07T14:00:00+00:00").unwrap();
+        session_core::SessionRecord {
+            id: id.into(),
+            created_at: at,
+            state: session_core::SessionState::Saved,
+            queue_seq: None,
+            speaker_count: None,
+            asr_model: None,
+            recognition_snapshot: None,
+            home_path: home.map(|h| h.to_string_lossy().into_owned()),
+            title: None,
+            found_speakers: None,
+            live_transcript: None,
+            transcribe_again_model: None,
+            started_at: None,
+            note_type: None,
+            tags: Vec::new(),
+            pending_type: pending_from.map(|from| session_core::folder::PendingType {
+                to: None,
+                from: Some(from.into()),
+                by: "computer-b".into(),
+                at,
+            }),
+        }
+    }
+
+    #[test]
+    fn the_storage_folders_come_from_the_rows_in_the_storage_folder() {
+        // KTD4, KTD9.
+        let root = Path::new("/notes");
+        let mut discarded = record("d", Some(root.join("Board/2026-10-01 Plan")), None);
+        discarded.state = session_core::SessionState::Discarded;
+        let records = [
+            record(
+                "a",
+                Some(root.join("Pathfinder/2026-10-02 Session 12")),
+                None,
+            ),
+            record(
+                "b",
+                Some(root.join("Pathfinder/2026-10-03 Session 13")),
+                None,
+            ),
+            record("c", Some(root.join("2026-10-07 0900 Standup")), None),
+            // B deleted "Old" while this note was busy: it is leaving.
+            record("e", Some(root.join("Old/2026-09-01 Retro")), Some("Old")),
+            // One note of "Mixed" leaves and one stays.
+            record("f", Some(root.join("Mixed/2026-09-02 A")), Some("Mixed")),
+            record("g", Some(root.join("Mixed/2026-09-03 B")), None),
+            record(
+                "h",
+                Some(PathBuf::from("/other/Pathfinder/2026-10-04 X")),
+                None,
+            ),
+            record("i", None, None),
+            discarded,
+        ];
+        let folders = StorageFolders::from_records(root, &records);
+        assert_eq!(folders.homes, ["2026-10-07 0900 Standup"]);
+        assert_eq!(
+            folders.types,
+            [
+                type_folder("Pathfinder", 2, false),
+                type_folder("Old", 1, true),
+                type_folder("Mixed", 2, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_type_list_holds_shared_and_folder_types_and_the_read_writes_nothing() {
+        // R2, R34, KTD9: the list read uses the view in memory only.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        manager
+            .add_note_type("One on One", &StorageFolders::default())
+            .unwrap();
+        let path = file::settings_path(folder.path());
+        let bytes = std::fs::read(&path).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        let folders = StorageFolders {
+            types: vec![type_folder("Customer Calls", 2, false)],
+            homes: Vec::new(),
+        };
+        let list = manager.note_types(&folders);
+        assert_eq!(type_names(&list), ["One on One", "Customer Calls"]);
+        assert_eq!(
+            list.types[1],
+            NoteTypeEntry {
+                name: "Customer Calls".into(),
+                valid: true,
+                shared: false,
+                notes: 2,
+            }
+        );
+        assert_eq!(list.default_type, None);
+        assert!(!manager.reread());
+        manager.note_types(&folders);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(file_of(folder.path())["note_types"], json!(["One on One"]));
+    }
+
+    #[test]
+    fn an_add_saves_the_list_with_the_folder_types_and_refuses_a_bad_or_taken_name() {
+        // R3, R28, KTD8, KTD9.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let folders = StorageFolders {
+            types: vec![
+                type_folder("Customer Calls", 1, false),
+                type_folder("con", 1, false),
+                type_folder("Old", 1, true),
+            ],
+            homes: vec!["2026-10-07 0900 Standup".into()],
+        };
+        assert_eq!(
+            manager.add_note_type("  Pathfinder ", &folders).unwrap(),
+            "Pathfinder"
+        );
+        assert_eq!(
+            file_of(folder.path())["note_types"],
+            json!(["Customer Calls", "Pathfinder"])
+        );
+        let before = std::fs::read(file::settings_path(folder.path())).unwrap();
+        assert_eq!(
+            manager.add_note_type("pathfinder", &folders).unwrap_err(),
+            "A type with this name already exists."
+        );
+        assert_eq!(
+            manager.add_note_type("1:1s", &folders).unwrap_err(),
+            session_save::naming::TypeNameError::ForbiddenCharacter(':').to_string()
+        );
+        assert_eq!(
+            manager
+                .add_note_type("2026-10-07 0900 standup", &folders)
+                .unwrap_err(),
+            "A note folder in the storage folder has this name."
+        );
+        assert_eq!(
+            std::fs::read(file::settings_path(folder.path())).unwrap(),
+            before
+        );
+        // "con" is listed but is not valid, and "Old" is leaving.
+        let list = manager.note_types(&folders);
+        assert_eq!(type_names(&list), ["Customer Calls", "Pathfinder", "con"]);
+        assert!(!list.types[2].valid);
+    }
+
+    #[test]
+    fn the_default_type_is_saved_and_no_type_clears_it() {
+        // R7, R23.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let folders = StorageFolders {
+            types: vec![type_folder("Customer Calls", 1, false)],
+            homes: Vec::new(),
+        };
+        manager
+            .add_note_type("Pathfinder", &StorageFolders::default())
+            .unwrap();
+        manager
+            .set_default_note_type(Some("customer calls"), &folders)
+            .unwrap();
+        let on_disk = file_of(folder.path());
+        assert_eq!(on_disk["default_note_type"], json!("Customer Calls"));
+        assert_eq!(
+            on_disk["note_types"],
+            json!(["Pathfinder", "Customer Calls"])
+        );
+        assert_eq!(
+            manager.note_types(&folders).default_type.as_deref(),
+            Some("Customer Calls")
+        );
+        assert_eq!(
+            manager
+                .set_default_note_type(Some("Board"), &folders)
+                .unwrap_err(),
+            "That type no longer exists."
+        );
+        manager.set_default_note_type(None, &folders).unwrap();
+        assert_eq!(file_of(folder.path())["default_note_type"], Value::Null);
+        assert_eq!(manager.note_types(&folders).default_type, None);
+    }
+
+    #[test]
+    fn a_type_change_is_refused_and_writes_nothing_while_the_file_does_not_parse() {
+        // Rule 4 of the shared settings rules.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        manager
+            .add_note_type("Pathfinder", &StorageFolders::default())
+            .unwrap();
+        let path = file::settings_path(folder.path());
+        std::fs::write(&path, r#"{"note_types": ["Path"#).unwrap();
+        manager.reread();
+        // The list comes from the cache, and the read wrote nothing.
+        assert_eq!(
+            type_names(&manager.note_types(&StorageFolders::default())),
+            ["Pathfinder"]
+        );
+        assert!(
+            manager
+                .add_note_type("Board", &StorageFolders::default())
+                .is_err()
+        );
+        assert!(
+            manager
+                .set_default_note_type(None, &StorageFolders::default())
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"note_types": ["Path"#
+        );
+    }
+
+    #[test]
+    fn a_change_of_folder_copies_the_types_and_the_default_into_a_folder_with_no_settings() {
+        // KTD14.
+        let old = TempDir::new().unwrap();
+        let new = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(old.path()));
+        manager.join_at_launch();
+        manager
+            .add_note_type("Pathfinder", &StorageFolders::default())
+            .unwrap();
+        manager
+            .set_default_note_type(Some("Pathfinder"), &StorageFolders::default())
+            .unwrap();
+
+        manager.change_folder(Some(new.path().to_path_buf()));
+        let on_disk = file_of(new.path());
+        assert_eq!(on_disk["note_types"], json!(["Pathfinder"]));
+        assert_eq!(on_disk["default_note_type"], json!("Pathfinder"));
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(type_names(&list), ["Pathfinder"]);
+        assert_eq!(list.default_type.as_deref(), Some("Pathfinder"));
+    }
+
+    #[test]
+    fn a_change_of_folder_to_a_folder_with_settings_keeps_its_types() {
+        // Rule 8: the folder's settings apply. This computer's types do not
+        // go into a folder that has settings.
+        let old = TempDir::new().unwrap();
+        let shared = TempDir::new().unwrap();
+        let computer_a = Computer::new();
+        let a = computer_a.manager(Some(shared.path()));
+        a.join_at_launch();
+        a.add_note_type("Customer Calls", &StorageFolders::default())
+            .unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(old.path()));
+        manager.join_at_launch();
+        manager
+            .add_note_type("Pathfinder", &StorageFolders::default())
+            .unwrap();
+
+        manager.change_folder(Some(shared.path().to_path_buf()));
+        assert_eq!(
+            file_of(shared.path())["note_types"],
+            json!(["Customer Calls"])
+        );
+        assert_eq!(
+            type_names(&manager.note_types(&StorageFolders::default())),
+            ["Customer Calls"]
+        );
     }
 }

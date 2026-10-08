@@ -586,3 +586,153 @@ fn a_save_of_audio_removal_keeps_every_other_field_and_unknown_fields() {
     expected["audio_removal"] = json!("off");
     assert_eq!(on_disk(root.path()), expected);
 }
+
+// ------------------------------------------------------------ note types
+
+#[test]
+fn the_note_types_and_the_default_type_parse_and_null_is_no_type() {
+    // R2, R7, KTD9.
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"note_types": ["Pathfinder", "One on One"], "default_note_type": "Pathfinder"}),
+    );
+    let fields = parsed(root.path()).fields;
+    assert_eq!(
+        fields.note_types,
+        Field::Known(vec!["Pathfinder".to_string(), "One on One".to_string()])
+    );
+    assert_eq!(
+        fields.default_note_type,
+        Field::Known(Some("Pathfinder".to_string()))
+    );
+
+    write_raw(root.path(), &json!({"default_note_type": null}));
+    let fields = parsed(root.path()).fields;
+    assert_eq!(fields.note_types, Field::Absent);
+    assert_eq!(fields.default_note_type, Field::Known(None));
+}
+
+#[test]
+fn a_note_type_list_of_the_wrong_form_is_unknown() {
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"note_types": "Pathfinder", "default_note_type": 3}),
+    );
+    let fields = parsed(root.path()).fields;
+    assert_eq!(fields.note_types, Field::Unknown(json!("Pathfinder")));
+    assert_eq!(fields.default_note_type, Field::Unknown(json!(3)));
+    let keys: Vec<_> = fields
+        .unknown_values()
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys, ["note_types", "default_note_type"]);
+}
+
+#[test]
+fn a_save_of_another_field_keeps_the_note_types_and_the_default_type() {
+    // The prevention rule of the shared settings rules: a save of another
+    // field keeps each new field.
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({
+            "schema_version": 1,
+            "note_types": ["Pathfinder", "One on One"],
+            "default_note_type": "One on One"
+        }),
+    );
+    save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).unwrap();
+    let raw = on_disk(root.path());
+    assert_eq!(raw["note_types"], json!(["Pathfinder", "One on One"]));
+    assert_eq!(raw["default_note_type"], json!("One on One"));
+    assert_eq!(raw["live_transcript"], json!(false));
+}
+
+#[test]
+fn a_save_of_the_note_types_keeps_every_other_field() {
+    let root = folder();
+    let mut before = full();
+    before["from_a_newer_build"] = json!({"x": 1});
+    write_raw(root.path(), &before);
+    save_settings(
+        root.path(),
+        &[
+            SharedValue::NoteTypes(vec!["Pathfinder".into()]),
+            SharedValue::DefaultNoteType(None),
+        ],
+    )
+    .unwrap();
+    let mut expected = before;
+    expected["note_types"] = json!(["Pathfinder"]);
+    expected["default_note_type"] = Value::Null;
+    assert_eq!(on_disk(root.path()), expected);
+}
+
+/// Each name and its bytes in the `.longhand` folder of `root`.
+fn longhand_files(root: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+    let mut files: Vec<_> = fs::read_dir(root.join(".longhand"))
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.file_name(), fs::read(e.path()).unwrap())
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// The effective type names of a read of `root` by a computer with no
+/// cache.
+fn effective_names(root: &Path) -> Vec<String> {
+    let loaded = load(root, None);
+    let shared = loaded
+        .view
+        .fields
+        .note_types
+        .known()
+        .cloned()
+        .unwrap_or_default();
+    shared_settings::note_types::effective_types(&shared, &[])
+        .into_iter()
+        .map(|t| t.name)
+        .collect()
+}
+
+#[test]
+fn a_read_of_the_note_types_writes_nothing_for_a_file_that_does_not_parse() {
+    let root = folder();
+    let path = root.path().join(".longhand").join(SETTINGS_FILE);
+    fs::write(&path, r#"{"note_types": ["Pathfinder""#).unwrap();
+    let before = longhand_files(root.path());
+    assert!(effective_names(root.path()).is_empty());
+    assert_eq!(longhand_files(root.path()), before);
+}
+
+#[test]
+fn a_read_of_the_note_types_writes_nothing_for_a_newer_schema_version() {
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"schema_version": SCHEMA_VERSION + 1, "note_types": ["Pathfinder"]}),
+    );
+    let before = longhand_files(root.path());
+    assert_eq!(effective_names(root.path()), ["Pathfinder"]);
+    assert_eq!(longhand_files(root.path()), before);
+}
+
+#[test]
+fn a_conflict_copy_with_other_note_types_has_no_effect_and_the_read_writes_nothing() {
+    let root = folder();
+    write_raw(root.path(), &json!({"note_types": ["Pathfinder"]}));
+    fs::write(
+        root.path().join(".longhand").join("settings 2.json"),
+        r#"{"note_types": ["Customer Calls"], "default_note_type": "Customer Calls"}"#,
+    )
+    .unwrap();
+    let before = longhand_files(root.path());
+    assert_eq!(effective_names(root.path()), ["Pathfinder"]);
+    assert_eq!(longhand_files(root.path()), before);
+}

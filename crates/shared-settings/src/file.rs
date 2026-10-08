@@ -38,6 +38,8 @@ pub const KEY_SPEAKER_PROCESSING_MODE: &str = "speaker_processing_mode";
 pub const KEY_RECOGNITION_LANGUAGE: &str = "recognition_language";
 pub const KEY_CHECK_UPDATES_AUTOMATICALLY: &str = "check_updates_automatically";
 pub const KEY_AUDIO_REMOVAL: &str = "audio_removal";
+pub const KEY_NOTE_TYPES: &str = "note_types";
+pub const KEY_DEFAULT_NOTE_TYPE: &str = "default_note_type";
 
 /// The delay of a new storage folder: the audio of a saved note goes 30
 /// days after the note last recorded (R2).
@@ -178,6 +180,14 @@ pub struct SharedFields {
     /// When the audio of a saved note goes. An absent field is the
     /// default, 30 days (KTD3).
     pub audio_removal: Field<AudioRemoval>,
+    /// The note types, in the order that Settings shows them (R2, KTD9).
+    /// The list is one value: the last change wins. A name that fails the
+    /// type name check stays in the file, but no type comes from it (see
+    /// [`crate::note_types`]).
+    pub note_types: Field<Vec<String>>,
+    /// The type of a new note from the New Note button and the shortcut
+    /// (R7, R23). `Known(None)` and an absent field are "No type".
+    pub default_note_type: Field<Option<String>>,
 }
 
 impl SharedFields {
@@ -200,6 +210,8 @@ impl SharedFields {
             audio_removal: parse(raw, KEY_AUDIO_REMOVAL, |removal: &AudioRemoval| {
                 removal.valid()
             }),
+            note_types: parse(raw, KEY_NOTE_TYPES, |_| true),
+            default_note_type: parse(raw, KEY_DEFAULT_NOTE_TYPE, |_| true),
         }
     }
 
@@ -243,6 +255,8 @@ impl SharedFields {
                 unknown(&self.check_updates_automatically),
             ),
             (KEY_AUDIO_REMOVAL, unknown(&self.audio_removal)),
+            (KEY_NOTE_TYPES, unknown(&self.note_types)),
+            (KEY_DEFAULT_NOTE_TYPE, unknown(&self.default_note_type)),
         ]
         .into_iter()
         .filter_map(|(key, value)| Some((key, value?)))
@@ -290,6 +304,8 @@ pub enum SharedValue {
     RecognitionLanguage(Option<String>),
     CheckUpdatesAutomatically(bool),
     AudioRemoval(AudioRemoval),
+    NoteTypes(Vec<String>),
+    DefaultNoteType(Option<String>),
 }
 
 impl SharedValue {
@@ -305,6 +321,8 @@ impl SharedValue {
             SharedValue::RecognitionLanguage(_) => KEY_RECOGNITION_LANGUAGE,
             SharedValue::CheckUpdatesAutomatically(_) => KEY_CHECK_UPDATES_AUTOMATICALLY,
             SharedValue::AudioRemoval(_) => KEY_AUDIO_REMOVAL,
+            SharedValue::NoteTypes(_) => KEY_NOTE_TYPES,
+            SharedValue::DefaultNoteType(_) => KEY_DEFAULT_NOTE_TYPE,
         }
     }
 
@@ -320,6 +338,8 @@ impl SharedValue {
             SharedValue::RecognitionLanguage(language) => serde_json::to_value(language),
             SharedValue::CheckUpdatesAutomatically(on) => serde_json::to_value(on),
             SharedValue::AudioRemoval(removal) => serde_json::to_value(removal),
+            SharedValue::NoteTypes(names) => serde_json::to_value(names),
+            SharedValue::DefaultNoteType(name) => serde_json::to_value(name),
         };
         value.expect("a shared setting serializes")
     }
