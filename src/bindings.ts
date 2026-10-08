@@ -1585,8 +1585,8 @@ general: boolean }
  */
 export type NoteTypeList = { 
 /**
- * General, then the types of the shared list in their order, then the
- * folder-only types in name order.
+ * General, then the types of the shared list and the folder-only
+ * types in name order that ignores case.
  */
 types: NoteTypeEntry[]; 
 /**

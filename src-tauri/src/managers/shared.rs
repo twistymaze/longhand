@@ -637,8 +637,8 @@ pub struct NoteTypeEntry {
 /// The effective type list and the default type (R2, R7, KTD9).
 #[derive(Serialize, Type, Debug, Clone, PartialEq, Eq, Default)]
 pub struct NoteTypeList {
-    /// General, then the types of the shared list in their order, then the
-    /// folder-only types in name order.
+    /// General, then the types of the shared list and the folder-only
+    /// types in name order that ignores case.
     pub types: Vec<NoteTypeEntry>,
     /// The type of a new note from the New Note button and the shortcut.
     /// `None` is General. A shared default that names no valid type of the
@@ -1956,7 +1956,7 @@ mod tests {
         let list = manager.note_types(&folders);
         assert_eq!(
             type_names(&list),
-            ["General", "One on One", "Customer Calls"]
+            ["General", "Customer Calls", "One on One"]
         );
         // General is first: the notes at the top of the storage folder.
         assert_eq!(
@@ -1970,7 +1970,7 @@ mod tests {
             }
         );
         assert_eq!(
-            list.types[2],
+            list.types[1],
             NoteTypeEntry {
                 name: "Customer Calls".into(),
                 valid: true,
@@ -2036,9 +2036,9 @@ mod tests {
         let list = manager.note_types(&folders);
         assert_eq!(
             type_names(&list),
-            ["General", "Customer Calls", "Pathfinder", "con"]
+            ["General", "con", "Customer Calls", "Pathfinder"]
         );
-        assert!(!list.types[3].valid);
+        assert!(!list.types[1].valid);
     }
 
     #[test]
@@ -2062,7 +2062,7 @@ mod tests {
         assert_eq!(on_disk["default_note_type"], json!("Customer Calls"));
         assert_eq!(
             on_disk["note_types"],
-            json!(["Pathfinder", "Customer Calls"])
+            json!(["Customer Calls", "Pathfinder"])
         );
         assert_eq!(
             manager.note_types(&folders).default_type.as_deref(),
@@ -2225,7 +2225,7 @@ mod tests {
                 // The edit is recorded before the list changes (KTD7).
                 assert_eq!(
                     file_of(folder.path())["note_types"],
-                    json!(["Pathfinder", "Board"])
+                    json!(["Board", "Pathfinder"])
                 );
                 recorded.borrow_mut().push(edit.clone());
                 Ok(())
@@ -2264,7 +2264,7 @@ mod tests {
             })
         );
         let on_disk = file_of(folder.path());
-        assert_eq!(on_disk["note_types"], json!(["D&D", "Board"]));
+        assert_eq!(on_disk["note_types"], json!(["Board", "D&D"]));
         assert_eq!(on_disk["default_note_type"], json!("D&D"));
     }
 

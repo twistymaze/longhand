@@ -41,10 +41,10 @@ fn the_list_holds_a_shared_type_with_no_folder_and_a_folder_type_not_in_the_shar
         types,
         [
             NoteType {
-                name: "Pathfinder".into(),
+                name: "Customer Calls".into(),
                 valid: true,
-                shared: true,
-                notes: 3,
+                shared: false,
+                notes: 2,
             },
             NoteType {
                 name: "One on One".into(),
@@ -53,10 +53,10 @@ fn the_list_holds_a_shared_type_with_no_folder_and_a_folder_type_not_in_the_shar
                 notes: 0,
             },
             NoteType {
-                name: "Customer Calls".into(),
+                name: "Pathfinder".into(),
                 valid: true,
-                shared: false,
-                notes: 2,
+                shared: true,
+                notes: 3,
             },
         ]
     );
@@ -79,12 +79,25 @@ fn a_shared_name_that_fails_the_check_or_repeats_is_not_listed() {
 }
 
 #[test]
-fn folder_only_types_follow_the_shared_list_in_name_order() {
+fn shared_and_folder_only_types_are_in_one_name_order_that_ignores_case() {
     let types = effective_types(
-        &shared(&["Zeta"]),
+        &shared(&["Zeta", "alpha"]),
         &[folder("customer calls", 1), folder("Board", 1)],
     );
-    assert_eq!(names(&types), ["Zeta", "Board", "customer calls"]);
+    assert_eq!(names(&types), ["alpha", "Board", "customer calls", "Zeta"]);
+}
+
+#[test]
+fn a_type_added_later_with_an_earlier_name_is_listed_first() {
+    // The list is in name order, not in the order of creation.
+    let (list, _) = add_type(&shared(&["Pathfinder"]), &[], &[], "Board").unwrap();
+    assert_eq!(list, ["Board", "Pathfinder"]);
+    assert_eq!(names(&effective_types(&list, &[])), ["Board", "Pathfinder"]);
+    // A shared list in the order of creation is listed in name order too.
+    assert_eq!(
+        names(&effective_types(&shared(&["Pathfinder", "Board"]), &[])),
+        ["Board", "Pathfinder"]
+    );
 }
 
 #[test]
@@ -97,7 +110,7 @@ fn a_folder_named_con_is_listed_but_not_valid_and_never_goes_into_the_shared_lis
     assert_eq!(con.notes, 2);
     assert_eq!(list_to_save(&[], &folders), ["Pathfinder"]);
     let (list, _) = add_type(&[], &folders, &[], "Board").unwrap();
-    assert_eq!(list, ["Pathfinder", "Board"]);
+    assert_eq!(list, ["Board", "Pathfinder"]);
     assert_eq!(
         default_to_save(&[], &folders, Some("con")),
         Err(NoteTypeError::NoSuchType)
@@ -118,7 +131,7 @@ fn a_leaving_type_is_not_listed_and_does_not_come_back_after_a_list_edit() {
     );
     let (list, name) = add_type(&after_delete_on_b, &folders, &[], "Board").unwrap();
     assert_eq!(name, "Board");
-    assert_eq!(list, ["One on One", "Board"]);
+    assert_eq!(list, ["Board", "One on One"]);
 }
 
 #[test]
@@ -138,7 +151,7 @@ fn an_add_puts_the_folder_only_types_into_the_shared_list() {
     )
     .unwrap();
     assert_eq!(name, "Board");
-    assert_eq!(list, ["Pathfinder", "Customer Calls", "Board"]);
+    assert_eq!(list, ["Board", "Customer Calls", "Pathfinder"]);
 }
 
 #[test]
@@ -250,7 +263,7 @@ fn a_default_of_a_folder_only_type_also_writes_the_list() {
         default_to_save(&shared(&["Pathfinder"]), &folders, Some("customer calls")),
         Ok((
             Some("Customer Calls".to_string()),
-            Some(shared(&["Pathfinder", "Customer Calls"]))
+            Some(shared(&["Customer Calls", "Pathfinder"]))
         ))
     );
     assert_eq!(
@@ -268,10 +281,10 @@ fn a_default_of_a_folder_only_type_also_writes_the_list() {
 }
 
 #[test]
-fn a_rename_keeps_the_place_of_the_type_in_the_list() {
+fn a_rename_moves_the_type_to_the_name_order_place_of_its_new_name() {
     // R6.
     let renamed = rename_type(
-        &shared(&["Pathfinder", "One on One"]),
+        &shared(&["One on One", "Pathfinder"]),
         &[folder("Pathfinder", 3)],
         &[],
         "pathfinder",
@@ -357,7 +370,7 @@ fn a_folder_only_type_with_a_bad_name_can_be_renamed_to_a_valid_name() {
         "Console",
     )
     .unwrap();
-    assert_eq!(renamed.list, shared(&["Pathfinder", "Console"]));
+    assert_eq!(renamed.list, shared(&["Console", "Pathfinder"]));
     assert_eq!(renamed.from, "con");
 }
 
@@ -370,7 +383,7 @@ fn a_delete_removes_the_type_and_writes_the_folder_only_types() {
         "pathfinder",
     )
     .unwrap();
-    assert_eq!(list, shared(&["One on One", "Board"]));
+    assert_eq!(list, shared(&["Board", "One on One"]));
     assert_eq!(name, "Pathfinder");
     assert_eq!(
         delete_type(&shared(&["One on One"]), &[], "Pathfinder"),

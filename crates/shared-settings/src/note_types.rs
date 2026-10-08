@@ -63,9 +63,9 @@ pub enum NoteTypeError {
     NoSuchType,
 }
 
-/// The effective type list: the valid names of the shared list in their
-/// order, then the folder-only types in name order. Two names that differ
-/// only in case are one type, with the spelling of the shared list.
+/// The effective type list: the valid names of the shared list and the
+/// folder-only types, in name order that ignores case. Two names that
+/// differ only in case are one type, with the spelling of the shared list.
 pub fn effective_types(shared: &[String], folders: &[TypeFolder]) -> Vec<NoteType> {
     // The notes of a leaving folder have another type now.
     let notes_in = |name: &str| {
@@ -107,13 +107,21 @@ pub fn effective_types(shared: &[String], folders: &[TypeFolder]) -> Vec<NoteTyp
             notes: notes_in(&folder.name),
         });
     }
-    folder_only.sort_by_key(|t| t.name.to_lowercase());
     types.extend(folder_only);
+    // The list is in name order, so a type is easy to find.
+    types.sort_by_cached_key(|t| t.name.to_lowercase());
     types
 }
 
+/// Put the names `list` in name order that ignores case: the order of the
+/// effective list.
+fn sort_names(list: &mut [String]) {
+    list.sort_by_cached_key(|name| name.to_lowercase());
+}
+
 /// The shared list that a change of the list writes: each valid type of
-/// the effective list. Folder-only types go into the list here (KTD9).
+/// the effective list, in name order. Folder-only types go into the list
+/// here (KTD9).
 pub fn list_to_save(shared: &[String], folders: &[TypeFolder]) -> Vec<String> {
     effective_types(shared, folders)
         .into_iter()
@@ -144,6 +152,7 @@ pub fn add_type(
     }
     let mut list = list_to_save(shared, folders);
     list.push(name.clone());
+    sort_names(&mut list);
     Ok((list, name))
 }
 
@@ -206,6 +215,7 @@ pub fn rename_type(
         Some(i) => list[i] = new.clone(),
         None => list.push(new.clone()),
     }
+    sort_names(&mut list);
     Ok(Renamed {
         list,
         from,
