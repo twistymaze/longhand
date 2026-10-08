@@ -123,7 +123,7 @@ export function TagPicker({
           onOpen?.();
           setOpen(true);
         }}
-        className="rounded-[4px] px-[5px] py-px text-[0.72rem] leading-[1.3] font-medium whitespace-nowrap text-label-secondary hover:bg-fill hover:text-label active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
+        className="rounded-[5px] px-[6px] py-[2px] text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap text-label-secondary hover:bg-fill hover:text-label active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
       >
         + Tag
       </button>
@@ -140,7 +140,7 @@ export function TagPicker({
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={visible && active >= 0 ? optionId(active) : undefined}
-        className="h-[18px] w-40 rounded-[4px] bg-control px-[5px] text-[0.72rem] text-label shadow-[inset_0_0_0_1px_var(--control-border)] outline-offset-0 placeholder:text-label-tertiary focus:outline-2 focus:outline-accent"
+        className="h-[20px] w-44 rounded-[5px] bg-control px-[6px] text-[0.875rem] text-label shadow-[inset_0_0_0_1px_var(--control-border)] outline-offset-0 placeholder:text-label-tertiary focus:outline-2 focus:outline-accent"
         value={query}
         placeholder="Tag name"
         spellCheck={false}
@@ -188,7 +188,7 @@ export function TagPicker({
                 role="option"
                 aria-selected={index === active}
                 aria-label={row.kind === "typed" ? `Add "${row.text}"` : tagName(row.text)}
-                className={`flex h-6 cursor-default items-center rounded-md px-1.5 select-none ${
+                className={`flex h-7 cursor-default items-center rounded-md px-1.5 select-none ${
                   index === active ? "bg-fill" : ""
                 }`}
                 onMouseMove={() => setActive(index)}

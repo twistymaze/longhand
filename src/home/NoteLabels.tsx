@@ -6,8 +6,10 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { TagLabel, tagName, TypeLabel, typeName } from "../lib/Labels";
 
-/// The space that "+N" needs after the last label that shows.
-const MORE_WIDTH = 28;
+/// The space that "+N" needs after the last label that shows: "+99" at
+/// the label text size, with its padding. The first label leaves
+/// GAP + MORE_WIDTH (40 px) free.
+const MORE_WIDTH = 36;
 const GAP = 4;
 
 export function NoteLabels({
@@ -59,7 +61,7 @@ export function NoteLabels({
   const shown = Math.min(fit.shown, count);
   const names = [...(noteType === null ? [] : [typeName(noteType)]), ...tags.map(tagName)];
   const hidden = names.slice(shown);
-  const surface = onAccent ? "rounded-[4px] bg-group" : "";
+  const surface = onAccent ? "rounded-[5px] bg-group" : "";
   const items = [
     ...(noteType === null ? [] : [<TypeLabel key="type" name={noteType} />]),
     ...tags.map((tag) => <TagLabel key={`tag:${tag}`} text={tag} />),
@@ -72,7 +74,7 @@ export function NoteLabels({
           data-index={i}
           // A label never shrinks. The first label is at most as wide as
           // the space less "+N", so a long name shows in part.
-          className={`flex shrink-0 ${i === 0 && count > 1 ? "max-w-[calc(100%-32px)]" : "max-w-full"} ${surface} ${
+          className={`flex shrink-0 ${i === 0 && count > 1 ? "max-w-[calc(100%-40px)]" : "max-w-full"} ${surface} ${
             i < shown ? "" : "invisible"
           }`}
         >
@@ -84,7 +86,7 @@ export function NoteLabels({
           title={hidden.join(", ")}
           aria-label={`${hidden.length} more: ${hidden.join(", ")}`}
           style={{ left: fit.more }}
-          className={`absolute top-1/2 -translate-y-1/2 rounded-[4px] px-[5px] py-px text-[0.72rem] leading-[1.3] font-medium whitespace-nowrap ${
+          className={`absolute top-1/2 -translate-y-1/2 rounded-[5px] px-[6px] py-[2px] text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap ${
             onAccent ? "bg-white/20 text-white" : "bg-fill text-label-secondary"
           }`}
         >

@@ -24,7 +24,7 @@ import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
-import { isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
+import { hasNoTypeNote, isFiltered, keepExisting, matches, type NoteFilter, noFilter } from "./filter";
 import { groupByDay, rowTitle } from "./group";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
@@ -101,10 +101,11 @@ export function Home({
   );
   // The filter stays while Home is mounted, so it stays when the user opens
   // a note and comes back (R33). A type or a tag that no longer exists drops
-  // out of it.
+  // out of it. "No type" drops out when every listed note has a type.
   const lists = useTypesAndTags(active);
   const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
-  const filter = keepExisting(chosenFilter, lists.types?.types ?? null, lists.tags);
+  const noType = hasNoTypeNote(listed);
+  const filter = keepExisting(chosenFilter, lists.types?.types ?? null, lists.tags, noType);
   useEffect(() => {
     if (filter !== chosenFilter) setFilter(filter);
   }, [filter, chosenFilter]);
@@ -286,6 +287,7 @@ export function Home({
             <FilterBar
               filter={filter}
               types={lists.types?.types ?? []}
+              noType={noType}
               tags={lists.tags ?? []}
               onChange={setFilter}
             />
@@ -380,7 +382,9 @@ export function Home({
                     <h2 className="px-2.5 pt-2 pb-1.5 text-[0.72rem] font-semibold tracking-[0.06em] text-label-tertiary uppercase">
                       {group.label}
                     </h2>
-                    <div className="grid gap-px">
+                    {/* One column that is never wider than the list:
+                        the labels of a row do not make the row wider. */}
+                    <div className="grid grid-cols-[minmax(0,1fr)] gap-px">
                       {group.entries.map((entry) =>
                         isOpen(entry.state) ? (
                           <RecordingRow

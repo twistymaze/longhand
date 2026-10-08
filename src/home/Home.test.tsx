@@ -1270,6 +1270,24 @@ describe("Home: filter by type and tags", () => {
     expect(titles()).toEqual(["Standup"]);
   });
 
+  test("with no note that has no type, No type is not a choice", async () => {
+    setup({ entries: notes.filter((n) => n.note_type !== null) });
+    await screen.findByRole("radio", { name: "Pathfinder" });
+    expect(screen.queryByRole("radio", { name: "No type" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "All" })).toBeTruthy();
+  });
+
+  test("a chosen No type drops out of the filter when no note has no type any more", async () => {
+    const { view, props } = setup();
+    await chooseType(userEvent.setup(), "No type");
+    expect(titles()).toEqual(["Standup"]);
+    const typed = notes.map((n) => (n.note_type === null ? { ...n, note_type: "Pathfinder" } : n));
+    view.rerender(<Home {...props} entries={typed} />);
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "No type" })).toBeNull());
+    expect(screen.getByRole("radio", { name: "All" }).getAttribute("aria-checked")).toBe("true");
+    expect(titles()).toHaveLength(4);
+  });
+
   // AE5, R21.
   test("a recording note of another type stays visible", async () => {
     setup({

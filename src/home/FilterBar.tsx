@@ -1,5 +1,6 @@
 // The filter bar under the "Notes" heading (R19). A segmented control
-// chooses "All", "No type" or one note type. When the segments do not fit,
+// chooses "All", "No type" or one note type. "No type" shows only when a
+// listed note has no type. When the segments do not fit,
 // one menu replaces the control. The Tags menu adds a tag to the filter, and
 // each chosen tag shows as a label with a control that removes it. The bar
 // changes at once, with no motion: it is used many times a day.
@@ -28,12 +29,15 @@ const choiceOf = (value: string): TypeChoice =>
 export function FilterBar({
   filter,
   types,
+  noType,
   tags,
   onChange,
 }: {
   filter: NoteFilter;
   /// The effective type list. The filter shows every entry (KTD9).
   types: NoteTypeEntry[];
+  /// At least one listed note has no type, so "No type" is a choice.
+  noType: boolean;
   /// The tag list (`list_tags`).
   tags: TagEntry[];
   onChange: (filter: NoteFilter) => void;
@@ -45,7 +49,7 @@ export function FilterBar({
 
   const segments: Segment<string>[] = [
     { value: ALL, label: "All" },
-    { value: NO_TYPE, label: "No type" },
+    ...(noType ? [{ value: NO_TYPE, label: "No type" }] : []),
     ...types.map((t) => ({ value: `${NAMED}${t.name}`, label: t.name })),
   ];
   const value = valueOf(filter.type);
@@ -66,7 +70,7 @@ export function FilterBar({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [types.map((t) => t.name).join("\n")]);
+  }, [noType, types.map((t) => t.name).join("\n")]);
 
   const setType = (type: TypeChoice) => onChange({ ...filter, type });
   const toggleTag = (key: string) =>

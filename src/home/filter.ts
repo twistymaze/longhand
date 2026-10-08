@@ -29,12 +29,21 @@ export function matches(entry: SessionEntry, filter: NoteFilter): boolean {
   return filter.tags.every((key) => keys.has(key));
 }
 
-/// The filter without a type or a tag that no longer exists. A null list
-/// is not read yet, so its choices stay. A type that changed only its case
-/// keeps its place with the new spelling. Returns the same object when
-/// nothing changes.
-export function keepExisting(filter: NoteFilter, types: NoteTypeEntry[] | null, tags: TagEntry[] | null): NoteFilter {
+/// True when "No type" is a choice: at least one listed note has no type.
+export const hasNoTypeNote = (entries: SessionEntry[]) => entries.some((e) => e.note_type === null);
+
+/// The filter without a type or a tag that no longer exists. "No type"
+/// drops out when `noType` is false. A null list is not read yet, so its
+/// choices stay. A type that changed only its case keeps its place with the
+/// new spelling. Returns the same object when nothing changes.
+export function keepExisting(
+  filter: NoteFilter,
+  types: NoteTypeEntry[] | null,
+  tags: TagEntry[] | null,
+  noType: boolean,
+): NoteFilter {
   let type = filter.type;
+  if (!noType && type.kind === "no_type") type = { kind: "all" };
   if (types && type.kind === "named") {
     const name = type.name;
     const found = types.find((t) => sameType(t.name, name));
