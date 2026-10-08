@@ -20,7 +20,7 @@ execution: code
 - **Stop conditions:** Stop and ask when a change would let a computer that only receives a sync move, rename or write into a home folder (except the takeover of a move that has waited 7 days, R35), when a step could forget a note that still exists in the storage folder, or when a requirement cannot be met without a change to the publication conflict rule.
 - **Execution profile:** Rust workspace (`crates/`, `src-tauri/`) and React frontend (`src/`). Work in a worktree from `origin/main`. Invoke `apple-design` before UI work (U8 to U11). A signed build is needed for the manual test, because the folder watcher, sync and WebKit focus need the real bundle.
 
-Product Contract preservation: changed: R35 added — any computer can do a move that is owed for 7 days, so a lost computer does not leave a note in the wrong folder. The user approved it at planning on 2026-10-07. Otherwise unchanged.
+Product Contract preservation: changed: R35 added — any computer can do a move that is owed for 7 days, so a lost computer does not leave a note in the wrong folder. The user approved it at planning on 2026-10-07. Changed after the plan review on 2026-10-07, with the user's approval: R6 and R29 now match the per-note moves and the folder-wins rule; R18 keeps an edit that has synced; R26 holds for a move that arrives within 2 minutes. Otherwise unchanged.
 
 ---
 
@@ -48,7 +48,7 @@ After one or two weeks of use, every note is in one list on Home and directly in
 - **The New Note button and the shortcut use a default note type from Settings. The New Note menu lists the types.** (session-settled: user-directed — chosen over no type, over the last type used, over a type picker at the top of the menu and over submenus.) Governs R7, R23, R24.
 - **The Home filter is a bar under the "Notes" heading: one type and all chosen tags.** (session-settled: user-directed — chosen over a menu in the heading, a filter field with tokens and a filter column; for the logic, chosen over one choice at a time and over any of the chosen tags.) Governs R19, R20.
 - **The type and tags show in a row under the note title.** (session-settled: user-directed — chosen over a toolbar button with a popover.) Governs R16.
-- **Edits to the type and tags work on any computer at any time, and Longhand never loses one.** (session-settled: user-directed — chosen over read-only type and tags while another computer records or processes the note.) Governs R5, R13, R18.
+- **Edits to the type and tags work on any computer at any time, and Longhand never loses one that has synced.** (session-settled: user-directed — chosen over read-only type and tags while another computer records or processes the note.) Governs R5, R13, R18.
 - **The default note type is one shared setting for all computers.** (session-settled: user-directed — chosen over a default on each computer.) Governs R7.
 - **At rest, the folder decides the type.** (session-settled: user-approved — chosen over the saved type as authority, which would move a folder back after a drag in Finder.) Governs R29.
 - **A rename onto an existing name merges.** (session-settled: user-approved — chosen over refusing the name.) Governs R6, R13.
@@ -65,13 +65,13 @@ After one or two weeks of use, every note is in one list on Home and directly in
 - R3. Settings lists the note types and can add, rename and delete a type. The type menu on the note page and the New Note menu also accept a new type name, which adds the type to the list.
 - R4. A note with a type has its home folder in a type folder: a folder in the storage folder with the type's name. A note with no type has its home folder directly in the storage folder, as today.
 - R5. A type change puts the note's home folder in the folder of the new type. The app shows the new type at once. When any computer records or processes the note, the computer where the user changed the type does the move later, when no computer works on the note. That computer keeps the task through a failed processing, a quit and a restart.
-- R6. A type rename renames the type folder. A rename to the name of an existing type merges the two types: the notes go into the existing type folder. A type delete puts the notes of that type directly in the storage folder, and they have no type after that. For a busy note, the move waits as R5 says.
+- R6. A type rename moves each note of the type into the folder with the new name. A rename to the name of an existing type merges the two types: the notes go into the existing type folder. A type delete puts the notes of that type directly in the storage folder, and they have no type after that. For a busy note, the move waits as R5 says.
 - R7. Settings has a default note type, which can be "No type". The default is a shared setting, so every computer uses the same default. When the default type is deleted, the default changes to "No type".
 - R8. Home lists the notes in type folders and the notes directly in the storage folder, on every computer.
-- R26. A note whose home folder goes to another folder keeps its identity on every computer, also when the sync service delivers the move late or in parts. Other computers never forget the note and add it again as a new note.
+- R26. A note whose home folder goes to another folder keeps its identity on every computer, also when the sync service delivers the move late (up to 2 minutes) or in parts. Other computers never forget the note and add it again as a new note when the move arrives within 2 minutes.
 - R27. When the target folder already has a home folder with the same name, the move uses the free-name rule of the storage-folder Move. It never replaces a folder.
 - R28. The app refuses a type name that cannot be a folder name on macOS or on Windows, or that is reserved (`.longhand`, "No type"), with a message that says why.
-- R29. At rest, the folder decides the type: a home folder that a person puts in another type folder outside Longhand gets that type. A type change made in Longhand that waits for its move (R5) has priority over the folder until the move is done.
+- R29. At rest, the folder decides the type: a home folder that a person puts in another type folder outside Longhand gets that type. A type change made in Longhand that waits for its move (R5) has priority over the folder until the move is done, unless a person moved the home folder after the change. Then the folder wins and the waiting change is cleared.
 - R31. A delete of a type or a tag in Settings asks for one confirmation that says how many notes change. A rename does not ask.
 - R34. A folder in the storage folder that holds home folders and is not in the type list is added to the type list, and its notes get that type.
 - R35. When a type change has waited for its move for 7 days, any computer that uses the storage folder can do the move.
@@ -94,7 +94,7 @@ After one or two weeks of use, every note is in one list on Home and directly in
 
 - R16. A row under the note's title and subtitle shows the type as a menu and each tag with a control to remove it, followed by "+ Tag". "+ Tag" suggests the tags from the tag list and accepts a new tag.
 - R17. During a recording, the row follows the attention budget of the recording page (walking skeleton U7): it does not move, flash or change for anything except a change the user made.
-- R18. A change to the type or tags on one computer is kept when another computer saves a result of the same note. This includes a rename or delete of a tag or a type in Settings.
+- R18. A change to the type or tags on one computer is kept when another computer saves a result of the same note after the change has synced to it. This includes a rename or delete of a tag or a type in Settings.
 
 **Home**
 
@@ -207,7 +207,7 @@ This plan covers note types with type folders, and tags with the Home filter. Th
 
 - KTD1. **The home folder's position is the note type at rest. `session.md` stores no type, except a pending one.** A home folder directly in the storage folder has no type. A home folder in a type folder has that type. The store row keeps a derived `note_type` column that each scan refreshes from the path. This applies R4 and R29. It also means that a Finder drag or a Finder rename of a type folder needs no file write. (session-settled: user-approved — chosen over the saved type as the authority: governs R29.)
 - KTD2. **Two user fields in the `session.md` frontmatter: `longhand_tags` (a list of exact texts) and `longhand_pending_type` (present only while a move waits).** `longhand_pending_type` holds the target type, the source type, the computer and the time of the change. Every writer of `session.md` copies both fields from the current file at the moment of its write. These writers are publication `patch()`, `folder_rename::document()`, Save, the early write and Regenerate. This is the same read-modify-write that keeps `title` today. Neither field is in `ResultFields`, so a tag edit never causes a publication conflict. The three checks that compare a fingerprint of the whole `session.md` (the Transcribe Again replacement base, the Regenerate Summary expected file and the Resume saved-prefix manifest) compare it with both fields removed, so a tag or type edit never fails a run. This applies R11 and R18. The key names are distinct from Obsidian's `tags`, so Obsidian shows a property and not tags. (session-settled: user-approved — chosen over Obsidian `#tags`: governs R11.)
-- KTD3. **The pending type has priority only while the folder still matches its source type.** A computer shows `longhand_pending_type.to` when the home folder is still in `from`. When the folder is somewhere else (the move is done, or a person moved it), the folder wins, and the computer that owes the move clears the field. This applies R29 and gives a clear result for a Finder drag while a move waits.
+- KTD3. **The pending type has priority only while the folder still matches its source type.** A computer shows `longhand_pending_type.to` when the home folder is still in `from`. When the folder is somewhere else (the move is done, or a person moved it), the folder wins, and the computer that owes the move clears the field. This applies R29 and gives a clear result for a Finder drag while a move waits. A second type change on a waiting note keeps `from` and replaces `to`. A change back to `from` clears the field and the `type_moves` row.
 - KTD4. **One depth-aware rule finds the storage root of a home folder.** The library scans depth 0 and depth 1 only:
   - A top-level folder with `session.md` is a home folder.
   - A top-level folder without one is a type folder when it holds at least one home folder.
@@ -216,7 +216,7 @@ This plan covers note types with type folders, and tags with the Home filter. Th
 
   A single helper gives the storage root and the type of a home path. It replaces every `home.parent()`-is-the-root assumption: scan, `scan_folders`, `Known::add`, reconcile `Coverage` and pending delete, `forget_outside`, watcher `place`, `early_home::locate`, `empty_note`, `remove_copies::reachable`, audio removal `note_available`, the Save staging root and `move_notes`. This applies R8.
 - KTD5. **A type move reuses the owed-rename recipe: a local `type_moves` table, keyed by session id, written before the move.**
-  - **The record:** a new migration (`0018`) adds the table. It holds the target type, the source type and the time. It never holds a path: the move finds the current folder by id at move time.
+  - **The record:** a new migration (`0019`) adds the table. It holds the target type, the source type and the time. It never holds a path: the move finds the current folder by id at move time.
   - **Set and clear:** the record is set when a move is deferred or fails, and before a quit. It is cleared when the folder is at the target, found there by session id and not by a retry. That rule follows `docs/solutions/logic-errors/receiving-computer-renamed-synced-folder-back.md`.
   - **Who moves:** only the computer with the row moves the folder. A receiving computer reads the pending field and never moves, except after the 7-day takeover in KTD13. This applies R5.
 - KTD6. **"No computer works on the note" means all of these:**
@@ -226,6 +226,7 @@ This plan covers note types with type folders, and tags with the Home filter. Th
 
   The owing computer tries again on each library scan and on each sync event for the note. A missing storage root pauses the move. It does not drop the move. This applies R5.
 - KTD7. **A type rename, merge or delete is a set of per-note moves. It is never a rename of the type folder.**
+  - **Crash safety:** a local `bulk_edits` record for the operation is written before the shared list changes. Each launch and scan continues the operation until every note has its pending field and `type_moves` row. Then the record is removed.
   - **Order:** the shared list changes first. Then each note gets `longhand_pending_type` and a `type_moves` row.
   - **The old folder:** it stays until its last note has left. The folder is then removed only when it holds nothing except system files (`.DS_Store`, `Thumbs.db`). While old-name moves are open, the old folder does not come back as a type through R34.
   - **Case-only rename:** when the names differ only in case, the folder is renamed through a temporary name, because macOS treats the two names as one folder.
@@ -241,10 +242,10 @@ This plan covers note types with type folders, and tags with the Home filter. Th
 - KTD9. **The effective type list is the shared list plus every type folder that holds a note. A read never writes the shared list.** This applies R34 without breaking shared-settings rule 1 (`docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`). A folder-only type goes into the shared list the first time the user edits the list, with two exceptions:
   - A folder whose every home folder has a `longhand_pending_type` with that folder as `from` is a type that is leaving. It is not in the effective list and never goes into the shared list. Every computer can apply this rule, because the pending field syncs with the note.
   - A folder whose name fails the KTD8 check is listed and can be filtered, and its notes keep that type. It never goes into the shared list and is not offered for a new note or a type change. Settings offers only a rename to a valid name, or a delete. The type list and the default type are two new shared fields, `note_types` and `default_note_type`, with the usual `Field`, `KEY_` and `SharedValue` items. The list is one key, and the last change wins (rule 8). This applies R2 and R7.
-- KTD10. **A tag key is a normalized form of the text.** The key is the trimmed text, with spaces around `::` removed and case folded. Matching, the filter, merge and rename use the key. The display text is the spelling on the oldest note that has the tag. The tag list and the counts come from the store, where a new `tags` column is refreshed from `session.md` like `title`. This applies R12 and R30.
-- KTD11. **A Settings rename or delete of a tag is a read-modify-write of `longhand_tags` in each note's `session.md`.** It is not a folder move, so it never waits for a busy note (KTD2 keeps it). Notes that cannot be written (storage folder unavailable) go into a local `tag_edits` record that the next launch retries. This applies R13 and R18.
-- KTD12. **A deleted-looking note is forgotten only after a full depth-1 scan cannot find its session id.** The existing 30-second wait stays as the minimum. A late or partial sync therefore follows a moved note by id (`reconcile::follow`) and does not forget it and adopt it again. This applies R26. The cost is that a real delete on another computer leaves Home a little later.
-- KTD13. **Any computer takes over an owed move after 7 days.** A computer that finds a `longhand_pending_type` older than 7 days, and finds that no computer works on the note (all of KTD6, including no `result: pending`), sets its own `type_moves` row and does the move. This applies R35.
+- KTD10. **A tag key is a normalized form of the text.** The key is the trimmed text, with spaces around `::` removed and case folded. Matching, the filter, merge and rename use the key. The display text is the spelling on the note with the earliest start time that has the tag. This stands in for "the first spelling used" in R30. The tag list and the counts come from the store, where a new `tags` column is refreshed from `session.md` like `title`. This applies R12 and R30.
+- KTD11. **A Settings rename or delete of a tag is a read-modify-write of `longhand_tags` in each note's `session.md`.** It is not a folder move, so it never waits for a busy note (KTD2 keeps it). A local `bulk_edits` record (KTD7) holds each Settings rename or delete of a tag. It is written before the first note changes, and each launch retries it until every note is done. This applies R13 and R18.
+- KTD12. **A deleted-looking note is forgotten only after a full depth-1 scan cannot find its session id.** The wait before a forget becomes 2 minutes in place of 30 seconds (`DELETE_WAIT`). A sync that delivers a move within that time is followed by id (`reconcile::follow`), and the note is not forgotten and adopted again. This applies R26. The cost is that a real delete on another computer leaves Home up to 2 minutes later. (session-settled: user-directed — chosen over 10 minutes and 1 hour: deletes stay fast.)
+- KTD13. **Any computer takes over an owed move after 7 days.** A computer that finds a `longhand_pending_type` older than 7 days, and finds that no computer works on the note (all of KTD6, including no `result: pending`), writes its own computer into the field's `by` and sets its own `type_moves` row. It does the move only on a later scan, at least 10 minutes later, when the field still names it. An owing computer that returns and finds another computer in `by` drops its own row. This applies R35.
 - KTD14. **The storage-folder Move keeps the type folder.** A note moves to `new root / type / name` with the existing free-name rule. A note in a type folder is no longer left out of the Move. The Move also copies `note_types` and `default_note_type` when the new folder has no shared settings yet. This applies R8 and R27.
 - KTD15. **The UI reuses existing parts:** `Tabs` from `SessionPage` as a shared segmented control, `Menu` from `SessionMenu` (with new separators and a height limit), `ModelPicker`'s combobox for "+ Tag", `Tag` and `useConfirm` from `src/settings/ui.tsx`, and `SummaryPrompts` as the model for the Settings pane. A scope colour comes from a stable hash of the scope key into a fixed set of system colours, with light and dark values.
 
@@ -260,7 +261,7 @@ flowchart TB
   F -->|"folders that hold notes"| E
   R --> UI["Home filter, note row, New Note menu"]
   E --> UI
-  L["Local only: type_moves, tag_edits"] -->|"owing computer acts"| F
+  L["Local only: type_moves, bulk_edits"] -->|"owing computer acts"| F
 ```
 
 The life of one type change, on the computer where the user made it:
@@ -280,12 +281,13 @@ stateDiagram-v2
 
 ### Assumptions
 
+- A `session.md` write that another computer makes before a tag or type edit has synced to it can undo that edit, when the sync service keeps the other computer's file. This is the same accepted risk as shared-settings rule 7. (session-settled: user-directed — chosen over detecting the race and merging the tags: the same rule as shared settings.)
 - Older Longhand builds drop `longhand_tags` and `longhand_pending_type` when they rewrite `session.md`, because `SessionDoc` has no field for unknown keys. Nobody uses Longhand yet, so this is accepted.
 - Two computers that add a type at the same moment can lose one add (shared-settings rule 8). A type with notes comes back through KTD9.
 
 ### Sequencing
 
-U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. The UI units U8 to U11 follow the backend. U12 can go at any time.
+U1 and U4 first. U2 and U3 follow. U5 builds on them, and U6 follows U5. U7 needs U3 and U4. The UI units U8 to U11 follow the backend. U12 can go at any time.
 
 ---
 
@@ -298,7 +300,7 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 | U3 | Depth-aware library | `crates/library/src/scan.rs`, `reconcile.rs`, `src-tauri/src/managers/library.rs`, `crates/pipeline/src/*` | U2 |
 | U4 | Shared type list and default type | `crates/shared-settings/src/file.rs`, `src-tauri/src/managers/shared.rs` | U1 |
 | U5 | Type move engine | `crates/pipeline/src/folder_rename.rs`, `crates/session-save/src/rename_home.rs`, `runner.rs` | U2, U3, U4 |
-| U6 | Tag edits and the tag list | `crates/pipeline/`, `src-tauri/src/commands/session.rs` | U2, U3 |
+| U6 | Tag edits and the tag list | `crates/pipeline/`, `src-tauri/src/commands/session.rs` | U2, U3, U5 |
 | U7 | New note with a type | `src-tauri/src/commands/capture.rs`, `src-tauri/src/managers/capture.rs`, `shortcut.rs`, `crates/pipeline/src/early_home.rs` | U3, U4 |
 | U8 | Shared UI parts | `src/session/SessionMenu.tsx`, `src/settings/ui.tsx`, new `src/lib/` parts | none |
 | U9 | Home filter, rows and New Note menu | `src/home/Home.tsx`, `SessionRow.tsx`, `NewNoteButton.tsx` | U6, U7, U8 |
@@ -393,6 +395,8 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 - Covers R29: a person moves a home folder from `Pathfinder/` to `One on One/`, and the next scan gives the type "One on One". No file is written.
 - A person renames the type folder `Pathfinder` to `D&D` in Finder, and every note in it gets the type "D&D".
 - Covers R26: the sync delivers the old folder's removal, and the new folder appears 90 seconds later. The row keeps its id and local state and is never forgotten.
+- The new folder appears 3 minutes later. The note is forgotten and then adopted again by id, and no duplicate row remains.
+- A real delete on another computer leaves Home after 2 minutes.
 - A partial sync delivers the folder at its new place without the new `session.md`. Nothing is written, and the note keeps its id.
 - The storage root's marker is missing (sign-out of the sync service). No typed note is forgotten.
 - `forget_outside` keeps typed notes after a launch.
@@ -442,13 +446,13 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 
 **Dependencies:** U2, U3, U4.
 
-**Files:** `crates/session-core/migrations/0018_note_types_and_tags.sql` (the `type_moves` table), `crates/session-core/src/jobs.rs`, `crates/session-save/src/rename_home.rs`, `crates/pipeline/src/folder_rename.rs`, `crates/pipeline/src/runner.rs`, `src-tauri/src/managers/processing.rs`, `src-tauri/src/commands/session.rs`, `src-tauri/src/commands/settings.rs`; tests in `crates/session-save/tests/rename_home.rs`, `crates/pipeline/tests/` (a new `type_move.rs`), `crates/library/tests/two_computers.rs`.
+**Files:** `crates/session-core/migrations/0019_type_moves_and_bulk_edits.sql` (the `type_moves` and `bulk_edits` tables), `crates/session-core/src/jobs.rs`, `crates/session-save/src/rename_home.rs`, `crates/pipeline/src/folder_rename.rs`, `crates/pipeline/src/runner.rs`, `src-tauri/src/managers/processing.rs`, `src-tauri/src/commands/session.rs`, `src-tauri/src/commands/settings.rs`; tests in `crates/session-save/tests/rename_home.rs`, `crates/pipeline/tests/` (a new `type_move.rs`), `crates/library/tests/two_computers.rs`.
 
 **Approach:**
 1. Add a cross-parent variant of `rename_home::rename` with the same intent, no-replace and free-name rules (R27).
 2. Extend the folder-rename reconcile so that the target parent comes from the row's pending type. Also check KTD6.
 3. Change a note's type with `set_note_type`. If the note is free, it moves at once. Otherwise the change writes `longhand_pending_type` and a `type_moves` row (KTD5).
-4. A type rename, merge or delete changes the shared list first, then makes the per-note moves (KTD7). It returns a count for the R31 confirmation.
+4. A type rename, merge or delete writes its `bulk_edits` record, changes the shared list, then makes the per-note moves (KTD7). It returns a count for the R31 confirmation.
 5. On a launch and on each scan, run the owed moves. Do the takeover after 7 days (KTD13), and clear a stale pending field (KTD3).
 6. Remove an empty old type folder (KTD7).
 
@@ -469,6 +473,7 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 - A case-only rename "pathfinder" to "Pathfinder" renames through a temporary name.
 - A busy note in a renamed type stays in the old folder and shows the new type, and the old folder does not come back as a type.
 - Covers R35: a pending field 8 days old with no row on this computer and no fresh marker. This computer does the move.
+- Two computers take over at the same time. Only the one that the field names after 10 minutes moves the folder, and the other drops its row.
 - A pending field 8 days old on a note with `result: pending` and no fresh marker is not taken over.
 - A receiving computer that sees a pending field younger than 7 days never moves a folder.
 - The source folder is gone (deleted note). The row is dropped and logged.
@@ -481,15 +486,15 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 
 **Requirements:** R9, R10, R12, R13, R15, R18, R30, R31; AE3, AE4, AE6; KTD10, KTD11.
 
-**Dependencies:** U2, U3.
+**Dependencies:** U2, U3, U5 (the `bulk_edits` table).
 
-**Files:** `crates/pipeline/src/` (a new `tags.rs`), `crates/session-core/src/jobs.rs`, `crates/session-core/migrations/0018_note_types_and_tags.sql` (the `tag_edits` table), `src-tauri/src/commands/session.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/lib.rs`; tests in `crates/pipeline/tests/tags.rs`, `crates/library/tests/two_computers.rs`.
+**Files:** `crates/pipeline/src/` (a new `tags.rs`), `crates/session-core/src/jobs.rs`, `src-tauri/src/commands/session.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/lib.rs`; tests in `crates/pipeline/tests/tags.rs`, `crates/library/tests/two_computers.rs`.
 
 **Approach:**
 1. `set_note_tags` writes `longhand_tags` with a read-modify-write and updates the row. It works during a recording and during processing (R10).
 2. `list_tags` returns the display spelling, the key and the count from the store (KTD10).
 3. `rename_tag` and `delete_tag` rewrite each note that has the key (KTD11). A rename to an existing key merges, and a note keeps one copy. Each returns the count for R31.
-4. Failed notes go into `tag_edits`, which the next launch retries.
+4. A rename or delete writes a `bulk_edits` record first (KTD11), and each launch continues it until every note is done.
 5. `LibraryChanged` lists each note that a tag edit touched.
 
 **Patterns to follow:** `write_title_in` in `crates/pipeline/src/folder_rename.rs`; `docs/solutions/logic-errors/synced-summary-did-not-refresh-open-note.md`.
@@ -499,7 +504,7 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 - Covers AE4: a note with `Person::Nathan` gets `Person::Sarah`. Both are kept.
 - Adding `person::nathan` to a note that has `Person::Nathan` changes nothing.
 - Covers AE6: removing the last `follow-up` removes it from `list_tags`.
-- The display spelling is the spelling on the oldest note.
+- The display spelling is the spelling on the note with the earliest start time.
 - Covers AE3: renaming `Customer::Mayo` to `Customer::Mayo Clinic` on 12 notes changes all 12, including one that another computer processes.
 - Renaming `Customer::Mayo` to an existing `Customer::Mayo Clinic` merges. A note with both keeps one.
 - Deleting a tag returns the count and removes the tag from every note.
@@ -578,6 +583,7 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 2. Filter `listed` before `groupByDay`, and always keep open entries (R21).
 3. Rows show the type and tag labels after the details. The labels truncate with `min-w-0`, and a "+N" shows the hidden count in a narrow window.
 4. The New Note menu lists the types, "No type", a separator, the other recording choice, a separator and "New Type…".
+5. "New Type…" opens a small dialog next to the button. It has one name field and Create and Cancel buttons, and the field takes focus. A refused name shows its reason in the dialog. Escape or Cancel closes it, and no note starts.
 
 **Test scenarios:**
 - Covers F3: "One on One" plus `Person::Nathan` shows only matching notes. Removing the tag label shows every one-on-one.
@@ -589,7 +595,8 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 - With many types, the segmented control changes to one menu.
 - A row shows a pending type as the type.
 - The New Note menu lists the types in order, and choosing "Pathfinder" calls `start_recording` with that type.
-- "New Type…" with a refused name shows the reason and starts no note.
+- "New Type…" with a refused name shows the reason in the dialog and starts no note.
+- Escape in the "New Type…" dialog closes it and starts no note.
 
 **Verification:** All Home behaviours in R19 to R24 and R32 to R33 have tests, and the Home tests still pass.
 
@@ -604,7 +611,7 @@ U1 and U4 first. U2 and U3 follow. U5 and U6 build on them. U7 needs U3 and U4. 
 **Files:** `src/session/SessionPage.tsx`, new `src/session/TypeAndTags.tsx`; tests in `src/session/TypeAndTags.test.tsx` and `src/session/SessionPage.test.tsx`.
 
 **Approach:**
-1. Put the row after the subtitle. The type menu lists the effective types and "No type" and accepts a new name.
+1. Put the row after the subtitle. The type menu lists the effective types and "No type", and its "New Type…" item opens the same dialog as U9.
 2. Each tag label has a remove control, followed by "+ Tag" (the TagPicker).
 3. A type change shows the result as a notice, like `TitleField` does. When the move waits, the notice says that the folder moves when the note is free.
 4. Before the picker takes focus, remove the editor's selection (`docs/solutions/ui-bugs/typed-text-went-to-hidden-notes-after-tab-click.md`).
