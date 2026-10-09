@@ -1122,11 +1122,15 @@ impl Store {
         let tx = self.conn.transaction()?;
         write_state(&tx, id, &next)?;
         apply_queue_effects(&tx, id, &current.state, &next, event)?;
-        // A resume puts a new segment after the last one, so no segment of
-        // the note ends in a pause now (KTD4 of the pause plan).
+        // A resume puts a new segment after the last one, so the last
+        // segment does not end in a pause now. An earlier segment keeps its
+        // flag: a Continue followed it (KTD4 of the pause plan).
         if matches!(event, Event::UserResume { .. }) {
             tx.execute(
-                "UPDATE segments SET ends_in_pause = 0 WHERE session_id = ?1",
+                "UPDATE segments SET ends_in_pause = 0
+                 WHERE session_id = ?1 AND idx =
+                   (SELECT idx FROM segments WHERE session_id = ?1
+                    ORDER BY offset_ms DESC LIMIT 1)",
                 [id],
             )?;
         }

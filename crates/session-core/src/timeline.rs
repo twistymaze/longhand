@@ -25,7 +25,7 @@ pub struct Segment {
     #[serde(default = "mono")]
     pub channels: u16,
     /// True when the note paused after this segment (KTD4 of the pause
-    /// plan). A resume of the note clears it.
+    /// plan). A resume of the note clears it on the last segment.
     #[serde(default)]
     pub ends_in_pause: bool,
 }

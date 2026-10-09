@@ -1337,6 +1337,22 @@ fn a_paused_note_that_stops_and_resumes_has_no_pause_flag() {
 }
 
 #[test]
+fn a_resume_keeps_the_flag_of_a_pause_that_the_note_continued_after() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    store.mark_pause("s1").unwrap();
+    // Continue, then a second pause.
+    store.put_segment("s1", &segment(1, 120_000)).unwrap();
+    store.put_segment("s1", &segment(2, 240_000)).unwrap();
+    store.mark_pause("s1").unwrap();
+    stop(&mut store, "s1", 5);
+    assert_eq!(pause_flags(&store, "s1"), [true, false, true]);
+    store.apply("s1", &resume_event()).unwrap();
+    assert_eq!(pause_flags(&store, "s1"), [true, false, false]);
+}
+
+#[test]
 fn the_stereo_mark_is_the_first_stereo_segment() {
     // KTD2: set when the first stereo segment is kept, and never moved.
     let mut store = Store::open_in_memory().unwrap();
