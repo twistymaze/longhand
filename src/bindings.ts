@@ -1420,9 +1420,10 @@ export type LiveState =
  */
 "starting" | "running" | 
 /**
- * A gap started: the missing audio is transcribed after Stop.
+ * The live transcript fell behind: the missing audio is transcribed
+ * after Stop.
  */
-"paused" | 
+"behind" | 
 /**
  * No live transcript for this segment: it is transcribed after Stop.
  */
@@ -2177,6 +2178,11 @@ shortcut: string | null;
  */
 show_window_shortcut: string | null; 
 /**
+ * The chord that pauses the recording note and continues the paused
+ * note. Off by default (R16).
+ */
+pause_shortcut: string | null; 
+/**
  * The one storage folder (R1). The library lists the notes in it, and
  * the next note saves to it. Empty only until the launch sets the
  * default folder (R2, KTD12).
@@ -2316,15 +2322,15 @@ export type SharedState = { availability: SharedAvailability;
  */
 newer_version: boolean; unknown_values: UnknownSharedValue[] }
 /**
- * Which of the two shortcuts a command acts on.
+ * Which of the three shortcuts a command acts on.
  */
-export type ShortcutKind = "recording" | "show_window"
+export type ShortcutKind = "recording" | "show_window" | "pause"
 /**
  * One shortcut's state (KTD7): off when `chord` is `None`, registered, or
  * failed with a reason in `error`.
  */
 export type ShortcutStatus = { chord: string | null; registered: boolean; error: string | null }
-export type ShortcutStatuses = { recording: ShortcutStatus; show_window: ShortcutStatus }
+export type ShortcutStatuses = { recording: ShortcutStatus; show_window: ShortcutStatus; pause: ShortcutStatus }
 /**
  * The main window must show the page of this session (R3).
  */

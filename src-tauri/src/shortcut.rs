@@ -1,6 +1,7 @@
 //! The global shortcuts: the recording chord, which starts a note or
 //! records into the shown note, and stops the recording (R1, R10), and the
-//! optional chord that shows or hides the main window (R5, R6).
+//! optional chord that shows or hides the main window (R5, R6), and the
+//! optional chord that pauses and continues the open note (R16).
 //!
 //! Registration follows Handy's `shortcut/tauri_impl.rs`, and a change
 //! follows its `change_binding`: a press is handled on `Pressed` only, and a
@@ -20,27 +21,29 @@ use crate::managers::capture::CaptureManager;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, Settings, SpeakerCountSetting};
 
-/// Which of the two shortcuts a command acts on.
+/// Which of the three shortcuts a command acts on.
 #[derive(Serialize, Deserialize, Type, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ShortcutKind {
     Recording,
     ShowWindow,
+    Pause,
 }
 
 impl ShortcutKind {
+    const ALL: [Self; 3] = [Self::Recording, Self::ShowWindow, Self::Pause];
+
     fn saved(self, settings: &Settings) -> Option<String> {
         match self {
             Self::Recording => settings.shortcut.clone(),
             Self::ShowWindow => settings.show_window_shortcut.clone(),
+            Self::Pause => settings.pause_shortcut.clone(),
         }
     }
 
-    fn other(self) -> Self {
-        match self {
-            Self::Recording => Self::ShowWindow,
-            Self::ShowWindow => Self::Recording,
-        }
+    /// The kinds whose chords a new chord of this kind must not use (KTD10).
+    fn others(self) -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().filter(move |kind| *kind != self)
     }
 }
 
@@ -64,6 +67,7 @@ impl ShortcutStatus {
 pub struct ShortcutStatuses {
     pub recording: ShortcutStatus,
     pub show_window: ShortcutStatus,
+    pub pause: ShortcutStatus,
 }
 
 #[derive(Default)]
@@ -74,6 +78,7 @@ pub struct ShortcutRegistration {
     changes: Mutex<()>,
     recording: Mutex<ShortcutStatus>,
     show_window: Mutex<ShortcutStatus>,
+    pause: Mutex<ShortcutStatus>,
 }
 
 impl ShortcutRegistration {
@@ -81,6 +86,7 @@ impl ShortcutRegistration {
         match kind {
             ShortcutKind::Recording => &self.recording,
             ShortcutKind::ShowWindow => &self.show_window,
+            ShortcutKind::Pause => &self.pause,
         }
     }
 
@@ -95,6 +101,7 @@ impl ShortcutRegistration {
         ShortcutStatuses {
             recording: self.status(ShortcutKind::Recording),
             show_window: self.status(ShortcutKind::ShowWindow),
+            pause: self.status(ShortcutKind::Pause),
         }
     }
 
@@ -153,21 +160,22 @@ pub fn same_chord(a: &str, b: &str) -> bool {
 
 /// The shown reason when the system refuses a chord (R10).
 const NOT_AVAILABLE: &str = "Another app uses these keys. Choose different keys.";
-const TAKEN_BY_OTHER: &str = "The other Longhand shortcut uses these keys.";
+const TAKEN_BY_OTHER: &str = "Another Longhand shortcut uses these keys.";
 
 /// Change one shortcut from `old` to `new` (KTD4). The chord is checked
-/// before anything is unregistered. When the new chord is refused, the old
+/// before anything is unregistered, also against the chords of the other
+/// shortcuts in `others` (KTD10). When the new chord is refused, the old
 /// chord is registered again. The caller saves only after `Ok`.
 pub fn apply_change(
     old: Option<&str>,
     new: Option<&str>,
-    other: Option<&str>,
+    others: &[&str],
     mut unregister: impl FnMut(&str),
     mut register: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
     if let Some(new) = new {
         check_chord(new)?;
-        if other.is_some_and(|other| same_chord(new, other)) {
+        if others.iter().any(|other| same_chord(new, other)) {
             return Err(TAKEN_BY_OTHER.into());
         }
         if old.is_some_and(|old| same_chord(new, old)) {
@@ -204,6 +212,10 @@ fn register_chord(app: &AppHandle, kind: ShortcutKind, chord: &str) -> Result<()
                     tauri::async_runtime::spawn(async move { toggle(app).await });
                 }
                 ShortcutKind::ShowWindow => crate::window::toggle_main_window(app),
+                ShortcutKind::Pause => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move { pause_or_continue(app).await });
+                }
             }
         };
     app.global_shortcut()
@@ -249,16 +261,17 @@ fn register_saved(
     registration.set_status(kind, status);
 }
 
-/// Register both saved chords at launch (R12).
+/// Register all saved chords at launch (R12).
 pub fn register(app: &AppHandle) {
     let registration = ShortcutRegistration::default();
     let saved = settings::get_settings(app);
-    register_saved(app, &registration, &saved, ShortcutKind::Recording);
-    register_saved(app, &registration, &saved, ShortcutKind::ShowWindow);
+    for kind in ShortcutKind::ALL {
+        register_saved(app, &registration, &saved, kind);
+    }
     app.manage(registration);
 }
 
-/// Set, change or clear one shortcut (R1–R3, R5, R9, R10). Returns both
+/// Set, change or clear one shortcut (R1–R3, R5, R9, R10, R16). Returns all
 /// statuses on success, or the reason the chord was refused.
 pub fn set_shortcut(
     app: &AppHandle,
@@ -270,15 +283,17 @@ pub fn set_shortcut(
         .changes
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    // Only a registered chord needs unregistering: during capture both are
+    // Only a registered chord needs unregistering: during capture all are
     // suspended, and a failed chord was never registered.
     let status = registration.status(kind);
     let old = status.chord.filter(|_| status.registered);
-    let other = kind.other().saved(&settings::get_settings(app));
+    let saved = settings::get_settings(app);
+    let others: Vec<String> = kind.others().filter_map(|k| k.saved(&saved)).collect();
+    let others: Vec<&str> = others.iter().map(String::as_str).collect();
     apply_change(
         old.as_deref(),
         chord.as_deref(),
-        other.as_deref(),
+        &others,
         |c| unregister_chord(app, c),
         |c| register_chord(app, kind, c),
     )?;
@@ -296,13 +311,14 @@ pub fn set_shortcut(
         match kind {
             ShortcutKind::Recording => s.shortcut = chord,
             ShortcutKind::ShowWindow => s.show_window_shortcut = chord,
+            ShortcutKind::Pause => s.pause_shortcut = chord,
         }
         Ok(())
     })?;
     Ok(registration.statuses())
 }
 
-/// Unregister both chords while the user presses keys for a new one, so the
+/// Unregister all chords while the user presses keys for a new one, so the
 /// keys start nothing (R11).
 pub fn suspend(app: &AppHandle) {
     let registration = app.state::<ShortcutRegistration>();
@@ -310,10 +326,16 @@ pub fn suspend(app: &AppHandle) {
         .changes
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    for kind in [ShortcutKind::Recording, ShortcutKind::ShowWindow] {
+    suspend_registered(&registration, |chord| unregister_chord(app, chord));
+}
+
+/// Unregister each registered chord and record it as not registered. The
+/// chord stays in the status, so a resume registers it again.
+fn suspend_registered(registration: &ShortcutRegistration, mut unregister: impl FnMut(&str)) {
+    for kind in ShortcutKind::ALL {
         let status = registration.status(kind);
         if let (Some(chord), true) = (&status.chord, status.registered) {
-            unregister_chord(app, chord);
+            unregister(chord);
             registration.set_status(
                 kind,
                 ShortcutStatus {
@@ -335,7 +357,7 @@ pub fn resume(app: &AppHandle) {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let saved = settings::get_settings(app);
-    for kind in [ShortcutKind::Recording, ShortcutKind::ShowWindow] {
+    for kind in ShortcutKind::ALL {
         if !registration.status(kind).registered {
             register_saved(app, &registration, &saved, kind);
         }
@@ -345,7 +367,7 @@ pub fn resume(app: &AppHandle) {
 /// What one press of the recording shortcut reads (R10, KTD7).
 #[derive(Debug, Clone, Copy)]
 pub struct Press<'a> {
-    /// A recording runs.
+    /// A note is open: it records or is paused (R17).
     pub capturing: bool,
     /// The storage folder is available, so a note can start (R7).
     pub folder_available: bool,
@@ -359,7 +381,7 @@ pub struct Press<'a> {
 /// What one press of the recording shortcut does (R10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShortcutAction {
-    /// Stop the recording that runs.
+    /// Stop the open note, recording or paused (R17).
     Stop,
     /// Start nothing: the storage folder is not available (AE8).
     Nothing,
@@ -528,6 +550,58 @@ async fn toggle(app: AppHandle) {
     .await;
 }
 
+/// What one press of the Pause shortcut does (R16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseAction {
+    /// Pause the recording note.
+    Pause,
+    /// Continue the paused note.
+    Continue,
+    /// No note is open.
+    Nothing,
+}
+
+/// The decision of the Pause shortcut from the capture state: `open` when a
+/// note is open (recording, reopening the microphone, or paused), and
+/// `paused` when the user paused it. The press sends a target state, so a
+/// press that races a button click cannot invert the state (KTD8).
+pub fn pause_press_action(open: bool, paused: bool) -> PauseAction {
+    match (open, paused) {
+        (_, true) => PauseAction::Continue,
+        (true, false) => PauseAction::Pause,
+        (false, false) => PauseAction::Nothing,
+    }
+}
+
+/// Do one press of the Pause shortcut (R16). It reads the capture state and
+/// pauses or continues the open note. With no open note, it does nothing.
+async fn pause_or_continue(app: AppHandle) {
+    let manager = Arc::clone(&app.state::<Arc<CaptureManager>>());
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let status = match manager.status(&app) {
+            Ok(status) => status,
+            Err(e) => {
+                log::error!("the Pause shortcut could not read the capture state: {e}");
+                return;
+            }
+        };
+        match pause_press_action(status.recording, status.paused) {
+            PauseAction::Pause => {
+                if let Err(e) = manager.pause_session(&app) {
+                    log::error!("shortcut pause failed: {e}");
+                }
+            }
+            PauseAction::Continue => {
+                if let Err(e) = manager.continue_session(&app) {
+                    log::error!("shortcut continue failed: {e}");
+                }
+            }
+            PauseAction::Nothing => log::info!("the Pause shortcut was pressed with no open note"),
+        }
+    })
+    .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,14 +644,14 @@ mod tests {
         plugin: &mut Plugin,
         old: Option<&str>,
         new: Option<&str>,
-        other: Option<&str>,
+        others: &[&str],
     ) -> Result<(), String> {
         let refused = plugin.refused.clone();
         let calls = std::cell::RefCell::new(Vec::new());
         let result = apply_change(
             old,
             new,
-            other,
+            others,
             |c| calls.borrow_mut().push(format!("unregister {c}")),
             |c| {
                 calls.borrow_mut().push(format!("register {c}"));
@@ -595,7 +669,7 @@ mod tests {
     #[test]
     fn a_change_unregisters_the_old_chord_and_registers_the_new() {
         let mut plugin = Plugin::default();
-        let result = change(&mut plugin, Some("Super+KeyA"), Some("Super+KeyB"), None);
+        let result = change(&mut plugin, Some("Super+KeyA"), Some("Super+KeyB"), &[]);
         assert_eq!(result, Ok(()));
         assert_eq!(
             plugin.calls,
@@ -609,7 +683,7 @@ mod tests {
             refused: vec!["Super+KeyB"],
             ..Default::default()
         };
-        let result = change(&mut plugin, Some("Super+KeyA"), Some("Super+KeyB"), None);
+        let result = change(&mut plugin, Some("Super+KeyA"), Some("Super+KeyB"), &[]);
         assert_eq!(result, Err(NOT_AVAILABLE.to_string()));
         assert_eq!(
             plugin.calls,
@@ -628,37 +702,144 @@ mod tests {
             &mut plugin,
             Some("Super+KeyA"),
             Some("Command+KeyL"),
-            Some("Super+KeyL"),
+            &["Super+KeyL"],
         );
         assert_eq!(result, Err(TAKEN_BY_OTHER.to_string()));
         assert!(plugin.calls.is_empty());
     }
 
+    // A Pause chord that the Recording or the Show Longhand shortcut uses.
+    #[test]
+    fn a_chord_that_any_other_shortcut_uses_is_refused() {
+        let recording = "Super+Shift+KeyR";
+        let show_window = "Super+Shift+KeyL";
+        for taken in ["Command+Shift+KeyR", "Command+Shift+KeyL"] {
+            let mut plugin = Plugin::default();
+            let result = change(&mut plugin, None, Some(taken), &[recording, show_window]);
+            assert_eq!(
+                result,
+                Err("Another Longhand shortcut uses these keys.".to_string())
+            );
+            assert!(plugin.calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_saved_chord_of_each_kind_is_its_setting() {
+        let settings = Settings {
+            shortcut: Some("Super+KeyR".into()),
+            show_window_shortcut: Some("Super+KeyL".into()),
+            pause_shortcut: Some("Super+KeyP".into()),
+            ..Settings::default()
+        };
+        let saved: Vec<_> = ShortcutKind::ALL
+            .iter()
+            .map(|kind| kind.saved(&settings))
+            .collect();
+        assert_eq!(
+            saved,
+            [
+                Some("Super+KeyR".to_string()),
+                Some("Super+KeyL".to_string()),
+                Some("Super+KeyP".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_other_kinds_are_all_kinds_but_this_one() {
+        assert_eq!(
+            ShortcutKind::Pause.others().collect::<Vec<_>>(),
+            [ShortcutKind::Recording, ShortcutKind::ShowWindow]
+        );
+        assert_eq!(
+            ShortcutKind::Recording.others().collect::<Vec<_>>(),
+            [ShortcutKind::ShowWindow, ShortcutKind::Pause]
+        );
+    }
+
+    #[test]
+    fn suspending_unregisters_all_three_registered_chords() {
+        let registration = ShortcutRegistration::default();
+        for (kind, chord) in [
+            (ShortcutKind::Recording, "Super+KeyR"),
+            (ShortcutKind::ShowWindow, "Super+KeyL"),
+            (ShortcutKind::Pause, "Super+KeyP"),
+        ] {
+            registration.set_status(
+                kind,
+                ShortcutStatus {
+                    chord: Some(chord.into()),
+                    registered: true,
+                    error: None,
+                },
+            );
+        }
+        let mut unregistered = Vec::new();
+        suspend_registered(&registration, |c| unregistered.push(c.to_string()));
+        assert_eq!(unregistered, ["Super+KeyR", "Super+KeyL", "Super+KeyP"]);
+        let statuses = registration.statuses();
+        for status in [statuses.recording, statuses.show_window, statuses.pause] {
+            assert!(!status.registered);
+            assert!(status.chord.is_some());
+        }
+    }
+
+    // Covers AE5: a Pause press on a paused note continues it.
+    #[test]
+    fn a_pause_press_on_a_paused_note_continues_it() {
+        assert_eq!(pause_press_action(true, true), PauseAction::Continue);
+    }
+
+    #[test]
+    fn a_pause_press_on_a_recording_note_pauses_it() {
+        assert_eq!(pause_press_action(true, false), PauseAction::Pause);
+    }
+
+    #[test]
+    fn a_pause_press_with_no_open_note_does_nothing() {
+        assert_eq!(pause_press_action(false, false), PauseAction::Nothing);
+    }
+
+    // Covers AE5, R17: `capturing` comes from `is_capturing`, which counts a
+    // paused note, so the Recording shortcut stops a paused note.
+    #[test]
+    fn a_recording_press_on_a_paused_note_stops_it() {
+        let action = press_action(
+            &Press {
+                capturing: true,
+                ..press()
+            },
+            |_| panic!("a stop reads no note"),
+        );
+        assert_eq!(action, ShortcutAction::Stop);
+    }
+
     #[test]
     fn an_invalid_chord_is_refused_before_anything_changes() {
         let mut plugin = Plugin::default();
-        assert!(change(&mut plugin, Some("Super+KeyA"), Some("KeyB"), None).is_err());
+        assert!(change(&mut plugin, Some("Super+KeyA"), Some("KeyB"), &[]).is_err());
         assert!(plugin.calls.is_empty());
     }
 
     #[test]
     fn a_clear_unregisters_the_old_chord() {
         let mut plugin = Plugin::default();
-        assert_eq!(change(&mut plugin, Some("Super+KeyA"), None, None), Ok(()));
+        assert_eq!(change(&mut plugin, Some("Super+KeyA"), None, &[]), Ok(()));
         assert_eq!(plugin.calls, ["unregister Super+KeyA"]);
     }
 
     #[test]
     fn a_clear_with_no_chord_changes_nothing() {
         let mut plugin = Plugin::default();
-        assert_eq!(change(&mut plugin, None, None, None), Ok(()));
+        assert_eq!(change(&mut plugin, None, None, &[]), Ok(()));
         assert!(plugin.calls.is_empty());
     }
 
     #[test]
     fn setting_the_same_keys_again_changes_nothing() {
         let mut plugin = Plugin::default();
-        let result = change(&mut plugin, Some("Super+KeyA"), Some("Command+KeyA"), None);
+        let result = change(&mut plugin, Some("Super+KeyA"), Some("Command+KeyA"), &[]);
         assert_eq!(result, Ok(()));
         assert!(plugin.calls.is_empty());
     }
@@ -666,7 +847,7 @@ mod tests {
     #[test]
     fn a_first_chord_is_registered_when_none_was_set() {
         let mut plugin = Plugin::default();
-        assert_eq!(change(&mut plugin, None, Some("Super+KeyB"), None), Ok(()));
+        assert_eq!(change(&mut plugin, None, Some("Super+KeyB"), &[]), Ok(()));
         assert_eq!(plugin.calls, ["register Super+KeyB"]);
     }
 

@@ -12,6 +12,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     interface_zoom_percent: 100,
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
+    pause_shortcut: null,
     storage_folder: "/notes",
     endpoint_base_url: "",
     endpoint_model: "",
@@ -245,6 +246,35 @@ describe("Recording pane", () => {
     const before = calls(mock, "readiness").length;
     await user.click(within(row).getByRole("button", { name: "Clear" }));
     await waitFor(() => expect(calls(mock, "readiness").length).toBeGreaterThan(before));
+  });
+
+  // Covers R16: a new install has no Pause chord.
+  test("the Pause shortcut is under the recording shortcut and shows Off when it has no chord", async () => {
+    await open();
+    const rows = screen.getAllByText(/^(Recording shortcut|Pause shortcut)$/).map((el) => el.textContent);
+    expect(rows).toEqual(["Recording shortcut", "Pause shortcut"]);
+    const row = screen.getByText("Pause shortcut").closest(".settings-row") as HTMLElement;
+    expect(row.textContent).toContain("Off");
+    expect(within(row).queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
+  test("a registered Pause shortcut shows what it does, and Clear sends the pause kind", async () => {
+    const pause = { chord: "Alt+Shift+P", registered: true, error: null };
+    const { mock, user } = await open({
+      handlers: {
+        shortcut_status: () => ({ ...shortcutStatuses, pause }),
+        set_shortcut: () => shortcutStatuses,
+        suspend_shortcuts: () => null,
+        resume_shortcuts: () => null,
+      },
+    });
+    const row = (await screen.findByText("Pauses and continues a recording from any app")).closest(
+      ".settings-row",
+    ) as HTMLElement;
+    expect(within(row).getByText("Pause shortcut")).toBeTruthy();
+    await user.click(within(row).getByRole("button", { name: "Clear" }));
+    expect(calls(mock, "set_shortcut")).toEqual([{ kind: "pause", chord: null }]);
+    await waitFor(() => expect(row.textContent).toContain("Off"));
   });
 
   test("with microphone access not allowed on macOS, the Microphone group offers Allow", async () => {
