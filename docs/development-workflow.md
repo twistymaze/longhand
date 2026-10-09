@@ -82,7 +82,8 @@ After approval:
 5. Run `git fetch --prune origin`. GitHub deletes the head branch when the PR merges. If `git branch -r` still shows it, delete it with `git push origin --delete <branch>`.
 6. Remove the subagent worktrees of this work, in `.claude/worktrees/agent-*`. Subagents that run with worktree isolation create them, and the managed tool of the session does not remove them. For each one, confirm that `git status --short` shows no changes and that its commits are in `main`: `git cherry main <branch>` shows only `-` lines, or the files of the commit are in `main` in a later form. Then run `git worktree remove <path>` and delete its branch. If a subagent worktree has changes or commits that are not in `main`, keep it and tell the user.
 7. Run `ce-compound` for the work that the PR shipped.
-8. Commit the resulting docs on `main` and push them. Commit only this session's files by path, and run `git pull --rebase origin main` before the push.
-9. Make sure that nothing is left. `git worktree list` shows only the main checkout and the worktrees of open work. `git branch` and `git branch -r` show only `main` and the branches of open PRs. Report each remaining item and its reason.
+8. Move the idea of the work to `done/` with `bun scripts/ideas.ts move <slug> done`, and write the PR in its file ([Feature ideas](ideas/README.md)). Also move any other idea that the PR made unnecessary. Then run `bun scripts/ideas.ts check`.
+9. Commit the resulting docs on `main` and push them. Commit only this session's files by path, and run `git pull --rebase origin main` before the push.
+10. Make sure that nothing is left. `git worktree list` shows only the main checkout and the worktrees of open work. `git branch` and `git branch -r` show only `main` and the branches of open PRs. Report each remaining item and its reason.
 
 The Claude Code auto mode classifier blocks `git branch -D` and `git push origin --delete`. If it blocks a step, do not try another way. Give the user the exact commands and continue with the other steps.

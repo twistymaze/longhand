@@ -18,3 +18,4 @@ The copies grow with every replacement, sync to every computer, and keep old ver
 
 ## Notes / Current state
 - Brainstorm done on 2026-09-30; see the plan.
+- Shipped in [PR #29](https://github.com/twistymaze/longhand/pull/29).

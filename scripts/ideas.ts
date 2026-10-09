@@ -96,6 +96,38 @@ function move(slug: string, folder: string) {
     console.log(`Add a "## Why parked" section to ${relative(root, to)}.`);
 }
 
+// The branch names of the PRs that merged into main. A merge commit subject
+// is "Merge pull request #N from <owner>/<branch>".
+function mergedBranches(): Set<string> {
+  const ref = Bun.spawnSync(["git", "rev-parse", "--verify", "--quiet", "origin/main"], { cwd: root }).exitCode === 0 ? "origin/main" : "HEAD";
+  const git = Bun.spawnSync(["git", "log", ref, "--merges", "--format=%s"], { cwd: root, stderr: "pipe" });
+  const branches = new Set<string>();
+  for (const line of git.stdout.toString().split("\n")) {
+    const m = /^Merge pull request #\d+ from [^/]+\/(.+)$/.exec(line.trim());
+    if (m) branches.add(m[1]);
+  }
+  return branches;
+}
+
+// An idea in next/ whose plan topic has a merged branch has shipped and must
+// move to done/. Plan branches are named worktree-<topic> or codex/<topic>.
+function shippedButOpen(ideas: Idea[]): string[] {
+  const open = ideas.filter((i) => i.folder !== "done" && i.meta.plan);
+  if (open.length === 0) return [];
+  const branches = mergedBranches();
+  const errors: string[] = [];
+  for (const i of open) {
+    const planPath = join(root, String(i.meta.plan));
+    if (!existsSync(planPath)) continue;
+    const topic = /^topic:\s*(\S+)\s*$/m.exec(readFileSync(planPath, "utf8"))?.[1];
+    if (!topic) continue;
+    const branch = [`worktree-${topic}`, `codex/${topic}`].find((b) => branches.has(b));
+    if (branch)
+      errors.push(`${relative(root, i.path)}: branch ${branch} of its plan merged; move it with "bun scripts/ideas.ts move ${i.slug} done" and write the PR in its file`);
+  }
+  return errors;
+}
+
 function check(): number {
   const ideas = allIdeas();
   const slugs = new Set<string>();
@@ -113,6 +145,7 @@ function check(): number {
   for (const i of ideas)
     for (const r of (i.meta.related as string[] | undefined) ?? [])
       if (!slugs.has(r)) errors.push(`${relative(root, i.path)}: related idea "${r}" does not exist`);
+  errors.push(...shippedButOpen(ideas));
   for (const name of readdirSync(ideasDir))
     if (name.endsWith(".md") && name !== "README.md") errors.push(`docs/ideas/${name}: put the idea in a folder (${folders.join(", ")})`);
   for (const file of linkingFiles()) {

@@ -26,14 +26,16 @@ To learn about one idea, read its `description:` first. Read the full file only 
 
 Add ideas as they come up in any session, not only in planning.
 
-- **A new idea** gets its own file, `docs/ideas/someday/<kebab-case-slug>.md`, in the format below. Put it in `next/` only when the user confirms it as a priority. Run `bun scripts/ideas.ts` first: if the idea extends an existing one, add a note to that file.
+- **A new idea** gets its own file, `docs/ideas/someday/<kebab-case-slug>.md`, in the format below. Put it in `next/` only when the user confirms it as a priority. First, make sure that the idea is new. `bun scripts/ideas.ts` lists only the open ideas, so also search `docs/ideas/done/`, `docs/plans/` and `docs/solutions/` for its key words. Work that shipped from a plan with no idea file is only in those folders. If the idea extends an existing one, add a note to that file. If shipped work already solves it, tell the user and do not file it.
 - **One idea for each file.** A file holds one well-formed idea, or a small set of closely related ideas in one area. It is not a list of small unrelated tasks, such as the residual findings of a code review. Those findings go to the PR, to a plan, or to a separate idea file each.
 - **An idea only mentioned in passing** in a plan, brainstorm, review or conversation also gets a file here, so that the list stays complete.
 - **To change the status,** move the file with `bun scripts/ideas.ts move <slug> <folder>`. The script runs `git mv` and changes every link to the file in `docs/` and the root documents. Do not move an idea file by hand.
-- **When an idea is picked up,** move it to `next/` if it is not there, and add `plan: docs/plans/<plan>.md`. When it ships, move it to `done/` and write the PR in its file.
+- **When an idea is picked up,** move it to `next/` if it is not there, and add `plan: docs/plans/<plan>.md`. A plan that starts with no idea file, such as a fix from a conversation, also gets an idea file in `next/` with its `plan:` field, so that the work is in `done/` after it ships.
+- **When it ships,** move it to `done/` in the same session that merges the PR, and write the PR in its file. This is a step in [After a merge](../development-workflow.md#after-a-merge). `bun scripts/ideas.ts check` finds an idea that is not in `done/` after the branch of its plan merged.
+- **When the user or shipped work makes an idea unnecessary,** move it to `done/` with a short `## Outcome` section that tells why, or park it with its reason.
 - **When you park an idea,** write why in a `## Why parked` section.
 - **An idea that conflicts with a boundary** in `STRATEGY.md` goes to Ruled out below with its reason. It gets no file, so that nobody works out the reasoning again.
-- **Before a commit,** run `bun scripts/ideas.ts check`. It finds missing frontmatter fields, unknown areas, parked ideas with no reason, `related:` slugs that do not exist, and broken links to idea files.
+- **Before a commit,** run `bun scripts/ideas.ts check`. It finds missing frontmatter fields, unknown areas, parked ideas with no reason, `related:` slugs that do not exist, broken links to idea files, and open ideas whose plan branch merged.
 
 Each idea file has this frontmatter and a short body:
 
