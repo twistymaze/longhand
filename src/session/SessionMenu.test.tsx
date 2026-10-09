@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { Menu, type MenuEntry, separator } from "./SessionMenu";
+import { Menu, type MenuEntry, SessionMenu, separator } from "./SessionMenu";
 
 const item = (label: string) => ({ label, onSelect: () => {} });
 
@@ -41,5 +41,75 @@ describe("Menu", () => {
     render(<Menu items={[separator("a"), { ...item("More"), submenu: [item("Inner")] }]} onClose={() => {}} />);
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowRight" });
     expect(screen.getByRole("menuitem", { name: "Inner" })).toBeTruthy();
+  });
+});
+
+describe("Menu in a floating layer", () => {
+  test("without the option, the menu is under its button in the same parent", () => {
+    render(
+      <div data-testid="parent" className="relative">
+        <Menu items={[item("One")]} onClose={() => {}} />
+      </div>,
+    );
+    const menu = screen.getByRole("menu");
+    expect(menu.parentElement).toBe(screen.getByTestId("parent"));
+    expect(menu.className).toContain("absolute");
+    expect(menu.className).toContain("top-full");
+  });
+
+  test("a floating menu is outside a parent that clips, and is fixed", () => {
+    render(
+      <div data-testid="clip" className="overflow-hidden">
+        <SessionMenu floating label="Actions for Pathfinder" items={[item("Rename…")]} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Pathfinder" }));
+    const menu = screen.getByRole("menu");
+    expect(screen.getByTestId("clip").contains(menu)).toBe(false);
+    expect(menu.className).toContain("fixed");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename…" }));
+  });
+
+  test("a press outside closes a floating menu, and a press in it does not", () => {
+    render(
+      <div>
+        <p>Outside</p>
+        <SessionMenu floating label="Actions" items={[item("One")]} />
+      </div>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "One" }));
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    fireEvent.pointerDown(screen.getByText("Outside"));
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  test("a click on the button of an open floating menu closes it", () => {
+    render(<SessionMenu floating label="Actions" items={[item("One")]} />);
+    const button = screen.getByRole("button", { name: "Actions" });
+    fireEvent.click(button);
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    fireEvent.pointerDown(button);
+    fireEvent.click(button);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("Escape closes a floating menu and gives the focus to its button", () => {
+    render(<SessionMenu floating label="Actions" items={[item("One")]} />);
+    const button = screen.getByRole("button", { name: "Actions" });
+    fireEvent.click(button);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(button);
+  });
+
+  test("Tab in a floating menu closes it and gives the focus to its button", () => {
+    render(<SessionMenu floating label="Actions" items={[item("One")]} />);
+    const button = screen.getByRole("button", { name: "Actions" });
+    fireEvent.click(button);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Tab" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(button);
   });
 });

@@ -2,7 +2,9 @@
 // session page's "…" menu (R7, R19). The menu and its submenus open and
 // close at once, with no motion: they are used many times a day.
 
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { autoUpdate, computePosition, flip, offset, shift } from "@floating-ui/dom";
+import { type KeyboardEvent, type Ref, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { RemoteView } from "../bindings";
 import { CheckIcon, ChevronIcon } from "../settings/icons";
 
@@ -76,6 +78,10 @@ const keyOf = (entry: MenuEntry) => (isSeparator(entry) ? `separator:${entry.key
 /// A menu with no submenu has a height limit and scrolls, so a long list
 /// of note types stays in the window. A menu with a submenu does not
 /// scroll, because the scroll area would cut off the submenu.
+/// With `floating`, the menu is in a portal with a fixed position under
+/// that button, so a parent with overflow hidden does not cut it off
+/// (KTD7). The button counts as part of the menu for a press outside, and
+/// Tab closes the menu, because the portal is outside the Tab order.
 export function Menu({
   items,
   onClose,
@@ -83,9 +89,12 @@ export function Menu({
   focusFirst = true,
   width = "w-52",
   align = "right",
+  floating,
 }: {
   items: MenuEntry[];
   onClose: () => void;
+  /// The button of a floating top menu.
+  floating?: RefObject<HTMLElement | null>;
   submenu?: boolean;
   /// The width classes of a top menu. A menu with long labels sets a
   /// width that fits them.
@@ -107,11 +116,32 @@ export function Menu({
   useEffect(() => {
     if (focusFirst) menu.current?.querySelector<HTMLButtonElement>(":scope > div > button:not(:disabled)")?.focus();
     const outside = (event: PointerEvent) => {
-      if (!menu.current?.parentElement?.contains(event.target as Node)) close.current();
+      const target = event.target as Node;
+      const inside = floating
+        ? menu.current?.contains(target) || floating.current?.contains(target)
+        : menu.current?.parentElement?.contains(target);
+      if (!inside) close.current();
     };
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
-  }, [focusFirst]);
+  }, [focusFirst, floating]);
+
+  // A floating menu is under its button, and stays in the window.
+  useLayoutEffect(() => {
+    const reference = floating?.current;
+    const popup = menu.current;
+    if (!reference || !popup) return;
+    const update = () => {
+      void computePosition(reference, popup, {
+        placement: align === "left" ? "bottom-start" : "bottom-end",
+        strategy: "fixed",
+        middleware: [offset(4), flip(), shift({ padding: 8 })],
+      }).then(({ x, y }) => {
+        Object.assign(popup.style, { left: `${x}px`, top: `${y}px` });
+      });
+    };
+    return autoUpdate(reference, popup, update);
+  }, [floating, align]);
 
   const buttonOf = (key: string) =>
     menu.current?.querySelector<HTMLButtonElement>(`:scope > div[data-key="${CSS.escape(key)}"] > button`) ?? null;
@@ -128,7 +158,7 @@ export function Menu({
 
   const onKeyDown = (event: KeyboardEvent) => {
     event.stopPropagation();
-    if (event.key === "Escape" || (submenu && event.key === "ArrowLeft")) {
+    if (event.key === "Escape" || (submenu && event.key === "ArrowLeft") || (floating && event.key === "Tab")) {
       event.preventDefault();
       onClose();
       return;
@@ -152,16 +182,22 @@ export function Menu({
   // A menu with a check mark keeps a column for it, so the labels align.
   const checks = items.some((e) => !isSeparator(e) && e.checked !== undefined);
   const scrolls = !items.some((e) => !isSeparator(e) && e.submenu !== undefined);
-  return (
+  const place = floating
+    ? `fixed z-50 ${width}`
+    : `absolute z-10 ${
+        submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full ${align === "left" ? "left-0" : "right-0"} mt-1 ${width}`
+      }`;
+  const body = (
     <div
       ref={menu}
       role="menu"
       onKeyDown={onKeyDown}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
-      className={`absolute z-10 rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)] ${
-        submenu ? "top-[-4px] right-full mr-1 w-60" : `top-full ${align === "left" ? "left-0" : "right-0"} mt-1 ${width}`
-      } ${scrolls ? "max-h-[min(24rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain" : ""}`}
+      style={floating ? { top: 0, left: 0 } : undefined}
+      className={`${place} rounded-md bg-group p-1 shadow-[0_0_0_0.5px_var(--separator),0_6px_20px_rgb(0_0_0/0.18)] ${
+        scrolls ? "max-h-[min(24rem,calc(100vh-8rem))] overflow-y-auto overscroll-contain" : ""
+      }`}
     >
       {items.map((entry) => {
         const key = keyOf(entry);
@@ -219,13 +255,33 @@ export function Menu({
       })}
     </div>
   );
+  return floating ? createPortal(body, document.body) : body;
 }
 
 /// The session page's "…" button and its menu. Each item closes the menu
 /// before it acts, so a dialog or the title field can take the focus.
-export function SessionMenu({ items, onOpen }: { items: MenuEntry[]; onOpen?: () => void }) {
+/// Settings rows use the same button with the row's name in `label`, and
+/// `floating`, because a Settings group has overflow hidden (KTD7).
+export function SessionMenu({
+  items,
+  onOpen,
+  label = "Actions",
+  disabled,
+  floating = false,
+  ref,
+}: {
+  items: MenuEntry[];
+  onOpen?: () => void;
+  /// The accessible name of the button.
+  label?: string;
+  disabled?: boolean;
+  /// The menu is in a floating layer (`Menu`'s `floating`).
+  floating?: boolean;
+  /// The button, so a page can give it the focus.
+  ref?: Ref<HTMLButtonElement>;
+}) {
   const [open, setOpen] = useState(false);
-  const button = useRef<HTMLButtonElement>(null);
+  const button = useRef<HTMLButtonElement | null>(null);
   const close = () => {
     setOpen(false);
     button.current?.focus();
@@ -246,16 +302,21 @@ export function SessionMenu({ items, onOpen }: { items: MenuEntry[]; onOpen?: ()
   return (
     <div className="relative">
       <button
-        ref={button}
+        ref={(el) => {
+          button.current = el;
+          if (typeof ref === "function") ref(el);
+          else if (ref) (ref as RefObject<HTMLButtonElement | null>).current = el;
+        }}
         type="button"
-        aria-label="Actions"
+        aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => {
           if (!open) onOpen?.();
           setOpen((o) => !o);
         }}
-        className={`flex h-[22px] w-7 items-center justify-center rounded-md text-label-secondary hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent ${open ? "bg-fill" : ""}`}
+        className={`flex h-[22px] w-7 items-center justify-center rounded-md text-label-secondary enabled:hover:bg-fill enabled:active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 ${open ? "bg-fill" : ""}`}
       >
         <svg aria-hidden viewBox="0 0 16 16" className="size-4">
           <circle cx="3.5" cy="8" r="1.25" fill="currentColor" />
@@ -263,7 +324,7 @@ export function SessionMenu({ items, onOpen }: { items: MenuEntry[]; onOpen?: ()
           <circle cx="12.5" cy="8" r="1.25" fill="currentColor" />
         </svg>
       </button>
-      {open && <Menu onClose={close} items={closing(items)} />}
+      {open && <Menu onClose={close} items={closing(items)} floating={floating ? button : undefined} />}
     </div>
   );
 }

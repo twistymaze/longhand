@@ -1,14 +1,26 @@
-// The Types and Tags pane (R3, R6, R7, R13, R28, R31): the note types with
-// the default type, and the tags with their counts. Each change is one
-// backend command. A rename applies at once and asks nothing. A delete asks
-// for one confirmation that says how many notes change. A rename onto
-// another type or tag merges the two, and the pane says so.
+// The Types and Tags pane (R12-R20, KTD7): the default type for new notes,
+// the note types with their summary prompts, and the tags with their
+// counts. The rows follow the macOS System Settings lists: each name is
+// plain text, and only the popups and the ⋯ buttons are controls. Rename…
+// and Delete… are in the ⋯ menu of a row. A rename applies on Return, and
+// Escape or a click elsewhere cancels it. A delete asks for one
+// confirmation that says how many notes change. A rename onto another type
+// or tag merges the two, and the pane says so. A popup choice applies at
+// once. Each change is one backend command.
 
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { commands, type NoteTypeEntry, type NoteTypeList, type Result, type TagEntry } from "../bindings";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  commands,
+  type NoteTypeEntry,
+  type NoteTypeList,
+  type Result,
+  type SummaryPromptEntry,
+  type TagEntry,
+} from "../bindings";
 import { GENERAL, sameType, tagKey } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
-import { Button, CommitField, ErrorText, fieldClass, Group, Pane, notes, useConfirm } from "./ui";
+import { SessionMenu } from "../session/SessionMenu";
+import { Button, ErrorText, fieldClass, Group, NameField, Pane, Row, notes, useConfirm } from "./ui";
 
 /// Runs a command. A command that does not run gives `fallback` as its
 /// error.
@@ -21,58 +33,19 @@ async function attempt<T>(op: () => Promise<Result<T, string>>, fallback: string
   }
 }
 
-/// The radio mark of one choice of the default type.
-function RadioMark({ checked }: { checked: boolean }) {
-  return (
-    <span
-      aria-hidden
-      className={`flex size-[15px] shrink-0 items-center justify-center rounded-full ${
-        checked ? "bg-accent" : "bg-control shadow-[inset_0_0_0_1px_var(--control-border)]"
-      }`}
-    >
-      {checked && <span className="size-[5px] rounded-full bg-white" />}
-    </span>
-  );
-}
+/// The width of the prompt popup column. A row with no popup keeps the
+/// same width empty, so the columns of all rows align (R20).
+const promptColumn = "w-[14rem] min-w-0 shrink";
+/// The width of the ⋯ button column.
+const menuColumn = "w-7 shrink-0";
 
-/// One choice of the default type. In WKWebView a click does not give a
-/// button the focus, so the click gives it.
-function Radio({
-  label,
-  checked,
-  disabled,
-  onChoose,
-}: {
-  label: string;
-  checked: boolean;
-  disabled: boolean;
-  onChoose: () => void;
-}) {
+/// One row of a list: the name and the controls on one line, and an
+/// optional line of detail under them. `nameId` names the row for
+/// assistive technology.
+function ListRow({ nameId, children, detail }: { nameId: string; children: ReactNode; detail?: ReactNode }) {
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-label={label}
-      aria-checked={checked}
-      tabIndex={checked ? 0 : -1}
-      disabled={disabled}
-      onClick={(e) => {
-        e.currentTarget.focus();
-        if (!checked) onChoose();
-      }}
-      className="-m-1.5 shrink-0 rounded-full p-1.5 outline-offset-0 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40"
-    >
-      <RadioMark checked={checked} />
-    </button>
-  );
-}
-
-/// One row of a list: the controls on one line, and an optional line of
-/// detail under them.
-function ListRow({ children, detail }: { children: ReactNode; detail?: ReactNode }) {
-  return (
-    <div className="settings-row px-4">
-      <div className="py-2">
+    <div role="listitem" aria-labelledby={nameId} className="settings-row px-4">
+      <div className="py-1.5">
         <div className="flex min-h-[2.25rem] items-center gap-3">{children}</div>
         {detail}
       </div>
@@ -80,25 +53,27 @@ function ListRow({ children, detail }: { children: ReactNode; detail?: ReactNode
   );
 }
 
-/// The count of notes in a row.
-function Count({ n }: { n: number }) {
-  return <span className="shrink-0 text-[0.85rem] whitespace-nowrap text-label-secondary tabular-nums">{notes(n)}</span>;
-}
-
-/// The name field of a row. It takes the free width, to a limit.
-function NameField(props: { label: string; value: string; disabled?: boolean; onCommit: (v: string) => void }) {
+/// The name of a row as plain text, or the name field while the row is in
+/// a rename.
+function RowName({ id, text, field }: { id: string; text: string; field: ReactNode }) {
   return (
-    <div className="min-w-0 max-w-[20rem] flex-1">
-      <CommitField {...props} width="w-full" />
+    <div className="flex min-w-[6rem] flex-1 items-center">
+      {/* The field moves left by its padding and border, so its text stays where the name was. */}
+      {field ? <div className="-ml-[9px] max-w-[20rem] min-w-0 flex-1">{field}</div> : (
+        <span id={id} title={text} className="min-w-0 truncate">
+          {text}
+        </span>
+      )}
     </div>
   );
 }
 
-function DeleteButton({ what, name, disabled, onClick }: { what: string; name: string; disabled?: boolean; onClick: () => void }) {
+/// The count of notes in a row, right-aligned in its column.
+function Count({ n }: { n: number }) {
   return (
-    <Button disabled={disabled} onClick={onClick}>
-      Delete<span className="sr-only"> {what} {name}</span>
-    </Button>
+    <span className="w-[4.75rem] shrink-0 text-right text-[0.85rem] whitespace-nowrap text-label-secondary tabular-nums">
+      {notes(n)}
+    </span>
   );
 }
 
@@ -114,33 +89,58 @@ function tagDeleteMessage(t: TagEntry): string {
   return `${notes(t.count)} ${t.count === 1 ? "loses" : "lose"} this tag.`;
 }
 
+/// The row that has the name field open, or null.
+type Edit = { list: "types" | "tags"; name: string } | { list: "add" } | null;
+/// The control that takes the focus after the next render: the ⋯ button
+/// of a row, or the Add Type button.
+type FocusTarget = { list: "types" | "tags"; name: string } | { list: "add" } | null;
+
+/// The option value of "Default" in a prompt popup and of General in the
+/// default type popup. No prompt id and no type name is empty.
+const NONE = "";
+
 export function TypesAndTags({
   readOnly = null,
 }: {
-  /// Why the shared settings are read-only now, or null (R16).
+  /// Why the shared settings are read-only now, or null (R19).
   readOnly?: string | null;
 }) {
   const [types, setTypes] = useState<NoteTypeList | null>(null);
   const [tags, setTags] = useState<TagEntry[] | null>(null);
+  const [prompts, setPrompts] = useState<SummaryPromptEntry[] | null>(null);
   const [typeError, setTypeError] = useState<string | null>(null);
   const [tagError, setTagError] = useState<string | null>(null);
   // The result of the last merge, for each list.
   const [typeNotice, setTypeNotice] = useState<string | null>(null);
   const [tagNotice, setTagNotice] = useState<string | null>(null);
-  const [newType, setNewType] = useState("");
+  const [editing, setEditing] = useState<Edit>(null);
+  const [focusTo, setFocusTo] = useState<FocusTarget>(null);
   const { ask, dialog } = useConfirm();
+  const ids = useId();
+  const typeList = useRef<HTMLDivElement>(null);
+  const tagList = useRef<HTMLDivElement>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
 
   // Reads can end out of order. Each read and each command result takes a
   // number, and only the newest number changes a list.
   const typeRequest = useRef(0);
   const tagRequest = useRef(0);
+  const promptRequest = useRef(0);
 
   const load = useCallback(async () => {
     const typeAt = ++typeRequest.current;
     const tagAt = ++tagRequest.current;
-    const [t, g] = await Promise.all([
+    const promptAt = ++promptRequest.current;
+    const [t, g, p] = await Promise.all([
       attempt(() => commands.noteTypes(), "The types could not be read."),
       attempt(() => commands.listTags(), "The tags could not be read."),
+      commands.summaryPrompts().then(
+        (list) => list.prompts,
+        (e: unknown) => {
+          console.error("The summary prompts could not be read.", e);
+          return null;
+        },
+      ),
     ]);
     if (typeAt === typeRequest.current) {
       if (t.status === "ok") {
@@ -154,14 +154,35 @@ export function TypesAndTags({
         setTagError(null);
       } else setTagError(g.error);
     }
+    if (promptAt === promptRequest.current && p) setPrompts(p);
   }, []);
 
-  // A change on another computer, on a note page or in the library reads
-  // the lists again.
+  // A change on another computer, in the Summaries pane, on a note page or
+  // in the library reads the lists again.
   useEffect(() => {
     void load();
   }, [load]);
   useReloadOn(load);
+
+  // WKWebView does not focus a clicked button, so the focus goes back to
+  // the ⋯ button of a row with an explicit focus() (KTD7). A rename can
+  // change the case of the name or merge it into another row, so the row
+  // is found by its name as the list compares names.
+  useEffect(() => {
+    if (!focusTo) return;
+    setFocusTo(null);
+    if (focusTo.list === "add") {
+      addButton.current?.focus();
+      return;
+    }
+    const match =
+      focusTo.list === "types"
+        ? types?.types.find((t) => sameType(t.name, focusTo.name))?.name
+        : tags?.find((t) => t.key === tagKey(focusTo.name))?.text;
+    const list = focusTo.list === "types" ? typeList.current : tagList.current;
+    if (match === undefined || !list) return;
+    list.querySelector<HTMLButtonElement>(`button[aria-label="${CSS.escape(`Actions for ${match}`)}"]`)?.focus();
+  }, [focusTo, types, tags]);
 
   // Runs a type command. On success the pane shows the new list.
   const runType = async <T,>(op: () => Promise<Result<T, string>>, listOf: (data: T) => NoteTypeList) => {
@@ -191,145 +212,205 @@ export function TypesAndTags({
     return true;
   };
 
-  const addType = async () => {
-    const name = newType;
-    if (name.trim() === "") return;
-    if (await runType(() => commands.addNoteType(name), (l) => l)) setNewType("");
+  /// Closes the name field. Escape gives the focus back to the control
+  /// that opened the field; a click elsewhere leaves the focus there.
+  const cancelEdit = (byKey: boolean) => {
+    const was = editing;
+    setEditing(null);
+    if (byKey && was) setFocusTo(was);
+  };
+
+  const addType = async (name: string) => {
+    if (name.trim() === "") {
+      cancelEdit(true);
+      return true;
+    }
+    const done = await runType(() => commands.addNoteType(name), (l) => l);
+    if (done) {
+      setEditing(null);
+      setFocusTo({ list: "add" });
+    }
+    return done;
   };
 
   const renameType = async (t: NoteTypeEntry, to: string) => {
+    if (to === t.name) {
+      cancelEdit(true);
+      return true;
+    }
     // A case-only change is not a merge.
     const into = types?.types.find((o) => o.name !== t.name && sameType(o.name, to));
     const done = await runType(() => commands.renameNoteType(t.name, to), (e) => e.list);
-    if (done && into) setTypeNotice(`Merged “${t.name}” into “${into.name}”.`);
+    if (done) {
+      setEditing(null);
+      setFocusTo({ list: "types", name: to });
+      if (into) setTypeNotice(`Merged “${t.name}” into “${into.name}”.`);
+    }
+    return done;
   };
 
   const deleteType = async (t: NoteTypeEntry) => {
     const yes = await ask({ title: `Delete “${t.name}”?`, message: typeDeleteMessage(t), action: "Delete" });
     if (yes) await runType(() => commands.deleteNoteType(t.name), (e) => e.list);
+    else setFocusTo({ list: "types", name: t.name });
   };
 
   const renameTag = async (t: TagEntry, to: string) => {
+    if (to === t.text) {
+      cancelEdit(true);
+      return true;
+    }
     const into = tags?.find((o) => o.key !== t.key && o.key === tagKey(to));
     const done = await runTag(() => commands.renameTag(t.text, to));
-    if (done && into) setTagNotice(`Merged “${t.text}” into “${into.text}”.`);
+    if (done) {
+      setEditing(null);
+      setFocusTo({ list: "tags", name: to });
+      if (into) setTagNotice(`Merged “${t.text}” into “${into.text}”.`);
+    }
+    return done;
   };
 
   const deleteTag = async (t: TagEntry) => {
     const yes = await ask({ title: `Delete the tag “${t.text}”?`, message: tagDeleteMessage(t), action: "Delete" });
     if (yes) await runTag(() => commands.deleteTag(t.text));
+    else setFocusTo({ list: "tags", name: t.text });
   };
+
+  const setDefault = (name: string | null) => void runType(() => commands.setDefaultNoteType(name), (l) => l);
+  const setPrompt = (t: NoteTypeEntry, id: string | null) =>
+    void runType(() => commands.setNoteTypePrompt(t.name, id), (l) => l);
 
   const locked = readOnly !== null;
-  // General is the built-in type, first in the list. Its default is null.
-  const general = types?.types.find((t) => t.general);
-  const named = types?.types.filter((t) => !t.general) ?? [];
-  const choices: (string | null)[] = [null, ...named.filter((t) => t.valid).map((t) => t.name)];
-  const setDefault = (name: string | null) =>
-    void runType(() => commands.setDefaultNoteType(name), (l) => l);
+  const valid = types?.types.filter((t) => !t.general && t.valid) ?? [];
+  const defaultValue = valid.find((t) => sameType(t.name, types?.default_type ?? ""))?.name ?? NONE;
+  const isEditing = (list: "types" | "tags", name: string) =>
+    editing !== null && editing.list === list && editing.name === name;
 
-  // The up and down arrows move the default through the choices, as in a
-  // radio group.
-  const onRadioKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    // The arrows in a name field do not change the default.
-    const onRadio = (e.target as HTMLElement).getAttribute("role") === "radio";
-    if (locked || !types || !onRadio || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
-    e.preventDefault();
-    const at = choices.indexOf(types.default_type);
-    const next = Math.min(choices.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)));
-    if (next === at) return;
-    const radios = e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]');
-    radios[next]?.focus();
-    setDefault(choices[next]);
-  };
+  const menuItems = (onRename: () => void, onDelete: () => void) => [
+    { label: "Rename…", onSelect: onRename },
+    { label: "Delete…", onSelect: onDelete },
+  ];
 
   return (
     <Pane title="Types and Tags">
+      {types && (
+        <Group>
+          <Row label="New notes get the type">
+            <select
+              aria-label="New notes get the type"
+              className={`${fieldClass} w-[14rem]`}
+              value={defaultValue}
+              disabled={locked}
+              onChange={(e) => setDefault(e.target.value === NONE ? null : e.target.value)}
+            >
+              <option value={NONE}>{GENERAL}</option>
+              {valid.map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Row>
+        </Group>
+      )}
+
       <Group
         header="Types"
         footer={
           locked
             ? `${readOnly} Types can’t be changed now.`
-            : "Each type is a folder in the storage folder. A new note gets the checked type."
+            : "Each type is a folder in the storage folder. A type set to “Default” uses the default prompt in Summaries."
         }
       >
         {types && (
-          <div role="radiogroup" aria-label="Default type" onKeyDown={onRadioKey}>
-            <ListRow
-              detail={
-                <p className="mt-0.5 pl-[27px] text-[0.85rem] leading-[1.4] text-label-secondary">
+          <div ref={typeList} role="list" aria-label="Types">
+            {types.types.map((t, index) => {
+              const nameId = `${ids}-type-${index}`;
+              const warning = !t.valid && (
+                <p className="mt-0.5 text-[0.85rem] leading-[1.4] text-caution">
+                  {sameType(t.name, GENERAL)
+                    ? "General is a built-in type. Rename this type."
+                    : "This name can’t be a folder name. Rename the type."}
+                </p>
+              );
+              const note = t.general && (
+                <p className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">
                   Notes at the top of the storage folder.
                 </p>
-              }
-            >
-              <Radio
-                label={GENERAL}
-                checked={types.default_type === null}
-                disabled={locked}
-                onChoose={() => setDefault(null)}
-              />
-              <span className="min-w-0 flex-1 truncate">{GENERAL}</span>
-              <Count n={general?.notes ?? 0} />
-            </ListRow>
-            {named.map((t) => (
-              <ListRow
-                key={t.name}
-                detail={
-                  !t.valid && (
-                    <p className="mt-1 pl-[27px] text-[0.85rem] leading-[1.4] text-caution">
-                      {sameType(t.name, GENERAL)
-                        ? "General is a built-in type. Rename this type."
-                        : "This name can’t be a folder name. Rename the type."}
-                    </p>
-                  )
-                }
-              >
-                {t.valid ? (
-                  <Radio
-                    label={t.name}
-                    checked={sameType(types.default_type ?? "", t.name)}
-                    disabled={locked}
-                    onChoose={() => setDefault(t.name)}
+              );
+              return (
+                <ListRow key={t.name} nameId={nameId} detail={warning || note}>
+                  <RowName
+                    id={nameId}
+                    text={t.name}
+                    field={
+                      isEditing("types", t.name) && (
+                        <NameField
+                          label={`Name of type ${t.name}`}
+                          value={t.name}
+                          onApply={(v) => renameType(t, v)}
+                          onCancel={cancelEdit}
+                        />
+                      )
+                    }
                   />
-                ) : (
-                  <span aria-hidden className="w-[15px] shrink-0" />
-                )}
-                <NameField
-                  label={`Name of type ${t.name}`}
-                  value={t.name}
-                  disabled={locked}
-                  onCommit={(v) => void renameType(t, v)}
-                />
-                <span className="flex-1" />
-                <Count n={t.notes} />
-                <DeleteButton what="type" name={t.name} disabled={locked} onClick={() => void deleteType(t)} />
-              </ListRow>
-            ))}
+                  <Count n={t.notes} />
+                  {t.valid ? (
+                    <select
+                      aria-label={`Summary prompt for ${t.name}`}
+                      className={`${fieldClass} ${promptColumn}`}
+                      value={t.prompt_choice ?? NONE}
+                      disabled={locked || prompts === null}
+                      onChange={(e) => setPrompt(t, e.target.value === NONE ? null : e.target.value)}
+                    >
+                      <option value={NONE}>Default</option>
+                      {prompts?.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span aria-hidden className={promptColumn} />
+                  )}
+                  <div className={menuColumn}>
+                    {!t.general && (
+                      <SessionMenu
+                        floating
+                        label={`Actions for ${t.name}`}
+                        disabled={locked}
+                        items={menuItems(
+                          () => setEditing({ list: "types", name: t.name }),
+                          () => void deleteType(t),
+                        )}
+                      />
+                    )}
+                  </div>
+                </ListRow>
+              );
+            })}
           </div>
         )}
-        <ListRow>
-          <span aria-hidden className="w-[15px] shrink-0" />
-          <div className="min-w-0 max-w-[20rem] flex-1">
-            <input
-              aria-label="New type"
-              placeholder="New type"
-              className={`${fieldClass} w-full disabled:text-label-secondary`}
-              value={newType}
-              disabled={locked}
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              onChange={(e) => setNewType(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void addType();
-              }}
-            />
+        <div className="px-4">
+          {/* The list is between this row and the row before it, so the row draws its own separator. */}
+          <div className={`flex min-h-[2.75rem] items-center py-1.5 ${types && types.types.length > 0 ? "border-t border-separator" : ""}`}>
+            {editing?.list === "add" ? (
+              <div className="max-w-[20rem] min-w-0 flex-1">
+                <NameField
+                  label="New type"
+                  placeholder="New type"
+                  value=""
+                  onApply={addType}
+                  onCancel={cancelEdit}
+                />
+              </div>
+            ) : (
+              <Button ref={addButton} disabled={locked} onClick={() => setEditing({ list: "add" })}>
+                Add Type…
+              </Button>
+            )}
           </div>
-          <span className="flex-1" />
-          <Button disabled={locked || newType.trim() === ""} onClick={() => void addType()}>
-            Add Type
-          </Button>
-        </ListRow>
+        </div>
         {typeNotice && (
           <p role="status" className="px-4 pb-2 text-[0.85rem] text-label-secondary">
             {typeNotice}
@@ -340,18 +421,48 @@ export function TypesAndTags({
 
       <Group header="Tags" footer="A change applies to every note with the tag. A rename to an existing tag joins the two tags.">
         {tags && tags.length === 0 && (
-          <ListRow>
-            <span className="text-label-secondary">No tags yet. Add tags on the page of a note.</span>
-          </ListRow>
+          <div className="settings-row px-4">
+            <p className="flex min-h-[2.25rem] items-center py-1.5 text-label-secondary">
+              No tags yet. Add tags on the page of a note.
+            </p>
+          </div>
         )}
-        {tags?.map((t) => (
-          <ListRow key={t.key}>
-            <NameField label={`Name of tag ${t.text}`} value={t.text} onCommit={(v) => void renameTag(t, v)} />
-            <span className="flex-1" />
-            <Count n={t.count} />
-            <DeleteButton what="tag" name={t.text} onClick={() => void deleteTag(t)} />
-          </ListRow>
-        ))}
+        {tags && tags.length > 0 && (
+          <div ref={tagList} role="list" aria-label="Tags">
+            {tags.map((t, index) => {
+              const nameId = `${ids}-tag-${index}`;
+              return (
+                <ListRow key={t.key} nameId={nameId}>
+                  <RowName
+                    id={nameId}
+                    text={t.text}
+                    field={
+                      isEditing("tags", t.text) && (
+                        <NameField
+                          label={`Name of tag ${t.text}`}
+                          value={t.text}
+                          onApply={(v) => renameTag(t, v)}
+                          onCancel={cancelEdit}
+                        />
+                      )
+                    }
+                  />
+                  <Count n={t.count} />
+                  <div className={menuColumn}>
+                    <SessionMenu
+                      floating
+                      label={`Actions for ${t.text}`}
+                      items={menuItems(
+                        () => setEditing({ list: "tags", name: t.text }),
+                        () => void deleteTag(t),
+                      )}
+                    />
+                  </div>
+                </ListRow>
+              );
+            })}
+          </div>
+        )}
         {tagNotice && (
           <p role="status" className="px-4 pb-2 text-[0.85rem] text-label-secondary">
             {tagNotice}
