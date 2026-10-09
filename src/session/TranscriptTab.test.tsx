@@ -48,6 +48,22 @@ describe("TranscriptTab", () => {
     expect(screen.getAllByText("Speaker 1")).toHaveLength(2);
   });
 
+  // Covers AE6.
+  test("a pause shows its length in minutes and reads differently from a resume", () => {
+    renderTab([
+      turn(0, 1, "Before."),
+      { kind: "pause", duration_ms: 15 * 60_000 },
+      turn(3_900_000, 1, "After the pause."),
+      { kind: "gap", at_ms: 6_300_000, duration_ms: 3_600_000, wall_start: new Date(2026, 8, 30, 10, 2).toISOString() },
+      turn(6_300_000, 1, "After the resume."),
+    ]);
+    const pause = screen.getByText("Paused · 15 min");
+    const resume = screen.getByText(/^Resumed /);
+    // The lines on each side of the label differ.
+    expect(pause.firstElementChild?.className).toContain("border-dashed");
+    expect(resume.firstElementChild?.className).not.toContain("border-dashed");
+  });
+
   test("a gap with no start time says that time was not recorded", () => {
     renderTab([turn(0, 1, "Before."), { kind: "gap", at_ms: 9_000, duration_ms: 65_000, wall_start: null }]);
     expect(screen.getByText(/Not recorded/)).toBeTruthy();

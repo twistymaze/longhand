@@ -72,14 +72,20 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
     ordered.sort_by_key(|s| s.offset_ms);
 
     let mut lines = Vec::new();
-    let mut previous_end: Option<u64> = None;
+    // The end of the previous segment, and true when the note paused there.
+    let mut previous: Option<(u64, bool)> = None;
     for segment in ordered {
-        if let Some(end) = previous_end {
-            lines.push(TranscriptLine::Gap {
-                duration_ms: segment.offset_ms.saturating_sub(end),
+        if let Some((end, paused)) = previous {
+            let duration_ms = segment.offset_ms.saturating_sub(end);
+            // A pause gets its own line in place of the gap line (KTD5 of
+            // the pause plan).
+            lines.push(if paused {
+                TranscriptLine::Pause { duration_ms }
+            } else {
+                TranscriptLine::Gap { duration_ms }
             });
         }
-        previous_end = Some(segment.end_ms());
+        previous = Some((segment.end_ms(), segment.ends_in_pause));
 
         let mut pieces: Vec<Piece> = Vec::new();
         for window in windows.iter().filter(|w| w.segment == segment.index) {

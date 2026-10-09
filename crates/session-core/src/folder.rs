@@ -513,8 +513,11 @@ pub enum TranscriptLine {
         speaker: Option<u32>,
         text: String,
     },
-    /// Between segments.
+    /// Between segments, where the note stopped and resumed or lost audio.
     Gap { duration_ms: u64 },
+    /// Between segments, where the user paused the note (KTD5 of the pause
+    /// plan). Processing does not treat this time as missing audio.
+    Pause { duration_ms: u64 },
     /// A within-segment silence past the threshold.
     Silence { duration_ms: u64 },
 }
@@ -569,6 +572,10 @@ impl Transcript {
                     "\n--- gap {} ---\n\n",
                     format_position(*duration_ms)
                 )),
+                TranscriptLine::Pause { duration_ms } => out.push_str(&format!(
+                    "\n--- pause {} ---\n\n",
+                    format_position(*duration_ms)
+                )),
                 TranscriptLine::Silence { duration_ms } => out.push_str(&format!(
                     "\n--- silence {} ---\n\n",
                     format_position(*duration_ms)
@@ -606,6 +613,7 @@ impl Transcript {
                 let duration_ms = parse_position(time).ok_or_else(|| err("bad duration"))?;
                 lines.push(match kind {
                     "gap" => TranscriptLine::Gap { duration_ms },
+                    "pause" => TranscriptLine::Pause { duration_ms },
                     "silence" => TranscriptLine::Silence { duration_ms },
                     _ => return Err(err("unknown marker")),
                 });

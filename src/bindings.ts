@@ -672,6 +672,31 @@ async stopRecording() : Promise<Result<StopOutcome, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Pause the note that records (R1, KTD8). A note that is already paused,
+ * or no note that records, does not change.
+ */
+async pauseRecording() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pause_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Continue the paused note (R1, KTD8). A note that records, or no paused
+ * note, does not change. When the microphone cannot open, the note is
+ * interrupted (R5).
+ */
+async continueRecording() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("continue_recording") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resume_recording", { sessionId }) };
@@ -1274,7 +1299,12 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
  * Between segments; `at_ms` is where the earlier segment ends, and
  * `wall_start` (RFC 3339) is when the next segment started (KTD12).
  */
-{ kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | { kind: "silence"; duration_ms: number }
+{ kind: "gap"; at_ms: number; duration_ms: number; wall_start: string | null } | 
+/**
+ * Between segments, where the user paused the note (KTD5 of the pause
+ * plan).
+ */
+{ kind: "pause"; duration_ms: number } | { kind: "silence"; duration_ms: number }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
 /**
  * The result of a model list request, for the Summaries pane (KTD2). It
@@ -1853,7 +1883,22 @@ export type RecordingStatus = {
 /**
  * The open session: recording, or interrupted and resumable.
  */
-session_id: string | null; state: string | null; recording: boolean; 
+session_id: string | null; state: string | null; 
+/**
+ * A note is open: a segment records, a restart reopens the
+ * microphone, or the note is paused.
+ */
+recording: boolean; 
+/**
+ * The user paused the open note (KTD1): no segment records, and the
+ * stored state stays Capturing.
+ */
+paused: boolean; 
+/**
+ * The audio that the kept segments of the open note hold, gaps
+ * excluded. While paused, it is the elapsed time that the page shows.
+ */
+recorded_ms: number; 
 /**
  * Processing waits: a note records, or a live worker saves its last
  * part after Stop (KTD9, KTD20). The same test as the runner's.

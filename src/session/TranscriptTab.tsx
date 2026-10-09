@@ -1,7 +1,7 @@
 // The saved transcript (R16, R18). Consecutive turns of one speaker show
 // under one label, each paragraph as its own block. A paragraph's time
 // shows while the pointer is on it. A resume shows as a marker with its
-// date and time. The tab opens at the end, where a reader who returns to a
+// date and time, and a pause as a marker with its length. The tab opens at the end, where a reader who returns to a
 // session usually continues.
 
 import { useLayoutEffect, useRef } from "react";
@@ -14,7 +14,7 @@ type Turn = Extract<DocLine, { kind: "turn" }>;
 
 type Part =
   | { kind: "speaker"; speaker: number | null; turns: Turn[] }
-  | { kind: "marker"; label: string };
+  | { kind: "marker"; label: string; dashed?: boolean };
 
 /// "35:48", or "4:02:03" with hours.
 export function formatClock(ms: number): string {
@@ -37,6 +37,11 @@ export function resumedLabel(iso: string, now: Date = new Date()): string {
   return `Resumed ${date}, ${time}`;
 }
 
+/// "Paused · 15 min": the length of a pause in whole minutes, at least 1.
+export function pausedLabel(ms: number): string {
+  return `Paused · ${Math.max(1, Math.round(ms / 60_000))} min`;
+}
+
 /// The lines in groups: the turns of one speaker until another speaks or
 /// a marker comes.
 function parts(lines: DocLine[]): Part[] {
@@ -51,6 +56,8 @@ function parts(lines: DocLine[]): Part[] {
         kind: "marker",
         label: line.wall_start ? resumedLabel(line.wall_start) : `Not recorded for ${formatClock(line.duration_ms)}`,
       });
+    } else if (line.kind === "pause") {
+      out.push({ kind: "marker", label: pausedLabel(line.duration_ms), dashed: true });
     } else {
       out.push({ kind: "marker", label: `Silence for ${formatClock(line.duration_ms)}` });
     }
@@ -103,7 +110,7 @@ export function TranscriptTab({
       {lines.length === 0 && <p className="mt-4 text-label-tertiary">Nothing was transcribed.</p>}
       {parts(lines).map((part, i) =>
         part.kind === "marker" ? (
-          <Marker key={i} label={part.label} />
+          <Marker key={i} label={part.label} dashed={part.dashed} />
         ) : (
           <section key={i} className="mt-5">
             {part.speaker !== null && (

@@ -91,6 +91,35 @@ fn transcript_md_round_trips() {
 }
 
 #[test]
+fn a_pause_line_round_trips_and_differs_from_a_gap_line() {
+    let transcript = Transcript {
+        has_speakers: true,
+        lines: vec![
+            TranscriptLine::Turn {
+                position_ms: 0,
+                speaker: Some(1),
+                text: "Before the break.".into(),
+            },
+            TranscriptLine::Pause {
+                duration_ms: 900_000,
+            },
+            TranscriptLine::Turn {
+                position_ms: 3_900_000,
+                speaker: Some(1),
+                text: "After the break.".into(),
+            },
+            TranscriptLine::Gap {
+                duration_ms: 60_000,
+            },
+        ],
+    };
+    let text = transcript.render();
+    assert!(text.contains("\n--- pause 00:15:00 ---\n"), "{text}");
+    assert!(text.contains("\n--- gap 00:01:00 ---\n"), "{text}");
+    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+}
+
+#[test]
 fn transcript_without_speakers_says_so_and_round_trips() {
     let transcript = Transcript {
         has_speakers: false,
