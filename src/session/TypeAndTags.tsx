@@ -1,6 +1,7 @@
 // The row under the note's title and subtitle (R16): the note type as a
-// menu, each tag with a control that removes it, and "+ Tag". A type
-// change shows its result as a notice under the title, as a rename does.
+// menu, each tag with a control that removes it, and "+ Tag". A failed
+// type change shows the error as a notice under the title, as a rename
+// does.
 //
 // During a recording, the row follows the attention budget of the
 // recording page (R17). It changes only after an action of the user. A
