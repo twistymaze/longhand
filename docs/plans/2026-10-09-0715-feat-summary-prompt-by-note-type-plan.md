@@ -441,7 +441,7 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 
 **Files:**
 - `CONCEPTS.md`
-- `docs/ideas/next/summary-prompt-by-note-type.md`
+- `docs/ideas/done/summary-prompt-by-note-type.md`
 
 **Approach:**
 1. Change "Summary prompt" to describe the default prompt and the prompt choice of each type.

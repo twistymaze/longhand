@@ -13,12 +13,13 @@ plan: docs/plans/2026-10-09-0715-feat-summary-prompt-by-note-type-plan.md
 ## Idea
 Each note has a type, and the type chooses one of the saved summary prompts. For example, a Pathfinder note gets a recap of the session, and a work note gets decisions and follow-ups.
 
-The note type of [Note types and tags](../done/note-folders.md) gives a note its type. This idea stays separate from that idea so that each idea stays small.
+The note type of [Note types and tags](note-folders.md) gives a note its type. This idea stays separate from that idea so that each idea stays small.
 
 ## Why
 One summary shape does not fit every kind of note. The walking skeleton used one shape because that got to a usable app faster.
 
 ## Notes / Current state
-- Saved summary prompts shipped ([done/summary-prompts.md](../done/summary-prompts.md)): Settings holds a list of named prompts that control the output, with one active prompt for the whole app. This idea adds the choice of a prompt for each note, from its type.
+- Saved summary prompts shipped ([done/summary-prompts.md](summary-prompts.md)): Settings holds a list of named prompts that control the output, with one active prompt for the whole app. This idea adds the choice of a prompt for each note, from its type.
 - Open questions: what happens when a note has no type (the app-wide prompt); and whether the user can change the type after the summary exists (Regenerate with the new prompt).
 - Brainstormed on 2026-10-09. The plan answers both open questions: General and each type set to "Default" use the default prompt, and a type change after a summary offers a regeneration. The plan also redesigns the Types and Tags pane: plain-text names, a prompt popup on each type, and a ⋯ menu for Rename and Delete.
+- Shipped in PR #50 (https://github.com/twistymaze/longhand/pull/50).

@@ -23,4 +23,4 @@ All notes are in one flat list. The user wants to browse by group on Home, keep 
 ## Notes / Current state
 - Shipped in PR #45. Changes from the plan during the manual test: the built-in type General (the top of the storage folder) replaces "no type"; types are in name order; tag scope colours are assigned across the library; the summarizer gets the type, the tags and the user's own title.
 - The brainstorm of 2026-10-07 wrote the requirements in the plan above. It also changes the `STRATEGY.md` boundary that ruled out tags (R25 of the plan).
-- Follow-up ideas: [suggested-tags](../someday/suggested-tags.md) and [summary-prompt-by-note-type](../next/summary-prompt-by-note-type.md).
+- Follow-up ideas: [suggested-tags](../someday/suggested-tags.md) and [summary-prompt-by-note-type](summary-prompt-by-note-type.md).

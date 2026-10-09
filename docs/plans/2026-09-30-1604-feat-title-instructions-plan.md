@@ -89,7 +89,7 @@ The result is a title such as "Topics discussed" that does not say what kind of 
 
 ### Scope Boundaries
 
-- A summary prompt chosen by note type (`docs/ideas/next/summary-prompt-by-note-type.md`). The meeting type in a title is text only. It does not choose a prompt and is not stored as a field.
+- A summary prompt chosen by note type (`docs/ideas/done/summary-prompt-by-note-type.md`). The meeting type in a title is text only. It does not choose a prompt and is not stored as a field.
 - Titles of existing notes. They change only through Regenerate Summary, under R13.
 - Placeholders or variables in the title text, such as the date or the folder name.
 - Structured (JSON-schema) output from the endpoint.

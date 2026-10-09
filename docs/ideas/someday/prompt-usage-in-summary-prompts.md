@@ -16,5 +16,5 @@ Each row in the Summary prompts pane shows the note types that use the prompt, f
 After types choose their prompts, the user cannot see from the prompt list which prompt a type uses. Before the user edits or deletes a prompt, they must look in the Types and Tags pane.
 
 ## Notes / Current state
-- Depends on [summary-prompt-by-note-type](../next/summary-prompt-by-note-type.md), which adds the prompt choice for each type.
+- Depends on [summary-prompt-by-note-type](../done/summary-prompt-by-note-type.md), which adds the prompt choice for each type.
 - The delete confirmation of a prompt already says how many types use it (R5 of that plan).
