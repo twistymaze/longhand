@@ -8,6 +8,7 @@
 //! a sync service can deliver a file in parts, and Longhand never writes
 //! over such a file.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +41,7 @@ pub const KEY_CHECK_UPDATES_AUTOMATICALLY: &str = "check_updates_automatically";
 pub const KEY_AUDIO_REMOVAL: &str = "audio_removal";
 pub const KEY_NOTE_TYPES: &str = "note_types";
 pub const KEY_DEFAULT_NOTE_TYPE: &str = "default_note_type";
+pub const KEY_NOTE_TYPE_PROMPTS: &str = "note_type_prompts";
 
 /// The delay of a new storage folder: the audio of a saved note goes 30
 /// days after the note last recorded (R2).
@@ -188,6 +190,12 @@ pub struct SharedFields {
     /// The type of a new note from the New Note button and the shortcut
     /// (R7, R23). `Known(None)` and an absent field are General.
     pub default_note_type: Field<Option<String>>,
+    /// The summary prompt choice of each note type: the type name, with
+    /// "General" for General, and the id of its prompt (R1, R2, KTD1). A
+    /// type with no key, and an absent field, use the default prompt. The
+    /// map is one value: the last change wins. Find the choice of a type
+    /// with [`crate::note_types::type_prompt_id`].
+    pub note_type_prompts: Field<BTreeMap<String, String>>,
 }
 
 impl SharedFields {
@@ -212,6 +220,7 @@ impl SharedFields {
             }),
             note_types: parse(raw, KEY_NOTE_TYPES, |_| true),
             default_note_type: parse(raw, KEY_DEFAULT_NOTE_TYPE, |_| true),
+            note_type_prompts: parse(raw, KEY_NOTE_TYPE_PROMPTS, |_| true),
         }
     }
 
@@ -257,6 +266,7 @@ impl SharedFields {
             (KEY_AUDIO_REMOVAL, unknown(&self.audio_removal)),
             (KEY_NOTE_TYPES, unknown(&self.note_types)),
             (KEY_DEFAULT_NOTE_TYPE, unknown(&self.default_note_type)),
+            (KEY_NOTE_TYPE_PROMPTS, unknown(&self.note_type_prompts)),
         ]
         .into_iter()
         .filter_map(|(key, value)| Some((key, value?)))
@@ -306,6 +316,7 @@ pub enum SharedValue {
     AudioRemoval(AudioRemoval),
     NoteTypes(Vec<String>),
     DefaultNoteType(Option<String>),
+    NoteTypePrompts(BTreeMap<String, String>),
 }
 
 impl SharedValue {
@@ -323,6 +334,7 @@ impl SharedValue {
             SharedValue::AudioRemoval(_) => KEY_AUDIO_REMOVAL,
             SharedValue::NoteTypes(_) => KEY_NOTE_TYPES,
             SharedValue::DefaultNoteType(_) => KEY_DEFAULT_NOTE_TYPE,
+            SharedValue::NoteTypePrompts(_) => KEY_NOTE_TYPE_PROMPTS,
         }
     }
 
@@ -340,6 +352,7 @@ impl SharedValue {
             SharedValue::AudioRemoval(removal) => serde_json::to_value(removal),
             SharedValue::NoteTypes(names) => serde_json::to_value(names),
             SharedValue::DefaultNoteType(name) => serde_json::to_value(name),
+            SharedValue::NoteTypePrompts(map) => serde_json::to_value(map),
         };
         value.expect("a shared setting serializes")
     }

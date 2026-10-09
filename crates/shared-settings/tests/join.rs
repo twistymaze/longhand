@@ -39,6 +39,7 @@ fn cache_of_b(source: &Path, prompts: Vec<Prompt>) -> Cache {
         settings: apply_patch(&default_settings(), &[SharedValue::LiveTranscript(false)]),
         prompts,
         active_prompt: None,
+        type_prompts: Vec::new(),
         background: String::new(),
     }
 }
@@ -487,6 +488,7 @@ fn a_settings_file_that_names_a_prompt_that_has_not_arrived_uses_the_cached_text
         settings: apply_patch(&default_settings(), &[]),
         prompts: vec![standup.clone()],
         active_prompt: None,
+        type_prompts: Vec::new(),
         background: String::new(),
     };
     // The settings file arrives and names "Standup". Its file has not.

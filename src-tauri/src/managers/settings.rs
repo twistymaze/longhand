@@ -1194,6 +1194,7 @@ impl LegacyShared {
             settings: self.settings,
             prompts: self.prompts,
             active_prompt,
+            type_prompts: Vec::new(),
             // A local store from before shared settings has no Background.
             background: String::new(),
         }
@@ -2377,6 +2378,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            type_prompts: Vec::new(),
             background: String::new(),
         };
         let shared = SharedSnapshot {
@@ -2463,6 +2465,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            type_prompts: Vec::new(),
             background: String::new(),
         };
         let shared = SharedSnapshot {

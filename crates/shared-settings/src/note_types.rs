@@ -21,6 +21,8 @@
 //! Nothing here reads a file. The caller gives the type folders from the
 //! store.
 
+use std::collections::BTreeMap;
+
 use session_save::naming::{GENERAL, TypeNameError, check_type_name, same_type_name};
 
 /// A type folder in the storage folder: a folder that holds at least one
@@ -249,6 +251,77 @@ pub fn default_after(
     default
         .is_some_and(|default| same_type_name(default, old))
         .then(|| new.map(str::to_string))
+}
+
+/// The id of the summary prompt that the type `note_type` chooses in the
+/// map `prompts`, or `None` for "Default" (R1, KTD1). `None` and the name
+/// "General" are General. The names compare without case. A type that is
+/// not a valid type of the effective list `types` has no choice (R18), so
+/// a key that names no such type has no effect.
+pub fn type_prompt_id<'a>(
+    prompts: &'a BTreeMap<String, String>,
+    types: &[NoteType],
+    note_type: Option<&str>,
+) -> Option<&'a str> {
+    let name = match note_type.filter(|name| !same_type_name(name, GENERAL)) {
+        None => GENERAL,
+        Some(name) => types
+            .iter()
+            .find(|t| t.valid && same_type_name(&t.name, name))?
+            .name
+            .as_str(),
+    };
+    prompts
+        .get(name)
+        .or_else(|| {
+            prompts
+                .iter()
+                .find(|(key, _)| same_type_name(key, name))
+                .map(|(_, id)| id)
+        })
+        .map(String::as_str)
+}
+
+/// The map `prompts` after the edit of the type `from` (R6, KTD6), or
+/// `None` when the edit changes nothing. A rename to `to` moves the entry
+/// of `from` to `to`. A merge into `to` (`merged`) keeps the entry of
+/// `to` and removes the entry of `from`. A delete (`to` is `None`) removes
+/// the entry of `from`. An add of a type uses a delete of its name, to
+/// remove an old entry with that name. A type with no entry changes
+/// nothing, so a launch can continue an edit whose map is saved already.
+pub fn prompts_after_edit(
+    prompts: &BTreeMap<String, String>,
+    from: &str,
+    to: Option<&str>,
+    merged: bool,
+) -> Option<BTreeMap<String, String>> {
+    let mut map = prompts.clone();
+    let mut id = None;
+    map.retain(|key, value| {
+        let keep = !same_type_name(key, from);
+        if !keep && (id.is_none() || key == from) {
+            id = Some(value.clone());
+        }
+        keep
+    });
+    let id = id?;
+    if let Some(to) = to.filter(|_| !merged) {
+        map.retain(|key, _| !same_type_name(key, to));
+        map.insert(to.to_string(), id);
+    }
+    Some(map)
+}
+
+/// The map `prompts` without each entry that chooses the prompt
+/// `prompt_id`, or `None` when no entry chooses it (R5, KTD6). The types
+/// of those entries then use the default prompt.
+pub fn prompts_without(
+    prompts: &BTreeMap<String, String>,
+    prompt_id: &str,
+) -> Option<BTreeMap<String, String>> {
+    let mut map = prompts.clone();
+    map.retain(|_, id| id != prompt_id);
+    (map.len() != prompts.len()).then_some(map)
 }
 
 /// The shared list `shared` with the edit of `from` to `to` (a rename or a
