@@ -51,6 +51,7 @@ fn cache_with(source: &Path, background: &str) -> Cache {
         settings: default_settings(),
         prompts: Vec::new(),
         active_prompt: None,
+        type_prompts: Vec::new(),
         background: background.into(),
     }
 }

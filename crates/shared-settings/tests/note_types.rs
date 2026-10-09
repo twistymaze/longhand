@@ -1,10 +1,13 @@
 //! The effective note type list (U4 of the note types plan): the shared
 //! list plus each type folder that holds a note (R2, R3, R7, R34, KTD9).
 
+use std::collections::BTreeMap;
+
 use session_save::naming::TypeNameError;
 use shared_settings::note_types::{
     NoteType, NoteTypeError, Renamed, TypeFolder, add_type, default_after, default_to_save,
-    delete_type, effective_default, effective_types, list_after_edit, list_to_save, rename_type,
+    delete_type, effective_default, effective_types, list_after_edit, list_to_save, prompt_choice,
+    prompts_after_edit, prompts_without, rename_type, set_prompt_choice,
 };
 
 fn shared(names: &[&str]) -> Vec<String> {
@@ -447,4 +450,138 @@ fn an_add_of_a_leaving_name_makes_a_type_with_no_notes() {
     let types = effective_types(&list, &folders);
     assert_eq!(names(&types), ["D&D", "Pathfinder"]);
     assert_eq!(types[1].notes, 0);
+}
+
+/// A type-to-prompt map from `entries`.
+fn prompt_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+    entries
+        .iter()
+        .map(|(name, id)| (name.to_string(), id.to_string()))
+        .collect()
+}
+
+#[test]
+fn the_prompt_of_a_type_is_found_without_case() {
+    // KTD1: "pathfinder" finds the entry saved for "Pathfinder".
+    let map = prompt_map(&[("Pathfinder", "recap-id")]);
+    assert_eq!(
+        prompt_choice(&map, Some("pathfinder"), true),
+        Some("recap-id")
+    );
+    let map = prompt_map(&[("pathfinder", "recap-id")]);
+    assert_eq!(
+        prompt_choice(&map, Some("Pathfinder"), true),
+        Some("recap-id")
+    );
+}
+
+#[test]
+fn general_has_its_own_entry_and_no_entry_is_the_default() {
+    // R1: General is the key "General". A type with no key is "Default".
+    let map = prompt_map(&[("General", "standup-id")]);
+    assert_eq!(prompt_choice(&map, None, true), Some("standup-id"));
+    assert_eq!(prompt_choice(&map, Some("Pathfinder"), true), None);
+    assert_eq!(prompt_choice(&BTreeMap::new(), None, true), None);
+}
+
+#[test]
+fn the_choice_of_a_type_comes_from_its_name_and_validity() {
+    // R1, R18: General is the key "General". A type that is not valid,
+    // such as a folder named "General", has no choice.
+    let map = prompt_map(&[("General", "standup-id"), ("Pathfinder", "recap-id")]);
+    assert_eq!(prompt_choice(&map, None, true), Some("standup-id"));
+    assert_eq!(
+        prompt_choice(&map, Some("pathfinder"), true),
+        Some("recap-id")
+    );
+    assert_eq!(prompt_choice(&map, Some("Pathfinder"), false), None);
+    assert_eq!(prompt_choice(&map, Some("General"), false), None);
+    assert_eq!(prompt_choice(&map, Some("Board"), true), None);
+}
+
+#[test]
+fn a_set_choice_replaces_each_spelling_of_the_name() {
+    // KTD6: one entry for each type.
+    let mut map = prompt_map(&[("pathfinder", "recap-id"), ("Board", "standup-id")]);
+    set_prompt_choice(&mut map, "Pathfinder", Some("other-id"));
+    assert_eq!(
+        map,
+        prompt_map(&[("Pathfinder", "other-id"), ("Board", "standup-id")])
+    );
+    set_prompt_choice(&mut map, "PATHFINDER", None);
+    assert_eq!(map, prompt_map(&[("Board", "standup-id")]));
+}
+
+#[test]
+fn a_rename_moves_the_prompt_choice_to_the_new_name() {
+    // R6.
+    let map = prompt_map(&[("Work", "recap-id"), ("Board", "standup-id")]);
+    assert_eq!(
+        prompts_after_edit(&map, "work", Some("Projects"), false),
+        Some(prompt_map(&[
+            ("Projects", "recap-id"),
+            ("Board", "standup-id")
+        ]))
+    );
+    // A rename that changes only the case keeps the choice.
+    assert_eq!(
+        prompts_after_edit(&map, "Work", Some("WORK"), false),
+        Some(prompt_map(&[("WORK", "recap-id"), ("Board", "standup-id")]))
+    );
+}
+
+#[test]
+fn a_merge_keeps_the_prompt_choice_of_the_type_that_it_merges_into() {
+    // AE6 in part: Work merges into Meetings.
+    let map = prompt_map(&[("Work", "recap-id"), ("Meetings", "standup-id")]);
+    assert_eq!(
+        prompts_after_edit(&map, "Work", Some("Meetings"), true),
+        Some(prompt_map(&[("Meetings", "standup-id")]))
+    );
+    // A target with no choice stays at "Default".
+    let map = prompt_map(&[("Work", "recap-id")]);
+    assert_eq!(
+        prompts_after_edit(&map, "Work", Some("Meetings"), true),
+        Some(BTreeMap::new())
+    );
+}
+
+#[test]
+fn a_delete_removes_the_prompt_choice_of_the_type_and_keeps_the_others() {
+    // R6.
+    let map = prompt_map(&[("Work", "recap-id"), ("Board", "standup-id")]);
+    assert_eq!(
+        prompts_after_edit(&map, "work", None, false),
+        Some(prompt_map(&[("Board", "standup-id")]))
+    );
+}
+
+#[test]
+fn an_edit_of_a_type_with_no_choice_changes_nothing() {
+    // A launch can continue an edit whose map is saved already (KTD6).
+    let map = prompt_map(&[("Projects", "recap-id")]);
+    assert_eq!(
+        prompts_after_edit(&map, "Work", Some("Projects"), false),
+        None
+    );
+    assert_eq!(
+        prompts_after_edit(&map, "Work", Some("Projects"), true),
+        None
+    );
+    assert_eq!(prompts_after_edit(&map, "Work", None, false), None);
+}
+
+#[test]
+fn a_prompt_delete_removes_each_choice_of_that_prompt() {
+    // R5.
+    let map = prompt_map(&[
+        ("General", "recap-id"),
+        ("Work", "recap-id"),
+        ("Board", "standup-id"),
+    ]);
+    assert_eq!(
+        prompts_without(&map, "recap-id"),
+        Some(prompt_map(&[("Board", "standup-id")]))
+    );
+    assert_eq!(prompts_without(&map, "other-id"), None);
 }

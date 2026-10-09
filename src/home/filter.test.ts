@@ -8,6 +8,9 @@ const type = (name: string, over: Partial<NoteTypeEntry> = {}): NoteTypeEntry =>
   shared: true,
   notes: 0,
   general: false,
+  prompt_choice: null,
+  prompt_name: null,
+  summary_prompt_id: "topic-summary",
   ...over,
 });
 const general = type("General", { shared: false, notes: 3, general: true });

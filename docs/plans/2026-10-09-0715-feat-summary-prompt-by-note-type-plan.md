@@ -65,12 +65,12 @@ The Types and Tags pane shows each type name and each tag as an editable text fi
 **Types and Tags pane**
 
 - R12. A popup above the type list chooses the default type for new notes. It replaces the radio buttons.
-- R13. Each type row shows the name as plain text, the count of notes, the summary prompt popup and a ⋯ menu. General has no ⋯ menu, because it cannot be renamed or deleted.
+- R13. Each type row shows the name as plain text, the count of notes, the summary prompt popup (except a type with an invalid name, R18) and a ⋯ menu. General has no ⋯ menu, because it cannot be renamed or deleted.
 - R14. The summary prompt popup on a type row applies the choice at once, with no Save step.
 - R15. The ⋯ menu has Rename… and Delete…. Rename turns the name into a field for that one row: Return applies the name, and Escape or a click elsewhere cancels. Delete asks for one confirmation that says how many notes change, as it does now. The merge notice after a rename stays.
 - R16. An "Add Type…" row at the end of the list adds a type. It shows a name field for the new type, with the same Return and Escape rules as Rename.
 - R17. Each tag row shows the tag as plain text, the count of notes and a ⋯ menu with Rename… and Delete…, with the same rules as R15.
-- R18. A type with an invalid name keeps its warning and its ⋯ menu, so the user can rename or delete it.
+- R18. A type with an invalid name keeps its warning and its ⋯ menu, so the user can rename or delete it. It shows no summary prompt popup and uses the default prompt.
 - R19. While the shared settings are read-only, the popups and the ⋯ menus are disabled, and the pane says why, as it does now.
 - R20. The pane follows macOS System Settings list conventions: plain-text rows, aligned columns, and controls that look like controls only where they act.
 
@@ -140,7 +140,7 @@ flowchart TB
 
 - KTD1. **The prompt choices are one shared map from type name to prompt id.** A new shared field holds a JSON object. Its key is the type name, with "General" for General, and its value is the prompt id. A type with no key uses the default prompt. The map is one value, so the last change wins for the whole map, as for `note_types`. Lookups compare type names without case and ignore keys that name no type in the effective type list. The value is the prompt id, not the name, because a prompt rename keeps its id. A value that is not an object of strings stays in the file as an unknown value. "General" cannot collide with a named type, because the type name check refuses it. Governs R1, R2, R6.
 - KTD2. **Each type's prompt resolves in the same order as the active prompt, with its own cached copy.** The order is: built-in prompt, folder copy with no conflict, the last copy this computer read, conflicted folder copy, then the default prompt. The cache today keeps only the active prompt's copy, so it gets the last read copy of each prompt that the map names. `Settings` gets one function that returns the resolved prompt for a note type. Governs R3, R7.
-- KTD3. **The summary paths ask for the prompt of the note's type when they run, and the prompt copy at recording start goes.** The engines call that returns the summary prompt takes the note type. The summary step reads the type from the store record (the shown type, which includes a pending type move), when the step starts. Regenerate resolves the prompt after it follows the folder, so a type change from another computer that the follow brings in counts. Recording start no longer copies the prompt, and the runner no longer reads that copy. The stored columns stay. The resume rule stays unchanged: a stub made with another prompt starts over. Governs R3, R4.
+- KTD3. **The summary paths ask for the prompt of the note's type when they run, and the prompt copy at recording start goes.** The engines call that returns the summary prompt takes the note type. The summary step reads the type from the store record (the shown type, which includes a pending type move), when the step starts. Regenerate resolves the prompt after it follows the folder, so a type change from another computer that the follow brings in counts. Recording start no longer copies the prompt, and the runner no longer reads that copy. The stored columns stay. The resume rule of Regenerate stays unchanged: a stub made with another prompt starts over. A retried summary step whose inputs changed (for example, the type) already makes every model call again, so it also replaces its stored prompt with the prompt of the current type. Governs R3, R4.
 - KTD4. **A summary records the id of its prompt beside the name.** The id goes into the summary front matter in the same publication as the summary, and the note page receives it with the summary. The offer compares the resolved prompt id of the note's current type with this id. A summary with no recorded id gives no offer. Governs R9.
 - KTD5. **The offer is a page-local trigger plus conditions read again on each render.** A type change made on the note page sets the trigger. Dismiss, the start of a regeneration and leaving the page clear it. The offer shows while the trigger is set and the R9 conditions hold now. The conditions are: a complete summary with a recorded prompt id, no processing or regeneration in progress, and a resolved prompt id of the current type that differs from the summary's id. A synced type change sets no trigger, which keeps R11. The conditions are read again when processing or a regeneration ends, which covers AE4. Governs R9, R10, R11.
 - KTD6. **Type edits and prompt deletes update the map in the same save as their other values.** One pure function, next to `default_after`, gives the map after a rename, merge or delete. A rename moves the entry, a merge keeps the target's entry, and a delete removes the entry. The launch replay of an interrupted type edit applies the same function. It detects a merge because the target key already exists in the list. A prompt delete removes each entry that names the prompt, in the same save that resets the active prompt. Adding a type removes an old entry with the same name. Choosing a prompt for a type that has a folder but is not in the shared list adds the type to the list, as choosing it as the default does. Governs R5, R6.
@@ -188,8 +188,7 @@ stateDiagram-v2
 
 ### Assumptions
 
-- The note page can read the resolved prompt id of each type from the type list that the Types and Tags commands already return. The page reloads that list when settings change, as the pane does.
-- A summary step that fails and is retried later keeps the prompt it stored when it started. When the user changed the type in between and the page is still open, KTD5 shows the offer after the retry.
+- The note page can read the resolved prompt id of each type from the type list that the Types and Tags commands already return. The page reloads that list when settings change, as the pane does. The offer compares the resolved id; the pane popup and the delete count use the choice.
 
 ### Sequencing
 
@@ -256,7 +255,7 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 
 **Approach:**
 1. Add a command that sets one type's prompt choice (a prompt id, or none for "Default"), following `set_default_note_type`. It returns the type list.
-2. Add the resolved prompt choice to each `NoteTypeEntry`. A never-read prompt shows as "Default", per R7.
+2. Give each `NoteTypeEntry` two values: the prompt choice (a prompt id, or none for "Default"; a never-read prompt shows as "Default", per R7), and the resolved prompt id that a summary of that type uses (the default prompt's id for "Default").
 3. Add the map patch to the rename and delete saves, to the launch replay of an interrupted type edit, and to adding a type.
 4. Remove the deleted prompt's entries in the prompt delete save.
 5. Add the function on `Settings` that returns the resolved prompt for a note type, with the cached copies.
@@ -305,7 +304,8 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 2. In the summary step, read the shown type from the store record and ask for its prompt. Remove `first_summary_prompt`.
 3. In Regenerate, resolve the prompt after the folder follow, so it uses the type that the follow brings in.
 4. Stop the prompt copy at recording start. Keep the columns and their read code only where tests of old data need them.
-5. Add the prompt id to the complete summary metadata and to `SummaryView`, with the same serde rules as the name.
+5. When a summary step finds changed inputs and clears its stored calls, also replace its stored prompt with the prompt it was given.
+6. Add the prompt id to the complete summary metadata and to `SummaryView`, with the same serde rules as the name.
 
 **Execution note:** Start with a failing runner test for AE1, because it proves that the recording-start copy no longer decides the prompt.
 
@@ -318,10 +318,11 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 - Covers AE7. Regenerate Summary on a Pathfinder note uses the prompt that Pathfinder has now, not the one that made the summary.
 - Regenerate after the folder follow brings in a type change from another computer uses the new type's prompt.
 - A summary step that resumes a stub made with another prompt starts over; a stub made with the same prompt resumes.
+- A first summary fails, the type changes from One on One to Pathfinder, and the retry uses the Pathfinder prompt.
 - The summary front matter records both the prompt name and the prompt id, and an older summary without an id still reads.
 - Regenerate with no Working location folder still succeeds with the type's prompt.
 
-**Verification:** The pipeline, session-core and app tests pass, and no code reads the recording-start prompt copy.
+**Verification:** The pipeline, session-core and app tests pass, and no production code reads the recording-start prompt copy.
 
 ### U4. Types and Tags pane redesign
 
@@ -340,7 +341,7 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 
 **Approach:**
 1. Add the floating-layer option to `Menu`, and keep its current behavior as the default.
-2. Add the rename field to `ui.tsx` (Return applies, Escape and blur cancel, focus on open).
+2. Add the rename field to `ui.tsx` (Return applies, Escape and blur cancel, focus on open). When the command refuses the name, the field stays open with the typed text and the focus, and the refusal shows in the pane's error text.
 3. Replace the radio group with the default-type popup above the list.
 4. Build the type row: name, count, prompt popup (no popup for an invalid name), and ⋯ menu (none for General).
 5. Build the tag row with the same parts, without a popup.
@@ -360,6 +361,7 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 - Covers AE8. Rename… then Escape leaves the name unchanged and calls no command.
 - Rename… then a click elsewhere leaves the name unchanged and calls no command.
 - Rename… then Return calls the rename command, and a merge shows the merge notice.
+- Rename… to "General" then Return keeps the field open with the typed text and the focus, and shows the refusal in the pane's error text.
 - Delete… asks one confirmation that says how many notes move to General.
 - Add Type… then Return adds the type; Escape adds nothing.
 - An invalid-name type shows its warning and a ⋯ menu, and no prompt popup.
@@ -384,7 +386,7 @@ U1 → U2 → U3. U4 and U5 need U2. U6 needs U2 and U3. U7 is last.
 
 **Approach:**
 1. Change the "In use" marker, its button and the footer to the default-prompt wording. The footer says that the default prompt applies to each type set to "Default".
-2. Count the types whose resolved choice is the prompt, from the type list, and put the count in the delete confirmation.
+2. Count the types whose prompt choice (not the resolved id) is the prompt, from the type list, and put the count in the delete confirmation.
 
 **Test scenarios:**
 - Covers AE5. Delete of a prompt that one type uses shows a confirmation that says one type uses it.
@@ -472,7 +474,7 @@ Run each unit's new tests red first, then the related crate tests. Run the full 
 
 - Every requirement R1-R20 holds, and each AE has a passing test.
 - The checks above pass, and `src/bindings.ts` is regenerated and committed.
-- No code reads the recording-start prompt copy.
+- No production code reads the recording-start prompt copy. Tests of old data may read the retained columns.
 - The user approved the pane screenshot and tested the offer in a signed build.
 - `CONCEPTS.md` and the idea file are current.
 - No code from abandoned attempts stays in the diff.

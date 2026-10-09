@@ -655,6 +655,11 @@ pub enum SummaryMeta {
         /// summary made before prompts were recorded has none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt_name: Option<String>,
+        /// The id of the summary prompt that made the summary (KTD4). The
+        /// note page compares it with the prompt of the note type now
+        /// (R9). A summary made before prompt ids were recorded has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_id: Option<String>,
     },
     /// Summarization failed; the session was saved anyway (R22).
     Stub { failed_stage: String },

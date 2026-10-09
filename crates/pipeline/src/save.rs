@@ -1151,14 +1151,17 @@ pub fn rescue_notes(
 /// AE17): a stub left by a failed summary, or a summary the user wants
 /// redone. A rename that waited for the regeneration then moves the
 /// folder, whether the regeneration succeeded or not (KTD8). The returned
-/// path is in the folder under its name after that rename.
+/// path is in the folder under its name after that rename. `resolve` gives
+/// the summary prompt of a note type. The regeneration calls it after the
+/// row follows its folder, so a type change from another computer counts
+/// (R3, KTD3).
 #[allow(clippy::too_many_arguments)]
 pub fn regenerate_summary(
     store: &SharedStore,
     session_id: &str,
     working_root: &Path,
     endpoint: SummaryEndpoint,
-    active: Prompt,
+    resolve: &dyn Fn(Option<&str>) -> Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
@@ -1168,7 +1171,7 @@ pub fn regenerate_summary(
         session_id,
         working_root,
         endpoint,
-        active,
+        resolve,
         learn,
         control,
         progress,
@@ -1193,7 +1196,7 @@ fn summarize_again(
     session_id: &str,
     working_root: &Path,
     endpoint: SummaryEndpoint,
-    active: Prompt,
+    resolve: &dyn Fn(Option<&str>) -> Prompt,
     learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
@@ -1208,14 +1211,22 @@ fn summarize_again(
     // regeneration claim. A publication that an earlier regeneration left
     // is finished or dropped first, so that two publications of the note
     // never overlap (KTD4).
-    let (home, segments) = {
+    let (home, segments, note_type) = {
         let mut guard = lock(store);
         home_path(&guard, session_id)?.ok_or_else(not_saved)?;
         recover_summary_publication(&mut guard, session_id)?;
         crate::follow::follow_folder(&mut guard, session_id, false)?;
         let home = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
-        (home, guard.segments(session_id)?)
+        let record = guard.session(session_id)?.ok_or_else(not_saved)?;
+        (
+            home,
+            guard.segments(session_id)?,
+            crate::type_move::shown_type(&record).0,
+        )
     };
+    // The type that the note shows after the follow chooses the prompt
+    // (R3, KTD3).
+    let active = resolve(note_type.as_deref());
     // Regenerate Summary explicitly accepts the current transcript text.
     // An external edit removes the reusable recognition reference.
     let mut current = SessionDoc::read(&home)?;

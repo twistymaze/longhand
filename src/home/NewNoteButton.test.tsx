@@ -130,10 +130,10 @@ describe("NewNoteButton", () => {
 
 describe("NewNoteButton: note types (R24)", () => {
   const types: NoteTypeEntry[] = [
-    { name: "General", valid: true, shared: false, notes: 4, general: true },
-    { name: "Pathfinder", valid: true, shared: true, notes: 3, general: false },
-    { name: "One on One", valid: true, shared: true, notes: 2, general: false },
-    { name: "Bad:Name", valid: false, shared: false, notes: 1, general: false },
+    { name: "General", valid: true, shared: false, notes: 4, general: true, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" },
+    { name: "Pathfinder", valid: true, shared: true, notes: 3, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" },
+    { name: "One on One", valid: true, shared: true, notes: 2, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" },
+    { name: "Bad:Name", valid: false, shared: false, notes: 1, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" },
   ];
 
   function renderTyped(records = true) {
@@ -204,7 +204,7 @@ describe("NewNoteButton: note types (R24)", () => {
 
   test("Create adds the type and starts a note of that type", async () => {
     const added: NoteTypeList = {
-      types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false }],
+      types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" }],
       default_type: null,
     };
     mockTauri({ add_note_type: () => added });
@@ -231,7 +231,7 @@ describe("NewNoteButton: note types (R24)", () => {
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "add_note_type")).toBe(true));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    await act(async () => finish({ types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false }], default_type: null }));
+    await act(async () => finish({ types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" }], default_type: null }));
     await act(() => new Promise((r) => setTimeout(r, 20)));
     expect(onStart).not.toHaveBeenCalled();
   });

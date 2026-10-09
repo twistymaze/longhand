@@ -8,6 +8,7 @@ import {
   type Ref,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -313,6 +314,69 @@ export function useConfirm() {
     />
   );
   return { ask, dialog };
+}
+
+/// A name field that opens for one edit, for a rename or a new name (R15,
+/// R16, KTD7). It takes the focus and selects its text when it opens.
+/// Return gives the text to `onApply`; the owner closes the field when the
+/// name applies. When `onApply` gives false, the field stays open with the
+/// text and the focus. Escape and a click elsewhere call `onCancel`, so a
+/// name changes only on Return. `byKey` is true for Escape: the owner then
+/// gives the focus back to the control that opened the field.
+export function NameField({
+  value,
+  label,
+  placeholder,
+  onApply,
+  onCancel,
+}: {
+  value: string;
+  label: string;
+  placeholder?: string;
+  onApply: (v: string) => Promise<boolean>;
+  onCancel: (byKey: boolean) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const field = useRef<HTMLInputElement>(null);
+  // A blur while the command runs does not cancel the edit.
+  const applying = useRef(false);
+  useLayoutEffect(() => {
+    field.current?.focus();
+    field.current?.select();
+  }, []);
+  const apply = async () => {
+    if (applying.current) return;
+    applying.current = true;
+    const done = await onApply(draft);
+    applying.current = false;
+    if (!done) field.current?.focus();
+  };
+  return (
+    <input
+      ref={field}
+      aria-label={label}
+      className={`${fieldClass} w-full`}
+      value={draft}
+      placeholder={placeholder}
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (!applying.current) onCancel(false);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void apply();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          onCancel(true);
+        }
+      }}
+    />
+  );
 }
 
 /// A text field that commits on Return or when focus leaves, the way macOS

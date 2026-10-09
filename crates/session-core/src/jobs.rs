@@ -100,17 +100,6 @@ pub struct RecordingModel {
     pub live_transcript: bool,
 }
 
-/// The active summary prompt when a note starts recording (KTD15). The
-/// note's first automatic summary uses it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptSnapshot {
-    pub id: String,
-    pub name: String,
-    pub text: String,
-    /// Empty for a note from before migration 0015.
-    pub title_text: String,
-}
-
 /// A microphone that a note chose: cpal's stable device ID, with the device
 /// name as its label (KTD1 of the system audio plan).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -475,7 +464,6 @@ impl Store {
             None,
             &CaptureChoice::default(),
             None,
-            None,
             false,
         )
     }
@@ -489,18 +477,14 @@ impl Store {
         model: Option<&RecordingModel>,
         capture: &CaptureChoice,
         snapshot: Option<&serde_json::Value>,
-        prompt: Option<&PromptSnapshot>,
         opened: bool,
     ) -> Result<()> {
         // `opened`: `created_at` is the time the note opened, and the note
         // keeps it as its start time (R16).
         self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
-               mic_id, mic_label, system_audio, recognition_snapshot,
-               prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
-               prompt_snapshot_title_text, started_here, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1,
-               CASE WHEN ?15 THEN ?2 END)",
+               mic_id, mic_label, system_audio, recognition_snapshot, started_here, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, CASE WHEN ?11 THEN ?2 END)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -514,10 +498,6 @@ impl Store {
                 capture.microphone.as_ref().map(|m| m.label.as_str()),
                 capture.system_audio,
                 snapshot.map(serde_json::to_string).transpose()?,
-                prompt.map(|p| p.id.as_str()),
-                prompt.map(|p| p.name.as_str()),
-                prompt.map(|p| p.text.as_str()),
-                prompt.map_or("", |p| p.title_text.as_str()),
                 opened,
             ],
         )?;
@@ -574,12 +554,12 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
     ) -> Result<Vec<String>> {
-        self.start_session_with_recognition(id, now, speaker_count, model, capture, None, None)
+        self.start_session_with_recognition(id, now, speaker_count, model, capture, None)
     }
 
-    /// Store the recognition configuration and the active summary prompt
-    /// (KTD15) with the new session in the same INSERT.
-    #[allow(clippy::too_many_arguments)]
+    /// Store the recognition configuration with the new session in the same
+    /// INSERT. The note records no summary prompt: the type of the note
+    /// when the summary runs chooses it (R4 of the type prompt plan).
     pub fn start_session_with_recognition(
         &mut self,
         id: &str,
@@ -588,7 +568,6 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
         snapshot: Option<&serde_json::Value>,
-        prompt: Option<&PromptSnapshot>,
     ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
@@ -604,44 +583,8 @@ impl Store {
                 stopped.push(record.id);
             }
         }
-        self.insert_session(
-            id,
-            now,
-            speaker_count,
-            Some(model),
-            capture,
-            snapshot,
-            prompt,
-            true,
-        )?;
+        self.insert_session(id, now, speaker_count, Some(model), capture, snapshot, true)?;
         Ok(stopped)
-    }
-
-    /// The active summary prompt when the note started (KTD15). `None` for
-    /// a note from before migration 0013, or one that another computer
-    /// recorded.
-    pub fn prompt_snapshot(&self, id: &str) -> Result<Option<PromptSnapshot>> {
-        type Columns = (Option<String>, Option<String>, Option<String>, String);
-        let (id_, name, text, title_text): Columns = self
-            .conn
-            .query_row(
-                "SELECT prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
-                   prompt_snapshot_title_text
-                 FROM sessions WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?
-            .ok_or_else(|| StoreError::NoSuchSession(id.into()))?;
-        Ok(match (id_, name, text) {
-            (Some(id), Some(name), Some(text)) => Some(PromptSnapshot {
-                id,
-                name,
-                text,
-                title_text,
-            }),
-            _ => None,
-        })
     }
 
     pub fn recognition_snapshot(&self, id: &str) -> Result<Option<serde_json::Value>> {

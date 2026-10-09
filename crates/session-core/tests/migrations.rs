@@ -482,7 +482,7 @@ fn version_fourteen(path: &std::path::Path) -> Connection {
 }
 
 #[test]
-fn migration_fifteen_gives_existing_prompt_snapshots_an_empty_title_text() {
+fn migration_fifteen_gives_existing_prompt_columns_an_empty_title_text() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("longhand.db");
     {
@@ -496,18 +496,33 @@ fn migration_fifteen_gives_existing_prompt_snapshots_an_empty_title_text() {
         .unwrap();
         add_session(&conn, "s2");
     }
-    let store = Store::open(&path).unwrap();
-    assert_eq!(
-        store.prompt_snapshot("s1").unwrap(),
-        Some(session_core::PromptSnapshot {
-            id: "b1".into(),
-            name: "Standup".into(),
-            text: "Write a standup.".into(),
-            title_text: String::new(),
-        })
-    );
+    let _store = Store::open(&path).unwrap();
+    let conn = Connection::open(&path).unwrap();
+    let title_text: String = conn
+        .query_row(
+            "SELECT prompt_snapshot_title_text FROM sessions WHERE id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(title_text, "");
+    let name: String = conn
+        .query_row(
+            "SELECT prompt_snapshot_name FROM sessions WHERE id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(name, "Standup");
     // A note with no snapshot still has none.
-    assert_eq!(store.prompt_snapshot("s2").unwrap(), None);
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT prompt_snapshot_id FROM sessions WHERE id = 's2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(id, None);
 }
 
 #[test]

@@ -70,7 +70,7 @@ const document = (body: string): SessionDocument => ({
   has_speakers: true,
   lines: [],
   transcript_markdown: "",
-  summary: { body, stub: false, host: null, model: null, prompt: null },
+  summary: { body, stub: false, host: null, model: null, prompt: null, prompt_id: null },
 });
 
 function renderHome({
@@ -1204,8 +1204,8 @@ describe("Home: notes with no audio and other computers", () => {
 describe("Home: filter by type and tags", () => {
   const typeList = (...names: string[]): NoteTypeList => ({
     types: [
-      { name: "General", valid: true, shared: false, notes: 1, general: true },
-      ...names.map((name) => ({ name, valid: true, shared: true, notes: 1, general: false })),
+      { name: "General", valid: true, shared: false, notes: 1, general: true, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" },
+      ...names.map((name) => ({ name, valid: true, shared: true, notes: 1, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" })),
     ],
     default_type: null,
   });

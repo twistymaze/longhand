@@ -123,14 +123,14 @@ pub fn join_folder(root: &Path, cache_dir: &Path, kind: JoinKind) -> io::Result<
     Ok(joined)
 }
 
-/// The custom prompts of `cache`, the active prompt included when the
-/// list does not have it.
+/// The custom prompts of `cache`, the active prompt and the prompts of
+/// the note types included when the list does not have them.
 fn prompts_of(cache: &Cache) -> Vec<Prompt> {
     let mut prompts = cache.prompts.clone();
-    if let Some(active) = &cache.active_prompt
-        && !prompts.iter().any(|p| p.id == active.id)
-    {
-        prompts.push(active.clone());
+    for prompt in cache.active_prompt.iter().chain(&cache.type_prompts) {
+        if !prompts.iter().any(|p| p.id == prompt.id) {
+            prompts.push(prompt.clone());
+        }
     }
     prompts
 }

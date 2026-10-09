@@ -7,6 +7,7 @@
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -130,13 +131,17 @@ pub fn check(dir: &Path, floor_bytes: u64) -> DestinationStatus {
 
 /// Create and remove a uniquely named file. `create_new` refuses an existing
 /// name, symlink or not, so the probe never writes through a planted link.
+/// The name has a count, because checks can run at the same time and the
+/// macOS clock changes only once per microsecond.
 fn probe_writable(dir: &Path) -> std::io::Result<()> {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let count = COUNT.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     let probe: PathBuf = dir.join(format!(
-        ".longhand-write-probe-{}-{nanos}",
+        ".longhand-write-probe-{}-{nanos}-{count}",
         std::process::id()
     ));
     OpenOptions::new()
@@ -353,5 +358,28 @@ mod tests {
         let result = check(&locked, 0);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(result, DestinationStatus::NotWritable { .. }));
+    }
+
+    // Checks that run at the same time must not use the same probe file.
+    // On macOS the clock changes only once per microsecond.
+    #[test]
+    fn checks_at_the_same_time_all_find_the_folder_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        (0..200)
+                            .map(|_| probe_writable(dir.path()))
+                            .find(Result::is_err)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                assert!(handle.join().unwrap().is_none());
+            }
+        });
     }
 }

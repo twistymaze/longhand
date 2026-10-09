@@ -59,6 +59,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::note_types,
             commands::settings::add_note_type,
             commands::settings::set_default_note_type,
+            commands::settings::set_note_type_prompt,
             commands::settings::rename_note_type,
             commands::settings::delete_note_type,
             commands::settings::rename_tag,

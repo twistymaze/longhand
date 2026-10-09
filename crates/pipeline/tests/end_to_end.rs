@@ -77,7 +77,7 @@ impl EngineProvider for RealModel {
             )),
         }
     }
-    fn summary_prompt(&self) -> summarize::Prompt {
+    fn summary_prompt(&self, _: Option<&str>) -> summarize::Prompt {
         summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
     }
     fn background(&self) -> String {

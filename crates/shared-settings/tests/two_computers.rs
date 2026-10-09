@@ -476,3 +476,101 @@ fn a_change_of_folder_copies_the_note_types_into_a_folder_with_no_settings() {
         Field::Known(Some("One on One".to_string()))
     );
 }
+
+/// The prompt of the type `name` in `view`: the choice by the production
+/// rule, then the prompt that the view holds for that id.
+fn type_prompt<'a>(view: &'a SharedView, name: Option<&str>) -> Option<&'a ActivePrompt> {
+    let choices = view.fields.type_prompt_map();
+    let id = shared_settings::note_types::prompt_choice(&choices, name, true)?;
+    view.type_prompts.get(id)
+}
+
+fn map(entries: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+    entries
+        .iter()
+        .map(|(name, id)| (name.to_string(), id.to_string()))
+        .collect()
+}
+
+#[test]
+fn a_change_of_the_type_prompts_on_a_shows_on_b_and_a_save_of_b_keeps_it() {
+    // R2, KTD1.
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::ChangeOfFolder);
+    let standup = create_prompt(folder.path(), "Standup", "A's standup.").unwrap();
+    a.save(
+        folder.path(),
+        &[
+            SharedValue::NoteTypes(vec!["Pathfinder".into()]),
+            SharedValue::NoteTypePrompts(map(&[("Pathfinder", &standup.id)])),
+        ],
+    );
+    let on_b = b.refresh(folder.path());
+    match type_prompt(&on_b, Some("pathfinder")) {
+        Some(ActivePrompt::Custom { prompt, from_cache }) => {
+            assert_eq!(prompt.text, "A's standup.");
+            assert!(!from_cache);
+        }
+        other => panic!("expected the Standup prompt, got {other:?}"),
+    }
+    b.save(folder.path(), &[SharedValue::LiveTranscript(false)]);
+    let on_a = a.refresh(folder.path());
+    assert_eq!(
+        on_a.fields.note_type_prompts,
+        Field::Known(map(&[("Pathfinder", &standup.id)]))
+    );
+    assert_eq!(on_a.fields.live_transcript, Field::Known(false));
+}
+
+#[test]
+fn a_type_prompt_whose_file_is_gone_is_the_last_copy_that_this_computer_read() {
+    // R7, KTD2.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    let standup = create_prompt(folder.path(), "Standup", "A's standup.").unwrap();
+    a.save(
+        folder.path(),
+        &[
+            SharedValue::NoteTypes(vec!["Pathfinder".into()]),
+            SharedValue::NoteTypePrompts(map(&[("Pathfinder", &standup.id)])),
+        ],
+    );
+    shared_settings::prompts::delete_prompt(folder.path(), &standup.id).unwrap();
+    // Each read after the file went keeps the copy.
+    a.refresh(folder.path());
+    let view = a.refresh(folder.path());
+    assert!(view.prompts.is_empty());
+    match type_prompt(&view, Some("Pathfinder")) {
+        Some(ActivePrompt::Custom { prompt, from_cache }) => {
+            assert_eq!(prompt.text, "A's standup.");
+            assert!(from_cache);
+        }
+        other => panic!("expected the cached Standup prompt, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_type_prompt_that_this_computer_never_read_gives_no_prompt() {
+    // R7: the caller uses the default prompt.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    let view = a.save(
+        folder.path(),
+        &[
+            SharedValue::NoteTypes(vec!["Pathfinder".into()]),
+            SharedValue::NoteTypePrompts(map(&[
+                ("Pathfinder", "never-read-id"),
+                ("General", summarize::prompts::TOPIC_SUMMARY_ID),
+            ])),
+        ],
+    );
+    assert_eq!(type_prompt(&view, Some("Pathfinder")), None);
+    assert_eq!(
+        type_prompt(&view, None),
+        Some(&ActivePrompt::BuiltIn(summarize::prompts::topic_summary()))
+    );
+}

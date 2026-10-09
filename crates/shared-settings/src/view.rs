@@ -7,6 +7,7 @@
 //! is missing, not reachable, or has a settings file that does not parse,
 //! the view comes from the cache and is read-only.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::{Map, Value};
@@ -31,7 +32,8 @@ pub enum Availability {
     NotAvailable(Unavailable),
 }
 
-/// The prompt that the next summary uses.
+/// The prompt that the next summary uses: the active prompt, or the prompt
+/// of a note type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivePrompt {
     BuiltIn(Prompt),
@@ -67,6 +69,11 @@ pub struct SharedView {
     /// The custom prompts, in the order that Settings shows them.
     pub prompts: Vec<Prompt>,
     pub active: ActivePrompt,
+    /// The prompt of each id that the type prompts field names, by id, in
+    /// the same order of sources as the active prompt (KTD2). A prompt
+    /// that this computer never read is not here. Find the prompt of a
+    /// type with [`SharedView::type_prompt`].
+    pub type_prompts: BTreeMap<String, ActivePrompt>,
     /// The Background text that summaries use. It is the cached text when
     /// the view comes from the cache or the Background file cannot be
     /// used (KTD3).
@@ -144,7 +151,8 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         Ok(scan) => scan,
         Err(cause) => return from_cache(cache, Availability::NotAvailable(cause)),
     };
-    let active = active_from_folder(&file.fields.active_summary_prompt, &scan, cache);
+    let active = active_prompt(&file.fields.active_summary_prompt, Some(&scan), cache);
+    let type_prompts = type_prompts(&file.fields.note_type_prompts, Some(&scan), cache);
     let prompts: Vec<Prompt> = scan.prompts.iter().map(Prompt::from).collect();
     // A missing file in a folder with a settings file is an empty
     // Background. A file that cannot be used keeps the cached text.
@@ -157,10 +165,8 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         source: root.to_path_buf(),
         settings: file.raw.clone(),
         prompts: prompts.clone(),
-        active_prompt: match &active {
-            ActivePrompt::Custom { prompt, .. } => Some(prompt.clone()),
-            ActivePrompt::BuiltIn(_) | ActivePrompt::Missing(_) => None,
-        },
+        active_prompt: custom_prompt(&active),
+        type_prompts: type_prompts.values().filter_map(custom_prompt).collect(),
         background: background.clone(),
     };
     let view = SharedView {
@@ -169,6 +175,7 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         fields: file.fields,
         prompts,
         active,
+        type_prompts,
         background,
         background_unavailable,
     };
@@ -176,6 +183,15 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
     Loaded {
         view,
         cache: changed.then_some(new_cache),
+    }
+}
+
+/// The custom prompt of `prompt`, for the cache. A built-in prompt and a
+/// missing prompt give `None`.
+fn custom_prompt(prompt: &ActivePrompt) -> Option<Prompt> {
+    match prompt {
+        ActivePrompt::Custom { prompt, .. } => Some(prompt.clone()),
+        ActivePrompt::BuiltIn(_) | ActivePrompt::Missing(_) => None,
     }
 }
 
@@ -214,7 +230,8 @@ fn from_cache(cache: Option<&Cache>, availability: Availability) -> Loaded {
     let raw = cache.map_or_else(default_settings, |c| c.settings.clone());
     let fields = SharedFields::from_raw(&raw);
     let prompts = cache.map(|c| c.prompts.clone()).unwrap_or_default();
-    let active = active_from_cache(&fields.active_summary_prompt, cache);
+    let active = active_prompt(&fields.active_summary_prompt, None, cache);
+    let type_prompts = type_prompts(&fields.note_type_prompts, None, cache);
     Loaded {
         view: SharedView {
             availability,
@@ -222,6 +239,7 @@ fn from_cache(cache: Option<&Cache>, availability: Availability) -> Loaded {
             fields,
             prompts,
             active,
+            type_prompts,
             background: cached_background(cache),
             background_unavailable: None,
         },
@@ -235,51 +253,47 @@ fn cached_background(cache: Option<&Cache>) -> String {
     cache.map(|c| c.background.clone()).unwrap_or_default()
 }
 
-/// The id that the active field names. An absent field is the default.
-enum ActiveId<'a> {
-    BuiltIn(Prompt),
-    Custom(&'a str),
-    Missing(String),
-}
-
-fn active_id(field: &Field<String>) -> ActiveId<'_> {
-    match field {
-        Field::Absent => ActiveId::BuiltIn(summarize::prompts::topic_summary()),
-        Field::Known(id) => match summarize::prompts::built_in(id) {
-            Some(prompt) => ActiveId::BuiltIn(prompt),
-            None => ActiveId::Custom(id),
-        },
-        Field::Unknown(value) => ActiveId::Missing(value.to_string()),
-    }
-}
-
 /// The last copy of the prompt `id` in the cache.
 fn cached_prompt(cache: Option<&Cache>, id: &str) -> Option<Prompt> {
     let cache = cache?;
     cache
         .active_prompt
         .iter()
+        .chain(&cache.type_prompts)
         .chain(&cache.prompts)
         .find(|p| p.id == id)
         .cloned()
 }
 
-fn active_from_folder(
+/// The active prompt that the active field names. An absent field is the
+/// Topic summary. A value that is not an id is missing.
+fn active_prompt(
     field: &Field<String>,
-    scan: &PromptScan,
+    scan: Option<&PromptScan>,
     cache: Option<&Cache>,
 ) -> ActivePrompt {
-    let id = match active_id(field) {
-        ActiveId::BuiltIn(prompt) => return ActivePrompt::BuiltIn(prompt),
-        ActiveId::Missing(text) => return ActivePrompt::Missing(text),
-        ActiveId::Custom(id) => id,
-    };
-    let in_folder = scan.get(id).map(Prompt::from);
+    match field {
+        Field::Absent => ActivePrompt::BuiltIn(summarize::prompts::topic_summary()),
+        Field::Known(id) => resolve(id, scan, cache),
+        Field::Unknown(value) => ActivePrompt::Missing(value.to_string()),
+    }
+}
+
+/// The prompt with the id `id` (KTD2), in this order: the built-in
+/// prompt, the folder copy when it has no conflict copy, the last copy in
+/// the cache, the folder copy with a conflict copy, and else missing.
+/// `scan` is `None` when the view comes from the cache.
+fn resolve(id: &str, scan: Option<&PromptScan>, cache: Option<&Cache>) -> ActivePrompt {
+    if let Some(prompt) = summarize::prompts::built_in(id) {
+        return ActivePrompt::BuiltIn(prompt);
+    }
+    let in_folder = scan.and_then(|scan| scan.get(id)).map(Prompt::from);
+    let conflicted = scan.is_some_and(|scan| scan.conflicted.contains(id));
     // While the id has a conflict copy, or its file is missing, the text
     // comes from the cache (R14).
-    if let Some(prompt) = in_folder.clone().filter(|_| !scan.conflicted.contains(id)) {
+    if !conflicted && let Some(prompt) = &in_folder {
         return ActivePrompt::Custom {
-            prompt,
+            prompt: prompt.clone(),
             from_cache: false,
         };
     }
@@ -298,16 +312,21 @@ fn active_from_folder(
     }
 }
 
-fn active_from_cache(field: &Field<String>, cache: Option<&Cache>) -> ActivePrompt {
-    match active_id(field) {
-        ActiveId::BuiltIn(prompt) => ActivePrompt::BuiltIn(prompt),
-        ActiveId::Missing(text) => ActivePrompt::Missing(text),
-        ActiveId::Custom(id) => match cached_prompt(cache, id) {
-            Some(prompt) => ActivePrompt::Custom {
-                prompt,
-                from_cache: true,
-            },
-            None => ActivePrompt::Missing(id.to_string()),
-        },
-    }
+/// The prompt of each id that the type prompts field names, when the
+/// prompt exists (R7, KTD2). A missing prompt is not in the map, so its
+/// types use the default prompt.
+fn type_prompts(
+    field: &Field<BTreeMap<String, String>>,
+    scan: Option<&PromptScan>,
+    cache: Option<&Cache>,
+) -> BTreeMap<String, ActivePrompt> {
+    let Some(map) = field.known() else {
+        return BTreeMap::new();
+    };
+    map.values()
+        .filter_map(|id| {
+            let prompt = resolve(id, scan, cache);
+            prompt.prompt().is_some().then(|| (id.clone(), prompt))
+        })
+        .collect()
 }

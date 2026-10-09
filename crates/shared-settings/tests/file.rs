@@ -736,3 +736,84 @@ fn a_conflict_copy_with_other_note_types_has_no_effect_and_the_read_writes_nothi
     assert_eq!(effective_names(root.path()), ["Pathfinder"]);
     assert_eq!(longhand_files(root.path()), before);
 }
+
+#[test]
+fn the_type_prompts_parse_as_a_map_and_a_save_of_another_field_keeps_them() {
+    // R2, KTD1, and the prevention rule of the shared settings rules.
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({
+            "schema_version": 1,
+            "note_types": ["Pathfinder"],
+            "note_type_prompts": {"General": "standup-id", "Pathfinder": "recap-id"}
+        }),
+    );
+    let expected: std::collections::BTreeMap<String, String> = [
+        ("General".to_string(), "standup-id".to_string()),
+        ("Pathfinder".to_string(), "recap-id".to_string()),
+    ]
+    .into();
+    assert_eq!(
+        parsed(root.path()).fields.note_type_prompts,
+        Field::Known(expected)
+    );
+    save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).unwrap();
+    assert_eq!(
+        on_disk(root.path())["note_type_prompts"],
+        json!({"General": "standup-id", "Pathfinder": "recap-id"})
+    );
+}
+
+#[test]
+fn a_save_of_the_type_prompts_writes_the_map_and_keeps_every_other_field() {
+    let root = folder();
+    let mut before = full();
+    before["from_a_newer_build"] = json!({"x": 1});
+    write_raw(root.path(), &before);
+    save_settings(
+        root.path(),
+        &[SharedValue::NoteTypePrompts(
+            [("Pathfinder".to_string(), "recap-id".to_string())].into(),
+        )],
+    )
+    .unwrap();
+    let mut expected = before;
+    expected["note_type_prompts"] = json!({"Pathfinder": "recap-id"});
+    assert_eq!(on_disk(root.path()), expected);
+}
+
+#[test]
+fn a_type_prompts_value_that_is_not_an_object_of_strings_is_unknown_and_stays() {
+    // KTD1: the value stays in the file and gives no choices.
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"schema_version": 1, "note_type_prompts": {"Pathfinder": 3}}),
+    );
+    let fields = parsed(root.path()).fields;
+    assert_eq!(
+        fields.note_type_prompts,
+        Field::Unknown(json!({"Pathfinder": 3}))
+    );
+    assert!(fields.note_type_prompts.known().is_none());
+    let keys: Vec<_> = fields
+        .unknown_values()
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys, ["note_type_prompts"]);
+    save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).unwrap();
+    assert_eq!(
+        on_disk(root.path())["note_type_prompts"],
+        json!({"Pathfinder": 3})
+    );
+}
+
+#[test]
+fn an_absent_type_prompts_field_is_absent() {
+    // R1: no map is "Default" for every type.
+    let root = folder();
+    write_raw(root.path(), &full());
+    assert_eq!(parsed(root.path()).fields.note_type_prompts, Field::Absent);
+}

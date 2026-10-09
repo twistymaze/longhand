@@ -388,6 +388,18 @@ async setDefaultNoteType(name: string | null) : Promise<Result<NoteTypeList, str
 }
 },
 /**
+ * Choose the summary prompt of a note type, or "Default" for `None` (R1,
+ * R2). The name "General" is General.
+ */
+async setNoteTypePrompt(name: string, promptId: string | null) : Promise<Result<NoteTypeList, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_note_type_prompt", { name, promptId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Rename a note type (R6). A new name of another type merges the two
  * types: the notes go into the folder of that type. The default type
  * follows the rename. The name goes through the type name check (R28).
@@ -1579,7 +1591,25 @@ notes: number;
  * in the storage folder. It is first in the list. It cannot be renamed
  * or deleted, and a note of General has the type `None`.
  */
-general: boolean }
+general: boolean; 
+/**
+ * The id of the summary prompt that the type chooses, or `None` for
+ * "Default" (R1). A choice that names a prompt that this computer
+ * never read is "Default" (R7). A type that is not valid has no
+ * choice (R18).
+ */
+prompt_choice: string | null; 
+/**
+ * The name of the prompt of `prompt_choice`, from the last copy that
+ * this computer read. Settings shows this name also when the file of
+ * the prompt is missing (R7).
+ */
+prompt_name: string | null; 
+/**
+ * The id of the prompt that a summary of the type uses now: the
+ * chosen prompt, or the default prompt for "Default" (R3, KTD2).
+ */
+summary_prompt_id: string }
 /**
  * The effective type list and the default type (R2, R7, KTD9).
  */
@@ -2363,7 +2393,12 @@ stub: boolean; host: string | null; model: string | null;
  * The name of the prompt that made the summary. A summary made before
  * prompts had names, and a stub, have none.
  */
-prompt: string | null }
+prompt: string | null; 
+/**
+ * The id of the prompt that made the summary (KTD4). A summary made
+ * before prompt ids were recorded, and a stub, have none.
+ */
+prompt_id: string | null }
 /**
  * The system audio permission, as the page reads it (R9, R10, KTD12).
  */

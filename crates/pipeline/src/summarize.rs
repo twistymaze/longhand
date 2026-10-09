@@ -23,7 +23,7 @@ use std::time::Duration;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
-use session_core::{Segment, Stage, TitleSource};
+use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Turn};
 use summarize::client::Message;
 use summarize::prompts::{Details, UserText};
@@ -314,16 +314,23 @@ fn input_fingerprint(
     Ok(session_core::folder::fingerprint(&bytes))
 }
 
+/// The store row of the note `session_id`. A note that is not in the
+/// store is a failure.
+pub(crate) fn note_record(
+    store: &SharedStore,
+    session_id: &str,
+) -> Result<SessionRecord, StageError> {
+    lock(store)
+        .session(session_id)?
+        .ok_or_else(|| StageError::Failed(format!("the note {session_id} is not in the store")))
+}
+
 /// The note details as they are now: the type that the app shows, which
 /// can be a pending type (KTD3), the tags, and the title when the user
 /// typed it. A title that processing proposed is not a detail. A run reads
 /// them once, when it starts, and sends that copy with every call.
 fn note_details(store: &SharedStore, session_id: &str) -> Result<Details, StageError> {
-    let Some(record) = lock(store).session(session_id)? else {
-        return Err(StageError::Failed(format!(
-            "the note {session_id} is not in the store"
-        )));
-    };
+    let record = note_record(store, session_id)?;
     Ok(Details {
         note_type: crate::type_move::shown_type(&record).0,
         title: record
@@ -428,8 +435,9 @@ pub fn run(
 }
 
 /// Summarize the `transcript.md` in `folder`, resuming any calls already
-/// made. Writes nothing but checkpoints. `active` is the active summary
-/// prompt, which the run uses only when it saved no snapshot before.
+/// made. Writes nothing but checkpoints. `active` is the summary prompt of
+/// the note type, which the run uses when it saved no snapshot before, or
+/// when its inputs changed and every call runs again (KTD3).
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
@@ -463,6 +471,9 @@ pub fn produce(
     if saved.as_deref() != Some(input.as_str()) {
         forget_calls(store, session_id)?;
         checkpoint::put(store, session_id, Stage::Summarize, INPUT, &input)?;
+        // Every call runs again, so the run uses the prompt that it was
+        // given, which is the prompt of the type now (KTD3).
+        checkpoint::put(store, session_id, Stage::Summarize, PROMPT, &active)?;
     }
     let client = Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
@@ -621,10 +632,11 @@ pub fn produce(
         meta: SummaryMeta::Complete {
             endpoint_host: client.host(),
             model: endpoint.model.clone(),
-            // The name comes from the snapshot, so it always matches the
-            // text that was sent (R11). With nothing said, no prompt made
-            // the summary.
+            // The name and the id come from the snapshot, so they always
+            // match the text that was sent (R11, KTD4). With nothing said,
+            // no prompt made the summary.
             prompt_name: (!turns.is_empty()).then(|| prompt.name.clone()),
+            prompt_id: (!turns.is_empty()).then(|| prompt.id.clone()),
         },
         body: text,
     })

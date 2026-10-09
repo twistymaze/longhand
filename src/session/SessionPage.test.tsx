@@ -98,7 +98,7 @@ const doc: SessionDocument = {
   has_speakers: true,
   lines: [{ kind: "turn", position_ms: 0, speaker: 1, text: "Hello." }],
   transcript_markdown: "# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n",
-  summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m", prompt: null },
+  summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m", prompt: null, prompt_id: null },
 };
 
 function captureOf(over: Partial<Capture> = {}): Capture {
@@ -986,6 +986,7 @@ describe("SessionPage", () => {
         host: null,
         model: null,
         prompt: null,
+        prompt_id: null,
       },
     };
     const tauri = mockPage(e, {}, { session_document: () => stub, regenerate_summary: () => "/x/summary.md" });
@@ -1933,7 +1934,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
 
   test("on a note in use on another computer, the Summary tab's Regenerate Summary waits with the reason", async () => {
     const e = entry("s", { remote: "in_use" });
-    const stub = { ...doc, summary: { body: "No summary was produced.", stub: true, host: null, model: null, prompt: null } };
+    const stub = { ...doc, summary: { body: "No summary was produced.", stub: true, host: null, model: null, prompt: null, prompt_id: null } };
     mockPage(e, {}, { session_document: () => stub });
     renderPage({ id: "s", sessions: sessionsOf([e]) });
     const button = await screen.findByRole("button", { name: "Regenerate Summary" });
@@ -2009,5 +2010,193 @@ describe("SessionPage: Record, Resume and other computers", () => {
     expect(saves.slice(1).every((id) => id === "new")).toBe(true);
     await user.click(screen.getByRole("button", { name: "Open New Note" }));
     expect(opened).toEqual(["new"]);
+  });
+});
+
+describe("SessionPage regenerate offer", () => {
+  const prompt = (id: string, name: string) => ({ id, name, text: "", title_text: "", built_in: false });
+  const prompts = {
+    prompts: [prompt("topic-summary", "Topic summary"), prompt("play", "Play-by-play summary"), prompt("decisions", "Decisions")],
+    active: "topic-summary",
+    text_limit: 10_000,
+    title_text_limit: 1_000,
+  };
+  const typeEntry = (name: string, id: string, general = false) => ({
+    name,
+    valid: true,
+    shared: !general,
+    notes: 1,
+    general,
+    prompt_choice: id === "topic-summary" ? null : id,
+    prompt_name: null,
+    summary_prompt_id: id,
+  });
+  const types = [
+    typeEntry("General", "topic-summary", true),
+    typeEntry("Debrief", "decisions"),
+    typeEntry("One on One", "topic-summary"),
+    typeEntry("Pathfinder", "play"),
+    typeEntry("Work", "topic-summary"),
+    // R7: the file of Recap is missing; summaries use the last copy read.
+    { ...typeEntry("Board", "recap"), prompt_name: "Recap" },
+  ];
+  const typeRow = () => screen.getByRole("group", { name: "Type and tags" });
+  const dismiss = () => screen.queryByRole("button", { name: "Dismiss" });
+  /// The offer: its sentence, its Regenerate Summary and its Dismiss.
+  const offer = () => dismiss()?.parentElement?.parentElement ?? null;
+
+  /// A saved note of type One on One whose summary Topic summary made, on
+  /// a page that reads the note list as the app does.
+  function open(over: { note?: Partial<SessionEntry>; promptId?: string | null } = {}) {
+    const note = { current: entry("s", { note_type: "One on One", ...over.note }) };
+    const summary = { ...doc.summary!, prompt: "Topic summary", prompt_id: over.promptId === undefined ? "topic-summary" : over.promptId };
+    const tauri = mockPage(note.current, {}, {
+      list_sessions: () => [note.current],
+      session_detail: () => detail(note.current),
+      session_document: () => ({ ...doc, summary }),
+      note_types: () => ({ types, default_type: null }),
+      summary_prompts: () => prompts,
+      set_note_type: (args) => {
+        note.current = { ...note.current, note_type: args.noteType as string | null };
+        return { kind: "done" };
+      },
+      regenerate_summary: () => "/x/summary.md",
+    });
+    const view = render(<Synced id="s" />);
+    return { tauri, note, view, user: userEvent.setup() };
+  }
+
+  async function chooseType(user: ReturnType<typeof userEvent.setup>, from: string, to: string) {
+    await user.click(await screen.findByRole("button", { name: `Type: ${from}` }));
+    await user.click(await screen.findByRole("menuitemradio", { name: to }));
+    await within(typeRow()).findByRole("button", { name: `Type: ${to}` });
+  }
+
+  /// Waits until the page read the prompts after the type change, so that
+  /// an offer would show by now.
+  async function settle(tauri: ReturnType<typeof mockTauri>) {
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "summary_prompts")).toBe(true));
+    await act(async () => {});
+  }
+
+  // AE2.
+  test("a type change to a type with another prompt offers a regeneration, and its action regenerates", async () => {
+    const { tauri, user } = open();
+    await screen.findByText("We agreed the budget.");
+    expect(dismiss()).toBeNull();
+    await chooseType(user, "One on One", "Pathfinder");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    expect(within(offer()!).getByRole("status").textContent).toBe("Pathfinder uses Play-by-play summary.");
+    await user.click(within(offer()!).getByRole("button", { name: "Regenerate Summary" }));
+    await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "regenerate_summary").length).toBe(1));
+    expect(dismiss()).toBeNull();
+  });
+
+  test("the offer names a chosen prompt whose file is missing by its last copy read (R7)", async () => {
+    const { user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Board");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    expect(within(offer()!).getByRole("status").textContent).toBe("Board uses Recap.");
+  });
+
+  // AE3.
+  test("a type change between two types with the same prompt offers nothing", async () => {
+    const { tauri, user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Work");
+    await settle(tauri);
+    expect(dismiss()).toBeNull();
+  });
+
+  // AE4.
+  test("a type change during processing offers nothing until processing ends, then offers a regeneration", async () => {
+    const { tauri, note, user } = open({ note: { state: "processing", stage: "summarize" } });
+    await chooseType(user, "One on One", "Pathfinder");
+    await settle(tauri);
+    expect(dismiss()).toBeNull();
+    note.current = { ...note.current, state: "saved", stage: null };
+    await act(() => tauri.emit("library-changed", { changed: ["s"], removed: [] }));
+    await screen.findByText("We agreed the budget.");
+    await waitFor(() => expect(offer()).not.toBeNull());
+  });
+
+  test("a change back to the type of the summary removes the offer", async () => {
+    const { user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Pathfinder");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    await chooseType(user, "Pathfinder", "One on One");
+    await waitFor(() => expect(dismiss()).toBeNull());
+  });
+
+  test("Dismiss removes the offer, and only a new type change can give it again", async () => {
+    const { tauri, user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Pathfinder");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    await user.click(dismiss()!);
+    expect(dismiss()).toBeNull();
+    await act(() => tauri.emit("settings-changed", { settings: {} }));
+    await act(() => tauri.emit("library-changed", { changed: ["s"], removed: [] }));
+    await act(async () => {});
+    expect(dismiss()).toBeNull();
+    await chooseType(user, "Pathfinder", "Debrief");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    expect(within(offer()!).getByRole("status").textContent).toBe("Debrief uses Decisions.");
+  });
+
+  // R11.
+  test("a type change from another computer offers nothing", async () => {
+    const { tauri, note } = open();
+    await screen.findByText("We agreed the budget.");
+    note.current = { ...note.current, note_type: "Pathfinder" };
+    await act(() => tauri.emit("library-changed", { changed: ["s"], removed: [] }));
+    await screen.findByRole("button", { name: "Type: Pathfinder" });
+    await act(async () => {});
+    expect(dismiss()).toBeNull();
+  });
+
+  test("a summary with no recorded prompt id offers nothing", async () => {
+    const { tauri, user } = open({ promptId: null });
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Pathfinder");
+    await settle(tauri);
+    expect(dismiss()).toBeNull();
+  });
+
+  test("the offer shows on the Transcript tab and the My Notes tab", async () => {
+    const { user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Pathfinder");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    await user.click(tab("Transcript"));
+    expect(offer()).not.toBeNull();
+    await user.click(tab("My Notes"));
+    expect(offer()).not.toBeNull();
+  });
+
+  test("the offer's Regenerate Summary waits while another computer works on the note", async () => {
+    const { user } = open({ note: { remote: "in_use" } });
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Pathfinder");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    const button = within(offer()!).getByRole("button", { name: "Regenerate Summary" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(button.closest("[title]")?.getAttribute("title")).toBe("Wait until the other computer is done with this note.");
+    expect(within(offer()!).getByRole("button", { name: "Dismiss" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("leaving the note and opening it again offers nothing", async () => {
+    const { view, user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Pathfinder");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    view.unmount();
+    render(<Synced id="s" />);
+    await screen.findByText("We agreed the budget.");
+    await screen.findByRole("button", { name: "Type: Pathfinder" });
+    await act(async () => {});
+    expect(dismiss()).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 // The summary prompts in the Summaries pane (R1–R4, KTD11): the list of
-// prompts with the prompt in use, and an editor for the selected prompt
+// prompts with the default prompt, and an editor for the selected prompt
 // under it. Each change is one backend command (KTD7). The editor saves the
 // prompt text and the title text as the user types: one second after the
 // last change, and at once on blur or a change of prompt or pane. The two
@@ -8,7 +8,7 @@
 // Markdown editor of My Notes (KTD7).
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
+import { commands, events, type NoteTypeEntry, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
 import { Button, ChangedElsewhereNotice, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
@@ -66,11 +66,11 @@ function PromptRow({
             <span className="text-accent">
               <CheckIcon />
             </span>
-            In use
+            Default
           </span>
         ) : (
           <Button disabled={disabled} onClick={onUse}>
-            Use<span className="sr-only"> {prompt.name}</span>
+            Make default<span className="sr-only"> {prompt.name}</span>
           </Button>
         )}
       </div>
@@ -113,6 +113,9 @@ export function SummaryPrompts({
   closeSaveLimit?: number;
 }) {
   const [list, setList] = useState<SummaryPromptList | null>(null);
+  // The note types, for the count in the delete confirmation. Null when
+  // the list could not be read.
+  const [types, setTypes] = useState<NoteTypeEntry[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // The state below is kept by field key (`keyOf`): one entry for each
   // field of each prompt.
@@ -144,6 +147,12 @@ export function SummaryPrompts({
   const load = useCallback(async () => {
     try {
       setList(await commands.summaryPrompts());
+      try {
+        const result = await commands.noteTypes();
+        setTypes(result.status === "ok" ? result.data.types : null);
+      } catch {
+        setTypes(null);
+      }
     } catch (e) {
       setListError(typeof e === "string" ? e : "The summary prompts could not be read.");
     }
@@ -285,7 +294,7 @@ export function SummaryPrompts({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list]);
 
-  // A selection that is gone (a deleted prompt) goes back to the prompt in use.
+  // A selection that is gone (a deleted prompt) goes back to the default prompt.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
   const limits: Record<Field, number> = { text: list?.text_limit ?? 0, title: list?.title_text_limit ?? 0 };
@@ -365,7 +374,14 @@ export function SummaryPrompts({
   };
   // A save of the same prompt that already started completes first.
   const remove = async () => {
-    const yes = await ask({ title: `Delete “${name}”?`, message: "This can’t be undone.", action: "Delete" });
+    // The types that choose this prompt. A type set to "Default" is not
+    // counted, even when the prompt is the default prompt (R8).
+    const users = types?.filter((t) => t.prompt_choice === id).length ?? 0;
+    const message =
+      users > 0
+        ? `${users === 1 ? "1 type uses" : `${users} types use`} this prompt. ${users === 1 ? "It changes" : "They change"} to Default. This can’t be undone.`
+        : "This can’t be undone.";
+    const yes = await ask({ title: `Delete “${name}”?`, message, action: "Delete" });
     if (!yes) return;
     if (pending.current?.id === id) cancel();
     await saving.current;
@@ -441,7 +457,7 @@ export function SummaryPrompts({
         footer={
           locked
             ? `${readOnly} Prompts can’t be changed now.`
-            : "The prompt in use writes each new summary. Summaries you already have don’t change."
+            : "The default prompt writes the summary of each type set to “Default”. Summaries you already have don’t change."
         }
       >
         <div role="radiogroup" aria-label="Summary prompts">

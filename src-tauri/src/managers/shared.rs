@@ -473,16 +473,26 @@ impl SharedSettingsManager {
     }
 
     /// Remove a custom prompt. When it was active, the Topic summary becomes
-    /// active in the same change (R4).
+    /// active in the same change (R4). Each type that chose it changes to
+    /// "Default" in the same save (R5, KTD6).
     pub fn delete_prompt(&self, id: &str) -> Result<(), String> {
         self.change(|root| {
             let settings = prompts::delete_prompt(root, id)?;
-            let active = settings.fields.active_summary_prompt;
-            if active.known().is_some_and(|active| active == id) {
-                file::save_settings(
-                    root,
-                    &[SharedValue::ActiveSummaryPrompt(TOPIC_SUMMARY_ID.into())],
-                )?;
+            let fields = &settings.fields;
+            let mut patch = Vec::new();
+            if fields
+                .active_summary_prompt
+                .known()
+                .is_some_and(|active| active == id)
+            {
+                patch.push(SharedValue::ActiveSummaryPrompt(TOPIC_SUMMARY_ID.into()));
+            }
+            patch.extend(
+                note_types::prompts_without(&fields.type_prompt_map(), id)
+                    .map(SharedValue::NoteTypePrompts),
+            );
+            if !patch.is_empty() {
+                file::save_settings(root, &patch)?;
             }
             Ok(())
         })
@@ -632,6 +642,18 @@ pub struct NoteTypeEntry {
     /// in the storage folder. It is first in the list. It cannot be renamed
     /// or deleted, and a note of General has the type `None`.
     pub general: bool,
+    /// The id of the summary prompt that the type chooses, or `None` for
+    /// "Default" (R1). A choice that names a prompt that this computer
+    /// never read is "Default" (R7). A type that is not valid has no
+    /// choice (R18).
+    pub prompt_choice: Option<String>,
+    /// The name of the prompt of `prompt_choice`, from the last copy that
+    /// this computer read. Settings shows this name also when the file of
+    /// the prompt is missing (R7).
+    pub prompt_name: Option<String>,
+    /// The id of the prompt that a summary of the type uses now: the
+    /// chosen prompt, or the default prompt for "Default" (R3, KTD2).
+    pub summary_prompt_id: String,
 }
 
 /// The effective type list and the default type (R2, R7, KTD9).
@@ -744,19 +766,35 @@ fn default_type(fields: &file::SharedFields) -> Option<String> {
     fields.default_note_type.known().cloned().flatten()
 }
 
-/// The values that a type rename or delete writes (R6, R7): the list, and
-/// the default type when it names the old type.
+/// The values that a type rename, merge or delete writes (R6, R7, KTD6):
+/// the list, the default type when it names the old type, and the type
+/// prompt choices when the old type has one. `merged` tells that `to` is
+/// another type.
 fn edit_patch(
     fields: &file::SharedFields,
     list: Vec<String>,
     from: &str,
     to: Option<&str>,
+    merged: bool,
 ) -> Vec<SharedValue> {
     let mut patch = vec![SharedValue::NoteTypes(list)];
     if let Some(default) = note_types::default_after(default_type(fields).as_deref(), from, to) {
         patch.push(SharedValue::DefaultNoteType(default));
     }
+    patch.extend(prompts_patch(fields, from, to, merged));
     patch
+}
+
+/// The type prompt choices after the edit of the type `from`, when the
+/// edit changes them (KTD6). See [`note_types::prompts_after_edit`].
+fn prompts_patch(
+    fields: &file::SharedFields,
+    from: &str,
+    to: Option<&str>,
+    merged: bool,
+) -> Option<SharedValue> {
+    note_types::prompts_after_edit(&fields.type_prompt_map(), from, to, merged)
+        .map(SharedValue::NoteTypePrompts)
 }
 
 impl SharedSettingsManager {
@@ -764,28 +802,64 @@ impl SharedSettingsManager {
     /// shared view in memory and `folders` (KTD9). This does no file I/O
     /// and never writes.
     pub fn note_types(&self, folders: &StorageFolders) -> NoteTypeList {
-        let fields = self.snapshot().view.fields;
-        let types = note_types::effective_types(&shared_types(&fields), &folders.types);
-        let default = default_type(&fields);
+        let view = self.snapshot().view;
+        let fields = &view.fields;
+        let types = note_types::effective_types(&shared_types(fields), &folders.types);
+        let default = default_type(fields);
         let count = |notes: usize| u32::try_from(notes).unwrap_or(u32::MAX);
+        // The default prompt. A missing prompt is the Topic summary.
+        let default_prompt = view
+            .active
+            .prompt()
+            .map_or(TOPIC_SUMMARY_ID, |p| p.id.as_str());
+        // A type that is not valid uses the default prompt (R18). A folder
+        // named "General" is such a type, and it does not get the choice of
+        // the built-in General.
+        let prompt_of = |note_type: Option<&str>, valid: bool| {
+            let choice = fields
+                .note_type_prompts
+                .known()
+                .and_then(|map| note_types::prompt_choice(map, note_type, valid))
+                .and_then(|id| view.type_prompts.get(id))
+                .and_then(|p| p.prompt());
+            let summary_prompt_id = choice.map_or_else(|| default_prompt.into(), |p| p.id.clone());
+            (
+                choice.map(|p| p.id.clone()),
+                choice.map(|p| p.name.clone()),
+                summary_prompt_id,
+            )
+        };
+        let (prompt_choice, prompt_name, summary_prompt_id) = prompt_of(None, true);
         let general = NoteTypeEntry {
             name: session_save::naming::GENERAL.to_string(),
             valid: true,
             shared: false,
             notes: count(folders.homes.len()),
             general: true,
+            prompt_choice,
+            prompt_name,
+            summary_prompt_id,
         };
-        NoteTypeList {
-            default_type: note_types::effective_default(default.as_deref(), &types),
-            types: std::iter::once(general)
-                .chain(types.into_iter().map(|t| NoteTypeEntry {
-                    name: t.name,
+        let entries: Vec<NoteTypeEntry> = types
+            .iter()
+            .map(|t| {
+                let (prompt_choice, prompt_name, summary_prompt_id) =
+                    prompt_of(Some(&t.name), t.valid);
+                NoteTypeEntry {
+                    name: t.name.clone(),
                     valid: t.valid,
                     shared: t.shared,
                     notes: count(t.notes),
                     general: false,
-                }))
-                .collect(),
+                    prompt_choice,
+                    prompt_name,
+                    summary_prompt_id,
+                }
+            })
+            .collect();
+        NoteTypeList {
+            default_type: note_types::effective_default(default.as_deref(), &types),
+            types: std::iter::once(general).chain(entries).collect(),
         }
     }
 
@@ -795,10 +869,15 @@ impl SharedSettingsManager {
     /// list (KTD9). Returns the name as saved.
     pub fn add_note_type(&self, name: &str, folders: &StorageFolders) -> Result<String, String> {
         self.change(|root| {
-            let shared = types_in_file(root)?;
-            let (list, name) = note_types::add_type(&shared, &folders.types, &folders.homes, name)
-                .map_err(|e| Failure::Refused(e.to_string()))?;
-            file::save_settings(root, &[SharedValue::NoteTypes(list)])?;
+            let fields = fields_in_file(root)?;
+            let (list, name) =
+                note_types::add_type(&shared_types(&fields), &folders.types, &folders.homes, name)
+                    .map_err(|e| Failure::Refused(e.to_string()))?;
+            let mut patch = vec![SharedValue::NoteTypes(list)];
+            // A new type starts with "Default", so an old choice with its
+            // name goes (R1, KTD6).
+            patch.extend(prompts_patch(&fields, &name, None, false));
+            file::save_settings(root, &patch)?;
             Ok(name)
         })
     }
@@ -820,6 +899,40 @@ impl SharedSettingsManager {
             file::save_settings(root, &patch)?;
             Ok(())
         })
+    }
+
+    /// Choose the summary prompt `prompt_id` for the note type `name`, or
+    /// "Default" for `None` (R1, R2). `None` and "General" as `name` are
+    /// General. The type must be a valid type of the effective list, and
+    /// the prompt must exist. A folder-only type goes into the shared list
+    /// in the same save (KTD6, KTD9).
+    pub fn set_note_type_prompt(
+        &self,
+        name: &str,
+        prompt_id: Option<&str>,
+        folders: &StorageFolders,
+    ) -> Result<NoteTypeList, String> {
+        self.change(|root| {
+            let fields = fields_in_file(root)?;
+            // The type check of a default type is the same check: General,
+            // or a valid type with the spelling of the list.
+            let (chosen, list) =
+                note_types::default_to_save(&shared_types(&fields), &folders.types, Some(name))
+                    .map_err(|e| Failure::Refused(e.to_string()))?;
+            let key = chosen.unwrap_or_else(|| session_save::naming::GENERAL.to_string());
+            if let Some(id) = prompt_id
+                && find_prompt(root, id).is_none()
+            {
+                return Err(Failure::Refused(NO_SUCH_PROMPT.into()));
+            }
+            let mut map = fields.type_prompt_map();
+            note_types::set_prompt_choice(&mut map, &key, prompt_id);
+            let mut patch = vec![SharedValue::NoteTypePrompts(map)];
+            patch.extend(list.map(SharedValue::NoteTypes));
+            file::save_settings(root, &patch)?;
+            Ok(())
+        })?;
+        Ok(self.note_types(folders))
     }
 
     /// Rename the note type `name` to `new_name` (R6). A new name of
@@ -852,7 +965,13 @@ impl SharedSettingsManager {
                 to: renamed.to.clone(),
             };
             before_save(&edit).map_err(Failure::Refused)?;
-            let patch = edit_patch(&fields, renamed.list, &renamed.from, Some(&renamed.to));
+            let patch = edit_patch(
+                &fields,
+                renamed.list,
+                &renamed.from,
+                Some(&renamed.to),
+                renamed.merged,
+            );
             file::save_settings(root, &patch)?;
             Ok(Some(edit))
         })
@@ -874,14 +993,14 @@ impl SharedSettingsManager {
                     .map_err(|e| Failure::Refused(e.to_string()))?;
             let edit = BulkEdit::DeleteType { name: name.clone() };
             before_save(&edit).map_err(Failure::Refused)?;
-            file::save_settings(root, &edit_patch(&fields, list, &name, None))?;
+            file::save_settings(root, &edit_patch(&fields, list, &name, None, false))?;
             Ok(edit)
         })
     }
 
     /// Continue a type rename, merge or delete whose list change a quit or
-    /// a crash stopped (KTD7): write only what the list and the default
-    /// type do not have yet.
+    /// a crash stopped (KTD7): write only what the list, the default type
+    /// and the type prompt choices do not have yet (KTD6).
     pub fn finish_type_edit(&self, edit: &BulkEdit) -> Result<(), String> {
         let (from, to) = match edit {
             BulkEdit::RenameType { from, to } => (from.as_str(), Some(to.as_str())),
@@ -892,6 +1011,14 @@ impl SharedSettingsManager {
         self.change(|root| {
             let fields = fields_in_file(root)?;
             let mut patch = Vec::new();
+            // The edit is a merge when the list has the target type. After
+            // a saved edit, the old type has no choice, so the choices do
+            // not change.
+            let merged = to.is_some_and(|to| {
+                !same_type_name(from, to)
+                    && shared_types(&fields).iter().any(|t| same_type_name(t, to))
+            });
+            patch.extend(prompts_patch(&fields, from, to, merged));
             if let Some(list) = note_types::list_after_edit(&shared_types(&fields), from, to) {
                 patch.push(SharedValue::NoteTypes(list));
             }
@@ -1967,6 +2094,9 @@ mod tests {
                 shared: false,
                 notes: 1,
                 general: true,
+                prompt_choice: None,
+                prompt_name: None,
+                summary_prompt_id: TOPIC_SUMMARY_ID.into(),
             }
         );
         assert_eq!(
@@ -1977,6 +2107,9 @@ mod tests {
                 shared: false,
                 notes: 2,
                 general: false,
+                prompt_choice: None,
+                prompt_name: None,
+                summary_prompt_id: TOPIC_SUMMARY_ID.into(),
             }
         );
         assert_eq!(list.default_type, None);
@@ -2338,5 +2471,358 @@ mod tests {
             type_names(&manager.note_types(&folders)),
             ["General", "D&D"]
         );
+    }
+
+    // ------------------------------------------------- type prompt choices
+
+    /// The entry of the type `name` in `list`.
+    fn entry<'a>(list: &'a NoteTypeList, name: &str) -> &'a NoteTypeEntry {
+        list.types
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("no type {name}"))
+    }
+
+    /// The prompt choice and the resolved prompt id of the type `name`.
+    fn choice(list: &NoteTypeList, name: &str) -> (Option<String>, String) {
+        let e = entry(list, name);
+        (e.prompt_choice.clone(), e.summary_prompt_id.clone())
+    }
+
+    /// A custom prompt named `name` with the text `text`.
+    fn custom_prompt(manager: &SharedSettingsManager, name: &str, text: &str) -> String {
+        let id = manager.create_prompt().unwrap();
+        manager.rename_prompt(&id, name).unwrap();
+        manager.set_prompt_text(&id, text).unwrap();
+        id
+    }
+
+    fn type_prompts_on_disk(root: &Path) -> Value {
+        file_of(root)
+            .get(file::KEY_NOTE_TYPE_PROMPTS)
+            .cloned()
+            .unwrap_or(json!({}))
+    }
+
+    #[test]
+    fn a_prompt_choice_for_a_type_shows_in_the_type_list() {
+        // R1, R2.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        let list = manager
+            .set_note_type_prompt("pathfinder", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        let list_after = manager.note_types(&StorageFolders::default());
+        assert_eq!(list, list_after);
+        assert_eq!(
+            choice(&list, "Pathfinder"),
+            (Some(recap.clone()), recap.clone())
+        );
+        // A type with no choice uses the default prompt.
+        assert_eq!(choice(&list, "Board"), (None, TOPIC_SUMMARY_ID.to_string()));
+        assert_eq!(
+            choice(&list, "General"),
+            (None, TOPIC_SUMMARY_ID.to_string())
+        );
+        assert_eq!(
+            type_prompts_on_disk(folder.path()),
+            json!({ "Pathfinder": recap })
+        );
+
+        manager
+            .set_note_type_prompt("General", Some(PLAY_BY_PLAY_ID), &StorageFolders::default())
+            .unwrap();
+        manager.activate_prompt(&recap).unwrap();
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(
+            choice(&list, "General"),
+            (Some(PLAY_BY_PLAY_ID.into()), PLAY_BY_PLAY_ID.into())
+        );
+        // "Default" follows the default prompt.
+        assert_eq!(choice(&list, "Board"), (None, recap.clone()));
+
+        // "Default" removes the entry.
+        manager
+            .set_note_type_prompt("Pathfinder", None, &StorageFolders::default())
+            .unwrap();
+        assert_eq!(
+            type_prompts_on_disk(folder.path()),
+            json!({ "General": PLAY_BY_PLAY_ID })
+        );
+        assert_eq!(
+            manager
+                .set_note_type_prompt("Pathfinder", Some("missing"), &StorageFolders::default())
+                .unwrap_err(),
+            NO_SUCH_PROMPT
+        );
+        assert_eq!(
+            manager
+                .set_note_type_prompt("Gone", Some(PLAY_BY_PLAY_ID), &StorageFolders::default())
+                .unwrap_err(),
+            "That type no longer exists."
+        );
+    }
+
+    #[test]
+    fn a_prompt_choice_for_a_folder_only_type_adds_the_type_to_the_list() {
+        // KTD6.
+        let (folder, _computer, manager) = with_types(&["Board"]);
+        let folders = StorageFolders {
+            types: vec![type_folder("Customer Calls", 2, false)],
+            homes: Vec::new(),
+        };
+        let list = manager
+            .set_note_type_prompt("customer calls", Some(PLAY_BY_PLAY_ID), &folders)
+            .unwrap();
+        let on_disk = file_of(folder.path());
+        assert_eq!(on_disk["note_types"], json!(["Board", "Customer Calls"]));
+        assert_eq!(
+            on_disk[file::KEY_NOTE_TYPE_PROMPTS],
+            json!({ "Customer Calls": PLAY_BY_PLAY_ID })
+        );
+        assert!(entry(&list, "Customer Calls").shared);
+        assert_eq!(
+            choice(&list, "Customer Calls"),
+            (Some(PLAY_BY_PLAY_ID.into()), PLAY_BY_PLAY_ID.into())
+        );
+    }
+
+    #[test]
+    fn a_type_with_an_invalid_name_or_a_prompt_never_read_shows_default() {
+        // R7, R18.
+        let (_folder, _computer, manager) = with_types(&["Pathfinder"]);
+        manager
+            .save(&[SharedValue::NoteTypePrompts(
+                [
+                    ("Pathfinder".to_string(), "never-read".to_string()),
+                    ("1:1s".to_string(), PLAY_BY_PLAY_ID.to_string()),
+                ]
+                .into(),
+            )])
+            .unwrap();
+        let folders = StorageFolders {
+            types: vec![type_folder("1:1s", 1, false)],
+            homes: Vec::new(),
+        };
+        let list = manager.note_types(&folders);
+        assert_eq!(
+            choice(&list, "Pathfinder"),
+            (None, TOPIC_SUMMARY_ID.to_string())
+        );
+        assert_eq!(choice(&list, "1:1s"), (None, TOPIC_SUMMARY_ID.to_string()));
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("Pathfinder")).id,
+            TOPIC_SUMMARY_ID
+        );
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("1:1s")).id,
+            TOPIC_SUMMARY_ID
+        );
+    }
+
+    #[test]
+    fn deleting_a_prompt_that_a_type_uses_resets_the_type_to_default() {
+        // AE5, R5: one save resets the type and the active prompt.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("Pathfinder", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        manager
+            .set_note_type_prompt("Board", Some(PLAY_BY_PLAY_ID), &StorageFolders::default())
+            .unwrap();
+
+        manager.delete_prompt(&recap).unwrap();
+        let on_disk = file_of(folder.path());
+        assert_eq!(
+            on_disk[file::KEY_NOTE_TYPE_PROMPTS],
+            json!({ "Board": PLAY_BY_PLAY_ID })
+        );
+        assert_eq!(on_disk["active_summary_prompt"], TOPIC_SUMMARY_ID);
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(
+            choice(&list, "Pathfinder"),
+            (None, TOPIC_SUMMARY_ID.to_string())
+        );
+    }
+
+    #[test]
+    fn a_rename_moves_the_choice_and_a_merge_keeps_the_target_choice() {
+        // AE6, R6.
+        let (folder, _computer, manager) = with_types(&["Work", "Meetings", "Board"]);
+        let decisions = custom_prompt(&manager, "Decisions", "Decisions text.");
+        manager
+            .set_note_type_prompt("Work", Some(&decisions), &StorageFolders::default())
+            .unwrap();
+        manager
+            .set_note_type_prompt("Board", Some(PLAY_BY_PLAY_ID), &StorageFolders::default())
+            .unwrap();
+
+        manager
+            .rename_note_type("Work", "Meetings", &StorageFolders::default(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(
+            type_prompts_on_disk(folder.path()),
+            json!({ "Board": PLAY_BY_PLAY_ID })
+        );
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(choice(&list, "Meetings").0, None);
+
+        manager
+            .rename_note_type(
+                "Board",
+                "Directors",
+                &StorageFolders::default(),
+                &|_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(
+            type_prompts_on_disk(folder.path()),
+            json!({ "Directors": PLAY_BY_PLAY_ID })
+        );
+
+        manager
+            .delete_note_type("Directors", &StorageFolders::default(), &|_| Ok(()))
+            .unwrap();
+        assert_eq!(type_prompts_on_disk(folder.path()), json!({}));
+    }
+
+    #[test]
+    fn the_launch_replay_of_a_type_edit_moves_the_choice_too() {
+        // KTD6: the quit came after the record and before the list save.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Work", "Meetings"]);
+        manager
+            .save(&[SharedValue::NoteTypePrompts(
+                [
+                    ("Pathfinder".to_string(), PLAY_BY_PLAY_ID.to_string()),
+                    ("Work".to_string(), PLAY_BY_PLAY_ID.to_string()),
+                ]
+                .into(),
+            )])
+            .unwrap();
+        manager
+            .finish_type_edit(&BulkEdit::RenameType {
+                from: "Pathfinder".into(),
+                to: "D&D".into(),
+            })
+            .unwrap();
+        manager
+            .finish_type_edit(&BulkEdit::RenameType {
+                from: "Work".into(),
+                to: "Meetings".into(),
+            })
+            .unwrap();
+        let on_disk = file_of(folder.path());
+        assert_eq!(on_disk["note_types"], json!(["Meetings", "D&D"]));
+        assert_eq!(
+            on_disk[file::KEY_NOTE_TYPE_PROMPTS],
+            json!({ "D&D": PLAY_BY_PLAY_ID })
+        );
+    }
+
+    #[test]
+    fn adding_a_type_removes_an_old_choice_with_its_name() {
+        // KTD6: a new type starts with "Default" (R1).
+        let (folder, _computer, manager) = with_types(&[]);
+        manager
+            .save(&[SharedValue::NoteTypePrompts(
+                [("Pathfinder".to_string(), PLAY_BY_PLAY_ID.to_string())].into(),
+            )])
+            .unwrap();
+        manager
+            .add_note_type("pathfinder", &StorageFolders::default())
+            .unwrap();
+        assert_eq!(type_prompts_on_disk(folder.path()), json!({}));
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(choice(&list, "pathfinder").0, None);
+    }
+
+    #[test]
+    fn a_prompt_choice_is_refused_while_the_settings_are_read_only() {
+        // R19 of the pane, rule 4 of the shared settings rules.
+        let (folder, _computer, manager) = with_types(&["Pathfinder"]);
+        let path = file::settings_path(folder.path());
+        std::fs::write(&path, r#"{"note_types": ["Path"#).unwrap();
+        manager.reread();
+        assert_eq!(
+            manager
+                .set_note_type_prompt(
+                    "Pathfinder",
+                    Some(PLAY_BY_PLAY_ID),
+                    &StorageFolders::default()
+                )
+                .unwrap_err(),
+            ReadOnlyCause::DoesNotParse.message()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"note_types": ["Path"#
+        );
+    }
+
+    #[test]
+    fn the_prompt_of_a_note_type_follows_its_choice() {
+        // R3, R7, KTD2.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        let standup = custom_prompt(&manager, "Standup", "Standup text.");
+        manager.activate_prompt(&standup).unwrap();
+        manager
+            .set_note_type_prompt("Pathfinder", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        manager
+            .set_note_type_prompt("General", Some(PLAY_BY_PLAY_ID), &StorageFolders::default())
+            .unwrap();
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("pathfinder")).text,
+            "Recap text."
+        );
+        // A type with no entry uses the default prompt.
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("Board")).text,
+            "Standup text."
+        );
+        assert_eq!(settings.summary_prompt_for_type(None).id, PLAY_BY_PLAY_ID);
+
+        // The file of the prompt goes away: the last copy read applies.
+        let file_name = prompt_files(folder.path())
+            .into_iter()
+            .find(|name| name.starts_with("Recap"))
+            .unwrap();
+        std::fs::remove_file(prompts::prompts_folder(folder.path()).join(file_name)).unwrap();
+        manager.reread();
+        let settings = settings_of(&manager);
+        assert!(settings.summary_prompts.iter().all(|p| p.id != recap));
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("Pathfinder")).text,
+            "Recap text."
+        );
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(choice(&list, "Pathfinder"), (Some(recap.clone()), recap));
+    }
+
+    #[test]
+    fn the_type_list_names_the_chosen_prompt_also_when_its_file_is_missing() {
+        // R7: Settings shows the prompt that a summary of the type uses.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager
+            .set_note_type_prompt("Pathfinder", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        let file_name = prompt_files(folder.path())
+            .into_iter()
+            .find(|name| name.starts_with("Recap"))
+            .unwrap();
+        std::fs::remove_file(prompts::prompts_folder(folder.path()).join(file_name)).unwrap();
+        manager.reread();
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(
+            entry(&list, "Pathfinder").prompt_name.as_deref(),
+            Some("Recap")
+        );
+        assert_eq!(entry(&list, "Board").prompt_name, None);
     }
 }

@@ -33,6 +33,12 @@ pub struct Cache {
     /// copy (R14).
     #[serde(default)]
     pub active_prompt: Option<Prompt>,
+    /// The last texts of the custom prompts that the note types choose,
+    /// as this computer read them. They stay while the file of a prompt is
+    /// missing or has a conflict copy, as the active prompt does (R7,
+    /// KTD2).
+    #[serde(default)]
+    pub type_prompts: Vec<Prompt>,
     /// The last Background text that this computer read. Summaries use it
     /// while the Background file cannot be used (KTD3). A cache from a
     /// version before the Background has an empty text.

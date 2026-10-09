@@ -90,12 +90,12 @@ pub trait EngineProvider: Send + Sync {
     /// The summarization endpoint, read fresh for each summarize stage so a
     /// settings change applies to the next session to reach it.
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem>;
-    /// A snapshot of the active summary prompt, read fresh for each
-    /// summarize stage like the endpoint. A run that saved a snapshot
-    /// before uses its saved one (KTD4). The first automatic summary of a
-    /// note that recorded its prompt at the start uses that prompt instead
-    /// (KTD15). Summarize Again always uses this prompt.
-    fn summary_prompt(&self) -> summarize::Prompt;
+    /// A snapshot of the summary prompt of the note type `note_type`, or of
+    /// "No type" for `None`, read fresh for each summarize stage like the
+    /// endpoint (R3, KTD3). A type with no prompt of its own gives the
+    /// default prompt. A run that saved a snapshot before uses its saved
+    /// one while its inputs stay the same (KTD4).
+    fn summary_prompt(&self, note_type: Option<&str>) -> summarize::Prompt;
     /// The Background text that the next summary uses, read fresh when a
     /// summary starts like the prompt (KTD6). It is the cached text when
     /// the Background file cannot be used (KTD3), and empty when the user
@@ -463,17 +463,19 @@ impl Runner {
             control.proceed()?;
             let endpoint = endpoint(&env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
-            // Regenerate uses the current Background (R10, KTD6).
-            let active = summarize::Prompt {
+            // Regenerate uses the prompt of the note type after the row
+            // follows its folder (R3, KTD3), and the current Background
+            // (R10, KTD6).
+            let resolve = |note_type: Option<&str>| summarize::Prompt {
                 background: env.engines.background(),
-                ..env.engines.summary_prompt()
+                ..env.engines.summary_prompt(note_type)
             };
             save::regenerate_summary(
                 &env.store,
                 &id,
                 &env.working_root,
                 endpoint,
-                active,
+                &resolve,
                 &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 &control,
                 &mut |done, total| {
@@ -1416,8 +1418,11 @@ fn execute(
         Stage::Summarize => {
             let endpoint = endpoint(env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
-            let mut prompt = first_summary_prompt(&env.store, id)?
-                .unwrap_or_else(|| env.engines.summary_prompt());
+            // The type that the note shows when the step starts chooses
+            // the prompt (R3, KTD3). A pending type counts.
+            let record = summarize::note_record(&env.store, id)?;
+            let note_type = type_move::shown_type(&record).0;
+            let mut prompt = env.engines.summary_prompt(note_type.as_deref());
             // The summary uses the Background of the time that it starts
             // (KTD6). A resumed summary uses the Background of its saved
             // PROMPT checkpoint, which `summarize::produce` reads first.
@@ -1507,28 +1512,6 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
         EndpointProblem::Locked(message) => StageError::Blocked(message),
         EndpointProblem::Unconfigured(message) => StageError::Failed(message),
     })
-}
-
-/// The prompt of the note's first automatic summary: the active prompt
-/// when the note started (KTD15). `None` for a note with no snapshot, and
-/// for a Transcribe Again run, which the user starts later, as Summarize
-/// Again. Those use the active prompt.
-fn first_summary_prompt(
-    store: &SharedStore,
-    id: &str,
-) -> Result<Option<summarize::Prompt>, StageError> {
-    let store = lock(store);
-    if store.transcribe_again_marks(id)?.model.is_some() {
-        return Ok(None);
-    }
-    Ok(store.prompt_snapshot(id)?.map(|p| summarize::Prompt {
-        id: p.id,
-        name: p.name,
-        text: p.text,
-        title_text: p.title_text,
-        // The caller sets the Background when the summary starts (KTD6).
-        background: String::new(),
-    }))
 }
 
 fn has_title_request(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
@@ -1852,7 +1835,7 @@ mod tests {
         fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
             unreachable!()
         }
-        fn summary_prompt(&self) -> summarize::Prompt {
+        fn summary_prompt(&self, _: Option<&str>) -> summarize::Prompt {
             unreachable!()
         }
         fn background(&self) -> String {

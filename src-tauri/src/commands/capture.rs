@@ -318,6 +318,9 @@ mod tests {
             shared: true,
             notes: 0,
             general: false,
+            prompt_choice: None,
+            prompt_name: None,
+            summary_prompt_id: summarize::prompts::TOPIC_SUMMARY_ID.into(),
         }
     }
 

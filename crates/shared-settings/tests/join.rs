@@ -39,6 +39,7 @@ fn cache_of_b(source: &Path, prompts: Vec<Prompt>) -> Cache {
         settings: apply_patch(&default_settings(), &[SharedValue::LiveTranscript(false)]),
         prompts,
         active_prompt: None,
+        type_prompts: Vec::new(),
         background: String::new(),
     }
 }
@@ -487,6 +488,7 @@ fn a_settings_file_that_names_a_prompt_that_has_not_arrived_uses_the_cached_text
         settings: apply_patch(&default_settings(), &[]),
         prompts: vec![standup.clone()],
         active_prompt: None,
+        type_prompts: Vec::new(),
         background: String::new(),
     };
     // The settings file arrives and names "Standup". Its file has not.
@@ -618,6 +620,76 @@ fn the_active_prompt_with_a_conflict_copy_uses_the_cached_text() {
     assert_eq!(
         loaded.cache.unwrap().active_prompt,
         Some(prompt("recap-a", "Recap", "A's recap."))
+    );
+}
+
+#[test]
+fn a_prompt_that_only_a_note_type_chooses_is_copied_into_the_new_folder() {
+    // R7, R22: the cache keeps the prompt of a type, and a change of
+    // folder copies it like the active prompt.
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = Cache {
+        type_prompts: vec![prompt("standup-b", "Standup", "B's standup.")],
+        ..cache_of_b(old.path(), vec![])
+    };
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert_eq!(joined.written.prompt_files, vec!["Standup.md".to_string()]);
+    assert_eq!(names(&joined.view.prompts), vec!["Recap", "Standup"]);
+    assert_eq!(
+        fs::read_to_string(
+            root.path()
+                .join(".longhand")
+                .join("prompts")
+                .join("Standup.md")
+        )
+        .unwrap(),
+        render_prompt_file("standup-b", "Standup", "B's standup.")
+    );
+}
+
+#[test]
+fn a_type_prompt_with_a_conflict_copy_uses_the_cached_text() {
+    // R14: while the id that a type chooses has a conflict copy, the text
+    // comes from the cache. The cache has the prompt only as a type prompt.
+    let root = folder_of_a();
+    let prompts_dir = root.path().join(".longhand").join("prompts");
+    let settings = apply_patch(
+        &default_settings(),
+        &[SharedValue::NoteTypePrompts(BTreeMap::from([(
+            "Pathfinder".to_string(),
+            "standup-a".to_string(),
+        )]))],
+    );
+    fs::write(
+        root.path().join(".longhand").join("settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    // Both computers changed "Standup" offline. The file has B's text,
+    // and the copy has A's newer text.
+    fs::write(
+        prompts_dir.join("Standup.md"),
+        render_prompt_file("standup-a", "Standup", "B's standup."),
+    )
+    .unwrap();
+    fs::write(
+        prompts_dir.join("Standup 2.md"),
+        render_prompt_file("standup-a", "Standup", "A's newer standup."),
+    )
+    .unwrap();
+    let cache = Cache {
+        settings: settings.clone(),
+        type_prompts: vec![prompt("standup-a", "Standup", "A's standup.")],
+        ..cache_of_b(root.path(), vec![])
+    };
+    let loaded = load(root.path(), Some(&cache));
+    assert_eq!(
+        loaded.view.type_prompts.get("standup-a"),
+        Some(&ActivePrompt::Custom {
+            prompt: prompt("standup-a", "Standup", "A's standup."),
+            from_cache: true
+        })
     );
 }
 

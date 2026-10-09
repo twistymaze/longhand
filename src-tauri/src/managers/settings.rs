@@ -537,6 +537,16 @@ pub struct Settings {
     /// conflict copy (R14).
     #[serde(skip)]
     pub cached_active_prompt: Option<summarize::Prompt>,
+    /// A shared setting. The summary prompt choice of each note type: the
+    /// type name, with "General" for General, and the prompt id (KTD1).
+    /// The Types and Tags pane reads the choices from the type list.
+    #[serde(skip)]
+    pub note_type_prompts: std::collections::BTreeMap<String, String>,
+    /// The prompt of each id that `note_type_prompts` names, by id: the
+    /// folder copy, or the last copy that this computer read (R7, KTD2).
+    /// A prompt that this computer never read is not here.
+    #[serde(skip)]
+    pub type_prompts: std::collections::BTreeMap<String, summarize::Prompt>,
 }
 
 /// The most characters the Background can have (R6).
@@ -689,6 +699,8 @@ impl Default for Settings {
             background_limit: BACKGROUND_LIMIT,
             background_read_only: background_read_only(&SharedSnapshot::default()),
             cached_active_prompt: None,
+            note_type_prompts: Default::default(),
+            type_prompts: Default::default(),
         }
     }
 }
@@ -756,6 +768,13 @@ impl Settings {
                 } => Some(prompt.clone()),
                 _ => None,
             },
+            note_type_prompts: fields.type_prompt_map(),
+            type_prompts: shared
+                .view
+                .type_prompts
+                .iter()
+                .filter_map(|(id, prompt)| Some((id.clone(), prompt.prompt()?.clone())))
+                .collect(),
         }
     }
 
@@ -882,6 +901,25 @@ impl Settings {
             })
             .or_else(|| self.find_summary_prompt(id))
             .unwrap_or_else(summarize::prompts::topic_summary)
+    }
+
+    /// The prompt that a summary of a note of the type `note_type` uses now
+    /// (R3, KTD2). `None` is General. A type with no choice, a type whose
+    /// name is not valid (R18), and a choice that names a prompt that this
+    /// computer never read use the default prompt
+    /// ([`Settings::active_summary_prompt_snapshot`]). While the file of the
+    /// chosen prompt is missing or has a conflict copy, the last copy that
+    /// this computer read applies (R7).
+    pub fn summary_prompt_for_type(&self, note_type: Option<&str>) -> summarize::Prompt {
+        use session_save::naming::check_type_name;
+        use shared_settings::note_types::prompt_choice;
+        // The type of a note is in the effective type list, so the type
+        // name check gives its validity.
+        let valid = note_type.is_none_or(|name| check_type_name(name).as_deref() == Ok(name));
+        prompt_choice(&self.note_type_prompts, note_type, valid)
+            .and_then(|id| self.type_prompts.get(id))
+            .cloned()
+            .unwrap_or_else(|| self.active_summary_prompt_snapshot())
     }
 
     pub fn summary_prompt_list(&self) -> SummaryPromptList {
@@ -1194,6 +1232,7 @@ impl LegacyShared {
             settings: self.settings,
             prompts: self.prompts,
             active_prompt,
+            type_prompts: Vec::new(),
             // A local store from before shared settings has no Background.
             background: String::new(),
         }
@@ -2377,6 +2416,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            type_prompts: Vec::new(),
             background: String::new(),
         };
         let shared = SharedSnapshot {
@@ -2463,6 +2503,7 @@ mod tests {
             settings: raw,
             prompts: Vec::new(),
             active_prompt: None,
+            type_prompts: Vec::new(),
             background: String::new(),
         };
         let shared = SharedSnapshot {
