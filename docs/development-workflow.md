@@ -27,6 +27,18 @@ rm -rf ~/Downloads/longhand-test
 
 A local build has no track, so it gets no updates. The preview build in `/Applications` keeps its updates.
 
+### Windows
+
+A Mac cannot build the Windows installer. Start a CI run that builds a release installer and uploads it:
+
+```sh
+gh workflow run ci.yml -R twistymaze/longhand --ref <branch> -f windows_installer=true
+```
+
+The Windows job takes about 30 minutes. Download the `longhand-windows-installer` artifact into the gitignored `.context/windows-test/` folder with `gh run download <run-id> -R twistymaze/longhand -n longhand-windows-installer -D .context/windows-test`. Give the PowerShell steps to copy it with `scp` into `$HOME\Downloads\longhand-test\` and run it. Start the steps with the removal of that folder, and give the cleanup steps: uninstall Longhand in Settings, delete the folder, and delete `.context/windows-test/` on the Mac.
+
+The installer is not signed. A file copied with `scp` has no Mark of the Web, so SmartScreen does not check it. A browser download shows a SmartScreen warning.
+
 ## Checks and CI
 
 Run local checks, including:
