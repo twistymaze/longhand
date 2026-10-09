@@ -15,13 +15,17 @@ import {
   commands,
   type MicrophoneChoice,
   type MicrophoneList,
+  type NoteTypeEntry,
   type Readiness,
   type SessionDetail,
   type SessionDocument,
+  type SummaryPromptEntry,
   type WaitingPart,
 } from "../bindings";
 import { rowTitle } from "../home/group";
 import { features } from "../lib/features";
+import { sameType } from "../lib/Labels";
+import { useReloadOn } from "../lib/useReloadOn";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
 import { formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
@@ -187,6 +191,7 @@ export function SessionPage({
       : tabs;
   const tab = visibleTabs.some((t) => t.value === chosen) ? chosen : "notes";
   const [doc, setDoc] = useState<SessionDocument | null>(null);
+  const [staleDocument, setStaleDocument] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [regenerating, setRegenerating] = useState(false);
@@ -244,6 +249,9 @@ export function SessionPage({
     const before = previous.current;
     previous.current = phase;
     if (before === phase) return;
+    // The document of the note changes during processing. Until the page
+    // reads it again, its summary is not the current summary.
+    if (phase !== "saved") setStaleDocument(true);
     if (phase === "recording") setChosen("notes");
     else if (before === "recording") setChosen("summary");
     else if (phase === "saved" && before === "processing" && !notesPanel.current?.contains(document.activeElement)) {
@@ -274,6 +282,7 @@ export function SessionPage({
     if (read !== documentRead.current) return;
     if (result.status === "ok") {
       setDoc(result.data);
+      setStaleDocument(false);
       setError(null);
     } else setError(sentence(result.error));
   }, [id]);
@@ -355,8 +364,38 @@ export function SessionPage({
   // The progress event of an earlier run stays in `sessions.live`. Only an
   // event that arrives after this run starts shows as its progress.
   const liveAtStart = useRef(sessions.live[id]);
+
+  // The offer to regenerate the summary after a type change (R9, R10,
+  // KTD5). Only a type change of the user on this page sets the trigger,
+  // so a synced type change gives no offer (R11). Dismiss and the start of
+  // a regeneration clear it. The page state goes when the user leaves the
+  // note. The page reads the prompt of each type only while the trigger is
+  // set, and again at each settings or library change.
+  const [offerAsked, setOfferAsked] = useState(false);
+  const offerRead = useRef({ asked: false, read: 0 });
+  offerRead.current.asked = offerAsked;
+  const [typePrompts, setTypePrompts] = useState<{ types: NoteTypeEntry[]; prompts: SummaryPromptEntry[] } | null>(null);
+  const loadTypePrompts = useCallback(async () => {
+    if (!offerRead.current.asked) return;
+    const read = ++offerRead.current.read;
+    try {
+      const [types, prompts] = await Promise.all([commands.noteTypes(), commands.summaryPrompts()]);
+      if (read !== offerRead.current.read || types.status !== "ok") return;
+      setTypePrompts({ types: types.data.types, prompts: prompts.prompts });
+    } catch (e) {
+      console.error("The prompts of the note types could not be read:", e);
+    }
+  }, []);
+  useReloadOn(loadTypePrompts);
+  const typeChanged = () => {
+    offerRead.current.asked = true;
+    setOfferAsked(true);
+    void loadTypePrompts();
+  };
+
   const regenerate = () => {
     liveAtStart.current = sessions.live[id];
+    setOfferAsked(false);
     setRegenerating(true);
     setNotice(null);
     // The status shows on Summary, so the page moves there, as it does
@@ -521,6 +560,31 @@ export function SessionPage({
       </Button>
     </span>
   );
+
+  // The offer shows while its trigger is set and the R9 conditions hold
+  // now: a complete summary with a recorded prompt id, no processing or
+  // regeneration, and a type whose prompt is another prompt (KTD4, KTD5).
+  // The conditions are read again at each render, so the offer shows when
+  // processing ends and goes when the type changes back.
+  const offerSummary = doc?.summary;
+  const offerType =
+    entry && typePrompts?.types.find((t) => (entry.note_type === null ? t.general : !t.general && sameType(t.name, entry.note_type)));
+  const offer =
+    offerAsked &&
+    phase === "saved" &&
+    !regenerating &&
+    !staleDocument &&
+    offerSummary &&
+    !offerSummary.stub &&
+    offerSummary.prompt_id &&
+    offerType &&
+    offerType.summary_prompt_id !== "" &&
+    offerType.summary_prompt_id !== offerSummary.prompt_id
+      ? {
+          type: offerType.name,
+          prompt: typePrompts?.prompts.find((p) => p.id === offerType.summary_prompt_id)?.name ?? null,
+        }
+      : null;
 
   // The note's own live mode decides, not the model selected now (R9). A
   // Transcribe Again run has no live text.
@@ -711,6 +775,7 @@ export function SessionPage({
               recording={phase === "recording"}
               onNotice={setNotice}
               onChanged={() => void sessions.refresh()}
+              onTypeChanged={typeChanged}
             />
           )}
           {syncLines.map((line) => (
@@ -745,6 +810,24 @@ export function SessionPage({
               {notice.settings && (
                 <Button onClick={() => void commands.openSettings()}>Open Settings…</Button>
               )}
+            </div>
+          )}
+          {/* The offer is in the header column, so it shows on every tab
+              (R10). It is one quiet line: the user starts the regeneration. */}
+          {offer && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+              <p role="status" className="min-w-0 text-[0.85rem] text-label-secondary">
+                {offer.prompt ? `${offer.type} uses ${offer.prompt}.` : `${offer.type} uses another summary prompt.`}
+              </p>
+              <div className="flex items-center gap-1.5">
+                {/* The same availability and reason as the menu item. */}
+                <span title={held ? heldReason : (remoteReason ?? undefined)} className="inline-flex">
+                  <Button disabled={held || remote !== null} onClick={regenerate}>
+                    Regenerate Summary
+                  </Button>
+                </span>
+                <Button onClick={() => setOfferAsked(false)}>Dismiss</Button>
+              </div>
             </div>
           )}
           {!notice && againFailed && (

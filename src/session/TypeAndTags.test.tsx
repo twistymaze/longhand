@@ -36,6 +36,7 @@ type Props = { noteType: string | null; tags: string[]; recording?: boolean };
 function renderRow(props: Props) {
   const onNotice = mock((_n: Notice | null) => {});
   const onChanged = mock(() => {});
+  const onTypeChanged = mock(() => {});
   const ui = (p: Props) => (
     <TypeAndTags
       sessionId="s1"
@@ -45,10 +46,11 @@ function renderRow(props: Props) {
       recording={p.recording ?? false}
       onNotice={onNotice}
       onChanged={onChanged}
+      onTypeChanged={onTypeChanged}
     />
   );
   const view = render(ui(props));
-  return { ...view, onNotice, onChanged, user: userEvent.setup(), rerenderWith: (p: Props) => view.rerender(ui(p)) };
+  return { ...view, onNotice, onChanged, onTypeChanged, user: userEvent.setup(), rerenderWith: (p: Props) => view.rerender(ui(p)) };
 }
 
 const row = () => screen.getByRole("group", { name: "Type and tags" });
@@ -86,6 +88,30 @@ describe("TypeAndTags", () => {
     expect(onNotice).toHaveBeenLastCalledWith(null);
     expect(onChanged).toHaveBeenCalled();
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  test("a type change of the user reports that the type changed, and a type change from another computer does not (R9, R11)", async () => {
+    mockRow();
+    const { user, onTypeChanged, onChanged, rerenderWith } = renderRow({ noteType: "One on One", tags: [] });
+    rerenderWith({ noteType: "Pathfinder", tags: [] });
+    expect(onTypeChanged).not.toHaveBeenCalled();
+    await user.click(typeButton());
+    await user.click(await screen.findByRole("menuitemradio", { name: "General" }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(onTypeChanged).toHaveBeenCalledTimes(1);
+  });
+
+  test("a refused type change reports no type change", async () => {
+    mockRow({
+      set_note_type: () => {
+        throw "The note type isn't in the list";
+      },
+    });
+    const { user, onNotice, onTypeChanged } = renderRow({ noteType: "One on One", tags: [] });
+    await user.click(typeButton());
+    await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
+    await waitFor(() => expect(onNotice).toHaveBeenCalled());
+    expect(onTypeChanged).not.toHaveBeenCalled();
   });
 
   test("General calls set_note_type with null", async () => {

@@ -53,6 +53,7 @@ export function TypeAndTags({
   recording,
   onNotice,
   onChanged,
+  onTypeChanged,
 }: {
   sessionId: string;
   /// The list has the note. Until then the row is empty.
@@ -65,6 +66,9 @@ export function TypeAndTags({
   onNotice: (notice: Notice | null) => void;
   /// A change completed: the list must be read again.
   onChanged: () => void;
+  /// The user changed the type of the note on this page. A type change
+  /// from another computer does not call it (R9, R11, KTD5).
+  onTypeChanged: () => void;
 }) {
   const [shown, setShown] = useState<View | null>(present ? { noteType, tags } : null);
   // The values from the list replace the shown values, except during a
@@ -119,6 +123,7 @@ export function TypeAndTags({
     if (result.status === "ok") {
       setShown((s) => (s ? { ...s, noteType: next } : s));
       onChanged();
+      onTypeChanged();
     }
   };
 
