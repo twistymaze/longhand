@@ -2819,7 +2819,10 @@ mod tests {
         std::fs::remove_file(prompts::prompts_folder(folder.path()).join(file_name)).unwrap();
         manager.reread();
         let list = manager.note_types(&StorageFolders::default());
-        assert_eq!(entry(&list, "Pathfinder").prompt_name.as_deref(), Some("Recap"));
+        assert_eq!(
+            entry(&list, "Pathfinder").prompt_name.as_deref(),
+            Some("Recap")
+        );
         assert_eq!(entry(&list, "Board").prompt_name, None);
     }
 }
