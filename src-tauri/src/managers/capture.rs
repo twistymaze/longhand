@@ -1911,7 +1911,10 @@ impl CaptureManager {
             .map(|c| (c.timeline, Some(c.epoch)));
         let (mut timeline, epoch) = match held {
             Some(held) => held,
-            None => (Timeline::from_segments(self.store().segments(id)?)?, None),
+            None => match self.stored_timeline(id) {
+                Ok(timeline) => (timeline, None),
+                Err(e) => return self.reopen_failed(app, inner, id, None, reopen, e),
+            },
         };
         let offset = match timeline.segments().last() {
             Some(last) => resume_offset(
@@ -1922,12 +1925,18 @@ impl CaptureManager {
             ),
             None => 0,
         };
-        let index = timeline.open(offset, resumed_at)?;
         let epoch = epoch.unwrap_or_else(|| {
             let now = Instant::now();
             now.checked_sub(Duration::from_millis(offset))
                 .unwrap_or(now)
         });
+        let index = match timeline.open(offset, resumed_at) {
+            Ok(index) => index,
+            Err(e) => {
+                let clock = Some((timeline, epoch));
+                return self.reopen_failed(app, inner, id, clock, reopen, e.into());
+            }
+        };
         let live = self.live_model(id);
         // A user resume and a crash resume keep the note's choice (KTD2).
         let capture = self.note_capture(id);
@@ -1946,30 +1955,9 @@ impl CaptureManager {
         };
         let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
-            Err(e) if reopen == Reopen::Record => {
-                // The note had no audio before: it is a note with no audio
-                // again, and the user can record later (R19).
-                drop(inner);
-                if let Err(stop) = self.stop_in_store(app, id) {
-                    log::error!("could not end the recording of {id}: {stop}");
-                }
-                changed(app, None);
-                return Err(e);
-            }
             Err(e) => {
-                // The store already says Capturing: put the session back to
-                // Interrupted, with its alert and the watch for the
-                // microphone's return, which reopens from the held clock.
-                timeline.abandon_open();
-                inner.clock = Some(Clock::new(id, timeline, epoch));
-                drop(inner);
-                let loss = Loss {
-                    reason: InterruptReason::Device,
-                    message: format!("the microphone could not be opened: {e}"),
-                    restartable: false,
-                };
-                Arc::clone(self).interrupt(app, id, &loss, None);
-                return Err(e);
+                let clock = Some((timeline, epoch));
+                return self.reopen_failed(app, inner, id, clock, reopen, e);
             }
         };
         if let Some(live) = &mut active.live {
@@ -1983,6 +1971,48 @@ impl CaptureManager {
         app.state::<Arc<AlertsManager>>().clear(id);
         changed(app, Some(id));
         Ok(())
+    }
+
+    /// The timeline of the note `id` from its stored segments.
+    fn stored_timeline(&self, id: &str) -> Result<Timeline, CaptureError> {
+        Ok(Timeline::from_segments(self.store().segments(id)?)?)
+    }
+
+    /// The next segment of `id` did not open, and the store already says
+    /// Capturing. A note that had no audio before is a note with no audio
+    /// again, and the user can record later (R19). Every other note goes
+    /// back to Interrupted, with its alert and the watch for the
+    /// microphone's return, which reopens from the held clock. So no
+    /// failure leaves a Capturing note with nothing open.
+    fn reopen_failed(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        mut inner: std::sync::MutexGuard<'_, Inner>,
+        id: &str,
+        clock: Option<(Timeline, Instant)>,
+        reopen: Reopen,
+        e: CaptureError,
+    ) -> Result<(), CaptureError> {
+        if reopen == Reopen::Record {
+            drop(inner);
+            if let Err(stop) = self.stop_in_store(app, id) {
+                log::error!("could not end the recording of {id}: {stop}");
+            }
+            changed(app, None);
+            return Err(e);
+        }
+        if let Some((mut timeline, epoch)) = clock {
+            timeline.abandon_open();
+            inner.clock = Some(Clock::new(id, timeline, epoch));
+        }
+        drop(inner);
+        let loss = Loss {
+            reason: InterruptReason::Device,
+            message: format!("the microphone could not be opened: {e}"),
+            restartable: false,
+        };
+        Arc::clone(self).interrupt(app, id, &loss, None);
+        Err(e)
     }
 
     /// Copy the old audio of the resumed note `id` into its working
