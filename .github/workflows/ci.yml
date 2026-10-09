@@ -31,6 +31,10 @@ on:
         description: Also run the four-hour recorder soak (U21)
         type: boolean
         default: false
+      windows_installer:
+        description: Also build a release Windows installer and upload it for a manual test
+        type: boolean
+        default: false
 
 # A new push to a pull request stops its old run. Runs on main all
 # complete, so that each one saves its cache.
@@ -329,6 +333,25 @@ jobs:
           if (-not $helper) { throw "Installer lacks the NeMo helper" }
           bun scripts/validate-recognition/installed-smoke.ts $helper.FullName
           if ($LASTEXITCODE -ne 0) { throw "Installed helper inference failed" }
+
+      # A manual test needs the release profile: the debug build above is
+      # too slow to show real performance. On demand only, because the
+      # release build compiles every dependency again:
+      # `gh workflow run ci.yml --ref <branch> -f windows_installer=true`.
+      - name: Tauri build (Windows installer, release)
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.windows_installer
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: bun tauri build --bundles nsis
+
+      - name: Upload the Windows installer
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.windows_installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: longhand-windows-installer
+          path: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
 
       # Shows how much of the Dev Drive and the runner's disks the job used,
       # to check the drive size.
