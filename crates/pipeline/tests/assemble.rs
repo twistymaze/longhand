@@ -743,6 +743,7 @@ mod stereo {
             wall_end: at(1_800),
             audio_file: "audio/segment-01.opus".into(),
             channels: 2,
+            ends_in_pause: false,
         };
         let store = store();
         store
@@ -1100,6 +1101,7 @@ mod stereo {
             wall_end: at(hour as i64),
             audio_file: "audio/segment-01.opus".into(),
             channels,
+            ends_in_pause: false,
         };
         store
             .lock()

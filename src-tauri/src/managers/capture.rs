@@ -4282,6 +4282,7 @@ mod tests {
             wall_end: at(at_secs + 60),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         }
     }
 

@@ -778,6 +778,7 @@ mod tests {
             wall_end: start + chrono::TimeDelta::minutes(1),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         };
         let folder = root.path().join("2026-09-25 0900 Planning");
         fs::create_dir(&folder).unwrap();

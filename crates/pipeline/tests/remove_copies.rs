@@ -43,6 +43,7 @@ fn segments() -> Vec<Segment> {
         wall_end: end,
         audio_file: AUDIO.into(),
         channels: 1,
+        ends_in_pause: false,
     }]
 }
 

@@ -1122,6 +1122,14 @@ impl Store {
         let tx = self.conn.transaction()?;
         write_state(&tx, id, &next)?;
         apply_queue_effects(&tx, id, &current.state, &next, event)?;
+        // A resume puts a new segment after the last one, so no segment of
+        // the note ends in a pause now (KTD4 of the pause plan).
+        if matches!(event, Event::UserResume { .. }) {
+            tx.execute(
+                "UPDATE segments SET ends_in_pause = 0 WHERE session_id = ?1",
+                [id],
+            )?;
+        }
         tx.commit()?;
         Ok(next)
     }
@@ -1162,7 +1170,8 @@ impl Store {
 
     pub fn segments(&self, session_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self.conn.prepare(
-            "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels
+            "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
+               ends_in_pause
              FROM segments WHERE session_id = ?1 ORDER BY offset_ms",
         )?;
         let rows = stmt.query_map([session_id], |r| {
@@ -1174,11 +1183,12 @@ impl Store {
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
                 r.get::<_, u16>(6)?,
+                r.get::<_, bool>(7)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (index, offset, duration, start, end, audio_file, channels) = row?;
+            let (index, offset, duration, start, end, audio_file, channels, ends_in_pause) = row?;
             out.push(Segment {
                 index,
                 offset_ms: offset as u64,
@@ -1187,9 +1197,24 @@ impl Store {
                 wall_end: parse_time(&end)?,
                 audio_file,
                 channels,
+                ends_in_pause,
             });
         }
         Ok(out)
+    }
+
+    /// Mark the note's last kept segment as the end of a pause (KTD4 of the
+    /// pause plan). Returns false when the note has no segment.
+    pub fn mark_pause(&self, id: &str) -> Result<bool> {
+        self.require(id)?;
+        let changed = self.conn.execute(
+            "UPDATE segments SET ends_in_pause = 1
+             WHERE session_id = ?1 AND idx =
+               (SELECT idx FROM segments WHERE session_id = ?1
+                ORDER BY offset_ms DESC LIMIT 1)",
+            [id],
+        )?;
+        Ok(changed > 0)
     }
 
     /// The audio files of the note's segments whose audio was removed: the
@@ -2056,12 +2081,14 @@ fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
 fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Result<()> {
     conn.execute(
         "INSERT INTO segments
-         (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
+          ends_in_pause)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT (session_id, idx) DO UPDATE SET
            offset_ms = excluded.offset_ms, duration_ms = excluded.duration_ms,
            wall_start = excluded.wall_start, wall_end = excluded.wall_end,
-           audio_file = excluded.audio_file, channels = excluded.channels",
+           audio_file = excluded.audio_file, channels = excluded.channels,
+           ends_in_pause = excluded.ends_in_pause",
         params![
             session_id,
             segment.index,
@@ -2071,6 +2098,7 @@ fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Res
             segment.wall_end.to_rfc3339(),
             segment.audio_file,
             segment.channels,
+            segment.ends_in_pause,
         ],
     )?;
     Ok(())

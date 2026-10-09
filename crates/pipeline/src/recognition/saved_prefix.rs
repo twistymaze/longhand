@@ -280,6 +280,7 @@ mod tests {
                     wall_end: at + chrono::Duration::seconds(1),
                     audio_file: format!("audio/{index}.opus"),
                     channels: 1,
+                    ends_in_pause: false,
                 })
                 .collect::<Vec<_>>();
             for segment in &segments {

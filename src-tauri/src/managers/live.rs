@@ -1294,6 +1294,7 @@ mod tests {
                     wall_end: at,
                     audio_file: format!("audio/segment-{index:02}.opus"),
                     channels: 1,
+                    ends_in_pause: false,
                 },
             )
             .unwrap();

@@ -21,6 +21,7 @@ fn segment(index: u32) -> Segment {
         wall_end: common::at(i64::from(index) * 10 + 5),
         audio_file: pipeline::recover::segment_audio_file(index),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 

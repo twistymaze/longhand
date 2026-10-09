@@ -117,6 +117,7 @@ fn recover_one(
             wall_end: wall_start + chrono::TimeDelta::milliseconds(duration_ms as i64),
             audio_file: segment_audio_file(index),
             channels,
+            ends_in_pause: false,
         };
         let store = lock(store);
         store.put_segment(id, &segment)?;

@@ -1585,6 +1585,7 @@ mod remove_audio_tests {
             wall_end: end,
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         }];
         let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
         let summary = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";
@@ -2110,6 +2111,7 @@ mod record_tests {
             wall_end: opened() + chrono::TimeDelta::minutes(1),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         }
     }
 

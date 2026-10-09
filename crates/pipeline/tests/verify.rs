@@ -23,6 +23,7 @@ fn verification_counts_speech_without_request_padding() {
         wall_end: common::at(20),
         audio_file: "unused.opus".into(),
         channels: 1,
+        ends_in_pause: false,
     };
     let plan = serde_json::json!({
         "segment": 0, "duration_ms": 20000, "voiced_ms": 9756,
@@ -178,6 +179,7 @@ fn legacy_zero_voiced_plan_preserves_the_adopted_transcript_skip() {
         wall_end: common::at(20),
         audio_file: "unavailable.opus".into(),
         channels: 1,
+        ends_in_pause: false,
     };
     let legacy = serde_json::json!({
         "segment": 0, "duration_ms": 20000, "voiced_ms": 0,
@@ -211,6 +213,7 @@ fn legacy_speech_without_audio_fails_instead_of_passing_as_silence() {
         wall_end: common::at(20),
         audio_file: "unavailable.opus".into(),
         channels: 1,
+        ends_in_pause: false,
     };
     let legacy = serde_json::json!({
         "segment": 0, "duration_ms": 20000, "voiced_ms": 1000,
@@ -441,6 +444,7 @@ fn voiced_sound_without_words_after_a_gap_fill_passes() {
         wall_end: common::at(66),
         audio_file: "unused.opus".into(),
         channels: 1,
+        ends_in_pause: false,
     };
     let put = |key: &str, value: serde_json::Value| {
         pipeline::checkpoint::put(

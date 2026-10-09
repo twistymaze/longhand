@@ -114,6 +114,7 @@ fn segment() -> Segment {
         wall_end: started() + chrono::TimeDelta::minutes(1),
         audio_file: "audio/segment-01.opus".into(),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 

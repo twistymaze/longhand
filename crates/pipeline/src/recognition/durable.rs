@@ -1056,6 +1056,7 @@ mod tests {
             wall_end: now + chrono::Duration::seconds(1),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         };
         let archive = temp.path().join(&segment.audio_file);
         let processing = temp.path().join(crate::proc_file(&segment.audio_file));
