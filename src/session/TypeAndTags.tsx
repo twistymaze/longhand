@@ -1,6 +1,7 @@
 // The row under the note's title and subtitle (R16): the note type as a
-// menu, each tag with a control that removes it, and "+ Tag". A type
-// change shows its result as a notice under the title, as a rename does.
+// menu, each tag with a control that removes it, and "+ Tag". A failed
+// type change shows the error as a notice under the title, as a rename
+// does.
 //
 // During a recording, the row follows the attention budget of the
 // recording page (R17). It changes only after an action of the user. A
@@ -20,16 +21,11 @@ import type { Notice } from "./TitleField";
 
 type View = { noteType: string | null; tags: string[] };
 
-/// The notice for the result of a type change, or null when the user
-/// needs to know nothing.
+/// The notice for the result of a type change: only an error. A folder
+/// move that waits or must try again gets no notice, because the app
+/// moves the folder later without help (CLAUDE.md, UI design).
 function typeNotice(result: Awaited<ReturnType<typeof commands.setNoteType>>): Notice | null {
   if (result.status === "error") return { tone: "negative", text: sentence(result.error) };
-  if (result.data.kind === "later") {
-    return { tone: "caution", text: "The type changed. The folder moves when the note is free." };
-  }
-  if (result.data.kind === "kept") {
-    return { tone: "caution", text: `The type changed. The folder moves later. ${sentence(result.data.message)}` };
-  }
   return null;
 }
 
@@ -54,7 +50,6 @@ export function TypeAndTags({
   present,
   noteType,
   tags,
-  moveWaits,
   recording,
   onNotice,
   onChanged,
@@ -65,8 +60,6 @@ export function TypeAndTags({
   /// The type that the app shows (`SessionEntry.note_type`).
   noteType: string | null;
   tags: string[];
-  /// The home folder moves to the folder of the type later.
-  moveWaits: boolean;
   /// The note records now: changes from elsewhere wait (R17).
   recording: boolean;
   onNotice: (notice: Notice | null) => void;
@@ -207,7 +200,6 @@ export function TypeAndTags({
           type="button"
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          title={moveWaits ? "The folder moves when the note is free." : undefined}
           onClick={(e) => {
             clearSelection();
             // WKWebView does not focus a clicked button.

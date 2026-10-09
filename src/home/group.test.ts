@@ -14,7 +14,6 @@ const entry = (id: string, started: Date, over: Partial<SessionEntry> = {}): Ses
   storage_unavailable: false,
   remote: null,
   note_type: null,
-  type_move_waits: false,
   tags: [],
   ...over,
 });

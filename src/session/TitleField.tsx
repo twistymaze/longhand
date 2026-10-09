@@ -11,16 +11,12 @@ import { sentence } from "../processing/describe";
 export type Notice = { tone: "caution" | "negative"; text: string; settings?: boolean };
 
 /// Rename a session, and say what the user must know about the result:
-/// an error, or a folder that kept its old name. Null when all is well.
+/// only an error. A folder that keeps its old name for now gets no
+/// notice, because the app renames it later without help (CLAUDE.md, UI
+/// design).
 export async function commitTitle(sessionId: string, title: string): Promise<Notice | null> {
   const result = await commands.renameSession(sessionId, title);
   if (result.status === "error") return { tone: "negative", text: sentence(result.error) };
-  if (result.data.kind === "kept") {
-    return {
-      tone: "caution",
-      text: `The title changed, but the folder kept its old name. ${sentence(result.data.message)}`,
-    };
-  }
   return null;
 }
 

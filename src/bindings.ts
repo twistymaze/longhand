@@ -2080,11 +2080,6 @@ remote: RemoteView | null;
  */
 note_type: string | null; 
 /**
- * The home folder moves to the folder of `note_type` later, when no
- * computer works on the note (R5).
- */
-type_move_waits: boolean; 
-/**
  * The tags of the note, as their exact texts (R9, R11).
  */
 tags: string[] }
