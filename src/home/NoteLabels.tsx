@@ -81,7 +81,7 @@ export function NoteLabels({
           title={hidden.join(", ")}
           aria-label={`${hidden.length} more: ${hidden.join(", ")}`}
           style={{ left: fit.more }}
-          className={`absolute top-1/2 -translate-y-1/2 rounded-[5px] px-[6px] py-[2px] text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap bg-fill text-label-secondary`}
+          className="absolute top-1/2 -translate-y-1/2 rounded-[5px] bg-fill px-[6px] py-[2px] text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap text-label-secondary"
         >
           +{hidden.length}
         </span>
