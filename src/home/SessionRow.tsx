@@ -8,7 +8,7 @@ import { useRef, useState } from "react";
 import type { SessionEntry } from "../bindings";
 import { entryStatus, entryTone, formatDuration, sessionTitle } from "../processing/describe";
 import { canDelete, Menu, remoteLabels, remoteReasons } from "../session/SessionMenu";
-import { MoreIcon, NoteIcon } from "../settings/icons";
+import { MoreIcon } from "../settings/icons";
 import { Status } from "../settings/ui";
 import { speakerCount } from "./group";
 import { NoteLabels } from "./NoteLabels";
@@ -115,8 +115,9 @@ export function SessionRow({
         .filter(Boolean)
         // An empty line keeps the row as tall as the others.
         .join(" · ") || " ";
-  const secondary = selected ? "text-white/75" : "text-label-secondary";
-  const surface = selected ? "bg-accent text-white" : menuOpen ? "bg-row-hover text-label" : "text-label";
+  // The selected row has a neutral fill and an accent bar to its left, so
+  // the colours of the labels stay the strongest colour in the row.
+  const surface = selected ? "bg-row-selected" : menuOpen ? "bg-row-hover" : "";
 
   const closeMenu = () => {
     setMenuOpen(false);
@@ -142,16 +143,10 @@ export function SessionRow({
           onOpen();
         }
       }}
-      className={`group relative flex cursor-default items-center gap-3 rounded-[9px] px-2.5 py-2 ${surface} outline-offset-1 ${selected ? "outline-none" : "focus-visible:outline-2 focus-visible:outline-accent"}`}
+      className={`group relative flex cursor-default items-center gap-3 rounded-[9px] px-2.5 py-2 text-label ${surface} outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
     >
-      <span
-        aria-hidden
-        className={`flex size-8 shrink-0 items-center justify-center rounded-[8px] ${
-          selected ? "bg-white/20 text-white" : "bg-accent/12 text-accent"
-        }`}
-      >
-        <NoteIcon className="size-[17px]" />
-      </span>
+      {/* The bar is in the list's left padding, outside the row's corners. */}
+      {selected && <span aria-hidden className="absolute inset-y-1.5 -left-2 w-[3px] rounded-full bg-accent" />}
       <div className="min-w-0 flex-1">
         {renaming ? (
           <TitleField
@@ -165,17 +160,13 @@ export function SessionRow({
         )}
         {/* The type and tag labels follow the details (R22). */}
         <div className="flex min-w-0 items-center gap-2">
-          <div className={`min-w-0 shrink-0 truncate text-[0.8rem] ${secondary}`}>{details}</div>
-          <NoteLabels noteType={noteType} tags={entry.tags} onAccent={selected} />
+          <div className="min-w-0 shrink-0 truncate text-[0.8rem] text-label-secondary">{details}</div>
+          <NoteLabels noteType={noteType} tags={entry.tags} />
         </div>
       </div>
       {status && (
-        <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-[0.75rem] font-medium ${
-            selected ? "bg-white/20 text-white" : "bg-fill"
-          }`}
-        >
-          {selected ? status : <Status tone={tone}>{status}</Status>}
+        <span className="shrink-0 rounded-full bg-fill px-2 py-0.5 text-[0.75rem] font-medium">
+          <Status tone={tone}>{status}</Status>
         </span>
       )}
       <div className="relative shrink-0" onDoubleClick={(e) => e.stopPropagation()}>
@@ -189,9 +180,7 @@ export function SessionRow({
             e.stopPropagation();
             setMenuOpen((open) => !open);
           }}
-          className={`flex h-6 w-7 items-center justify-center rounded-md ${
-            selected ? "text-white hover:bg-white/15 active:bg-white/25" : "text-label-secondary hover:bg-fill active:bg-fill-pressed"
-          } ${menuOpen || selected ? "" : "opacity-0 group-hover:opacity-100"}`}
+          className={`flex h-6 w-7 items-center justify-center rounded-md text-label-secondary hover:bg-fill active:bg-fill-pressed ${menuOpen || selected ? "" : "opacity-0 group-hover:opacity-100"}`}
         >
           <MoreIcon />
         </button>

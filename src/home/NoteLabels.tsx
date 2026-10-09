@@ -15,13 +15,9 @@ const GAP = 4;
 export function NoteLabels({
   noteType,
   tags,
-  onAccent = false,
 }: {
   noteType: string | null;
   tags: string[];
-  /// The row is selected: each label gets a solid surface, so it keeps its
-  /// contrast on the accent colour.
-  onAccent?: boolean;
 }) {
   const area = useRef<HTMLDivElement>(null);
   const count = (noteType === null ? 0 : 1) + tags.length;
@@ -61,7 +57,6 @@ export function NoteLabels({
   const shown = Math.min(fit.shown, count);
   const names = [...(noteType === null ? [] : [typeName(noteType)]), ...tags.map(tagName)];
   const hidden = names.slice(shown);
-  const surface = onAccent ? "rounded-[5px] bg-group" : "";
   const items = [
     ...(noteType === null ? [] : [<TypeLabel key="type" name={noteType} />]),
     ...tags.map((tag) => <TagLabel key={`tag:${tag}`} text={tag} />),
@@ -74,7 +69,7 @@ export function NoteLabels({
           data-index={i}
           // A label never shrinks. The first label is at most as wide as
           // the space less "+N", so a long name shows in part.
-          className={`flex shrink-0 ${i === 0 && count > 1 ? "max-w-[calc(100%-40px)]" : "max-w-full"} ${surface} ${
+          className={`flex shrink-0 ${i === 0 && count > 1 ? "max-w-[calc(100%-40px)]" : "max-w-full"} ${
             i < shown ? "" : "invisible"
           }`}
         >
@@ -86,9 +81,7 @@ export function NoteLabels({
           title={hidden.join(", ")}
           aria-label={`${hidden.length} more: ${hidden.join(", ")}`}
           style={{ left: fit.more }}
-          className={`absolute top-1/2 -translate-y-1/2 rounded-[5px] px-[6px] py-[2px] text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap ${
-            onAccent ? "bg-white/20 text-white" : "bg-fill text-label-secondary"
-          }`}
+          className={`absolute top-1/2 -translate-y-1/2 rounded-[5px] px-[6px] py-[2px] text-[0.875rem] leading-[1.4] font-medium whitespace-nowrap bg-fill text-label-secondary`}
         >
           +{hidden.length}
         </span>

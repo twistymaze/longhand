@@ -23,6 +23,7 @@
   --negative: #d70015;
   --row-hover: rgb(70 50 20 / 0.05);
   --sidebar-selected: rgb(70 50 20 / 0.085);
+  --row-selected: rgb(70 50 20 / 0.12);
   --pane: #faf9f6;
 }
 
@@ -46,6 +47,7 @@
     --negative: #ff453a;
     --row-hover: rgb(255 245 225 / 0.055);
     --sidebar-selected: rgb(255 245 225 / 0.1);
+    --row-selected: rgb(255 245 225 / 0.14);
     --pane: #22201c;
   }
 }
@@ -77,6 +79,7 @@
   --color-negative: var(--negative);
   --color-row-hover: var(--row-hover);
   --color-sidebar-selected: var(--sidebar-selected);
+  --color-row-selected: var(--row-selected);
   --color-pane: var(--pane);
 }
 
