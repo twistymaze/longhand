@@ -224,6 +224,12 @@ impl SharedFields {
         }
     }
 
+    /// The type prompt choices (KTD1). A map of a form that this build does
+    /// not know gives no choices.
+    pub fn type_prompt_map(&self) -> BTreeMap<String, String> {
+        self.note_type_prompts.known().cloned().unwrap_or_default()
+    }
+
     /// The file comes from a newer build, so it can hold settings that
     /// this build does not show.
     pub fn newer_schema(&self) -> bool {

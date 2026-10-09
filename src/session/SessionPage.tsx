@@ -20,6 +20,7 @@ import {
   type SessionDetail,
   type SessionDocument,
   type SummaryPromptEntry,
+  type SummaryView,
   type WaitingPart,
 } from "../bindings";
 import { rowTitle } from "../home/group";
@@ -131,6 +132,30 @@ export function microphoneItems(
     });
   }
   return items;
+}
+
+/// The type and the prompt name of the offer to regenerate the summary, or
+/// null (R9, KTD4, KTD5). The offer needs a complete summary with a
+/// recorded prompt id, and a type whose prompt is another prompt. The
+/// prompt name is null when the prompt list does not have the prompt.
+function offerFor(
+  summary: SummaryView | null | undefined,
+  entry: { note_type: string | null } | undefined,
+  typePrompts: { types: NoteTypeEntry[]; prompts: SummaryPromptEntry[] } | null,
+): { type: string; prompt: string | null } | null {
+  const offerType =
+    entry && typePrompts?.types.find((t) => (entry.note_type === null ? t.general : !t.general && sameType(t.name, entry.note_type)));
+  return summary &&
+    !summary.stub &&
+    summary.prompt_id &&
+    offerType &&
+    offerType.summary_prompt_id !== "" &&
+    offerType.summary_prompt_id !== summary.prompt_id
+    ? {
+        type: offerType.name,
+        prompt: typePrompts?.prompts.find((p) => p.id === offerType.summary_prompt_id)?.name ?? null,
+      }
+    : null;
 }
 
 function BackChevron() {
@@ -566,25 +591,7 @@ export function SessionPage({
   // regeneration, and a type whose prompt is another prompt (KTD4, KTD5).
   // The conditions are read again at each render, so the offer shows when
   // processing ends and goes when the type changes back.
-  const offerSummary = doc?.summary;
-  const offerType =
-    entry && typePrompts?.types.find((t) => (entry.note_type === null ? t.general : !t.general && sameType(t.name, entry.note_type)));
-  const offer =
-    offerAsked &&
-    phase === "saved" &&
-    !regenerating &&
-    !staleDocument &&
-    offerSummary &&
-    !offerSummary.stub &&
-    offerSummary.prompt_id &&
-    offerType &&
-    offerType.summary_prompt_id !== "" &&
-    offerType.summary_prompt_id !== offerSummary.prompt_id
-      ? {
-          type: offerType.name,
-          prompt: typePrompts?.prompts.find((p) => p.id === offerType.summary_prompt_id)?.name ?? null,
-        }
-      : null;
+  const offer = offerAsked && phase === "saved" && !regenerating && !staleDocument ? offerFor(doc?.summary, entry, typePrompts) : null;
 
   // The note's own live mode decides, not the model selected now (R9). A
   // Transcribe Again run has no live text.

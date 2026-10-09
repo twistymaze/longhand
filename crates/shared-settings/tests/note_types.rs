@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use session_save::naming::TypeNameError;
 use shared_settings::note_types::{
     NoteType, NoteTypeError, Renamed, TypeFolder, add_type, default_after, default_to_save,
-    delete_type, effective_default, effective_types, list_after_edit, list_to_save,
-    prompts_after_edit, prompts_without, rename_type, type_prompt_id,
+    delete_type, effective_default, effective_types, list_after_edit, list_to_save, prompt_choice,
+    prompts_after_edit, prompts_without, rename_type, set_prompt_choice, type_prompt_id,
 };
 
 fn shared(names: &[&str]) -> Vec<String> {
@@ -504,6 +504,34 @@ fn a_type_with_an_invalid_name_has_no_prompt_choice() {
     let types = effective_types(&[], &[folder("CON", 1)]);
     let map = prompt_map(&[("CON", "recap-id")]);
     assert_eq!(type_prompt_id(&map, &types, Some("CON")), None);
+}
+
+#[test]
+fn the_choice_of_a_type_comes_from_its_name_and_validity() {
+    // R1, R18: General is the key "General". A type that is not valid,
+    // such as a folder named "General", has no choice.
+    let map = prompt_map(&[("General", "standup-id"), ("Pathfinder", "recap-id")]);
+    assert_eq!(prompt_choice(&map, None, true), Some("standup-id"));
+    assert_eq!(
+        prompt_choice(&map, Some("pathfinder"), true),
+        Some("recap-id")
+    );
+    assert_eq!(prompt_choice(&map, Some("Pathfinder"), false), None);
+    assert_eq!(prompt_choice(&map, Some("General"), false), None);
+    assert_eq!(prompt_choice(&map, Some("Board"), true), None);
+}
+
+#[test]
+fn a_set_choice_replaces_each_spelling_of_the_name() {
+    // KTD6: one entry for each type.
+    let mut map = prompt_map(&[("pathfinder", "recap-id"), ("Board", "standup-id")]);
+    set_prompt_choice(&mut map, "Pathfinder", Some("other-id"));
+    assert_eq!(
+        map,
+        prompt_map(&[("Pathfinder", "other-id"), ("Board", "standup-id")])
+    );
+    set_prompt_choice(&mut map, "PATHFINDER", None);
+    assert_eq!(map, prompt_map(&[("Board", "standup-id")]));
 }
 
 #[test]

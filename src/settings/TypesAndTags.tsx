@@ -89,11 +89,8 @@ function tagDeleteMessage(t: TagEntry): string {
   return `${notes(t.count)} ${t.count === 1 ? "loses" : "lose"} this tag.`;
 }
 
-/// The row that has the name field open, or null.
-type Edit = { list: "types" | "tags"; name: string } | { list: "add" } | null;
-/// The control that takes the focus after the next render: the ⋯ button
-/// of a row, or the Add Type button.
-type FocusTarget = { list: "types" | "tags"; name: string } | { list: "add" } | null;
+/// A row of a list, or the Add Type row.
+type RowRef = { list: "types" | "tags"; name: string } | { list: "add" };
 
 /// The option value of "Default" in a prompt popup and of General in the
 /// default type popup. No prompt id and no type name is empty.
@@ -113,8 +110,11 @@ export function TypesAndTags({
   // The result of the last merge, for each list.
   const [typeNotice, setTypeNotice] = useState<string | null>(null);
   const [tagNotice, setTagNotice] = useState<string | null>(null);
-  const [editing, setEditing] = useState<Edit>(null);
-  const [focusTo, setFocusTo] = useState<FocusTarget>(null);
+  // The row that has the name field open, or null.
+  const [editing, setEditing] = useState<RowRef | null>(null);
+  // The control that takes the focus after the next render: the ⋯ button
+  // of a row, or the Add Type button.
+  const [focusTo, setFocusTo] = useState<RowRef | null>(null);
   const { ask, dialog } = useConfirm();
   const ids = useId();
   const typeList = useRef<HTMLDivElement>(null);

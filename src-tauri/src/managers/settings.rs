@@ -768,11 +768,7 @@ impl Settings {
                 } => Some(prompt.clone()),
                 _ => None,
             },
-            note_type_prompts: fields
-                .note_type_prompts
-                .known()
-                .cloned()
-                .unwrap_or_default(),
+            note_type_prompts: fields.type_prompt_map(),
             type_prompts: shared
                 .view
                 .type_prompts
@@ -916,24 +912,11 @@ impl Settings {
     /// this computer read applies (R7).
     pub fn summary_prompt_for_type(&self, note_type: Option<&str>) -> summarize::Prompt {
         use session_save::naming::check_type_name;
-        use shared_settings::note_types::{NoteType, type_prompt_id};
-        // The type of a note is in the effective type list, so the list of
-        // only that type gives the same lookup.
-        let types: Vec<NoteType> = note_type
-            .map(|name| NoteType {
-                name: name.to_string(),
-                valid: check_type_name(name).as_deref() == Ok(name),
-                shared: true,
-                notes: 0,
-            })
-            .into_iter()
-            .collect();
-        // A folder named "General" is not valid, and it does not get the
-        // choice of the built-in General.
-        if types.iter().any(|t| !t.valid) {
-            return self.active_summary_prompt_snapshot();
-        }
-        type_prompt_id(&self.note_type_prompts, &types, note_type)
+        use shared_settings::note_types::prompt_choice;
+        // The type of a note is in the effective type list, so the type
+        // name check gives its validity.
+        let valid = note_type.is_none_or(|name| check_type_name(name).as_deref() == Ok(name));
+        prompt_choice(&self.note_type_prompts, note_type, valid)
             .and_then(|id| self.type_prompts.get(id))
             .cloned()
             .unwrap_or_else(|| self.active_summary_prompt_snapshot())

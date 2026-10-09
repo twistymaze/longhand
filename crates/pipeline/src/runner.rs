@@ -463,8 +463,8 @@ impl Runner {
             control.proceed()?;
             let endpoint = endpoint(&env)?;
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
-            // Regenerate uses the prompt of the note type after the
-            // follow of the folder (R3, KTD3), and the current Background
+            // Regenerate uses the prompt of the note type after the row
+            // follows its folder (R3, KTD3), and the current Background
             // (R10, KTD6).
             let resolve = |note_type: Option<&str>| summarize::Prompt {
                 background: env.engines.background(),
@@ -1420,9 +1420,7 @@ fn execute(
             let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             // The type that the note shows when the step starts chooses
             // the prompt (R3, KTD3). A pending type counts.
-            let record = lock(&env.store)
-                .session(id)?
-                .ok_or_else(|| StageError::Failed(format!("the note {id} is not in the store")))?;
+            let record = summarize::note_record(&env.store, id)?;
             let note_type = type_move::shown_type(&record).0;
             let mut prompt = env.engines.summary_prompt(note_type.as_deref());
             // The summary uses the Background of the time that it starts

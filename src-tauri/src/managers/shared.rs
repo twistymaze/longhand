@@ -488,7 +488,7 @@ impl SharedSettingsManager {
                 patch.push(SharedValue::ActiveSummaryPrompt(TOPIC_SUMMARY_ID.into()));
             }
             patch.extend(
-                note_types::prompts_without(&type_prompt_map(fields), id)
+                note_types::prompts_without(&fields.type_prompt_map(), id)
                     .map(SharedValue::NoteTypePrompts),
             );
             if !patch.is_empty() {
@@ -757,16 +757,6 @@ fn fields_in_file(root: &Path) -> Result<file::SharedFields, Failure> {
     }
 }
 
-/// The type prompt choices of the shared fields `fields` (KTD1). A map of
-/// a form that this build does not know gives no choices.
-fn type_prompt_map(fields: &file::SharedFields) -> std::collections::BTreeMap<String, String> {
-    fields
-        .note_type_prompts
-        .known()
-        .cloned()
-        .unwrap_or_default()
-}
-
 /// The default type of the shared fields `fields`. `None` is General.
 fn default_type(fields: &file::SharedFields) -> Option<String> {
     fields.default_note_type.known().cloned().flatten()
@@ -799,7 +789,7 @@ fn prompts_patch(
     to: Option<&str>,
     merged: bool,
 ) -> Option<SharedValue> {
-    note_types::prompts_after_edit(&type_prompt_map(fields), from, to, merged)
+    note_types::prompts_after_edit(&fields.type_prompt_map(), from, to, merged)
         .map(SharedValue::NoteTypePrompts)
 }
 
@@ -818,15 +808,21 @@ impl SharedSettingsManager {
             .active
             .prompt()
             .map_or(TOPIC_SUMMARY_ID, |p| p.id.as_str());
-        let prompt_of = |note_type: Option<&str>| {
-            let choice = view
-                .type_prompt(note_type, &types)
+        // A type that is not valid uses the default prompt (R18). A folder
+        // named "General" is such a type, and it does not get the choice of
+        // the built-in General.
+        let prompt_of = |note_type: Option<&str>, valid: bool| {
+            let choice = fields
+                .note_type_prompts
+                .known()
+                .and_then(|map| note_types::prompt_choice(map, note_type, valid))
+                .and_then(|id| view.type_prompts.get(id))
                 .and_then(|p| p.prompt())
                 .map(|p| p.id.clone());
             let summary_prompt_id = choice.clone().unwrap_or_else(|| default_prompt.into());
             (choice, summary_prompt_id)
         };
-        let (prompt_choice, summary_prompt_id) = prompt_of(None);
+        let (prompt_choice, summary_prompt_id) = prompt_of(None, true);
         let general = NoteTypeEntry {
             name: session_save::naming::GENERAL.to_string(),
             valid: true,
@@ -839,14 +835,7 @@ impl SharedSettingsManager {
         let entries: Vec<NoteTypeEntry> = types
             .iter()
             .map(|t| {
-                // A type that is not valid uses the default prompt (R18).
-                // A folder named "General" is such a type, and it does
-                // not get the choice of the built-in General.
-                let (prompt_choice, summary_prompt_id) = if t.valid {
-                    prompt_of(Some(&t.name))
-                } else {
-                    (None, default_prompt.to_string())
-                };
+                let (prompt_choice, summary_prompt_id) = prompt_of(Some(&t.name), t.valid);
                 NoteTypeEntry {
                     name: t.name.clone(),
                     valid: t.valid,
@@ -926,11 +915,8 @@ impl SharedSettingsManager {
             {
                 return Err(Failure::Refused(NO_SUCH_PROMPT.into()));
             }
-            let mut map = type_prompt_map(&fields);
-            map.retain(|type_name, _| !same_type_name(type_name, &key));
-            if let Some(id) = prompt_id {
-                map.insert(key, id.to_string());
-            }
+            let mut map = fields.type_prompt_map();
+            note_types::set_prompt_choice(&mut map, &key, prompt_id);
             let mut patch = vec![SharedValue::NoteTypePrompts(map)];
             patch.extend(list.map(SharedValue::NoteTypes));
             file::save_settings(root, &patch)?;

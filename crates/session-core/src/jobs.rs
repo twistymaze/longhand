@@ -100,9 +100,9 @@ pub struct RecordingModel {
     pub live_transcript: bool,
 }
 
-/// The active summary prompt that a note recorded when it started, before
-/// the type of a note chose its prompt (KTD15). Nothing writes it now, and
-/// no summary uses it. The columns stay for old data.
+/// The active summary prompt that a note recorded when it started (KTD15).
+/// The store keeps the columns for old data. No code writes them, and no
+/// summary uses them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptSnapshot {
     pub id: String,

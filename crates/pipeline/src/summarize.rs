@@ -23,7 +23,7 @@ use std::time::Duration;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
-use session_core::{Segment, Stage, TitleSource};
+use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Turn};
 use summarize::client::Message;
 use summarize::prompts::{Details, UserText};
@@ -314,16 +314,23 @@ fn input_fingerprint(
     Ok(session_core::folder::fingerprint(&bytes))
 }
 
+/// The store row of the note `session_id`. A note that is not in the
+/// store is a failure.
+pub(crate) fn note_record(
+    store: &SharedStore,
+    session_id: &str,
+) -> Result<SessionRecord, StageError> {
+    lock(store)
+        .session(session_id)?
+        .ok_or_else(|| StageError::Failed(format!("the note {session_id} is not in the store")))
+}
+
 /// The note details as they are now: the type that the app shows, which
 /// can be a pending type (KTD3), the tags, and the title when the user
 /// typed it. A title that processing proposed is not a detail. A run reads
 /// them once, when it starts, and sends that copy with every call.
 fn note_details(store: &SharedStore, session_id: &str) -> Result<Details, StageError> {
-    let Some(record) = lock(store).session(session_id)? else {
-        return Err(StageError::Failed(format!(
-            "the note {session_id} is not in the store"
-        )));
-    };
+    let record = note_record(store, session_id)?;
     Ok(Details {
         note_type: crate::type_move::shown_type(&record).0,
         title: record

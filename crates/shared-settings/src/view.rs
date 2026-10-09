@@ -180,17 +180,8 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         source: root.to_path_buf(),
         settings: file.raw.clone(),
         prompts: prompts.clone(),
-        active_prompt: match &active {
-            ActivePrompt::Custom { prompt, .. } => Some(prompt.clone()),
-            ActivePrompt::BuiltIn(_) | ActivePrompt::Missing(_) => None,
-        },
-        type_prompts: type_prompts
-            .values()
-            .filter_map(|prompt| match prompt {
-                ActivePrompt::Custom { prompt, .. } => Some(prompt.clone()),
-                ActivePrompt::BuiltIn(_) | ActivePrompt::Missing(_) => None,
-            })
-            .collect(),
+        active_prompt: custom_prompt(&active),
+        type_prompts: type_prompts.values().filter_map(custom_prompt).collect(),
         background: background.clone(),
     };
     let view = SharedView {
@@ -207,6 +198,15 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
     Loaded {
         view,
         cache: changed.then_some(new_cache),
+    }
+}
+
+/// The custom prompt of `prompt`, for the cache. A built-in prompt and a
+/// missing prompt give `None`.
+fn custom_prompt(prompt: &ActivePrompt) -> Option<Prompt> {
+    match prompt {
+        ActivePrompt::Custom { prompt, .. } => Some(prompt.clone()),
+        ActivePrompt::BuiltIn(_) | ActivePrompt::Missing(_) => None,
     }
 }
 
@@ -302,13 +302,11 @@ fn resolve(id: &str, scan: Option<&PromptScan>, cache: Option<&Cache>) -> Active
     if let Some(prompt) = summarize::prompts::built_in(id) {
         return ActivePrompt::BuiltIn(prompt);
     }
-    let in_folder = scan.and_then(|scan| scan.get(id).map(|p| (Prompt::from(p), scan)));
+    let in_folder = scan.and_then(|scan| scan.get(id)).map(Prompt::from);
+    let conflicted = scan.is_some_and(|scan| scan.conflicted.contains(id));
     // While the id has a conflict copy, or its file is missing, the text
     // comes from the cache (R14).
-    if let Some((prompt, _)) = in_folder
-        .as_ref()
-        .filter(|(_, scan)| !scan.conflicted.contains(id))
-    {
+    if !conflicted && let Some(prompt) = &in_folder {
         return ActivePrompt::Custom {
             prompt: prompt.clone(),
             from_cache: false,
@@ -321,7 +319,7 @@ fn resolve(id: &str, scan: Option<&PromptScan>, cache: Option<&Cache>) -> Active
         };
     }
     match in_folder {
-        Some((prompt, _)) => ActivePrompt::Custom {
+        Some(prompt) => ActivePrompt::Custom {
             prompt,
             from_cache: false,
         },

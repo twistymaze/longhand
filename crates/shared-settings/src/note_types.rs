@@ -263,13 +263,32 @@ pub fn type_prompt_id<'a>(
     types: &[NoteType],
     note_type: Option<&str>,
 ) -> Option<&'a str> {
-    let name = match note_type.filter(|name| !same_type_name(name, GENERAL)) {
+    match note_type.filter(|name| !same_type_name(name, GENERAL)) {
+        None => prompt_choice(prompts, None, true),
+        Some(name) => {
+            let found = types
+                .iter()
+                .find(|t| t.valid && same_type_name(&t.name, name))?;
+            prompt_choice(prompts, Some(&found.name), true)
+        }
+    }
+}
+
+/// The id of the summary prompt that the type `note_type` chooses in the
+/// map `prompts`, or `None` for "Default" (R1, R18, KTD1). `None` is
+/// General. `valid` tells that the name of the type passes the type name
+/// check, and it has no effect for General. A type that is not valid has
+/// no choice, so a folder named "General" does not get the choice of the
+/// built-in General. The names compare without case.
+pub fn prompt_choice<'a>(
+    prompts: &'a BTreeMap<String, String>,
+    note_type: Option<&str>,
+    valid: bool,
+) -> Option<&'a str> {
+    let name = match note_type {
         None => GENERAL,
-        Some(name) => types
-            .iter()
-            .find(|t| t.valid && same_type_name(&t.name, name))?
-            .name
-            .as_str(),
+        Some(name) if valid => name,
+        Some(_) => return None,
     };
     prompts
         .get(name)
@@ -280,6 +299,20 @@ pub fn type_prompt_id<'a>(
                 .map(|(_, id)| id)
         })
         .map(String::as_str)
+}
+
+/// Set the choice of the type `name` in the map `prompts` to the prompt
+/// `prompt_id`, or to "Default" for `None` (R1, KTD6). An entry of each
+/// other spelling of the name goes.
+pub fn set_prompt_choice(
+    prompts: &mut BTreeMap<String, String>,
+    name: &str,
+    prompt_id: Option<&str>,
+) {
+    prompts.retain(|key, _| !same_type_name(key, name));
+    if let Some(id) = prompt_id {
+        prompts.insert(name.to_string(), id.to_string());
+    }
 }
 
 /// The map `prompts` after the edit of the type `from` (R6, KTD6), or
@@ -306,8 +339,7 @@ pub fn prompts_after_edit(
     });
     let id = id?;
     if let Some(to) = to.filter(|_| !merged) {
-        map.retain(|key, _| !same_type_name(key, to));
-        map.insert(to.to_string(), id);
+        set_prompt_choice(&mut map, to, Some(&id));
     }
     Some(map)
 }
