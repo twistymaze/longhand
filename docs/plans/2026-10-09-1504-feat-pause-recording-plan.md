@@ -41,17 +41,18 @@ Long meetings often have a part that should not be in the note: a break with cas
 
 **Pause and continue**
 
-- R1. While a note records, the user can pause it from the recording bar, and continue it from the same place.
+- R1. While a note records, the user can pause it with a Pause control next to Stop in the page toolbar, and continue it from the same control.
 - R2. While paused, the microphone and Computer audio are closed, and Longhand writes no audio to disk, including the crash-recovery data.
-- R3. Continue records into the same note. The microphone choice and the Computer audio switch keep the values they had before the pause.
+- R3. Continue records into the same note. The microphone choice and the Computer audio switch keep their values, and the user can change them while paused; a change takes effect at Continue.
 - R4. Stop works while paused. Processing then runs over the audio recorded before the pause, as after a usual Stop.
-- R5. Pause is available only while the note records. It is not available while a capture is interrupted, or for a stopped or saved note.
+- R5. Pause is available only while the note records. It is not available while a capture is interrupted, or for a stopped or saved note. If Continue cannot open the microphone, the note becomes interrupted, with the alert and the Resume and Stop choices of an interrupted capture.
 - R6. If Longhand stops unexpectedly while paused, recovery treats the note as stopped at the start of the pause.
 - R7. A pause has no maximum length.
+- R7a. While a note is paused, Longhand is busy as during recording: an update offer stays held, and an update restart waits until Stop.
 
 **Paused state on screen**
 
-- R8. While paused, the recording bar says "Paused", the elapsed time stops, and the Pause control becomes "Continue". Nothing on the bar moves or flashes (U7 attention budget).
+- R8. While paused, the recording bar says "Paused", the elapsed time stops, and the bar shows no level meter. The Pause control becomes "Continue". Nothing on the bar moves or flashes (U7 attention budget).
 - R9. While paused, Home keeps the note as the open-note row. The row says "Paused", its time stops, and its icon is neutral grey. Recording stays red and interrupted stays the caution colour.
 - R10. While paused, the tray title says "Paused" in place of the recording time.
 - R11. A paused note is an open note. New Note stays unavailable until Stop, as during recording.
@@ -59,8 +60,8 @@ Long meetings often have a part that should not be in the note: a break with cas
 
 **Transcript and summary**
 
-- R13. The finished transcript shows a marker at each pause, with the pause duration, for example "Paused · 14 min". The summary model receives the same marker at the same position.
-- R14. The pause marker is different from the marker for time between a Stop and a Resume ("Not recorded for …").
+- R13. The finished transcript shows a marker at each pause that the note continued after, with the pause duration, for example "Paused · 14 min". The summary model receives the same marker at the same position.
+- R14. The pause marker is different from the marker for time between a Stop and a Resume ("Resumed <date>, <time>" in the app, a gap line in `transcript.md`).
 - R15. Processing does not treat a pause as missing audio. Gap fill does not try to transcribe it.
 
 **Shortcuts**
@@ -75,7 +76,7 @@ Long meetings often have a part that should not be in the note: a break with cas
 - AE3. **Covers R6.** Given a paused note, when Longhand quits unexpectedly and the user opens it again, then the note recovers with the audio recorded before the pause and nothing after it.
 - AE4. **Covers R3.** Given a note that records with Computer audio on, when the user pauses and continues, then Computer audio is on again.
 - AE5. **Covers R16, R17.** Given a paused note with Longhand in the background, when the user presses the Pause shortcut, then the note continues. When the user presses the Recording shortcut, then the note stops.
-- AE6. **Covers R14.** Given a saved note with one pause, when the user stops it, resumes it later and stops it again, then the transcript shows a pause marker and a "Not recorded for …" marker, and the two read differently.
+- AE6. **Covers R14.** Given a saved note with one pause, when the user stops it, resumes it later and stops it again, then the transcript shows a pause marker and a "Resumed …" marker, and the two read differently.
 
 ### Scope Boundaries
 
@@ -91,7 +92,7 @@ Long meetings often have a part that should not be in the note: a break with cas
 
 - How the session data records a pause, so that processing, recovery and other computers can tell it from a Stop/Resume gap (R6, R14, R15).
 - The exact marker text in `transcript.md` and in the summary input (R13).
-- Whether the Pause control also goes in an app menu or the tray menu, in addition to the recording bar (R1).
+- Whether the Pause control also goes in an app menu or the tray menu, in addition to the page toolbar (R1).
 - How the live transcript shows the paused state (R12).
 
 ### Sources / Research
