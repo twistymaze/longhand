@@ -89,6 +89,10 @@ The input that a note records from. The user chooses the usual microphone in Set
 ### System audio
 All audio that the computer plays, from any app. A note records it only while its Computer audio switch is on. The UI calls it "Computer audio"; "system audio" is the term in code and docs only. A note with system audio saves the raw microphone on the left channel and the raw system audio on the right. The microphone is the clock: the system audio is padded or trimmed to match it. On macOS the capture is a global process tap that leaves out Longhand's own sounds and the known mixer apps (apps that play the audio of other apps again, often with the microphone in it), and needs the Screen & System Audio Recording permission. On Windows it is a loopback of one output device, which follows the device where another app plays.
 
+### Pause
+The state of a recording note that captures nothing for a time, by the user's choice. The microphone and the system audio are closed, and no audio, not even recovery data, goes to disk. Continue records into the same note; the UI does not call it Resume, because Resume records into a stopped note. A paused note is still open: processing starts only at Stop. The transcript and the summary input mark each pause with its duration. A pause is not a gap: gap fill does not transcribe it.
+*Avoid:* "pause" for a silence in speech (say silence)
+
 ### Echo removal
 The processing step after Stop that removes the system audio that the microphone heard from the speakers. It changes only the audio that processing uses, never the saved recording. It is distinct from the echo gate, which only leaves out microphone chunks that are mostly echo from the live mix during recording.
 
@@ -113,7 +117,7 @@ A span of audio that the speaker model analyzes on its own, with its own speaker
 The text that a streaming recognition model makes during recording. It shows in the Transcript tab when the selected model supports live transcription and the note uses that mode. Live text and speaker labels can be provisional. The runtime can revise them before finalization. Compatible durable results are reused after Stop; missing or invalid results require processing. Live speaker analysis is a separate choice and can run with an offline transcription model.
 
 ### Part
-A span of a live transcript that the app saves as one checkpoint. A part ends at the first pause of at least 600 ms after 4 minutes, and always at 8 minutes. The live stream then starts again for the next part.
+A span of a live transcript that the app saves as one checkpoint. A part ends at the first silence of at least 600 ms after 4 minutes, and always at 8 minutes. The live stream then starts again for the next part.
 
 ### Gap
 Audio of a session that has no live transcript: a span that the live transcript missed because it fell behind, failed or stopped, or a part that did not save before a crash. After Stop, recognition transcribes only the gaps in batch ("gap fill").
