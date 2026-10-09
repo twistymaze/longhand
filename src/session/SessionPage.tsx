@@ -708,7 +708,6 @@ export function SessionPage({
               present={entry !== undefined}
               noteType={entry?.note_type ?? null}
               tags={entry?.tags ?? []}
-              moveWaits={entry?.type_move_waits ?? false}
               recording={phase === "recording"}
               onNotice={setNotice}
               onChanged={() => void sessions.refresh()}

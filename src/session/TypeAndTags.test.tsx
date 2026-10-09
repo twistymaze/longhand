@@ -42,7 +42,6 @@ function renderRow(props: Props) {
       present
       noteType={p.noteType}
       tags={p.tags}
-      moveWaits={false}
       recording={p.recording ?? false}
       onNotice={onNotice}
       onChanged={onChanged}
@@ -98,29 +97,22 @@ describe("TypeAndTags", () => {
     expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "s1", noteType: null });
   });
 
-  test("a busy note shows the new type and says that the folder moves later", async () => {
-    mockRow({ set_note_type: () => ({ kind: "later" }) });
-    const { user, onNotice } = renderRow({ noteType: null, tags: [] });
-    await user.click(typeButton());
-    await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
-    await waitFor(() => expect(typeButton().textContent).toContain("Pathfinder"));
-    expect(onNotice).toHaveBeenLastCalledWith({
-      tone: "caution",
-      text: "The type changed. The folder moves when the note is free.",
+  // The app moves the folder later without help: the user gets no notice.
+  for (const [what, result] of [
+    ["a busy note", { kind: "later" }],
+    ["a folder that could not move now", { kind: "kept", message: "the folder is in use" }],
+  ] as const) {
+    test(`${what} shows the new type and no notice`, async () => {
+      mockRow({ set_note_type: () => result });
+      const { user, onNotice } = renderRow({ noteType: null, tags: [] });
+      await user.click(typeButton());
+      await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
+      await waitFor(() => expect(typeButton().textContent).toContain("Pathfinder"));
+      await waitFor(() => expect(onNotice).toHaveBeenCalled());
+      expect(onNotice).toHaveBeenLastCalledWith(null);
+      expect(typeButton().getAttribute("title")).toBeNull();
     });
-  });
-
-  test("a folder that could not move gives the reason", async () => {
-    mockRow({ set_note_type: () => ({ kind: "kept", message: "the folder is in use" }) });
-    const { user, onNotice } = renderRow({ noteType: null, tags: [] });
-    await user.click(typeButton());
-    await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
-    await waitFor(() => expect(onNotice).toHaveBeenCalled());
-    expect(onNotice).toHaveBeenLastCalledWith({
-      tone: "caution",
-      text: "The type changed. The folder moves later. The folder is in use.",
-    });
-  });
+  }
 
   test("a refused type change shows the error and keeps the type", async () => {
     mockRow({

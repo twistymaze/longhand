@@ -20,16 +20,11 @@ import type { Notice } from "./TitleField";
 
 type View = { noteType: string | null; tags: string[] };
 
-/// The notice for the result of a type change, or null when the user
-/// needs to know nothing.
+/// The notice for the result of a type change: only an error. A folder
+/// move that waits or must try again gets no notice, because the app
+/// moves the folder later without help (CLAUDE.md, UI design).
 function typeNotice(result: Awaited<ReturnType<typeof commands.setNoteType>>): Notice | null {
   if (result.status === "error") return { tone: "negative", text: sentence(result.error) };
-  if (result.data.kind === "later") {
-    return { tone: "caution", text: "The type changed. The folder moves when the note is free." };
-  }
-  if (result.data.kind === "kept") {
-    return { tone: "caution", text: `The type changed. The folder moves later. ${sentence(result.data.message)}` };
-  }
   return null;
 }
 
@@ -54,7 +49,6 @@ export function TypeAndTags({
   present,
   noteType,
   tags,
-  moveWaits,
   recording,
   onNotice,
   onChanged,
@@ -65,8 +59,6 @@ export function TypeAndTags({
   /// The type that the app shows (`SessionEntry.note_type`).
   noteType: string | null;
   tags: string[];
-  /// The home folder moves to the folder of the type later.
-  moveWaits: boolean;
   /// The note records now: changes from elsewhere wait (R17).
   recording: boolean;
   onNotice: (notice: Notice | null) => void;
@@ -207,7 +199,6 @@ export function TypeAndTags({
           type="button"
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          title={moveWaits ? "The folder moves when the note is free." : undefined}
           onClick={(e) => {
             clearSelection();
             // WKWebView does not focus a clicked button.

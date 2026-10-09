@@ -1618,7 +1618,7 @@ describe("SessionPage type and tags row", () => {
     expect(within(typeRow()).getByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();
   });
 
-  test("a type change on a busy note shows the new type and says that the folder moves later", async () => {
+  test("a type change on a busy note shows the new type and no folder notice", async () => {
     const e = entry("p", { state: "processing", stage: "transcribe" });
     const tauri = mockPage(e, {}, { set_note_type: () => ({ kind: "later" }) });
     const sessions = sessionsOf([e]);
@@ -1626,10 +1626,11 @@ describe("SessionPage type and tags row", () => {
     const user = userEvent.setup();
     await user.click(within(typeRow()).getByRole("button", { name: "Type: General" }));
     await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
-    expect(await screen.findByText("The type changed. The folder moves when the note is free.")).toBeTruthy();
-    expect(within(typeRow()).getByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();
+    expect(await within(typeRow()).findByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();
     expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "p", noteType: "Pathfinder" });
-    expect(sessions.refresh).toHaveBeenCalled();
+    await waitFor(() => expect(sessions.refresh).toHaveBeenCalled());
+    expect(screen.queryByText(/The type changed/)).toBeNull();
+    expect(screen.queryByText(/The folder moves/)).toBeNull();
   });
 
   test("text typed in + Tag never reaches My Notes", async () => {

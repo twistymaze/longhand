@@ -534,8 +534,9 @@ describe("Home", () => {
     ).toEqual([{ sessionId: "s", title: "" }]);
   });
 
-  test("a folder that keeps its old name shows the message", async () => {
-    mockTauri({
+  // The app renames the folder later without help: the user gets no message.
+  test("a folder that keeps its old name for now shows no message", async () => {
+    const tauri = mockTauri({
       session_document: () => document("Text."),
       session_detail: () => detail(entry("s"), null),
       rename_session: () => ({
@@ -551,9 +552,31 @@ describe("Home", () => {
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.clear(screen.getByRole("textbox", { name: "Title" }));
     await user.keyboard("New{Enter}");
-    expect(
-      await screen.findByText(/The folder is open in another app/),
-    ).toBeTruthy();
+    await waitFor(() =>
+      expect(tauri.calls.some((c) => c.cmd === "rename_session")).toBe(true),
+    );
+    await act(async () => {});
+    expect(screen.queryByText(/open in another app/)).toBeNull();
+    expect(screen.queryByText(/kept its old name/)).toBeNull();
+  });
+
+  test("a rename that fails shows the error", async () => {
+    mockTauri({
+      session_document: () => document("Text."),
+      session_detail: () => detail(entry("s"), null),
+      rename_session: () => {
+        throw "the note was not found";
+      },
+    });
+    renderHome({ entries: [entry("s", { title: "Old title" })] });
+    const user = userEvent.setup();
+    await user.click(
+      within(row("Old title")).getByRole("button", { name: "Actions" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.keyboard("New{Enter}");
+    expect(await screen.findByText("The note was not found.")).toBeTruthy();
   });
 
   // Covers AE6, R16.
