@@ -594,6 +594,22 @@ pub fn set_default_note_type(
     Ok(shared.note_types(&folders))
 }
 
+/// Choose the summary prompt of a note type, or "Default" for `None` (R1,
+/// R2). The name "General" is General.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn set_note_type_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    name: String,
+    prompt_id: Option<String>,
+) -> Result<NoteTypeList, String> {
+    let folders = storage_folders(&app)?;
+    let list = shared.set_note_type_prompt(&name, prompt_id.as_deref(), &folders)?;
+    settings::emit_settings_changed(&app);
+    Ok(list)
+}
+
 /// What a type rename, merge or delete did (R6, R31).
 #[derive(Serialize, Type)]
 pub struct NoteTypeEdit {

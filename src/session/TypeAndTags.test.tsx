@@ -8,10 +8,10 @@ import { TypeAndTags } from "./TypeAndTags";
 
 const typeList: NoteTypeList = {
   types: [
-    { name: "General", valid: true, shared: false, notes: 2, general: true },
-    { name: "One on One", valid: true, shared: true, notes: 4, general: false },
-    { name: "Pathfinder", valid: true, shared: true, notes: 30, general: false },
-    { name: "Bad:Name", valid: false, shared: false, notes: 1, general: false },
+    { name: "General", valid: true, shared: false, notes: 2, general: true, prompt_choice: null, summary_prompt_id: "topic-summary" },
+    { name: "One on One", valid: true, shared: true, notes: 4, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
+    { name: "Pathfinder", valid: true, shared: true, notes: 30, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
+    { name: "Bad:Name", valid: false, shared: false, notes: 1, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
   ],
   default_type: null,
 };
@@ -132,7 +132,7 @@ describe("TypeAndTags", () => {
     const tauri = mockRow({
       add_note_type: (args) => ({
         ...typeList,
-        types: [...typeList.types, { name: args.name as string, valid: true, shared: true, notes: 0, general: false }],
+        types: [...typeList.types, { name: args.name as string, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" }],
       }),
     });
     const { user } = renderRow({ noteType: null, tags: [] });
@@ -277,7 +277,7 @@ describe("TypeAndTags", () => {
     const tauri = mockRow({ note_types: () => list });
     const { user } = renderRow({ noteType: null, tags: [] });
     await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "note_types").length).toBe(1));
-    list = { ...typeList, types: [{ name: "Standup", valid: true, shared: true, notes: 0, general: false }] };
+    list = { ...typeList, types: [{ name: "Standup", valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" }] };
     await act(() => tauri.emit("settings-changed", { settings: {} }));
     await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "note_types").length).toBe(2));
     await user.click(typeButton());
@@ -291,7 +291,7 @@ describe("TypeAndTags", () => {
     await waitFor(() => expect(reads).toHaveLength(1));
     await act(() => tauri.emit("settings-changed", { settings: {} }));
     await waitFor(() => expect(reads).toHaveLength(2));
-    const one = (name: string): NoteTypeList => ({ types: [{ name, valid: true, shared: true, notes: 0, general: false }], default_type: null });
+    const one = (name: string): NoteTypeList => ({ types: [{ name, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" }], default_type: null });
     await act(async () => reads[1](one("New")));
     await act(async () => reads[0](one("Old")));
     await act(() => new Promise((r) => setTimeout(r, 20)));
@@ -312,7 +312,7 @@ describe("TypeAndTags", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
     await act(async () =>
-      finish({ ...typeList, types: [...typeList.types, { name: "Customer Call", valid: true, shared: true, notes: 0, general: false }] }),
+      finish({ ...typeList, types: [...typeList.types, { name: "Customer Call", valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" }] }),
     );
     await act(() => new Promise((r) => setTimeout(r, 20)));
     expect(tauri.calls.some((c) => c.cmd === "set_note_type")).toBe(false);

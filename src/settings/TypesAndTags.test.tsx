@@ -13,10 +13,10 @@ const key = (text: string) => text.trim().replace(/\s*::\s*/g, "::").toLowerCase
 /// backend does. A rename onto another type or tag merges the two.
 function backend(over: Record<string, CommandHandler> = {}) {
   let types: NoteTypeEntry[] = [
-    { name: "General", valid: true, shared: false, notes: 5, general: true },
-    { name: "Pathfinder", valid: true, shared: true, notes: 30, general: false },
-    { name: "Projects", valid: true, shared: true, notes: 4, general: false },
-    { name: "Bad:Name", valid: false, shared: false, notes: 2, general: false },
+    { name: "General", valid: true, shared: false, notes: 5, general: true, prompt_choice: null, summary_prompt_id: "topic-summary" },
+    { name: "Pathfinder", valid: true, shared: true, notes: 30, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
+    { name: "Projects", valid: true, shared: true, notes: 4, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
+    { name: "Bad:Name", valid: false, shared: false, notes: 2, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
   ];
   let defaultType: string | null = null;
   let tags: TagEntry[] = [
@@ -30,7 +30,7 @@ function backend(over: Record<string, CommandHandler> = {}) {
     add_note_type: ({ name }) => {
       const n = name as string;
       if (types.some((t) => same(t.name, n))) throw "A type with this name already exists.";
-      types = [...types, { name: n, valid: true, shared: true, notes: 0, general: false }];
+      types = [...types, { name: n, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" }];
       return list();
     },
     set_default_note_type: ({ name }) => {
@@ -134,8 +134,8 @@ describe("TypesAndTags", () => {
     backend({
       note_types: () => ({
         types: [
-          { name: "General", valid: true, shared: false, notes: 1, general: true },
-          { name: "general", valid: false, shared: false, notes: 2, general: false },
+          { name: "General", valid: true, shared: false, notes: 1, general: true, prompt_choice: null, summary_prompt_id: "topic-summary" },
+          { name: "general", valid: false, shared: false, notes: 2, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" },
         ],
         default_type: null,
       }),
@@ -321,7 +321,7 @@ describe("TypesAndTags", () => {
 });
 
 const typesNamed = (...names: string[]): NoteTypeList => ({
-  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0, general: false })),
+  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" })),
   default_type: null,
 });
 const settle = () => act(() => new Promise((r) => setTimeout(r, 20)));
