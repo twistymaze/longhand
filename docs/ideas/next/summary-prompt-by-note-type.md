@@ -4,7 +4,8 @@ description: "The type of a note chooses its summary prompt: a recap for Pathfin
 area: transcript-and-summary
 added: 2026-09-23
 source: "the retired FUTURE-IDEAS.md; changed from 'summary kinds chosen by folder' in the idea review of 2026-09-28"
-related: [summary-prompts, note-folders]
+related: [summary-prompts, note-folders, prompt-usage-in-summary-prompts]
+plan: docs/plans/2026-10-09-0715-feat-summary-prompt-by-note-type-plan.md
 ---
 
 # A summary prompt for each type of note
@@ -20,3 +21,4 @@ One summary shape does not fit every kind of note. The walking skeleton used one
 ## Notes / Current state
 - Saved summary prompts shipped ([done/summary-prompts.md](../done/summary-prompts.md)): Settings holds a list of named prompts that control the output, with one active prompt for the whole app. This idea adds the choice of a prompt for each note, from its type.
 - Open questions: what happens when a note has no type (the app-wide prompt); and whether the user can change the type after the summary exists (Regenerate with the new prompt).
+- Brainstormed on 2026-10-09. The plan answers both open questions: General and each type set to "Default" use the default prompt, and a type change after a summary offers a regeneration. The plan also redesigns the Types and Tags pane: plain-text names, a prompt popup on each type, and a ⋯ menu for Rename and Delete.

@@ -87,7 +87,7 @@ The current summary has one fixed shape: an overview, then "Key points" with a `
 
 ### Scope Boundaries
 
-- Choosing the prompt from the destination folder. This is the existing idea `docs/ideas/someday/summary-prompt-by-note-type.md`, and it builds on this list.
+- Choosing the prompt from the destination folder. This is the existing idea `docs/ideas/next/summary-prompt-by-note-type.md`, and it builds on this list.
 - Choosing a prompt for one note at Regenerate time, or before a recording.
 - Carrying context from the previous session (now part of `docs/ideas/someday/agentic-summary.md`).
 - Editing the title prompt, and placeholders or variables in prompt text.

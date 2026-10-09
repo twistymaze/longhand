@@ -167,7 +167,7 @@ This plan covers note types with type folders, and tags with the Home filter. Th
 
 - Suggested tags ([suggested-tags](../ideas/someday/suggested-tags.md))
   - Depends on this plan: the summary needs the tag list and the note type list to suggest from.
-- A summary prompt for each type of note ([summary-prompt-by-note-type](../ideas/someday/summary-prompt-by-note-type.md))
+- A summary prompt for each type of note ([summary-prompt-by-note-type](../ideas/next/summary-prompt-by-note-type.md))
   - Depends on this plan: the note type of R1 is the "type" that idea needs.
 - Search the library ([library-and-browsing](../ideas/someday/library-and-browsing.md))
   - Shares the Home list and the filter bar. Still to decide: whether search uses the filter bar.

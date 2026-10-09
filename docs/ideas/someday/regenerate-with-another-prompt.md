@@ -18,4 +18,4 @@ Sometimes one note needs a different summary shape. Now the user must change the
 ## Notes / Current state
 - Saved summary prompts shipped ([done/summary-prompts.md](../done/summary-prompts.md)): Settings holds named prompts and one active prompt for the whole app.
 - The note menu has Regenerate Summary (`src/session/SessionPage.tsx`), which calls `regenerateSummary(id)` with the active prompt. This idea adds a prompt argument.
-- Open question: does the note remember the prompt it used, so that a later plain Regenerate uses the same prompt? This overlaps with [summary-prompt-by-note-type](summary-prompt-by-note-type.md), where the type of a note chooses its prompt.
+- Open question: does the note remember the prompt it used, so that a later plain Regenerate uses the same prompt? This overlaps with [summary-prompt-by-note-type](../next/summary-prompt-by-note-type.md), where the type of a note chooses its prompt.
