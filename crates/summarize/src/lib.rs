@@ -16,7 +16,7 @@ pub mod models;
 pub mod prompts;
 pub mod tokens;
 
-pub use chunk::{Chunk, Turn};
+pub use chunk::{Chunk, Line, Turn};
 pub use client::{Client, Completion, Endpoint, Limits, SummarizeError};
 pub use context::{Budget, BudgetSource};
 pub use models::{ModelList, list_models};

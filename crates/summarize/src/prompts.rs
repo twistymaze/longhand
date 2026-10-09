@@ -32,7 +32,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::chunk::{Chunk, Turn, render_turn};
+use crate::chunk::{Chunk, Line, render_line};
 use crate::client::Message;
 
 /// A summary prompt: a name, the text that goes into the final call and the
@@ -595,10 +595,28 @@ fn final_system(background: &Background, rules: &[&str], text: &str) -> Message 
     }
 }
 
+/// The rule that tells the model what a pause line is. The user message
+/// holds it directly before the transcript block, only when that block
+/// holds a pause line. Input with no pause changes no byte.
+pub const PAUSE_RULE: &str = "A line such as \"--- pause 00:14:00 ---\" marks a \
+pause: time that was not recorded, with its length. The parts of the meeting \
+before and after a pause line are separate parts of the meeting.";
+
+/// The transcript block for `lines`, after [`PAUSE_RULE`] when a line is a
+/// pause line.
+fn transcript_block(attributes: &str, lines: &[Line]) -> String {
+    let block = block("transcript", attributes, lines.iter().map(render_line));
+    if lines.iter().any(|l| matches!(l, Line::Pause { .. })) {
+        format!("{PAUSE_RULE}\n{block}")
+    } else {
+        block
+    }
+}
+
 /// The whole transcript in one call: the normal case (KTD16). `text` is
 /// the summary prompt's text.
 pub fn whole<'a>(
-    turns: &[Turn],
+    lines: &[Line],
     notes: &str,
     text: &str,
     user: impl Into<UserText<'a>>,
@@ -611,7 +629,7 @@ pub fn whole<'a>(
             content: format!(
                 "{}{}{}\nSummarize this session.",
                 background.details_block(),
-                block("transcript", "", turns.iter().map(render_turn)),
+                transcript_block("", lines),
                 notes_block(notes)
             ),
         },
@@ -634,11 +652,7 @@ pub fn part<'a>(
             content: format!(
                 "{}{}{}\nWrite notes on part {} of {total}.",
                 background.details_block(),
-                block(
-                    "transcript",
-                    &format!(" part=\"{}\"", index + 1),
-                    chunk.turns.iter().map(render_turn)
-                ),
+                transcript_block(&format!(" part=\"{}\"", index + 1), &chunk.lines),
                 notes_block(notes),
                 index + 1
             ),
@@ -739,7 +753,7 @@ pub fn overhead<'a>(notes: &str, text: &str, user: impl Into<UserText<'a>>) -> u
     let user = user.into();
     let messages = part(
         &Chunk {
-            turns: Vec::new(),
+            lines: Vec::new(),
             first_new: 0,
         },
         9_999,

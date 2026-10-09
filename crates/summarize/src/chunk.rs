@@ -3,7 +3,8 @@
 //! notes document goes whole with every call (KTD6), so the caller takes
 //! its size from the allowance first. A turn longer than the allowance on
 //! its own is split at sentence boundaries, each part keeping the speaker
-//! label and start time.
+//! label and start time. A pause line goes into the same chunk as the line
+//! after it.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,13 +19,30 @@ pub struct Turn {
     pub text: String,
 }
 
-/// The share of a chunk's turns repeated at the start of the next.
+/// One line of the summary input: a turn, or a pause in the note.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Line {
+    Turn(Turn),
+    /// The user paused the note for `duration_ms`. Nothing was recorded in
+    /// that time.
+    Pause {
+        duration_ms: u64,
+    },
+}
+
+impl From<Turn> for Line {
+    fn from(turn: Turn) -> Self {
+        Self::Turn(turn)
+    }
+}
+
+/// The share of a chunk's lines repeated at the start of the next.
 pub const OVERLAP: f64 = 0.10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chunk {
-    pub turns: Vec<Turn>,
-    /// `turns[..first_new]` repeat the end of the previous chunk.
+    pub lines: Vec<Line>,
+    /// `lines[..first_new]` repeat the end of the previous chunk.
     pub first_new: usize,
 }
 
@@ -44,6 +62,13 @@ pub fn render_turn(turn: &Turn) -> String {
     }
 }
 
+pub fn render_line(line: &Line) -> String {
+    match line {
+        Line::Turn(turn) => render_turn(turn),
+        Line::Pause { duration_ms } => format!("--- pause {} ---", format_clock(*duration_ms)),
+    }
+}
+
 /// A line's cost inside a prompt: its text and its newline.
 fn line_cost(line: &str) -> usize {
     estimate(line) + 1
@@ -53,12 +78,29 @@ fn turn_cost(turn: &Turn) -> usize {
     line_cost(&render_turn(turn))
 }
 
-/// Split turns that cannot fit a chunk on their own.
-fn split_long(turns: &[Turn], allowance: usize) -> Vec<Turn> {
-    let mut out = Vec::with_capacity(turns.len());
-    for turn in turns {
+/// The cost of `line` in a chunk. A pause line also costs the pause rule,
+/// which a part with a pause line carries once.
+fn chunk_line_cost(line: &Line) -> usize {
+    match line {
+        Line::Turn(turn) => turn_cost(turn),
+        Line::Pause { .. } => line_cost(&render_line(line)) + line_cost(crate::prompts::PAUSE_RULE),
+    }
+}
+
+/// Split turns that cannot fit a chunk on their own. A turn after pause
+/// lines goes into the same chunk as them, so it gets less room.
+fn split_long(lines: &[Line], allowance: usize) -> Vec<Line> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut pauses = 0; // the cost of the pause lines before this line
+    for line in lines {
+        let Line::Turn(turn) = line else {
+            pauses += chunk_line_cost(line);
+            out.push(line.clone());
+            continue;
+        };
+        let allowance = allowance.saturating_sub(std::mem::take(&mut pauses));
         if turn_cost(turn) <= allowance {
-            out.push(turn.clone());
+            out.push(line.clone());
             continue;
         }
         let empty = Turn {
@@ -79,12 +121,12 @@ fn split_long(turns: &[Turn], allowance: usize) -> Vec<Turn> {
             if fits || part.text.is_empty() {
                 part.text = candidate;
             } else {
-                out.push(std::mem::replace(&mut part, empty.clone()));
+                out.push(std::mem::replace(&mut part, empty.clone()).into());
                 part.text = piece.to_string();
             }
         }
         if !part.text.is_empty() {
-            out.push(part);
+            out.push(part.into());
         }
     }
     out
@@ -135,41 +177,51 @@ fn sentences(text: &str) -> Vec<String> {
     out
 }
 
-/// Pack `turns` into chunks whose rendered turns each cost at most
+/// Pack `lines` into chunks whose rendered lines each cost at most
 /// `allowance` tokens.
-pub fn chunk(turns: &[Turn], allowance: usize) -> Vec<Chunk> {
-    let turns = split_long(turns, allowance);
-    if turns.is_empty() {
+pub fn chunk(lines: &[Line], allowance: usize) -> Vec<Chunk> {
+    let lines = split_long(lines, allowance);
+    if lines.is_empty() {
         return Vec::new();
     }
-    let weight: Vec<usize> = turns.iter().map(turn_cost).collect();
+    let weight: Vec<usize> = lines.iter().map(chunk_line_cost).collect();
+    // The end of the group that starts at line `i`: pause lines go with the
+    // line after them, so a chunk never ends with a pause line.
+    let group_end = |i: usize| {
+        let mut j = i;
+        while j < lines.len() && matches!(lines[j], Line::Pause { .. }) {
+            j += 1;
+        }
+        (j + 1).min(lines.len())
+    };
 
     let mut chunks = Vec::new();
-    let mut start = 0; // first turn this chunk owns
-    let mut overlap_from = 0; // first turn it repeats
-    while start < turns.len() {
-        let mut cost: usize = (overlap_from..start).map(|i| turn_cost(&turns[i])).sum();
+    let mut start = 0; // first line this chunk owns
+    let mut overlap_from = 0; // first line it repeats
+    while start < lines.len() {
+        let mut cost: usize = weight[overlap_from..start].iter().sum();
         let mut end = start;
-        while end < turns.len() && (end == start || cost + weight[end] <= allowance) {
-            // The first owned turn always goes in, so the packing advances.
-            cost += weight[end];
-            end += 1;
+        while end < lines.len() {
+            let next = group_end(end);
+            let add: usize = weight[end..next].iter().sum();
+            // The first owned group always goes in, so the packing advances.
+            if end > start && cost + add > allowance {
+                break;
+            }
+            cost += add;
+            end = next;
         }
         chunks.push(Chunk {
-            turns: turns[overlap_from..end].to_vec(),
+            lines: lines[overlap_from..end].to_vec(),
             first_new: start - overlap_from,
         });
-        // Repeat the last ~10% of this chunk's turns, but never so many that
-        // the next chunk could not own at least one turn of its own.
+        // Repeat the last ~10% of this chunk's lines, but never so many that
+        // the next chunk could not own at least one group of its own.
         let span = end - overlap_from;
         let mut repeat = ((span as f64 * OVERLAP).round() as usize).min(end - start);
         while repeat > 0
-            && end < turns.len()
-            && (end - repeat..end)
-                .map(|i| turn_cost(&turns[i]))
-                .sum::<usize>()
-                + weight[end]
-                > allowance
+            && end < lines.len()
+            && weight[end - repeat..group_end(end)].iter().sum::<usize>() > allowance
         {
             repeat -= 1;
         }

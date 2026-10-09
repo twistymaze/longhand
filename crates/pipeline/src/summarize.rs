@@ -24,7 +24,7 @@ use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, SessionRecord, Stage, TitleSource};
-use summarize::chunk::{self, Chunk, Turn};
+use summarize::chunk::{self, Chunk, Line, Turn};
 use summarize::client::Message;
 use summarize::prompts::{Details, UserText};
 use summarize::{Budget, Client, Endpoint, SummarizeError, context, prompts, tokens};
@@ -228,10 +228,10 @@ fn call_key(layer: usize, index: usize) -> String {
     format!("l{layer:02}-{index:05}")
 }
 
-/// The turns of the `transcript.md` in `folder` (KTD4). The file holds the
-/// final text, so the turns are the same on every computer, also on one
-/// that has no recognition results for the note.
-pub fn transcript_turns(folder: &Path) -> Result<Vec<Turn>, StageError> {
+/// The turns and pause lines of the `transcript.md` in `folder` (KTD4).
+/// The file holds the final text, so the lines are the same on every
+/// computer, also on one that has no recognition results for the note.
+pub fn transcript_turns(folder: &Path) -> Result<Vec<Line>, StageError> {
     turns_of(folder, &read_transcript(folder)?)
 }
 
@@ -267,8 +267,9 @@ fn read_transcript(folder: &Path) -> Result<String, StageError> {
     })
 }
 
-/// The turns of `text`, the `transcript.md` in `folder`.
-fn turns_of(folder: &Path, text: &str) -> Result<Vec<Turn>, StageError> {
+/// The turns and pause lines of `text`, the `transcript.md` in `folder`.
+/// The summary model sees each pause at its position (R13).
+fn turns_of(folder: &Path, text: &str) -> Result<Vec<Line>, StageError> {
     let transcript = Transcript::parse(text).map_err(|e| {
         StageError::Failed(format!(
             "the transcript {} is not valid: {e}",
@@ -283,11 +284,12 @@ fn turns_of(folder: &Path, text: &str) -> Result<Vec<Turn>, StageError> {
                 position_ms,
                 speaker,
                 text,
-            } => Some(Turn {
+            } => Some(Line::Turn(Turn {
                 position_ms,
                 speaker,
                 text,
-            }),
+            })),
+            TranscriptLine::Pause { duration_ms } => Some(Line::Pause { duration_ms }),
             _ => None,
         })
         .collect())
@@ -452,6 +454,7 @@ pub fn produce(
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
     let transcript = read_transcript(folder)?;
     let turns = turns_of(folder, &transcript)?;
+    let said = turns.iter().any(|line| matches!(line, Line::Turn(_)));
     let notes = session_notes(store, session_id)?;
     let raw_notes = lock(store).notes(session_id)?;
     checkpoint::put(
@@ -542,7 +545,7 @@ pub fn produce(
         details: &details,
         progress: &mut *progress,
     };
-    let done = if turns.is_empty() {
+    let done = if !said {
         // Nothing was said (AE16): there is nothing to send.
         None
     } else {
@@ -635,8 +638,8 @@ pub fn produce(
             // The name and the id come from the snapshot, so they always
             // match the text that was sent (R11, KTD4). With nothing said,
             // no prompt made the summary.
-            prompt_name: (!turns.is_empty()).then(|| prompt.name.clone()),
-            prompt_id: (!turns.is_empty()).then(|| prompt.id.clone()),
+            prompt_name: said.then(|| prompt.name.clone()),
+            prompt_id: said.then(|| prompt.id.clone()),
         },
         body: text,
     })
@@ -736,7 +739,7 @@ impl<'a> Calls<'a> {
         }
     }
 
-    fn summarize(&mut self, turns: &[Turn], plan: &Plan) -> Result<Final, Outcome> {
+    fn summarize(&mut self, turns: &[Line], plan: &Plan) -> Result<Final, Outcome> {
         let (text, title_text) = (self.text, self.title_text);
         let user = self.user();
         let room = plan.room(0);
@@ -1023,7 +1026,11 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use super::{Details, clean_title, input_fingerprint, read_transcript};
+    use std::path::Path;
+
+    use summarize::chunk::{Line, Turn};
+
+    use super::{Details, clean_title, input_fingerprint, read_transcript, turns_of};
 
     /// A note with no details has the fingerprint of an earlier build, so a
     /// checkpoint from that build stays valid.
@@ -1055,6 +1062,50 @@ mod tests {
         .unwrap();
         std::fs::write(folder.path().join("transcript.md"), "# Transcript\n").unwrap();
         assert_eq!(read_transcript(folder.path()).unwrap(), "# Transcript\n");
+    }
+
+    fn turn(position_ms: u64, speaker: u32, text: &str) -> Line {
+        Turn {
+            position_ms,
+            speaker: Some(speaker),
+            text: text.into(),
+        }
+        .into()
+    }
+
+    /// Covers R13: the summary input holds the pause line between the
+    /// turns before and after it.
+    #[test]
+    fn a_pause_line_stays_between_its_turns_in_the_summary_input() {
+        let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- pause 00:14:00 ---\n\n- [00:01:00] Speaker 2: After.\n";
+        let lines = turns_of(Path::new("f"), text).unwrap();
+        assert_eq!(
+            lines,
+            vec![
+                turn(0, 1, "Before."),
+                Line::Pause {
+                    duration_ms: 840_000
+                },
+                turn(60_000, 2, "After."),
+            ]
+        );
+        let input = &summarize::prompts::whole(&lines, "", "Summarize.", "")[1].content;
+        assert_eq!(
+            input.matches("\n--- pause 00:14:00 ---\n").count(),
+            1,
+            "{input}"
+        );
+    }
+
+    /// A gap line and a silence line do not go to the summary model.
+    #[test]
+    fn a_transcript_with_a_gap_line_and_no_pause_gives_only_its_turns() {
+        let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- gap 00:00:30 ---\n\n- [00:01:00] Speaker 2: After.\n\n--- silence 00:00:40 ---\n\n";
+        let lines = turns_of(Path::new("f"), text).unwrap();
+        assert_eq!(
+            lines,
+            vec![turn(0, 1, "Before."), turn(60_000, 2, "After.")]
+        );
     }
 
     #[test]
