@@ -159,10 +159,10 @@ describe("SummaryPrompts", () => {
       expect.stringContaining("Team sync"),
     ]);
     const group = screen.getByRole("radiogroup", { name: "Summary prompts" });
-    expect(within(group).getAllByText("In use")).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "Use Topic summary" })).toBeNull();
-    expect(button("Use Play-by-play summary")).toBeTruthy();
-    expect(button("Use Team sync")).toBeTruthy();
+    expect(within(group).getAllByText("Default")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Make default Topic summary" })).toBeNull();
+    expect(button("Make default Play-by-play summary")).toBeTruthy();
+    expect(button("Make default Team sync")).toBeTruthy();
   });
 
   test("a built-in prompt shows read-only text and Duplicate, with no Delete or count", async () => {
@@ -701,18 +701,57 @@ describe("SummaryPrompts", () => {
     expect(row("Topic summary").getAttribute("aria-checked")).toBe("true");
   });
 
+  const typeEntry = (name: string, prompt_choice: string | null, summary_prompt_id = prompt_choice ?? "topic-summary") => ({
+    name, valid: true, shared: true, notes: 0, general: false, prompt_choice, summary_prompt_id,
+  });
+  const noteTypes = (types: ReturnType<typeof typeEntry>[]) => ({ note_types: () => ({ types, default_type: null }) });
+  const deleteCustom = async () => {
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await user.click(button("Delete"));
+    return within(await screen.findByRole("alertdialog"));
+  };
+
+  test("Delete of a prompt that one type uses says that one type uses it", async () => {
+    backend(noteTypes([typeEntry("Standup", "c1"), typeEntry("Review", null, "c1"), typeEntry("Plan", "play-by-play")]));
+    renderPrompts();
+    const dialog = await deleteCustom();
+    expect(dialog.getByText(/^1 type uses this prompt\. It changes to Default\./)).toBeTruthy();
+  });
+
+  test("Delete of a prompt that no type uses shows no type count", async () => {
+    backend(noteTypes([typeEntry("Review", null, "c1"), typeEntry("Plan", "play-by-play")]));
+    renderPrompts();
+    const dialog = await deleteCustom();
+    expect(dialog.getByText("This can’t be undone.")).toBeTruthy();
+    expect(dialog.queryByText(/type/)).toBeNull();
+  });
+
+  test("Delete of a prompt that two types use gives the count", async () => {
+    backend(noteTypes([typeEntry("Standup", "c1"), typeEntry("Review", "c1")]));
+    renderPrompts();
+    const dialog = await deleteCustom();
+    expect(dialog.getByText(/^2 types use this prompt\. They change to Default\./)).toBeTruthy();
+  });
+
+  test("the footer says that the default prompt applies to each type set to Default", async () => {
+    backend();
+    renderPrompts();
+    expect(await screen.findByText(/The default prompt writes the summary of each type set to “Default”/)).toBeTruthy();
+  });
+
   test("clicking a row only selects it, and its Use button makes it the prompt in use", async () => {
     const tauri = backend();
     renderPrompts();
     const user = userEvent.setup();
     await selectCustom(user);
     expect(tauri.calls.some((c) => c.cmd === "activate_summary_prompt")).toBe(false);
-    expect(within(row("Topic summary").parentElement!).getByText("In use")).toBeTruthy();
+    expect(within(row("Topic summary").parentElement!).getByText("Default")).toBeTruthy();
 
-    await user.click(button("Use Team sync"));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Use Team sync" })).toBeNull());
+    await user.click(button("Make default Team sync"));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Make default Team sync" })).toBeNull());
     expect(tauri.calls.find((c) => c.cmd === "activate_summary_prompt")?.args).toEqual({ id: "c1" });
-    expect(button("Use Topic summary")).toBeTruthy();
+    expect(button("Make default Topic summary")).toBeTruthy();
   });
 
   test("an activate error shows inline in the list", async () => {
@@ -723,7 +762,7 @@ describe("SummaryPrompts", () => {
     });
     renderPrompts();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Use Team sync" }));
+    await user.click(await screen.findByRole("button", { name: "Make default Team sync" }));
     expect(await screen.findByText("The settings could not be saved.")).toBeTruthy();
   });
 
@@ -1026,7 +1065,7 @@ describe("shared prompts", () => {
   }
 
   const inUseRow = () =>
-    within(screen.getByRole("radiogroup", { name: "Summary prompts" })).getByText("In use").closest(".settings-row")
+    within(screen.getByRole("radiogroup", { name: "Summary prompts" })).getByText("Default").closest(".settings-row")
       ?.textContent;
 
   test("a change from another computer refreshes the prompt in use", async () => {
@@ -1160,7 +1199,7 @@ describe("shared prompts", () => {
     expect(titleArea().getAttribute("aria-readonly")).toBe("true");
     expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).disabled).toBe(true);
     expect((button("New Prompt") as HTMLButtonElement).disabled).toBe(true);
-    expect((button("Use Team sync") as HTMLButtonElement).disabled).toBe(true);
+    expect((button("Make default Team sync") as HTMLButtonElement).disabled).toBe(true);
     expect((button("Duplicate") as HTMLButtonElement).disabled).toBe(true);
     expect((button("Delete") as HTMLButtonElement).disabled).toBe(true);
   });
