@@ -35,7 +35,6 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   storage_unavailable: false,
   remote: null,
   note_type: null,
-  type_move_waits: false,
   tags: [],
   ...over,
 });
@@ -1455,10 +1454,10 @@ describe("Home: filter by type and tags", () => {
   });
 
   // R22, KTD3.
-  test("a row shows the type, a pending type as the type, and the tags", () => {
+  test("a row shows the type and the tags", () => {
     setup({
       entries: [
-        entry("p", { title: "Planning", note_type: "One on One", type_move_waits: true, tags: ["Person::Nathan", "follow-up"] }),
+        entry("p", { title: "Planning", note_type: "One on One", tags: ["Person::Nathan", "follow-up"] }),
       ],
     });
     const planning = row("Planning");

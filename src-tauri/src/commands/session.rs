@@ -50,9 +50,6 @@ pub struct SessionEntry {
     /// for its move, else the type folder that holds the home folder.
     /// `None` is General.
     pub note_type: Option<String>,
-    /// The home folder moves to the folder of `note_type` later, when no
-    /// computer works on the note (R5).
-    pub type_move_waits: bool,
     /// The tags of the note, as their exact texts (R9, R11).
     pub tags: Vec<String>,
 }
@@ -456,7 +453,6 @@ fn entry(
         SessionState::Processing { .. } => stage,
         _ => None,
     };
-    let (note_type, type_move_waits) = pipeline::type_move::shown_type(record);
     SessionEntry {
         id: record.id.clone(),
         started: record.start(segments).to_rfc3339(),
@@ -467,8 +463,7 @@ fn entry(
         found_speakers: record.found_speakers,
         storage_unavailable: storage_unavailable(status, record),
         remote: status.remote(record).map(RemoteView::from),
-        note_type,
-        type_move_waits,
+        note_type: pipeline::type_move::shown_type(record).0,
         tags: record.tags.clone(),
     }
 }
@@ -2003,10 +1998,7 @@ mod entry_tests {
         };
         let status: Arc<LibraryStatus> = Arc::default();
         let e = entry(&record, &[], None, &status);
-        assert_eq!(
-            (e.note_type.as_deref(), e.type_move_waits),
-            (Some("D&D"), true)
-        );
+        assert_eq!(e.note_type.as_deref(), Some("D&D"));
         assert_eq!(
             e.tags,
             vec!["Person::Nathan".to_string(), "follow-up".into()]
@@ -2017,10 +2009,7 @@ mod entry_tests {
             ..record
         };
         let e = entry(&moved, &[], None, &status);
-        assert_eq!(
-            (e.note_type.as_deref(), e.type_move_waits),
-            (Some("Board"), false)
-        );
+        assert_eq!(e.note_type.as_deref(), Some("Board"));
     }
 
     #[test]

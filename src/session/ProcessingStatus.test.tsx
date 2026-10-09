@@ -17,7 +17,6 @@ const waiting: SessionDetail = {
     storage_unavailable: false,
     remote: null,
     note_type: null,
-    type_move_waits: false,
     tags: [],
   },
   done: ["transcribe", "summarize"],
