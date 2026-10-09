@@ -21,3 +21,7 @@ The user started a new note without a type and changed the type at once. The pag
 ## Notes / Current state
 
 The plan also removes `type_move_waits` from the session entry. A move that keeps failing is a separate idea: [Failed folder move needs attention](../someday/failed-folder-move-needs-attention.md).
+
+## Outcome
+
+Shipped in PR #49.
