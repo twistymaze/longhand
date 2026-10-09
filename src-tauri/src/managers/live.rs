@@ -138,8 +138,9 @@ pub enum LiveState {
     /// The model loads, or the worker waits for the engine.
     Starting,
     Running,
-    /// A gap started: the missing audio is transcribed after Stop.
-    Paused,
+    /// The live transcript fell behind: the missing audio is transcribed
+    /// after Stop.
+    Behind,
     /// No live transcript for this segment: it is transcribed after Stop.
     Unavailable,
     Ended,
@@ -150,7 +151,7 @@ impl From<LiveStatus> for LiveState {
         match status {
             LiveStatus::Starting => Self::Starting,
             LiveStatus::Running => Self::Running,
-            LiveStatus::Paused => Self::Paused,
+            LiveStatus::Behind => Self::Behind,
             LiveStatus::Unavailable => Self::Unavailable,
             LiveStatus::Ended => Self::Ended,
         }

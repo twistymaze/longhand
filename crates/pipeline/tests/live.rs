@@ -384,7 +384,7 @@ fn live_word_times_match_the_assembled_file_before_and_after_a_dropped_second() 
             .statuses
             .lock()
             .unwrap()
-            .contains(&LiveStatus::Paused)
+            .contains(&LiveStatus::Behind)
     );
     // Each saved part was reported with the row that was saved.
     assert_eq!(*r.seen.saved.lock().unwrap(), rows);
@@ -604,7 +604,7 @@ fn forty_five_seconds_of_speech_with_no_new_text_ends_the_part_as_a_gap() {
     assert_eq!(rows[1].end_ms, 60_000);
     assert_eq!(r.script.streams.load(Ordering::SeqCst), 2);
     let statuses = r.seen.statuses.lock().unwrap().clone();
-    assert!(statuses.contains(&LiveStatus::Paused), "{statuses:?}");
+    assert!(statuses.contains(&LiveStatus::Behind), "{statuses:?}");
 }
 
 #[test]

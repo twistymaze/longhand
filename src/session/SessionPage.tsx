@@ -614,7 +614,9 @@ export function SessionPage({
     if (deleted) return null;
     if (phase === "missing") return <AfterStop>This note is no longer in the list.</AfterStop>;
     if (phase === "recording") {
-      return !detail ? null : liveView(capture.status?.recording ? "recording" : "interrupted");
+      // The pause is checked first: a paused note also counts as recording.
+      const mode: LiveMode = capture.status?.paused ? "paused" : capture.status?.recording ? "recording" : "interrupted";
+      return !detail ? null : liveView(mode);
     }
     if (phase === "processing") {
       // The live text stays until the saved transcript is ready. A note

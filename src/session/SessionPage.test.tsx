@@ -1472,6 +1472,21 @@ describe("SessionPage", () => {
       expect(screen.getByText("And then we")).toBeTruthy();
     });
 
+    test("a paused note shows the paused line on Transcript", async () => {
+      const e = entry("rec", { state: "capturing" });
+      mockPage(e, { live_transcript: true, asr_model: "parakeet-unified-en-0.6b" }, { live_transcript: () => ({ ...saidSoFar, state: "behind" }) });
+      renderPage({
+        id: "rec",
+        capture: recordingCapture("rec", { status: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true } }),
+        sessions: sessionsOf([e]),
+      });
+      await act(async () => {});
+      await userEvent.setup().click(tab("Transcript"));
+      expect(await screen.findByText("What we said so far.")).toBeTruthy();
+      expect(screen.getByText("Paused. Nothing is recorded until you continue.")).toBeTruthy();
+      expect(screen.queryByText(/The missing part/)).toBeNull();
+    });
+
     test("offline text still shows independent live speaker analysis", async () => {
       const e = entry("rec", { state: "capturing" });
       const marker = { session_id: "rec", generation: "g", epoch: 0, key: "speakers", revision: 1, rows: [] };

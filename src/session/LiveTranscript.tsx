@@ -27,10 +27,11 @@ import { Marker } from "./Marker";
 
 /// Where the note is:
 /// - recording: the live worker can add text;
+/// - paused: the user paused the note, and nothing records;
 /// - interrupted: the capture stopped before Stop;
 /// - processing: after Stop, until the saved transcript is ready;
 /// - loading: the note is saved, and the page reads the saved transcript.
-export type LiveMode = "recording" | "interrupted" | "processing" | "loading";
+export type LiveMode = "recording" | "paused" | "interrupted" | "processing" | "loading";
 
 /// The view is at the bottom when less than this is below it.
 const BOTTOM_SLACK_PX = 32;
@@ -42,7 +43,10 @@ function line(mode: LiveMode, state: string | null, hasText: boolean): string | 
   if (mode === "processing") return "The final transcript, with speakers, shows here when processing finishes.";
   if (mode === "loading") return "Loading the final transcript…";
   if (mode === "interrupted") return hasText ? "Recording interrupted. The text so far stays." : READY_AFTER_STOP;
-  if (state === "paused") return "Live transcript paused. The missing part is transcribed after you stop.";
+  // Before the live state: a pause ends the segment, and the worker can then
+  // report that it fell behind (R12).
+  if (mode === "paused") return "Paused. Nothing is recorded until you continue.";
+  if (state === "behind") return "Live transcript paused. The missing part is transcribed after you stop.";
   if (state === "unavailable" || state === "ended") {
     return hasText ? "The live transcript stopped. The rest is transcribed after you stop." : READY_AFTER_STOP;
   }
