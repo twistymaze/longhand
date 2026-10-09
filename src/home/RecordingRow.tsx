@@ -1,14 +1,34 @@
-// A recording or interrupted note in the library. The elapsed time updates
-// without animation to keep the recording surface quiet.
+// A recording, paused or interrupted note in the library. The elapsed time
+// updates without animation to keep the recording surface quiet.
 
 import { formatPosition } from "../lib/timeline";
 import { ChevronIcon, WaveformIcon } from "../settings/icons";
 import { NoteLabels } from "./NoteLabels";
 
-export type RecordingNow = { sessionId: string; elapsedMs: number; interrupted: boolean; noteType?: string | null; tags?: string[] };
+export type RecordingNow = {
+  sessionId: string;
+  elapsedMs: number;
+  interrupted: boolean;
+  /// The user paused the note (R9). Its time stops.
+  paused?: boolean;
+  noteType?: string | null;
+  tags?: string[];
+};
+
+/// The icon tint, title and subtitle of each state: red while recording,
+/// the caution colour while interrupted, and neutral grey while paused.
+function look(recording: RecordingNow): { tint: string; title: string; detail: string } {
+  if (recording.interrupted) {
+    return { tint: "text-caution bg-caution/12", title: "Recording interrupted", detail: "Open to resume or stop" };
+  }
+  if (recording.paused) {
+    return { tint: "text-label-secondary bg-fill", title: "Paused", detail: "Open to continue or stop" };
+  }
+  return { tint: "text-negative bg-negative/12", title: "Recording", detail: "In progress" };
+}
 
 export function RecordingRow({ recording, selected, onSelect, onOpen }: { recording: RecordingNow; selected: boolean; onSelect: () => void; onOpen: (id: string) => void }) {
-  const tint = recording.interrupted ? "text-caution bg-caution/12" : "text-negative bg-negative/12";
+  const { tint, title, detail } = look(recording);
   return (
     <button
       type="button"
@@ -27,14 +47,10 @@ export function RecordingRow({ recording, selected, onSelect, onOpen }: { record
         <WaveformIcon className="size-[17px]" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-medium">
-          {recording.interrupted ? "Recording interrupted" : "Recording"}
-        </span>
+        <span className="block truncate font-medium">{title}</span>
         {/* The type and tag labels follow the details (R22). */}
         <span className="flex min-w-0 items-center gap-2">
-          <span className="min-w-0 shrink-0 truncate text-[0.8rem] text-label-secondary">
-            {recording.interrupted ? "Open to resume or stop" : "In progress"}
-          </span>
+          <span className="min-w-0 shrink-0 truncate text-[0.8rem] text-label-secondary">{detail}</span>
           <NoteLabels noteType={recording.noteType ?? null} tags={recording.tags ?? []} />
         </span>
       </span>

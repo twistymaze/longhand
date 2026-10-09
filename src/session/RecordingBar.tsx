@@ -2,14 +2,15 @@
 // It keeps the two tiers of walking-skeleton U7, because a glance is all a
 // participant at the table should spend:
 // - always: the live dot, the elapsed time, the microphone as secondary
-//   text, and the Computer audio toggle (KTD14). Stop is in the page's
-//   toolbar, in the place of Record and Resume;
+//   text, and the Computer audio toggle (KTD14). Pause and Stop are in the
+//   page's toolbar, in the place of Record and Resume. While paused, the
+//   bar says "Paused", the time stops, and the dot is grey;
 // - only while a condition exists: the level meter and the warnings.
 // Nothing in the bar moves: the level bars on the Transcript tab show the
 // input. The warnings appear at once, with no fade: motion would pull the
 // eye.
 
-import { useState } from "react";
+import { type MouseEvent, useState } from "react";
 import { commands, type Readiness, type RecordingStatus, type SpeakerCountSetting } from "../bindings";
 import { features } from "../lib/features";
 import { formatPosition, levelFraction } from "../lib/timeline";
@@ -21,6 +22,7 @@ import { Button, fieldClass, formatBytes } from "../settings/ui";
 
 const statusText: Record<InputStatus, string> = {
   idle: "Recording stopped",
+  paused: "Paused",
   starting: "Starting…",
   capturing: "Recording",
   quiet: "Recording",
@@ -33,15 +35,12 @@ const statusText: Record<InputStatus, string> = {
 /// the microphone hears.
 const showsLevel: InputStatus[] = ["quiet", "stalled", "reconnecting"];
 
-/// A steady dot: red while audio arrives, orange when it does not.
+/// A steady dot: red while audio arrives, orange when it does not, and grey
+/// while the user has paused the note.
 function LiveDot({ input }: { input: InputStatus }) {
   const live = input === "capturing" || input === "quiet" || input === "starting";
-  return (
-    <span
-      aria-hidden
-      className={`size-2 shrink-0 rounded-full ${live ? "bg-negative" : "bg-caution"}`}
-    />
-  );
+  const tint = input === "paused" ? "bg-label-tertiary" : live ? "bg-negative" : "bg-caution";
+  return <span aria-hidden className={`size-2 shrink-0 rounded-full ${tint}`} />;
 }
 
 /// Stop, with the square that marks it on every recorder. The page's
@@ -56,6 +55,38 @@ export function StopButton({ disabled, onClick }: { disabled: boolean; onClick: 
         Stop
       </span>
     </Button>
+  );
+}
+
+/// Pause, or Continue while paused, next to Stop (R1, R8). Pause has the
+/// two bars that mark it on every recorder, in the text colour. Continue
+/// starts the recording again, so it has the red dot of Record and Resume.
+/// Nothing in the control moves.
+export function PauseButton({
+  paused,
+  disabled = false,
+  onClick,
+}: {
+  paused: boolean;
+  disabled?: boolean;
+  onClick: (e: MouseEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <span className="mr-1 inline-flex">
+      <Button disabled={disabled} onClick={onClick}>
+        <span className="inline-flex items-center gap-1.5">
+          {paused ? (
+            <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-negative" />
+          ) : (
+            <span aria-hidden="true" className="flex h-[9px] shrink-0 gap-[2px]">
+              <span className="w-[3px] rounded-[1px] bg-current" />
+              <span className="w-[3px] rounded-[1px] bg-current" />
+            </span>
+          )}
+          {paused ? "Continue" : "Pause"}
+        </span>
+      </Button>
+    </span>
   );
 }
 

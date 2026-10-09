@@ -104,7 +104,12 @@ function MainWindow() {
 
   const open = capture.status?.session_id ?? null;
   const recording = open
-    ? { sessionId: open, elapsedMs: capture.recordedMs, interrupted: !capture.status?.recording }
+    ? {
+        sessionId: open,
+        elapsedMs: capture.recordedMs,
+        interrupted: capture.status?.interruption != null,
+        paused: capture.status?.paused ?? false,
+      }
     : null;
 
   // The keyboard focus goes back to the row that Tab moves to in the list.

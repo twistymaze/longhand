@@ -10,7 +10,7 @@
 // open tab (R17) and the "…" menu. The tabs change at
 // once, with no motion: they are used many times in a session.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   commands,
   type MicrophoneChoice,
@@ -35,7 +35,7 @@ import { useDeleteSession } from "./DeleteSession";
 import { LevelBars } from "./LevelBars";
 import { NotesTab } from "./NotesTab";
 import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
-import { RecordingBar, StopButton } from "./RecordingBar";
+import { PauseButton, RecordingBar, StopButton } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
 import { copyText, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu } from "./SessionMenu";
@@ -379,6 +379,21 @@ export function SessionPage({
     await capture.refresh();
   };
 
+  // Pause, or Continue while paused, next to Stop (R1). It shows only while
+  // the note records or is paused, not while it is interrupted (R5). The
+  // control has no busy state and no motion while the microphone opens:
+  // the commands set a target state, so a second click does no harm
+  // (KTD8). The click focuses the control, because WebKit does not, so the
+  // focus stays on it when its name changes.
+  const pausable = phase === "recording" && capture.status?.session_id === id && capture.status.recording;
+  const paused = capture.status?.paused ?? false;
+  const pauseOrContinue = async (e: MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.focus();
+    const r = paused ? await commands.continueRecording() : await commands.pauseRecording();
+    setNotice(r.status === "error" ? { tone: "negative", text: sentence(r.error) } : null);
+    await capture.refresh();
+  };
+
   // Another computer works on the note (R20, R21, R23). Its notes stay
   // editable; the actions that need the audio wait.
   const remote = entry?.remote ?? detail?.entry.remote ?? null;
@@ -712,7 +727,8 @@ export function SessionPage({
           <SegmentedControl
             label="Show"
             items={visibleTabs.map((t) =>
-              t.value === "transcript" && open && capture.status?.recording
+              // A paused note hears nothing, so it shows no bars (R8).
+              t.value === "transcript" && open && capture.status?.recording && !paused
                 ? { ...t, accessory: <LevelBars levels={capture.levels} input={capture.input} /> }
                 : t,
             )}
@@ -727,6 +743,14 @@ export function SessionPage({
           </div>
         )}
         <div data-tauri-drag-region className="flex items-center justify-end gap-1">
+          {pausable && (
+            // A microphone that is reopened cannot pause until it records.
+            <PauseButton
+              paused={paused}
+              disabled={!paused && capture.status?.reconnecting === true}
+              onClick={(e) => void pauseOrContinue(e)}
+            />
+          )}
           {phase === "recording" && (
             <span className="mr-1 inline-flex">
               <StopButton disabled={stopBusy || !stopReady} onClick={() => void stop()} />

@@ -17,6 +17,8 @@ use crate::window::{open_settings, show_main_window};
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 const OPEN: &str = "Open Longhand";
 const ALERT_TITLE: &str = "Interrupted";
+/// The title while the open note is paused (R10), in place of the time.
+const PAUSED_TITLE: &str = "Paused";
 
 /// The menu item that fronts the window, renamed while an alert is raised.
 struct OpenItem(MenuItem<tauri::Wry>);
@@ -46,6 +48,12 @@ pub fn set_alert(app: &AppHandle, headline: Option<&str>) {
 /// recording time from the next tick, and is empty after a stop.
 pub fn recording_changed(app: &AppHandle, session_id: Option<&str>) {
     update_title(app, |title| title.recording_changed(session_id));
+}
+
+/// The open note paused or continued. While paused, the title says
+/// "Paused" in place of the recording time (R10).
+pub fn recording_paused(app: &AppHandle, paused: bool) {
+    update_title(app, |title| title.set_paused(paused));
 }
 
 /// A capture tick: the title shows the new recorded time once a second.
@@ -146,12 +154,15 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// The text beside the menu-bar icon. An alert title takes precedence over
-/// the recording time; with neither, the title is empty.
+/// "Paused", and "Paused" over the recording time; with none, the title is
+/// empty.
 #[derive(Default)]
 struct TrayTitle {
     alert: bool,
     /// The session now recording, and its last recorded time in whole seconds.
     recording: Option<(String, Option<u64>)>,
+    /// The open note is paused.
+    paused: bool,
     /// The text last given to the tray, so an update that changes nothing
     /// makes no call.
     shown: String,
@@ -169,9 +180,22 @@ impl TrayTitle {
         match session_id {
             // A resume of the same session keeps its time until the next tick.
             Some(id) if self.recording.as_ref().is_some_and(|(r, _)| r == id) => {}
-            Some(id) => self.recording = Some((id.to_string(), None)),
-            None => self.recording = None,
+            Some(id) => {
+                self.recording = Some((id.to_string(), None));
+                self.paused = false;
+            }
+            None => {
+                self.recording = None;
+                self.paused = false;
+            }
         }
+        self.refresh()
+    }
+
+    /// Record a pause or a continue of the open note. Returns the new title
+    /// when it changed.
+    fn set_paused(&mut self, paused: bool) -> Option<String> {
+        self.paused = paused;
         self.refresh()
     }
 
@@ -189,6 +213,9 @@ impl TrayTitle {
     fn text(&self) -> String {
         if self.alert {
             return ALERT_TITLE.to_string();
+        }
+        if self.paused && self.recording.is_some() {
+            return PAUSED_TITLE.to_string();
         }
         match &self.recording {
             Some((_, Some(seconds))) => recording_title(seconds * 1000),
@@ -323,6 +350,42 @@ mod tests {
         assert_eq!(title.set_alert(true), Some(ALERT_TITLE.into()));
         assert_eq!(title.tick("a", 6_000), None);
         assert_eq!(title.set_alert(false), Some("● 0:00:06".into()));
+    }
+
+    // Covers R10.
+    #[test]
+    fn a_paused_note_shows_paused_in_place_of_the_time() {
+        let mut title = TrayTitle::default();
+        title.recording_changed(Some("a"));
+        title.tick("a", 5_000);
+        assert_eq!(title.set_paused(true), Some(PAUSED_TITLE.into()));
+        assert_eq!(PAUSED_TITLE, "Paused");
+        // The pause keeps the note open: the same note changes nothing.
+        assert_eq!(title.recording_changed(Some("a")), None);
+        // A late tick from the closed segment keeps "Paused".
+        assert_eq!(title.tick("a", 6_000), None);
+        assert_eq!(title.set_paused(false), Some("● 0:00:06".into()));
+        assert_eq!(title.tick("a", 7_000), Some("● 0:00:07".into()));
+    }
+
+    #[test]
+    fn a_stop_while_paused_empties_the_title_and_the_next_note_shows_its_time() {
+        let mut title = TrayTitle::default();
+        title.recording_changed(Some("a"));
+        title.tick("a", 5_000);
+        title.set_paused(true);
+        assert_eq!(title.recording_changed(None), Some(String::new()));
+        title.recording_changed(Some("b"));
+        assert_eq!(title.tick("b", 1_000), Some("● 0:00:01".into()));
+    }
+
+    #[test]
+    fn an_alert_takes_precedence_over_paused() {
+        let mut title = TrayTitle::default();
+        title.recording_changed(Some("a"));
+        title.set_paused(true);
+        assert_eq!(title.set_alert(true), Some(ALERT_TITLE.into()));
+        assert_eq!(title.set_alert(false), Some(PAUSED_TITLE.into()));
     }
 
     #[test]

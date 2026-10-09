@@ -1668,7 +1668,9 @@ impl CaptureManager {
         }
         drop(inner);
         log::info!("session {id} paused");
-        // The note stays open: the tray and the page keep the note.
+        // The note stays open: the tray and the page keep the note. The
+        // tray title says "Paused" (R10).
+        crate::tray::recording_paused(app, true);
         changed(app, Some(&id));
         Ok(())
     }
@@ -1683,6 +1685,9 @@ impl CaptureManager {
             return Ok(());
         };
         inner.paused = None;
+        // The tray title shows the time again from the next tick. A failed
+        // open shows the alert title.
+        crate::tray::recording_paused(app, false);
         self.open_next_segment(app, inner, &id, now(), Reopen::Continue)
     }
 

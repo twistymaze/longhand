@@ -29,6 +29,33 @@ const idle: RecordingStatus = {
   recorded_ms: 0,
 };
 
+// A window that reloads while the note is paused gets no ticks, so the
+// time comes from the status.
+test("a window opened while the note is paused shows the recorded time and the paused input", async () => {
+  mockTauri({
+    recording_status: () => ({ ...idle, recording: true, paused: true, session_id: "rec", state: "capturing", recorded_ms: 312_000 }),
+  });
+  const hook = renderHook(() => useCapture());
+  await act(async () => {});
+  expect(hook.result.current.recordedMs).toBe(312_000);
+  expect(hook.result.current.input).toBe("paused");
+  hook.unmount();
+});
+
+// While a segment records, the status holds only the kept segments, so a
+// poll does not move the ticked time back.
+test("a status poll while the note records keeps the time from the ticks", async () => {
+  const tauri = mockTauri({
+    recording_status: () => ({ ...idle, recording: true, session_id: "rec", state: "capturing", recorded_ms: 60_000 }),
+  });
+  const hook = renderHook(() => useCapture());
+  await act(async () => {});
+  await act(async () => { await tauri.emit("capture-tick", { session_id: "rec", recorded_ms: 95_000, peak: 0.5 }); });
+  await act(async () => { await hook.result.current.refresh(); });
+  expect(hook.result.current.recordedMs).toBe(95_000);
+  hook.unmount();
+});
+
 test("recording starts and status polls do not check sound output; capture errors remain", async () => {
   const status = { ...idle, recording: true, session_id: "rec", state: "capturing" };
   const tauri = mockTauri({ recording_status: () => status });

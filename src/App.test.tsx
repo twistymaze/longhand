@@ -124,6 +124,29 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
   });
 
+  // Covers R9, R11, and a window opened while paused.
+  test("a paused note shows on Home as the paused open-note row with the recorded time, and no New Note", async () => {
+    const status = {
+      current: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true, recorded_ms: 312_000 },
+    };
+    mockApp(status, { current: [recordingEntry] });
+    render(<App />);
+    const row = await screen.findByRole("option", { name: /Paused/ });
+    await waitFor(() => expect(row.textContent).toContain("00:05:12"));
+    expect(row.textContent).not.toMatch(/Recording interrupted/);
+    expect(screen.queryByRole("button", { name: /New Note/ })).toBeNull();
+  });
+
+  // Covers R9: an interrupted note keeps its own row.
+  test("an interrupted note shows on Home as Recording interrupted", async () => {
+    const status = {
+      current: { ...idle, session_id: "rec", state: "interrupted", interruption: { headline: "Microphone lost", disk: false } },
+    };
+    mockApp(status, { current: [{ ...recordingEntry, state: "interrupted" }] });
+    render(<App />);
+    expect(await screen.findByRole("option", { name: /Recording interrupted/ })).toBeTruthy();
+  });
+
   // Covers R3: the tray's "Open Longhand" during a recording.
   test("a request to show a session opens its page", async () => {
     const status = { current: { ...idle, session_id: "rec", state: "capturing", recording: true } };

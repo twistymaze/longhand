@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   LiveTranscript,
@@ -570,6 +570,30 @@ describe("SessionPage", () => {
       });
     });
 
+    // Covers R3: the inputs stay editable while paused.
+    test("while paused, the Computer audio toggle and the Microphone menu stay available", async () => {
+      const tauri = mockPage(rec, {}, {
+        list_microphones: () => microphones,
+        set_note_system_audio: () => null,
+      });
+      renderPage({
+        id: "rec",
+        capture: recordingCapture("rec", {
+          status: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true },
+          input: "paused",
+        }),
+        sessions: sessionsOf([rec]),
+      });
+      const toggle = within(bar()).getByRole("button", { name: "Computer audio" }) as HTMLButtonElement;
+      expect(toggle.disabled).toBe(false);
+      const user = userEvent.setup();
+      await user.click(toggle);
+      expect(tauri.calls.find((c) => c.cmd === "set_note_system_audio")?.args).toEqual({ sessionId: "rec", enabled: true });
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      expect(screen.getByRole("menuitem", { name: "Microphone" })).toBeTruthy();
+      expect(screen.getByRole("menuitemcheckbox", { name: "Record Computer Audio" })).toBeTruthy();
+    });
+
     test("with the microphone copy flag, the mixer warning shows", () => {
       mockPage(rec);
       renderPage({
@@ -755,6 +779,83 @@ describe("SessionPage", () => {
     await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
     await userEvent.setup().click(stop);
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true);
+  });
+
+  describe("Pause and Continue", () => {
+    const e = entry("rec", { state: "capturing" });
+    const paused = (over: Partial<Capture> = {}) =>
+      recordingCapture("rec", {
+        status: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true, recorded_ms: 312_000 },
+        input: "paused",
+        recordedMs: 312_000,
+        ...over,
+      });
+    const toolbarButtons = () =>
+      within(screen.getByRole("banner")).getAllByRole("button").map((b) => b.textContent);
+
+    // Covers R1.
+    test("on a recording note, the toolbar shows Pause next to Stop", () => {
+      mockPage(e);
+      renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+      const names = toolbarButtons();
+      expect(names.indexOf("Stop")).toBe(names.indexOf("Pause") + 1);
+      expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    });
+
+    // Covers R1, R8.
+    test("on a paused note, the toolbar shows Continue and Stop, and Continue continues the note", async () => {
+      const tauri = mockPage(e, {}, { continue_recording: () => null });
+      renderPage({ id: "rec", capture: paused(), sessions: sessionsOf([e]) });
+      const names = toolbarButtons();
+      expect(names.indexOf("Stop")).toBe(names.indexOf("Continue") + 1);
+      expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+      await userEvent.setup().click(screen.getByRole("button", { name: "Continue" }));
+      expect(tauri.calls.some((c) => c.cmd === "continue_recording")).toBe(true);
+    });
+
+    // Covers R5.
+    test("on an interrupted note, the toolbar has no Pause or Continue", () => {
+      mockPage(e);
+      renderPage({
+        id: "rec",
+        capture: captureOf({
+          status: { ...idle, session_id: "rec", state: "interrupted", interruption: { headline: "Microphone lost", disk: false } },
+          input: "idle",
+        }),
+        sessions: sessionsOf([e]),
+      });
+      expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    });
+
+    // Covers R8.
+    test("a paused note's recording bar shows Paused, the frozen time, and no level meter", () => {
+      mockPage(e);
+      renderPage({ id: "rec", capture: paused({ levels: [0, 0, 0] }), sessions: sessionsOf([e]) });
+      const bar = screen.getByRole("region", { name: "Recording" });
+      expect(within(bar).getByText("Paused")).toBeTruthy();
+      expect(bar.textContent).toContain("00:05:12");
+      expect(within(bar).queryByRole("img", { name: /Audio level/ })).toBeNull();
+      expect(bar.textContent).not.toMatch(/No audio arriving|Recording/);
+    });
+
+    // The WKWebView lesson: a click does not focus a button, so the click
+    // handler focuses it.
+    test("a click on Pause pauses the note and leaves the focus on the Continue control", async () => {
+      const tauri = mockPage(e, {}, { pause_recording: () => null });
+      const view = renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+      // The editor of a recording takes the focus when its notes load.
+      const editor = await screen.findByRole("textbox", { name: "My Notes" });
+      await waitFor(() => expect(editor.contains(document.activeElement)).toBe(true));
+      const pause = screen.getByRole("button", { name: "Pause" });
+      // A click event with no focus change, as WebKit sends it.
+      fireEvent.click(pause);
+      await act(async () => {});
+      expect(tauri.calls.some((c) => c.cmd === "pause_recording")).toBe(true);
+      view.rerenderWith(paused(), sessionsOf([e]));
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Continue" }));
+    });
   });
 
   test("while recording, Transcript says what comes after Stop, and no text promises a summary", async () => {

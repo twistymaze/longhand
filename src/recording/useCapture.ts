@@ -28,6 +28,10 @@ export function useCapture(): Capture {
     const result = await commands.recordingStatus();
     if (result.status === "ok") {
       setStatus(result.data);
+      // While paused no tick arrives, and the status holds the whole
+      // recorded time. While a segment records, the status does not hold
+      // that segment, so the ticks give the time.
+      if (result.data.paused) setRecordedMs(result.data.recorded_ms);
     }
   }, []);
 
@@ -66,21 +70,24 @@ export function useCapture(): Capture {
   }, [refresh]);
 
   const recording = status?.recording ?? false;
+  const paused = status?.paused ?? false;
 
   // The stall check needs time to pass even when no event arrives. A window
   // opened mid-session starts its stall clock when it first sees the
-  // recording, so an input already dead is still caught.
+  // recording, so an input already dead is still caught. A paused note has
+  // no input to check.
   useEffect(() => {
-    if (!recording) return;
+    if (!recording || paused) return;
     if (startedAt.current === null) startedAt.current = performance.now();
     const timer = window.setInterval(() => setNow(performance.now()), 500);
     return () => window.clearInterval(timer);
-  }, [recording]);
+  }, [recording, paused]);
 
   return {
     status,
     input: inputStatus({
       recording,
+      paused,
       reconnecting: status?.reconnecting ?? false,
       lostReason,
       lastTickAt: lastTickAt.current,
