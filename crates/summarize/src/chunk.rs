@@ -91,14 +91,14 @@ fn chunk_line_cost(line: &Line) -> usize {
 /// lines goes into the same chunk as them, so it gets less room.
 fn split_long(lines: &[Line], allowance: usize) -> Vec<Line> {
     let mut out = Vec::with_capacity(lines.len());
-    let mut pauses = 0; // the cost of the pause lines before this line
+    let mut pause_cost = 0;
     for line in lines {
         let Line::Turn(turn) = line else {
-            pauses += chunk_line_cost(line);
+            pause_cost += chunk_line_cost(line);
             out.push(line.clone());
             continue;
         };
-        let allowance = allowance.saturating_sub(std::mem::take(&mut pauses));
+        let allowance = allowance.saturating_sub(std::mem::take(&mut pause_cost));
         if turn_cost(turn) <= allowance {
             out.push(line.clone());
             continue;

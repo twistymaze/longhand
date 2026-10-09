@@ -1,8 +1,8 @@
 // The saved transcript (R16, R18). Consecutive turns of one speaker show
 // under one label, each paragraph as its own block. A paragraph's time
 // shows while the pointer is on it. A resume shows as a marker with its
-// date and time, and a pause as a marker with its length. The tab opens at the end, where a reader who returns to a
-// session usually continues.
+// date and time, and a pause as a marker with its length. The tab opens
+// at the end, where a reader who returns to a session usually continues.
 
 import { useLayoutEffect, useRef } from "react";
 import type { DocLine } from "../bindings";

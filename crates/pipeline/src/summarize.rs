@@ -228,13 +228,6 @@ fn call_key(layer: usize, index: usize) -> String {
     format!("l{layer:02}-{index:05}")
 }
 
-/// The turns and pause lines of the `transcript.md` in `folder` (KTD4).
-/// The file holds the final text, so the lines are the same on every
-/// computer, also on one that has no recognition results for the note.
-pub fn transcript_turns(folder: &Path) -> Result<Vec<Line>, StageError> {
-    turns_of(folder, &read_transcript(folder)?)
-}
-
 /// The bytes of the `transcript.md` in `folder`, or `None` when the file
 /// is not there. The read has a timeout: a synced folder can hold a file
 /// that does not download.
@@ -269,7 +262,7 @@ fn read_transcript(folder: &Path) -> Result<String, StageError> {
 
 /// The turns and pause lines of `text`, the `transcript.md` in `folder`.
 /// The summary model sees each pause at its position (R13).
-fn turns_of(folder: &Path, text: &str) -> Result<Vec<Line>, StageError> {
+fn lines_of(folder: &Path, text: &str) -> Result<Vec<Line>, StageError> {
     let transcript = Transcript::parse(text).map_err(|e| {
         StageError::Failed(format!(
             "the transcript {} is not valid: {e}",
@@ -453,8 +446,8 @@ pub fn produce(
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
     let transcript = read_transcript(folder)?;
-    let turns = turns_of(folder, &transcript)?;
-    let said = turns.iter().any(|line| matches!(line, Line::Turn(_)));
+    let lines = lines_of(folder, &transcript)?;
+    let said = lines.iter().any(|line| matches!(line, Line::Turn(_)));
     let notes = session_notes(store, session_id)?;
     let raw_notes = lock(store).notes(session_id)?;
     checkpoint::put(
@@ -550,7 +543,7 @@ pub fn produce(
         None
     } else {
         Some(loop {
-            match calls.summarize(&turns, &plan) {
+            match calls.summarize(&lines, &plan) {
                 Ok(done) => break done,
                 Err(Pressure { layer, room }) if shrinks < MAX_SHRINKS => {
                     shrinks += 1;
@@ -739,7 +732,7 @@ impl<'a> Calls<'a> {
         }
     }
 
-    fn summarize(&mut self, turns: &[Line], plan: &Plan) -> Result<Final, Outcome> {
+    fn summarize(&mut self, lines: &[Line], plan: &Plan) -> Result<Final, Outcome> {
         let (text, title_text) = (self.text, self.title_text);
         let user = self.user();
         let room = plan.room(0);
@@ -758,7 +751,7 @@ impl<'a> Calls<'a> {
             return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
         }
         let notes = fit_notes(room, self.notes, text, title_text, user);
-        let whole = prompts::whole(turns, &notes, text, user);
+        let whole = prompts::whole(lines, &notes, text, user);
         let title_reserve = prompts::title_reserve(title_text, user);
         if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
             <= room.limit as usize
@@ -773,7 +766,7 @@ impl<'a> Calls<'a> {
 
         // Too long for one call: parts, then merges until one remains.
         let allowance = chunk_allowance(room, &notes, text, title_text, user);
-        let chunks: Vec<Chunk> = chunk::chunk(turns, allowance);
+        let chunks: Vec<Chunk> = chunk::chunk(lines, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
         for (i, c) in chunks.iter().enumerate() {
@@ -1030,7 +1023,7 @@ mod tests {
 
     use summarize::chunk::{Line, Turn};
 
-    use super::{Details, clean_title, input_fingerprint, read_transcript, turns_of};
+    use super::{Details, clean_title, input_fingerprint, lines_of, read_transcript};
 
     /// A note with no details has the fingerprint of an earlier build, so a
     /// checkpoint from that build stays valid.
@@ -1078,7 +1071,7 @@ mod tests {
     #[test]
     fn a_pause_line_stays_between_its_turns_in_the_summary_input() {
         let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- pause 00:14:00 ---\n\n- [00:01:00] Speaker 2: After.\n";
-        let lines = turns_of(Path::new("f"), text).unwrap();
+        let lines = lines_of(Path::new("f"), text).unwrap();
         assert_eq!(
             lines,
             vec![
@@ -1101,7 +1094,7 @@ mod tests {
     #[test]
     fn a_transcript_with_a_gap_line_and_no_pause_gives_only_its_turns() {
         let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- gap 00:00:30 ---\n\n- [00:01:00] Speaker 2: After.\n\n--- silence 00:00:40 ---\n\n";
-        let lines = turns_of(Path::new("f"), text).unwrap();
+        let lines = lines_of(Path::new("f"), text).unwrap();
         assert_eq!(
             lines,
             vec![turn(0, 1, "Before."), turn(60_000, 2, "After.")]

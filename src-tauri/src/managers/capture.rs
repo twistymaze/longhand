@@ -2055,7 +2055,7 @@ impl CaptureManager {
             speaker,
         } = snapshot;
         let open = self.open_session()?;
-        let (microphone_choice, system_audio, stereo_mark, recorded_ms) = match open.as_ref() {
+        let (microphone_choice, system_audio, stereo_mark, kept_ms) = match open.as_ref() {
             Some((id, _)) => {
                 let store = self.store();
                 let choice = store.capture_choice(id)?;
@@ -2101,7 +2101,7 @@ impl CaptureManager {
             state: open.as_ref().map(|(_, state)| state.name().to_string()),
             recording,
             paused,
-            recorded_ms,
+            recorded_ms: kept_ms,
             processing_waits: recording
                 || app
                     .try_state::<Arc<LiveManager>>()
@@ -3035,12 +3035,7 @@ impl CaptureManager {
             prepared.input.name,
             prepared.fallback
         );
-        let recorded_before: u64 = self
-            .store()
-            .segments(session_id)?
-            .iter()
-            .map(|s| s.duration_ms)
-            .sum();
+        let recorded_before = recorded_ms(&self.store().segments(session_id)?);
         let capture_started_at = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let writer = ChunkedWriter::create(SegmentArgs {
             dir: self.session_dir(session_id).join(RECOVERY_DIR),
