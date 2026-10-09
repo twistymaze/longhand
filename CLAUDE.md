@@ -28,6 +28,13 @@ Invoke `apple-design` before any UI design, implementation, or review. Add skill
 
 The recording surface must not draw participants' attention back to the screen. U7's two-tier rail and attention budget take precedence over motion or ornament.
 
+Show a notice, warning, or error message only when one of these conditions is true:
+
+- The user must do something.
+- Something abnormal or unexpected occurred, and it is likely to be important to the user.
+
+Do not show a message for normal behaviour, for example a folder move that the app does after a recording. Do not show a message for a problem that the app corrects without help. Show it only if the app tries to correct the problem and does not succeed.
+
 ## Language
 
 Code identifiers, comments, logs, docs, plans, and agent guidance follow ASD-STE100. Use short, active sentences, one meaning per word (one sense, not one use), and one term per concept. Use the terms in `CONCEPTS.md`. Use no metaphors.
