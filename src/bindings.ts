@@ -1600,6 +1600,12 @@ general: boolean;
  */
 prompt_choice: string | null; 
 /**
+ * The name of the prompt of `prompt_choice`, from the last copy that
+ * this computer read. Settings shows this name also when the file of
+ * the prompt is missing (R7).
+ */
+prompt_name: string | null; 
+/**
  * The id of the prompt that a summary of the type uses now: the
  * chosen prompt, or the default prompt for "Default" (R3, KTD2).
  */

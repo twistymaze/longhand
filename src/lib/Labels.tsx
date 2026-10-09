@@ -45,7 +45,7 @@ export const GENERAL = "General";
 /// empty prompt id, because the prompt is not known yet.
 export function withGeneral(types: NoteTypeEntry[]): NoteTypeEntry[] {
   if (types.some((t) => t.general)) return types;
-  return [{ name: GENERAL, valid: true, shared: false, notes: 0, general: true, prompt_choice: null, summary_prompt_id: "" }, ...types];
+  return [{ name: GENERAL, valid: true, shared: false, notes: 0, general: true, prompt_choice: null, prompt_name: null, summary_prompt_id: "" }, ...types];
 }
 
 /// The text that VoiceOver reads for a tag, such as "Person: Nathan".

@@ -2028,6 +2028,7 @@ describe("SessionPage regenerate offer", () => {
     notes: 1,
     general,
     prompt_choice: id === "topic-summary" ? null : id,
+    prompt_name: null,
     summary_prompt_id: id,
   });
   const types = [
@@ -2036,6 +2037,8 @@ describe("SessionPage regenerate offer", () => {
     typeEntry("One on One", "topic-summary"),
     typeEntry("Pathfinder", "play"),
     typeEntry("Work", "topic-summary"),
+    // R7: the file of Recap is missing; summaries use the last copy read.
+    { ...typeEntry("Board", "recap"), prompt_name: "Recap" },
   ];
   const typeRow = () => screen.getByRole("group", { name: "Type and tags" });
   const dismiss = () => screen.queryByRole("button", { name: "Dismiss" });
@@ -2087,6 +2090,14 @@ describe("SessionPage regenerate offer", () => {
     await user.click(within(offer()!).getByRole("button", { name: "Regenerate Summary" }));
     await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "regenerate_summary").length).toBe(1));
     expect(dismiss()).toBeNull();
+  });
+
+  test("the offer names a chosen prompt whose file is missing by its last copy read (R7)", async () => {
+    const { user } = open();
+    await screen.findByText("We agreed the budget.");
+    await chooseType(user, "One on One", "Board");
+    await waitFor(() => expect(offer()).not.toBeNull());
+    expect(within(offer()!).getByRole("status").textContent).toBe("Board uses Recap.");
   });
 
   // AE3.

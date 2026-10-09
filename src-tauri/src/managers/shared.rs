@@ -647,6 +647,10 @@ pub struct NoteTypeEntry {
     /// never read is "Default" (R7). A type that is not valid has no
     /// choice (R18).
     pub prompt_choice: Option<String>,
+    /// The name of the prompt of `prompt_choice`, from the last copy that
+    /// this computer read. Settings shows this name also when the file of
+    /// the prompt is missing (R7).
+    pub prompt_name: Option<String>,
     /// The id of the prompt that a summary of the type uses now: the
     /// chosen prompt, or the default prompt for "Default" (R3, KTD2).
     pub summary_prompt_id: String,
@@ -817,12 +821,15 @@ impl SharedSettingsManager {
                 .known()
                 .and_then(|map| note_types::prompt_choice(map, note_type, valid))
                 .and_then(|id| view.type_prompts.get(id))
-                .and_then(|p| p.prompt())
-                .map(|p| p.id.clone());
-            let summary_prompt_id = choice.clone().unwrap_or_else(|| default_prompt.into());
-            (choice, summary_prompt_id)
+                .and_then(|p| p.prompt());
+            let summary_prompt_id = choice.map_or_else(|| default_prompt.into(), |p| p.id.clone());
+            (
+                choice.map(|p| p.id.clone()),
+                choice.map(|p| p.name.clone()),
+                summary_prompt_id,
+            )
         };
-        let (prompt_choice, summary_prompt_id) = prompt_of(None, true);
+        let (prompt_choice, prompt_name, summary_prompt_id) = prompt_of(None, true);
         let general = NoteTypeEntry {
             name: session_save::naming::GENERAL.to_string(),
             valid: true,
@@ -830,12 +837,14 @@ impl SharedSettingsManager {
             notes: count(folders.homes.len()),
             general: true,
             prompt_choice,
+            prompt_name,
             summary_prompt_id,
         };
         let entries: Vec<NoteTypeEntry> = types
             .iter()
             .map(|t| {
-                let (prompt_choice, summary_prompt_id) = prompt_of(Some(&t.name), t.valid);
+                let (prompt_choice, prompt_name, summary_prompt_id) =
+                    prompt_of(Some(&t.name), t.valid);
                 NoteTypeEntry {
                     name: t.name.clone(),
                     valid: t.valid,
@@ -843,6 +852,7 @@ impl SharedSettingsManager {
                     notes: count(t.notes),
                     general: false,
                     prompt_choice,
+                    prompt_name,
                     summary_prompt_id,
                 }
             })
@@ -2085,6 +2095,7 @@ mod tests {
                 notes: 1,
                 general: true,
                 prompt_choice: None,
+                prompt_name: None,
                 summary_prompt_id: TOPIC_SUMMARY_ID.into(),
             }
         );
@@ -2097,6 +2108,7 @@ mod tests {
                 notes: 2,
                 general: false,
                 prompt_choice: None,
+                prompt_name: None,
                 summary_prompt_id: TOPIC_SUMMARY_ID.into(),
             }
         );
@@ -2790,5 +2802,24 @@ mod tests {
         );
         let list = manager.note_types(&StorageFolders::default());
         assert_eq!(choice(&list, "Pathfinder"), (Some(recap.clone()), recap));
+    }
+
+    #[test]
+    fn the_type_list_names_the_chosen_prompt_also_when_its_file_is_missing() {
+        // R7: Settings shows the prompt that a summary of the type uses.
+        let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager
+            .set_note_type_prompt("Pathfinder", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        let file_name = prompt_files(folder.path())
+            .into_iter()
+            .find(|name| name.starts_with("Recap"))
+            .unwrap();
+        std::fs::remove_file(prompts::prompts_folder(folder.path()).join(file_name)).unwrap();
+        manager.reread();
+        let list = manager.note_types(&StorageFolders::default());
+        assert_eq!(entry(&list, "Pathfinder").prompt_name.as_deref(), Some("Recap"));
+        assert_eq!(entry(&list, "Board").prompt_name, None);
     }
 }

@@ -136,8 +136,9 @@ export function microphoneItems(
 
 /// The type and the prompt name of the offer to regenerate the summary, or
 /// null (R9, KTD4, KTD5). The offer needs a complete summary with a
-/// recorded prompt id, and a type whose prompt is another prompt. The
-/// prompt name is null when the prompt list does not have the prompt.
+/// recorded prompt id, and a type whose prompt is another prompt. When the
+/// prompt list does not have the prompt, the name is the name of the last
+/// copy read (R7), or null.
 function offerFor(
   summary: SummaryView | null | undefined,
   entry: { note_type: string | null } | undefined,
@@ -153,7 +154,7 @@ function offerFor(
     offerType.summary_prompt_id !== summary.prompt_id
     ? {
         type: offerType.name,
-        prompt: typePrompts?.prompts.find((p) => p.id === offerType.summary_prompt_id)?.name ?? null,
+        prompt: typePrompts?.prompts.find((p) => p.id === offerType.summary_prompt_id)?.name ?? offerType.prompt_name,
       }
     : null;
 }

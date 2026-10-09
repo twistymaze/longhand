@@ -26,18 +26,22 @@ const entry = (name: string, notes: number, valid = true, general = false): Note
   notes,
   general,
   prompt_choice: null,
+  prompt_name: null,
   summary_prompt_id: "topic-summary",
 });
 
 /// A fake of the type, tag and prompt commands that keeps its own lists, as
 /// the backend does. A rename onto another type or tag merges the two.
-function backend(over: Record<string, CommandHandler> = {}) {
-  let types: NoteTypeEntry[] = [
+function backend(
+  over: Record<string, CommandHandler> = {},
+  start: NoteTypeEntry[] = [
     entry("General", 5, true, true),
     entry("Pathfinder", 30),
     entry("Projects", 4),
     entry("Bad:Name", 2, false),
-  ];
+  ],
+) {
+  let types = start;
   let defaultType: string | null = null;
   let tags: TagEntry[] = [
     { text: "Person :: Nathan", key: "person::nathan", count: 12 },
@@ -61,7 +65,14 @@ function backend(over: Record<string, CommandHandler> = {}) {
     set_note_type_prompt: ({ name, promptId }) => {
       const id = promptId as string | null;
       types = types.map((t) =>
-        t.name === name ? { ...t, prompt_choice: id, summary_prompt_id: id ?? prompts.active } : t,
+        t.name === name
+          ? {
+              ...t,
+              prompt_choice: id,
+              prompt_name: prompts.prompts.find((p) => p.id === id)?.name ?? null,
+              summary_prompt_id: id ?? prompts.active,
+            }
+          : t,
       );
       return list();
     },
@@ -212,6 +223,22 @@ describe("TypesAndTags", () => {
     await user.selectOptions(promptPopup("Pathfinder"), "Default");
     await waitFor(() => expect(selectedText(promptPopup("Pathfinder"))).toBe("Default"));
     expect(called(tauri, "set_note_type_prompt")[2].args).toEqual({ name: "Pathfinder", promptId: null });
+  });
+
+  test("a choice whose prompt file is missing shows the prompt that summaries use, and Default resets it (R7)", async () => {
+    const recap = { ...entry("Pathfinder", 30), prompt_choice: "recap", prompt_name: "Recap", summary_prompt_id: "recap" };
+    const tauri = backend({}, [entry("General", 5, true, true), recap, entry("Projects", 4), entry("Bad:Name", 2, false)]);
+    renderPane();
+    const user = userEvent.setup();
+    await loaded();
+    expect(optionTexts(promptPopup("Pathfinder"))).toEqual(["Default", "Topic summary", "Play-by-play summary", "Recap"]);
+    expect(selectedText(promptPopup("Pathfinder"))).toBe("Recap");
+    // Only the type that chooses the prompt offers it.
+    expect(optionTexts(promptPopup("General"))).toEqual(["Default", "Topic summary", "Play-by-play summary"]);
+
+    await user.selectOptions(promptPopup("Pathfinder"), "Default");
+    await waitFor(() => expect(selectedText(promptPopup("Pathfinder"))).toBe("Default"));
+    expect(called(tauri, "set_note_type_prompt").map((c) => c.args)).toEqual([{ name: "Pathfinder", promptId: null }]);
   });
 
   test("a refused prompt choice shows its reason", async () => {

@@ -9,6 +9,7 @@ const type = (name: string, over: Partial<NoteTypeEntry> = {}): NoteTypeEntry =>
   notes: 0,
   general: false,
   prompt_choice: null,
+  prompt_name: null,
   summary_prompt_id: "topic-summary",
   ...over,
 });

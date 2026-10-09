@@ -702,7 +702,7 @@ describe("SummaryPrompts", () => {
   });
 
   const typeEntry = (name: string, prompt_choice: string | null, summary_prompt_id = prompt_choice ?? "topic-summary") => ({
-    name, valid: true, shared: true, notes: 0, general: false, prompt_choice, summary_prompt_id,
+    name, valid: true, shared: true, notes: 0, general: false, prompt_choice, prompt_name: null, summary_prompt_id,
   });
   const noteTypes = (types: ReturnType<typeof typeEntry>[]) => ({ note_types: () => ({ types, default_type: null }) });
   const deleteCustom = async () => {

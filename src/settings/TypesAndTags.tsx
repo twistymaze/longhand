@@ -369,6 +369,10 @@ export function TypesAndTags({
                           {p.name}
                         </option>
                       ))}
+                      {/* R7: the file of the chosen prompt is missing, and summaries use the last copy read. */}
+                      {prompts && t.prompt_choice !== null && !prompts.some((p) => p.id === t.prompt_choice) && (
+                        <option value={t.prompt_choice}>{t.prompt_name}</option>
+                      )}
                     </select>
                   ) : (
                     <span aria-hidden className={promptColumn} />

@@ -5,7 +5,7 @@ import { mockTauri } from "../test/tauri";
 import { useTypesAndTags } from "./useTypesAndTags";
 
 const typesNamed = (...names: string[]): NoteTypeList => ({
-  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, summary_prompt_id: "topic-summary" })),
+  types: names.map((name) => ({ name, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" })),
   default_type: null,
 });
 const settle = () => act(() => new Promise((r) => setTimeout(r, 20)));
