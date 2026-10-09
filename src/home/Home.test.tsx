@@ -70,7 +70,7 @@ const document = (body: string): SessionDocument => ({
   has_speakers: true,
   lines: [],
   transcript_markdown: "",
-  summary: { body, stub: false, host: null, model: null, prompt: null },
+  summary: { body, stub: false, host: null, model: null, prompt: null, prompt_id: null },
 });
 
 function renderHome({

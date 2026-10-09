@@ -1902,34 +1902,18 @@ fn a_save_into_a_type_folder_of_the_old_folder_is_found() {
     assert!(store.saves_into(Path::new("/notes")).unwrap().is_empty());
 }
 
-/// KTD15: a note keeps the active prompt from when it started.
+/// R4 of the type prompt plan: a note records no prompt when it starts.
 #[test]
-fn a_note_keeps_the_prompt_snapshot_from_its_start() {
+fn a_new_note_records_no_prompt_snapshot() {
     let mut store = Store::open_in_memory().unwrap();
-    let prompt = session_core::PromptSnapshot {
-        id: "b1".into(),
-        name: "Standup".into(),
-        text: "Write a standup.".into(),
-        title_text: "Name the team.".into(),
-    };
     let model = RecordingModel {
         asr_model: "m".into(),
         live_transcript: false,
     };
     store
-        .start_session_with_recognition(
-            "new",
-            t(0),
-            None,
-            &model,
-            &CaptureChoice::default(),
-            None,
-            Some(&prompt),
-        )
+        .start_session_with_recognition("new", t(0), None, &model, &CaptureChoice::default(), None)
         .unwrap();
-    assert_eq!(store.prompt_snapshot("new").unwrap(), Some(prompt));
-
-    // A note from before the update has no snapshot.
+    assert_eq!(store.prompt_snapshot("new").unwrap(), None);
     store.create_session("old", t(1), None).unwrap();
     assert_eq!(store.prompt_snapshot("old").unwrap(), None);
     assert!(matches!(

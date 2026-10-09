@@ -114,7 +114,7 @@ impl EngineProvider for Provider {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
         Err(EndpointProblem::Unconfigured("not used".into()))
     }
-    fn summary_prompt(&self) -> pipeline::summarize::Prompt {
+    fn summary_prompt(&self, _: Option<&str>) -> pipeline::summarize::Prompt {
         summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
     }
     fn background(&self) -> String {
@@ -1795,8 +1795,8 @@ impl EngineProvider for WithAnalyzer {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
         self.0.summary_endpoint()
     }
-    fn summary_prompt(&self) -> pipeline::summarize::Prompt {
-        self.0.summary_prompt()
+    fn summary_prompt(&self, note_type: Option<&str>) -> pipeline::summarize::Prompt {
+        self.0.summary_prompt(note_type)
     }
     fn background(&self) -> String {
         self.0.background()
@@ -1911,8 +1911,8 @@ impl EngineProvider for WordlessProvider {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
         self.0.summary_endpoint()
     }
-    fn summary_prompt(&self) -> pipeline::summarize::Prompt {
-        self.0.summary_prompt()
+    fn summary_prompt(&self, note_type: Option<&str>) -> pipeline::summarize::Prompt {
+        self.0.summary_prompt(note_type)
     }
     fn background(&self) -> String {
         self.0.background()

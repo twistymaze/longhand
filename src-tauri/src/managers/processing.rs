@@ -508,8 +508,8 @@ impl EngineProvider for Models {
         })
     }
 
-    fn summary_prompt(&self) -> summarize::Prompt {
-        settings::get_settings(&self.app).active_summary_prompt_snapshot()
+    fn summary_prompt(&self, note_type: Option<&str>) -> summarize::Prompt {
+        settings::get_settings(&self.app).summary_prompt_for_type(note_type)
     }
 
     /// The Background of the shared view. It is the cached text while the

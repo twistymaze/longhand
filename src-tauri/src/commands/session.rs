@@ -429,6 +429,9 @@ pub struct SummaryView {
     /// The name of the prompt that made the summary. A summary made before
     /// prompts had names, and a stub, have none.
     pub prompt: Option<String>,
+    /// The id of the prompt that made the summary (KTD4). A summary made
+    /// before prompt ids were recorded, and a stub, have none.
+    pub prompt_id: Option<String>,
 }
 
 #[derive(Serialize, Type)]
@@ -1067,12 +1070,14 @@ fn summary_view(summary: Summary) -> SummaryView {
             endpoint_host,
             model,
             prompt_name,
+            prompt_id,
         } => SummaryView {
             body,
             stub: false,
             host: Some(endpoint_host),
             model: Some(model),
             prompt: prompt_name,
+            prompt_id,
         },
         SummaryMeta::Stub { .. } => SummaryView {
             body,
@@ -1080,6 +1085,7 @@ fn summary_view(summary: Summary) -> SummaryView {
             host: None,
             model: None,
             prompt: None,
+            prompt_id: None,
         },
     }
 }
@@ -1855,19 +1861,23 @@ mod tests {
     }
 
     #[test]
-    fn a_summary_view_carries_the_recorded_prompt_name() {
-        let complete = |prompt_name: Option<&str>| Summary {
+    fn a_summary_view_carries_the_recorded_prompt_name_and_id() {
+        let complete = |prompt: Option<(&str, &str)>| Summary {
             meta: SummaryMeta::Complete {
                 endpoint_host: "api.example.com".into(),
                 model: "m".into(),
-                prompt_name: prompt_name.map(Into::into),
+                prompt_name: prompt.map(|p| p.0.into()),
+                prompt_id: prompt.map(|p| p.1.into()),
             },
             body: "We agreed.".into(),
         };
-        let named = summary_view(complete(Some("Team sync")));
+        let named = summary_view(complete(Some(("Team sync", "b1"))));
         assert_eq!(named.prompt.as_deref(), Some("Team sync"));
+        assert_eq!(named.prompt_id.as_deref(), Some("b1"));
         assert_eq!(named.host.as_deref(), Some("api.example.com"));
-        assert!(summary_view(complete(None)).prompt.is_none());
+        let older = summary_view(complete(None));
+        assert!(older.prompt.is_none());
+        assert!(older.prompt_id.is_none());
     }
 
     // Covers AE1 (R6).

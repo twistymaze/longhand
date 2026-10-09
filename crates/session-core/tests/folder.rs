@@ -142,6 +142,7 @@ fn summary_md_round_trips_both_forms_and_never_holds_a_credential() {
                 endpoint_host: "litellm.example.com".into(),
                 model: "gpt-5".into(),
                 prompt_name: Some("Team sync".into()),
+                prompt_id: Some("b1".into()),
             },
             body: "## Decisions\n\n- Ship Friday.".into(),
         },
@@ -150,6 +151,7 @@ fn summary_md_round_trips_both_forms_and_never_holds_a_credential() {
                 endpoint_host: "litellm.example.com".into(),
                 model: "gpt-5".into(),
                 prompt_name: None,
+                prompt_id: None,
             },
             body: "## Decisions\n\n- Ship Friday.".into(),
         },
@@ -167,7 +169,7 @@ fn summary_md_round_trips_both_forms_and_never_holds_a_credential() {
 }
 
 #[test]
-fn a_summary_md_with_no_prompt_name_parses_and_renders_again_without_one() {
+fn a_summary_md_with_no_prompt_name_or_id_parses_and_renders_again_without_one() {
     let older = "---\nstatus: complete\nendpoint_host: litellm.example.com\nmodel: gpt-5\n---\n\n## Decisions\n";
     let summary = Summary::parse(older).unwrap();
     assert_eq!(
@@ -176,34 +178,37 @@ fn a_summary_md_with_no_prompt_name_parses_and_renders_again_without_one() {
             endpoint_host: "litellm.example.com".into(),
             model: "gpt-5".into(),
             prompt_name: None,
+            prompt_id: None,
         }
     );
     assert_eq!(summary.render(), older);
 }
 
 #[test]
-fn a_summary_md_records_the_prompt_name_in_its_frontmatter() {
+fn a_summary_md_records_the_prompt_name_and_id_in_its_frontmatter() {
     let summary = Summary {
         meta: SummaryMeta::Complete {
             endpoint_host: "litellm.example.com".into(),
             model: "gpt-5".into(),
             prompt_name: Some("Team sync".into()),
+            prompt_id: Some("b1".into()),
         },
         body: "## Decisions".into(),
     };
     let text = summary.render();
     assert!(text.contains("\nprompt_name: Team sync\n"), "{text}");
+    assert!(text.contains("\nprompt_id: b1\n"), "{text}");
 }
 
 #[test]
-fn a_stub_renders_with_no_prompt_name() {
+fn a_stub_renders_with_no_prompt_name_or_id() {
     let stub = Summary {
         meta: SummaryMeta::Stub {
             failed_stage: "summarize".into(),
         },
         body: "No summary was produced.".into(),
     };
-    assert!(!stub.render().contains("prompt_name"));
+    assert!(!stub.render().contains("prompt_"));
 }
 
 #[test]

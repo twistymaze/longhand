@@ -98,7 +98,7 @@ const doc: SessionDocument = {
   has_speakers: true,
   lines: [{ kind: "turn", position_ms: 0, speaker: 1, text: "Hello." }],
   transcript_markdown: "# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n",
-  summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m", prompt: null },
+  summary: { body: "We agreed the budget.", stub: false, host: "api.example.com", model: "m", prompt: null, prompt_id: null },
 };
 
 function captureOf(over: Partial<Capture> = {}): Capture {
@@ -986,6 +986,7 @@ describe("SessionPage", () => {
         host: null,
         model: null,
         prompt: null,
+        prompt_id: null,
       },
     };
     const tauri = mockPage(e, {}, { session_document: () => stub, regenerate_summary: () => "/x/summary.md" });
@@ -1933,7 +1934,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
 
   test("on a note in use on another computer, the Summary tab's Regenerate Summary waits with the reason", async () => {
     const e = entry("s", { remote: "in_use" });
-    const stub = { ...doc, summary: { body: "No summary was produced.", stub: true, host: null, model: null, prompt: null } };
+    const stub = { ...doc, summary: { body: "No summary was produced.", stub: true, host: null, model: null, prompt: null, prompt_id: null } };
     mockPage(e, {}, { session_document: () => stub });
     renderPage({ id: "s", sessions: sessionsOf([e]) });
     const button = await screen.findByRole("button", { name: "Regenerate Summary" });

@@ -64,7 +64,7 @@ impl EngineProvider for Provider {
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
         Err(EndpointProblem::Unconfigured("not used".into()))
     }
-    fn summary_prompt(&self) -> pipeline::summarize::Prompt {
+    fn summary_prompt(&self, _: Option<&str>) -> pipeline::summarize::Prompt {
         summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
     }
     fn background(&self) -> String {

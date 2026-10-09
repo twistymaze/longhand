@@ -76,6 +76,8 @@ struct Script {
     capturing: AtomicBool,
     /// The active summary prompt; unset is the "Topic summary" built-in.
     prompt: Mutex<Option<summarize::Prompt>>,
+    /// The prompt of each note type. A type with none uses `prompt`.
+    type_prompts: Mutex<std::collections::HashMap<String, summarize::Prompt>>,
     /// The Background text; unset is empty.
     background: Mutex<String>,
     /// Named sentences that the recognizer hears: when set, each window
@@ -438,7 +440,12 @@ impl EngineProvider for Provider {
             .clone()
             .unwrap_or(Err(EndpointProblem::Unconfigured("no endpoint".into())))
     }
-    fn summary_prompt(&self) -> summarize::Prompt {
+    fn summary_prompt(&self, note_type: Option<&str>) -> summarize::Prompt {
+        if let Some(prompt) =
+            note_type.and_then(|t| self.0.type_prompts.lock().unwrap().get(t).cloned())
+        {
+            return prompt;
+        }
         self.0.prompt.lock().unwrap().clone().unwrap_or_else(|| {
             summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap()
         })
@@ -2047,70 +2054,120 @@ async fn regenerating_a_complete_summary_uses_the_prompt_active_now_and_records_
     assert_eq!(prompt_name(&path), Some("Team sync".into()));
 }
 
-fn snapshot_of(prompt: &summarize::Prompt) -> session_core::PromptSnapshot {
-    session_core::PromptSnapshot {
-        id: prompt.id.clone(),
-        name: prompt.name.clone(),
-        text: prompt.text.clone(),
-        title_text: prompt.title_text.clone(),
+/// The note type `note_type` uses `prompt` from now on.
+fn use_type_prompt(r: &Rig, note_type: &str, prompt: &summarize::Prompt) {
+    r.script
+        .type_prompts
+        .lock()
+        .unwrap()
+        .insert(note_type.into(), prompt.clone());
+}
+
+fn set_type(r: &Rig, note_type: &str) {
+    r.store
+        .lock()
+        .unwrap()
+        .set_note_type("s", Some(note_type))
+        .unwrap();
+}
+
+/// The prompt id that the `summary.md` at `path` records.
+fn prompt_id(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).unwrap();
+    match session_core::folder::Summary::parse(&text).unwrap().meta {
+        session_core::folder::SummaryMeta::Complete { prompt_id, .. } => prompt_id,
+        session_core::folder::SummaryMeta::Stub { .. } => None,
     }
 }
 
-/// "s" started with `started` as the active prompt, and the active prompt
-/// is `now` when it runs, as after a change during the recording.
-async fn note_started_with(
-    r: &Rig,
-    started: &summarize::Prompt,
-    now: &summarize::Prompt,
-) -> (http::Mock, std::path::PathBuf) {
-    let mock = numbered_summaries(r).await;
-    common::queue_session_with_prompt(
+fn sent(calls: &[(String, String)], marker: &str) -> bool {
+    calls.iter().any(|(s, _)| s.contains(marker))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_type_change_during_the_recording_chooses_the_prompt_of_the_first_summary() {
+    // Covers AE1 (R3, R4, KTD3): the type of the note when the summary
+    // starts chooses the prompt, not the prompt when recording started.
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    let play = custom_prompt("Play-by-play summary", "PLAY-MARKER");
+    use_type_prompt(&r, "Pathfinder", &play);
+    common::record_session(
         &r.store,
         &r.root,
         "s",
         100,
         Some("m"),
         &[(16_000, conversation())],
-        &snapshot_of(started),
     );
-    use_prompt(r, now);
+    set_type(&r, "Pathfinder");
+    common::stop_session(&r.store, "s", 100);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    (mock, saved_folder(r, "s").join("summary.md"))
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_first_summary_uses_the_prompt_that_was_active_when_the_note_started() {
-    // R20, KTD15: a change of the active prompt during the recording
-    // applies from the next note.
-    let r = rig().await;
-    let started = summarize::Prompt {
-        title_text: "Name the team.".into(),
-        ..custom_prompt("Team sync", "FIRST-MARKER")
-    };
-    let now = custom_prompt("Business meeting", "SECOND-MARKER");
-    let (mock, path) = note_started_with(&r, &started, &now).await;
     let calls = chat_messages(&mock);
-    assert!(calls.iter().any(|(s, _)| s.contains("FIRST-MARKER")));
-    assert!(calls.iter().all(|(s, _)| !s.contains("SECOND-MARKER")));
-    assert_eq!(prompt_name(&path), Some("Team sync".into()));
-    // The snapshot keeps its title text (KTD7).
-    let saved: summarize::Prompt =
-        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PROMPT)
-            .unwrap()
-            .unwrap();
-    assert_eq!(saved, started);
-    // The title request carries the snapshot's title text.
-    let request = pipeline::summarize::pending_title_request(&r.store, "s")
-        .unwrap()
-        .expect("a title request");
-    let ask = &request.messages.last().unwrap().content;
-    assert!(ask.contains("Name the team."), "{ask}");
+    assert!(sent(&calls, "PLAY-MARKER"));
+    let path = saved_folder(&r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Play-by-play summary".into()));
+    // KTD4: the summary records the id of its prompt beside the name.
+    assert_eq!(prompt_id(&path), Some(play.id.clone()));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(&format!("prompt_id: {}", play.id)), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_note_from_before_the_update_with_no_snapshot_uses_the_active_prompt() {
+async fn a_prompt_edited_during_the_recording_gives_the_first_summary_the_edited_text() {
+    // R4: the text of the prompt when the summary starts.
     let r = rig().await;
     let mock = numbered_summaries(&r).await;
+    let first = custom_prompt("Team sync", "FIRST-MARKER");
+    use_prompt(&r, &first);
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    use_prompt(
+        &r,
+        &summarize::Prompt {
+            text: "Write the summary as a short list. EDITED-MARKER".into(),
+            ..first.clone()
+        },
+    );
+    common::stop_session(&r.store, "s", 100);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(sent(&calls, "EDITED-MARKER"));
+    assert!(!sent(&calls, "FIRST-MARKER"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_uses_the_prompt_of_the_note_type() {
+    // R3: Transcribe Again uses the prompt of the type when it runs.
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    saved_note(&r, None).await;
+    let before = chat_messages(&mock).len();
+    let play = custom_prompt("Play-by-play summary", "PLAY-MARKER");
+    use_type_prompt(&r, "Pathfinder", &play);
+    set_type(&r, "Pathfinder");
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(sent(&calls[before..], "PLAY-MARKER"));
+    let path = saved_folder(&r, "s").join("summary.md");
+    assert_eq!(prompt_name(&path), Some("Play-by-play summary".into()));
+    assert_eq!(prompt_id(&path), Some(play.id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_uses_the_prompt_that_the_note_type_has_now() {
+    // Covers AE7 (R3): not the prompt that made the summary.
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    let topic = custom_prompt("Topic summary", "TOPIC-MARKER");
+    use_type_prompt(&r, "Pathfinder", &topic);
     queue_session(
         &r.store,
         &r.root,
@@ -2119,57 +2176,100 @@ async fn a_note_from_before_the_update_with_no_snapshot_uses_the_active_prompt()
         Some("m"),
         &[(16_000, conversation())],
     );
-    assert_eq!(r.store.lock().unwrap().prompt_snapshot("s").unwrap(), None);
-    use_prompt(&r, &custom_prompt("Business meeting", "ACTIVE-MARKER"));
+    set_type(&r, "Pathfinder");
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert!(
-        chat_messages(&mock)
-            .iter()
-            .any(|(s, _)| s.contains("ACTIVE-MARKER"))
-    );
     let path = saved_folder(&r, "s").join("summary.md");
-    assert_eq!(prompt_name(&path), Some("Business meeting".into()));
+    assert_eq!(prompt_id(&path), Some(topic.id.clone()));
+    let before = chat_messages(&mock).len();
+    let play = custom_prompt("Play-by-play summary", "PLAY-MARKER");
+    use_type_prompt(&r, "Pathfinder", &play);
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_messages(&mock);
+    assert!(sent(&calls[before..], "PLAY-MARKER"));
+    assert!(!sent(&calls[before..], "TOPIC-MARKER"));
+    assert_eq!(prompt_name(&path), Some("Play-by-play summary".into()));
+    assert_eq!(prompt_id(&path), Some(play.id));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn summarize_again_on_a_note_with_a_snapshot_uses_the_prompt_that_the_user_selects() {
+async fn regenerate_summary_uses_the_prompt_of_a_type_that_the_folder_brings_in() {
+    // KTD3: the prompt resolves after the follow of the folder, so a type
+    // change from another computer counts.
     let r = rig().await;
-    let started = custom_prompt("Team sync", "FIRST-MARKER");
-    let (mock, path) = note_started_with(&r, &started, &started).await;
+    let mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
     let before = chat_messages(&mock).len();
-    use_prompt(&r, &custom_prompt("Business meeting", "SELECTED-MARKER"));
-    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
-    let calls = chat_messages(&mock);
-    assert!(
-        calls[before..]
-            .iter()
-            .any(|(s, _)| s.contains("SELECTED-MARKER"))
-    );
-    assert!(
-        calls[before..]
-            .iter()
-            .all(|(s, _)| !s.contains("FIRST-MARKER"))
-    );
-    assert_eq!(prompt_name(&path), Some("Business meeting".into()));
+    let one = custom_prompt("One on One summary", "ONE-MARKER");
+    use_type_prompt(&r, "One on One", &one);
+    // Another computer changes the type to "One on One".
+    edit_session_md(&home, |doc| doc.pending_type = Some(pending_type()));
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+    assert!(sent(&chat_messages(&mock)[before..], "ONE-MARKER"));
+    assert_eq!(prompt_id(&path), Some(one.id));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn transcribe_again_on_a_note_with_a_snapshot_uses_the_active_prompt() {
-    // Transcribe Again is a later action of the user, as Summarize Again.
-    let r = rig().await;
-    let started = custom_prompt("Team sync", "FIRST-MARKER");
-    let (mock, path) = note_started_with(&r, &started, &started).await;
-    let before = chat_messages(&mock).len();
-    use_prompt(&r, &custom_prompt("Business meeting", "ACTIVE-MARKER"));
-    confirm_again(&r).unwrap();
-    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let calls = chat_messages(&mock);
-    assert!(
-        calls[before..]
-            .iter()
-            .any(|(s, _)| s.contains("ACTIVE-MARKER"))
+async fn a_summary_that_resumes_after_a_type_change_uses_the_prompt_of_the_new_type() {
+    // KTD3: a summary step whose inputs changed makes every call again,
+    // with the prompt of the type that the note has now.
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    let first = rig_with(Arc::clone(&store), root, Arc::default());
+    use_type_prompt(
+        &first,
+        "One on One",
+        &custom_prompt("Topic summary", "TOPIC-MARKER"),
     );
-    assert_eq!(prompt_name(&path), Some("Business meeting".into()));
+    // The process stops after two part notes.
+    let runner = Arc::clone(&first.runner);
+    let count = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        if count.fetch_add(1, Ordering::SeqCst) == 1 {
+            runner.cancel("s");
+        }
+        (200, http::completion("Notes on a part."))
+    }));
+    let first_mock = summaries_from(&first, reply, Some(BACKGROUND_CONTEXT)).await;
+    long_session(&first);
+    set_type(&first, "One on One");
+    assert_eq!(first.runner.run_next().await.unwrap().1, Outcome::Cancelled);
+    assert_eq!(chat_calls(&first_mock).len(), 2);
+
+    let Rig { _root, .. } = first;
+    let second = rig_with(Arc::clone(&store), _root, Arc::default());
+    let play = custom_prompt("Play-by-play summary", "PLAY-MARKER");
+    use_type_prompt(
+        &second,
+        "One on One",
+        &custom_prompt("Topic summary", "TOPIC-MARKER"),
+    );
+    use_type_prompt(&second, "Pathfinder", &play);
+    set_type(&second, "Pathfinder");
+    let mock = summaries_from(
+        &second,
+        http::Reply::Json(200, http::completion("Notes on a part.")),
+        Some(BACKGROUND_CONTEXT),
+    )
+    .await;
+    assert_eq!(
+        second
+            .runner
+            .reclaim(session_core::jobs::Liveness::OnlyInstance)
+            .unwrap(),
+        vec!["s".to_string()]
+    );
+    assert_eq!(second.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let calls = chat_messages(&mock);
+    assert!(sent(&calls, "PLAY-MARKER"));
+    assert!(!sent(&calls, "TOPIC-MARKER"));
+    // The part notes made before the stop are made again.
+    assert!(
+        calls
+            .iter()
+            .any(|(_, u)| u.contains("<transcript part=\"1\">"))
+    );
+    let path = saved_folder(&second, "s").join("summary.md");
+    assert_eq!(prompt_id(&path), Some(play.id));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2425,20 +2525,36 @@ fn saved_prompt(r: &Rig) -> summarize::Prompt {
         .unwrap()
 }
 
+/// "s" is queued and runs with `prompt` as the default prompt.
+async fn summarized_with(r: &Rig, prompt: &summarize::Prompt) -> http::Mock {
+    let mock = numbered_summaries(r).await;
+    use_prompt(r, prompt);
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    mock
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_note_with_a_snapshot_is_summarized_with_the_background_at_summary_start() {
+async fn a_first_summary_uses_the_prompt_and_the_background_at_summary_start() {
     let r = rig().await;
     use_background(&r, "Pria is spelled Priya. BACKGROUND-MARKER");
-    let started = custom_prompt("Team sync", "FIRST-MARKER");
-    let (mock, _) = note_started_with(&r, &started, &started).await;
+    let active = custom_prompt("Business meeting", "ACTIVE-MARKER");
+    let mock = summarized_with(&r, &active).await;
     let calls = chat_messages(&mock);
     assert!(!calls.is_empty());
     for (system, _) in &calls {
         assert!(system.contains("BACKGROUND-MARKER"), "{system}");
-        assert!(system.contains("FIRST-MARKER"), "{system}");
+        assert!(system.contains("ACTIVE-MARKER"), "{system}");
     }
     let saved = saved_prompt(&r);
-    assert_eq!(saved.id, started.id);
+    assert_eq!(saved.id, active.id);
     assert_eq!(saved.background, "Pria is spelled Priya. BACKGROUND-MARKER");
     // The title request carries the Background too.
     let request = pipeline::summarize::pending_title_request(&r.store, "s")
@@ -2448,35 +2564,10 @@ async fn a_note_with_a_snapshot_is_summarized_with_the_background_at_summary_sta
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_note_with_no_snapshot_uses_the_active_prompt_and_the_same_background() {
-    let r = rig().await;
-    let mock = numbered_summaries(&r).await;
-    queue_session(
-        &r.store,
-        &r.root,
-        "s",
-        100,
-        Some("m"),
-        &[(16_000, conversation())],
-    );
-    use_prompt(&r, &custom_prompt("Business meeting", "ACTIVE-MARKER"));
-    use_background(&r, "BACKGROUND-MARKER");
-    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let calls = chat_messages(&mock);
-    assert!(!calls.is_empty());
-    for (system, _) in &calls {
-        assert!(system.contains("ACTIVE-MARKER"), "{system}");
-        assert!(system.contains("BACKGROUND-MARKER"), "{system}");
-    }
-    assert_eq!(saved_prompt(&r).background, "BACKGROUND-MARKER");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn transcribe_again_uses_the_background_at_its_summary_start() {
     let r = rig().await;
     use_background(&r, "FIRST-BACKGROUND");
-    let started = custom_prompt("Team sync", "FIRST-MARKER");
-    let (mock, _) = note_started_with(&r, &started, &started).await;
+    let mock = summarized_with(&r, &custom_prompt("Team sync", "FIRST-MARKER")).await;
     let before = chat_messages(&mock).len();
     use_background(&r, "SECOND-BACKGROUND");
     confirm_again(&r).unwrap();
@@ -5366,13 +5457,22 @@ async fn regenerate_summary_on_a_computer_with_no_working_folder_makes_the_folde
     // A computer that has not recorded has no `sessions/` folder, but it
     // can regenerate the summary of a note in the storage folder.
     let r = rig().await;
-    let _mock = numbered_summaries(&r).await;
+    let mock = numbered_summaries(&r).await;
     let home = saved_note(&r, None).await;
     std::fs::remove_dir_all(&r.root).unwrap();
+    let before = chat_messages(&mock).len();
+    // The summary uses the prompt of the note type (R3).
+    use_type_prompt(
+        &r,
+        "Pathfinder",
+        &custom_prompt("Play-by-play summary", "PLAY-MARKER"),
+    );
+    set_type(&r, "Pathfinder");
 
     let path = r.runner.regenerate_summary("s").await.unwrap();
     assert_eq!(path, home.join("summary.md"));
     assert!(read(&home, "summary.md").contains("Summary number"));
+    assert!(sent(&chat_messages(&mock)[before..], "PLAY-MARKER"));
     assert_fingerprints_match(&home);
 }
 
@@ -7504,7 +7604,7 @@ async fn a_regeneration_stopped_before_its_record_changes_nothing_and_keeps_the_
                 "s",
                 &root,
                 endpoint,
-                summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap(),
+                &|_| summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap(),
                 &|_| {},
                 &control,
                 &mut |_, _| {},

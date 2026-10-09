@@ -2387,7 +2387,12 @@ stub: boolean; host: string | null; model: string | null;
  * The name of the prompt that made the summary. A summary made before
  * prompts had names, and a stub, have none.
  */
-prompt: string | null }
+prompt: string | null; 
+/**
+ * The id of the prompt that made the summary (KTD4). A summary made
+ * before prompt ids were recorded, and a stub, have none.
+ */
+prompt_id: string | null }
 /**
  * The system audio permission, as the page reads it (R9, R10, KTD12).
  */
