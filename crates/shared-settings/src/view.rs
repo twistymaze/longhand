@@ -18,7 +18,6 @@ use crate::cache::{Cache, read_cache, write_cache};
 use crate::file::{
     AudioRemoval, Field, FileRead, SharedFields, Unavailable, default_settings, read_settings,
 };
-use crate::note_types::{NoteType, type_prompt_id};
 use crate::prompts::{PromptScan, scan_prompts};
 
 /// Whether this computer can change the shared settings now.
@@ -89,20 +88,6 @@ impl SharedView {
     /// settings are read-only in every other case (R16).
     pub fn writable(&self) -> bool {
         self.availability == Availability::Available
-    }
-
-    /// The prompt that the note type `note_type` chooses, or `None` when
-    /// the type uses the default prompt (R1, R3, R7). `None` and "General"
-    /// are General, and `types` is the effective type list. A choice that
-    /// names a prompt that this computer never read is "Default".
-    pub fn type_prompt(
-        &self,
-        note_type: Option<&str>,
-        types: &[NoteType],
-    ) -> Option<&ActivePrompt> {
-        let map = self.fields.note_type_prompts.known()?;
-        self.type_prompts
-            .get(type_prompt_id(map, types, note_type)?)
     }
 
     /// Whether a save of the Background can write now (R5, KTD3).

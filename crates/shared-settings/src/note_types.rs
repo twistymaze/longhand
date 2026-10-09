@@ -254,27 +254,6 @@ pub fn default_after(
 }
 
 /// The id of the summary prompt that the type `note_type` chooses in the
-/// map `prompts`, or `None` for "Default" (R1, KTD1). `None` and the name
-/// "General" are General. The names compare without case. A type that is
-/// not a valid type of the effective list `types` has no choice (R18), so
-/// a key that names no such type has no effect.
-pub fn type_prompt_id<'a>(
-    prompts: &'a BTreeMap<String, String>,
-    types: &[NoteType],
-    note_type: Option<&str>,
-) -> Option<&'a str> {
-    match note_type.filter(|name| !same_type_name(name, GENERAL)) {
-        None => prompt_choice(prompts, None, true),
-        Some(name) => {
-            let found = types
-                .iter()
-                .find(|t| t.valid && same_type_name(&t.name, name))?;
-            prompt_choice(prompts, Some(&found.name), true)
-        }
-    }
-}
-
-/// The id of the summary prompt that the type `note_type` chooses in the
 /// map `prompts`, or `None` for "Default" (R1, R18, KTD1). `None` is
 /// General. `valid` tells that the name of the type passes the type name
 /// check, and it has no effect for General. A type that is not valid has

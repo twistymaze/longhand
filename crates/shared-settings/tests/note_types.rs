@@ -7,7 +7,7 @@ use session_save::naming::TypeNameError;
 use shared_settings::note_types::{
     NoteType, NoteTypeError, Renamed, TypeFolder, add_type, default_after, default_to_save,
     delete_type, effective_default, effective_types, list_after_edit, list_to_save, prompt_choice,
-    prompts_after_edit, prompts_without, rename_type, set_prompt_choice, type_prompt_id,
+    prompts_after_edit, prompts_without, rename_type, set_prompt_choice,
 };
 
 fn shared(names: &[&str]) -> Vec<String> {
@@ -463,15 +463,14 @@ fn prompt_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
 #[test]
 fn the_prompt_of_a_type_is_found_without_case() {
     // KTD1: "pathfinder" finds the entry saved for "Pathfinder".
-    let types = effective_types(&shared(&["Pathfinder"]), &[]);
     let map = prompt_map(&[("Pathfinder", "recap-id")]);
     assert_eq!(
-        type_prompt_id(&map, &types, Some("pathfinder")),
+        prompt_choice(&map, Some("pathfinder"), true),
         Some("recap-id")
     );
     let map = prompt_map(&[("pathfinder", "recap-id")]);
     assert_eq!(
-        type_prompt_id(&map, &types, Some("Pathfinder")),
+        prompt_choice(&map, Some("Pathfinder"), true),
         Some("recap-id")
     );
 }
@@ -479,31 +478,10 @@ fn the_prompt_of_a_type_is_found_without_case() {
 #[test]
 fn general_has_its_own_entry_and_no_entry_is_the_default() {
     // R1: General is the key "General". A type with no key is "Default".
-    let types = effective_types(&shared(&["Pathfinder"]), &[]);
     let map = prompt_map(&[("General", "standup-id")]);
-    assert_eq!(type_prompt_id(&map, &types, None), Some("standup-id"));
-    assert_eq!(
-        type_prompt_id(&map, &types, Some("general")),
-        Some("standup-id")
-    );
-    assert_eq!(type_prompt_id(&map, &types, Some("Pathfinder")), None);
-    assert_eq!(type_prompt_id(&BTreeMap::new(), &types, None), None);
-}
-
-#[test]
-fn a_key_that_names_no_type_of_the_list_is_ignored() {
-    // KTD1.
-    let types = effective_types(&shared(&["Pathfinder"]), &[]);
-    let map = prompt_map(&[("Board", "recap-id")]);
-    assert_eq!(type_prompt_id(&map, &types, Some("Board")), None);
-}
-
-#[test]
-fn a_type_with_an_invalid_name_has_no_prompt_choice() {
-    // R18: the type uses the default prompt.
-    let types = effective_types(&[], &[folder("CON", 1)]);
-    let map = prompt_map(&[("CON", "recap-id")]);
-    assert_eq!(type_prompt_id(&map, &types, Some("CON")), None);
+    assert_eq!(prompt_choice(&map, None, true), Some("standup-id"));
+    assert_eq!(prompt_choice(&map, Some("Pathfinder"), true), None);
+    assert_eq!(prompt_choice(&BTreeMap::new(), None, true), None);
 }
 
 #[test]

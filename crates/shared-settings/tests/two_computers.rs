@@ -477,12 +477,12 @@ fn a_change_of_folder_copies_the_note_types_into_a_folder_with_no_settings() {
     );
 }
 
-/// The prompt of the type `name` in `view`, with the shared list as the
-/// type list.
+/// The prompt of the type `name` in `view`: the choice by the production
+/// rule, then the prompt that the view holds for that id.
 fn type_prompt<'a>(view: &'a SharedView, name: Option<&str>) -> Option<&'a ActivePrompt> {
-    let shared = view.fields.note_types.known().cloned().unwrap_or_default();
-    let types = shared_settings::note_types::effective_types(&shared, &[]);
-    view.type_prompt(name, &types)
+    let choices = view.fields.type_prompt_map();
+    let id = shared_settings::note_types::prompt_choice(&choices, name, true)?;
+    view.type_prompts.get(id)
 }
 
 fn map(entries: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {

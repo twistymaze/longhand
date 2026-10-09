@@ -194,7 +194,7 @@ pub struct SharedFields {
     /// "General" for General, and the id of its prompt (R1, R2, KTD1). A
     /// type with no key, and an absent field, use the default prompt. The
     /// map is one value: the last change wins. Find the choice of a type
-    /// with [`crate::note_types::type_prompt_id`].
+    /// with [`crate::note_types::prompt_choice`].
     pub note_type_prompts: Field<BTreeMap<String, String>>,
 }
 
