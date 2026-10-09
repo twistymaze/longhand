@@ -66,6 +66,30 @@ From `crates/shared-settings/src/prompts.rs`:
 - **Test a draft prompt.** An agent cannot run Longhand's summary step. To test a draft prompt, it can only imitate the step with its own model, and that misses the fixed rules, the Background, the user's endpoint and the model.
   - *Change:* a way to run Summarize with a draft prompt on one note and get the result without saving it: a CLI command, or the "Regenerate With" idea with a preview. This is the most useful change for prompt design.
 
+## The larger question for the brainstorm
+
+The changes above repair single cases. When this idea is brainstormed, ask the larger question first: **what does it take to make most or all shared settings plain files that the app edits for convenience and that a person or an agent can also edit outside the app with no trouble?** The user sees a lot of power and flexibility in such a system. The answer can replace many of the single changes above with one design.
+
+Some of it exists already:
+
+- The shared settings are files in `.longhand/`: `settings.json`, `background.md` and one Markdown file for each prompt.
+- The folder is the authority for note types: a type folder that holds a note is a type, even when it is not in `note_types`.
+- The tag list comes from the notes.
+- Longhand watches the storage folder and reads a changed file within seconds.
+
+Questions for the brainstorm:
+
+- **Which settings become files, and which stay local?** The settings for each computer (microphone, shortcuts, the storage folder itself) and secrets (keys in the Keychain) probably stay out of the folder.
+- **Format:** one file for each item (as for prompts), or one file for each group? JSON, YAML or Markdown with front matter? A format that a person can read and that permits comments is easier to edit by hand.
+- **Identity:** names change, so settings that point to other settings need stable ids. How does a file made by hand get an id, and how does Longhand repair a copy that has an id twice?
+- **Bad files:** what does Longhand do with a file that does not parse, a value that is not valid, or a reference to something that is gone? A clear notice and a safe fallback, never a silent change or a crash.
+- **Changes from two places:** an edit in the app and an edit in a file, on one computer or on two. Today `note_types` and the planned type-to-prompt map are one value each, so the last change wins for the whole value. One file for each item reduces this.
+- **Writes by Longhand:** keep the parts of a file that Longhand does not know, keep the user's layout where possible, and never rewrite a file that did not change.
+- **Versions:** an older build that reads a newer file, and a newer build that reads an older file (see `old-build-stops-with-a-message`).
+- **Documentation:** the skill describes each file, and the lint checks each file. The files then become a public interface, and a change to them needs the same care as a change to the app's UI.
+
+Precedents: VS Code `settings.json`, and Obsidian, whose settings and plugins are files in the vault.
+
 ## Notes
 
 **Skill or CLI:**
