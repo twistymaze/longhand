@@ -1905,7 +1905,9 @@ fn a_save_into_a_type_folder_of_the_old_folder_is_found() {
 /// R4 of the type prompt plan: a note records no prompt when it starts.
 #[test]
 fn a_new_note_records_no_prompt_snapshot() {
-    let mut store = Store::open_in_memory().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = Store::open(&path).unwrap();
     let model = RecordingModel {
         asr_model: "m".into(),
         live_transcript: false,
@@ -1913,13 +1915,17 @@ fn a_new_note_records_no_prompt_snapshot() {
     store
         .start_session_with_recognition("new", t(0), None, &model, &CaptureChoice::default(), None)
         .unwrap();
-    assert_eq!(store.prompt_snapshot("new").unwrap(), None);
     store.create_session("old", t(1), None).unwrap();
-    assert_eq!(store.prompt_snapshot("old").unwrap(), None);
-    assert!(matches!(
-        store.prompt_snapshot("absent"),
-        Err(StoreError::NoSuchSession(_))
-    ));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let set: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE prompt_snapshot_id IS NOT NULL
+               OR prompt_snapshot_name IS NOT NULL OR prompt_snapshot_text IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(set, 0);
 }
 
 // ---------------------------------------------------------------- notes-only notes (KTD2, KTD8)

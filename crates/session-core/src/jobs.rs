@@ -100,18 +100,6 @@ pub struct RecordingModel {
     pub live_transcript: bool,
 }
 
-/// The active summary prompt that a note recorded when it started (KTD15).
-/// The store keeps the columns for old data. No code writes them, and no
-/// summary uses them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptSnapshot {
-    pub id: String,
-    pub name: String,
-    pub text: String,
-    /// Empty for a note from before migration 0015.
-    pub title_text: String,
-}
-
 /// A microphone that a note chose: cpal's stable device ID, with the device
 /// name as its label (KTD1 of the system audio plan).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -597,33 +585,6 @@ impl Store {
         }
         self.insert_session(id, now, speaker_count, Some(model), capture, snapshot, true)?;
         Ok(stopped)
-    }
-
-    /// The active summary prompt that the note recorded when it started
-    /// (KTD15). `None` for a note from before migration 0013, one that
-    /// another computer recorded, and every new note. No summary uses it.
-    pub fn prompt_snapshot(&self, id: &str) -> Result<Option<PromptSnapshot>> {
-        type Columns = (Option<String>, Option<String>, Option<String>, String);
-        let (id_, name, text, title_text): Columns = self
-            .conn
-            .query_row(
-                "SELECT prompt_snapshot_id, prompt_snapshot_name, prompt_snapshot_text,
-                   prompt_snapshot_title_text
-                 FROM sessions WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?
-            .ok_or_else(|| StoreError::NoSuchSession(id.into()))?;
-        Ok(match (id_, name, text) {
-            (Some(id), Some(name), Some(text)) => Some(PromptSnapshot {
-                id,
-                name,
-                text,
-                title_text,
-            }),
-            _ => None,
-        })
     }
 
     pub fn recognition_snapshot(&self, id: &str) -> Result<Option<serde_json::Value>> {
