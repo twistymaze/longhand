@@ -38,6 +38,8 @@ const idle: RecordingStatus = {
   system_audio_other_output: false,
   system_audio_mic_copy: false,
   microphone_choice: null,
+  paused: false,
+  recorded_ms: 0,
 };
 
 const recordingEntry: SessionEntry = {

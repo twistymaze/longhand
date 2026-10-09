@@ -129,7 +129,15 @@ pub struct RecordingStatus {
     /// The open session: recording, or interrupted and resumable.
     pub session_id: Option<String>,
     pub state: Option<String>,
+    /// A note is open: a segment records, a restart reopens the
+    /// microphone, or the note is paused.
     pub recording: bool,
+    /// The user paused the open note (KTD1): no segment records, and the
+    /// stored state stays Capturing.
+    pub paused: bool,
+    /// The audio that the kept segments of the open note hold, gaps
+    /// excluded. While paused, it is the elapsed time that the page shows.
+    pub recorded_ms: u64,
     /// Processing waits: a note records, or a live worker saves its last
     /// part after Stop (KTD9, KTD20). The same test as the runner's.
     pub processing_waits: bool,
@@ -669,11 +677,16 @@ struct Inner {
     /// True after the update manager claimed a restart. No recording
     /// starts after that, because the app restarts (KD6).
     restart_claimed: bool,
+    /// The note that the user paused (KTD1). No segment records, the
+    /// microphone is closed, and `clock` keeps the note's timeline. The
+    /// stored state stays Capturing.
+    paused: Option<String>,
 }
 
 /// What [`CaptureManager::status`] reads under the inner lock.
 struct StatusSnapshot {
     recording: bool,
+    paused: bool,
     reconnecting: bool,
     sample_rate: Option<u32>,
     /// The input name and the fallback flag of the recording segment.
@@ -716,6 +729,108 @@ impl Inner {
             watch.cancel.cancel();
         }
     }
+
+    /// A note is open (KTD3): a segment records, a restart reopens a lost
+    /// microphone, or the note is paused. Every guard and status reader
+    /// that means "a note is open" reads this. It reads only `Inner`, so
+    /// the caller takes no store lock first.
+    fn note_open(&self) -> bool {
+        self.active.is_some() || self.recovering.is_some() || self.paused.is_some()
+    }
+
+    /// The part of the status that [`CaptureManager::status`] reads under
+    /// the inner lock.
+    fn snapshot(&self) -> StatusSnapshot {
+        let speaker = self.active.as_ref().and_then(|a| {
+            a.speaker.as_ref().map(|link| {
+                (
+                    a.system_audio,
+                    link.attached(),
+                    link.failed(),
+                    link.other_output_playing(),
+                    link.mic_copy(),
+                )
+            })
+        });
+        StatusSnapshot {
+            recording: self.note_open(),
+            paused: self.paused.is_some(),
+            reconnecting: self.recovering.is_some(),
+            sample_rate: self.prepared.as_ref().map(|p| p.rate),
+            input: self.active.as_ref().map(|a| (a.input.clone(), a.fallback)),
+            held: self.held_microphone.clone(),
+            held_system_audio: self.held_system_audio,
+            silent: self.silent_check.flagged(),
+            permission: self.permission,
+            speaker,
+        }
+    }
+}
+
+/// What a Pause does (R1, R5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PauseStep {
+    /// Close the segment that records in the note, and keep the clock.
+    Close(String),
+    /// The note is already paused, or no segment records: interrupted,
+    /// restarting, stopped, or no note.
+    Nothing,
+}
+
+fn pause_step(inner: &Inner) -> PauseStep {
+    match &inner.active {
+        Some(active) if inner.recovering.is_none() && inner.paused.is_none() => {
+            PauseStep::Close(active.session_id.clone())
+        }
+        _ => PauseStep::Nothing,
+    }
+}
+
+/// What a Continue does (KTD8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContinueStep {
+    /// Open the next segment of the paused note.
+    Open(String),
+    /// No note is paused.
+    Nothing,
+}
+
+fn continue_step(inner: &Inner) -> ContinueStep {
+    match &inner.paused {
+        Some(id) => ContinueStep::Open(id.clone()),
+        None => ContinueStep::Nothing,
+    }
+}
+
+/// Whether Resume or Record can capture a note now: no note is open, and
+/// no restart for an update is claimed.
+fn may_capture(inner: &Inner) -> Result<(), CaptureError> {
+    if inner.note_open() {
+        return Err(CaptureError::AlreadyCapturing);
+    }
+    if inner.restart_claimed {
+        return Err(CaptureError::Restarting);
+    }
+    Ok(())
+}
+
+/// The note that a Stop ends when no segment records, after `supersede`
+/// gave `reconnecting`: the paused note, else the note whose restart was
+/// cancelled. The paused flag clears.
+fn stopped_without_segment(inner: &mut Inner, reconnecting: Option<String>) -> Option<String> {
+    inner.paused.take().or(reconnecting)
+}
+
+/// Whether a background reopen (the device watch, a restart, the move back
+/// to the chosen microphone) can open the microphone now (KTD9). While a
+/// note is paused, the microphone stays closed (R2).
+fn may_reopen(inner: &Inner) -> bool {
+    inner.paused.is_none()
+}
+
+/// The audio recorded in `segments`, gaps excluded.
+fn recorded_ms(segments: &[session_core::Segment]) -> u64 {
+    segments.iter().map(|s| s.duration_ms).sum()
 }
 
 /// A saved choice as the capture crate takes it.
@@ -1142,6 +1257,9 @@ enum Reopen {
     Resume,
     /// Record into a note with no audio: its first segment.
     Record,
+    /// Continue a paused note (KTD2). A failed open interrupts the note,
+    /// as for Resume (R5).
+    Continue,
 }
 
 /// Take the note `id` with no audio from Saved to Capturing in the store
@@ -1298,23 +1416,23 @@ impl CaptureManager {
     /// the usual order: inner, then store.
     pub fn with_recording_held<T>(&self, f: impl FnOnce(bool, &Store) -> T) -> T {
         let inner = self.inner();
-        let recording = inner.active.is_some() || inner.recovering.is_some();
+        let recording = inner.note_open();
         let store = self.store();
         f(recording, &store)
     }
 
-    /// Recording, or reopening a lost microphone to go on recording.
+    /// Recording, reopening a lost microphone to go on recording, or
+    /// paused (KTD3).
     pub fn is_capturing(&self) -> bool {
-        let inner = self.inner();
-        inner.active.is_some() || inner.recovering.is_some()
+        self.inner().note_open()
     }
 
     /// Claim a restart for an update (KD6). The claim fails while a note
-    /// records. The check and the claim use the lock that a start holds, so
-    /// a start cannot come between them.
+    /// records or is paused. The check and the claim use the lock that a
+    /// start holds, so a start cannot come between them.
     pub fn claim_restart(&self) -> bool {
         let mut inner = self.inner();
-        if inner.active.is_some() || inner.recovering.is_some() {
+        if inner.note_open() {
             return false;
         }
         inner.restart_claimed = true;
@@ -1357,6 +1475,10 @@ impl CaptureManager {
             models.missing_spec(spec)
         })?;
         let mut ended = inner.supersede();
+        // A paused note ends as a recording note does.
+        if let Some(paused) = inner.paused.take() {
+            ended = Some(paused);
+        }
         if let Some(active) = inner.active.take() {
             ended = Some(active.session_id.clone());
             self.close_segment(&mut inner, active, false)?;
@@ -1500,8 +1622,9 @@ impl CaptureManager {
                 self.close_segment(&mut inner, active, false)?;
                 id
             }
-            None => match reconnecting {
-                // Stopped between restart attempts: the lost segment is closed.
+            None => match stopped_without_segment(&mut inner, reconnecting) {
+                // Stopped while paused (R4), or between restart attempts:
+                // the segment is closed.
                 Some(id) => id,
                 // Stopped from the failed-capture state, which acknowledges
                 // it (R5c).
@@ -1516,6 +1639,51 @@ impl CaptureManager {
         app.state::<Arc<AlertsManager>>().clear(&id);
         changed(app, None);
         Ok(outcome)
+    }
+
+    /// Pause the note that records (R1, R2, KTD2). The segment closes as
+    /// for sleep, with no alert, and the microphone and Computer audio
+    /// close. The clock stays, so Continue puts the paused time into the
+    /// timeline gap. The last kept segment gets the pause flag (KTD4). The
+    /// stored state stays Capturing (KTD1). A note that is already paused,
+    /// or that does not record, does not change (KTD8).
+    pub fn pause_session(&self, app: &AppHandle) -> Result<(), CaptureError> {
+        let mut inner = self.inner();
+        let PauseStep::Close(id) = pause_step(&inner) else {
+            return Ok(());
+        };
+        // The device watch, a restart and the capture watcher stop: no
+        // background reopen opens the microphone while paused (KTD9).
+        inner.supersede();
+        if let Some(active) = inner.active.take()
+            && let Err(e) = self.close_segment(&mut inner, active, false)
+        {
+            log::error!("closing {id} for a pause failed: {e}");
+        }
+        inner.paused = Some(id.clone());
+        match self.store().mark_pause(&id) {
+            Ok(true) => {}
+            Ok(false) => log::info!("session {id} paused with no kept segment"),
+            Err(e) => log::error!("could not mark the pause of {id}: {e}"),
+        }
+        drop(inner);
+        log::info!("session {id} paused");
+        // The note stays open: the tray and the page keep the note.
+        changed(app, Some(&id));
+        Ok(())
+    }
+
+    /// Continue the paused note (R1, R3, KTD2): its next segment opens on
+    /// the note's stored choice, after a timeline gap as long as the pause.
+    /// When the microphone cannot open, the note is interrupted with its
+    /// alert (R5). A note that is not paused does not change (KTD8).
+    pub fn continue_session(self: &Arc<Self>, app: &AppHandle) -> Result<(), CaptureError> {
+        let mut inner = self.inner();
+        let ContinueStep::Open(id) = continue_step(&inner) else {
+            return Ok(());
+        };
+        inner.paused = None;
+        self.open_next_segment(app, inner, &id, now(), Reopen::Continue)
     }
 
     /// Stop `id` in the store: queued for processing, or a note with no
@@ -1594,12 +1762,7 @@ impl CaptureManager {
         id: &str,
     ) -> Result<SessionState, CaptureError> {
         let inner = self.inner();
-        if inner.active.is_some() || inner.recovering.is_some() {
-            return Err(CaptureError::AlreadyCapturing);
-        }
-        if inner.restart_claimed {
-            return Err(CaptureError::Restarting);
-        }
+        may_capture(&inner)?;
         let space_ok = recorder::storage::check(
             recorder::storage::available_space(&self.working_root),
             DISK_RESERVE_BYTES,
@@ -1694,12 +1857,7 @@ impl CaptureManager {
     /// (R12) first.
     pub fn record_session(self: &Arc<Self>, app: &AppHandle, id: &str) -> Result<(), CaptureError> {
         let mut inner = self.inner();
-        if inner.active.is_some() || inner.recovering.is_some() {
-            return Err(CaptureError::AlreadyCapturing);
-        }
-        if inner.restart_claimed {
-            return Err(CaptureError::Restarting);
-        }
+        may_capture(&inner)?;
         let settings = settings::get_settings(app);
         let models = app.state::<Arc<ModelsManager>>();
         let count = crate::shortcut::speaker_count(settings.default_speaker_count);
@@ -1878,34 +2036,10 @@ impl CaptureManager {
     }
 
     pub fn status(&self, app: &AppHandle) -> Result<RecordingStatus, CaptureError> {
-        let snapshot = {
-            let inner = self.inner();
-            let reconnecting = inner.recovering.is_some();
-            let speaker = inner.active.as_ref().and_then(|a| {
-                a.speaker.as_ref().map(|link| {
-                    (
-                        a.system_audio,
-                        link.attached(),
-                        link.failed(),
-                        link.other_output_playing(),
-                        link.mic_copy(),
-                    )
-                })
-            });
-            StatusSnapshot {
-                recording: inner.active.is_some() || reconnecting,
-                reconnecting,
-                sample_rate: inner.prepared.as_ref().map(|p| p.rate),
-                input: inner.active.as_ref().map(|a| (a.input.clone(), a.fallback)),
-                held: inner.held_microphone.clone(),
-                held_system_audio: inner.held_system_audio,
-                silent: inner.silent_check.flagged(),
-                permission: inner.permission,
-                speaker,
-            }
-        };
+        let snapshot = self.inner().snapshot();
         let StatusSnapshot {
             recording,
+            paused,
             reconnecting,
             sample_rate,
             input,
@@ -1916,7 +2050,7 @@ impl CaptureManager {
             speaker,
         } = snapshot;
         let open = self.open_session()?;
-        let (microphone_choice, system_audio, stereo_mark) = match open.as_ref() {
+        let (microphone_choice, system_audio, stereo_mark, recorded_ms) = match open.as_ref() {
             Some((id, _)) => {
                 let store = self.store();
                 let choice = store.capture_choice(id)?;
@@ -1924,6 +2058,7 @@ impl CaptureManager {
                     choice.microphone.as_ref().map(MicrophoneChoice::from),
                     choice.system_audio && SYSTEM_AUDIO_AVAILABLE,
                     store.stereo_from(id)?.is_some(),
+                    recorded_ms(&store.segments(id)?),
                 )
             }
             None => {
@@ -1933,6 +2068,7 @@ impl CaptureManager {
                     held_system_audio.unwrap_or(settings.system_audio_default)
                         && SYSTEM_AUDIO_AVAILABLE,
                     false,
+                    0,
                 )
             }
         };
@@ -1959,6 +2095,8 @@ impl CaptureManager {
             session_id: open.as_ref().map(|(id, _)| id.clone()),
             state: open.as_ref().map(|(_, state)| state.name().to_string()),
             recording,
+            paused,
+            recorded_ms,
             processing_waits: recording
                 || app
                     .try_state::<Arc<LiveManager>>()
@@ -2550,7 +2688,8 @@ impl CaptureManager {
                 }
             }
             let id = clock.session_id.clone();
-            if inner.active.is_some() || inner.recovering.is_some() {
+            // A paused note stays paused after a wake.
+            if inner.note_open() {
                 return;
             }
             // A sleep past the auto-queue wait (R5e) is taken as the end of
@@ -2712,7 +2851,7 @@ impl CaptureManager {
             if cancel.is_cancelled() {
                 return;
             }
-            if inner.active.is_some() || inner.recovering.is_some() {
+            if inner.note_open() {
                 break;
             }
             log::info!("inputs changed while {id} waits for its microphone; trying it");
@@ -2758,6 +2897,11 @@ impl CaptureManager {
         at_switch: bool,
         speaker: Option<EarlySpeaker>,
     ) -> Result<(), CaptureError> {
+        // Every background reopen comes here: a paused note keeps the
+        // microphone closed (KTD9).
+        if !may_reopen(inner) {
+            return Err(CaptureError::Other("the note is paused".into()));
+        }
         self.audio.mic().forget();
         inner.prepared = None;
         let (index, offset) = {
@@ -4494,5 +4638,163 @@ mod tests {
         store.create_session("kept", at(0), None).unwrap();
         store.put_segment("kept", &one_segment(1)).unwrap();
         assert_eq!(open_with_no_segments(&store), vec!["empty".to_string()]);
+    }
+
+    /// A note that records segment 0 of `id`, with its clock.
+    fn recording_inner(id: &str) -> Inner {
+        Inner {
+            active: Some(active(id, false)),
+            clock: Some(Clock::new(id, Timeline::new(), Instant::now())),
+            ..Inner::default()
+        }
+    }
+
+    /// A note `id` that is paused: no segment records, and the clock stays.
+    fn paused_inner(id: &str) -> Inner {
+        Inner {
+            clock: Some(Clock::new(id, Timeline::new(), Instant::now())),
+            paused: Some(id.into()),
+            ..Inner::default()
+        }
+    }
+
+    // Covers R1, R5 (KTD2).
+    #[test]
+    fn only_a_recording_note_pauses() {
+        assert_eq!(
+            pause_step(&recording_inner("s")),
+            PauseStep::Close("s".into())
+        );
+        assert_eq!(pause_step(&paused_inner("s")), PauseStep::Nothing);
+        // Interrupted: the clock stays, and nothing records.
+        let interrupted = Inner {
+            clock: Some(Clock::new("s", Timeline::new(), Instant::now())),
+            ..Inner::default()
+        };
+        assert_eq!(pause_step(&interrupted), PauseStep::Nothing);
+        // Stopped, or no note.
+        assert_eq!(pause_step(&Inner::default()), PauseStep::Nothing);
+        // A restart reopens a lost microphone.
+        let mut restarting = recording_inner("s");
+        restarting.active = None;
+        restarting.recovering = Some(Pending::new("s"));
+        assert_eq!(pause_step(&restarting), PauseStep::Nothing);
+    }
+
+    // Covers R1, KTD8.
+    #[test]
+    fn only_a_paused_note_continues() {
+        assert_eq!(
+            continue_step(&paused_inner("s")),
+            ContinueStep::Open("s".into())
+        );
+        assert_eq!(continue_step(&recording_inner("s")), ContinueStep::Nothing);
+        assert_eq!(continue_step(&Inner::default()), ContinueStep::Nothing);
+    }
+
+    // Covers R11 (KTD3).
+    #[test]
+    fn a_paused_note_is_an_open_note() {
+        assert!(recording_inner("s").note_open());
+        assert!(paused_inner("s").note_open());
+        let restarting = Inner {
+            recovering: Some(Pending::new("s")),
+            ..Inner::default()
+        };
+        assert!(restarting.note_open());
+        assert!(!Inner::default().note_open());
+    }
+
+    // Covers R11 (KTD3): Resume or Record of another note is refused while
+    // a note is paused, as while a note records.
+    #[test]
+    fn a_capture_of_another_note_is_refused_while_a_note_is_paused() {
+        let recording = may_capture(&recording_inner("s")).unwrap_err();
+        let paused = may_capture(&paused_inner("s")).unwrap_err();
+        assert!(matches!(recording, CaptureError::AlreadyCapturing));
+        assert!(matches!(paused, CaptureError::AlreadyCapturing));
+        assert!(may_capture(&Inner::default()).is_ok());
+    }
+
+    // Covers R4: Stop of a paused note ends that note, and the note is
+    // no longer paused.
+    #[test]
+    fn a_stop_with_no_segment_open_ends_the_paused_note() {
+        let mut inner = paused_inner("s");
+        assert_eq!(stopped_without_segment(&mut inner, None), Some("s".into()));
+        assert!(inner.paused.is_none());
+        let mut restarting = Inner::default();
+        assert_eq!(
+            stopped_without_segment(&mut restarting, Some("r".into())),
+            Some("r".into())
+        );
+        assert_eq!(stopped_without_segment(&mut Inner::default(), None), None);
+    }
+
+    // Covers R4, AE2 (KTD4): a Stop of a paused note applies UserStop from
+    // Capturing. The pause flag stays until a later Resume.
+    #[test]
+    fn a_stop_of_a_paused_note_queues_it_and_keeps_the_pause_flag() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        assert!(store.mark_pause("s").unwrap());
+        let outcome = stop_note(&mut store, "s", at(900)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+        assert_eq!(store.session("s").unwrap().unwrap().state.name(), "queued");
+        assert!(store.segments("s").unwrap()[0].ends_in_pause);
+    }
+
+    // Covers R2 (KTD9).
+    #[test]
+    fn a_background_reopen_is_refused_while_a_note_is_paused() {
+        assert!(!may_reopen(&paused_inner("s")));
+        assert!(may_reopen(&recording_inner("s")));
+        assert!(may_reopen(&Inner::default()));
+    }
+
+    // Covers AE1, R7: a note that recorded 50 min and paused 15 min
+    // continues 15 min after the end of its last segment.
+    #[test]
+    fn a_continue_after_a_pause_of_15_minutes_leaves_a_15_minute_gap() {
+        let last_end = 50 * 60_000;
+        let elapsed = 65 * 60_000;
+        assert_eq!(
+            resume_offset(last_end, at(3_000), at(3_900), Some(elapsed)),
+            elapsed
+        );
+    }
+
+    // Covers R8 (KTD1): a paused note records for every reader of the
+    // status, and it is paused.
+    #[test]
+    fn the_status_of_a_paused_note_is_recording_and_paused() {
+        let paused = paused_inner("s").snapshot();
+        assert!(paused.recording);
+        assert!(paused.paused);
+        assert!(!paused.reconnecting);
+        assert!(paused.input.is_none());
+        let recording = recording_inner("s").snapshot();
+        assert!(recording.recording);
+        assert!(!recording.paused);
+    }
+
+    // Covers R8: the recorded time is the sum of the kept segments.
+    #[test]
+    fn the_recorded_time_is_the_sum_of_the_kept_segments() {
+        let first = one_segment(1);
+        let second = session_core::Segment {
+            index: 1,
+            offset_ms: 900_000,
+            duration_ms: 30_000,
+            ..one_segment(901)
+        };
+        assert_eq!(recorded_ms(&[first, second]), 90_000);
+        assert_eq!(recorded_ms(&[]), 0);
     }
 }

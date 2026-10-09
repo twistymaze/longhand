@@ -133,6 +133,31 @@ pub async fn stop_recording(
     Ok(outcome)
 }
 
+/// Pause the note that records (R1, KTD8). A note that is already paused,
+/// or no note that records, does not change.
+#[tauri::command]
+#[specta::specta]
+pub async fn pause_recording(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+) -> Result<(), String> {
+    let manager = Arc::clone(&manager);
+    blocking(move || manager.pause_session(&app).map_err(|e| e.to_string())).await
+}
+
+/// Continue the paused note (R1, KTD8). A note that records, or no paused
+/// note, does not change. When the microphone cannot open, the note is
+/// interrupted (R5).
+#[tauri::command]
+#[specta::specta]
+pub async fn continue_recording(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+) -> Result<(), String> {
+    let manager = Arc::clone(&manager);
+    blocking(move || manager.continue_session(&app).map_err(|e| e.to_string())).await
+}
+
 /// Record into a note with no audio (R11, KTD2), from the note page or the
 /// recording shortcut. Refused with the reason that the note page shows
 /// (R12, R21, R23): the note records or is processed on another computer,
