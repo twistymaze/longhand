@@ -2,6 +2,9 @@
 // It shows the state of the update manager and sends the user's choice.
 // The manager opens and closes the window. A close by the user counts as
 // the left button's choice.
+//
+// The window can open while the user types, so the page ignores the
+// keyboard: no button gets the focus, and Return and Space do not click.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -13,7 +16,8 @@ import { Button, formatBytes } from "../settings/ui";
 /// A prominent button is blue, as the default button of a macOS alert.
 type Action = { label: string; choice: Choice; prominent?: boolean };
 
-/// The text and the buttons of one state. The last button is the default.
+/// The text and the buttons of one state. The last button is at the right,
+/// as the default button of a macOS alert.
 type View = { title: string; message?: string; progress?: { downloaded: number; total: number | null }; buttons: Action[] };
 
 const ok: Action ={ label: "OK", choice: "close", prominent: true };
@@ -81,26 +85,35 @@ function progressText({ downloaded, total }: { downloaded: number; total: number
 /// requests the content size plus an offset. After each window resize, the
 /// offset is the last request minus the viewport. The page reads the
 /// viewport only then, because before the resize it shows the old size.
+///
+/// The window opens hidden. After the first resize that needs no new
+/// request, the page asks the app to show the window.
 function useWindowFitsContent(content: RefObject<HTMLElement | null>, shown: boolean) {
+  const showRequested = useRef(false);
   useLayoutEffect(() => {
     const element = content.current;
     if (!element) return;
     let requested: { width: number; height: number } | null = null;
     let offset = { width: 0, height: 0 };
+    // True when the window already has the size that fits the content.
     const fit = () => {
       const rect = element.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+      if (rect.width === 0 || rect.height === 0) return false;
       const width = Math.ceil(rect.width) + offset.width;
       const height = Math.ceil(rect.height) + offset.height;
-      if (requested?.width === width && requested.height === height) return;
+      if (requested?.width === width && requested.height === height) return true;
       requested = { width, height };
       getCurrentWindow().setSize(new LogicalSize(width, height)).catch(() => {});
+      return false;
     };
     const windowResized = () => {
       if (requested) {
         offset = { width: requested.width - window.innerWidth, height: requested.height - window.innerHeight };
       }
-      fit();
+      if (fit() && !showRequested.current) {
+        showRequested.current = true;
+        void commands.showUpdateWindow();
+      }
     };
     fit();
     const contentResized = new ResizeObserver(fit);
@@ -129,25 +142,22 @@ export function UpdateWindow() {
   }, []);
 
   const view = state ? viewOf(state) : null;
-  const defaultButton = useRef<HTMLButtonElement>(null);
-  const title = view?.title;
-  // WKWebView does not focus a button on click, so the page sets the focus
-  // itself. Return then activates the default button.
-  useEffect(() => defaultButton.current?.focus(), [title]);
   const content = useRef<HTMLElement>(null);
   useWindowFitsContent(content, view !== null);
 
   if (!view) return <main className="h-screen bg-window" />;
   const choose = (choice: Choice) => void commands.chooseUpdate(choice);
-  const cancel = view.buttons[0]!;
   const fraction = view.progress?.total ? Math.min(1, view.progress.downloaded / view.progress.total) : null;
 
   return (
     <main
       ref={content}
       className="flex w-[480px] gap-4 bg-window px-5 pt-5 pb-4 text-label select-none"
+      // The app does not let the window take the focus. If a button has the
+      // focus all the same, Return and Space do not click it. A click from
+      // the pointer or from VoiceOver still chooses.
       onKeyDown={(e) => {
-        if (e.key === "Escape") choose(cancel.choice);
+        if (e.key === "Enter" || e.key === " ") e.preventDefault();
       }}
     >
       <AppIcon className="size-14" />
@@ -179,19 +189,11 @@ export function UpdateWindow() {
           </div>
         )}
         <div className="flex justify-end gap-2 pt-4">
-          {view.buttons.map((b, i) => {
-            const isDefault = i === view.buttons.length - 1;
-            return (
-              <Button
-                key={b.choice}
-                ref={isDefault ? defaultButton : undefined}
-                prominent={b.prominent}
-                onClick={() => choose(b.choice)}
-              >
-                {b.label}
-              </Button>
-            );
-          })}
+          {view.buttons.map((b) => (
+            <Button key={b.choice} prominent={b.prominent} onClick={() => choose(b.choice)}>
+              {b.label}
+            </Button>
+          ))}
         </div>
       </div>
     </main>

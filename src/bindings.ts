@@ -1134,6 +1134,14 @@ async chooseUpdate(choice: Choice) : Promise<void> {
     await TAURI_INVOKE("choose_update", { choice });
 },
 /**
+ * The update window's page has set the size that fits its content, so the
+ * window can show. Async because a synchronous command that changes a
+ * window can deadlock on Windows.
+ */
+async showUpdateWindow() : Promise<void> {
+    await TAURI_INVOKE("show_update_window");
+},
+/**
  * Return the full licence list for the platform of this build.
  */
 async licenceText() : Promise<string> {

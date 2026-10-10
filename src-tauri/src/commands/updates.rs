@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::managers::updates::{Choice, UpdateManager, UpdateState};
 
@@ -19,6 +19,15 @@ pub fn update_state(manager: State<'_, Arc<UpdateManager>>) -> UpdateState {
 #[specta::specta]
 pub fn check_for_updates(manager: State<'_, Arc<UpdateManager>>) {
     manager.check_now();
+}
+
+/// The update window's page has set the size that fits its content, so the
+/// window can show. Async because a synchronous command that changes a
+/// window can deadlock on Windows.
+#[tauri::command]
+#[specta::specta]
+pub async fn show_update_window(app: AppHandle) {
+    crate::window::show_built_update_window(&app);
 }
 
 /// A button in the update window, or a close of the window.

@@ -94,6 +94,9 @@ objc2-service-management = "0.3.2"
 # The recording widget panel (src/widget.rs), as in Handy. From crates.io,
 # because deny.toml refuses other sources.
 tauri-nspanel = "2.1"
+# A window shows after tao's queued move and resize (src/window.rs). tao
+# already uses it.
+dispatch2 = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tauri-plugin-autostart = "=2.5.1"

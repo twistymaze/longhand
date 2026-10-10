@@ -67,19 +67,28 @@ describe("the update window", () => {
     expect(buttons()).toEqual(["OK"]);
   });
 
-  test("the default button has the focus, so Return activates it", async () => {
-    const tauri = open({ state: "offered", version: NEW, current: CURRENT });
-    const install = await screen.findByRole("button", { name: "Install and Relaunch" });
-    await waitFor(() => expect(document.activeElement).toBe(install));
-    await userEvent.setup().keyboard("{Enter}");
-    expect(choices(tauri)).toEqual(["install"]);
+  // The window can open while the user types in another app. A key press
+  // that was meant for that app must not choose.
+  test("no button has the focus when the window opens", async () => {
+    open({ state: "offered", version: NEW, current: CURRENT });
+    await screen.findByRole("button", { name: "Install and Relaunch" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement?.tagName).not.toBe("BUTTON");
   });
 
-  test("Escape sends the left button's choice", async () => {
+  test("Return, Space and Escape send no choice", async () => {
     const tauri = open({ state: "offered", version: NEW, current: CURRENT });
     await screen.findByRole("button", { name: "Install and Relaunch" });
-    await userEvent.setup().keyboard("{Escape}");
-    expect(choices(tauri)).toEqual(["remind_later"]);
+    await userEvent.setup().keyboard("{Enter} {Escape}");
+    expect(choices(tauri)).toEqual([]);
+  });
+
+  test("a key press on a button that has the focus sends no choice", async () => {
+    const tauri = open({ state: "offered", version: NEW, current: CURRENT });
+    const install = await screen.findByRole("button", { name: "Install and Relaunch" });
+    install.focus();
+    await userEvent.setup().keyboard("{Enter} ");
+    expect(choices(tauri)).toEqual([]);
   });
 });
 
@@ -90,7 +99,9 @@ describe("the update window size", () => {
     Object.defineProperty(window, "innerHeight", { value: height, configurable: true });
   }
 
-  test("a window that shows less than the content grows by the part that does not show", async () => {
+  // The window opens hidden. It shows only after it has the content's size,
+  // so it does not first show at the wrong size.
+  test("a window that shows less than the content grows by the part that does not show, and then shows", async () => {
     mockWindows("update");
     const measure = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
       DOMRect.fromRect({ width: 480, height: 132.2 }),
@@ -101,9 +112,11 @@ describe("the update window size", () => {
       const tauri = mockTauri({
         update_state: () => ({ state: "up_to_date", current: CURRENT }),
         "plugin:window|set_size": () => null,
+        show_update_window: () => null,
       });
       const sizes = () =>
         tauri.calls.filter((c) => c.cmd === "plugin:window|set_size").map((c) => JSON.stringify(c.args));
+      const shows = () => tauri.calls.filter((c) => c.cmd === "show_update_window").length;
       render(<UpdateWindow />);
       await screen.findByText("Longhand is up to date");
       await waitFor(() => expect(sizes().slice(-1)[0]).toContain('"width":480,"height":133'));
@@ -112,12 +125,18 @@ describe("the update window size", () => {
       setViewport(480, 101);
       act(() => void window.dispatchEvent(new Event("resize")));
       await waitFor(() => expect(sizes().slice(-1)[0]).toContain('"width":480,"height":165'));
+      expect(shows()).toBe(0);
 
-      // All of the content shows, so the window keeps its size.
+      // All of the content shows, so the window keeps its size and shows.
       const count = sizes().length;
       setViewport(480, 133);
       act(() => void window.dispatchEvent(new Event("resize")));
       expect(sizes().length).toBe(count);
+      await waitFor(() => expect(shows()).toBe(1));
+
+      // A later resize does not show the window again.
+      act(() => void window.dispatchEvent(new Event("resize")));
+      expect(shows()).toBe(1);
     } finally {
       measure.mockRestore();
       setViewport(...viewport);

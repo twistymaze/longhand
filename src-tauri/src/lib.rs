@@ -127,6 +127,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::updates::update_state,
             commands::updates::check_for_updates,
             commands::updates::choose_update,
+            commands::updates::show_update_window,
             commands::licences::licence_text,
             commands::webview_log::log_from_webview,
             commands::widget::widget_hide,

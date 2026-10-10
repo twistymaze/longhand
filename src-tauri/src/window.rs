@@ -270,9 +270,33 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
             .maximizable(false)
             .minimizable(false)
             .center()
+            // The window can open while the user types, in another app or
+            // in Longhand. It opens without the focus (`show` with `focus`
+            // false), so the key presses stay where the user types, and it
+            // floats so that it is not behind other windows.
+            .focused(false)
+            .always_on_top(true)
+            // The first click on a button chooses, also when Longhand is
+            // not the active app.
+            .accept_first_mouse(true)
             .build();
             match built {
-                Ok(window) => front(app, &window),
+                // The page shows the window when it has the size of the
+                // content (`show_built_update_window`). If the page does not
+                // do this in `UPDATE_SHOW_LIMIT`, the window shows here.
+                // The limit applies only to this window: a window that is
+                // built after this one closes waits for its own page.
+                Ok(_) => {
+                    UPDATE_OPENS.opened();
+                    let open = UPDATE_OPENS.current();
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(UPDATE_SHOW_LIMIT);
+                        if UPDATE_OPENS.is_current(open) {
+                            show_built_update_window(&app);
+                        }
+                    });
+                }
                 Err(e) => log::error!("failed to open the update window: {e}"),
             }
         }
@@ -285,6 +309,19 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
             }
         }
         _ => {}
+    }
+}
+
+/// The time from the build of the update window to its show when the page
+/// does not show it.
+const UPDATE_SHOW_LIMIT: Duration = Duration::from_secs(1);
+
+/// Show the update window if it is open and hidden. It takes no focus.
+pub fn show_built_update_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(UPDATE_WINDOW)
+        && !window.is_visible().unwrap_or(true)
+    {
+        show(app, &window, false);
     }
 }
 
@@ -303,8 +340,9 @@ static CLOSED_BY_STATE: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// a page that stops (a crash, a reload) cannot.
 const SETTINGS_CLOSE_LIMIT: Duration = Duration::from_secs(6);
 
-/// Counts the Settings windows that were built, so that a late destroy does
-/// not close a new window that opened after the close request.
+/// Counts the windows with one label that were built, so that a late action
+/// does not change a new window: a late destroy of a Settings window, or a
+/// late show of an update window.
 struct OpenCount(AtomicU64);
 
 impl OpenCount {
@@ -329,14 +367,62 @@ impl OpenCount {
 }
 
 static SETTINGS_OPENS: OpenCount = OpenCount::new();
+static UPDATE_OPENS: OpenCount = OpenCount::new();
+
+/// Put the window in front of the other windows, also when Longhand is not
+/// the active app, but do not make it the key window. The key presses then
+/// stay in the window where the user types. A click on the window makes it
+/// the key window as usual. tao's show always makes the window the key
+/// window, so this calls AppKit directly. Call it on the main thread.
+#[cfg(target_os = "macos")]
+fn order_front_without_key(window: &WebviewWindow) -> tauri::Result<()> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let ns_window = window.ns_window()?.cast::<AnyObject>();
+    // SAFETY: `ns_window` is the live NSWindow of `window`, and the caller
+    // runs on the main thread, as AppKit requires.
+    unsafe {
+        let _: () = msg_send![ns_window, orderFrontRegardless];
+    }
+    Ok(())
+}
 
 /// Show and focus `window`. A visible window keeps the Dock icon, so the app
 /// becomes Regular again if a hide made it Accessory.
 fn front(app: &AppHandle, window: &WebviewWindow) {
-    if let Err(e) = window.show() {
+    show(app, window, true);
+}
+
+/// Show the window, and with `focus`, make it the focused window.
+///
+/// On macOS the window-state plugin moves and resizes a new window through
+/// tao, which queues the change on the main dispatch queue. A show at once
+/// would draw the window at its default place first. The show goes on the
+/// same queue, so it comes after the change.
+fn show(app: &AppHandle, window: &WebviewWindow, focus: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let app = app.clone();
+        let window = window.clone();
+        dispatch2::DispatchQueue::main().exec_async(move || show_now(&app, &window, focus));
+    }
+    #[cfg(not(target_os = "macos"))]
+    show_now(app, window, focus);
+}
+
+fn show_now(app: &AppHandle, window: &WebviewWindow, focus: bool) {
+    #[cfg(target_os = "macos")]
+    let shown = if focus {
+        window.show()
+    } else {
+        order_front_without_key(window)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let shown = window.show();
+    if let Err(e) = shown {
         log::error!("failed to show the {} window: {e}", window.label());
     }
-    if let Err(e) = window.set_focus() {
+    if focus && let Err(e) = window.set_focus() {
         log::error!("failed to focus the {} window: {e}", window.label());
     }
     // Showing promotes the app from Accessory to Regular, which is the
