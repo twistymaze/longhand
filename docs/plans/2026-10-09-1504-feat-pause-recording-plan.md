@@ -453,4 +453,4 @@ Manual test steps: record 1 min, pause, check the macOS microphone indicator is 
 - `src/bindings.ts` matches the Rust commands.
 - The manual test in a signed build passes.
 - No code from abandoned approaches is left in the diff.
-- `docs/ideas/next/pause-recording.md` moves to `done/` after the merge.
+- The idea moves to `docs/ideas/done/pause-recording.md` after the merge.

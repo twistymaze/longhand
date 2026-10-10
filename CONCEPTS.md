@@ -182,3 +182,7 @@ A signed, notarized macOS build that CI makes from each push to main that passes
 
 ### Update manifest
 The file that identifies the newest build of a track: its version, date, archive address and signature. The app reads only this file when it checks for updates. For the preview track, it is `preview/latest.json` in the public builds repository.
+
+## Flagged ambiguities
+
+- "Gap" has two senses. A Gap (above) is audio with no live transcript, which gap fill transcribes. The gap line in a finished transcript is the time between two segments, for example after a Stop and a Resume: no audio exists there, and gap fill does not transcribe it. The time between two segments that a Pause and a Continue made is a pause line, never a gap line.
