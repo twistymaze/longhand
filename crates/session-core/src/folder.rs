@@ -398,8 +398,13 @@ impl SessionDoc {
         }
         for pair in self.segments.windows(2) {
             let gap = pair[1].offset_ms - (pair[0].offset_ms + pair[0].duration_ms);
+            let kind = if pair[0].ends_in_pause {
+                "Pause"
+            } else {
+                "Gap"
+            };
             out.push_str(&format!(
-                "\nGap of {} between segments {} and {}.",
+                "\n{kind} of {} between segments {} and {}.",
                 format_position(gap),
                 pair[0].index + 1,
                 pair[1].index + 1

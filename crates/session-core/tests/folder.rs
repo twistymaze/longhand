@@ -54,6 +54,26 @@ fn session_md_round_trips_the_timeline() {
 }
 
 #[test]
+fn session_md_names_a_pause_between_segments() {
+    let segment = |index: u32, offset_ms: u64, ends_in_pause: bool| Segment {
+        index,
+        offset_ms,
+        duration_ms: 60_000,
+        wall_start: wall(0),
+        wall_end: wall(1),
+        audio_file: format!("audio/segment-0{}.opus", index + 1),
+        channels: 1,
+        ends_in_pause,
+    };
+    let segments = vec![segment(0, 0, true), segment(1, 120_000, false)];
+    let text = SessionDoc::new("01J8Z", None, &segments).unwrap().render();
+    assert!(
+        text.contains("Pause of 00:01:00 between segments 1 and 2."),
+        "{text}"
+    );
+}
+
+#[test]
 fn transcript_md_round_trips() {
     let transcript = Transcript {
         has_speakers: true,
