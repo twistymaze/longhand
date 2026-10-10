@@ -13,6 +13,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     shortcut: "CmdOrCtrl+Shift+R",
     show_window_shortcut: null,
     pause_shortcut: null,
+    widget_shortcut: null,
     storage_folder: "/notes",
     endpoint_base_url: "",
     endpoint_model: "",
@@ -29,6 +30,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     system_audio_default: false,
     new_note_records: true,
     alert_sound: true,
+    show_recording_widget: true,
     hide_from_dock: false,
     check_updates_automatically: true,
     audio_removal: { kind: "after_days", days: 30 },
@@ -97,6 +99,10 @@ async function open({
     },
     set_alert_sound: ({ enabled }) => {
       state.settings = { ...state.settings, alert_sound: enabled as boolean };
+      return state.settings;
+    },
+    set_show_recording_widget: ({ enabled }) => {
+      state.settings = { ...state.settings, show_recording_widget: enabled as boolean };
       return state.settings;
     },
     ...handlers,
@@ -274,6 +280,42 @@ describe("Recording pane", () => {
     expect(within(row).getByText("Pause shortcut")).toBeTruthy();
     await user.click(within(row).getByRole("button", { name: "Clear" }));
     expect(calls(mock, "set_shortcut")).toEqual([{ kind: "pause", chord: null }]);
+    await waitFor(() => expect(row.textContent).toContain("Off"));
+  });
+
+  test("the recording widget switch is on by default, and turning it off saves the change", async () => {
+    const { mock, user } = await open();
+    const toggle = screen.getByRole("switch", { name: "Show the recording widget" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("A change applies from the next note")).toBeTruthy();
+    await user.click(toggle);
+    expect(calls(mock, "set_show_recording_widget")).toEqual([{ enabled: false }]);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+  });
+
+  test("the widget shortcut shows Off with no chord", async () => {
+    await open();
+    const row = screen.getByText("Widget shortcut").closest(".settings-row") as HTMLElement;
+    expect(row.textContent).toContain("Off");
+    expect(within(row).queryByRole("button", { name: "Clear" })).toBeNull();
+  });
+
+  test("a registered widget shortcut shows what it does, and Clear sends the widget kind", async () => {
+    const widget = { chord: "Alt+Shift+W", registered: true, error: null };
+    const { mock, user } = await open({
+      handlers: {
+        shortcut_status: () => ({ ...shortcutStatuses, widget }),
+        set_shortcut: () => shortcutStatuses,
+        suspend_shortcuts: () => null,
+        resume_shortcuts: () => null,
+      },
+    });
+    const row = (await screen.findByText("Shows or hides the widget for the open note")).closest(
+      ".settings-row",
+    ) as HTMLElement;
+    expect(within(row).getByText("Widget shortcut")).toBeTruthy();
+    await user.click(within(row).getByRole("button", { name: "Clear" }));
+    expect(calls(mock, "set_shortcut")).toEqual([{ kind: "widget", chord: null }]);
     await waitFor(() => expect(row.textContent).toContain("Off"));
   });
 

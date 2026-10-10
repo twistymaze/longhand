@@ -12,6 +12,12 @@ forwardErrorsToLog();
 // its place (`.title-strip` in index.css).
 if (navigator.userAgent.includes("Mac")) document.documentElement.classList.add("mac");
 
+// The recording widget window is transparent: only its pill shows
+// (`.widget-window` in index.css).
+if (new URLSearchParams(window.location.search).get("window") === "widget") {
+  document.documentElement.classList.add("widget-window");
+}
+
 // On macOS the app menu holds Settings… (⌘,). Windows has no app menu, so
 // Ctrl+, opens Settings from any window (KTD3).
 if (!navigator.userAgent.includes("Mac")) {

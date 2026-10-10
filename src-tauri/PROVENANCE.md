@@ -20,6 +20,15 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Licence: MIT, licences/sources/Handy-MIT.txt
 - Status: modified — settings-driven tray visibility removed; the window always hides to the tray; the Settings window and the Dock-icon rule for it are Longhand's own
 
+## `src/widget.rs`
+
+- Repository: https://github.com/cjpais/Handy
+- Revision: 29bd2c0d6b4b705df5fd6d2f387e5db5ecc27480
+- Source paths: `src-tauri/src/overlay.rs` (recording overlay panel and window settings, bottom-centre placement in logical points on macOS and physical pixels on Windows, Windows topmost order)
+- Copyright: Copyright (c) 2025 CJ Pais
+- Licence: MIT, licences/sources/Handy-MIT.txt
+- Status: modified — one size and the work-area bottom on both platforms; remembers its display and moves to a remaining display; content protection, a mouse tracking area for hover, the per-note show rules and the sync are Longhand's own
+
 ## `src/tray.rs`
 
 - Repository: https://github.com/cjpais/Handy

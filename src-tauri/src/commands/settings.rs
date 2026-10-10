@@ -285,6 +285,17 @@ pub fn set_alert_sound(app: AppHandle, enabled: bool) -> Result<Settings, String
     })
 }
 
+/// Choose whether a new note shows the recording widget (R11). The next
+/// note reads the new value (R14).
+#[tauri::command]
+#[specta::specta]
+pub fn set_show_recording_widget(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| {
+        s.show_recording_widget = enabled;
+        Ok(())
+    })
+}
+
 /// Choose whether the app checks for updates by itself (R10). The next
 /// scheduled check reads the new value.
 #[tauri::command(async)]

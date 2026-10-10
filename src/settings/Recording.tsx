@@ -203,7 +203,12 @@ function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
         />
       </Row>
       <RecordingShortcut readiness={readiness} onRefresh={onRefresh} />
-      <PauseShortcut onRefresh={onRefresh} />
+      <OptionalShortcut
+        kind="pause"
+        label="Pause shortcut"
+        does="Pauses and continues a recording from any app"
+        onRefresh={onRefresh}
+      />
       {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );
@@ -234,34 +239,70 @@ function RecordingShortcut({ readiness, onRefresh }: { readiness: Readiness; onR
   );
 }
 
-/// The Pause shortcut (R16). It has no default chord. Readiness holds only
-/// the recording shortcut, so this row reads its own status.
-function PauseShortcut({ onRefresh }: { onRefresh: () => Promise<void> }) {
-  const [pause, setPause] = useState<ShortcutStatus>({ chord: null, registered: false, error: null });
+/// A shortcut with no default chord: the Pause shortcut (R16) and the
+/// widget shortcut (R13). Readiness holds only the recording shortcut, so
+/// this row reads its own status. `does` says what a registered chord does.
+function OptionalShortcut({
+  kind,
+  label,
+  does,
+  onRefresh,
+}: {
+  kind: "pause" | "widget";
+  label: string;
+  does: string;
+  onRefresh: () => Promise<void>;
+}) {
+  const [status, setStatus] = useState<ShortcutStatus>({ chord: null, registered: false, error: null });
   useEffect(() => {
-    void commands.shortcutStatus().then((s) => setPause(s.pause));
-  }, []);
+    void commands.shortcutStatus().then((s) => setStatus(s[kind]));
+  }, [kind]);
   return (
     <ShortcutField
-      kind="pause"
-      label="Pause shortcut"
-      status={pause}
+      kind={kind}
+      label={label}
+      status={status}
       detail={
-        !pause.chord ? (
+        !status.chord ? (
           <StatusText tone="neutral">Off</StatusText>
-        ) : pause.registered ? (
-          "Pauses and continues a recording from any app"
+        ) : status.registered ? (
+          does
         ) : (
-          <StatusText tone="negative">{pause.error ?? "Not registered"}</StatusText>
+          <StatusText tone="negative">{status.error ?? "Not registered"}</StatusText>
         )
       }
       onChanged={(next) => {
-        setPause(next.pause);
+        setStatus(next[kind]);
         // A change pauses all shortcuts, and the resume can change whether
         // the recording shortcut is registered.
         void onRefresh();
       }}
     />
+  );
+}
+
+/// The recording widget (R11, R13): the switch applies from the next note,
+/// and the shortcut shows or hides the widget for the open note.
+function WidgetGroup({ settings, onSettings, onRefresh }: PaneProps) {
+  return (
+    <Group
+      header="Recording Widget"
+      footer="A small bar at the bottom of the screen shows the time and the Pause and Stop buttons while a note is recording, paused or interrupted."
+    >
+      <SettingSwitch
+        label="Show the recording widget"
+        detail="A change applies from the next note"
+        checked={settings.show_recording_widget}
+        set={commands.setShowRecordingWidget}
+        onSettings={onSettings}
+      />
+      <OptionalShortcut
+        kind="widget"
+        label="Widget shortcut"
+        does="Shows or hides the widget for the open note"
+        onRefresh={onRefresh}
+      />
+    </Group>
   );
 }
 
@@ -295,6 +336,7 @@ export function RecordingPane(props: PaneProps) {
   return (
     <Pane title="Recording">
       <NewNote {...props} />
+      <WidgetGroup {...props} />
       <MicrophoneGroup {...props} />
       {features.systemAudio && <SystemAudio {...props} />}
       <AlertGroup settings={props.settings} onSettings={props.onSettings} />

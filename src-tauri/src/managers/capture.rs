@@ -3364,6 +3364,8 @@ impl CaptureManager {
 
 fn changed(app: &AppHandle, session_id: Option<&str>) {
     crate::tray::recording_changed(app, session_id);
+    // A request only: some callers hold the capture lock here (KTD1).
+    crate::widget::request(app, crate::widget::Request::Sync);
     // A recording start closes the update window at once (AE2).
     crate::managers::updates::recording_changed(app);
     let _ = RecordingChanged {

@@ -78,9 +78,10 @@ pub fn change(app: &AppHandle, action: ZoomAction) -> Result<u16, String> {
     )
 }
 
-/// The update window has no interface zoom, as a macOS alert.
+/// The update window has no interface zoom, as a macOS alert. The recording
+/// widget has none either: its window has a fixed size (KTD9).
 fn has_zoom(label: &str) -> bool {
-    label != crate::window::UPDATE_WINDOW
+    label != crate::window::UPDATE_WINDOW && label != crate::widget::WIDGET_WINDOW
 }
 
 /// Hold the same operation lock while creating a hidden window at its saved scale.
@@ -119,6 +120,13 @@ fn apply(window: &WebviewWindow, percent: u16) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn the_recording_widget_has_no_interface_zoom() {
+        assert!(!has_zoom(crate::widget::WIDGET_WINDOW));
+        assert!(has_zoom(crate::window::MAIN_WINDOW));
+    }
+
     #[test]
     fn concurrent_windows_save_and_apply_in_one_order() {
         use std::sync::{

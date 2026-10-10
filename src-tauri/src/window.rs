@@ -422,15 +422,22 @@ fn hide_dock_icon_if_no_window(closing: &Window) {
     #[cfg(target_os = "macos")]
     {
         let app = closing.app_handle();
-        let other_visible = app
-            .webview_windows()
-            .values()
-            .any(|w| w.label() != closing.label() && w.is_visible().unwrap_or(false));
+        let other_visible = app.webview_windows().values().any(|w| {
+            keeps_dock_icon(w.label(), closing.label()) && w.is_visible().unwrap_or(false)
+        });
         let hide_from_dock = crate::managers::settings::get_settings(app).hide_from_dock;
         set_dock_policy(app, dock_policy(hide_from_dock, other_visible));
     }
     #[cfg(not(target_os = "macos"))]
     let _ = closing;
+}
+
+/// Whether a visible window `label` keeps the Dock icon while `closing`
+/// closes. The recording widget does not: it is a panel, not a window that
+/// the user opened (KTD9).
+#[cfg(any(target_os = "macos", test))]
+fn keeps_dock_icon(label: &str, closing: &str) -> bool {
+    label != closing && label != crate::widget::WIDGET_WINDOW
 }
 
 /// The macOS activation policy: Regular has a Dock icon, and Accessory has
@@ -557,6 +564,15 @@ mod tests {
     #[test]
     fn with_the_switch_off_a_visible_window_keeps_the_dock_icon() {
         assert_eq!(dock_policy(false, true), DockPolicy::Regular);
+    }
+
+    // With "Hide from Dock" on, the main window closed and the pill visible,
+    // the Dock icon goes: the pill does not count as a window (KTD9).
+    #[test]
+    fn the_recording_widget_does_not_keep_the_dock_icon() {
+        assert!(!keeps_dock_icon(crate::widget::WIDGET_WINDOW, MAIN_WINDOW));
+        assert!(keeps_dock_icon(SETTINGS_WINDOW, MAIN_WINDOW));
+        assert!(!keeps_dock_icon(MAIN_WINDOW, MAIN_WINDOW));
     }
 
     /// Startup has no visible window: a login launch with the switch on has

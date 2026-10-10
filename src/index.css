@@ -95,6 +95,12 @@ html {
   overflow: hidden;
 }
 
+/* The recording widget window is transparent around its pill. */
+html.widget-window,
+html.widget-window body {
+  background: transparent;
+}
+
 /* On macOS the main window has no title bar of its own. This strip takes
    its place: it is empty, it has the window's colour, it holds the window
    buttons (centred by window.rs), and a drag on it moves the window.

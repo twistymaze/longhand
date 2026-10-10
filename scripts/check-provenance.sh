@@ -37,6 +37,7 @@ BORROWED_DIRS=(
   src-tauri
   src/editor
   src/settings
+  src/widget
 )
 
 FIELDS=("Repository" "Revision" "Source paths" "Copyright" "Licence" "Status")

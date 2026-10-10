@@ -236,6 +236,7 @@ pub struct LocalSettings {
     pub shortcut: Option<String>,
     pub show_window_shortcut: Option<String>,
     pub pause_shortcut: Option<String>,
+    pub widget_shortcut: Option<String>,
     pub storage_folder: String,
     pub endpoint_base_url: Option<String>,
     pub endpoint_model: String,
@@ -255,6 +256,9 @@ pub struct LocalSettings {
     /// sound (R9). Local to this computer (KTD1).
     pub alert_sound: bool,
     pub hide_from_dock: bool,
+    /// Whether a new note shows the recording widget (R11). Local to this
+    /// computer.
+    pub show_recording_widget: bool,
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
 }
 
@@ -460,6 +464,9 @@ pub struct Settings {
     /// The chord that pauses the recording note and continues the paused
     /// note. Off by default (R16).
     pub pause_shortcut: Option<String>,
+    /// The chord that shows or hides the recording widget for the open
+    /// note. Off by default (R13).
+    pub widget_shortcut: Option<String>,
     /// The one storage folder (R1). The library lists the notes in it, and
     /// the next note saves to it. Empty only until the launch sets the
     /// default folder (R2, KTD12).
@@ -504,6 +511,10 @@ pub struct Settings {
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
+    /// Whether a new note shows the recording widget: the pill that is on
+    /// screen while a note is open (R11). On by default. Local to this
+    /// computer. A change applies to the next note (R14).
+    pub show_recording_widget: bool,
     /// A shared setting. The app checks for a newer build of its track at
     /// launch, each hour and at each wake (R9, R10). On by default. "Check
     /// for Updates…" works when it is off (R11).
@@ -677,6 +688,7 @@ impl Default for Settings {
             shortcut: Some(DEFAULT_SHORTCUT.to_string()),
             show_window_shortcut: None,
             pause_shortcut: None,
+            widget_shortcut: None,
             storage_folder: String::new(),
             endpoint_base_url: None,
             endpoint_model: String::new(),
@@ -694,6 +706,7 @@ impl Default for Settings {
             new_note_records: true,
             alert_sound: true,
             hide_from_dock: false,
+            show_recording_widget: true,
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
             learned_context_limits: Default::default(),
@@ -726,6 +739,7 @@ impl Settings {
             shortcut: local.shortcut,
             show_window_shortcut: local.show_window_shortcut,
             pause_shortcut: local.pause_shortcut,
+            widget_shortcut: local.widget_shortcut,
             storage_folder: local.storage_folder,
             endpoint_base_url: local.endpoint_base_url,
             endpoint_model: local.endpoint_model,
@@ -747,6 +761,7 @@ impl Settings {
             new_note_records: local.new_note_records,
             alert_sound: local.alert_sound,
             hide_from_dock: local.hide_from_dock,
+            show_recording_widget: local.show_recording_widget,
             check_updates_automatically: known_or(
                 &fields.check_updates_automatically,
                 defaults.check_updates_automatically,
@@ -792,6 +807,7 @@ impl Settings {
             shortcut: self.shortcut.clone(),
             show_window_shortcut: self.show_window_shortcut.clone(),
             pause_shortcut: self.pause_shortcut.clone(),
+            widget_shortcut: self.widget_shortcut.clone(),
             storage_folder: self.storage_folder.clone(),
             endpoint_base_url: self.endpoint_base_url.clone(),
             endpoint_model: self.endpoint_model.clone(),
@@ -807,6 +823,7 @@ impl Settings {
             new_note_records: self.new_note_records,
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
+            show_recording_widget: self.show_recording_widget,
             learned_context_limits: self.learned_context_limits.clone(),
         }
     }
@@ -1856,6 +1873,8 @@ mod tests {
         assert_eq!(settings.show_window_shortcut, None);
         // A new install has no Pause chord (R16).
         assert_eq!(settings.pause_shortcut, None);
+        // A new install has no recording widget chord (R13).
+        assert_eq!(settings.widget_shortcut, None);
     }
 
     #[test]
@@ -1939,6 +1958,33 @@ mod tests {
         assert_eq!(stored["alert_sound"], json!(false));
         let (read, _) = settings_from_value(&stored);
         assert!(!read.alert_sound);
+    }
+
+    // Covers R11: the recording widget is on by default, also for a store
+    // from before the setting.
+    #[test]
+    fn a_store_without_the_recording_widget_key_reads_as_on() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "endpoint_model": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert!(settings.show_recording_widget);
+        assert!(Settings::default().show_recording_widget);
+    }
+
+    // Covers R11: the setting is local to this computer.
+    #[test]
+    fn the_recording_widget_setting_stays_local() {
+        let settings = Settings {
+            show_recording_widget: false,
+            ..Settings::default()
+        };
+        let stored = serde_json::to_value(settings.local()).unwrap();
+        assert_eq!(stored["show_recording_widget"], json!(false));
+        let (read, _) = settings_from_value(&stored);
+        assert!(!read.show_recording_widget);
     }
 
     #[test]

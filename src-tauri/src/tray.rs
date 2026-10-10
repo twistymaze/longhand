@@ -23,6 +23,40 @@ const PAUSED_TITLE: &str = "Paused";
 /// The menu item that fronts the window, renamed while an alert is raised.
 struct OpenItem(MenuItem<tauri::Wry>);
 
+const SHOW_WIDGET: &str = "Show Recording Widget";
+const HIDE_WIDGET: &str = "Hide Recording Widget";
+
+/// The menu item that shows or hides the recording widget for the open
+/// note (R13).
+struct WidgetItem(MenuItem<tauri::Wry>);
+
+/// The text of the widget item, and whether it is available. With no open
+/// note the item is unavailable (R15).
+pub(crate) fn widget_item(action: crate::widget::PressAction) -> (&'static str, bool) {
+    use crate::widget::PressAction;
+    match action {
+        PressAction::Hide => (HIDE_WIDGET, true),
+        PressAction::Show => (SHOW_WIDGET, true),
+        PressAction::None => (SHOW_WIDGET, false),
+    }
+}
+
+/// Set the widget item for the next press. The change is queued on the
+/// main thread, and the caller does not wait for it.
+pub fn set_widget_item(app: &AppHandle, action: crate::widget::PressAction) {
+    let (text, enabled) = widget_item(action);
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        if let Some(item) = handle.try_state::<WidgetItem>() {
+            let _ = item.0.set_text(text);
+            let _ = item.0.set_enabled(enabled);
+        }
+    });
+    if let Err(e) = queued {
+        log::warn!("the tray widget item change could not be queued: {e}");
+    }
+}
+
 /// Show a failed-capture alert on the tray, or clear it (U15): a title
 /// beside the menu-bar icon on macOS, which takes precedence over the
 /// recording time, the tooltip, and the menu's first item, which fronts the
@@ -70,7 +104,7 @@ pub struct ShowSession {
 /// Show the main window. While a session records or is interrupted, the
 /// window also shows that session's page (R3), because the user who opens
 /// Longhand from the tray during a recording wants the recording.
-fn open_longhand(app: &AppHandle) {
+pub(crate) fn open_longhand(app: &AppHandle) {
     show_main_window(app);
     let Some(capture) = app.try_state::<Arc<CaptureManager>>() else {
         return;
@@ -91,7 +125,10 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     app.manage(OpenItem(open.clone()));
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Longhand", true, Some("CmdOrCtrl+Q"))?;
-    let menu = Menu::with_items(app, &[&open, &settings])?;
+    let (text, enabled) = widget_item(crate::widget::PressAction::None);
+    let widget = MenuItem::with_id(app, "widget", text, enabled, None::<&str>)?;
+    app.manage(WidgetItem(widget.clone()));
+    let menu = Menu::with_items(app, &[&open, &widget, &settings])?;
     // The tray menu is always there, also when "Hide from Dock" hides the
     // app menu (KTD11). Updates are macOS only.
     #[cfg(target_os = "macos")]
@@ -143,6 +180,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let tray = builder
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => open_longhand(app),
+            "widget" => crate::widget::toggle_open_note(app),
             "settings" => open_settings(app),
             "check-updates" => crate::managers::updates::check_for_updates(app),
             "quit" => app.exit(0),
@@ -297,6 +335,16 @@ fn show_title(_app: &AppHandle) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_widget_item_names_the_next_press_and_is_unavailable_with_no_open_note() {
+        use crate::widget::PressAction;
+        assert_eq!(widget_item(PressAction::Hide), (HIDE_WIDGET, true));
+        assert_eq!(widget_item(PressAction::Show), (SHOW_WIDGET, true));
+        assert!(!widget_item(PressAction::None).1);
+        assert_eq!(HIDE_WIDGET, "Hide Recording Widget");
+        assert_eq!(SHOW_WIDGET, "Show Recording Widget");
+    }
 
     #[test]
     fn recording_title_shows_hours_minutes_and_seconds() {

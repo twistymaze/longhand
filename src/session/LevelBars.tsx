@@ -43,7 +43,9 @@ export function barScale(peak: number): number {
   return Math.round(scale * 1000) / 1000;
 }
 
-export function LevelBars({ levels, input }: { levels: number[]; input: InputStatus }) {
+/// `large` draws 3 px bars, 12 px high, for the recording widget. Both sizes
+/// use whole pixels, so each bar has the same width on the screen.
+export function LevelBars({ levels, input, large = false }: { levels: number[]; input: InputStatus; large?: boolean }) {
   const reduce = useReducedMotion();
   const live = input === "capturing" || input === "quiet";
   const recent = levels.slice(-BARS);
@@ -57,7 +59,7 @@ export function LevelBars({ levels, input }: { levels: number[]; input: InputSta
       aria-hidden
       data-meter
       data-signal={signal}
-      className={`inline-flex h-[10px] items-center gap-[2px] ${tone} ${
+      className={`inline-flex items-center gap-[2px] ${large ? "h-[12px]" : "h-[10px]"} ${tone} ${
         reduce && !signal ? "opacity-40" : ""
       }`}
     >
@@ -65,7 +67,7 @@ export function LevelBars({ levels, input }: { levels: number[]; input: InputSta
         <span
           key={i}
           data-bar
-          className="h-full w-[2px] rounded-full bg-current motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-[cubic-bezier(0.23,1,0.32,1)]"
+          className={`h-full ${large ? "w-[3px]" : "w-[2px]"} rounded-full bg-current motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-[cubic-bezier(0.23,1,0.32,1)]`}
           style={{ transform: `scaleY(${scale})` }}
         />
       ))}

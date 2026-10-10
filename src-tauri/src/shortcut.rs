@@ -1,7 +1,8 @@
 //! The global shortcuts: the recording chord, which starts a note or
 //! records into the shown note, and stops the recording (R1, R10), and the
 //! optional chord that shows or hides the main window (R5, R6), and the
-//! optional chord that pauses and continues the open note (R16).
+//! optional chord that pauses and continues the open note (R16), and the
+//! optional chord that shows or hides the recording widget (R13).
 //!
 //! Registration follows Handy's `shortcut/tauri_impl.rs`, and a change
 //! follows its `change_binding`: a press is handled on `Pressed` only, and a
@@ -21,23 +22,25 @@ use crate::managers::capture::CaptureManager;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, Settings, SpeakerCountSetting};
 
-/// Which of the three shortcuts a command acts on.
+/// Which of the four shortcuts a command acts on.
 #[derive(Serialize, Deserialize, Type, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ShortcutKind {
     Recording,
     ShowWindow,
     Pause,
+    Widget,
 }
 
 impl ShortcutKind {
-    const ALL: [Self; 3] = [Self::Recording, Self::ShowWindow, Self::Pause];
+    const ALL: [Self; 4] = [Self::Recording, Self::ShowWindow, Self::Pause, Self::Widget];
 
     fn saved(self, settings: &Settings) -> Option<String> {
         match self {
             Self::Recording => settings.shortcut.clone(),
             Self::ShowWindow => settings.show_window_shortcut.clone(),
             Self::Pause => settings.pause_shortcut.clone(),
+            Self::Widget => settings.widget_shortcut.clone(),
         }
     }
 
@@ -68,6 +71,7 @@ pub struct ShortcutStatuses {
     pub recording: ShortcutStatus,
     pub show_window: ShortcutStatus,
     pub pause: ShortcutStatus,
+    pub widget: ShortcutStatus,
 }
 
 #[derive(Default)]
@@ -79,6 +83,7 @@ pub struct ShortcutRegistration {
     recording: Mutex<ShortcutStatus>,
     show_window: Mutex<ShortcutStatus>,
     pause: Mutex<ShortcutStatus>,
+    widget: Mutex<ShortcutStatus>,
 }
 
 impl ShortcutRegistration {
@@ -87,6 +92,7 @@ impl ShortcutRegistration {
             ShortcutKind::Recording => &self.recording,
             ShortcutKind::ShowWindow => &self.show_window,
             ShortcutKind::Pause => &self.pause,
+            ShortcutKind::Widget => &self.widget,
         }
     }
 
@@ -102,6 +108,7 @@ impl ShortcutRegistration {
             recording: self.status(ShortcutKind::Recording),
             show_window: self.status(ShortcutKind::ShowWindow),
             pause: self.status(ShortcutKind::Pause),
+            widget: self.status(ShortcutKind::Widget),
         }
     }
 
@@ -201,23 +208,29 @@ pub fn apply_change(
 }
 
 fn register_chord(app: &AppHandle, kind: ShortcutKind, chord: &str) -> Result<(), String> {
-    let handler =
-        move |app: &AppHandle, _: &Shortcut, event: tauri_plugin_global_shortcut::ShortcutEvent| {
-            if event.state() != ShortcutState::Pressed {
-                return;
+    let handler = move |app: &AppHandle,
+                        _: &Shortcut,
+                        event: tauri_plugin_global_shortcut::ShortcutEvent| {
+        if event.state() != ShortcutState::Pressed {
+            return;
+        }
+        match kind {
+            ShortcutKind::Recording => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { toggle(app).await });
             }
-            match kind {
-                ShortcutKind::Recording => {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move { toggle(app).await });
-                }
-                ShortcutKind::ShowWindow => crate::window::toggle_main_window(app),
-                ShortcutKind::Pause => {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move { pause_or_continue(app).await });
-                }
+            ShortcutKind::ShowWindow => crate::window::toggle_main_window(app),
+            ShortcutKind::Pause => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { pause_or_continue(app).await });
             }
-        };
+            // With no open note the press does nothing (R15).
+            ShortcutKind::Widget => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { crate::widget::toggle_open_note(&app) });
+            }
+        }
+    };
     app.global_shortcut()
         .on_shortcut(chord, handler)
         .map_err(|e| e.to_string())
@@ -312,6 +325,7 @@ pub fn set_shortcut(
             ShortcutKind::Recording => s.shortcut = chord,
             ShortcutKind::ShowWindow => s.show_window_shortcut = chord,
             ShortcutKind::Pause => s.pause_shortcut = chord,
+            ShortcutKind::Widget => s.widget_shortcut = chord,
         }
         Ok(())
     })?;
@@ -730,6 +744,7 @@ mod tests {
             shortcut: Some("Super+KeyR".into()),
             show_window_shortcut: Some("Super+KeyL".into()),
             pause_shortcut: Some("Super+KeyP".into()),
+            widget_shortcut: Some("Super+KeyW".into()),
             ..Settings::default()
         };
         let saved: Vec<_> = ShortcutKind::ALL
@@ -741,7 +756,8 @@ mod tests {
             [
                 Some("Super+KeyR".to_string()),
                 Some("Super+KeyL".to_string()),
-                Some("Super+KeyP".to_string())
+                Some("Super+KeyP".to_string()),
+                Some("Super+KeyW".to_string())
             ]
         );
     }
@@ -750,21 +766,30 @@ mod tests {
     fn the_other_kinds_are_all_kinds_but_this_one() {
         assert_eq!(
             ShortcutKind::Pause.others().collect::<Vec<_>>(),
-            [ShortcutKind::Recording, ShortcutKind::ShowWindow]
+            [
+                ShortcutKind::Recording,
+                ShortcutKind::ShowWindow,
+                ShortcutKind::Widget
+            ]
         );
         assert_eq!(
-            ShortcutKind::Recording.others().collect::<Vec<_>>(),
-            [ShortcutKind::ShowWindow, ShortcutKind::Pause]
+            ShortcutKind::Widget.others().collect::<Vec<_>>(),
+            [
+                ShortcutKind::Recording,
+                ShortcutKind::ShowWindow,
+                ShortcutKind::Pause
+            ]
         );
     }
 
     #[test]
-    fn suspending_unregisters_all_three_registered_chords() {
+    fn suspending_unregisters_all_four_registered_chords() {
         let registration = ShortcutRegistration::default();
         for (kind, chord) in [
             (ShortcutKind::Recording, "Super+KeyR"),
             (ShortcutKind::ShowWindow, "Super+KeyL"),
             (ShortcutKind::Pause, "Super+KeyP"),
+            (ShortcutKind::Widget, "Super+KeyW"),
         ] {
             registration.set_status(
                 kind,
@@ -777,9 +802,17 @@ mod tests {
         }
         let mut unregistered = Vec::new();
         suspend_registered(&registration, |c| unregistered.push(c.to_string()));
-        assert_eq!(unregistered, ["Super+KeyR", "Super+KeyL", "Super+KeyP"]);
+        assert_eq!(
+            unregistered,
+            ["Super+KeyR", "Super+KeyL", "Super+KeyP", "Super+KeyW"]
+        );
         let statuses = registration.statuses();
-        for status in [statuses.recording, statuses.show_window, statuses.pause] {
+        for status in [
+            statuses.recording,
+            statuses.show_window,
+            statuses.pause,
+            statuses.widget,
+        ] {
             assert!(!status.registered);
             assert!(status.chord.is_some());
         }

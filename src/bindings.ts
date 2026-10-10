@@ -206,6 +206,18 @@ async setAlertSound(enabled: boolean) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * Choose whether a new note shows the recording widget (R11). The next
+ * note reads the new value (R14).
+ */
+async setShowRecordingWidget(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_show_recording_widget", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app checks for updates by itself (R10). The next
  * scheduled check reads the new value.
  */
@@ -1133,6 +1145,23 @@ async licenceText() : Promise<string> {
  */
 async logFromWebview(level: WebviewLogLevel, message: string) : Promise<void> {
     await TAURI_INVOKE("log_from_webview", { level, message });
+},
+/**
+ * The × on the pill: hide it until the note stops (R12). The note does not
+ * change. `session_id` is the note that the pill showed when the user
+ * clicked, so a click does not hide the pill of a later note.
+ */
+async widgetHide(sessionId: string) : Promise<void> {
+    await TAURI_INVOKE("widget_hide", { sessionId });
+},
+/**
+ * A click on the pill outside its controls: show the main window with the
+ * open note in front, also when the window is closed or hidden (R10). The
+ * tray's open path does the same. Async, because a command that shows a
+ * window must not run on the main thread.
+ */
+async widgetOpenNote() : Promise<void> {
+    await TAURI_INVOKE("widget_open_note");
 }
 }
 
@@ -1155,7 +1184,9 @@ processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
 showSession: ShowSession,
-updateStateChanged: UpdateStateChanged
+updateStateChanged: UpdateStateChanged,
+widgetPointer: WidgetPointer,
+widgetShown: WidgetShown
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
@@ -1172,7 +1203,9 @@ processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
 showSession: "show-session",
-updateStateChanged: "update-state-changed"
+updateStateChanged: "update-state-changed",
+widgetPointer: "widget-pointer",
+widgetShown: "widget-shown"
 })
 
 /** user-defined constants **/
@@ -2183,6 +2216,11 @@ show_window_shortcut: string | null;
  */
 pause_shortcut: string | null; 
 /**
+ * The chord that shows or hides the recording widget for the open
+ * note. Off by default (R13).
+ */
+widget_shortcut: string | null; 
+/**
  * The one storage folder (R1). The library lists the notes in it, and
  * the next note saves to it. Empty only until the launch sets the
  * default folder (R2, KTD12).
@@ -2248,6 +2286,12 @@ alert_sound: boolean;
  * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
  */
 hide_from_dock: boolean; 
+/**
+ * Whether a new note shows the recording widget: the pill that is on
+ * screen while a note is open (R11). On by default. Local to this
+ * computer. A change applies to the next note (R14).
+ */
+show_recording_widget: boolean; 
 /**
  * A shared setting. The app checks for a newer build of its track at
  * launch, each hour and at each wake (R9, R10). On by default. "Check
@@ -2322,15 +2366,15 @@ export type SharedState = { availability: SharedAvailability;
  */
 newer_version: boolean; unknown_values: UnknownSharedValue[] }
 /**
- * Which of the three shortcuts a command acts on.
+ * Which of the four shortcuts a command acts on.
  */
-export type ShortcutKind = "recording" | "show_window" | "pause"
+export type ShortcutKind = "recording" | "show_window" | "pause" | "widget"
 /**
  * One shortcut's state (KTD7): off when `chord` is `None`, registered, or
  * failed with a reason in `error`.
  */
 export type ShortcutStatus = { chord: string | null; registered: boolean; error: string | null }
-export type ShortcutStatuses = { recording: ShortcutStatus; show_window: ShortcutStatus; pause: ShortcutStatus }
+export type ShortcutStatuses = { recording: ShortcutStatus; show_window: ShortcutStatus; pause: ShortcutStatus; widget: ShortcutStatus }
 /**
  * The main window must show the page of this session (R3).
  */
@@ -2604,6 +2648,21 @@ export type UpdateStateChanged = { state: UpdateState }
  */
 export type WaitingPart = "transcript" | "summary" | "notes" | "audio"
 export type WebviewLogLevel = "error" | "warn" | "info"
+/**
+ * The pointer entered, moved on or left the pill (KTD6). WebKit sends
+ * hover events late to a panel that is never the key window, so a native
+ * tracking area sends this on macOS, and the page sets the hover itself.
+ */
+export type WidgetPointer = { inside: boolean; 
+/**
+ * The pointer position in page pixels, from the top left.
+ */
+x: number; y: number }
+/**
+ * The pill window was shown. The page reads the status again, because a
+ * hidden page can hold an old state (KTD10).
+ */
+export type WidgetShown = null
 export type ZoomAction = "increase" | "decrease" | "reset"
 
 /** tauri-specta globals **/

@@ -45,7 +45,7 @@ The main window, the tray and the macOS microphone indicator do not prevent eith
 ### Key Decisions
 
 - **One widget for both failures, not a speech-detecting reminder.** Governs R1. (session-settled: user-directed — chosen over a reminder that listens for speech while paused: the user prefers one widget that solves both problems.)
-- **Handy's overlay is the model for the window and the look.** A non-activating panel above full-screen apps and all Spaces, with a dot, a level meter and a timer. Handy's live text is left out because it distracts. Governs R2, R3, R6. (session-settled: user-directed — chosen over a top-centre pill, a small corner pill with controls on hover, and a draggable pill: shown as a rough sketch.)
+- **Handy's overlay is the model for the window and the look.** A non-activating panel above full-screen apps and all Spaces, with a dot, a level meter and a timer. Handy's live text is left out because it distracts. Governs R2, R3, R6. (session-settled: user-directed — chosen over a top-centre pill, a small corner pill with controls on hover, and a draggable pill: shown as a rough sketch. After the U6 manual test the user asked for drag to move, so the pill is now draggable: see R3.)
 - **The pill shows also when Longhand is in front.** Governs R1. (session-settled: user-directed — chosen over hiding while the recording note is visible and hiding while Longhand is active: always visible is simpler and predictable.)
 - **Hidden from screen sharing and screenshots where the OS allows; the × is the macOS fallback.** Participants in a call do not see it, which keeps to U7. Governs R4. (session-settled: user-approved — chosen over showing in captures; and, if macOS does not honour the flag, chosen over hiding while a share is detected.)
 - **Pause, Continue and Stop on the pill; Stop has no confirmation.** Resume can continue a stopped note, so a Stop by mistake is recoverable. Governs R8, R9. (session-settled: user-directed — chosen over Pause/Continue only and no controls.)
@@ -62,9 +62,9 @@ The main window, the tray and the macOS microphone indicator do not prevent eith
 
 - R1. The pill shows while a note is Recording, Paused or Interrupted, also when Longhand is in front, unless the user hid it for this note or the switch is off (R11–R16). It hides at Stop, and it does not show Processing, Saved or other states after Stop.
 - R2. The pill stays above other windows, including full-screen apps, on every Space (macOS) and on the current virtual desktop (Windows). A click on a control does not take focus from the app in front or activate Longhand. R10 governs a click on the rest of the pill.
-- R3. The pill sits near the bottom centre of its display, above the Dock or taskbar. The user cannot move it in this version.
+- R3. The pill sits near the bottom centre of its display, above the Dock or taskbar. The user can drag it to another place; a click with no movement still shows the note (R10). The pill stays where the user put it while the note continues. Later notes use that place while its display is there, until Longhand quits. (Changed after the U6 manual test, at the user's request: the first version could not be moved.)
 - R4. The pill does not appear in screen sharing, screen recordings or screenshots, on macOS and Windows. Where macOS does not allow this, the × (R12) is the fallback (see Dependencies / Assumptions).
-- R5. The pill opens on the display under the pointer when it first shows for a note, and stays on that display. If that display goes away (a laptop lid closes, a monitor is unplugged) or the screen arrangement changes, the pill moves to the same position on a remaining display.
+- R5. The pill opens on the display of the place that the user dragged it to (R3), else on the display under the pointer, when it first shows for a note, and stays on that display. If that display goes away (a laptop lid closes, a monitor is unplugged) or the screen arrangement changes, the pill moves to the same position on a remaining display.
 
 **What it shows**
 

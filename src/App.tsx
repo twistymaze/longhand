@@ -1,6 +1,7 @@
-// The page has four windows (KTD3). The Settings window loads it with
+// The page has five windows (KTD3). The Settings window loads it with
 // `?window=settings`, the licences window with `?window=licences`, the update
-// window with `?window=update`, and the main window with no query.
+// window with `?window=update`, the recording widget with `?window=widget`,
+// and the main window with no query.
 
 import { useEffect, useRef, useState } from "react";
 import { useInterfaceZoom } from "./lib/useInterfaceZoom";
@@ -15,6 +16,7 @@ import { SessionPage } from "./session/SessionPage";
 import { useSessions } from "./session/useSessions";
 import { SettingsWindow } from "./settings/SettingsWindow";
 import { UpdateWindow } from "./update/UpdateWindow";
+import { RecordingWidget } from "./widget/RecordingWidget";
 import { useAppSettings } from "./settings/useAppSettings";
 
 const isMac = navigator.userAgent.includes("Mac");
@@ -171,7 +173,10 @@ function MainWindow() {
 
 export default function App() {
   const which = new URLSearchParams(window.location.search).get("window");
-  const zoom = useInterfaceZoom({ enabled: which !== "update" });
+  // The update window and the recording widget have a fixed size, so the
+  // interface size does not apply to them.
+  const zoom = useInterfaceZoom({ enabled: which !== "update" && which !== "widget" });
+  if (which === "widget") return <RecordingWidget />;
   return <>
     {which === "settings" ? (
       // The Settings window and the main window show tag labels, with the

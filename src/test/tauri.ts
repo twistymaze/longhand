@@ -5,11 +5,12 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 
 /** The `shortcut_status` result for a Settings window whose recording
- * shortcut is registered and whose show and Pause shortcuts are off. */
+ * shortcut is registered and whose show, Pause and widget shortcuts are off. */
 export const shortcutStatuses = {
   recording: { chord: "Alt+Shift+L", registered: true, error: null },
   show_window: { chord: null, registered: false, error: null },
   pause: { chord: null, registered: false, error: null },
+  widget: { chord: null, registered: false, error: null },
 };
 
 /** A handler for one command. It receives the command arguments. */

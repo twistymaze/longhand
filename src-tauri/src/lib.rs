@@ -8,6 +8,7 @@ mod menu;
 mod shortcut;
 mod startup;
 mod tray;
+mod widget;
 mod window;
 #[cfg(target_os = "macos")]
 mod zoom;
@@ -43,6 +44,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_system_audio_default,
             commands::settings::set_new_note_records,
             commands::settings::set_alert_sound,
+            commands::settings::set_show_recording_widget,
             commands::settings::set_check_updates_automatically,
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,
@@ -127,6 +129,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::updates::choose_update,
             commands::licences::licence_text,
             commands::webview_log::log_from_webview,
+            commands::widget::widget_hide,
+            commands::widget::widget_open_note,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
@@ -143,6 +147,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::live::LivePartSaved,
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,
+            widget::WidgetPointer,
+            widget::WidgetShown,
             window::MainWindowHidden,
             managers::updates::UpdateStateChanged,
         ])
@@ -331,12 +337,16 @@ fn setup_app(
         }
     });
     window::create_main_window(&handle)?;
+    widget::create(&handle)?;
     tray::create_tray(&handle)?;
     #[cfg(target_os = "macos")]
     menu::set_app_menu(&handle)?;
     shortcut::register(&handle);
     // After the tray exists, so the restored alert can mark it.
     alerts.restore(&handle, &capture);
+    // After the tray and the restored alert: a note that a crash interrupted
+    // shows the recording widget at launch (R1).
+    widget::start(&handle);
 
     if launch_reason == autostart::LaunchReason::Manual {
         window::show_main_window(&handle);
@@ -373,7 +383,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Restore the main and Settings windows to their saved size and position.
-        // The licences window keeps its centred default.
+        // The licences window keeps its centred default, and the recording
+        // widget its place above the Dock (R3).
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -381,7 +392,11 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&[window::LICENCES_WINDOW, window::UPDATE_WINDOW])
+                .with_denylist(&[
+                    window::LICENCES_WINDOW,
+                    window::UPDATE_WINDOW,
+                    widget::WIDGET_WINDOW,
+                ])
                 .build(),
         )
         // The About pane opens the acknowledged projects' pages in the
@@ -391,6 +406,10 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_macos_permissions::init());
+
+    // The recording widget is an NSPanel on macOS (KTD3).
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
 
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(
