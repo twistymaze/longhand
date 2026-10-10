@@ -12,7 +12,7 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** While a note is open (recording, paused or interrupted), the user always sees that state on screen, even when Longhand is not in front. The user can pause, continue or stop the note, or open it, without a switch to Longhand first.
+- **Objective:** While a note is open (recording, paused or interrupted), the user always sees that state on screen, even when Longhand is not in front, unless the user chose to hide it (R11–R14). The user can pause, continue or stop the note, or open it, without a switch to Longhand first.
 - **Product authority:** This Product Contract. The idea file is `docs/ideas/next/recording-state-widget.md`.
 - **Open blockers:** The Paused state comes from the pause-recording work (`docs/plans/2026-10-09-1504-feat-pause-recording-plan.md`, branch `worktree-pause-recording`). That work must merge to `main` before this work starts.
 
@@ -22,7 +22,7 @@ execution: code
 
 ### Summary
 
-A small pill near the bottom centre of the screen, above all other windows, on macOS and Windows. It shows while a note is Recording, Paused or Interrupted. It shows the state, the elapsed time and a level meter, and it has Pause, Continue and Stop. A click on the pill opens the note. A Settings switch (on by default) sets whether the pill shows. A hover ×, a tray item and a shortcut change that for the current note only.
+A small pill near the bottom centre of the screen, above all other windows, on macOS and Windows. It shows while a note is Recording, Paused or Interrupted. It shows the state and the elapsed time. What else it shows depends on the state: a level meter with Pause and Stop while recording, Continue and Stop while paused, and only Stop while interrupted. A click on the pill opens the note. A Settings switch (on by default) sets whether the pill shows. A hover ×, a tray item and a shortcut change that for the current note only.
 
 ### Problem Frame
 
@@ -49,10 +49,10 @@ The main window, the tray and the macOS microphone indicator do not prevent eith
 
 **When it shows**
 
-- R1. The pill shows while a note is Recording, Paused or Interrupted, also when Longhand is in front. It hides at Stop, and it does not show Processing, Saved or other states after Stop.
-- R2. The pill stays above other windows, including full-screen apps, on every Space (macOS) and every virtual desktop (Windows). It never takes focus from the app in front: a click on a control does not activate Longhand.
+- R1. The pill shows while a note is Recording, Paused or Interrupted, also when Longhand is in front, unless the user hid it for this note or the switch is off (R11–R14). It hides at Stop, and it does not show Processing, Saved or other states after Stop.
+- R2. The pill stays above other windows, including full-screen apps, on every Space (macOS) and every virtual desktop (Windows). A click on a control does not take focus from the app in front or activate Longhand. R10 governs a click on the rest of the pill.
 - R3. The pill sits near the bottom centre of its display, above the Dock or taskbar. The user cannot move it in this version.
-- R4. The pill does not appear in screen sharing, screen recordings or screenshots, on macOS and Windows.
+- R4. The pill does not appear in screen sharing, screen recordings or screenshots, on macOS and Windows. Where macOS does not allow this, the × (R12) is the fallback (see Dependencies / Assumptions).
 - R5. The pill opens on the display under the pointer when it first shows for a note, and stays on that display. If that display goes away (a laptop lid closes, a monitor is unplugged) or the screen arrangement changes, the pill moves to the same position on a remaining display.
 
 **What it shows**
@@ -75,7 +75,7 @@ The main window, the tray and the macOS microphone indicator do not prevent eith
 
 ### Acceptance Examples
 
-- AE1. **Covers R1, R7.** Given a note that records with Longhand behind a video call, when the user pauses it from the tray, then the pill changes to "Paused" with Continue and Stop, and stays on screen.
+- AE1. **Covers R1, R7.** Given a note that records with Longhand behind a video call, when the user pauses it with the Pause shortcut, then the pill changes to "Paused" with Continue and Stop, and stays on screen.
 - AE2. **Covers R2, R9.** Given the pill shows over a full-screen video call, when the user clicks Pause on the pill, then the note pauses and the video call stays in front with keyboard focus.
 - AE3. **Covers R5.** Given a laptop with an external display, the pill on the laptop display and a recording note, when the user closes the lid, then the pill moves to the external display.
 - AE4. **Covers R12, R14.** Given the switch is on and the user hides the pill with the ×, when the user pauses and continues the note, then the pill stays hidden. When the user stops it and starts a new note, the pill shows.
@@ -97,13 +97,14 @@ The main window, the tray and the macOS microphone indicator do not prevent eith
 
 - The pause-recording work merges first. On that branch, Paused is a flag on the capture manager, with `pause_recording` and `continue_recording` commands; it is not a `SessionState` variant.
 - The level meter and time come from the existing `CaptureTick` (4 per second, with `peak` and `recorded_ms`). Whether 4 per second looks smooth enough on a small meter is a planning question.
-- Tauri 2.11 can hide a window from screen capture on macOS and Windows. Not yet verified in the Tauri source.
+- Tauri 2.11 has `content_protected`: it sets the window sharing type to none on macOS and excludes the window from capture on Windows. On macOS 15 and later, ScreenCaptureKit capture (Zoom, Teams, Meet in a browser, the screenshot tool) is reported to ignore that flag. Verify R4 with those apps in a signed build. If macOS still shows the pill, accept that: R4 then holds on Windows only, and on macOS the user hides the pill with the × (R12) before a screen share.
 
 ### Outstanding Questions
 
 **Deferred to Planning**
 
 - How the pill window is made on Windows, where Handy uses a topmost window with no focus instead of a macOS panel.
+- How the pill detects that the pointer is over it on macOS (R12). The pill panel never becomes the key window, and WKWebView can send hover events only to a key window. Verify the hover × in a signed build; if no hover events arrive, add native pointer tracking that tells the pill page about enter and exit.
 - How Longhand detects a removed display or a changed screen arrangement while the pill shows. Handy repositions only when the overlay shows, so it has no example for R5.
 - How the tray item's label shows the current state (for example "Hide Recording Widget" when the pill shows).
 - Whether the Show/Hide action works only while a note is open, and what it does otherwise.
