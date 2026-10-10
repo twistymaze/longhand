@@ -207,13 +207,10 @@ pub fn transcript(
     let mut boundaries = ordered
         .windows(2)
         .map(|pair| {
-            let duration_ms = pair[1].offset_ms.saturating_sub(pair[0].end_ms());
-            let line = if pair[0].ends_in_pause {
-                TranscriptLine::Pause { duration_ms }
-            } else {
-                TranscriptLine::Gap { duration_ms }
-            };
-            (pair[1].offset_ms, line)
+            (
+                pair[1].offset_ms,
+                crate::join::boundary_line(pair[0], pair[1]),
+            )
         })
         .peekable();
     let mut keys: Vec<asr::SpeakerKey> = Vec::new();
