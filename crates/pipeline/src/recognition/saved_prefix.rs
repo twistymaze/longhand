@@ -89,10 +89,12 @@ pub(super) fn read(
 /// saved segment, and the audio does not change (KTD4 of the pause plan).
 fn same_segments(saved: &[Segment], note: &[Segment]) -> bool {
     saved.len() == note.len()
-        && saved.iter().zip(note).all(|(a, b)| Segment {
-            ends_in_pause: b.ends_in_pause,
-            ..a.clone()
-        } == *b)
+        && saved.iter().zip(note).all(|(a, b)| {
+            Segment {
+                ends_in_pause: b.ends_in_pause,
+                ..a.clone()
+            } == *b
+        })
 }
 
 fn session_manifest(home: &Path) -> std::io::Result<String> {

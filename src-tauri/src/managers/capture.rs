@@ -1655,16 +1655,24 @@ impl CaptureManager {
         // The device watch, a restart and the capture watcher stop: no
         // background reopen opens the microphone while paused (KTD9).
         inner.supersede();
-        if let Some(active) = inner.active.take()
-            && let Err(e) = self.close_segment(&mut inner, active, false)
-        {
-            log::error!("closing {id} for a pause failed: {e}");
-        }
+        // Only a segment that this pause closes and keeps gets the pause
+        // flag. When the segment is dropped, the last kept segment can end
+        // at a Stop or an earlier pause, and its flag must not change.
+        let kept = match inner.active.take() {
+            Some(active) => match self.close_segment(&mut inner, active, false) {
+                Ok(kept) => kept,
+                Err(e) => {
+                    log::error!("closing {id} for a pause failed: {e}");
+                    false
+                }
+            },
+            None => false,
+        };
         inner.paused = Some(id.clone());
-        match self.store().mark_pause(&id) {
-            Ok(true) => {}
-            Ok(false) => log::info!("session {id} paused with no kept segment"),
-            Err(e) => log::error!("could not mark the pause of {id}: {e}"),
+        if !kept {
+            log::info!("session {id} paused with no new kept segment");
+        } else if let Err(e) = self.store().mark_pause(&id) {
+            log::error!("could not mark the pause of {id}: {e}");
         }
         drop(inner);
         log::info!("session {id} paused");
@@ -3272,13 +3280,14 @@ impl CaptureManager {
     /// worker then saves its last part, or deletes the parts of a dropped
     /// segment, on its own thread: processing waits for it (KTD9). A
     /// segment that ends at an input change (`at_switch`), or that one
-    /// opened, is kept even when it is short (KTD3).
+    /// opened, is kept even when it is short (KTD3). Returns true when the
+    /// segment is kept.
     fn close_segment(
         &self,
         inner: &mut Inner,
         active: ActiveSegment,
         at_switch: bool,
-    ) -> Result<(), CaptureError> {
+    ) -> Result<bool, CaptureError> {
         let ActiveSegment {
             session_id,
             segment,
@@ -3321,13 +3330,15 @@ impl CaptureManager {
             .open_segment()
             .map_or(segment, |open| open.index);
         clock.timeline.set_open_channels(channels)?;
-        match close_timeline(
+        let closed = close_timeline(
             &mut clock.timeline,
             end_ms,
             now(),
             segment_audio_file(index),
             at_switch || opened_at_switch,
-        )? {
+        )?;
+        let kept = matches!(closed, Closed::Kept(_));
+        match closed {
             Closed::Kept(segment) => {
                 end_live(LiveEnd::Keep);
                 let store = self.store();
@@ -3347,7 +3358,7 @@ impl CaptureManager {
                 log::info!("segment {index} of {session_id} was under a second and was dropped");
             }
         }
-        Ok(())
+        Ok(kept)
     }
 }
 
