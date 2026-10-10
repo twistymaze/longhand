@@ -193,8 +193,29 @@ pub fn covers(ranges: &[SampleRange], required: SampleRange) -> bool {
 }
 
 /// Render readable turns without discarding the neutral rows' timing precision.
-pub fn transcript(result: &RouteResult) -> session_core::folder::Transcript {
+/// Between two of the note's `segments`, a pause line or a gap line goes
+/// before the first turn of the later segment, as in `join::build` (KTD5 of
+/// the pause plan).
+pub fn transcript(
+    result: &RouteResult,
+    segments: &[session_core::Segment],
+) -> session_core::folder::Transcript {
     use session_core::folder::{Transcript, TranscriptLine};
+    let mut ordered: Vec<_> = segments.iter().collect();
+    ordered.sort_by_key(|s| s.offset_ms);
+    // (start of the later segment, its line), in timeline order.
+    let mut boundaries = ordered
+        .windows(2)
+        .map(|pair| {
+            let duration_ms = pair[1].offset_ms.saturating_sub(pair[0].end_ms());
+            let line = if pair[0].ends_in_pause {
+                TranscriptLine::Pause { duration_ms }
+            } else {
+                TranscriptLine::Gap { duration_ms }
+            };
+            (pair[1].offset_ms, line)
+        })
+        .peekable();
     let mut keys: Vec<asr::SpeakerKey> = Vec::new();
     let mut lines = Vec::new();
     let mut open: Option<(Option<u32>, u64, u64, String)> = None;
@@ -204,6 +225,17 @@ pub fn transcript(result: &RouteResult) -> session_core::folder::Transcript {
         let text = row.text.trim();
         if text.is_empty() {
             continue;
+        }
+        let start = row.range.start / 16;
+        while let Some((_, line)) = boundaries.next_if(|(at, _)| *at <= start) {
+            if let Some((speaker, position_ms, _, text)) = open.take() {
+                lines.push(TranscriptLine::Turn {
+                    position_ms,
+                    speaker,
+                    text,
+                });
+            }
+            lines.push(line);
         }
         let speaker = row.speaker.as_ref().map(|key| {
             let index = keys
@@ -215,7 +247,6 @@ pub fn transcript(result: &RouteResult) -> session_core::folder::Transcript {
                 });
             (index + 1) as u32
         });
-        let start = row.range.start / 16;
         let end = row.range.end / 16;
         match &mut open {
             Some((current, _, last_end, paragraph))
@@ -251,6 +282,8 @@ pub fn transcript(result: &RouteResult) -> session_core::folder::Transcript {
             text,
         });
     }
+    // A segment with no text after it still gets its line.
+    lines.extend(boundaries.map(|(_, line)| line));
     Transcript {
         has_speakers: result.route != Route::Off,
         lines,

@@ -626,7 +626,7 @@ fn write_transcript(
     segments: &[Segment],
 ) -> Result<(), StageError> {
     let result = saved_result(store, id)?.ok_or_else(|| failed("recognition result is absent"))?;
-    let transcript = super::transcript(&result);
+    let transcript = super::transcript(&result, segments);
     lock(store).set_found_speakers(id, super::found_speakers(&result))?;
     let temporary = dir.join("transcript.md.tmp");
     let text = if result.route == Route::Off {

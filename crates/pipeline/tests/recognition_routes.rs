@@ -29,6 +29,80 @@ fn row() -> RecognitionSegment {
         speaker_finality: Finality::Final,
     }
 }
+fn segment(
+    index: u32,
+    offset_ms: u64,
+    duration_ms: u64,
+    ends_in_pause: bool,
+) -> session_core::Segment {
+    let at = chrono::DateTime::parse_from_rfc3339("2026-10-10T07:00:00+00:00").unwrap();
+    session_core::Segment {
+        index,
+        offset_ms,
+        duration_ms,
+        wall_start: at,
+        wall_end: at,
+        audio_file: format!("audio/{index}.wav"),
+        channels: 1,
+        ends_in_pause,
+    }
+}
+fn row_at(start_ms: u64, text: &str) -> RecognitionSegment {
+    let mut r = row();
+    r.range = SampleRange {
+        start: start_ms * 16,
+        end: (start_ms + 1000) * 16,
+    };
+    r.text = text.into();
+    r
+}
+#[test]
+fn a_recognition_transcript_has_a_line_between_segments() {
+    use session_core::folder::TranscriptLine;
+    let result = RouteResult {
+        route: Route::Off,
+        coverage: vec![SampleRange {
+            start: 0,
+            end: 80_000 * 16,
+        }],
+        rows: vec![
+            row_at(1_000, "before the pause"),
+            row_at(41_000, "after the pause"),
+            row_at(71_000, "after the resume"),
+        ],
+        speakers: vec![],
+        coverage_limitations: vec![],
+    };
+    // A pause after segment 0, a Stop and Resume after segment 1, and a
+    // pause after segment 2 with no text after it.
+    let segments = [
+        segment(0, 0, 24_000, true),
+        segment(1, 40_000, 20_000, false),
+        segment(2, 70_000, 5_000, true),
+        segment(3, 78_000, 1_000, false),
+    ];
+    let lines = pipeline::recognition::transcript(&result, &segments).lines;
+    let got: Vec<String> = lines
+        .iter()
+        .map(|l| match l {
+            TranscriptLine::Turn { text, .. } => text.clone(),
+            TranscriptLine::Pause { duration_ms } => format!("pause {duration_ms}"),
+            TranscriptLine::Gap { duration_ms } => format!("gap {duration_ms}"),
+            TranscriptLine::Silence { .. } => "silence".into(),
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            "before the pause",
+            "pause 16000",
+            "after the pause",
+            "gap 10000",
+            "after the resume",
+            "pause 3000",
+        ]
+    );
+}
 fn turn(start: u64, end: u64, id: u32) -> SpeakerTurn {
     SpeakerTurn {
         range: SampleRange { start, end },
@@ -190,7 +264,7 @@ fn transcript_groups_words_but_preserves_scope_and_pause_boundaries() {
         speakers: vec![],
         coverage_limitations: vec![],
     };
-    let transcript = pipeline::recognition::transcript(&result);
+    let transcript = pipeline::recognition::transcript(&result, &[]);
     assert_eq!(transcript.lines.len(), 3);
     assert!(
         matches!(&transcript.lines[0],session_core::folder::TranscriptLine::Turn{text,..} if text=="Hello there.")
@@ -224,7 +298,7 @@ fn terminal_native_time_point_keeps_text_without_inventing_duration() {
     };
     assert!(validate_result(&result, &result.coverage).is_ok());
     assert!(
-        pipeline::recognition::transcript(&result)
+        pipeline::recognition::transcript(&result, &[])
             .render()
             .contains("tail")
     );
