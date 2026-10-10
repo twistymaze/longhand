@@ -310,6 +310,50 @@ describe("Home", () => {
     expect(onOpen).toHaveBeenCalledWith("rec");
   });
 
+  // Covers R9, R11.
+  test("a paused note stays the open-note row with Paused, its time and a grey icon, and New Note stays unavailable", () => {
+    mockTauri();
+    render(
+      <Home
+        entries={[entry("rec", { state: "capturing" })]}
+        stages={{}}
+        recording={{ sessionId: "rec", elapsedMs: 5 * 60_000 + 12_000, interrupted: false, paused: true }}
+        readiness={{
+          armed: true,
+          microphone_authorized: true,
+          destination: { kind: "ready", path: "/notes", free_bytes: null },
+          shortcut: { chord: null, registered: false, error: null },
+          system_audio: "allowed",
+          missing_models: [],
+          endpoint_configured: true, can_start_note: true, note_start_refusal: null,
+        }}
+        chord={null}
+        onOpen={() => {}}
+        onChanged={() => {}}
+      />,
+    );
+    const paused = row("Paused");
+    expect(paused.getAttribute("aria-selected")).toBe("true");
+    expect(paused.textContent).toContain("Open to continue or stop");
+    expect(paused.textContent).toContain("00:05:12");
+    expect(paused.textContent).not.toMatch(/Recording|In progress/);
+    const icon = paused.querySelector("[aria-hidden]")!;
+    expect(icon.className).toContain("text-label-secondary");
+    expect(icon.className).not.toMatch(/negative|caution/);
+    expect(screen.queryByRole("button", { name: /New Note/ })).toBeNull();
+  });
+
+  test("an interrupted note still shows Recording interrupted with the caution colour", () => {
+    mockTauri();
+    renderHome({
+      entries: [entry("rec", { state: "interrupted" })],
+      recording: { sessionId: "rec", elapsedMs: 60_000, interrupted: true, paused: false },
+    });
+    const interrupted = row("Recording interrupted");
+    expect(interrupted.textContent).toContain("Open to resume or stop");
+    expect(interrupted.querySelector("[aria-hidden]")!.className).toContain("text-caution");
+  });
+
   test("while processing waits for a recording, a processing row and its preview say so", () => {
     mockTauri({
       session_document: () => document("Text."),

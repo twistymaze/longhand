@@ -192,7 +192,7 @@ describe("LiveTranscript", () => {
         ...initial, revision: 2, rows: [{ ...initial.rows[0], text: "Corrected words", speaker: "g:0:0:2" }],
       }));
       expect(screen.queryByText("Corrected words")).toBeNull();
-      await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "paused" }));
+      await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "behind" }));
       expect(screen.getByText("Corrected words")).toBeTruthy();
       expect(screen.getByText("Speaker labels updated.")).toBeTruthy();
       expect(screen.getByText("Live transcript paused. The missing part is transcribed after you stop.")).toBeTruthy();
@@ -387,13 +387,50 @@ describe("LiveTranscript", () => {
     });
     render(<Harness />);
     await screen.findByText("Before the gap.");
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "paused" }));
+    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "behind" }));
     expect(screen.getByText("Live transcript paused. The missing part is transcribed after you stop.")).toBeTruthy();
     expect(screen.getByText("Before the gap.")).toBeTruthy();
     // The worker reports running again with the first text after the gap.
     await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "running" }));
     await act(() => tauri.emit("live-transcript-event", text("rec", "After the gap", "", 1)));
     expect(screen.queryByText(/Live transcript paused/)).toBeNull();
+  });
+
+  test("a paused note shows the paused line, not the line for a live transcript that fell behind", async () => {
+    const tauri = mockLive({
+      recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "Before the pause." }],
+      current: null,
+      state: "running",
+    });
+    render(<Harness mode="paused" />);
+    await screen.findByText("Before the pause.");
+    expect(screen.getByText("Paused. Nothing is recorded until you continue.")).toBeTruthy();
+    // The worker can report that it fell behind when the segment ends.
+    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "behind" }));
+    expect(screen.getByText("Paused. Nothing is recorded until you continue.")).toBeTruthy();
+    expect(screen.queryByText(/Live transcript paused/)).toBeNull();
+    expect(screen.queryByText(/The missing part/)).toBeNull();
+  });
+
+  test("a paused note with no text shows the paused line", async () => {
+    mockLive();
+    render(<Harness mode="paused" />);
+    expect(await screen.findByText("Paused. Nothing is recorded until you continue.")).toBeTruthy();
+  });
+
+  test("after Continue, new text shows below the text from before the pause", async () => {
+    const tauri = mockLive({
+      recognition: [], parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 240_000, text: "Before the pause." }],
+      current: null,
+      state: "ended",
+    });
+    const { rerender } = render(<Harness mode="paused" />);
+    await screen.findByText("Before the pause.");
+    rerender(<Harness mode="recording" />);
+    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 1, state: "running" }));
+    await act(() => tauri.emit("live-transcript-event", { ...text("rec", "After the pause"), segment: 1 }));
+    expect(paragraphs()).toEqual(["Before the pause.", "After the pause"]);
+    expect(screen.queryByText("Paused. Nothing is recorded until you continue.")).toBeNull();
   });
 
   test("a rejected live_transcript call leaves the starting line and later events still show", async () => {

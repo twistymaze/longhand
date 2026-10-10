@@ -1,9 +1,10 @@
 // The Recording pane (R1, R6, KTD15): the usual microphone and the default of
 // the Computer audio switch. A new note starts with both. The pane also holds
-// the recording shortcut, the two permissions and the alert sound (R6–R9).
+// the recording and Pause shortcuts, the two permissions and the alert sound
+// (R6–R9, R16).
 
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_SHORTCUT, commands, type MicrophoneChoice, type MicrophoneList, type Readiness, type Settings } from "../bindings";
+import { DEFAULT_SHORTCUT, commands, type MicrophoneChoice, type MicrophoneList, type Readiness, type Settings, type ShortcutStatus } from "../bindings";
 import { sentence } from "../processing/describe";
 import { CheckIcon } from "./icons";
 import { MicrophoneAccessRow, SystemAudioAccessRow } from "./Permissions";
@@ -202,6 +203,7 @@ function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
         />
       </Row>
       <RecordingShortcut readiness={readiness} onRefresh={onRefresh} />
+      <PauseShortcut onRefresh={onRefresh} />
       {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );
@@ -228,6 +230,37 @@ function RecordingShortcut({ readiness, onRefresh }: { readiness: Readiness; onR
         )
       }
       onChanged={() => void onRefresh()}
+    />
+  );
+}
+
+/// The Pause shortcut (R16). It has no default chord. Readiness holds only
+/// the recording shortcut, so this row reads its own status.
+function PauseShortcut({ onRefresh }: { onRefresh: () => Promise<void> }) {
+  const [pause, setPause] = useState<ShortcutStatus>({ chord: null, registered: false, error: null });
+  useEffect(() => {
+    void commands.shortcutStatus().then((s) => setPause(s.pause));
+  }, []);
+  return (
+    <ShortcutField
+      kind="pause"
+      label="Pause shortcut"
+      status={pause}
+      detail={
+        !pause.chord ? (
+          <StatusText tone="neutral">Off</StatusText>
+        ) : pause.registered ? (
+          "Pauses and continues a recording from any app"
+        ) : (
+          <StatusText tone="negative">{pause.error ?? "Not registered"}</StatusText>
+        )
+      }
+      onChanged={(next) => {
+        setPause(next.pause);
+        // A change pauses all shortcuts, and the resume can change whether
+        // the recording shortcut is registered.
+        void onRefresh();
+      }}
     />
   );
 }

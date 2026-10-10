@@ -226,10 +226,19 @@ pub struct SegmentRecord {
     /// record stays as before (KTD6 of the system audio plan).
     #[serde(default = "crate::timeline::mono", skip_serializing_if = "is_mono")]
     pub channels: u16,
+    /// True when the note paused after this segment. A segment with no
+    /// pause writes no field, so its record stays as before (KTD4 of the
+    /// pause plan).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ends_in_pause: bool,
 }
 
 fn is_mono(channels: &u16) -> bool {
     *channels == 1
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl From<&Segment> for SegmentRecord {
@@ -242,6 +251,7 @@ impl From<&Segment> for SegmentRecord {
             duration_ms: s.duration_ms,
             audio: s.audio_file.clone(),
             channels: s.channels,
+            ends_in_pause: s.ends_in_pause,
         }
     }
 }
@@ -256,6 +266,7 @@ impl From<&SegmentRecord> for Segment {
             wall_end: r.wall_end,
             audio_file: r.audio.clone(),
             channels: r.channels,
+            ends_in_pause: r.ends_in_pause,
         }
     }
 }
@@ -387,8 +398,13 @@ impl SessionDoc {
         }
         for pair in self.segments.windows(2) {
             let gap = pair[1].offset_ms - (pair[0].offset_ms + pair[0].duration_ms);
+            let kind = if pair[0].ends_in_pause {
+                "Pause"
+            } else {
+                "Gap"
+            };
             out.push_str(&format!(
-                "\nGap of {} between segments {} and {}.",
+                "\n{kind} of {} between segments {} and {}.",
                 format_position(gap),
                 pair[0].index + 1,
                 pair[1].index + 1
@@ -502,8 +518,11 @@ pub enum TranscriptLine {
         speaker: Option<u32>,
         text: String,
     },
-    /// Between segments.
+    /// Between segments, where the note stopped and resumed or lost audio.
     Gap { duration_ms: u64 },
+    /// Between segments, where the user paused the note (KTD5 of the pause
+    /// plan). Processing does not treat this time as missing audio.
+    Pause { duration_ms: u64 },
     /// A within-segment silence past the threshold.
     Silence { duration_ms: u64 },
 }
@@ -558,6 +577,10 @@ impl Transcript {
                     "\n--- gap {} ---\n\n",
                     format_position(*duration_ms)
                 )),
+                TranscriptLine::Pause { duration_ms } => out.push_str(&format!(
+                    "\n--- pause {} ---\n\n",
+                    format_position(*duration_ms)
+                )),
                 TranscriptLine::Silence { duration_ms } => out.push_str(&format!(
                     "\n--- silence {} ---\n\n",
                     format_position(*duration_ms)
@@ -595,6 +618,7 @@ impl Transcript {
                 let duration_ms = parse_position(time).ok_or_else(|| err("bad duration"))?;
                 lines.push(match kind {
                     "gap" => TranscriptLine::Gap { duration_ms },
+                    "pause" => TranscriptLine::Pause { duration_ms },
                     "silence" => TranscriptLine::Silence { duration_ms },
                     _ => return Err(err("unknown marker")),
                 });

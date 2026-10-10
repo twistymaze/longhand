@@ -298,8 +298,9 @@ pub enum LiveStatus {
     Starting,
     /// Text arrives.
     Running,
-    /// A gap started. The text returns with the next part.
-    Paused,
+    /// The live transcript fell behind: a gap started, or the stream
+    /// stalled or failed. The text returns with the next part.
+    Behind,
     /// This recording has no live transcript: the model did not load or
     /// does not stream. The note gets a full pass after Stop.
     Unavailable,
@@ -574,7 +575,7 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
             stream = None;
             fresh = true;
             retry_at_ms = 0;
-            w.set_status(LiveStatus::Paused);
+            w.set_status(LiveStatus::Behind);
         }
         w.expected = Some(frame.index + len);
 
@@ -613,7 +614,7 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
                     w.config.stall_ms / 1000
                 );
                 w.finish_stalled(s);
-                w.set_status(LiveStatus::Paused);
+                w.set_status(LiveStatus::Behind);
                 Next::Continue
             }
             Ok(None) => Next::Same,
@@ -623,7 +624,7 @@ fn stream_parts(recognizer: &mut dyn Recognizer, w: &mut Work<'_>, inputs: &Inpu
                     w.config.segment
                 );
                 w.finish(s);
-                w.set_status(LiveStatus::Paused);
+                w.set_status(LiveStatus::Behind);
                 Next::Fresh
             }
         };

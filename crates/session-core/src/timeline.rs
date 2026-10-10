@@ -24,6 +24,10 @@ pub struct Segment {
     /// left and system audio on the right (KTD6 of the system audio plan).
     #[serde(default = "mono")]
     pub channels: u16,
+    /// True when the note paused after this segment (KTD4 of the pause
+    /// plan). A resume of the note clears it on the last segment.
+    #[serde(default)]
+    pub ends_in_pause: bool,
 }
 
 /// The channel count of a record that has no `channels` field: mono. The
@@ -228,6 +232,7 @@ impl Timeline {
             wall_end,
             audio_file,
             channels: open.channels,
+            ends_in_pause: false,
         };
         self.segments.push(segment.clone());
         Ok(Closed::Kept(segment))

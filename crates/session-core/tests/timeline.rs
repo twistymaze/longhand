@@ -16,6 +16,7 @@ fn two_segments() -> Timeline {
             wall_end: wall(1),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         },
         Segment {
             index: 1,
@@ -25,6 +26,7 @@ fn two_segments() -> Timeline {
             wall_end: wall(2),
             audio_file: "audio/segment-02.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         },
     ])
     .unwrap()
@@ -57,6 +59,7 @@ fn gap_comes_from_the_monotonic_offsets_not_the_wall_clock() {
             wall_end: wall(2) + TimeDelta::minutes(1),
             audio_file: "a".into(),
             channels: 1,
+            ends_in_pause: false,
         },
         Segment {
             index: 1,
@@ -66,6 +69,7 @@ fn gap_comes_from_the_monotonic_offsets_not_the_wall_clock() {
             wall_end: wall(1) + TimeDelta::minutes(1),
             audio_file: "b".into(),
             channels: 1,
+            ends_in_pause: false,
         },
     ])
     .unwrap();

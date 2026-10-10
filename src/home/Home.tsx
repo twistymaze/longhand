@@ -402,6 +402,7 @@ export function Home({
                                   ? recording.elapsedMs
                                   : entry.duration_ms,
                               interrupted: entry.state === "interrupted",
+                              paused: recording?.sessionId === entry.id && recording.paused === true,
                               noteType: rowType(entry.note_type),
                               tags: entry.tags,
                             }}

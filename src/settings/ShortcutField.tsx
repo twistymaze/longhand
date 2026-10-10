@@ -15,9 +15,9 @@ const isMac = navigator.userAgent.includes("Mac");
 
 type Mode = "rest" | "preparing" | "capturing" | "pending";
 
-// Both rows share one pause. The first row that captures pauses the
+// The rows share one pause. The first row that captures pauses the
 // shortcuts and the last row that finishes resumes them, so one row's finish
-// never resumes them while the other row captures. The calls go through one
+// never resumes them while another row captures. The calls go through one
 // chain, so a resume never overtakes the pause it follows.
 let holders = 0;
 let calls: Promise<unknown> = Promise.resolve();
@@ -35,7 +35,7 @@ function releasePause(): Promise<unknown> {
 }
 
 // Only one row waits for keys at a time. A row that starts to wait ends the
-// wait of the other row.
+// wait of any other row.
 let waiting: { current: () => void } | null = null;
 
 export function ShortcutField({

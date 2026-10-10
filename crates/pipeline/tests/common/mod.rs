@@ -73,6 +73,7 @@ pub fn write_segment(
         wall_end: at((offset_ms + duration_ms) as i64 / 1000),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 
@@ -122,6 +123,7 @@ pub fn write_stereo_segment(
         wall_end: at((offset_ms + duration_ms) as i64 / 1000),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 2,
+        ends_in_pause: false,
     }
 }
 

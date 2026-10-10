@@ -21,6 +21,7 @@ fn session_md_round_trips_the_timeline() {
             wall_end: wall(90),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         },
         Segment {
             index: 1,
@@ -30,6 +31,7 @@ fn session_md_round_trips_the_timeline() {
             wall_end: wall(124),
             audio_file: "audio/segment-02.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         },
     ];
     let doc = SessionDoc::new(
@@ -48,6 +50,26 @@ fn session_md_round_trips_the_timeline() {
     assert_eq!(
         Timeline::from_segments(parsed.timeline_segments()).unwrap(),
         Timeline::from_segments(segments).unwrap()
+    );
+}
+
+#[test]
+fn session_md_names_a_pause_between_segments() {
+    let segment = |index: u32, offset_ms: u64, ends_in_pause: bool| Segment {
+        index,
+        offset_ms,
+        duration_ms: 60_000,
+        wall_start: wall(0),
+        wall_end: wall(1),
+        audio_file: format!("audio/segment-0{}.opus", index + 1),
+        channels: 1,
+        ends_in_pause,
+    };
+    let segments = vec![segment(0, 0, true), segment(1, 120_000, false)];
+    let text = SessionDoc::new("01J8Z", None, &segments).unwrap().render();
+    assert!(
+        text.contains("Pause of 00:01:00 between segments 1 and 2."),
+        "{text}"
     );
 }
 
@@ -89,6 +111,35 @@ fn transcript_md_round_trips() {
 }
 
 #[test]
+fn a_pause_line_round_trips_and_differs_from_a_gap_line() {
+    let transcript = Transcript {
+        has_speakers: true,
+        lines: vec![
+            TranscriptLine::Turn {
+                position_ms: 0,
+                speaker: Some(1),
+                text: "Before the break.".into(),
+            },
+            TranscriptLine::Pause {
+                duration_ms: 900_000,
+            },
+            TranscriptLine::Turn {
+                position_ms: 3_900_000,
+                speaker: Some(1),
+                text: "After the break.".into(),
+            },
+            TranscriptLine::Gap {
+                duration_ms: 60_000,
+            },
+        ],
+    };
+    let text = transcript.render();
+    assert!(text.contains("\n--- pause 00:15:00 ---\n"), "{text}");
+    assert!(text.contains("\n--- gap 00:01:00 ---\n"), "{text}");
+    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+}
+
+#[test]
 fn transcript_without_speakers_says_so_and_round_trips() {
     let transcript = Transcript {
         has_speakers: false,
@@ -113,6 +164,7 @@ fn session_md_round_trips_with_a_title() {
         wall_end: wall(1),
         audio_file: "audio/segment-01.opus".into(),
         channels: 1,
+        ends_in_pause: false,
     }];
     let mut doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
     assert_eq!(doc.title, None);
@@ -225,6 +277,7 @@ fn one_segment(channels: u16) -> Vec<Segment> {
         wall_end: wall(1),
         audio_file: "audio/segment-01.opus".into(),
         channels,
+        ends_in_pause: false,
     }]
 }
 
@@ -264,6 +317,7 @@ fn a_session_md_from_before_the_new_fields_parses_and_its_title_is_the_users() {
     assert_eq!(doc.found_speakers, None);
     assert_eq!(doc.transcript_fingerprint, None);
     assert_eq!(doc.summary_fingerprint, None);
+    assert!(!Segment::from(&doc.segments[0]).ends_in_pause);
     assert_eq!(
         doc.title_and_source(),
         Some(Title {
@@ -304,6 +358,7 @@ fn a_stereo_segment_keeps_two_channels_and_gives_stereo_from() {
         wall_end: wall(3),
         audio_file: "audio/segment-02.opus".into(),
         channels: 2,
+        ends_in_pause: false,
     });
     let doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
     let parsed = SessionDoc::parse(&doc.render()).unwrap();
@@ -595,4 +650,47 @@ fn the_session_fingerprint_of_bytes_with_no_frontmatter_is_their_fingerprint() {
     ] {
         assert_eq!(session_fingerprint(bytes), fingerprint(bytes));
     }
+}
+
+#[test]
+fn a_session_md_with_no_pause_renders_as_before() {
+    // KTD4 of the pause plan: a note with no pause writes no new key.
+    let doc = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
+    assert_eq!(
+        doc.render(),
+        "---\nsession_id: 01J8Z\nstarted: 2026-09-22T09:00:00-05:00\nsegments:\n- index: 0\n  \
+         wall_start: 2026-09-22T09:00:00-05:00\n  wall_end: 2026-09-22T09:01:00-05:00\n  \
+         offset_ms: 0\n  duration_ms: 60000\n  audio: audio/segment-01.opus\n---\n\n\
+         # Longhand session\n\nStarted 2026-09-22 09:00.\n\n\
+         | Segment | Starts | Ends | At | Length | Audio |\n|---|---|---|---|---|---|\n\
+         | 1 | 09:00:00 | 09:01:00 | 00:00:00 | 00:01:00 | \
+         [audio/segment-01.opus](audio/segment-01.opus) |\n"
+    );
+}
+
+#[test]
+fn a_paused_segment_round_trips_through_session_md() {
+    let mut segments = one_segment(1);
+    segments[0].ends_in_pause = true;
+    segments.push(Segment {
+        index: 1,
+        offset_ms: 120_000,
+        duration_ms: 60_000,
+        wall_start: wall(17),
+        wall_end: wall(18),
+        audio_file: "audio/segment-02.opus".into(),
+        channels: 1,
+        ends_in_pause: false,
+    });
+    let doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
+    let text = doc.render();
+    assert_eq!(text.matches("ends_in_pause: true").count(), 1, "{text}");
+    let parsed = SessionDoc::parse(&text).unwrap();
+    assert_eq!(parsed, doc);
+    let flags: Vec<bool> = parsed
+        .segments
+        .iter()
+        .map(|s| Segment::from(s).ends_in_pause)
+        .collect();
+    assert_eq!(flags, [true, false]);
 }

@@ -38,6 +38,7 @@ fn segment(index: u32, end: &str, audio: &str) -> Segment {
         wall_end: end,
         audio_file: audio.into(),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 

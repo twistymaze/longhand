@@ -567,6 +567,60 @@ fn migration_sixteen_keeps_existing_rows_and_gives_them_no_open_time_owner_or_fi
 }
 
 #[test]
+fn migration_twenty_gives_existing_segments_no_pause_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, 19)
+            .unwrap();
+        add_session(&conn, "s1");
+        for idx in 0..2 {
+            conn.execute(
+                "INSERT INTO segments
+                 (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file,
+                  channels)
+                 VALUES ('s1', ?1, ?2, 60000, '2026-09-22T10:00:00-05:00',
+                         '2026-09-22T10:01:00-05:00', ?3, 1)",
+                params![
+                    idx,
+                    idx * 120_000,
+                    format!("audio/segment-0{}.opus", idx + 1)
+                ],
+            )
+            .unwrap();
+        }
+    }
+    let store = Store::open(&path).unwrap();
+    let flags: Vec<bool> = store
+        .segments("s1")
+        .unwrap()
+        .iter()
+        .map(|s| s.ends_in_pause)
+        .collect();
+    assert_eq!(flags, [false, false]);
+}
+
+#[test]
+fn a_new_database_has_the_pause_flag_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    drop(Store::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    let (kind, default): (String, Option<String>) = conn
+        .query_row(
+            "SELECT type, dflt_value FROM pragma_table_info('segments')
+             WHERE name = 'ends_in_pause'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "INTEGER");
+    assert_eq!(default.as_deref(), Some("0"));
+}
+
+#[test]
 fn migration_eighteen_keeps_existing_rows_and_gives_them_no_type_tags_or_pending_type() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("longhand.db");

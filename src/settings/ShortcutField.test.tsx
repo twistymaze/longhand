@@ -6,7 +6,7 @@ import { ShortcutField } from "./ShortcutField";
 
 const registered = (chord: string): ShortcutStatus => ({ chord, registered: true, error: null });
 const off: ShortcutStatus = { chord: null, registered: false, error: null };
-const resumed: ShortcutStatuses = { recording: registered("CommandOrControl+Alt+Shift+L"), show_window: off };
+const resumed: ShortcutStatuses = { recording: registered("CommandOrControl+Alt+Shift+L"), show_window: off, pause: off };
 
 function mockField(handlers: Record<string, (args: Record<string, unknown>) => unknown> = {}) {
   return mockTauri({

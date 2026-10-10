@@ -22,6 +22,7 @@ fn segment(index: u32, offset_ms: u64, duration_ms: u64) -> Segment {
         wall_end: wall(),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 
@@ -132,6 +133,94 @@ fn times_move_to_session_positions_and_segments_are_separated_by_a_gap() {
                 position_ms: 71_500,
                 speaker: Some(1),
                 text: "after".into()
+            },
+        ]
+    );
+}
+
+fn paused(index: u32, offset_ms: u64, duration_ms: u64) -> Segment {
+    Segment {
+        ends_in_pause: true,
+        ..segment(index, offset_ms, duration_ms)
+    }
+}
+
+/// The lines that are not turns, in order.
+fn markers_of(lines: &[TranscriptLine]) -> Vec<TranscriptLine> {
+    lines
+        .iter()
+        .filter(|l| !matches!(l, TranscriptLine::Turn { .. }))
+        .cloned()
+        .collect()
+}
+
+// Covers AE1.
+#[test]
+fn a_paused_segment_is_followed_by_a_pause_line_in_place_of_a_gap_line() {
+    let segments = [paused(0, 0, 10_000), segment(1, 910_000, 10_000)];
+    let windows = [
+        window(0, 1_000, &[(0, 2_000, "before")]),
+        window(1, 1_000, &[(0, 2_000, "after")]),
+    ];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 10_000, 1), turn(1, 0, 10_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        t.lines,
+        vec![
+            TranscriptLine::Turn {
+                position_ms: 1_000,
+                speaker: Some(1),
+                text: "before".into()
+            },
+            TranscriptLine::Pause {
+                duration_ms: 900_000
+            },
+            TranscriptLine::Turn {
+                position_ms: 911_000,
+                speaker: Some(1),
+                text: "after".into()
+            },
+        ]
+    );
+}
+
+// Covers AE2.
+#[test]
+fn a_paused_last_segment_writes_no_pause_line() {
+    let segments = [paused(0, 0, 10_000)];
+    let windows = [window(0, 1_000, &[(0, 2_000, "only")])];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 10_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(markers_of(&t.lines), vec![]);
+}
+
+// Covers AE6.
+#[test]
+fn a_pause_and_a_later_stop_and_resume_give_a_pause_line_then_a_gap_line() {
+    let segments = [
+        paused(0, 0, 10_000),
+        segment(1, 70_000, 10_000),
+        segment(2, 200_000, 10_000),
+    ];
+    let windows = [
+        window(0, 1_000, &[(0, 2_000, "one")]),
+        window(1, 1_000, &[(0, 2_000, "two")]),
+        window(2, 1_000, &[(0, 2_000, "three")]),
+    ];
+    let speakers = Speakers::Turns(vec![
+        turn(0, 0, 10_000, 1),
+        turn(1, 0, 10_000, 1),
+        turn(2, 0, 10_000, 1),
+    ]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        markers_of(&t.lines),
+        vec![
+            TranscriptLine::Pause {
+                duration_ms: 60_000
+            },
+            TranscriptLine::Gap {
+                duration_ms: 120_000
             },
         ]
     );

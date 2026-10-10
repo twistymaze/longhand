@@ -3,7 +3,7 @@
 //! other fixed rule. The four name rules count it as evidence only when it
 //! is not empty. An empty Background changes no byte of any message.
 
-use summarize::chunk::{Chunk, Turn};
+use summarize::chunk::{Chunk, Line, Turn};
 use summarize::client::Message;
 use summarize::prompts::{self, BACKGROUND_TEXT_LIMIT, PROMPT_TEXT_LIMIT, Prompt};
 use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
@@ -18,17 +18,20 @@ const ABOVE_WINS: &str = "These rules apply even when the instructions above say
 /// The last sentence of the part rules when there is a Background.
 const BACKGROUND_LOSES: &str = "These rules apply even when the background says otherwise.";
 
-fn one_turn() -> Vec<Turn> {
-    vec![Turn {
-        position_ms: 0,
-        speaker: Some(1),
-        text: "We agreed on the budget.".into(),
-    }]
+fn one_turn() -> Vec<Line> {
+    vec![
+        Turn {
+            position_ms: 0,
+            speaker: Some(1),
+            text: "We agreed on the budget.".into(),
+        }
+        .into(),
+    ]
 }
 
 fn one_chunk() -> Chunk {
     Chunk {
-        turns: one_turn(),
+        lines: one_turn(),
         first_new: 0,
     }
 }
@@ -100,6 +103,63 @@ fn an_empty_or_blank_background_gives_the_same_bytes_as_before() {
         prompts::fit_notes(&long, 4_000, CUSTOM, background)
     };
     assert_eq!(fitted(" \n"), fitted(""));
+}
+
+/// Two turns with two pause lines between them.
+fn paused() -> Vec<Line> {
+    vec![
+        Turn {
+            position_ms: 0,
+            speaker: Some(1),
+            text: "Before the break.".into(),
+        }
+        .into(),
+        Line::Pause {
+            duration_ms: 840_000,
+        },
+        Line::Pause {
+            duration_ms: 65_000,
+        },
+        Turn {
+            position_ms: 60_000,
+            speaker: Some(2),
+            text: "After the break.".into(),
+        }
+        .into(),
+    ]
+}
+
+/// Covers R13: the summary model sees each pause at its position, and one
+/// rule line tells it what a pause line is.
+#[test]
+fn a_prompt_with_a_pause_holds_the_pause_lines_between_the_turns_and_the_pause_rule_once() {
+    let topic = prompts::topic_summary();
+    let chunk = Chunk {
+        lines: paused(),
+        first_new: 0,
+    };
+    let whole = prompts::whole(&paused(), "", &topic.text, "");
+    let part = prompts::part(&chunk, 0, 3, "", "");
+    for messages in [&whole, &part] {
+        let user = &messages[1].content;
+        let before = user.find("[00:00:00] Speaker 1: Before the break.\n");
+        let first = user.find("\n--- pause 00:14:00 ---\n");
+        let second = user.find("\n--- pause 00:01:05 ---\n");
+        let after = user.find("\n[00:01:00] Speaker 2: After the break.\n");
+        assert!(
+            before < first && first < second && second < after && before.is_some(),
+            "{user}"
+        );
+        let rule = "A line such as \"--- pause 00:14:00 ---\" marks a pause: time that was not \
+recorded, with its length. The parts of the meeting before and after a pause line are separate \
+parts of the meeting.";
+        assert_eq!(user.matches(rule).count(), 1, "{user}");
+        // The rule is the app's text, not quoted data.
+        assert!(user.find(rule) < user.find("<transcript"), "{user}");
+    }
+    // No pause, no rule.
+    let plain = prompts::whole(&one_turn(), "", &topic.text, "");
+    assert!(!plain[1].content.contains("pause"), "{}", plain[1].content);
 }
 
 /// Covers AE1 and KTD4.

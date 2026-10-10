@@ -351,6 +351,7 @@ fn segment(index: u32, offset_ms: u64) -> session_core::Segment {
         wall_end: t(1),
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 
@@ -1253,6 +1254,102 @@ fn a_segment_row_keeps_its_channel_count() {
         .map(|s| s.channels)
         .collect();
     assert_eq!(channels, [1, 2]);
+}
+
+fn pause_flags(store: &Store, id: &str) -> Vec<bool> {
+    store
+        .segments(id)
+        .unwrap()
+        .iter()
+        .map(|s| s.ends_in_pause)
+        .collect()
+}
+
+fn resume_event() -> Event {
+    Event::UserResume {
+        space_ok: true,
+        audio_intact: true,
+    }
+}
+
+#[test]
+fn the_pause_flag_marks_only_the_last_segment_and_survives_a_reopen() {
+    // KTD4 of the pause plan.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut store = Store::open(&path).unwrap();
+        store.create_session("s1", t(0), None).unwrap();
+        store.put_segment("s1", &segment(0, 0)).unwrap();
+        store.put_segment("s1", &segment(1, 120_000)).unwrap();
+        assert!(store.mark_pause("s1").unwrap());
+        assert_eq!(pause_flags(&store, "s1"), [false, true]);
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(pause_flags(&store, "s1"), [false, true]);
+}
+
+#[test]
+fn the_pause_flag_on_a_note_with_no_segment_changes_nothing() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert!(!store.mark_pause("s1").unwrap());
+    assert!(store.segments("s1").unwrap().is_empty());
+}
+
+#[test]
+fn resuming_an_interrupted_note_clears_its_pause_flag() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.create_session("s2", t(0), None).unwrap();
+    for id in ["s1", "s2"] {
+        store.put_segment(id, &segment(0, 0)).unwrap();
+        store.put_segment(id, &segment(1, 120_000)).unwrap();
+        store.mark_pause(id).unwrap();
+    }
+    store
+        .apply(
+            "s1",
+            &Event::CaptureLost {
+                reason: InterruptReason::Device,
+                at: t(3),
+            },
+        )
+        .unwrap();
+    store.apply("s1", &resume_event()).unwrap();
+    assert_eq!(pause_flags(&store, "s1"), [false, false]);
+    // The resume of one note leaves the flag of another note.
+    assert_eq!(pause_flags(&store, "s2"), [false, true]);
+}
+
+#[test]
+fn a_paused_note_that_stops_and_resumes_has_no_pause_flag() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    store.put_segment("s1", &segment(1, 120_000)).unwrap();
+    store.mark_pause("s1").unwrap();
+    stop(&mut store, "s1", 5);
+    // The stop keeps the flag, so the transcript can show the pause.
+    assert_eq!(pause_flags(&store, "s1"), [false, true]);
+    store.apply("s1", &resume_event()).unwrap();
+    assert_eq!(pause_flags(&store, "s1"), [false, false]);
+}
+
+#[test]
+fn a_resume_keeps_the_flag_of_a_pause_that_the_note_continued_after() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    store.mark_pause("s1").unwrap();
+    // Continue, then a second pause.
+    store.put_segment("s1", &segment(1, 120_000)).unwrap();
+    store.put_segment("s1", &segment(2, 240_000)).unwrap();
+    store.mark_pause("s1").unwrap();
+    stop(&mut store, "s1", 5);
+    assert_eq!(pause_flags(&store, "s1"), [true, false, true]);
+    store.apply("s1", &resume_event()).unwrap();
+    assert_eq!(pause_flags(&store, "s1"), [true, false, false]);
 }
 
 #[test]

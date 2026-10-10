@@ -227,6 +227,7 @@ fn segment(index: u32, end: &str) -> Segment {
         wall_end: end,
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
+        ends_in_pause: false,
     }
 }
 

@@ -235,6 +235,7 @@ pub struct LocalSettings {
     pub interface_zoom_percent: u16,
     pub shortcut: Option<String>,
     pub show_window_shortcut: Option<String>,
+    pub pause_shortcut: Option<String>,
     pub storage_folder: String,
     pub endpoint_base_url: Option<String>,
     pub endpoint_model: String,
@@ -456,6 +457,9 @@ pub struct Settings {
     pub shortcut: Option<String>,
     /// The chord that shows or hides the main window. Off by default (R5).
     pub show_window_shortcut: Option<String>,
+    /// The chord that pauses the recording note and continues the paused
+    /// note. Off by default (R16).
+    pub pause_shortcut: Option<String>,
     /// The one storage folder (R1). The library lists the notes in it, and
     /// the next note saves to it. Empty only until the launch sets the
     /// default folder (R2, KTD12).
@@ -672,6 +676,7 @@ impl Default for Settings {
             interface_zoom_percent: 100,
             shortcut: Some(DEFAULT_SHORTCUT.to_string()),
             show_window_shortcut: None,
+            pause_shortcut: None,
             storage_folder: String::new(),
             endpoint_base_url: None,
             endpoint_model: String::new(),
@@ -720,6 +725,7 @@ impl Settings {
             interface_zoom_percent: local.interface_zoom_percent,
             shortcut: local.shortcut,
             show_window_shortcut: local.show_window_shortcut,
+            pause_shortcut: local.pause_shortcut,
             storage_folder: local.storage_folder,
             endpoint_base_url: local.endpoint_base_url,
             endpoint_model: local.endpoint_model,
@@ -785,6 +791,7 @@ impl Settings {
             interface_zoom_percent: self.interface_zoom_percent,
             shortcut: self.shortcut.clone(),
             show_window_shortcut: self.show_window_shortcut.clone(),
+            pause_shortcut: self.pause_shortcut.clone(),
             storage_folder: self.storage_folder.clone(),
             endpoint_base_url: self.endpoint_base_url.clone(),
             endpoint_model: self.endpoint_model.clone(),
@@ -1847,6 +1854,8 @@ mod tests {
         let (settings, _) = settings_from_value(&stored);
         assert_eq!(settings.shortcut.as_deref(), Some(DEFAULT_SHORTCUT));
         assert_eq!(settings.show_window_shortcut, None);
+        // A new install has no Pause chord (R16).
+        assert_eq!(settings.pause_shortcut, None);
     }
 
     #[test]

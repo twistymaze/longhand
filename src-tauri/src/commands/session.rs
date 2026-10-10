@@ -413,6 +413,11 @@ pub enum DocLine {
         duration_ms: u64,
         wall_start: Option<String>,
     },
+    /// Between segments, where the user paused the note (KTD5 of the pause
+    /// plan).
+    Pause {
+        duration_ms: u64,
+    },
     Silence {
         duration_ms: u64,
     },
@@ -1026,7 +1031,8 @@ fn read_document(folder: &Path) -> Result<SessionDocument, String> {
 }
 
 /// Transcript lines, each gap placed at the end of the segment before it
-/// and given the wall-clock start of the segment after it.
+/// and given the wall-clock start of the segment after it. Gap and pause
+/// lines pair with the segment pairs in order.
 fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
     let mut ordered: Vec<_> = doc.segments.iter().collect();
     ordered.sort_by_key(|s| s.offset_ms);
@@ -1057,6 +1063,12 @@ fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
                     duration_ms,
                     wall_start,
                 }
+            }
+            TranscriptLine::Pause { duration_ms } => {
+                // A pause line is also between two segments: it takes its
+                // pair, so that a later gap gets the pair after it.
+                gaps.next();
+                DocLine::Pause { duration_ms }
             }
             TranscriptLine::Silence { duration_ms } => DocLine::Silence { duration_ms },
         })
@@ -1585,6 +1597,7 @@ mod remove_audio_tests {
             wall_end: end,
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         }];
         let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
         let summary = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";
@@ -1861,6 +1874,57 @@ mod tests {
     }
 
     #[test]
+    fn a_pause_line_takes_its_segment_pair_so_a_later_gap_keeps_its_start() {
+        let segment = |index: u32, start: &str, end: &str, offset_ms: u64| {
+            format!(
+                "- index: {index}\n  wall_start: 2026-09-22T{start}:00+00:00\n  wall_end: 2026-09-22T{end}:00+00:00\n  offset_ms: {offset_ms}\n  duration_ms: 600000\n  audio: audio/segment-0{}.opus\n",
+                index + 1
+            )
+        };
+        let text = format!(
+            "---\nsession_id: s\nstarted: 2026-09-22T14:00:00+00:00\nsegments:\n{}{}{}---\n",
+            segment(0, "14:00", "14:10", 0) + "  ends_in_pause: true\n",
+            segment(1, "14:25", "14:35", 1_500_000),
+            segment(2, "16:00", "16:10", 6_600_000),
+        );
+        let doc = SessionDoc::parse(&text).unwrap();
+        let turn = |position_ms: u64| TranscriptLine::Turn {
+            position_ms,
+            speaker: None,
+            text: "a".into(),
+        };
+        let transcript = Transcript {
+            has_speakers: false,
+            lines: vec![
+                turn(1_000),
+                TranscriptLine::Pause {
+                    duration_ms: 900_000,
+                },
+                turn(1_501_000),
+                TranscriptLine::Gap {
+                    duration_ms: 4_500_000,
+                },
+                turn(6_601_000),
+            ],
+        };
+        let lines = doc_lines(&doc, transcript);
+        assert!(matches!(
+            &lines[1],
+            DocLine::Pause {
+                duration_ms: 900_000
+            }
+        ));
+        assert!(matches!(
+            &lines[3],
+            DocLine::Gap {
+                at_ms: 2_100_000,
+                duration_ms: 4_500_000,
+                wall_start: Some(w),
+            } if w == "2026-09-22T16:00:00+00:00"
+        ));
+    }
+
+    #[test]
     fn a_summary_view_carries_the_recorded_prompt_name_and_id() {
         let complete = |prompt: Option<(&str, &str)>| Summary {
             meta: SummaryMeta::Complete {
@@ -2110,6 +2174,7 @@ mod record_tests {
             wall_end: opened() + chrono::TimeDelta::minutes(1),
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
+            ends_in_pause: false,
         }
     }
 

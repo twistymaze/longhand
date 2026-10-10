@@ -384,7 +384,7 @@ fn live_word_times_match_the_assembled_file_before_and_after_a_dropped_second() 
             .statuses
             .lock()
             .unwrap()
-            .contains(&LiveStatus::Paused)
+            .contains(&LiveStatus::Behind)
     );
     // Each saved part was reported with the row that was saved.
     assert_eq!(*r.seen.saved.lock().unwrap(), rows);
@@ -604,7 +604,7 @@ fn forty_five_seconds_of_speech_with_no_new_text_ends_the_part_as_a_gap() {
     assert_eq!(rows[1].end_ms, 60_000);
     assert_eq!(r.script.streams.load(Ordering::SeqCst), 2);
     let statuses = r.seen.statuses.lock().unwrap().clone();
-    assert!(statuses.contains(&LiveStatus::Paused), "{statuses:?}");
+    assert!(statuses.contains(&LiveStatus::Behind), "{statuses:?}");
 }
 
 #[test]
@@ -932,6 +932,10 @@ impl Gaps {
     }
 
     fn transcribe(&self) {
+        self.transcribe_segments(std::slice::from_ref(&self.segment));
+    }
+
+    fn transcribe_segments(&self, segments: &[session_core::Segment]) {
         let slot: Mutex<Option<Box<dyn Recognizer>>> = Mutex::new(None);
         let (calls, blank_on) = (Arc::clone(&self.calls), Arc::clone(&self.blank_on));
         let load = move |_: &str| {
@@ -949,7 +953,7 @@ impl Gaps {
             &self.r.store,
             ID,
             self.dir.path(),
-            std::slice::from_ref(&self.segment),
+            segments,
             &Default::default(),
             &slot,
             &Unattended,
@@ -1071,6 +1075,49 @@ fn speech_that_a_part_heard_but_gave_no_text_gets_a_gap_fill() {
     g.transcribe();
     assert_eq!(g.filled(), vec![3, 4, 5]);
     g.verify().unwrap();
+}
+
+#[test]
+fn the_time_of_a_pause_between_two_segments_gets_no_gap_fill() {
+    // R15 of the pause plan: the note paused for 15 min after the first
+    // segment. The live text covers both segments, so no window runs.
+    let mut g = Gaps::new(&[(0, 60_000, live_words(0, 60))]);
+    g.segment.ends_in_pause = true;
+    let audio = vec![0.0; 60 * 16_000];
+    let second = write_segment(g.dir.path(), 1, 960_000, 16_000, &audio, false);
+    assemble::assemble_segment(
+        &g.dir.path().join(RECOVERY_DIR),
+        g.dir.path(),
+        &second,
+        &Unattended,
+    )
+    .unwrap();
+    let plan = WindowPlan {
+        segment: 1,
+        duration_ms: 60_000,
+        voiced_ms: 60_000,
+        voiced: vec![span(0, 60_000)],
+        speech: Some(vec![span(0, 60_000)]),
+        windows: (0..6).map(|i| span(i * 10_000, (i + 1) * 10_000)).collect(),
+    };
+    checkpoint::put(
+        &g.r.store,
+        ID,
+        Stage::Transcribe,
+        &checkpoint::plan_key(1),
+        &plan,
+    )
+    .unwrap();
+    let live = asr::LivePart {
+        start_ms: 0,
+        end_ms: 60_000,
+        words: live_words(0, 60),
+    };
+    live::save_part(&g.r.store, ID, 1, 0, &live).unwrap();
+
+    g.transcribe_segments(&[g.segment.clone(), second]);
+    assert_eq!(g.calls(), 0);
+    assert!(g.filled().is_empty());
 }
 
 #[test]

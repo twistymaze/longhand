@@ -15,6 +15,7 @@ export const QUIET_PEAK = 0.001;
 
 export type InputStatus =
   | "idle"
+  | "paused"
   | "starting"
   | "capturing"
   | "quiet"
@@ -24,6 +25,9 @@ export type InputStatus =
 
 export function inputStatus(opts: {
   recording: boolean;
+  /// The user paused the note: the microphone is closed on purpose, so no
+  /// tick is expected.
+  paused?: boolean;
   /// The microphone went away and is being reopened (U14).
   reconnecting?: boolean;
   lostReason: string | null;
@@ -33,7 +37,8 @@ export function inputStatus(opts: {
   /// The peaks of the latest ticks, oldest first.
   levels?: number[];
 }): InputStatus {
-  const { recording, reconnecting, lostReason, lastTickAt, startedAt, now, levels = [] } = opts;
+  const { recording, paused, reconnecting, lostReason, lastTickAt, startedAt, now, levels = [] } = opts;
+  if (paused) return "paused";
   if (reconnecting) return "reconnecting";
   if (lostReason) return "lost";
   if (!recording) return "idle";

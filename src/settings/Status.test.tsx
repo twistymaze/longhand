@@ -22,6 +22,7 @@ const baseSettings: Settings = {
   interface_zoom_percent: 100,
   shortcut: "Alt+Shift+L",
   show_window_shortcut: null,
+  pause_shortcut: null,
   storage_folder: "/notes",
   endpoint_base_url: null,
   endpoint_model: "",

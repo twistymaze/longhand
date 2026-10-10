@@ -72,14 +72,12 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
     ordered.sort_by_key(|s| s.offset_ms);
 
     let mut lines = Vec::new();
-    let mut previous_end: Option<u64> = None;
+    let mut previous: Option<&Segment> = None;
     for segment in ordered {
-        if let Some(end) = previous_end {
-            lines.push(TranscriptLine::Gap {
-                duration_ms: segment.offset_ms.saturating_sub(end),
-            });
+        if let Some(before) = previous {
+            lines.push(boundary_line(before, segment));
         }
-        previous_end = Some(segment.end_ms());
+        previous = Some(segment);
 
         let mut pieces: Vec<Piece> = Vec::new();
         for window in windows.iter().filter(|w| w.segment == segment.index) {
@@ -167,6 +165,18 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
     Transcript {
         has_speakers,
         lines,
+    }
+}
+
+/// The line between two segments that follow each other: a pause line when
+/// the note paused after `before`, otherwise a gap line (KTD5 of the pause
+/// plan). Both transcript routes use it.
+pub(crate) fn boundary_line(before: &Segment, after: &Segment) -> TranscriptLine {
+    let duration_ms = after.offset_ms.saturating_sub(before.end_ms());
+    if before.ends_in_pause {
+        TranscriptLine::Pause { duration_ms }
+    } else {
+        TranscriptLine::Gap { duration_ms }
     }
 }
 
