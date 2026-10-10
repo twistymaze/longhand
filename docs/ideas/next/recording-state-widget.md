@@ -5,6 +5,7 @@ area: interface
 added: 2026-10-09
 source: "pause-recording brainstorm (conversation, 2026-10-09)"
 related: [pause-recording]
+plan: docs/plans/2026-10-10-0829-feat-recording-widget-plan.md
 ---
 
 # Always-visible recording state widget
@@ -23,4 +24,4 @@ This replaces a reminder that listens for speech while paused. The user rejected
 ## Notes / Current state
 - U7's two-tier rail and attention budget apply: the widget must not draw participants' attention to the screen.
 - The tray already shows a state ("Interrupted") for a failed capture.
-- Open questions: position, size, whether it has controls (Pause, Stop), whether it shows on all displays, and whether it can be turned off.
+- The plan answers the open questions on position, controls, displays and turning it off.
