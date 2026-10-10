@@ -84,6 +84,17 @@ pub(super) fn read(
 /// The fingerprint of the `session.md` in `home` with the user fields
 /// removed, so a tag or type edit does not change the saved prefix (KTD2
 /// of the note types and tags plan).
+/// True when the saved segments are the same audio as the note's first
+/// segments. The pause flag does not count: a resume clears it on the last
+/// saved segment, and the audio does not change (KTD4 of the pause plan).
+fn same_segments(saved: &[Segment], note: &[Segment]) -> bool {
+    saved.len() == note.len()
+        && saved.iter().zip(note).all(|(a, b)| Segment {
+            ends_in_pause: b.ends_in_pause,
+            ..a.clone()
+        } == *b)
+}
+
 fn session_manifest(home: &Path) -> std::io::Result<String> {
     Ok(session_core::folder::session_fingerprint(&std::fs::read(
         home.join("session.md"),
@@ -163,7 +174,7 @@ fn candidate(
     let old = doc.timeline_segments();
     if old.is_empty()
         || old.len() > segments.len()
-        || old != segments[..old.len()]
+        || !same_segments(&old, &segments[..old.len()])
         || segments
             .windows(2)
             .any(|pair| pair[0].end_ms() > pair[1].offset_ms || pair[0].index >= pair[1].index)
@@ -522,6 +533,20 @@ mod tests {
                 "publication accepted changed {filename}"
             );
         }
+    }
+
+    #[test]
+    fn saved_prefix_accepts_a_note_saved_while_paused() {
+        // A Stop while paused saves the last segment with its pause flag.
+        // The resume clears the flag in the store only (KTD4 of the pause
+        // plan), and the audio is the same.
+        let case = Case::new();
+        let mut doc = session_core::folder::SessionDoc::read(case.temp.path()).unwrap();
+        for segment in &mut doc.segments {
+            segment.ends_in_pause = true;
+        }
+        std::fs::write(case.temp.path().join("session.md"), doc.render()).unwrap();
+        assert!(case.read().unwrap().is_some());
     }
 
     #[test]
