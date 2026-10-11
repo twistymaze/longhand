@@ -1,0 +1,45 @@
+# Checks that each PR title is a Conventional Commit with an allowed type.
+# Main allows only squash merges, and the squash commit title is the PR title,
+# so this title decides whether the merge makes a release and which part of
+# the version goes up (docs/releases.md). The job name "PR title" is a
+# required check in the main ruleset, so it never changes.
+#
+# The workflow uses pull_request, not pull_request_target: it needs no
+# secrets and no write permission. It runs for every PR, docs-only PRs too,
+# so the required check always reports.
+
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # v6.1.1
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # The commit types of docs/releases.md. feat, fix, perf, refactor,
+          # revert and build make a release; the others do not.
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            revert
+            build
+            docs
+            ci
+            test
+            chore
+            style
+          requireScope: false
