@@ -105,11 +105,14 @@ jobs:
           ref: ${{ needs.find.outputs.commit }}
 
       # The same setup as the Windows checks in ci.yml. A release build has
-      # its own artifacts, so it has its own cache key.
+      # its own artifacts, so it has its own cache key. It saves the cache
+      # only on success: a partial cache saved under the exact key is never
+      # replaced, so each later release would restore it.
       - name: Windows build setup
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v1-release-windows
+          prefix-key: v2-release-windows
+          cache-on-failure: false
 
       # rust-cache removes non-Cargo files from target during cache save,
       # so the NeMo cache goes in the temp folder. The version goes into the

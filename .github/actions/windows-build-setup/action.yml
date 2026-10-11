@@ -11,6 +11,14 @@ inputs:
   prefix-key:
     description: The rust-cache prefix key. A build with different artifacts needs its own key.
     required: true
+  cache-on-failure:
+    description: >-
+      Save the rust-cache when a later step fails. The checks use true, so
+      a job that has never passed still gets a cache. A release build uses
+      false, because it runs only after the checks pass, and a partial cache
+      saved under the exact key is never replaced.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -64,7 +72,8 @@ runs:
       with:
         components: rustfmt, clippy
 
-    # Saved even when a later step fails: otherwise a job that has never
+    # Saved even when a later step fails (unless the caller sets
+    # cache-on-failure to false): otherwise a job that has never
     # passed never gets a cache, and every run compiles ggml, ONNX Runtime
     # and SQLite from scratch. The key follows Cargo.lock only, and an exact
     # hit is never saved again, so a change to how CI builds (flags,
@@ -75,7 +84,7 @@ runs:
       if: runner.environment == 'github-hosted'
       with:
         prefix-key: ${{ inputs.prefix-key }}
-        cache-on-failure: true
+        cache-on-failure: ${{ inputs.cache-on-failure }}
         workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
 
     # The MSVC environment makes Rust select link.exe from PATH, where Git

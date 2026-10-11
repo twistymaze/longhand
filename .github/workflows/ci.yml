@@ -419,11 +419,15 @@ jobs:
         if: steps.version.outputs.due == 'true'
 
       # A release build has its own artifacts, so it has its own cache key.
+      # A release build runs only after the checks pass, so it saves the
+      # cache only on success. A failed build would save a partial cache
+      # under the exact key, and rust-cache never saves again after an exact
+      # hit, so each later release would restore that partial cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.version.outputs.due == 'true'
         with:
-          prefix-key: v1-release
-          cache-on-failure: true
+          prefix-key: v2-release
+          cache-on-failure: false
 
       - name: Install frontend dependencies
         if: steps.version.outputs.due == 'true'
