@@ -187,9 +187,9 @@ What to know:
 - **`rust-lld` was not used.** `src-tauri/build.rs` embeds the manifest with `/MANIFEST:EMBED /MANIFESTINPUT`. `rust-lld` is built without libxml2, and so it may not merge a manifest input. Test it in its own change if link time becomes a large part of a warm run.
 - **Already done before archived PR 7:** debug-profile bundles, NSIS as the only bundle, and `CARGO_INCREMENTAL=0` (rust-cache sets it). A next change to measure is `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, which makes the PDBs smaller and linking faster.
 
-## Follow-up: home runners
+## Follow-up: self-hosted runners
 
-Since October 2026 the macOS and Windows checks run on home runners that keep `target/` between jobs ([Checks and CI](../../development-workflow.md#checks-and-ci)). rust-cache, the Dev Drive step and the 8-core runner apply only when a job runs on GitHub's runners. The `ci.yml` line numbers in this document refer to the file at the time of archived PR 1 and archived PR 7. The feature-unification rule still applies: one set of cargo commands per job keeps each home runner's `target/` to one build of ggml.
+Since October 2026 the macOS and Windows checks run on self-hosted runners that keep `target/` between jobs ([Checks and CI](../../development-workflow.md#checks-and-ci)). rust-cache, the Dev Drive step and the 8-core runner apply only when a job runs on GitHub's runners. The `ci.yml` line numbers in this document refer to the file at the time of archived PR 1 and archived PR 7. The feature-unification rule still applies: one set of cargo commands per job keeps each self-hosted runner's `target/` to one build of ggml.
 
 ## Related Issues
 

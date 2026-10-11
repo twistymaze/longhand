@@ -11,7 +11,7 @@ Measured on 2026-10-10 and 2026-10-11 during the self-hosted CI runners work (`d
 
 ## Checks job
 
-| Job | GitHub runner | Home runner, cold | Home runner, warm |
+| Job | GitHub runner | Self-hosted runner, cold | Self-hosted runner, warm |
 |---|---|---|---|
 | macOS checks | about 14 min before U3, about 9.5 min after U3 | 7.7 min | 6.5 min |
 | Windows checks | about 20 min | 13.4 min | 4.9 to 5.0 min |
@@ -35,4 +35,4 @@ The release step is long even when warm. The warm run reused only part of the co
 
 - Each row is one or two runs, not an average.
 - A warm time depends on how much changed since the runner's last job.
-- A job for an offline home runner waits in the queue. `-f hosted=true` runs the checks on GitHub's runners.
+- A job for an offline self-hosted runner waits in the queue. `-f hosted=true` runs the checks on GitHub's runners.

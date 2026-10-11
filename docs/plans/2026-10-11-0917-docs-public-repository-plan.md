@@ -77,7 +77,7 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 **The switch**
 
 - R12. A checklist lists the steps before and after the switch in order. The user changes the visibility in the GitHub settings. An agent does not.
-- R13. Before the switch, the self-hosted runner settings for a public repository, from the README of the private repository `twistymaze/homelab-ci`, are applied. CI selects these runners through `vars.MACOS_RUNNER` and `vars.WINDOWS_RUNNER` in `.github/workflows/ci.yml`. Code from people outside the repository must not run on the home runners. A setting that GitHub allows only on a public repository is set immediately after the switch.
+- R13. Before the switch, the self-hosted runner settings for a public repository, from the README of the private repository `twistymaze/homelab-ci`, are applied. CI selects these runners through `vars.MACOS_RUNNER` and `vars.WINDOWS_RUNNER` in `.github/workflows/ci.yml`. Code from people outside the repository must not run on the self-hosted runners. A setting that GitHub allows only on a public repository is set immediately after the switch.
 - R14. After the switch, a check confirms that pull request creation is still limited to collaborators.
 - R15. After the switch, a check confirms that issue creation is still limited to collaborators. Wiki, Discussions and Projects stay off.
 - R16. The idea `pre-public-repo-audit` moves to `docs/ideas/done/`. The idea `about-longhand-and-readme` stays in `someday`, with only its About-pane part.
@@ -128,7 +128,7 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 ### Key Technical Decisions
 
 - KTD1. **The docs change first, in the current repository.** README, CONTRIBUTING, the general-docs edits (R7, R8, R9) and the reference rewrite (R17) are Markdown only. They go to `main` directly, as `docs/development-workflow.md` allows for docs-only changes, so they are in the history that R19 pushes. The history scan (R10) then runs on that final `main`.
-- KTD2. **`LICENSE` and the CI path-filter change are the first PR in the new repository.** The path filter in `.github/workflows/ci.yml` excludes only Markdown and the docs folders, so a root `LICENSE` would start CI and a preview publish. The PR adds `LICENSE` and excludes it from the filter. Its checks run on the home runners, and its merge publishes a build from a commit that the archive never built, which is the proof that R22 needs.
+- KTD2. **`LICENSE` and the CI path-filter change are the first PR in the new repository.** The path filter in `.github/workflows/ci.yml` excludes only Markdown and the docs folders, so a root `LICENSE` would start CI and a preview publish. The PR adds `LICENSE` and excludes it from the filter. Its checks run on the self-hosted runners, and its merge publishes a build from a commit that the archive never built, which is the proof that R22 needs.
 - KTD3. **A one-off setup script, outside the repository.** The script that copies settings and reads them back (R20) runs from a scratch folder and is not committed. It compares the archive and the new repository as JSON and shows the difference in chat.
 - KTD4. **The history scan uses `gitleaks` for credentials and `git grep` for the rest.** `gitleaks` is installed through Homebrew only after the user approves the download, and it always runs with `--redact` so that its report holds no secret value. `git grep` over all commits of `main` covers file contents, a list of each commit's file paths covers the `CLAUDE.md` private paths and any `.context/` path, and a search of the commit messages covers both. The content and message searches use the pattern in `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md`. The user supplies the infrastructure host names at run time, and they stay in the shell session (R10).
 - KTD5. **The agent runs the reversible GitHub steps, and the user runs the rest.** The agent runs the rename, the repository creation, the pushes, the settings script and the read-only checks, with approval for each step that changes something on GitHub. The user enters the secret values and the issue creation setting (R21), revokes a token (R24) and changes the visibility (R12).
@@ -294,11 +294,11 @@ flowchart TB
 1. Add `LICENSE` with the standard MIT text and the line from R5.
 2. Add `!LICENSE` to the push path filter in `ci.yml`, and update the comment above the filter.
 3. Add `LICENSE` to the definition of docs in the "Checks and CI" section of `docs/development-workflow.md`.
-4. Open the PR on the new repository with `-R twistymaze/longhand`, wait for the checks on the home runners, and merge.
+4. Open the PR on the new repository with `-R twistymaze/longhand`, wait for the checks on the self-hosted runners, and merge.
 5. Check the preview job of the merge run (KTD2).
 
 **Test scenarios:**
-- Happy path: the PR's checks run on `longhand-macos` and a Windows home runner and pass.
+- Happy path: the PR's checks run on `longhand-macos` and a Windows self-hosted runner and pass.
 - Happy path: the preview job of the merge run logs "published <version>", and `twistymaze/longhand-builds` has a new preview release.
 - Edge case: a later push that changes only `LICENSE` starts no CI run.
 
@@ -339,11 +339,11 @@ flowchart TB
 2. The user changes the visibility of `twistymaze/longhand` to public.
 3. Immediately after that, apply the settings from U5 that need a public repository, including approval for workflows from outside contributors.
 4. Check that pull request creation is limited to collaborators. Ask the user to confirm the issue setting on the settings page. Check that Wiki, Discussions and Projects are off.
-5. Start one `workflow_dispatch` CI run on `main` and confirm that its checks run on the home runners and pass.
+5. Start one `workflow_dispatch` CI run on `main` and confirm that its checks run on the self-hosted runners and pass.
 
 **Test expectation:** none -- settings only.
 
-**Verification:** Each check in step 4 passes, the outside-contributor approval setting reads back as set, and the dispatched run passes on the home runners.
+**Verification:** Each check in step 4 passes, the outside-contributor approval setting reads back as set, and the dispatched run passes on the self-hosted runners.
 
 ### U9. Idea moves
 
@@ -380,7 +380,7 @@ flowchart TB
 | PR checks and the preview job of the merge run | U6 | Checks pass, and the log shows "published <version>" |
 | Archive settings readback | U7 | Actions off, no secrets, no runner group access |
 | Post-switch settings checks | U8 | All pass |
-| Dispatched CI run after the switch | U8 | Checks run on the home runners and pass |
+| Dispatched CI run after the switch | U8 | Checks run on the self-hosted runners and pass |
 | `bun scripts/ideas.ts` | U9 | The ideas are in their folders |
 
 Run `bun` as `/Users/<user>/.bun/bin/bun` or with `~/.bun/bin` on `PATH`. Run `gh` outside the sandbox and with `-R` for each repository.
