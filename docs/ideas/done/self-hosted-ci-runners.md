@@ -15,3 +15,7 @@ Run the CI checks in VMs on the home network instead of on GitHub's runners: a m
 
 ## Why
 A change takes about 20 minutes of PR checks, 22 minutes of checks on `main` and a 10-minute preview build. Actions cost about $250 a month in October 2026. The Windows job is the slowest, which blocks a Windows preview build on `main`.
+
+## Outcome
+
+Shipped in PR #54. The macOS and Windows checks run on home runners; the setup is in a private repository. The preview build stays on GitHub's runners (see home-signing-runner).

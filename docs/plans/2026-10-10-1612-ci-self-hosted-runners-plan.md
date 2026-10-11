@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** The CI checks for a change finish much faster, mostly on Windows, and the macOS and Windows checks stop using billed runner minutes. Then a Windows preview build on `main` becomes practical.
 - **Means:** GitHub Actions runners in VMs on the agents VLAN, which has internet access only, plus workflow and test changes that help on any runner.
-- **Authority:** Product Contract R-IDs win on behaviour. KTDs win on mechanism inside their cited Rs. A unit overrides neither. The idea file is `docs/ideas/next/self-hosted-ci-runners.md`.
+- **Authority:** Product Contract R-IDs win on behaviour. KTDs win on mechanism inside their cited Rs. A unit overrides neither. The idea file is `docs/ideas/done/self-hosted-ci-runners.md`.
 - **Stop conditions:** Stop and ask in these cases:
   - A step changes the Proxmox host, the Mac Studio's network or login settings, GitHub organization or repository settings, or a runner registration, and the user has not approved that step.
   - The runner group "Selected workflows" option is not available on the Team plan, so R3 has only the job-started hook (KTD7).
@@ -471,7 +471,7 @@ flowchart TB
 
 **Dependencies:** U4, U7, U8.
 
-**Files:** `docs/ci-runners.md`, `docs/development-workflow.md`, `docs/solutions/performance-issues/cargo-feature-unification-ci-rebuilds.md` (out-of-date line references and the runner name), `docs/ideas/next/self-hosted-ci-runners.md`.
+**Files:** `docs/ci-runners.md`, `docs/development-workflow.md`, `docs/solutions/performance-issues/cargo-feature-unification-ci-rebuilds.md` (out-of-date line references and the runner name), `docs/ideas/done/self-hosted-ci-runners.md`.
 
 **Approach:**
 1. With the user's approval, set: PRs only from collaborators, approval for workflows from all external contributors, public repositories allowed on both runner groups (U4 and U8 created them, limited to this repository), and the `MACOS_RUNNER`, `WINDOWS_RUNNER` and `PREVIEW_RUNNER` variables.
