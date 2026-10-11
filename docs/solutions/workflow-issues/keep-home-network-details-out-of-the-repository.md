@@ -30,7 +30,7 @@ tags:
 
 ## Context
 
-The repository is private now, and the user plans to make it public. During the self-hosted CI runners work (archived PR 54), the agent wrote the runner setup scripts, a full setup guide, and the plan results into the repository. These files named the home hosts, IP addresses, the VLAN number, the router rules, the storage names and the hardware. The agent treated them as normal project docs, because the repository rules list only some private paths (`sample.m4a`, `fixtures/`, `manual-tests/`, `.env`, idea screenshots). The user saw the files after many commits and said that they did not want these details in the repository.
+The repository was private at that time. It became public on 2026-10-11. During the self-hosted CI runners work (archived PR 54), the agent wrote the runner setup scripts, a full setup guide, and the plan results into the repository. These files named the home hosts, IP addresses, the VLAN number, the router rules, the storage names and the hardware. The agent treated them as normal project docs, because the repository rules list only some private paths (`sample.m4a`, `fixtures/`, `manual-tests/`, `.env`, idea screenshots). The user saw the files after many commits and said that they did not want these details in the repository.
 
 The fix took much more work than writing the files correctly at the start:
 
@@ -39,7 +39,7 @@ The fix took much more work than writing the files correctly at the start:
 - The plan and idea files were already on `main`, so `main`'s history was written again. The `non_fast_forward` rule of the main ruleset was removed for the push and then restored. The push used `--force-with-lease` with the expected old SHA.
 - The feature branch was built again on the new `main` with only the scrubbed files.
 
-The old commits can still be opened on GitHub by their SHA, and the logs of old Actions runs still exist. `docs/ideas/done/pre-public-repo-audit.md` lists both for the audit before the repository becomes public.
+After the rewrite, the old commits could still be opened on GitHub by their SHA, and the logs of old Actions runs still showed them. A rewrite cannot remove either. To make the repository public without them, the old repository became the private archive `twistymaze/longhand-pre-public`, and a new `twistymaze/longhand` was made from a scanned copy of `main` ([public repository plan](../../plans/2026-10-11-0917-docs-public-repository-plan.md)). That option is now used up: a detail that is pushed to the public repository stays public.
 
 ## Guidance
 
@@ -53,7 +53,7 @@ Treat each detail of the user's home network and machines as private data, the s
 
 ## Why This Matters
 
-A public repository cannot be made private again in a useful way: anyone can clone it while it is public. A map of the home network helps an attacker: it shows which hosts exist, which addresses they have, and which rules isolate the CI VMs. A history rewrite removes the details from branches, but GitHub keeps the old commits available by SHA, and Actions logs can show them.
+A public repository cannot be made private again in a useful way: anyone can clone it while it is public. A map of the home network helps an attacker: it shows which hosts exist, which addresses they have, and which rules isolate the CI VMs. A history rewrite removes the details from branches, but GitHub keeps the old commits available by SHA, and Actions logs can show them. In the public repository, a pushed detail is visible at once. Secret scanning and push protection find only known token formats, not host names or addresses, so the search before a commit is the only check.
 
 ## When to Apply
 
