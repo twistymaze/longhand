@@ -65,9 +65,9 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 
 **Report and decision**
 
-- R15. A report gives, for each release build and setup, the cold and warm job times next to the baseline (R6), the time of each compile step, the cache restore and save times, the sccache hit rate, the cache write errors, and the GitHub Actions cache size that the setup uses. For each self-hosted runner, it gives the measured times, the local cache's disk use and size limit, and the effect of the weekly VM reset on the cache. It notes that the branch release-build times exclude signing and notarization. It also says what the result means for the `ephemeral-ci-runner-vms` idea.
+- R15. A report gives, for each release build and setup, the cold and warm job times next to the baseline (R6), the time of each compile step, the cache restore and save times, the sccache hit rate, the cache write errors, and the GitHub Actions cache size that the setup uses. For each self-hosted runner, it gives the measured times, the local cache's disk use and size limit, and the effect of the weekly VM reset on the cache. It notes that the branch release-build times exclude release signing and notarization. It also says what the result means for the `ephemeral-ci-runner-vms` idea.
 - R16. The user decides from the report, in one discussion, to keep sccache on every job or to remove it from every job. The kept setup (rust-cache plus sccache, or sccache only) is part of that decision.
-- R17. If the user keeps sccache, the final change applies it to all jobs in R1 and R8. If the user removes it, no sccache change merges, and the measured result is recorded in `docs/solutions/` so the question is not tested again without a new reason. R7 applies whatever the decision is.
+- R17. If the user keeps sccache, the final change applies it to all jobs in R1 and R8 and to the hosted `checks` matrix. If the user removes it, no sccache change merges, and the measured result is recorded in `docs/solutions/` so the question is not tested again without a new reason. R7 applies whatever the decision is.
 
 ### Key Decisions
 
@@ -78,7 +78,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 
 ### Scope Boundaries
 
-- The hosted `checks` matrix (`hosted=true`) is not measured. If the user keeps sccache, U5 still applies it there, because those jobs use the same setup action.
+- The hosted `checks` matrix (`hosted=true`) is not measured. A keep still applies to it (R17), because those jobs use the same setup action.
 - Clean VMs for each job (`docs/ideas/someday/ephemeral-ci-runner-vms.md`) are out of scope. R15 only reports what the result means for them.
 - A local cache that survives the weekly VM reset is out of scope. It needs a separate disk in the private runner setup. R15 reports the effect.
 - Moving the release build to a home runner (`docs/ideas/someday/home-signing-runner.md`) is out of scope.
@@ -113,7 +113,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 - KTD3. **"sccache only" keeps rust-cache with `cache-targets: false`.** rust-cache then caches only the crate registry and git checkouts, and sccache caches all compiled output. Without it, every job downloads all crates again, and the comparison measures download time. "rust-cache plus sccache" keeps rust-cache as today, with a new prefix key. Governs R2. (session-settled: user-approved — chosen over a literal "no rust-cache step at all": the comparison must measure compile time, not crate downloads.)
 - KTD4. **C/C++ goes through sccache with `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER`, and on Windows with `CMAKE_GENERATOR=Ninja`.** cmake-rs does not pass `RUSTC_WRAPPER` to CMake, and the Visual Studio generator that cmake-rs picks on Windows ignores compiler launchers. The cc-rs crates (bundled SQLite, ring and others) need only `RUSTC_WRAPPER`. ggml stays a CMake `Release` configuration, which has no `/Zi`, so its MSVC objects are cacheable. The Ninja generator changes how the shipped Windows build is made, so the installer smoke test must pass in each sccache setup. Governs R4. (session-settled: user-approved — the cost of the Ninja generator was shown, and the user confirmed the scope with it.)
 - KTD5. **A cold run uses a new `SCCACHE_GHA_VERSION` and a new rust-cache prefix key. A warm run builds a second commit on the experiment branch.** That commit changes one dependency patch version in Cargo.lock and one workspace source file, and it runs after the cold run of the same setup saved its cache. Governs R5.
-- KTD6. **The cache budget is managed by hand with `gh cache list` and `gh cache delete`.** Before the first run, U2 deletes the stale `v1-preview` entry on `main` and the two entries of the merged PR branch (about 3.2 GB in total). After each setup's runs, it deletes that setup's entries. Governs R12.
+- KTD6. **The cache budget is managed by hand with `gh cache list` and `gh cache delete`.** Before the first run, U3 deletes the two entries of the merged PR branch (about 2.5 GB). It keeps every `main` entry, including the unused `v1-preview` entry (0.72 GB), and counts it in the budget. After each setup's runs, it deletes that setup's entries. Governs R12.
 - KTD7. **Release builds stop saving the rust-cache on failure, and their prefix keys change.** `cache-on-failure: true` exists so that a check job that never passed still gets a cache. A release build runs only after the checks pass, so a failed release build has no such reason. New prefix keys (`v2-release`, `v2-release-windows`) leave the partial entry unused. Governs R7.
 - KTD8. **The self-hosted local cache is a folder in the runner's tool cache, set by a workflow step.** The step sets `SCCACHE_DIR` to `$RUNNER_TOOL_CACHE/sccache` unless the runner environment file already sets it, and it sets `SCCACHE_CACHE_SIZE` to 20G and `SCCACHE_BASEDIRS` to the work folder and Cargo home. This follows the `LONGHAND_NEMO_CACHE` fallback in `ci.yml`, so the experiment needs no change in the private runner repository. A new `sccache` input on the `ci.yml` dispatch turns it on, so normal PR runs do not change. Each runner has its own folder, because the sccache local cache supports one server for each folder. Governs R8, R9.
 
@@ -170,7 +170,7 @@ U1 is independent and ships first as its own PR. U2 to U4 are the experiment on 
 
 **Approach:**
 1. Dispatch inputs: `experiment-os` (none, macos or windows; none is the default and keeps normal CI), `experiment-setup` (`rust-cache-sccache` or `sccache-only`) and `cache-version` (the `SCCACHE_GHA_VERSION` suffix, KTD5).
-2. The macOS job mirrors the `release-build` compile: the release config file without `createUpdaterArtifacts`, `APPLE_SIGNING_IDENTITY: "-"`, and `bun tauri build --bundles app,dmg`. It has no signing, notarization or publish steps (R11).
+2. The macOS job mirrors the `release-build` compile: the release config file without `createUpdaterArtifacts`, `APPLE_SIGNING_IDENTITY: "-"`, and `bun tauri build --bundles app,dmg`. It does ad-hoc signing only, with no secrets, release signing, notarization or publish steps (R11).
 3. The Windows job mirrors the `release-windows.yml` build: the Windows setup action, then `bun tauri build --bundles nsis` in pwsh, then the installer smoke steps from the checks job.
 4. The sccache setup action installs sccache (KTD2) and sets `RUSTC_WRAPPER`, `SCCACHE_GHA_VERSION`, the CMake launcher variables, and on Windows `CMAKE_GENERATOR=Ninja` (KTD4). Set env through `$GITHUB_ENV`, not job-level `env`, where it depends on `runner.*`.
 5. On Windows, the sccache step runs after the Dev Drive step, so its post step runs before the drive is removed.
@@ -194,7 +194,7 @@ U1 is independent and ships first as its own PR. U2 to U4 are the experiment on 
 **Files:** none in the repository (a measurement commit on the experiment branch changes `Cargo.lock` and one workspace source file, KTD5).
 
 **Approach:**
-1. Delete the stale cache entries (KTD6) and record the cache use.
+1. Delete the merged branch's cache entries (KTD6) and record the cache use.
 2. For each setup, one at a time, with the branch head at the base commit: dispatch a cold run on macOS, then on Windows, each with a new cache version. Push the warm-change commit, confirm with `gh cache list` that the setup's entries exist and record how many sccache entries the cold run stored, then dispatch the warm runs. Record the step times, stats and cache size, then delete the setup's entries.
 3. Revert the warm-change commit before the next setup's cold runs, and push the same change again for its warm runs, so both setups build the same two commits. The branch ends on the reverted state.
 4. Choose a warm-change dependency that is not in the build graph of `transcribe-cpp-sys`, so that its CMake build script does not run again for a reason other than sccache.
