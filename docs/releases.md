@@ -19,6 +19,8 @@ After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` start
 
 CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run. When GitHub replaces a waiting Windows run, that release gets no installer.
 
+When a newer CI run on `main` is queued or running at the time of publication, the publish step publishes nothing. It logs "a newer CI run on main is queued or running" and ends without an error. The newer run publishes these commits in its release. Without this rule, publication can fail: when a newer commit changed a file in `.github/workflows/`, GitHub refuses to let the workflow token create a tag on the older commit (403, "Resource not accessible by integration").
+
 A push of only docs does not start CI (see [Checks and CI](development-workflow.md#checks-and-ci)). Its changes go out in the next release.
 
 ### When a release is due

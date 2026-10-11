@@ -56,6 +56,8 @@ function fakeRepo() {
     releases: [] as FakeRelease[],
     // Runs before each upload. A test can make it throw.
     beforeUpload: (_name: string) => {},
+    // True when a newer CI run on main is queued or running.
+    newerRun: false,
   };
   const view = (r: FakeRelease): Release => ({
     id: r.id,
@@ -118,6 +120,9 @@ function fakeRepo() {
     },
     async deleteRelease(release) {
       state.releases = state.releases.filter((r) => r.id !== release.id);
+    },
+    async newerRunWaiting() {
+      return state.newerRun;
     },
   };
   return { api, state };
@@ -191,6 +196,14 @@ test("an older run that finishes after a newer one publishes nothing", async () 
   await seedRelease(api, "1.1.0");
   expect(await publish(api, args("1.0.4"), quiet)).toBe("skipped");
   expect(state.releases.map((r) => r.tag_name)).toEqual(["v1.1.0"]);
+});
+
+test("a run that a newer CI run on main follows publishes nothing", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  state.newerRun = true;
+  expect(await publish(api, args("1.0.1"), quiet)).toBe("skipped");
+  expect(state.releases.map((r) => r.tag_name)).toEqual(["v1.0.0"]);
 });
 
 test("a stale draft with the same tag is deleted before the new draft", async () => {
@@ -328,6 +341,30 @@ test("the GitHub binding treats a 404 from the latest release as no release and 
   const headers = requests[0]!.init!.headers as Record<string, string>;
   expect(headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
   expect(headers.Authorization).toBe("Bearer t");
+});
+
+test("the GitHub binding finds a newer queued or running CI run on main", async () => {
+  const check = async (current: number, others: { run_number: number; status: string }[]) => {
+    let result = false;
+    const requests = await withFetch(
+      (url) =>
+        url.endsWith("/actions/runs/77")
+          ? Response.json({ run_number: current, status: "in_progress", workflow_id: 5 })
+          : Response.json({ workflow_runs: others.map((r) => ({ ...r, workflow_id: 5 })) }),
+      async () => {
+        result = await githubApi(REPO, "t", "77").newerRunWaiting();
+      },
+    );
+    return { result, lines: requests.map((r) => r.line) };
+  };
+  const queued = await check(10, [{ run_number: 11, status: "queued" }, { run_number: 10, status: "in_progress" }]);
+  expect(queued.result).toBe(true);
+  expect(queued.lines).toEqual([
+    `GET ${API}/actions/runs/77`,
+    `GET ${API}/actions/workflows/5/runs?branch=main&event=push&per_page=20`,
+  ]);
+  expect((await check(10, [{ run_number: 11, status: "completed" }, { run_number: 9, status: "queued" }])).result).toBe(false);
+  expect(await githubApi(REPO, "t").newerRunWaiting()).toBe(false);
 });
 
 test("the GitHub binding treats a 404 from a tag as no release and fails on other errors", async () => {

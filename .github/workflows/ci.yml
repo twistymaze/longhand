@@ -541,8 +541,10 @@ jobs:
     needs: release-build
     if: needs.release-build.outputs.due == 'true'
     runs-on: ubuntu-latest
+    # actions: read lets the publish step find a newer CI run on main.
     permissions:
       contents: write
+      actions: read
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
