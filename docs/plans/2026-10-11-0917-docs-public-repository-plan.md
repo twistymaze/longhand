@@ -33,7 +33,7 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 
 ### Key Decisions
 
-- **Publish a fresh repository, and keep the current one as a private archive.** The old commits stay only in a repository that never becomes public. All 7 `preview` secrets can be recovered on this machine or from Apple, so the setup costs no irreplaceable credential. Governs R18, R19, R20, R21, R22. (session-settled: user-directed — chosen over keeping the repository with a light cleanup that accepts the old commits as exposure, after the user confirmed that each secret is recoverable)
+- **Publish a fresh repository, and keep the current one as a private archive.** The old commits stay only in a repository that never becomes public. All 7 `preview` secrets can be recovered on this machine or from Apple, so the setup costs no irreplaceable credential. Governs R18, R19, R20, R21, R22, R24. (session-settled: user-directed — chosen over keeping the repository with a light cleanup that accepts the old commits as exposure, after the user confirmed that each secret is recoverable)
 - **The archive is named `twistymaze/longhand-pre-public`.** The name tells what period it holds. Governs R18. (session-settled: user-directed — chosen over `longhand-archive`, which the user found unclear, and over `longhand-private-history`, `longhand-old-private` and `longhand-2026-private`)
 - **PR references in tracked files become plain text.** The fresh repository numbers its PRs from 1, so "PR #53" would point at an unrelated PR, and links to the private archive show a 404 to visitors. Governs R17. (session-settled: user-directed — chosen over links to the archive and over no change)
 - **Issues stay on, with creation limited to collaborators.** The user wants to use Renovate's dependency dashboard issue later. Governs R15, R21. (session-settled: user-directed — chosen over turning issues off: Renovate's dashboard needs issues)
@@ -57,19 +57,20 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 - R7. `STRATEGY.md` describes its users without naming an employer. Its "Not a public project" line changes to say that the repository is public to follow but closed to contributions.
 - R8. No tracked file names the user's employer. A search of all tracked files finds every match, including `docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`.
 - R9. `docs/preview-builds.md` no longer says that the source repository stays private.
-- R17. Each reference to a PR of the current repository in a tracked file, such as "PR #53", becomes plain text that names it as an archived PR, such as "archived PR 53".
+- R17. Each reference to a PR or an Actions run of the current repository in a tracked file becomes plain text that names it as archived, such as "archived PR 53". This covers the text form "PR #53" and links to `github.com/twistymaze/longhand/pull/…`, `github.com/twistymaze/longhand/actions/runs/…` and `github.com/ervwalter/longhand/…`. The quotes in this plan that name a reference form, such as the merge-commit text in Scope Boundaries, stay as they are.
 
 **History check**
 
-- R10. Before the push to the new repository, a scan of the `main` history looks for secrets, committed private paths from the `CLAUDE.md` list, and home infrastructure details. The scan for infrastructure details uses the pattern in `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md` and the known infrastructure host names. The host names are never written into a tracked file. A real credential that matches is revoked or rotated. A match in the current files is removed. A match only in history is shown to the user, who decides before the push.
+- R10. Before the push to the new repository, a scan of the `main` history looks for secrets, committed private paths from the `CLAUDE.md` list, and home infrastructure details. The scan for infrastructure details uses the pattern in `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md` and the known infrastructure host names. The host names are never written into a tracked file. Each match in the history that will be pushed is shown to the user, who decides before the push, also when the same match is in the current files. A real credential that matches is also revoked or rotated, and a match in the current files is also removed.
 
 **Fresh repository**
 
 - R18. The current repository is renamed to `twistymaze/longhand-pre-public`. It stays private and keeps its PRs, its Actions history and its old commits.
-- R19. A new private repository `twistymaze/longhand` receives the `main` history. No other branch moves.
+- R24. After R22 passes, the archive can no longer sign or publish builds: Actions is off, its `preview` secrets are deleted, and it has no access to the `longhand-checks` runner group. If R21 used a new `BUILDS_TOKEN`, the user revokes the old one.
+- R19. A new private repository `twistymaze/longhand` is created empty. It receives the `main` history only after R20 and R21 are complete. No other branch moves.
 - R20. A script copies the settings of the archive to the new repository, then reads both back and shows that they match: the repository variables, the ruleset, the merge and feature settings, the PR creation policy, the `preview` environment without its secret values, and access to the `longhand-checks` runner group.
 - R21. The user enters the 7 `preview` secret values and the issue creation setting. The implementation gives one command for each secret, which reads the value from a file or the password manager. The implementation never reads or prints a secret value.
-- R22. Before the switch, one CI run and one preview publish pass on the new repository.
+- R22. Before the switch, one CI run passes on the new repository, and its preview job publishes a new build. The job log shows "published <version>", and a new preview release is in `twistymaze/longhand-builds`. A run that ends with "nothing to publish" does not count.
 - R23. The local checkout uses the new repository as its remote.
 
 **The switch**
