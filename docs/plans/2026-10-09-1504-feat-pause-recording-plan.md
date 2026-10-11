@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** A user can leave a part of a meeting out of a note (a break, or a sensitive discussion) without stopping the note. The note continues after that part, and processing starts only at Stop.
-- **Product authority:** This Product Contract. The always-visible recording widget is a separate idea (`docs/ideas/next/recording-state-widget.md`) and is not active scope.
+- **Product authority:** This Product Contract. The always-visible recording widget is a separate idea (`docs/ideas/done/recording-state-widget.md`) and is not active scope.
 - **Means:** Pause closes the open segment through the path that sleep already uses, keeps the capture clock in memory, and Continue opens the next segment (KTD1, KTD2).
 - **Authority:** Product Contract R-IDs win on behaviour; KTDs win on mechanism; a unit overrides neither.
 - **Stop conditions:** Stop and ask if a required change needs a new stored note state, or if a capture guard cannot read the paused state without taking the store lock first.
@@ -85,7 +85,7 @@ Long meetings often have a part that should not be in the note: a break with cas
 
 ### Scope Boundaries
 
-- The always-visible recording widget, for a forgotten pause or a forgotten Stop (`docs/ideas/next/recording-state-widget.md`).
+- The always-visible recording widget, for a forgotten pause or a forgotten Stop (`docs/ideas/done/recording-state-widget.md`).
 - Any reminder while paused, by time or by speech.
 - Automatic pause on silence.
 - Removing a part of a recording after the fact, for when the user did not pause before a sensitive part.

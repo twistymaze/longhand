@@ -93,6 +93,10 @@ All audio that the computer plays, from any app. A note records it only while it
 The state of a recording note that captures nothing for a time, by the user's choice. The microphone and the system audio are closed, and no audio, not even recovery data, goes to disk. Continue records into the same note; the UI does not call it Resume, because Resume records into a stopped note. A paused note is still open: processing starts only at Stop. The transcript and the summary input mark each pause with its duration. A pause is not a gap: gap fill does not transcribe it.
 *Avoid:* "pause" for a silence in speech (say silence)
 
+### Recording widget
+A small window above all other windows that shows the open note's state, time and Pause, Continue and Stop while a note is recording, paused or interrupted, so the user does not forget a note that still records or is paused. It never takes the focus from the app in front and is hidden from screen capture where the system allows. A Settings switch sets whether each new note shows it; the user can hide or show it for the open note only, and that choice ends when the note stops.
+*Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)
+
 ### Echo removal
 The processing step after Stop that removes the system audio that the microphone heard from the speakers. It changes only the audio that processing uses, never the saved recording. It is distinct from the echo gate, which only leaves out microphone chunks that are mostly echo from the live mix during recording.
 
@@ -156,13 +160,13 @@ The recognition choices that this computer uses for a new note. It equals the ch
 ## Shortcuts
 
 ### Shortcut
-A global key combination that does one Longhand action from any app. There are two: the recording shortcut starts and stops a recording, and the show shortcut shows the main window, or hides it when it is in front. The user can clear each one; a cleared recording shortcut is a choice, not a fault, and New Note still starts a recording.
+A global key combination that does one Longhand action from any app. The recording shortcut starts and stops a recording; the show shortcut shows the main window, or hides it when it is in front; the Pause shortcut pauses and continues the open note; and the widget shortcut shows or hides the recording widget for the open note. The user can clear each one; a cleared recording shortcut is a choice, not a fault, and New Note still starts a recording.
 
 ### Chord
-The keys of a shortcut: one or more modifier keys and one other key. A shortcut is the action; its chord is the keys the user sets for it. The two shortcuts cannot have the same chord, and a chord that another app holds is refused.
+The keys of a shortcut: one or more modifier keys and one other key. A shortcut is the action; its chord is the keys the user sets for it. No two shortcuts can have the same chord, and a chord that another app holds is refused.
 
 ### Key capture
-The state in which a Settings row waits for the user to press a new chord. It is distinct from audio capture, which records the microphone. During key capture both shortcuts are paused, so their chords start nothing, and only one row waits at a time. Escape, Tab or a click elsewhere ends key capture with no change.
+The state in which a Settings row waits for the user to press a new chord. It is distinct from audio capture, which records the microphone. During key capture all shortcuts are paused, so their chords start nothing, and only one row waits at a time. Escape, Tab or a click elsewhere ends key capture with no change.
 
 ## About
 

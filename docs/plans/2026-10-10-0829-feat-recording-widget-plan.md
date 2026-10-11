@@ -15,7 +15,7 @@ execution: code
 - **Objective:** While a note is open (recording, paused or interrupted), the user always sees that state on screen, even when Longhand is not in front, unless the user chose to hide it (R11–R16). The user can pause, continue or stop the note, or open it, without a switch to Longhand first.
 - **Means:** A pill window that is built once and is hidden and shown. On macOS it is a non-activating panel and on Windows a topmost window that takes no focus (KTD3, KTD4). Rust decides when it shows (KTD1, KTD2).
 - **Authority:** Product Contract R-IDs win on behaviour. KTDs win on mechanism inside their cited Rs. A unit overrides neither.
-- **Product authority:** This Product Contract. The idea file is `docs/ideas/next/recording-state-widget.md`.
+- **Product authority:** This Product Contract. The idea file is `docs/ideas/done/recording-state-widget.md`.
 - **Stop conditions:** Stop and ask in these cases:
   - `tauri-nspanel` from crates.io does not build with tauri 2.11.6, or it fails `cargo deny`.
   - The macOS panel cannot get pointer enter and exit events by either method in KTD6, so the hover × (R12) cannot work.
