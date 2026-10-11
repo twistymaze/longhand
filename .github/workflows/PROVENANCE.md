@@ -9,4 +9,4 @@ Handy-derived steps in the CI workflow, one record per file (R27).
 - Source paths: `.github/workflows/build.yml` (the steps "import Apple Developer Certificate" and "verify certificate")
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
-- Status: modified — used in the `preview` job only; the keychain is a temporary file with a random password, it is added to the search list and not made the default, and a later step deletes it
+- Status: modified — used in the `release-build` job only; the keychain is a temporary file with a random password, it is added to the search list and not made the default, and a later step deletes it
