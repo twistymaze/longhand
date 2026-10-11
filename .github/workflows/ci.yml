@@ -15,9 +15,9 @@ on:
   # cache from main, the first run of each pull request compiles everything.
   # Docs cannot change what the checks test, so a push of only docs runs
   # nothing. Docs are every Markdown file (plans, ideas, solutions, agent
-  # guidance, READMEs) and the agent config folders. PROVENANCE.md is the
-  # exception: the provenance check reads it. A later pattern overrides an
-  # earlier one.
+  # guidance, READMEs), the agent config folders and the root LICENSE.
+  # PROVENANCE.md is the exception: the provenance check reads it. A later
+  # pattern overrides an earlier one.
   push:
     branches: [main]
     paths:
@@ -26,6 +26,7 @@ on:
       - "!docs/**"
       - "!.claude/**"
       - "!.compound-engineering/**"
+      - "!LICENSE"
       - "**/PROVENANCE.md"
   workflow_dispatch:
     inputs:
