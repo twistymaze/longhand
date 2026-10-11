@@ -130,7 +130,7 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 - KTD1. **The docs change first, in the current repository.** README, CONTRIBUTING, the general-docs edits (R7, R8, R9) and the reference rewrite (R17) are Markdown only. They go to `main` directly, as `docs/development-workflow.md` allows for docs-only changes, so they are in the history that R19 pushes. The history scan (R10) then runs on that final `main`.
 - KTD2. **`LICENSE` and the CI path-filter change are the first PR in the new repository.** The path filter in `.github/workflows/ci.yml` excludes only Markdown and the docs folders, so a root `LICENSE` would start CI and a preview publish. The PR adds `LICENSE` and excludes it from the filter. Its checks run on the home runners, and its merge publishes a build from a commit that the archive never built, which is the proof that R22 needs.
 - KTD3. **A one-off setup script, outside the repository.** The script that copies settings and reads them back (R20) runs from a scratch folder and is not committed. It compares the archive and the new repository as JSON and shows the difference in chat.
-- KTD4. **The history scan uses `gitleaks` for credentials and `git grep` for the rest.** `gitleaks` is installed through Homebrew only after the user approves the download, and it always runs with `--redact` so that its report holds no secret value. `git grep` over all commits of `main` covers the `CLAUDE.md` private paths, any `.context/` path, the employer name for information, and the pattern in `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md`. The user supplies the infrastructure host names at run time, and they stay in the shell session (R10).
+- KTD4. **The history scan uses `gitleaks` for credentials and `git grep` for the rest.** `gitleaks` is installed through Homebrew only after the user approves the download, and it always runs with `--redact` so that its report holds no secret value. `git grep` over all commits of `main` covers file contents, a list of each commit's file paths covers the `CLAUDE.md` private paths and any `.context/` path, and a search of the commit messages covers both. The content and message searches use the pattern in `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md`. The user supplies the infrastructure host names at run time, and they stay in the shell session (R10).
 - KTD5. **The agent runs the reversible GitHub steps, and the user runs the rest.** The agent runs the rename, the repository creation, the pushes, the settings script and the read-only checks, with approval for each step that changes something on GitHub. The user enters the secret values and the issue creation setting (R21), revokes a token (R24) and changes the visibility (R12).
 - KTD6. **The README build steps come from the repository, not from memory.** The prerequisites are Rust 1.94.0 (`rust-toolchain.toml`), bun, cmake, Ninja, git and macOS 15 or later. `scripts/build-nemo.sh` clones NeMo-Speech.cpp and sentencepiece at pinned commits, so the first build is long. `src-tauri/tauri.conf.json` names the owner's Developer ID identity, so an outside builder sets `APPLE_SIGNING_IDENTITY="-"` for an ad-hoc signature, then runs `bun tauri build --bundles app`. Windows gets one line that names MSVC, Git Bash and the Vulkan SDK.
 
@@ -240,15 +240,17 @@ flowchart TB
 
 **Approach:**
 1. Ask the user to stop pushes to `main` from other sessions until U5 step 7. Fetch the final `main` and record its commit ID: this is the scanned commit. Ask the user to approve the `gitleaks` install, then run it with `--redact` over the full history of the scanned commit (KTD4). Read only the redacted report.
-2. Run the `git grep` searches over all commits of `main`: the private paths, any `.context/` path, and the infrastructure pattern with the host names that the user supplies.
-3. Show each match to the user with its commit and file. The user decides on each match before U5 starts.
-4. If the user decides that a credential is real, the user revokes or rotates it.
+2. Run the `git grep` searches over all commits of the scanned history for the infrastructure pattern, with the host names that the user supplies.
+3. List the file paths of every commit in the scanned history, and check them against the `CLAUDE.md` private paths and any `.context/` path.
+4. Search every commit message in the scanned history for the infrastructure pattern and the private paths.
+5. Show each match to the user with its commit and file or message. The user decides on each match.
+6. Complete what the decisions require under R10: the user revokes or rotates each real credential, and each match in the current files is removed with a docs commit on `main`. If a commit was added, record the new scanned commit and run steps 1 to 5 again on it.
 
 **Execution note:** Do not print a credential value in chat. Show the rule name, commit and path only.
 
 **Test expectation:** none -- an audit step with no code.
 
-**Verification:** The user decided on every match, or the scans found none.
+**Verification:** The last scan of the recorded scanned commit found no match, or the user decided on each match and step 6 is complete for it.
 
 ### U5. Fresh repository
 
@@ -358,10 +360,11 @@ flowchart TB
 **Approach:**
 1. Move the audit idea with `bun scripts/ideas.ts move`, as `docs/ideas/README.md` requires.
 2. Remove the README part from the About-pane idea and note that the README exists.
+3. Commit both changes and push them to `main` of `twistymaze/longhand`.
 
 **Test expectation:** none -- docs only.
 
-**Verification:** `bun scripts/ideas.ts` lists the audit idea under done and the About-pane idea under someday.
+**Verification:** `bun scripts/ideas.ts` lists the audit idea under done and the About-pane idea under someday, and `main` on GitHub shows both files in those folders.
 
 ---
 
@@ -372,7 +375,7 @@ flowchart TB
 | User approval of the README | U1 | The user approves the text |
 | Whole-word search for the employer name in tracked files | U2 | No match |
 | Search for the three reference forms in tracked files | U3 | Only the exempt quotes in this plan |
-| `gitleaks` and the `git grep` searches over `main` | U4 | The user decided on each match |
+| `gitleaks`, content, path and commit-message searches of the scanned commit | U4 | No match, or each match decided and its R10 action complete |
 | Settings readback, archive against new repository | U5 | Only the name, IDs and secret values differ |
 | PR checks and the preview job of the merge run | U6 | Checks pass, and the log shows "published <version>" |
 | Archive settings readback | U7 | Actions off, no secrets, no runner group access |
