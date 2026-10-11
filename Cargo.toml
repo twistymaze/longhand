@@ -26,3 +26,21 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "unwind"
+
+# Optimize the crates where the pipeline tests spend their time (R12,
+# KTD12). The test profile inherits these settings. `pipeline` makes the
+# generic rubato, realfft and rustfft code of its resampler, so the override
+# goes on `pipeline` and not on those crates. `earshot` and `vad` find speech,
+# `recorder` writes the chunk files, and `sha2` hashes the audio files. An
+# override on rubato, realfft, rustfft, num-complex, hound or opusic-sys gave
+# no measured gain: libopus is a release build at all levels.
+[profile.dev.package.pipeline]
+opt-level = 3
+[profile.dev.package.earshot]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.vad]
+opt-level = 3
+[profile.dev.package.recorder]
+opt-level = 3
