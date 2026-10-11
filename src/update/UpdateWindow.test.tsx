@@ -6,8 +6,8 @@ import type { UpdateState } from "../bindings";
 import { mockTauri } from "../test/tauri";
 import { UpdateWindow } from "./UpdateWindow";
 
-const CURRENT = "0.1.0-preview.20260928143012";
-const NEW = "0.1.0-preview.20260929080000";
+const CURRENT = "1.0.3";
+const NEW = "1.0.4";
 
 function open(state: UpdateState) {
   const tauri = mockTauri({ update_state: () => state, choose_update: () => null });
@@ -64,6 +64,7 @@ describe("the update window", () => {
   test("a local build says that it gets no updates", async () => {
     open({ state: "local_build" });
     expect(await screen.findByText("This build gets no updates")).toBeTruthy();
+    expect(screen.getByText("Local builds do not update. To get updates, install the latest release.")).toBeTruthy();
     expect(buttons()).toEqual(["OK"]);
   });
 

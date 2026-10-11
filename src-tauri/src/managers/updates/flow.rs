@@ -27,7 +27,7 @@ pub enum UpdateState {
     UpToDate { current: String },
     /// The result of a manual check that failed.
     CheckFailed { error: String },
-    /// The result of a manual check in a build with no track.
+    /// The result of a manual check in a build that is not a release build.
     LocalBuild,
     /// The build downloads (R16). `total` is none when the server sends no size.
     Downloading {
@@ -95,8 +95,8 @@ pub struct Facts {
     pub now: i64,
     pub busy: bool,
     pub automatic_checks: bool,
-    /// False for a local build (KTD8).
-    pub has_track: bool,
+    /// True for a release build. Only a release build gets updates (KTD8).
+    pub is_release_build: bool,
 }
 
 /// What the update manager does after a step.
@@ -223,7 +223,7 @@ impl Flow {
 
     /// An automatic check (R9, R10, R15, R17).
     fn timer(&mut self, facts: Facts) -> Vec<Effect> {
-        if !facts.automatic_checks || !facts.has_track {
+        if !facts.automatic_checks || !facts.is_release_build {
             return vec![];
         }
         let due = match &self.state {
@@ -265,7 +265,7 @@ impl Flow {
             }
             _ => {}
         }
-        if !facts.has_track {
+        if !facts.is_release_build {
             self.state = UpdateState::LocalBuild;
             return vec![];
         }
@@ -447,9 +447,9 @@ impl Flow {
 mod tests {
     use super::*;
 
-    const CURRENT: &str = "0.1.0-preview.20260928143012";
-    const NEW: &str = "0.1.0-preview.20260929080000";
-    const NEWER: &str = "0.1.0-preview.20260929160000";
+    const CURRENT: &str = "1.0.3";
+    const NEW: &str = "1.0.4";
+    const NEWER: &str = "1.0.5";
     const HOUR: i64 = 60 * 60;
     /// 2026-09-29 09:00 UTC.
     const NINE: i64 = 1_790_672_400;
@@ -459,7 +459,7 @@ mod tests {
             now,
             busy: false,
             automatic_checks: true,
-            has_track: true,
+            is_release_build: true,
         }
     }
 
@@ -519,10 +519,10 @@ mod tests {
     }
 
     #[test]
-    fn a_build_with_no_track_makes_no_automatic_check_and_says_so_at_a_manual_check() {
+    fn a_build_that_is_not_a_release_build_never_checks_and_says_so_at_a_manual_check() {
         let mut f = flow();
         let local = Facts {
-            has_track: false,
+            is_release_build: false,
             ..facts(NINE)
         };
         assert_eq!(f.step(Input::Timer, local), vec![]);

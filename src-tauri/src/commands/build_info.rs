@@ -1,30 +1,22 @@
-//! The identity of this build (R7, R8, KTD12). CI sets
-//! `LONGHAND_BUILD_COMMIT` and `LONGHAND_TRACK` at build time. A build
-//! without them is a local build: it has no track and gets no updates.
+//! The identity of this build (R7, R8, KTD12; KTD5 of the releases plan).
+//! CI sets `LONGHAND_BUILD_COMMIT` at build time, and also
+//! `LONGHAND_RELEASE=1` for the macOS release build. Only a release build
+//! gets updates.
 
 use serde::Serialize;
 use specta::Type;
 use tauri::AppHandle;
 
-/// The update track of a build. Each track has its own update manifest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "lowercase")]
-pub enum Track {
-    Preview,
+/// True when a `LONGHAND_RELEASE` value is `1`. All other values, and no
+/// value, give a build that is not a release build. That build makes no
+/// automatic check.
+pub fn parse_release(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
-/// The track that a `LONGHAND_TRACK` value names. An absent or unknown value
-/// gives no track, so the build makes no automatic check.
-pub fn parse_track(value: Option<&str>) -> Option<Track> {
-    match value {
-        Some("preview") => Some(Track::Preview),
-        _ => None,
-    }
-}
-
-/// The track of this build.
-pub fn track() -> Option<Track> {
-    parse_track(option_env!("LONGHAND_TRACK"))
+/// True when this build is a release build.
+pub fn is_release_build() -> bool {
+    parse_release(option_env!("LONGHAND_RELEASE"))
 }
 
 /// The first 7 characters of a commit hash. An empty value gives none.
@@ -37,22 +29,22 @@ fn short_commit(value: Option<&str>) -> Option<String> {
 
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct BuildInfo {
-    /// The full version, for example `0.1.0-preview.20260928143012`.
+    /// The full version, for example `1.0.4`.
     pub version: String,
     /// The short commit of the build. None for a local build.
     pub commit: Option<String>,
-    /// None for a local build.
-    pub track: Option<Track>,
+    /// True for a release build. Only a release build gets updates.
+    pub release: bool,
 }
 
-/// Return the version, the short commit and the track of this build.
+/// Return the version, the short commit and the release flag of this build.
 #[tauri::command]
 #[specta::specta]
 pub fn build_info(app: AppHandle) -> BuildInfo {
     BuildInfo {
         version: app.package_info().version.to_string(),
         commit: short_commit(option_env!("LONGHAND_BUILD_COMMIT")),
-        track: track(),
+        release: is_release_build(),
     }
 }
 
@@ -61,15 +53,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_absent_or_unknown_track_is_no_track() {
-        assert_eq!(parse_track(None), None);
-        assert_eq!(parse_track(Some("")), None);
-        assert_eq!(parse_track(Some("stable")), None);
+    fn an_absent_empty_or_other_value_is_not_a_release_build() {
+        assert!(!parse_release(None));
+        assert!(!parse_release(Some("")));
+        assert!(!parse_release(Some("0")));
+        assert!(!parse_release(Some("true")));
     }
 
     #[test]
-    fn preview_is_the_preview_track() {
-        assert_eq!(parse_track(Some("preview")), Some(Track::Preview));
+    fn one_is_a_release_build() {
+        assert!(parse_release(Some("1")));
     }
 
     #[test]

@@ -515,7 +515,7 @@ pub struct Settings {
     /// screen while a note is open (R11). On by default. Local to this
     /// computer. A change applies to the next note (R14).
     pub show_recording_widget: bool,
-    /// A shared setting. The app checks for a newer build of its track at
+    /// A shared setting. A release build checks for a newer release at
     /// launch, each hour and at each wake (R9, R10). On by default. "Check
     /// for Updates…" works when it is off (R11).
     pub check_updates_automatically: bool,

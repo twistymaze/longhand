@@ -101,8 +101,8 @@ mod tests {
     const SIGNED: &[u8] = b"longhand update test archive\n";
     const SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRTTY0am5aemFEKzJWbzFKdlVPL2pUNVgwbzRXLytwWUJobk9YWm0zMFRCZVBUUjNzL0hOckpEV3Z6RFVOZ0tzVFkrajRPVnFVTDkxTVc4Mm5sUHQ2NkVZYkNYbXJRV2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNjQ2MDM3CWZpbGU6YXJjaGl2ZS5iaW4KWGdkS2RQUXpOUW1GRUV4R0ZCbTJaM1o4ZXhYM1dIQmNBQkxBam4zU21vN3Y4NElqUDEyQVZqS1FVT3A2QUoxQ3Qrb296d2JmUmNyRzR2OUJydXJKQ0E9PQo=";
 
-    const CURRENT: &str = "0.1.0-preview.20260928143012";
-    const NEW: &str = "0.1.0-preview.20260929080000";
+    const CURRENT: &str = "1.0.3";
+    const NEW: &str = "1.0.10";
 
     #[test]
     fn a_signed_archive_passes_and_a_changed_archive_fails() {
@@ -132,19 +132,10 @@ mod tests {
     #[test]
     fn only_the_newest_archive_above_the_running_version_is_kept() {
         let dir = tempfile::tempdir().unwrap();
-        for version in [
-            CURRENT,
-            "0.1.0-preview.20260920000000",
-            NEW,
-            "0.1.0-preview.20260929000000",
-        ] {
+        for version in [CURRENT, "1.0.1", NEW, "1.0.9"] {
             save(dir.path(), version, SIGNED, SIGNATURE).unwrap();
         }
-        std::fs::write(
-            dir.path().join("0.1.0-preview.20260930000000.tar.gz"),
-            b"no signature",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("1.0.11.tar.gz"), b"no signature").unwrap();
         std::fs::write(dir.path().join("notes.txt"), b"other").unwrap();
         assert_eq!(newest_saved(dir.path(), CURRENT), Some(NEW.to_string()));
         let mut left: Vec<String> = std::fs::read_dir(dir.path())
