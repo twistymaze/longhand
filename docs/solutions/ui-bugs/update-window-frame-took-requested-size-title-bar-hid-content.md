@@ -30,9 +30,9 @@ tags:
 
 ## Problem
 
-The update window sizes itself to its content, as a macOS alert does. The page measures its content and asks the window for that size with `getCurrentWindow().setSize(LogicalSize)`. In the app, the window showed less than the page asked for, and the bottom of the OK button was outside the visible page. Fixed in PR #42.
+The update window sizes itself to its content, as a macOS alert does. The page measures its content and asks the window for that size with `getCurrentWindow().setSize(LogicalSize)`. In the app, the window showed less than the page asked for, and the bottom of the OK button was outside the visible page. Fixed in archived PR 42.
 
-The first fix (PR #37, "size the update window to its content at each interface zoom") measured `<main>` with `getBoundingClientRect`, multiplied the result by the interface scale, and called `setSize`. Its unit test checked only the multiplication. That session did not test the window in a real build at high zoom, so the difference between the requested size and the visible page did not show (session history).
+The first fix (archived PR 37, "size the update window to its content at each interface zoom") measured `<main>` with `getBoundingClientRect`, multiplied the result by the interface scale, and called `setSize`. Its unit test checked only the multiplication. That session did not test the window in a real build at high zoom, so the difference between the requested size and the visible page did not show (session history).
 
 ## Symptoms
 
@@ -64,7 +64,7 @@ The whole window frame had the requested size. The title bar took 32 pt from the
 3. Each fit requests `ceil(content) + offset`.
 4. A fit that gives the same size as the last request does nothing.
 
-Before (PR #37, paraphrased; the code is no longer in the tree):
+Before (archived PR 37, paraphrased; the code is no longer in the tree):
 
 ```ts
 const rect = main.getBoundingClientRect();

@@ -15,4 +15,4 @@ Show which models support live transcription and speaker labels, including label
 
 ## Current state
 
-Shipped in PR #18 ([flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md)).
+Shipped in archived PR 18 ([flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md)).

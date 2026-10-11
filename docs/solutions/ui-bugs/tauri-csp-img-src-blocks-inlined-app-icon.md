@@ -47,7 +47,7 @@ The Home header app icon did not show in the signed Tauri bundle. Vite put the s
 
 ## Solution
 
-Add `img-src 'self' data:` to the app CSP in `src-tauri/tauri.conf.json:15`. The fix was merged in PR #4 (twistymaze/longhand).
+Add `img-src 'self' data:` to the app CSP in `src-tauri/tauri.conf.json:15`. The fix was merged in archived PR 4 (twistymaze/longhand).
 
 Before:
 

@@ -30,7 +30,7 @@ tags:
 
 ## Context
 
-The repository is private now, and the user plans to make it public. During the self-hosted CI runners work (PR #54), the agent wrote the runner setup scripts, a full setup guide, and the plan results into the repository. These files named the home hosts, IP addresses, the VLAN number, the router rules, the storage names and the hardware. The agent treated them as normal project docs, because the repository rules list only some private paths (`sample.m4a`, `fixtures/`, `manual-tests/`, `.env`, idea screenshots). The user saw the files after many commits and said that they did not want these details in the repository.
+The repository is private now, and the user plans to make it public. During the self-hosted CI runners work (archived PR 54), the agent wrote the runner setup scripts, a full setup guide, and the plan results into the repository. These files named the home hosts, IP addresses, the VLAN number, the router rules, the storage names and the hardware. The agent treated them as normal project docs, because the repository rules list only some private paths (`sample.m4a`, `fixtures/`, `manual-tests/`, `.env`, idea screenshots). The user saw the files after many commits and said that they did not want these details in the repository.
 
 The fix took much more work than writing the files correctly at the start:
 

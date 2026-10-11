@@ -48,7 +48,7 @@ The Settings shortcut capture control puts its key and blur handlers on the capt
 
 ## Solution
 
-Focus the button when capture starts (PR #10, `src/settings/ShortcutField.tsx:110-128`):
+Focus the button when capture starts (archived PR 10, `src/settings/ShortcutField.tsx:110-128`):
 
 ```tsx
 const start = async () => {

@@ -40,9 +40,9 @@ The paths below are inside the plugin's `ce-babysit-pr` skill directory (`~/.cla
 - `_wake_reason` (near line 2527) returns `base-ref-blocked` for any blocker. It checks this before merge-ready and treats it like `stack-blocked` and `unrequested-base-merge`.
 - The watch loop (near line 2945) suppresses a blocker only when its signature was already present when the watcher was armed: `_blocker_sig(actionable) <= armed`. A push gives a new head and so a new signature. The first watcher after each push therefore wakes at once.
 
-A `race` does not last forever in 3.27.0. `_apply_stale_merge_computation` (near line 1118) records when a head and live base pair first shows the race. After `STALE_MERGE_COMPUTATION_SECONDS` (600 seconds, line 89) with no change, the identity becomes `stale-computation`, `_base_ref_blocker` returns no blocker, and a merge-ready wake can follow. Only `race` gets this bound. A `mergeability-pending` blocker has no time limit. An earlier note from PR #6 said the watcher "never" reached merge-ready (auto memory [claude]). That note predates this bound, or the watcher on PR #6 was not re-armed long enough to reach it.
+A `race` does not last forever in 3.27.0. `_apply_stale_merge_computation` (near line 1118) records when a head and live base pair first shows the race. After `STALE_MERGE_COMPUTATION_SECONDS` (600 seconds, line 89) with no change, the identity becomes `stale-computation`, `_base_ref_blocker` returns no blocker, and a merge-ready wake can follow. Only `race` gets this bound. A `mergeability-pending` blocker has no time limit. An earlier note from archived PR 6 said the watcher "never" reached merge-ready (auto memory [claude]). That note predates this bound, or the watcher on archived PR 6 was not re-armed long enough to reach it.
 
-On PR #11 (2026-09-26), two pushes gave two immediate `base-ref-blocked` wakes while CI ran. The Windows CI job takes about 25 minutes, so each wake arrived long before the checks finished.
+On archived PR 11 (2026-09-26), two pushes gave two immediate `base-ref-blocked` wakes while CI ran. The Windows CI job takes about 25 minutes, so each wake arrived long before the checks finished.
 
 ## Guidance
 
@@ -84,8 +84,8 @@ If an agent reads the wake as a real blocker, it stops watching a PR that only w
 
 ## Examples
 
-- **PR #11, first push:** the watcher woke with `base-ref-blocked` while CI ran. A re-arm with the same invocation values kept it polling. It later woke with `merge-ready`, and the snapshot showed `all_checks_ok` true, `MERGEABLE`, `CLEAN`.
-- **PR #11, after merging `main`:** the watcher woke at once with `base-ref-blocked`, `all_checks_ok` false, `race`. The bounded `gh pr checks` loop waited for CI. All checks passed, and auto-merge merged the PR.
+- **Archived PR 11, first push:** the watcher woke with `base-ref-blocked` while CI ran. A re-arm with the same invocation values kept it polling. It later woke with `merge-ready`, and the snapshot showed `all_checks_ok` true, `MERGEABLE`, `CLEAN`.
+- **Archived PR 11, after merging `main`:** the watcher woke at once with `base-ref-blocked`, `all_checks_ok` false, `race`. The bounded `gh pr checks` loop waited for CI. All checks passed, and auto-merge merged the PR.
 
 ## Related
 

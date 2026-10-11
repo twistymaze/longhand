@@ -39,20 +39,20 @@ tags:
 
 ## Context
 
-PR #6 (summary prompts) and PR #8 (recognition models, live transcript) were developed at the same time in separate worktrees. Each PR raised `CURRENT_SETTINGS_SCHEMA_VERSION` from 2 to 3 and added its own `if stored_version < 3` block to `apply_settings_migrations`:
+Archived PR 6 (summary prompts) and archived PR 8 (recognition models, live transcript) were developed at the same time in separate worktrees. Each PR raised `CURRENT_SETTINGS_SCHEMA_VERSION` from 2 to 3 and added its own `if stored_version < 3` block to `apply_settings_migrations`:
 
-- PR #6 sets `active_summary_prompt` to the Topic summary built-in for every store below version 3.
-- PR #8 keeps `PREVIOUS_DEFAULT_ASR_MODEL` (Whisper) for a store of version 1 or more that has no `asr_model` key, because the default recognition model changed.
+- Archived PR 6 sets `active_summary_prompt` to the Topic summary built-in for every store below version 3.
+- Archived PR 8 keeps `PREVIOUS_DEFAULT_ASR_MODEL` (Whisper) for a store of version 1 or more that has no `asr_model` key, because the default recognition model changed.
 
-PR #6 merged first. When main was merged into PR #8, git reported a conflict in those lines. Notarized builds of both branches were already installed on the user's machines, so version-3 stores from both builds exist.
+Archived PR 6 merged first. When main was merged into archived PR 8, git reported a conflict in those lines. Notarized builds of both branches were already installed on the user's machines, so version-3 stores from both builds exist.
 
-Each branch chose "the next unused number" correctly for its own base. The rule fails because each branch computes the number against the main it branched from, not against main at merge time. A third branch (summary model picker) started from main after PR #6 merged and before PR #8 merged. Its plan also says "Bump the schema version to the next unused number", which from that base is 4, the number PR #8 now uses (session history).
+Each branch chose "the next unused number" correctly for its own base. The rule fails because each branch computes the number against the main it branched from, not against main at merge time. A third branch (summary model picker) started from main after archived PR 6 merged and before archived PR 8 merged. Its plan also says "Bump the schema version to the next unused number", which from that base is 4, the number archived PR 8 now uses (session history).
 
 ## Guidance
 
-**1. At merge, the branch that merges second takes the next version.** Main's migration keeps its number. The second branch's migration moves to the next number, and the constant follows it. The merged result in PR #8:
+**1. At merge, the branch that merges second takes the next version.** Main's migration keeps its number. The second branch's migration moves to the next number, and the constant follows it. The merged result in archived PR 8:
 
-Before (PR #8 branch):
+Before (archived PR 8 branch):
 
 ```rust
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 3;
@@ -83,22 +83,22 @@ if stored_version < 4 {
 }
 ```
 
-**2. Guard a migration on field presence, not only on the version.** The model migration runs only when `asr_model` is missing (`settings.rs:387`). Every build writes `asr_model`, so a version-3 store from either build keeps its model. A version-3 store from the PR #8 build has no prompt fields, and serde defaults fill them. Thus a version-3 store from either build migrates correctly to version 4.
+**2. Guard a migration on field presence, not only on the version.** The model migration runs only when `asr_model` is missing (`settings.rs:387`). Every build writes `asr_model`, so a version-3 store from either build keeps its model. A version-3 store from the archived PR 8 build has no prompt fields, and serde defaults fill them. Thus a version-3 store from either build migrates correctly to version 4.
 
 **3. Key tests on `CURRENT_SETTINGS_SCHEMA_VERSION`, not on a literal.** After the renumber, a test such as "a store at the current version is not updated" that used a literal 3 became wrong without an error. Two prompt tests that asserted `updated` passed only because of the version stamp, not because of the prompt logic. These tests now use the constant.
 
-**4. Add a test for each store that an installed build can write.** `a_version_3_store_keeps_its_model_and_its_prompt` (`settings.rs:603`) loads a version-3 store from each build. It checks that the model, `live_transcript` and the active prompt are kept, and that the store from the PR #8 build gets the Topic summary default.
+**4. Add a test for each store that an installed build can write.** `a_version_3_store_keeps_its_model_and_its_prompt` (`settings.rs:603`) loads a version-3 store from each build. It checks that the model, `live_transcript` and the active prompt are kept, and that the store from the archived PR 8 build gets the Topic summary default.
 
 **5. After a merge of main, run the frontend gates, not only cargo.** Run `bun run build` (it runs `tsc`) and `bun run test`. The same merge broke:
 
 - Literal `Settings` objects in `src/settings/Models.test.tsx` and `src/settings/SummaryPrompts.test.tsx` lacked the other branch's new fields (a `tsc` error).
 - Main's new Settings-window test failed with "No mock for command speaker_models_status". The other branch's Settings window calls that command when it opens.
 
-**6. The same rule applies to SQL migrations in the session store.** `crates/session-core/src/schema.rs` registers the migrations in a list for `rusqlite_migration`, which records the applied version in SQLite's `user_version` pragma. The position in the list sets the version, not the file name. PR #8 added 0004 and 0005. If a parallel branch also adds a migration, the branch that merges second moves its file to the next number and to the end of the list.
+**6. The same rule applies to SQL migrations in the session store.** `crates/session-core/src/schema.rs` registers the migrations in a list for `rusqlite_migration`, which records the applied version in SQLite's `user_version` pragma. The position in the list sets the version, not the file name. Archived PR 8 added 0004 and 0005. If a parallel branch also adds a migration, the branch that merges second moves its file to the next number and to the end of the list.
 
 ## Why This Matters
 
-A textual conflict is the good case: it forces a decision. If the two migrations had been in different places or files, both PRs would merge without a conflict and both would claim version 3. An install that already reached version 3 with one build would never run the other build's migration. The result is a store that is marked current but is missing a change, with no error. For the session store, the same failure leaves a database at `user_version` N without the columns or tables of the other branch's migration N. Since PR #30, when both builds record migration hashes, a build that finds a different hash for migration N moves the database aside and rebuilds the notes list instead ([database rebuild](../runtime-errors/older-build-panicked-on-newer-database-at-launch.md)). Unfinished work then stays only in the backup, so the renumber rule still applies. The settings store has no such check.
+A textual conflict is the good case: it forces a decision. If the two migrations had been in different places or files, both PRs would merge without a conflict and both would claim version 3. An install that already reached version 3 with one build would never run the other build's migration. The result is a store that is marked current but is missing a change, with no error. For the session store, the same failure leaves a database at `user_version` N without the columns or tables of the other branch's migration N. Since archived PR 30, when both builds record migration hashes, a build that finds a different hash for migration N moves the database aside and rebuilds the notes list instead ([database rebuild](../runtime-errors/older-build-panicked-on-newer-database-at-launch.md)). Unfinished work then stays only in the backup, so the renumber rule still applies. The settings store has no such check.
 
 ## When to Apply
 

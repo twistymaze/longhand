@@ -20,9 +20,9 @@ Paths that start with `tauri-plugin-opener/` or `glob/` are in the Cargo registr
 
 ## Context
 
-PR #13 made the addresses in Settings > About clickable. The pane opens them with `openUrl` from `@tauri-apps/plugin-opener` (`src/settings/About.tsx:6`, `:20`, `:63`). The Settings capability must allow each address, or the plugin refuses the call with `ForbiddenUrl`.
+Archived PR 13 made the addresses in Settings > About clickable. The pane opens them with `openUrl` from `@tauri-apps/plugin-opener` (`src/settings/About.tsx:6`, `:20`, `:63`). The Settings capability must allow each address, or the plugin refuses the call with `ForbiddenUrl`.
 
-The allow-list in `src-tauri/capabilities/settings.json` had three shapes during PR #13:
+The allow-list in `src-tauri/capabilities/settings.json` had three shapes during archived PR 13:
 
 1. 42 exact addresses.
 2. 11 `https://<host>/*` patterns.
@@ -86,11 +86,11 @@ A scratch Rust program against glob 0.3.4 (offline, outside the repo) gave these
 - The clickable-links-in-notes work (`docs/ideas/someday/clickable-links-in-notes.md`). The main window has no opener permission. That work must add one to `src-tauri/capabilities/default.json`, choose a scope, and add a test. Addresses in notes come from user text and transcripts, so the case for "https only" is stronger there.
 - Any new window that opens addresses. Give it its own capability entry; a permission in one window does not apply to another.
 - Any change to an opener scope, or any use of a `glob`-based scope in another Tauri plugin.
-- An agent tool may refuse a scope change such as `https://*` as a security reduction. In PR #13, Claude Code's auto mode refused the first `https://*` edit. It accepted the edit after the user asked for it in their own words.
+- An agent tool may refuse a scope change such as `https://*` as a security reduction. In archived PR 13, Claude Code's auto mode refused the first `https://*` edit. It accepted the edit after the user asked for it in their own words.
 
 ## Examples
 
-Shape 1, exact addresses (first version in PR #13; entries shown are illustrative):
+Shape 1, exact addresses (first version in archived PR 13; entries shown are illustrative):
 
 ```json
 { "identifier": "opener:allow-open-url",

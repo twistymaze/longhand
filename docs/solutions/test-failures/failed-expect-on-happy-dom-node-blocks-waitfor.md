@@ -29,7 +29,7 @@ tags:
 
 ## Problem
 
-`a read-only state makes the recognition choices read-only` (`src/settings/Models.test.tsx`) timed out on CI on `main` after the PR #29 and PR #30 merges. The cause was not a slow runner. Each time a `waitFor` check failed, bun used 2.3 s to make the failure message.
+`a read-only state makes the recognition choices read-only` (`src/settings/Models.test.tsx`) timed out on CI on `main` after the archived PR 29 and archived PR 30 merges. The cause was not a slow runner. Each time a `waitFor` check failed, bun used 2.3 s to make the failure message.
 
 ## Symptoms
 

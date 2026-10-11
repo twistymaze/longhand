@@ -21,7 +21,7 @@ execution: code
   - The macOS panel cannot get pointer enter and exit events by either method in KTD6, so the hover × (R12) cannot work.
   - A change needs a new stored note state or a change to the capture state machine.
 - **Execution profile:** Standard depth. One worktree from `origin/main` named `recording-widget`. Commit per unit, push in batches, one PR. A manual test in a signed macOS build (U6) and a Windows installer test come before the PR is ready.
-- **Open blockers:** None. Pause-recording merged in PR #51.
+- **Open blockers:** None. Pause-recording merged in archived PR 51.
 
 ---
 

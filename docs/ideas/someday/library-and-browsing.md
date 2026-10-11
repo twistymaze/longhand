@@ -13,6 +13,6 @@ related: [cross-machine-library, ux-redesign]
 Find the note from three weeks ago: search the titles, summaries, transcripts and notes of every note in the library.
 
 ## Notes
-- The rest of the original library track shipped. The UX redesign (`docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`, PR #4) built the list, the preview, rename and delete. [One library across computers](../done/cross-machine-library.md) made Home list every note in the retained storage folders, including the notes that other computers recorded.
+- The rest of the original library track shipped. The UX redesign (`docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`, archived PR 4) built the list, the preview, rename and delete. [One library across computers](../done/cross-machine-library.md) made Home list every note in the retained storage folders, including the notes that other computers recorded.
 - Search needs an index. It must follow the rule for any index (R25) and the retained destination roots (R25a), including what a rebuild does when a retained root is missing or unmounted.
 - The organization idea (tags or folders) is close to this. Design the two together if both are picked up.

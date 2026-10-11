@@ -21,7 +21,7 @@ tags: ["granite", "timestamps", "speaker-recognition", "windowing", "long-audio"
 The ASR adapter treated token timestamps as the only native fine-grained timing.
 Granite Plus supplied word timestamps. The false capability result caused separate
 speaker analysis to split transcription input at speaker changes, removing useful
-recognition context. [PR #18](https://github.com/twistymaze/longhand/pull/18) corrected
+recognition context. Archived PR 18 corrected
 the adapter and retained bounded recovery for native output truncation.
 
 ## Symptoms

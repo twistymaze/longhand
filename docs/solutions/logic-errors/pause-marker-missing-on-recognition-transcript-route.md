@@ -19,7 +19,7 @@ tags: ["transcript", "recognition", "join", "pause", "segments", "route", "saved
 
 ## Problem
 
-Longhand writes `transcript.md` in two places. The pause feature (PR #51) added its pause line in only one of them. The first manual test of a signed build showed no pause marker. All unit tests passed.
+Longhand writes `transcript.md` in two places. The pause feature (archived PR 51) added its pause line in only one of them. The first manual test of a signed build showed no pause marker. All unit tests passed.
 
 ## Symptoms
 
@@ -74,4 +74,4 @@ The pause marker comes from the segment data, and both routes now read the segme
 
 - `docs/solutions/logic-errors/verify-stopped-on-detected-sound-without-words.md`: the same two-route shape in the verify stage, fixed with one shared function for both routes.
 - `docs/solutions/logic-errors/granite-word-timing-misclassified-as-absent.md`: another case where a recognition-route capability needed a check per route.
-- PR #51 (pause and continue a recording note).
+- Archived PR 51 (pause and continue a recording note).

@@ -19,7 +19,7 @@ tags: ["verify", "coverage", "vad", "gap-fill", "live-transcript", "retry"]
 
 ## Problem
 
-The Verify stage stopped a note when the speech detector (VAD) marked sound as speech and the model found no words in it. Retry runs the same model on the same audio, so the note could never finish. [PR #39](https://github.com/twistymaze/longhand/pull/39) changed the coverage rule.
+The Verify stage stopped a note when the speech detector (VAD) marked sound as speech and the model found no words in it. Retry runs the same model on the same audio, so the note could never finish. Archived PR 39 changed the coverage rule.
 
 ## Symptoms
 

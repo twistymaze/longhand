@@ -33,7 +33,7 @@ tags:
 
 ## Problem
 
-A note has several result files in its home folder: `recognition.jsonl`, `transcript.md`, `summary.md` and `session.md`. The storage folder can be in a synced cloud folder that several computers share. PR #29 removed the old result copies in `.longhand-results/` and replaced them with a publication: direct writes into the home folder, with `session.md` last. This doc describes that publication pattern and a defect that code review of PR #29 found in it.
+A note has several result files in its home folder: `recognition.jsonl`, `transcript.md`, `summary.md` and `session.md`. The storage folder can be in a synced cloud folder that several computers share. Archived PR 29 removed the old result copies in `.longhand-results/` and replaced them with a publication: direct writes into the home folder, with `session.md` last. This doc describes that publication pattern and a defect that code review of archived PR 29 found in it.
 
 ### How a publication works
 
@@ -53,7 +53,7 @@ Before the fix, `publish_with` read the home result fields only twice: once befo
 2. Found the conflict only before `session.md`, and returned `Outcome::Conflict`.
 3. The doc comment of `Outcome::Conflict` said "Nothing was written (KTD4)". `drop_publication` trusted it and did a clean drop.
 
-The home folder then held the other computer's `session.md` and this computer's `transcript.md` and `summary.md`. Nothing repaired it. The reliability reviewer and a Codex cross-model pass of the PR #29 code review found this independently.
+The home folder then held the other computer's `session.md` and this computer's `transcript.md` and `summary.md`. Nothing repaired it. The reliability reviewer and a Codex cross-model pass of the archived PR 29 code review found this independently.
 
 ## Symptoms
 
@@ -74,9 +74,9 @@ No user saw these symptoms. Code review found the defect before the merge. The r
 
 ## Solution
 
-Read the home result fields again before each `copy_atomic`, and stop at the first difference from `before`. Correct the doc comment of `Outcome::Conflict`. Both changes are in PR #29.
+Read the home result fields again before each `copy_atomic`, and stop at the first difference from `before`. Correct the doc comment of `Outcome::Conflict`. Both changes are in archived PR 29.
 
-Before (`crates/session-save/src/publication.rs` in PR #29 unit U3):
+Before (`crates/session-save/src/publication.rs` in archived PR 29 unit U3):
 
 ```rust
 let now = ResultFields::of(&SessionDoc::read(home)?).compared(self.set);
@@ -197,7 +197,7 @@ Also test the caller: after `Outcome::Conflict`, `drop_publication` deletes the 
 
 ## Related Issues
 
-- PR #29: the removal of the result copies, the publication, and this fix.
+- Archived PR 29: the removal of the result copies, the publication, and this fix.
 - `docs/plans/2026-09-30-0850-refactor-remove-result-copies-plan.md`: R2 to R5 and KTD1 to KTD5 (the publication), KTD7 (the one-minute wait), and the state diagram "Publication on the owner".
 - `docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`: the step-then-record state machine of Save.
 - `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`: rules 2 (patch only this save's fields) and 8 (the last change wins).

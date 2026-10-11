@@ -31,16 +31,16 @@ tags:
 
 ## Context
 
-The user often works on two or three ideas at the same time, each in its own worktree. PR #21 (keep five transcription models) was ready for a PR. During its work, PR #19 (model bundles) and PR #20 (Transcribe Again from Settings) merged into main: 21 commits. The user saw that main had moved and asked for a rebase before the PR.
+The user often works on two or three ideas at the same time, each in its own worktree. Archived PR 21 (keep five transcription models) was ready for a PR. During its work, archived PR 19 (model bundles) and archived PR 20 (Transcribe Again from Settings) merged into main: 21 commits. The user saw that main had moved and asked for a rebase before the PR.
 
 The rebase stopped with conflicts in three files: `crates/pipeline/src/reprocess.rs` (main rewrote a test), `src/settings/Models.test.tsx`, and `src/session/SessionPage.test.tsx`. The resolution of the conflict markers was not sufficient. Two more problems had no conflict marker:
 
 - New tests on main used model ids that the branch removed: `granite-speech-4.1-2b-plus-q5km` and `parakeet-tdt-0.6b-v2-q80` in `crates/pipeline/src/reprocess.rs` and `crates/pipeline/tests/runner.rs`, and `moss-transcribe-diarize-q80` in `crates/models/tests/recognition.rs`.
-- `models::recognition::bundle()` (`crates/models/src/recognition.rs:306`), which PR #19 added, listed `SpeakerSource::Integrated`. The branch deleted that variant, so the build failed.
+- `models::recognition::bundle()` (`crates/models/src/recognition.rs:306`), which archived PR 19 added, listed `SpeakerSource::Integrated`. The branch deleted that variant, so the build failed.
 
 A `git grep` of the tree for the removed identifiers, after the rebase, found all of them.
 
-A third problem did not fail the build. PR #20 added a refusal for a note with too many speakers. Its text ended "Choose another speaker source or model in Settings." After PR #21, only the speaker source sets the speaker limit, so another model cannot fix it. A read of the new Transcribe Again code on main found the stale text. It now ends "Choose another speaker source in Settings." (`crates/pipeline/src/reprocess.rs:129-132`).
+A third problem did not fail the build. Archived PR 20 added a refusal for a note with too many speakers. Its text ended "Choose another speaker source or model in Settings." After archived PR 21, only the speaker source sets the speaker limit, so another model cannot fix it. A read of the new Transcribe Again code on main found the stale text. It now ends "Choose another speaker source in Settings." (`crates/pipeline/src/reprocess.rs:129-132`).
 
 After the PR opened, main got one more commit. It only moved files under `docs/ideas/`, so no rebase was necessary.
 
@@ -73,7 +73,7 @@ A related problem with parallel worktrees is two branches that raise the same se
 
 ## Examples
 
-The check before the PR for PR #21:
+The check before the PR for archived PR 21:
 
 ```sh
 git fetch origin main

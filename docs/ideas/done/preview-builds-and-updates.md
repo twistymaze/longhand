@@ -17,4 +17,4 @@ Each push to main that passes CI publishes a signed, notarized DMG and update fi
 New builds get to a Mac only by hand today. The user and a few peers want each change on main to reach them as an update offer.
 
 ## Notes / Current state
-Requirements: `docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md`. Shipped in PR #22. A stable track, release tags and Windows updates come later.
+Requirements: `docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md`. Shipped in archived PR 22. A stable track, release tags and Windows updates come later.

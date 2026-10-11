@@ -18,4 +18,4 @@ A change takes about 20 minutes of PR checks, 22 minutes of checks on `main` and
 
 ## Outcome
 
-Shipped in PR #54. The macOS and Windows checks run on home runners; the setup is in a private repository. The preview build stays on GitHub's runners (see home-signing-runner).
+Shipped in archived PR 54. The macOS and Windows checks run on home runners; the setup is in a private repository. The preview build stays on GitHub's runners (see home-signing-runner).

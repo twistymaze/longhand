@@ -42,7 +42,7 @@ The chain of the failure. A path of the form `<crate>-<version>/src/...` is in t
 
 A second form of the same problem: two plan branches can each add a different migration 0015 (`docs/solutions/workflow-issues/parallel-branches-bump-same-schema-version.md`). A database from one branch then has main's version number but a different schema. `to_latest` accepts that database, and a later query fails.
 
-The fix is in PR #30.
+The fix is in archived PR 30.
 
 ## Symptoms
 
@@ -158,7 +158,7 @@ The `setup` body is in `setup_app`, which returns a `Result` (`src-tauri/src/lib
 - Never edit the SQL of a migration that a build already applied. A changed statement changes the hash, and every database that has the old hash is then `DifferentMigration` and rebuilt. Comment and whitespace edits do not change the hash. See `docs/solutions/workflow-issues/edited-applied-migration-breaks-older-databases.md`.
 - When new state can hold the only copy of user work (a new table, a new staging file or folder), add it to the unfinished work count in `inspect.rs`. Otherwise a rebuild removes it with no alert.
 - To test the path manually in a signed bundle: quit the app, copy the app data folder aside, then set `PRAGMA user_version = 99` on `longhand.db`. With all sessions saved, expect no alert, every saved note in the list, and a new folder in `database-backups/`. With one session queued, expect the alert that names one note. The automated tests use the same method (`crates/session-core/tests/inspect.rs:375`).
-- A database from a branch that was cut before PR #30 has no hash rows. It is trusted, so a different migration at the same version is not found. This gap closes when both builds carry the fix.
+- A database from a branch that was cut before archived PR 30 has no hash rows. It is trusted, so a different migration at the same version is not found. This gap closes when both builds carry the fix.
 
 ## Related
 

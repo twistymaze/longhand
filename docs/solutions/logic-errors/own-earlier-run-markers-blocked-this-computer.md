@@ -20,7 +20,7 @@ related_components: [library, session_core, background_job]
 
 ## Problem
 
-The in-use checks of PR #33 excepted only the in-use marker of the current run. After a quit or a crash, the next launch on the same computer read its own earlier marker as work on another computer, and refused the user's actions on that note for up to 30 minutes.
+The in-use checks of archived PR 33 excepted only the in-use marker of the current run. After a quit or a crash, the next launch on the same computer read its own earlier marker as work on another computer, and refused the user's actions on that note for up to 30 minutes.
 
 ## Symptoms
 
@@ -28,7 +28,7 @@ The in-use checks of PR #33 excepted only the in-use marker of the current run. 
 - For up to 30 minutes after that, the note page says that the note is in use on another computer. The text is "This note is recording or being processed on another computer. Try again when it is done." (`src-tauri/src/commands/session.rs:132-133`).
 - On the same computer that did the work, Record, Resume, Delete, Transcribe Again, Regenerate Summary and Remove Audio are refused (R21).
 - The empty-note pass at launch keeps an empty note (`Kept::InUse`) for 30 minutes after a crash.
-- Before PR #33, a stale marker of this computer only paused audio removal, so the defect was not visible.
+- Before archived PR 33, a stale marker of this computer only paused audio removal, so the defect was not visible.
 
 The cause has three parts:
 
@@ -122,4 +122,4 @@ Rules to keep:
 
 - [A computer that received a sync renamed another computer's folder back at launch](receiving-computer-renamed-synced-folder-back.md): the same rule from another side. An automatic step tells this computer's own earlier work from another computer's state with a local record of what this computer did (there `owed_renames`, here `runs`), never with the synced files alone.
 - [Parallel worktree PRs that each raise a schema version must renumber at merge](../workflow-issues/parallel-branches-bump-same-schema-version.md): the `runs` migration was renumbered from 0016 to 0017 when `main` added its own 0015.
-- PR #33 (twistymaze/longhand) shipped the fix.
+- Archived PR 33 shipped the fix.

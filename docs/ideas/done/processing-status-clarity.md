@@ -22,4 +22,4 @@ The user finds the current label awkward, and cannot see the progress of a slow 
 ## Notes / Current state
 - **The order stays.** The speaker stage runs before Transcribing, and the list shows that order. There is a technical reason (KTD7 in the walking skeleton plan): transcription cuts the audio into windows of at most 30 s, and it cuts them at speaker changes when the turns are known first. Otherwise a window can hold two people, and a model that gives no word timestamps puts the whole window on one speaker. The user decided on 2026-09-28 not to change the pipeline or the order in the list.
 - **Progress:** the speaker analysis has an `on_progress` callback (`crates/pipeline/src/diarize.rs`), and the runner sends `RunnerEvent::Progress` for some routes. `ProcessingStatus.tsx` shows a bar only when an event with a total arrives for the running stage. Find out which speaker routes send no total, or send it in a form that the UI does not read.
-- Shipped in PR #23.
+- Shipped in archived PR 23.

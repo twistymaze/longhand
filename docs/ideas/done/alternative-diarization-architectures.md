@@ -15,7 +15,7 @@ Offer model-provided speaker labels and separate speaker models, plus an off opt
 
 ## Current state
 
-Shipped in PR #18. The [simplify recognition models plan](../../plans/2026-09-28-1337-feat-simplify-recognition-models-plan.md) then removes the speaker labels that the transcription models give, so every model uses the separate speaker model. The text below describes the PR #18 scope.
+Shipped in archived PR 18. The [simplify recognition models plan](../../plans/2026-09-28-1337-feat-simplify-recognition-models-plan.md) then removes the speaker labels that the transcription models give, so every model uses the separate speaker model. The text below describes the archived PR 18 scope.
 
 The [flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md) covers MOSS, the speaker-capable Multitalker bundle, and the new Granite Speech 4.1 2B Plus catalog entry. Separate choices include Nemotron 3 Diarization, Sortformer, and the existing pyannote/WeSpeaker pipeline.
 

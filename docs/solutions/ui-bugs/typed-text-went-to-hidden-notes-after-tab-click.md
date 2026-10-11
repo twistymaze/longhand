@@ -28,7 +28,7 @@ tags:
 
 ## Problem
 
-During a recording, the user changed from My Notes to Transcript and back. Then typed text went to the editor's earlier cursor, not to the visible cursor, and markdown shortcuts stopped. Fixed in PR #44.
+During a recording, the user changed from My Notes to Transcript and back. Then typed text went to the editor's earlier cursor, not to the visible cursor, and markdown shortcuts stopped. Fixed in archived PR 44.
 
 ## Symptoms
 

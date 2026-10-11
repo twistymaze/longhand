@@ -3,7 +3,7 @@ title: Remove the result copies from note folders
 description: "Stop keeping .longhand-results copies of every result in each note folder; write results directly and delete recognition.jsonl with the audio"
 area: library-and-sharing
 added: 2026-09-30
-source: "the user, after the audio removal work (PR #28), found .longhand-results folders that are never cleaned up"
+source: "the user, after the audio removal work (archived PR 28), found .longhand-results folders that are never cleaned up"
 related: [remove-old-audio]
 plan: docs/plans/2026-09-30-0850-refactor-remove-result-copies-plan.md
 ---
@@ -18,4 +18,4 @@ The copies grow with every replacement, sync to every computer, and keep old ver
 
 ## Notes / Current state
 - Brainstorm done on 2026-09-30; see the plan.
-- Shipped in [PR #29](https://github.com/twistymaze/longhand/pull/29).
+- Shipped in archived PR 29.

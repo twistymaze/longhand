@@ -65,5 +65,5 @@ A targeted scan runs only because the watcher saw a file event in those folders.
 
 ## Related Issues
 
-- PR #14 (One library across computers) shipped this fix after a manual two-computer test found the problem.
+- Archived PR 14 (One library across computers) shipped this fix after a manual two-computer test found the problem.
 - [receiving-computer-renamed-synced-folder-back](receiving-computer-renamed-synced-folder-back.md): another problem that a partial sync caused in the same feature.

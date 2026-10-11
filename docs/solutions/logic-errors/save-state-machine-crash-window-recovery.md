@@ -35,7 +35,7 @@ tags:
 
 Save moves a finished session from the working location into the user's destination folder. The rule is that exactly one location holds a complete copy at every moment and a session is never lost (R22a/R22b). The work is a step-then-record state machine. `session_save::step` (`crates/session-save/src/lib.rs:155`) does one filesystem step and returns the next `SaveState` (`lib.rs:41-64`: `Working -> Copying -> Staged{staging, copied} -> Saved{path, working_retained} -> Done{path}`). `pipeline::save::run` writes each returned state to SQLite (`checkpoint::put`, `crates/pipeline/src/save.rs:175`) before it takes the next step.
 
-So every step has a window where its effect is on disk but the durable record still names the previous state. After a crash in that window, the relaunch calls `step(previous_state)` against a filesystem that already shows the effect. Two defects in that window survived the original implementation (U11/U18), its crash tests and a plan review. A full-branch code review with a cross-model pass found both. Both are fixed in PR https://github.com/ervwalter/longhand/pull/1 (merged to main).
+So every step has a window where its effect is on disk but the durable record still names the previous state. After a crash in that window, the relaunch calls `step(previous_state)` against a filesystem that already shows the effect. Two defects in that window survived the original implementation (U11/U18), its crash tests and a plan review. A full-branch code review with a cross-model pass found both. Both are fixed in archived PR 1 (merged to main).
 
 1. **The Staged step destroyed its own evidence.** It deleted the ownership marker, then renamed staging to the final name. A crash after the rename left no way to recognise the renamed folder.
 2. **A side record bypassed the state machine.** `run` routed any session with `home_path` set to `update_home`, the path that adds a resumed session's new files to its existing folder. It did this without checking whether a first save was still mid-flight.
@@ -236,5 +236,5 @@ For the routing class, add a pipeline test in the shape of `a_relaunch_after_the
 
 ## Related Issues
 
-- PR https://github.com/ervwalter/longhand/pull/1: the walking skeleton, including this fix.
+- Archived PR 1: the walking skeleton, including this fix.
 - `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`: R22b and R22d (the exactly-one-complete-copy and sweep rules, lines 163-165), KTD17 (line 321), U11's save approach (lines 932-952), and the resume approach (line 1001) whose "a home folder is updated in place" rule is the unqualified form of bug 2's routing. Historical record; its U11 note on the marker (line 952) predates the marker being kept through the final rename.

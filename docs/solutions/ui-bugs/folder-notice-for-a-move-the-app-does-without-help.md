@@ -34,7 +34,7 @@ The note page showed a caution notice when the folder of a note moved later or h
 
 ## Solution
 
-PR #49 removed the notices. `typeNotice` in `src/session/TypeAndTags.tsx` and `commitTitle` in `src/session/TitleField.tsx` now return a notice only for an error:
+Archived PR 49 removed the notices. `typeNotice` in `src/session/TypeAndTags.tsx` and `commitTitle` in `src/session/TitleField.tsx` now return a notice only for an error:
 
 ```ts
 function typeNotice(result: Awaited<ReturnType<typeof commands.setNoteType>>): Notice | null {
@@ -66,7 +66,7 @@ So the notice reported an internal step, not a state that the user must know abo
 
 ## Related Issues
 
-- PR #49 (merged): the fix.
+- Archived PR 49 (merged): the fix.
 - `docs/ideas/done/no-folder-notices-on-the-note-page.md`: the idea for this fix.
 - `docs/ideas/someday/failed-folder-move-needs-attention.md`: the report for a move that keeps failing.
 - `docs/solutions/logic-errors/receiving-computer-renamed-synced-folder-back.md`: the `Later` and `Kept` rename results and the retry at launch.

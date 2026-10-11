@@ -31,7 +31,7 @@ tags:
 
 ## Problem
 
-On macOS, a window that the window-state plugin restores showed at the default place first and then moved to its saved place. The update window had a related defect: each show made it the key window, so key presses meant for another window went to it. Fixed in PR #52.
+On macOS, a window that the window-state plugin restores showed at the default place first and then moved to its saved place. The update window had a related defect: each show made it the key window, so key presses meant for another window went to it. Fixed in archived PR 52.
 
 ## Symptoms
 
@@ -76,6 +76,6 @@ The frame change and the show now go through one ordered queue, so no frame is d
 
 ## Related
 
-- [The update window cut off its OK button](update-window-frame-took-requested-size-title-bar-hid-content.md): the size fit that step 4 waits for. That doc describes the earlier default-button focus, which PR #52 removed.
+- [The update window cut off its OK button](update-window-frame-took-requested-size-title-bar-hid-content.md): the size fit that step 4 waits for. That doc describes the earlier default-button focus, which archived PR 52 removed.
 - [tao's traffic light y is not the top inset](tao-traffic-light-y-not-top-inset.md): another tao macOS window behaviour found by reading tao source.
 - [WKWebView does not focus a button on click](wkwebview-click-does-not-focus-button-breaks-shortcut-capture.md): why a click does not give a button the focus in the update page.

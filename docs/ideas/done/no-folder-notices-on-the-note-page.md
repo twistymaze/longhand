@@ -24,4 +24,4 @@ The plan also removes `type_move_waits` from the session entry. A move that keep
 
 ## Outcome
 
-Shipped in PR #49.
+Shipped in archived PR 49.

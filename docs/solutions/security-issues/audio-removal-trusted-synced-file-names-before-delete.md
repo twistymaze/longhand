@@ -30,7 +30,7 @@ tags:
 
 Audio removal deletes the audio files that the segments of a note name. The step reads each name from the note's `session.md` in the home folder. The storage folder syncs across computers, so `session.md` can come from another computer or from a person who edited it. Thus the names are not trusted data.
 
-Before PR #28, `safe_audio_name` used a deny-list. It refused an empty name, an absolute name, a name with a `.` or `..` part, and the four document names in `library::conflict::DOCUMENTS` (`crates/library/src/conflict.rs:12`). The comparison was case-sensitive. The folder check then accepted any canonical parent folder that started with the home folder (`dir.starts_with(home)`). The code review of PR #28 (finding #1) found that these two checks let the step delete a file that is not audio.
+Before archived PR 28, `safe_audio_name` used a deny-list. It refused an empty name, an absolute name, a name with a `.` or `..` part, and the four document names in `library::conflict::DOCUMENTS` (`crates/library/src/conflict.rs:12`). The comparison was case-sensitive. The folder check then accepted any canonical parent folder that started with the home folder (`dir.starts_with(home)`). The code review of archived PR 28 (finding #1) found that these two checks let the step delete a file that is not audio.
 
 ## Symptoms
 
@@ -48,7 +48,7 @@ No user saw a lost file. The review found these paths:
 
 ## Solution
 
-PR #28 replaces the deny-list with an allowlist of the exact shape that Longhand writes, adds a directory refusal, and compares the canonical parent with the canonical `home/audio` folder.
+Archived PR 28 replaces the deny-list with an allowlist of the exact shape that Longhand writes, adds a directory refusal, and compares the canonical parent with the canonical `home/audio` folder.
 
 Before (`safe_audio_name`, deny-list):
 
@@ -183,4 +183,4 @@ Run the case-variant test on case-insensitive APFS (the macOS default). On a cas
 ## Related Issues
 
 - [Shared settings in a synced folder: rules](../integration-issues/shared-settings-in-a-synced-folder-rules.md): the same storage folder syncs; that doc covers how the app reads shared files, this doc covers deletes that synced files name.
-- PR #28 (audio removal), code review finding #1.
+- Archived PR 28 (audio removal), code review finding #1.

@@ -10,7 +10,7 @@ plan: docs/plans/2026-09-30-1540-feat-new-note-without-recording-plan.md
 
 # Start a new note without recording
 
-Shipped in [PR #33](https://github.com/twistymaze/longhand/pull/33).
+Shipped in archived PR 33.
 
 ## Idea
 A setting chooses what New Note does by default: start recording at once (today's behaviour), or open an empty note that does not record.

@@ -32,7 +32,7 @@ A golden-file test passed on macOS and failed on Windows CI. Git checked out the
   `assertion left == right failed: ""`
   The message text is the Debug form of the empty Background input (`{background:?}`). It does not show the byte difference.
 - The test reads `crates/summarize/tests/golden/no_background.txt` with `include_str!` (`crates/summarize/tests/background.rs:94`). It then compares `render_all(background)` with that text (line 96).
-- PR #38 introduced the file and the test.
+- Archived PR 38 introduced the file and the test.
 
 ## What Didn't Work
 
@@ -42,7 +42,7 @@ A golden-file test passed on macOS and failed on Windows CI. Git checked out the
 
 ## Solution
 
-Add a `.gitattributes` rule for golden files (`.gitattributes:5-7`, added in PR #38):
+Add a `.gitattributes` rule for golden files (`.gitattributes:5-7`, added in archived PR 38):
 
 ```
 # Golden test files keep LF line ends, so the tests compare the same bytes

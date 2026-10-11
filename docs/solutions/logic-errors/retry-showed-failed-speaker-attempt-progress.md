@@ -27,7 +27,7 @@ The speaker stage (`Stage::Diarize`) saves its progress as a checkpoint under `S
 
 The meter has one rule: the percent does not go back (`src/processing/describe.ts:108-111`). A new attempt of the speaker stage broke this rule. For a short time, the view showed the percent of the earlier attempt. It then dropped to the lower percent of the new attempt.
 
-The defect was in PR twistymaze/longhand#23 before merge. The same PR fixed it.
+The defect was in archived PR 23 before merge. The same PR fixed it.
 
 ## Symptoms
 
@@ -147,6 +147,6 @@ Use the same pattern for any other value that is saved per attempt: record the s
 
 ## Related Issues
 
-- PR twistymaze/longhand#23 (speaker progress; this defect and its fix).
+- Archived PR 23 (speaker progress; this defect and its fix).
 - [save-state-machine-crash-window-recovery.md](save-state-machine-crash-window-recovery.md): durable per-step state across a resume. A resume there also deletes the checkpoints that must not carry over.
 - [synced-summary-did-not-refresh-open-note.md](synced-summary-did-not-refresh-open-note.md): another stale view that `useSessions` fed.

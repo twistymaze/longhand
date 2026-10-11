@@ -30,7 +30,7 @@ Each note type has a summary prompt choice: "Default" or one saved summary promp
 
 ### Problem Frame
 
-Longhand has one active summary prompt for the whole app. A Pathfinder session needs a recap, and a work one-on-one needs decisions and follow-ups. To get the other shape, the user must change the app-wide prompt in Settings, regenerate the summary, and change the prompt back. Note types shipped in PR #45, and the type of a note already says which shape it needs.
+Longhand has one active summary prompt for the whole app. A Pathfinder session needs a recap, and a work one-on-one needs decisions and follow-ups. To get the other shape, the user must change the app-wide prompt in Settings, regenerate the summary, and change the prompt back. Note types shipped in archived PR 45, and the type of a note already says which shape it needs.
 
 The Types and Tags pane shows each type name and each tag as an editable text field with a Delete button beside it. A click and a keystroke in the wrong place renames a type, which moves its folder and its notes. The pane also looks less finished than the other Settings panes.
 

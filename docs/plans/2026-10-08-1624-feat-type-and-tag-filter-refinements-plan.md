@@ -30,7 +30,7 @@ Home treats note types as in use when the type list has a type other than Genera
 
 ### Problem Frame
 
-Note types and tags arrived in PR #45. With daily use, three problems are clear.
+Note types and tags arrived in archived PR 45. With daily use, three problems are clear.
 
 A user who keeps every note in General sees "All Types | General" on Home. Both choices show the same notes. A user with no tags sees a Tags menu that holds only "No tags".
 

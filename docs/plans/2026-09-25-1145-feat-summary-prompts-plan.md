@@ -340,26 +340,26 @@ The `cargo` and `uv` commands need the sandbox bypass. A summary needs no microp
 
 ## Completion record
 
-**Shipped 2026-09-25** in PR #6 (merge commit b9d037d) and PR #9 (merge commit c8940f3). Units U1–U5 are implemented. Two code reviews found 6 actionable findings, and all 6 are fixed in PR #6.
+**Shipped 2026-09-25** in archived PR 6 (merge commit b9d037d) and archived PR 9 (merge commit c8940f3). Units U1–U5 are implemented. Two code reviews found 6 actionable findings, and all 6 are fixed in archived PR 6.
 
 **Changes after the units:**
 
 - The prompt editor saves as the user types, 1 second after the last change, and has no Save button (KTD11 and U4 were updated). Tauri cannot stop an app quit, so an explicit Save lost text on quit.
 
-**The user's test of the notarized bundle** found four issues, which PR #9 fixes:
+**The user's test of the notarized bundle** found four issues, which archived PR 9 fixes:
 
 - Regenerate Summary showed no status. The Summary tab now shows the Summarizing row, with progress, in place of the summary.
 - The "Topic summary" text used RPG examples. Its examples are now general, and so are the test fixtures.
 - The Settings window sometimes did not close. A destroyed webview's close listener stopped the close of the next Settings window (`docs/solutions/ui-bugs/tauri-stale-close-listener-blocks-next-window.md`).
 - A title-bar double-click zoomed the Settings window. `src-tauri/src/zoom.rs` stops the zoom of a window whose zoom button is disabled.
 
-**Verification.** All the gates in the Verification Contract pass. The user tested the notarized bundle of PR #9 and confirmed the four fixes.
+**Verification.** All the gates in the Verification Contract pass. The user tested the notarized bundle of archived PR 9 and confirmed the four fixes.
 
 **Not done:**
 
 - The tuning of "Topic summary" against real sessions (U1 and the Definition of Done) is the user's task.
-- Deferred from the PR #9 review:
-  - A note that is opened again while Regenerate runs does not show the running status. This bug was already there before PR #9.
+- Deferred from the archived PR 9 review:
+  - A note that is opened again while Regenerate runs does not show the running status. This bug was already there before archived PR 9.
   - `zoom.rs` defines its own CGRect types instead of those of `objc2-core-foundation`.
 
 ---

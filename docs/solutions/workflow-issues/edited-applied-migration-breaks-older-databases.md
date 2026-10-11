@@ -36,7 +36,7 @@ Commit 399f360 (2026-09-24) renamed the "land" terms to "save". It changed the c
 
 `crates/session-core/src/schema.rs` uses `rusqlite_migration`, which records the applied version in SQLite's `user_version` pragma. It runs only the migrations above that version. A database made before 399f360 is already at version 1 or higher, so the edited 0001 never runs on it. The code then selects `home_path` from a table that still has `landed_path`.
 
-On 2026-09-25, the notarized build of PR #9 ran on a laptop that last had a build from before the rename. New Note failed at once with `No such column: home_path`. The tests did not find this, because each test makes a new database from the current migrations.
+On 2026-09-25, the notarized build of archived PR 9 ran on a laptop that last had a build from before the rename. New Note failed at once with `No such column: home_path`. The tests did not find this, because each test makes a new database from the current migrations.
 
 ## Guidance
 
@@ -49,7 +49,7 @@ On 2026-09-25, the notarized build of PR #9 ran on a laptop that last had a buil
 
 The failure shows only on real machines with old data, never in CI. It also blocks the main task of the app, starting a note. The user has two fixes: delete the database, which removes the old notes from the list (their folders stay on disk), or fix the database by hand. Neither fix is acceptable when the app has users.
 
-Since PR #30, each build records a hash of each applied migration in the `applied_migrations` table. At launch, a build that finds a recorded hash different from its own SQL for the same version moves the database and the Working location aside and makes a new database. The library scan then adopts the saved notes again ([database rebuild](../runtime-errors/older-build-panicked-on-newer-database-at-launch.md)). This replaces the `No such column` failure with a rebuild, but unfinished work stays only in the backup. A database with no hash row for a version, for example one made before PR #30, is still trusted, so the old failure can still occur. The guidance above does not change.
+Since archived PR 30, each build records a hash of each applied migration in the `applied_migrations` table. At launch, a build that finds a recorded hash different from its own SQL for the same version moves the database and the Working location aside and makes a new database. The library scan then adopts the saved notes again ([database rebuild](../runtime-errors/older-build-panicked-on-newer-database-at-launch.md)). This replaces the `No such column` failure with a rebuild, but unfinished work stays only in the backup. A database with no hash row for a version, for example one made before archived PR 30, is still trusted, so the old failure can still occur. The guidance above does not change.
 
 ## When to Apply
 

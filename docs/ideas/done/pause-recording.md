@@ -19,4 +19,4 @@ A long meeting can have a break with casual talk, or a discussion that is too se
 ## Notes / Current state
 The plan holds the requirements. A forgotten pause is left to the recording state widget idea.
 
-Shipped in PR #51 on 2026-10-10. The user's manual test of a signed build passed.
+Shipped in archived PR 51 on 2026-10-10. The user's manual test of a signed build passed.

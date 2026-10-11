@@ -76,9 +76,9 @@ The TCC result appears to be kept in the process after the first check. A new pr
 - **Any TCC check done through a private preflight function can be old.** When Longhand adds a check for another TCC service, use the same `combine` rule: trust an in-process "allowed", and ask a new process for anything else.
 - **Call `child_check` first in `main`.** If code runs before it, the child can start the Tauri app, open a window or take the single-instance lock.
 - **The test binary cannot act as the child.** The test harness does not know `CHILD_FLAG` and exits with 101. The hardware test in `crates/audio-system/tests/hardware.rs` therefore uses the in-process check, and `combine` is tested with a closure in place of the child.
-- **Test the grant flow in the signed bundle, from a fresh start.** Reset the permission (the TCC service is `kTCCServiceAudioCapture`, so `tccutil reset AudioCapture net.ewal.longhand` should do it; this command was not tested in PR #12), open the app, click "Allow…", allow the prompt, and look at the row without a restart.
+- **Test the grant flow in the signed bundle, from a fresh start.** Reset the permission (the TCC service is `kTCCServiceAudioCapture`, so `tccutil reset AudioCapture net.ewal.longhand` should do it; this command was not tested in archived PR 12), open the app, click "Allow…", allow the prompt, and look at the row without a restart.
 
 ## Related Issues
-- PR #12 (system audio and microphone choice), which added the permission check and this fix.
+- Archived PR 12 (system audio and microphone choice), which added the permission check and this fix.
 - `crates/audio-system/PROVENANCE.md`, the `src/permission.rs` record.
 - [WKWebView does not focus a clicked button](../ui-bugs/wkwebview-click-does-not-focus-button-breaks-shortcut-capture.md): another defect that only the signed bundle shows.

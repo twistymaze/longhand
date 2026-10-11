@@ -40,7 +40,7 @@ The cause was the shared `Pane` grid in `src/settings/ui.tsx`. It used `grid gap
 
 ## Solution
 
-Fixed in PR #13.
+Fixed in archived PR 13.
 
 `Pane`, `src/settings/ui.tsx:20-21`:
 

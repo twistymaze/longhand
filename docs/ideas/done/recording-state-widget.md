@@ -10,7 +10,7 @@ plan: docs/plans/2026-10-10-0829-feat-recording-widget-plan.md
 
 # Always-visible recording state widget
 
-Shipped in PR #53. Changes from the plan during the manual test: the user can drag the widget, and later notes use the dragged place until Longhand quits; the widget is about 20% larger; on macOS the hover comes from native pointer events. Hover lesson: `docs/solutions/ui-bugs/hover-lagged-in-a-panel-that-is-never-key.md`.
+Shipped in archived PR 53. Changes from the plan during the manual test: the user can drag the widget, and later notes use the dragged place until Longhand quits; the widget is about 20% larger; on macOS the hover comes from native pointer events. Hover lesson: `docs/solutions/ui-bugs/hover-lagged-in-a-panel-that-is-never-key.md`.
 
 ## Idea
 A small widget stays on screen, above other windows, while a note records or is paused. It shows the state (recording or paused) and the elapsed time, like Handy's recording overlay (`reference-source/Handy/src/overlay/RecordingOverlay.tsx`). The main window does not need to be in front.

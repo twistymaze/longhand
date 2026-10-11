@@ -25,7 +25,7 @@ The Move copies each saved note from the old storage folder to a new storage fol
 
 `prepare()` checked only once per pass that the old folder was reachable. If the old folder went away during a pass, each remaining note looked gone. The pass then dropped every remaining note and closed the Move as Finished. After Finished, the app removed the old folder from the library roots and forgot every row outside the roots. Longhand then stopped listing notes that were still on the old disk, and Retry could not get them back.
 
-Code review of PR twistymaze/longhand#24 found this defect before it occurred in production.
+Code review of archived PR 24 found this defect before it occurred in production.
 
 ## Symptoms
 
@@ -204,4 +204,4 @@ The key parts of the pattern:
 - [receiving-computer-renamed-synced-folder-back](receiving-computer-renamed-synced-folder-back.md): the same pattern. The state on disk alone cannot tell two causes apart, so an automatic step must get more evidence before it acts.
 - [save-state-machine-crash-window-recovery](save-state-machine-crash-window-recovery.md): the same step-then-record pattern that the Move journal uses, and a checklist of the window of each step.
 - [shared-settings-in-a-synced-folder-rules](../integration-issues/shared-settings-in-a-synced-folder-rules.md): rule 4 makes the same distinction for settings. A folder that is not available (`FolderMissing`) is not a missing file (`Missing`).
-- PR twistymaze/longhand#24 added the Move and this fix.
+- Archived PR 24 added the Move and this fix.

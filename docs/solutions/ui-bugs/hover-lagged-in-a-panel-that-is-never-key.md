@@ -29,7 +29,7 @@ tags:
 
 ## Problem
 
-The recording widget (PR #53) is a non-activating NSPanel that never becomes the key window, so it does not take focus from the app in front. In that panel, WKWebView updated CSS `:hover` late: the button highlight followed the pointer with a clear delay.
+The recording widget (archived PR 53) is a non-activating NSPanel that never becomes the key window, so it does not take focus from the app in front. In that panel, WKWebView updated CSS `:hover` late: the button highlight followed the pointer with a clear delay.
 
 ## Symptoms
 
@@ -44,7 +44,7 @@ The recording widget (PR #53) is a non-activating NSPanel that never becomes the
 
 ## Solution
 
-The panel already had a native tracking area for the hover × (enter and exit events). The fix, made during the PR #53 manual test and merged with it, adds pointer moves to that tracking area and lets the page set the hover itself.
+The panel already had a native tracking area for the hover × (enter and exit events). The fix, made during the archived PR 53 manual test and merged with it, adds pointer moves to that tracking area and lets the page set the hover itself.
 
 1. The tracking area also reports pointer moves (`src-tauri/src/widget.rs:530-532`):
 

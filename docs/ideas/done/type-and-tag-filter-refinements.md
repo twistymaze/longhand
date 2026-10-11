@@ -3,7 +3,7 @@ title: Type and tag filter refinements
 description: "Hide the Home type and tag filters until they are useful, show General on rows when types are in use, and give the Tags menu a filter field and grouped tag labels"
 area: library-and-sharing
 added: 2026-10-08
-source: "the user, after daily use of note types and tags (PR #45)"
+source: "the user, after daily use of note types and tags (archived PR 45)"
 related: [note-folders, suggested-tags]
 plan: docs/plans/2026-10-08-1624-feat-type-and-tag-filter-refinements-plan.md
 ---
@@ -18,4 +18,4 @@ A user who keeps every note in General sees a type filter whose choices show the
 
 ## Notes / Current state
 - Refines R19 and R22 of `docs/plans/2026-10-07-1940-feat-note-types-and-tags-plan.md`.
-- Shipped in PR #46. The button that clears the type and tag filters is named "Clear Filters".
+- Shipped in archived PR 46. The button that clears the type and tag filters is named "Clear Filters".

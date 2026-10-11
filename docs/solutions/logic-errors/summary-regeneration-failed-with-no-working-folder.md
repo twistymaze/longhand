@@ -19,7 +19,7 @@ related_components: [tauri_backend, testing_framework]
 
 ## Problem
 
-On a second computer that only reads notes from a synced storage folder, Regenerate Summary failed. The regeneration stages its result in the Working location, and that folder did not exist, because only a recording makes it. Fixed in PR #35.
+On a second computer that only reads notes from a synced storage folder, Regenerate Summary failed. The regeneration stages its result in the Working location, and that folder did not exist, because only a recording makes it. Fixed in archived PR 35.
 
 ## Symptoms
 
@@ -60,5 +60,5 @@ Regression test: `regenerate_summary_on_a_computer_with_no_working_folder_makes_
 
 ## Related Issues
 
-- PR #35.
+- Archived PR 35.
 - [Publication checked for another result only at start and end](publication-checked-for-another-result-only-at-start-and-end.md) describes the publication record that the local staging holds.

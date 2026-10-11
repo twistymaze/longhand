@@ -675,7 +675,7 @@ Manual checks on the signed bundle (microphone, Keychain, menus and the Trash ne
 
 ## Completion record
 
-**Shipped 2026-09-25** in PR #4 (merge commit 3e72045). Units U1–U14 are implemented. A code review found 7 actionable findings, and all 7 are fixed.
+**Shipped 2026-09-25** in archived PR 4 (merge commit 3e72045). Units U1–U14 are implemented. A code review found 7 actionable findings, and all 7 are fixed.
 
 **The user's review of the signed bundle** made these changes after the units:
 

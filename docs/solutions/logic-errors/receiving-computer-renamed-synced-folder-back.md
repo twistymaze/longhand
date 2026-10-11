@@ -78,6 +78,6 @@ This fix supports a wider rule that the user asked for in this work. **A compute
 
 ## Related Issues
 
-- PR #14 (One library across computers) shipped this fix.
+- Archived PR 14 (One library across computers) shipped this fix.
 - [save-state-machine-crash-window-recovery](save-state-machine-crash-window-recovery.md): the same pattern of a local record that survives a crash between a disk step and its record.
 - Plan: `docs/plans/2026-09-25-1217-feat-one-library-across-computers-plan.md` (KTD8, KTD9, R9).

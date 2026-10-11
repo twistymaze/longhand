@@ -35,7 +35,7 @@ tags:
 
 ## Problem
 
-A cold CI run on the Windows runner took about 71 minutes against about 8 on macOS (per this session's measurements of the pre-fix runs). The cause was not a slow machine: ggml, which `transcribe-cpp-sys` builds from source with CMake (C++ plus Vulkan shaders on Windows), was compiled **three times in one job**, because three cargo steps each selected a different set of packages and so resolved shared crates to different feature sets. PR https://github.com/ervwalter/longhand/pull/1 (merged to main) fixed it.
+A cold CI run on the Windows runner took about 71 minutes against about 8 on macOS (per this session's measurements of the pre-fix runs). The cause was not a slow machine: ggml, which `transcribe-cpp-sys` builds from source with CMake (C++ plus Vulkan shaders on Windows), was compiled **three times in one job**, because three cargo steps each selected a different set of packages and so resolved shared crates to different feature sets. Archived PR 1 (merged to main) fixed it.
 
 ## Symptoms
 
@@ -59,9 +59,9 @@ Per-step `Compiling` counts in the downloaded Windows job log (step times are se
 - **A cache that never refreshed (session history).** rust-cache initially saved only on success, and every early Windows job failed or was cancelled, so every run started cold (the first fully green cold Windows run took 103 minutes). Once the key matched exactly, rust-cache treated the cache as current and never saved new artifacts, so after the app bundle moved to the debug profile every run rebuilt everything. `cache-on-failure: true` and prefix-key bumps came out of this.
 - **Reordering steps** (full build first, then clippy, then tests) does not help. Clippy only type-checks (it emits metadata) and tests need codegen, so neither reuses the other's Rust artifacts in any order. What can be shared is the build-script run, and only when the resolved features match. Matching the selection is the fix, not the order.
 - **cargo-nextest** was the fallback: it compiles the whole workspace in one pass and can skip the app's tests at run time. It was not needed once the manifest fix let the app's tests run.
-- **Larger GitHub runners** are only available to organizations on Team or Enterprise plans, not a personal Pro account, and more cores would mostly speed up the CMake build rather than remove the duplicate builds. The repository later moved to the `twistymaze` organization, and PR #7 put the Windows job on an 8-core runner (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
+- **Larger GitHub runners** are only available to organizations on Team or Enterprise plans, not a personal Pro account, and more cores would mostly speed up the CMake build rather than remove the duplicate builds. The repository later moved to the `twistymaze` organization, and archived PR 7 put the Windows job on an 8-core runner (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
 - **The `custom-protocol` split** was left alone. `tauri build` turns on Tauri's `custom-protocol` feature (the app serves its pages from the bundle), which changes `tauri` and everything built on it (plugins, wry, tao, muda, the app). Per session measurements that costs about 52 crates (about 42 s) on macOS and about 40 on Windows. Matching it would mean testing in bundled mode or restructuring the workspace.
-- **Downloading SPIRV-Headers directly** instead of through vcpkg would save only about 15 of 38 s, so Handy's vcpkg setup stays (`.github/workflows/ci.yml:103-115`). **A Dev Drive on Windows** was deferred to a separate, measured experiment, which PR #7 did (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
+- **Downloading SPIRV-Headers directly** instead of through vcpkg would save only about 15 of 38 s, so Handy's vcpkg setup stays (`.github/workflows/ci.yml:103-115`). **A Dev Drive on Windows** was deferred to a separate, measured experiment, which archived PR 7 did (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
 
 ## Solution
 
@@ -132,7 +132,7 @@ To see why cargo rebuilds a unit, run `CARGO_LOG=cargo::core::compiler::fingerpr
 ### Count `Compiling` lines per step in a CI job log
 
 ```sh
-repo=ervwalter/longhand
+repo=twistymaze/longhand
 run=<run-id>        # gh run list -R "$repo" --workflow ci.yml
 gh run view "$run" -R "$repo" --json jobs --jq '.jobs[] | "\(.databaseId)  \(.name)"'
 job=<job-id>
@@ -162,7 +162,7 @@ rust-cache's automatic key follows the lockfile and toolchain, not how CI invoke
 
 ## Follow-up: Dev Drive, 8-core runner and a cache on main
 
-PR https://github.com/twistymaze/longhand/pull/7 (2026-09-25) made three more changes to the Windows job and to when CI runs.
+Archived PR 7 (2026-09-25) made three more changes to the Windows job and to when CI runs.
 
 1. **A Dev Drive** (`ci.yml:73-90`). `samypr100/setup-dev-drive@v4` creates a trusted ReFS drive on a dynamic 40 GB VHDX after checkout, and copies the workspace onto it. `CARGO_HOME` and `RUSTUP_HOME` also move onto it. The steps that build use `working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}`, and rust-cache uses the same workspace. A trusted Dev Drive also stops Defender from scanning each file. The action's post step dismounts the drive, and post steps run in reverse order, so the Dev Drive step must come before rust-cache. Otherwise rust-cache saves after the drive is gone.
 2. **The org's 8-core runner** (`ci.yml:46-56`): `windows-8core`, 8 cores, 32 GB, the Windows Server 2025 image. The matrix keeps `os: windows-latest` and adds `runner: windows-8core`. The job name `Checks (windows-latest)` is a required check in the main ruleset, and a job with a new name never reports that check, so auto-merge waits for ever.
@@ -185,14 +185,14 @@ What to know:
 - **The Dev Drive letter is part of the cache key.** rust-cache hashes the values of `CARGO_HOME`, `RUSTUP_HOME` and `CMAKE_PREFIX_PATH`, and the cached paths are absolute. On the standard runner the Dev Drive is `E:`, because `D:` is the runner's temp disk. The 8-core runner has one disk, so the Dev Drive is `D:`. A change of runner type thus gives one cold run. The action's `mount-path` input can mount the drive at a fixed folder, but Windows can resolve a path through a folder mount point to `\\?\Volume{GUID}\`, which CMake and the MSVC tools often do not accept. One cold run per change of runner type costs less.
 - **Main cannot restore a pull request's cache.** So the first run on main after a key change is cold, even when the pull request saved a cache with the same key.
 - **`rust-lld` was not used.** `src-tauri/build.rs` embeds the manifest with `/MANIFEST:EMBED /MANIFESTINPUT`. `rust-lld` is built without libxml2, and so it may not merge a manifest input. Test it in its own change if link time becomes a large part of a warm run.
-- **Already done before PR #7:** debug-profile bundles, NSIS as the only bundle, and `CARGO_INCREMENTAL=0` (rust-cache sets it). A next change to measure is `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, which makes the PDBs smaller and linking faster.
+- **Already done before archived PR 7:** debug-profile bundles, NSIS as the only bundle, and `CARGO_INCREMENTAL=0` (rust-cache sets it). A next change to measure is `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, which makes the PDBs smaller and linking faster.
 
 ## Follow-up: home runners
 
-Since October 2026 the macOS and Windows checks run on home runners that keep `target/` between jobs ([Checks and CI](../../development-workflow.md#checks-and-ci)). rust-cache, the Dev Drive step and the 8-core runner apply only when a job runs on GitHub's runners. The `ci.yml` line numbers in this document refer to the file at the time of PR #1 and PR #7. The feature-unification rule still applies: one set of cargo commands per job keeps each home runner's `target/` to one build of ggml.
+Since October 2026 the macOS and Windows checks run on home runners that keep `target/` between jobs ([Checks and CI](../../development-workflow.md#checks-and-ci)). rust-cache, the Dev Drive step and the 8-core runner apply only when a job runs on GitHub's runners. The `ci.yml` line numbers in this document refer to the file at the time of archived PR 1 and archived PR 7. The feature-unification rule still applies: one set of cargo commands per job keeps each home runner's `target/` to one build of ggml.
 
 ## Related Issues
 
-- PR https://github.com/ervwalter/longhand/pull/1: the walking skeleton, including the manifest embedding and CI restructure.
-- PR https://github.com/twistymaze/longhand/pull/7: the Dev Drive, the 8-core runner and CI on pushes to main.
+- Archived PR 1: the walking skeleton, including the manifest embedding and CI restructure.
+- Archived PR 7: the Dev Drive, the 8-core runner and CI on pushes to main.
 - `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`: U2 created `ci.yml` and `src-tauri/build.rs`; its file map (line 567) still describes the pre-fix CI layout (historical record).

@@ -29,7 +29,7 @@ The helper compiled, packaged its dependencies, and passed its protocol check.
 Rust then failed while linking dependency build scripts. The error named Git's
 `link.exe`, not the Microsoft linker.
 
-[PR #18](https://github.com/twistymaze/longhand/pull/18) fixed the problem.
+Archived PR 18 fixed the problem.
 The important diagnostic distinction was that native helper success did not
 prove that a later Cargo command selected the same compiler tools.
 
@@ -86,7 +86,7 @@ parsing did not detect this restriction; `actionlint` did.
 
 ## Validation and prevention
 
-[The final CI run](https://github.com/twistymaze/longhand/actions/runs/36423174397)
+The final CI run (archived)
 passed the early Rust tests, full workspace tests, installer build, and CPU
 inference with the helper extracted from the Windows installer. The macOS job
 also passed. This does not establish Windows GPU inference or meeting-length

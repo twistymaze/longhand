@@ -30,7 +30,7 @@ tags:
 
 ## Problem
 
-The Home Tags menu (PR #46) shows a filter field and the tag list in one popup. The popup is rendered with `createPortal` into `document.body`, because the Home pane has `overflow: hidden` and would cut off a wide menu. The field is therefore after `#root` in the document. Two behaviours that are correct for a popup that holds only a list became defects when the field moved into the popup.
+The Home Tags menu (archived PR 46) shows a filter field and the tag list in one popup. The popup is rendered with `createPortal` into `document.body`, because the Home pane has `overflow: hidden` and would cut off a wide menu. The field is therefore after `#root` in the document. Two behaviours that are correct for a popup that holds only a list became defects when the field moved into the popup.
 
 ## Symptoms
 

@@ -46,7 +46,7 @@ Longhand's main window uses an Overlay title bar with no title, so the page show
 
 ## Solution
 
-The fix merged in PR #4 (twistymaze/longhand). It has four parts.
+The fix merged in archived PR 4 (twistymaze/longhand). It has four parts.
 
 **1. The window (Rust, macOS only).** `create_main_window` applies the Overlay style, hides the title, and sets the button position only on macOS (`src-tauri/src/window.rs:13-29`):
 

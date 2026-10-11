@@ -136,5 +136,5 @@ Tests in `crates/pipeline/tests/live.rs`:
 ## Related Issues
 
 - [Live speaker rows plan](../../plans/2026-09-29-1143-feat-live-speaker-rows-plan.md): R3a, KTD2 and KTD8 record the design decisions.
-- [Speaker labels in the live transcript](../../ideas/done/live-speaker-labels.md): the idea that PR #26 shipped.
+- [Speaker labels in the live transcript](../../ideas/done/live-speaker-labels.md): the idea that archived PR 26 shipped.
 - [Granite word timing was treated as absent](granite-word-timing-misclassified-as-absent.md): read the returned timing collection, not the capability flag. `open_words` follows this rule.

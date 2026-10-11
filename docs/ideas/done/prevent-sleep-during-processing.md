@@ -15,4 +15,4 @@ Prevent idle system sleep while post-recording work runs. Release protection on 
 
 ## Current state
 
-Shipped in PR #18 ([flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md)). The pipeline runner holds a processing lease while it works (`crates/power/src/processing.rs`).
+Shipped in archived PR 18 ([flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md)). The pipeline runner holds a processing lease while it works (`crates/power/src/processing.rs`).

@@ -35,7 +35,7 @@ This occurred twice in Longhand:
 - A `runner.os` expression in a step's `shell` field. The
   [Windows linker solution](../build-errors/windows-rust-selects-git-linker-after-msvc-setup.md)
   records it.
-- `${{ runner.temp }}` in the preview job's job-level `env` (PR #22). A branch
+- `${{ runner.temp }}` in the preview job's job-level `env` (archived PR 22). A branch
   push showed the run as "workflow file issue".
 
 A YAML parser accepts both files. `actionlint` finds both errors, because it

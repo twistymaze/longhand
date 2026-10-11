@@ -33,7 +33,7 @@ Each time Longhand saves or replaces a result (Save, Transcribe Again, Regenerat
 
 The copies exist so that a computer that receives a half-synced update keeps showing the last complete result. That protects against a mismatch that lasts a few seconds. The user's rule is that the app does not over-engineer sync edge cases: the last change wins, and conflicts belong to the sync service (rule 8 in `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`).
 
-`recognition.jsonl` holds the timed words and speaker labels of a note. Longhand reuses it only for Transcribe Again and speaker-only reprocessing, and for the saved prefix of a Resume. All of these also need the audio. After audio removal (PR #28) the file has no use, but it stays in the folder with a second copy of the transcript text.
+`recognition.jsonl` holds the timed words and speaker labels of a note. Longhand reuses it only for Transcribe Again and speaker-only reprocessing, and for the saved prefix of a Resume. All of these also need the audio. After audio removal (archived PR 28) the file has no use, but it stays in the folder with a second copy of the transcript text.
 
 ### Key Decisions
 

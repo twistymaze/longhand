@@ -3,7 +3,7 @@ title: Faster diarization
 description: "Make speaker recognition fast, so that a long note is ready soon after Stop"
 area: processing
 added: 2026-09-26
-source: "The user, during the PR #12 review of stereo processing"
+source: "The user, during the archived PR 12 review of stereo processing"
 related: [system-audio-capture, alternative-diarization-architectures]
 plan: docs/plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md
 ---
@@ -18,7 +18,7 @@ The user reports that diarization is too slow now. [Per-channel processing](../p
 
 ## Current state
 
-Shipped in PR #18. On 2026-09-28 the user confirmed that the speed is good enough in normal use; the three-hour laptop test is not a condition.
+Shipped in archived PR 18. On 2026-09-28 the user confirmed that the speed is good enough in normal use; the three-hour laptop test is not a condition.
 
 The [flexible speaker recognition plan](../../plans/2026-09-27-1526-feat-flexible-speaker-recognition-plan.md) covers accelerated embeddings, recognition during recording, and user-selected model routes. The preferred target is a usable transcript and summary within two minutes after a three-hour recording stops on the intended laptop. Slower choices remain available.
 

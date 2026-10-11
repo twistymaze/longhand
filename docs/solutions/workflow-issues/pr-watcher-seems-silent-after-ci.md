@@ -51,16 +51,16 @@ A different false wake, `base-ref-blocked` after each push, is in [The PR watche
 
 The same question came from the user four times in six days (session history):
 
-- **2026-09-24, PR #2.** The user said: "Your babysitter is broken; the CI is already done." The watcher was in the default 300-second settle window.
-- **2026-09-25/26, PR #6.** The user asked why the watcher took so long. `main` had moved during CI, and the watcher reported a base-ref race. That cause is in the race doc linked above.
-- **2026-09-28, PR #20.** The user asked: "CI is done. is your watcher broken?" The settle window again. A memory to skip the settle wait existed, but the agent did not apply it when it armed the watcher.
-- **2026-09-29, PR #25.** The watcher had `--settle-seconds 0`. After a second push, the agent armed it again at 16:22:52Z. The Windows CI job takes about 16-17 minutes and completed at 16:39:03Z. The user asked "still waiting?". The agent ran `gh pr checks`, saw green checks, told the user that the watcher had failed, and stopped it at 16:39:54Z.
+- **2026-09-24, archived PR 2.** The user said: "Your babysitter is broken; the CI is already done." The watcher was in the default 300-second settle window.
+- **2026-09-25/26, archived PR 6.** The user asked why the watcher took so long. `main` had moved during CI, and the watcher reported a base-ref race. That cause is in the race doc linked above.
+- **2026-09-28, archived PR 20.** The user asked: "CI is done. is your watcher broken?" The settle window again. A memory to skip the settle wait existed, but the agent did not apply it when it armed the watcher.
+- **2026-09-29, archived PR 25.** The watcher had `--settle-seconds 0`. After a second push, the agent armed it again at 16:22:52Z. The Windows CI job takes about 16-17 minutes and completed at 16:39:03Z. The user asked "still waiting?". The agent ran `gh pr checks`, saw green checks, told the user that the watcher had failed, and stopped it at 16:39:54Z.
 
 ## What Didn't Work
 
 - **The default settle window.** On a PR with no reviewers, the 300-second quiet window has no purpose. It only adds 5 minutes after CI.
-- **A memory that says "skip the settle wait" (session history).** On 2026-09-28 the memory existed, but nothing made the agent apply it at arm time. The memory now names the flag, `--settle-seconds 0`. On PR #25 the agent passed the flag.
-- **A diagnosis from `gh pr checks` alone.** On PR #25 the watcher was healthy. Polls after 16:22:52Z fell near 16:25:22, 16:27:52, and so on to 16:37:52 and 16:40:22Z. The checks completed at 16:39:03Z, after the 16:37:52Z poll. The next poll, about 30 seconds after the agent stopped the watcher, would have emitted `merge-ready`. In `state.json`, `last_change_at` was 16:39:54Z. That value came from the agent's own manual snapshot, not from the watcher. All the merge-ready conditions held. The agent compared the check result with "no wake yet" and did not compare it with the poll schedule.
+- **A memory that says "skip the settle wait" (session history).** On 2026-09-28 the memory existed, but nothing made the agent apply it at arm time. The memory now names the flag, `--settle-seconds 0`. On archived PR 25 the agent passed the flag.
+- **A diagnosis from `gh pr checks` alone.** On archived PR 25 the watcher was healthy. Polls after 16:22:52Z fell near 16:25:22, 16:27:52, and so on to 16:37:52 and 16:40:22Z. The checks completed at 16:39:03Z, after the 16:37:52Z poll. The next poll, about 30 seconds after the agent stopped the watcher, would have emitted `merge-ready`. In `state.json`, `last_change_at` was 16:39:54Z. That value came from the agent's own manual snapshot, not from the watcher. All the merge-ready conditions held. The agent compared the check result with "no wake yet" and did not compare it with the poll schedule.
 - **Silence during a long wait.** The user saw no output for about 17 minutes. Without an expected finish time, the silent wait looked like a hang.
 
 ## Solution

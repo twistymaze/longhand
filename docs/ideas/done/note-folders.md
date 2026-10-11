@@ -21,6 +21,6 @@ Each note can have one note type and any number of tags.
 All notes are in one flat list. The user wants to browse by group on Home, keep notes in meaningful folders on disk, and label notes across folders by person, customer or topic. The first version of this idea was folders only. After one or two weeks of use, the user also wanted tags.
 
 ## Notes / Current state
-- Shipped in PR #45. Changes from the plan during the manual test: the built-in type General (the top of the storage folder) replaces "no type"; types are in name order; tag scope colours are assigned across the library; the summarizer gets the type, the tags and the user's own title.
+- Shipped in archived PR 45. Changes from the plan during the manual test: the built-in type General (the top of the storage folder) replaces "no type"; types are in name order; tag scope colours are assigned across the library; the summarizer gets the type, the tags and the user's own title.
 - The brainstorm of 2026-10-07 wrote the requirements in the plan above. It also changes the `STRATEGY.md` boundary that ruled out tags (R25 of the plan).
 - Follow-up ideas: [suggested-tags](../someday/suggested-tags.md) and [summary-prompt-by-note-type](summary-prompt-by-note-type.md).

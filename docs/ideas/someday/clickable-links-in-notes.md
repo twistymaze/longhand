@@ -3,7 +3,7 @@ title: Clickable links in notes
 description: "Open a link in a note in the default browser"
 area: interface
 added: 2026-09-26
-source: "a conversation during PR #13 (About pane), about the Settings opener allow-list"
+source: "a conversation during archived PR 13 (About pane), about the Settings opener allow-list"
 related: [ux-redesign]
 ---
 

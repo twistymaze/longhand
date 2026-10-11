@@ -60,7 +60,7 @@ Two backstops cover the cases where the page cannot remove its listener (a page 
 - If `destroy()` fails, the page calls `close_settings_window` (`src-tauri/src/commands/window.rs:20`). That command destroys only the calling window, so a late call cannot close a newer Settings window.
 - On each Settings close request, Rust starts a timer (`src-tauri/src/window.rs:141`, `SETTINGS_CLOSE_LIMIT` = 6 s, longer than the page's longest close of 5 s). If the same window is still open when the timer ends, Rust destroys it. A count of built windows stops the timer from closing a window that opened after the request.
 
-The fix was confirmed in the notarized app (PR #9).
+The fix was confirmed in the notarized app (archived PR 9).
 
 ## Why This Works
 

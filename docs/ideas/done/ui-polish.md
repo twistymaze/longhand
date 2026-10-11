@@ -19,4 +19,4 @@ Hover previews proved difficult to use. The user wants familiar desktop controls
 
 ## Notes / Current state
 
-Shipped in PR #17. The combined [UI polish plan](../../plans/2026-09-26-2119-feat-ui-polish-plan.md) defines the approved scope and implementation checks.
+Shipped in archived PR 17. The combined [UI polish plan](../../plans/2026-09-26-2119-feat-ui-polish-plan.md) defines the approved scope and implementation checks.

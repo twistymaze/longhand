@@ -25,7 +25,7 @@ tags:
 
 ## Problem
 
-The My Notes panel stays mounted while another tab shows, so that the editor keeps its document, cursor and undo history. But on a recording note, or a note that the user just started, a return to My Notes put the cursor at the end of the notes. Fixed in PR #36.
+The My Notes panel stays mounted while another tab shows, so that the editor keeps its document, cursor and undo history. But on a recording note, or a note that the user just started, a return to My Notes put the cursor at the end of the notes. Fixed in archived PR 36.
 
 ## Symptoms
 

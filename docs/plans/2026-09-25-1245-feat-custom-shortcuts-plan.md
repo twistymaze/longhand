@@ -146,7 +146,7 @@ flowchart TB
 
 ### Assumptions
 
-- PR #6 and PR #8 are merged. The summary-model-picker branch is in progress, and it also changes `managers/settings.rs`, `lib.rs`, `src/bindings.ts` and the `Settings` type. Merge `main` into this branch before this branch merges, and regenerate `src/bindings.ts` after the merge.
+- Archived PR 6 and archived PR 8 are merged. The summary-model-picker branch is in progress, and it also changes `managers/settings.rs`, `lib.rs`, `src/bindings.ts` and the `Settings` type. Merge `main` into this branch before this branch merges, and regenerate `src/bindings.ts` after the merge.
 - KTD3's approach stays: no settings migration. A build from a branch without this work reads a cleared shortcut as the default and drops the show chord at its next settings save. That is acceptable, but no such build runs between the manual set checks and the relaunch check (Verification Contract).
 - The app menu's own key equivalents (Cmd+Q, Cmd+W, Cmd+,) are caught by the menu before the web view sees them, so the control cannot capture them. That is acceptable: those chords would take a key from Longhand itself.
 
@@ -292,7 +292,7 @@ The `cargo` commands need the sandbox bypass. A global shortcut from another app
 
 ## Completion record
 
-**Shipped 2026-09-26** in PR #10 (merge commit fcf59ea). Units U1–U5 are implemented.
+**Shipped 2026-09-26** in archived PR 10 (merge commit fcf59ea). Units U1–U5 are implemented.
 
 **Changes after the units:**
 
@@ -300,7 +300,7 @@ The `cargo` commands need the sandbox bypass. A global shortcut from another app
 - The code review confirmed 3 findings, and all 3 are fixed. Both rows share one pause, and its calls go in order, so the finish of one row does not resume the shortcuts while the other row captures. The pane reads the statuses after the resume. `set_shortcut` records the status before it saves the settings.
 - The chord button keeps one width while it captures keys.
 
-**The user's test of the signed bundle** found two defects, which PR #10 also fixes:
+**The user's test of the signed bundle** found two defects, which archived PR 10 also fixes:
 
 - Keys and Escape did nothing during capture. WebKit does not focus a button when it is clicked, so the key handler on the button did not receive the keys. The row now focuses its button when capture starts. The unit tests did not find this defect, because they send key events to the button directly, and the Chromium preview gives focus on a click.
 - Both rows could wait for keys at the same time. A row that starts to wait now ends the wait of the other row.

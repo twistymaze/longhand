@@ -17,7 +17,7 @@ tags: [licences, cargo-deny, cargo-about, allow-list, cc0, public-domain, depend
 
 Two tools check the licences of the code that ships in the binary. `cargo deny` reads `deny.toml`, and cargo-about reads `about.toml` to make the full licence list. Each file has an allow-list: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0 and CC0-1.0. `about.toml` also accepts `blessing` for SQLite's notice.
 
-PR #14 added the `notify` crate, which is CC0-1.0 (a public-domain dedication). CC0 was not on the lists, so the first fix added a per-crate exception for `notify` in both files. The user then decided that CC0 belongs in the allow-list itself. Public domain asks for less than the licences already on the list, which ask for a notice at most. So the exception only made the lists harder to read, and the next CC0 crate would need a new exception.
+Archived PR 14 added the `notify` crate, which is CC0-1.0 (a public-domain dedication). CC0 was not on the lists, so the first fix added a per-crate exception for `notify` in both files. The user then decided that CC0 belongs in the allow-list itself. Public domain asks for less than the licences already on the list, which ask for a notice at most. So the exception only made the lists harder to read, and the next CC0 crate would need a new exception.
 
 ## Guidance
 
@@ -42,7 +42,7 @@ A per-crate exception says that the licence was a special decision for that crat
 
 ## Examples
 
-Before (PR #14; shortened, the comments and the other exceptions are left out):
+Before (archived PR 14; shortened, the comments and the other exceptions are left out):
 
 ```toml
 # deny.toml

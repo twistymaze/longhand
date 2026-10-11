@@ -26,4 +26,4 @@ The audio is the largest part of a note. A four-hour note makes a large file, an
   - A note that is not finished (recording, processing, waiting for a folder) never loses its audio.
   - Show the space the setting will free before the user turns it on.
 - Follow-up (found during the work): a removal that another computer makes before a Resume has copied the old audio fails the Resume. See the Risks of the plan.
-- Shipped in PR #28 (https://github.com/twistymaze/longhand/pull/28), merged 2026-09-30.
+- Shipped in archived PR 28, merged 2026-09-30.

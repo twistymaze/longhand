@@ -37,7 +37,7 @@ The skill permits, at the user's request: tag edits in `session.md`, type change
 
 ### Notes
 
-The checks below are from the code after PR #45.
+The checks below are from the code after archived PR 45.
 
 - **The `session.md` fingerprint includes the body and every field except `longhand_tags` and `longhand_pending_type`** (`session_fingerprint`, `crates/session-core/src/folder.rs`). A change to another field or to the body can make Transcribe Again, Regenerate Summary and Resume refuse to run.
   - *Change:* make the fingerprint cover only the fields that Longhand owns, as parsed values. Longhand makes the body from those fields, so the body does not need to count.

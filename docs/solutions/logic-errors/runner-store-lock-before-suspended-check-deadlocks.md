@@ -31,13 +31,13 @@ The capture manager and the processing runner share one store mutex. The capture
 
 ## Symptoms
 
-- No user saw the freeze. The code review of PR #19 found it before release.
+- No user saw the freeze. The code review of archived PR 19 found it before release.
 - The failure path: the user deletes a model in Settings while a note is being reprocessed. `delete_model` is a sync command, so the main thread waits forever, and the app stops responding.
 
 ## What Didn't Work
 
 - Reading `reprocess` alone does not show the lock. `(self.env.suspended)()` is a boxed closure. The pipeline crate cannot see that the app implements it with `CaptureManager::is_capturing()`, and that function locks `inner` (`src-tauri/src/managers/processing.rs:522`, `src-tauri/src/managers/capture.rs:1003`).
-- Before PR #19, `delete_model` took only the store lock, so the cycle did not exist. The cycle started when `delete_model` began to use `CaptureManager::with_recording_held`. That function holds `inner` and then the store through the deletes, so a recording cannot start between the delete checks and the deletes (`src-tauri/src/managers/capture.rs:995`).
+- Before archived PR 19, `delete_model` took only the store lock, so the cycle did not exist. The cycle started when `delete_model` began to use `CaptureManager::with_recording_held`. That function holds `inner` and then the store through the deletes, so a recording cannot start between the delete checks and the deletes (`src-tauri/src/managers/capture.rs:995`).
 
 ## Solution
 
