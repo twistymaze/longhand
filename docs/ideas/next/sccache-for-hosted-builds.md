@@ -1,10 +1,11 @@
 ---
 title: Compile cache for the hosted builds
-description: "Test sccache with its GitHub Actions cache on the hosted release builds, in place of or beside rust-cache"
+description: "Measure sccache on the hosted jobs (beside or in place of rust-cache) and as a local cache on the self-hosted runners, then keep it everywhere or nowhere"
 area: distribution
 added: 2026-10-11
 source: "conversation during the releases-in-source-repository PR (twistymaze/longhand#2)"
-related: [windows-preview-builds-and-updates, self-hosted-ci-runners]
+related: [windows-preview-builds-and-updates, self-hosted-ci-runners, ephemeral-ci-runner-vms]
+plan: docs/plans/2026-10-11-1635-ci-sccache-compile-cache-plan.md
 ---
 
 # Compile cache for the hosted builds
