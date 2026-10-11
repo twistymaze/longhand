@@ -26,7 +26,7 @@ runs:
     # The self-hosted runner has a permanent Dev Drive that holds its work folder.
     - name: Set up a Dev Drive
       if: runner.environment == 'github-hosted'
-      uses: samypr100/setup-dev-drive@v4
+      uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4
       with:
         drive-size: 40GB
         workspace-copy: true
@@ -42,7 +42,7 @@ runs:
     # The self-hosted runner's image has the same SDK version and sets VULKAN_SDK.
     - name: Install Vulkan SDK
       if: runner.environment == 'github-hosted'
-      uses: humbletim/install-vulkan-sdk@v1.2
+      uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
       with:
         version: 1.4.309.0
         cache: false
@@ -60,7 +60,7 @@ runs:
         $combined = if ($env:CMAKE_PREFIX_PATH) { "$prefix;$env:CMAKE_PREFIX_PATH" } else { $prefix }
         Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$combined"
 
-    - uses: dtolnay/rust-toolchain@1.94.0
+    - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
       with:
         components: rustfmt, clippy
 
@@ -71,7 +71,7 @@ runs:
     # profiles, which cargo commands run) needs `prefix-key` bumped or its
     # new artifacts are never cached. A self-hosted runner skips this: its target/
     # stays from the last job, and a cache save would prune it.
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       if: runner.environment == 'github-hosted'
       with:
         prefix-key: ${{ inputs.prefix-key }}
@@ -82,9 +82,9 @@ runs:
     # Bash can put its own link.exe first. So the caller's Rust steps use
     # `shell: pwsh`:
     # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
-    - uses: ilammy/msvc-dev-cmd@v1
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
-    - uses: oven-sh/setup-bun@v2
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
 
     - name: Install frontend dependencies
       shell: bash
