@@ -5,6 +5,7 @@ date: 2026-10-11
 topic: public-repository
 artifact_contract: ce-unified-plan/v1
 product_contract_source: ce-brainstorm
+execution: code
 ---
 
 # Public Repository - Plan
@@ -29,7 +30,7 @@ The repository is private, and the user wants other people to follow its develop
 
 Today a visitor would see a list of files with no README, no licence and no statement about contributions. `STRATEGY.md` names the user's employer and says "Not a public project". `docs/preview-builds.md` says "The source repository stays private".
 
-On 2026-10-11, the history of `main` was written again to remove home infrastructure details: the Proxmox and NAS host names, the VLAN number, router rules, storage names and hardware. The current repository still keeps the old commits. Its PR refs, its Actions logs and the force-push entry in the PR #54 timeline point to them, and no cleanup inside that repository can remove them. The host names of the self-hosted runners are generic and are not sensitive.
+On 2026-10-11, the history of `main` was written again to remove home infrastructure details: the Proxmox and NAS host names, the VLAN number, router rules, storage names and hardware. The current repository still keeps the old commits. Its PR refs, its Actions logs and the force-push entry in the timeline of archived PR 54 point to them, and no cleanup inside that repository can remove them. The host names of the self-hosted runners are generic and are not sensitive.
 
 ### Key Decisions
 
@@ -117,3 +118,273 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 - `docs/preview-builds.md`: the public preview builds, the `preview` environment and the source of each secret.
 - `deny.toml`, `about.toml`, `licences/`, and each `PROVENANCE.md`: licence policy and borrowed-code records (anarlog MIT, none from its `enterprise/` folder; Handy MIT; DTLN-aec MIT; NeMo Apache-2.0).
 - `STRATEGY.md` and `CONCEPTS.md`: the description and terms for the README.
+
+---
+
+## Planning Contract
+
+**Product Contract preservation:** Product Contract unchanged.
+
+### Key Technical Decisions
+
+- KTD1. **The docs change first, in the current repository.** README, CONTRIBUTING, the general-docs edits (R7, R8, R9) and the reference rewrite (R17) are Markdown only. They go to `main` directly, as `docs/development-workflow.md` allows for docs-only changes, so they are in the history that R19 pushes. The history scan (R10) then runs on that final `main`.
+- KTD2. **`LICENSE` and the CI path-filter change are the first PR in the new repository.** The path filter in `.github/workflows/ci.yml` excludes only Markdown and the docs folders, so a root `LICENSE` would start CI and a preview publish. The PR adds `LICENSE` and excludes it from the filter. Its checks run on the home runners, and its merge publishes a build from a commit that the archive never built, which is the proof that R22 needs.
+- KTD3. **A one-off setup script, outside the repository.** The script that copies settings and reads them back (R20) runs from a scratch folder and is not committed. It compares the archive and the new repository as JSON and shows the difference in chat.
+- KTD4. **The history scan uses `gitleaks` for credentials and `git grep` for the rest.** `gitleaks` is installed through Homebrew only after the user approves the download, and it always runs with `--redact` so that its report holds no secret value. `git grep` over all commits of `main` covers the `CLAUDE.md` private paths, any `.context/` path, the employer name for information, and the pattern in `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md`. The user supplies the infrastructure host names at run time, and they stay in the shell session (R10).
+- KTD5. **The agent runs the reversible GitHub steps, and the user runs the rest.** The agent runs the rename, the repository creation, the pushes, the settings script and the read-only checks, with approval for each step that changes something on GitHub. The user enters the secret values and the issue creation setting (R21), revokes a token (R24) and changes the visibility (R12).
+- KTD6. **The README build steps come from the repository, not from memory.** The prerequisites are Rust 1.94.0 (`rust-toolchain.toml`), bun, cmake, Ninja, git and macOS 15 or later. `scripts/build-nemo.sh` clones NeMo-Speech.cpp and sentencepiece at pinned commits, so the first build is long. `src-tauri/tauri.conf.json` names the owner's Developer ID identity, so an outside builder sets `APPLE_SIGNING_IDENTITY="-"` for an ad-hoc signature, then runs `bun tauri build --bundles app`. Windows gets one line that names MSVC, Git Bash and the Vulkan SDK.
+
+### High-Level Technical Design
+
+The work is a gated sequence across two repositories. Each gate must pass before the next step starts.
+
+```mermaid
+flowchart TB
+  A[U1-U3: docs on main of the current repo] --> B[U4: history scan of final main]
+  B -->|user decides on each match| C[U5: rename to longhand-pre-public, create empty twistymaze/longhand]
+  C --> D[U5: copy settings, read back, user enters secrets and issue setting]
+  D --> E[U5: push main, point local remote at new repo]
+  E --> F[U6: LICENSE + path-filter PR, merge]
+  F -->|log shows published version| G[U7: retire archive credentials]
+  G --> H[U8: checklist, user switches to public, public-only runner settings]
+  H --> I[U8: post-switch checks]
+  I --> J[U9: idea moves]
+```
+
+### Assumptions
+
+- GitHub accepts the first push of `main` to the new repository under the copied ruleset, because the ruleset lets the repository admin role bypass it, as it does on the current repository.
+- An ad-hoc signature (`APPLE_SIGNING_IDENTITY="-"`) is enough for an outside builder to run Longhand locally. U1 confirms the variable name against the Tauri build before the README states it.
+
+---
+
+## Implementation Units
+
+### U1. README and CONTRIBUTING
+
+**Goal:** A visitor understands Longhand, how to build it, and that the project does not take contributions yet.
+
+**Requirements:** R1, R2, R3, R4, R6
+
+**Dependencies:** None
+
+**Files:**
+- Create: `README.md`
+- Create: `CONTRIBUTING.md`
+
+**Approach:**
+1. Write the README from `STRATEGY.md` (Purpose, Positioning, Boundaries) with the terms in `CONCEPTS.md`. Use the UI word "note" where the README describes what the user sees.
+2. Add the "official releases are coming soon" statement and the build steps (KTD6). Link `LICENSE` and `CONTRIBUTING.md`. `LICENSE` arrives in U6, so the link is dead until then, which is acceptable while the repository is private.
+3. Write CONTRIBUTING in a warm tone: young project, not looking for outside contributions yet, thanks, follow along.
+4. Present the README draft to the user, apply the changes, and get approval before the commit (R4).
+
+**Patterns to follow:** UI text rules in `CLAUDE.md` (plain language, no metaphors). The subfolder READMEs in `licences/README.md` and `docs/ideas/README.md` for tone in repository docs.
+
+**Test expectation:** none -- docs only. The user's approval of the README is the check.
+
+**Verification:** The user approved the README text. Both files are on `main`.
+
+### U2. General docs
+
+**Goal:** The current docs are correct for a public repository and do not name the employer.
+
+**Requirements:** R7, R8, R9
+
+**Dependencies:** None
+
+**Files:**
+- Modify: `STRATEGY.md`
+- Modify: `docs/plans/2026-09-24-1956-feat-ux-redesign-plan.md`
+- Modify: `docs/preview-builds.md`
+
+**Approach:**
+1. In `STRATEGY.md`, replace the employer references in Users and Key metrics with general wording, and change "Not a public project" to say that the repository is public to follow but closed to contributions.
+2. Replace the employer reference in the UX-redesign plan.
+3. In `docs/preview-builds.md`, remove "The source repository stays private". Leave the billing sentences in `docs/development-workflow.md` and `.github/workflows/ci.yml` as they are: they stay true as conditionals.
+4. Search all tracked files for the employer name as a whole word, case-insensitive, and fix any other match.
+
+**Test expectation:** none -- docs only.
+
+**Verification:** A whole-word, case-insensitive search for the employer name in tracked files returns no match.
+
+### U3. Archived references
+
+**Goal:** No tracked file points a visitor at a wrong PR or a 404.
+
+**Requirements:** R17
+
+**Dependencies:** None
+
+**Files:**
+- Modify: the 77 tracked Markdown files that hold a PR reference, an Actions run link or an `ervwalter/longhand` link. Only Markdown files hold them.
+
+**Approach:**
+1. List the matches for the three forms in R17 and review the list before the edit.
+2. Rewrite each match as plain text, such as "archived PR 53" or "archived CI run". A link becomes its text without the URL.
+3. Leave the quotes in this plan that R17 exempts.
+4. Review the diff as a whole before the commit, because a scripted edit can break a sentence.
+
+**Test expectation:** none -- docs only.
+
+**Verification:** A search for the three forms in tracked files finds only the exempt quotes in this plan.
+
+### U4. History scan
+
+**Goal:** Nothing in the history that goes public surprises the user.
+
+**Requirements:** R10
+
+**Dependencies:** U1, U2, U3
+
+**Files:** None in the repository. The scan output stays in chat and in a scratch folder.
+
+**Approach:**
+1. Ask the user to stop pushes to `main` from other sessions until U5 step 7. Fetch the final `main` and record its commit ID: this is the scanned commit. Ask the user to approve the `gitleaks` install, then run it with `--redact` over the full history of the scanned commit (KTD4). Read only the redacted report.
+2. Run the `git grep` searches over all commits of `main`: the private paths, any `.context/` path, and the infrastructure pattern with the host names that the user supplies.
+3. Show each match to the user with its commit and file. The user decides on each match before U5 starts.
+4. If the user decides that a credential is real, the user revokes or rotates it.
+
+**Execution note:** Do not print a credential value in chat. Show the rule name, commit and path only.
+
+**Test expectation:** none -- an audit step with no code.
+
+**Verification:** The user decided on every match, or the scans found none.
+
+### U5. Fresh repository
+
+**Goal:** A private `twistymaze/longhand` holds the `main` history and the same settings as the archive.
+
+**Requirements:** R18, R19, R20, R21, R23, R13
+
+**Dependencies:** U4
+
+**Files:** None in the repository. The setup script lives in a scratch folder (KTD3).
+
+**Approach:**
+1. Export the settings of the current repository to JSON: repository settings, Actions settings, variables, the ruleset, the `preview` environment and its branch policy, and the runner group access.
+2. Rename the repository to `twistymaze/longhand-pre-public` (R18).
+3. Create the empty private `twistymaze/longhand`. Apply the exported settings, and add the new repository to the `longhand-checks` runner group.
+4. Read both repositories back and show the difference. Only the expected differences may remain: the name, the IDs and the secret values.
+5. Give the user one command for each of the 7 secrets, reading from a file or the password manager, and the settings-page step for issue creation (R21).
+6. Read the `homelab-ci` README and apply its settings for a public repository that GitHub allows on a private one (R13). Record the settings that need a public repository for U8.
+7. Check that `origin/main` still points to the scanned commit from U4. If it moved, scan the new commits under R10 first. Push exactly the scanned commit as `main` of the new repository, with no other refs or tags. Then point the local `origin` at the new repository (R19, R23).
+
+**Patterns to follow:** The secret commands in the table in `docs/preview-builds.md`.
+
+**Test expectation:** none -- repository setup with no code.
+
+**Verification:** The readback shows no unexpected difference. The `preview` environment lists 7 secrets. `git remote -v` names `twistymaze/longhand`.
+
+### U6. Licence and CI path filter
+
+**Goal:** The repository carries the MIT licence, and the new repository proves that its CI and preview publish work.
+
+**Requirements:** R5, R22
+
+**Dependencies:** U5
+
+**Files:**
+- Create: `LICENSE`
+- Modify: `.github/workflows/ci.yml`
+- Modify: `docs/development-workflow.md`
+
+**Approach:**
+1. Add `LICENSE` with the standard MIT text and the line from R5.
+2. Add `!LICENSE` to the push path filter in `ci.yml`, and update the comment above the filter.
+3. Add `LICENSE` to the definition of docs in the "Checks and CI" section of `docs/development-workflow.md`.
+4. Open the PR on the new repository with `-R twistymaze/longhand`, wait for the checks on the home runners, and merge.
+5. Check the preview job of the merge run (KTD2).
+
+**Test scenarios:**
+- Happy path: the PR's checks run on `longhand-macos` and a Windows home runner and pass.
+- Happy path: the preview job of the merge run logs "published <version>", and `twistymaze/longhand-builds` has a new preview release.
+- Edge case: a later push that changes only `LICENSE` starts no CI run.
+
+**Verification:** Both happy-path scenarios hold. GitHub shows "MIT" as the licence of the repository.
+
+### U7. Retire the archive
+
+**Goal:** Only the new repository can sign and publish builds.
+
+**Requirements:** R24
+
+**Dependencies:** U6
+
+**Files:** None in the repository.
+
+**Approach:**
+1. Turn off Actions in `twistymaze/longhand-pre-public`.
+2. Delete the 7 secrets of its `preview` environment.
+3. Remove it from the `longhand-checks` runner group.
+4. If U5 used a new `BUILDS_TOKEN`, the user revokes the old one.
+
+**Test expectation:** none -- settings only.
+
+**Verification:** The archive reports Actions off, no `preview` secrets and no runner group access. Its PRs and Actions history are still there.
+
+### U8. The switch
+
+**Goal:** The repository is public and locked down.
+
+**Requirements:** R12, R13, R14, R15
+
+**Dependencies:** U7
+
+**Files:** None in the repository. The checklist is in chat.
+
+**Approach:**
+1. Give the user the ordered checklist, with the owner of each step. Before the switch, confirm that the `longhand-checks` runner group allows public repositories, as the `homelab-ci` README requires.
+2. The user changes the visibility of `twistymaze/longhand` to public.
+3. Immediately after that, apply the settings from U5 that need a public repository, including approval for workflows from outside contributors.
+4. Check that pull request creation is limited to collaborators. Ask the user to confirm the issue setting on the settings page. Check that Wiki, Discussions and Projects are off.
+5. Start one `workflow_dispatch` CI run on `main` and confirm that its checks run on the home runners and pass.
+
+**Test expectation:** none -- settings only.
+
+**Verification:** Each check in step 4 passes, the outside-contributor approval setting reads back as set, and the dispatched run passes on the home runners.
+
+### U9. Idea moves
+
+**Goal:** The ideas folder shows the audit as done and keeps the About-pane idea.
+
+**Requirements:** R16
+
+**Dependencies:** U8
+
+**Files:**
+- Move: `docs/ideas/someday/pre-public-repo-audit.md` to `docs/ideas/done/`
+- Modify: `docs/ideas/someday/about-longhand-and-readme.md`
+
+**Approach:**
+1. Move the audit idea with `bun scripts/ideas.ts move`, as `docs/ideas/README.md` requires.
+2. Remove the README part from the About-pane idea and note that the README exists.
+
+**Test expectation:** none -- docs only.
+
+**Verification:** `bun scripts/ideas.ts` lists the audit idea under done and the About-pane idea under someday.
+
+---
+
+## Verification Contract
+
+| Check | Applies to | Done when |
+|---|---|---|
+| User approval of the README | U1 | The user approves the text |
+| Whole-word search for the employer name in tracked files | U2 | No match |
+| Search for the three reference forms in tracked files | U3 | Only the exempt quotes in this plan |
+| `gitleaks` and the `git grep` searches over `main` | U4 | The user decided on each match |
+| Settings readback, archive against new repository | U5 | Only the name, IDs and secret values differ |
+| PR checks and the preview job of the merge run | U6 | Checks pass, and the log shows "published <version>" |
+| Archive settings readback | U7 | Actions off, no secrets, no runner group access |
+| Post-switch settings checks | U8 | All pass |
+| Dispatched CI run after the switch | U8 | Checks run on the home runners and pass |
+| `bun scripts/ideas.ts` | U9 | The ideas are in their folders |
+
+Run `bun` as `/Users/<user>/.bun/bin/bun` or with `~/.bun/bin` on `PATH`. Run `gh` outside the sandbox and with `-R` for each repository.
+
+## Definition of Done
+
+- Each unit's verification holds.
+- `twistymaze/longhand` is public, and `twistymaze/longhand-pre-public` is private.
+- The setup script and the scan output are deleted from the scratch folder.
+- No temporary branch remains in either repository.
