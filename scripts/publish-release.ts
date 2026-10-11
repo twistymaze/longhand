@@ -20,6 +20,13 @@
 // without an error. The concurrency group of the CI workflow keeps two
 // publishes from running at the same time. The script uses only Bun built-ins, because the
 // publish job runs no `bun install`.
+//
+// When a newer CI run on main is queued or running, the publish command
+// publishes nothing and ends without an error. That run computes its version
+// from all commits since the latest release, so it publishes these commits
+// too. If a newer commit changed a workflow file, GitHub also refuses to let
+// the workflow token create a tag on this older commit (403, "Resource not
+// accessible by integration").
 
 import { basename } from "node:path";
 
@@ -82,6 +89,8 @@ export type ReleasesApi = {
   /// Publishes the draft and marks it as the latest release.
   publishRelease(release: Release): Promise<void>;
   deleteRelease(release: Release): Promise<void>;
+  /// True when a newer run of this CI workflow on main is queued or running.
+  newerRunWaiting(): Promise<boolean>;
 };
 
 export type PublishResult = "published" | "skipped";
@@ -107,6 +116,10 @@ export async function publish(
   const latestVersion = latest ? latest.tag_name.replace(/^v/, "") : null;
   if (!isNewer(args.version, latestVersion)) {
     log(`${args.version} is not higher than ${latestVersion}; nothing to publish`);
+    return "skipped";
+  }
+  if (await api.newerRunWaiting()) {
+    log(`a newer CI run on main is queued or running; it publishes ${args.version} or higher`);
     return "skipped";
   }
 
@@ -162,8 +175,9 @@ export async function attach(
   log(`attached ${args.installerName} to ${args.tag}`);
 }
 
-/// The releases of the repository through the GitHub REST API.
-export function githubApi(repository: string, token: string): ReleasesApi {
+/// The releases of the repository through the GitHub REST API. `runId` is the
+/// current workflow run (GITHUB_RUN_ID); without it, no newer run is found.
+export function githubApi(repository: string, token: string, runId?: string): ReleasesApi {
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
@@ -236,6 +250,15 @@ export function githubApi(repository: string, token: string): ReleasesApi {
       // The publish flow deletes only drafts, which have no tag.
       await call("DELETE", `${api}/releases/${release.id}`, undefined, [404]);
     },
+    async newerRunWaiting() {
+      if (!runId) return false;
+      type Run = { run_number: number; status: string; workflow_id: number };
+      const current = (await (await call("GET", `${api}/actions/runs/${runId}`)).json()) as Run;
+      const recent = (await (
+        await call("GET", `${api}/actions/workflows/${current.workflow_id}/runs?branch=main&event=push&per_page=20`)
+      ).json()) as { workflow_runs: Run[] };
+      return recent.workflow_runs.some((r) => r.run_number > current.run_number && r.status !== "completed");
+    },
   };
 }
 
@@ -248,7 +271,7 @@ const USAGE = [
 export async function main(
   argv: string[],
   env: Record<string, string | undefined>,
-  makeApi: (repository: string, token: string) => ReleasesApi = githubApi,
+  makeApi: (repository: string, token: string, runId?: string) => ReleasesApi = githubApi,
   log: (line: string) => void = console.log,
 ): Promise<void> {
   const [command, ...rest] = argv;
@@ -264,7 +287,7 @@ export async function main(
     const commit = env.GITHUB_SHA;
     if (!commit) throw new Error("GITHUB_SHA must be set to the built commit");
     await publish(
-      makeApi(repository, token),
+      makeApi(repository, token, env.GITHUB_RUN_ID),
       {
         repository,
         version,
