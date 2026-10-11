@@ -111,7 +111,7 @@ jobs:
       # rust-cache removes non-Cargo files from target during cache save,
       # so the NeMo cache goes in the temp folder. The version goes into the
       # build through a config file, not a commit (KTD6).
-      - name: Release config
+      - name: Record the NeMo cache path and the release config
         env:
           TAG: ${{ needs.find.outputs.tag }}
         run: |

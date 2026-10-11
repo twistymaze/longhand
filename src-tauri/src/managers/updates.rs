@@ -1,8 +1,9 @@
 //! The update manager (KTD6 to KTD10 of
 //! `docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md`). In
 //! a release build, it checks the update manifest of the latest release,
-//! holds an offer while a note records or processes, keeps the remind and ready delays, downloads after the user's
-//! click, and installs at the click, at quit or at the next launch.
+//! holds an offer while a note records or processes, keeps the remind and
+//! ready delays, downloads after the user's click, and installs at the
+//! click, at quit or at the next launch.
 //!
 //! [`flow::Flow`] makes each decision. This module does the effects: the
 //! network, the saved archives, the store, the window and the restart.

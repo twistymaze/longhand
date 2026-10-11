@@ -68,13 +68,7 @@ Do these steps once, in this order. Do a step again only to replace a credential
 
 4. **Add the 6 secrets to the environment.** Each `gh secret set` command asks for the value or reads it from a file, so no value goes into the shell history or a chat.
 
-   1. Check the App Store Connect values in your shell:
-
-      ```sh
-      test -n "$APPLE_API_KEY" && test -n "$APPLE_API_ISSUER" && test -f "$APPLE_API_KEY_PATH" && echo ok
-      ```
-
-      If it does not print `ok`, find the values first. The key ID is the part after `AuthKey_` in the `.p8` file name in `~/.appstoreconnect/private_keys`. The Issuer ID is at the top of App Store Connect → Users and Access → Integrations → Team Keys. In steps 4 to 6, paste the values at the prompt, or use the file path in place of the variable.
+   1. The App Store Connect API key is the one `.p8` file in `~/.appstoreconnect/private_keys`. Its file name is `AuthKey_<key ID>.p8`. The Issuer ID is at the top of App Store Connect → Users and Access → Integrations → Team Keys.
    2. Developer ID certificate. In Keychain Access, open the login keychain and the My Certificates tab. Right-click "Developer ID Application: Ervin Walter (7GLQLN8HXK)", choose Export, select "Personal Information Exchange (.p12)", save it as `~/Desktop/DeveloperID.p12`, and set a new password. Then run:
 
       ```sh
@@ -87,22 +81,22 @@ Do these steps once, in this order. Do a step again only to replace a credential
       gh secret set APPLE_CERTIFICATE_PASSWORD --env release -R twistymaze/longhand
       ```
 
-   4. API key ID:
+   4. API key ID. This command takes the key ID from the `.p8` file name:
 
       ```sh
-      printf %s "$APPLE_API_KEY" | gh secret set APPLE_API_KEY --env release -R twistymaze/longhand
+      basename ~/.appstoreconnect/private_keys/AuthKey_*.p8 .p8 | sed 's/^AuthKey_//' | tr -d '\n' | gh secret set APPLE_API_KEY --env release -R twistymaze/longhand
       ```
 
-   5. Issuer ID:
+   5. Issuer ID. Run this command and paste the Issuer ID from step 1:
 
       ```sh
-      printf %s "$APPLE_API_ISSUER" | gh secret set APPLE_API_ISSUER --env release -R twistymaze/longhand
+      gh secret set APPLE_API_ISSUER --env release -R twistymaze/longhand
       ```
 
    6. API private key:
 
       ```sh
-      gh secret set APPLE_API_PRIVATE_KEY --env release -R twistymaze/longhand < "$APPLE_API_KEY_PATH"
+      gh secret set APPLE_API_PRIVATE_KEY --env release -R twistymaze/longhand < ~/.appstoreconnect/private_keys/AuthKey_*.p8
       ```
 
    7. Updater key. If the file is gone, run the command without `< …` and paste the key from the password manager:
