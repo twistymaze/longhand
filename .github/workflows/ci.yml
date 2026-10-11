@@ -176,7 +176,7 @@ jobs:
         run: |
           export LONGHAND_NEMO_CACHE="${LONGHAND_NEMO_CACHE:-$NEMO_CACHE_IN_TEMP}"
           echo "LONGHAND_NEMO_CACHE=$LONGHAND_NEMO_CACHE" >> "$GITHUB_ENV"
-          bun test scripts/windows-redist.test.ts
+          bun test scripts/windows-redist.test.ts scripts/patch-nemo.test.ts
           bun scripts/prepare-nemo.ts
 
       - name: Native helper protocol smoke test

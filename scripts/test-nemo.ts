@@ -97,7 +97,10 @@ const texts = new Map<number, string>();
 let currentSegments: any[] = [];
 let pendingSegments: any[] = [];
 const pending = new Map<number, () => void>();
-const timer = setTimeout(() => fail(new Error("Helper test timed out")), Number(option("--timeout-ms", "180000")));
+let sampleTotal = 0;
+const timeoutMs = Number(option("--timeout-ms", "180000"));
+// The progress shows whether the helper is slow or stopped.
+const timer = setTimeout(() => fail(new Error(`Helper test timed out after ${timeoutMs} ms: ${readyAt ? `ready after ${Math.round(readyAt - startedAt)} ms` : "not ready"}, ${Math.max(0, receivedEnd - epochStart)} of ${sampleTotal} samples acknowledged`)), timeoutMs);
 function send(metadata: object, samples = new Float32Array()) {
   const seq = sequence++;
   const json = Buffer.from(JSON.stringify({ version: 1, generation: 19, epoch: 2, seq, ...metadata }));
@@ -182,6 +185,7 @@ try {
     assert(Number.isSafeInteger(sampleStart) && sampleStart >= 0 && sampleStart <= samples.length);
     assert(Number.isSafeInteger(sampleCount) && sampleCount > 0 && sampleStart + sampleCount <= samples.length);
     samples = samples.subarray(sampleStart, sampleStart + sampleCount);
+    sampleTotal = samples.length;
     acceptedEnd = epochStart;
     send({ command: "start", route, ...(speaker ? { speaker_model: speaker } : {}), asr_model: option("--asr"), streaming: option("--streaming", "true") === "true", gpu: Number(option("--gpu", "-1")), epoch_start: epochStart, max_epoch_samples: Math.max(samples.length, 1) });
     await wait(ready);
