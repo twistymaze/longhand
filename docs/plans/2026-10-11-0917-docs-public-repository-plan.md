@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** Visitors can follow Longhand on GitHub at `twistymaze/longhand`. They understand what it is and its licence, and they know that the project does not accept outside contributions. The public repository shows no secrets, no private files, no home infrastructure details and no exposure that the user did not accept.
-- **Product authority:** This Product Contract. The audit items in `docs/ideas/someday/pre-public-repo-audit.md` are input. The About-pane part of `docs/ideas/someday/about-longhand-and-readme.md` is not active scope.
+- **Product authority:** This Product Contract. The audit items in `docs/ideas/done/pre-public-repo-audit.md` are input. The About-pane part of `docs/ideas/someday/about-longhand-and-readme.md` is not active scope.
 - **Open blockers:** None.
 
 ---
@@ -112,7 +112,7 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 
 ### Sources / Research
 
-- `docs/ideas/someday/pre-public-repo-audit.md`: the audit items and the old-commit context.
+- `docs/ideas/done/pre-public-repo-audit.md`: the audit items and the old-commit context.
 - `docs/ideas/someday/about-longhand-and-readme.md`: the README idea and its About-pane part.
 - `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md`: what the history rewrite removed, and the search pattern.
 - `docs/preview-builds.md`: the public preview builds, the `preview` environment and the source of each secret.
@@ -354,7 +354,7 @@ flowchart TB
 **Dependencies:** U8
 
 **Files:**
-- Move: `docs/ideas/someday/pre-public-repo-audit.md` to `docs/ideas/done/`
+- Move: `docs/ideas/done/pre-public-repo-audit.md` to `docs/ideas/done/`
 - Modify: `docs/ideas/someday/about-longhand-and-readme.md`
 
 **Approach:**

@@ -124,7 +124,7 @@ The repository will become public in about one month, with pull requests limited
 - The Windows preview build itself (code signing, updates, publishing) is not in scope. It stays in `docs/ideas/someday/windows-preview-builds-and-updates.md`.
 - A new VM for each job is deferred: `docs/ideas/someday/ephemeral-ci-runner-vms.md`.
 - Moving the signing runner to the Mac mini is deferred: `docs/ideas/someday/signing-runner-on-mac-mini.md`.
-- The audit before the repository goes public (history scan for secrets, private files, logs, docs) is not in scope: `docs/ideas/someday/pre-public-repo-audit.md`.
+- The audit before the repository goes public (history scan for secrets, private files, logs, docs) is not in scope: `docs/ideas/done/pre-public-repo-audit.md`.
 - Making the repository public is not in scope.
 - A Windows licence purchase is not in scope.
 - Linux jobs (`cargo deny`, the recorder soak) stay on GitHub's runners. They cost very little.

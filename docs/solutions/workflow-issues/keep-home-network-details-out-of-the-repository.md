@@ -39,7 +39,7 @@ The fix took much more work than writing the files correctly at the start:
 - The plan and idea files were already on `main`, so `main`'s history was written again. The `non_fast_forward` rule of the main ruleset was removed for the push and then restored. The push used `--force-with-lease` with the expected old SHA.
 - The feature branch was built again on the new `main` with only the scrubbed files.
 
-The old commits can still be opened on GitHub by their SHA, and the logs of old Actions runs still exist. `docs/ideas/someday/pre-public-repo-audit.md` lists both for the audit before the repository becomes public.
+The old commits can still be opened on GitHub by their SHA, and the logs of old Actions runs still exist. `docs/ideas/done/pre-public-repo-audit.md` lists both for the audit before the repository becomes public.
 
 ## Guidance
 

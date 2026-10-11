@@ -5,6 +5,7 @@ area: distribution
 added: 2026-10-10
 source: "the self-hosted CI runners brainstorm on 2026-10-10"
 related: [self-hosted-ci-runners]
+plan: docs/plans/2026-10-11-0917-docs-public-repository-plan.md
 ---
 
 # Audit before the repository goes public
@@ -16,3 +17,6 @@ Home network details: on 2026-10-11 the history of `main` was written again to r
 
 ## Why
 The user plans to make the repository public in about one month. A public repository cannot be made private again in a useful way, because anyone can clone it while it is public.
+
+## Outcome
+Done on 2026-10-11 with the public repository plan. The old repository is now the private archive `twistymaze/longhand-pre-public`, with Actions off and no secrets. A new `twistymaze/longhand` was made from a scanned copy of `main`, so the old commits and Actions logs are not public. [PR 1](https://github.com/twistymaze/longhand/pull/1) in the new repository added the MIT licence. The repository is public, with PRs and issues limited to collaborators, approval for workflows from all outside contributors, secret scanning and push protection on, and the wiki, Discussions and Projects off.
