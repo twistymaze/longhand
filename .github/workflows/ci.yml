@@ -58,13 +58,13 @@ jobs:
         # main ruleset, so `os` never changes. `runner` chooses where the job
         # runs: the self-hosted runner that a repository variable names, or GitHub's
         # runner when the variable is not set or the `hosted` input is true.
-        # On GitHub, Windows runs on the org's larger runner (8 cores, 32 GB,
-        # Windows Server 2025, the windows-latest image).
+        # On GitHub, Windows runs on the standard runner, which is free for a
+        # public repository and is the runner of the Windows release build.
         include:
           - os: macos-latest
             runner: ${{ !inputs.hosted && vars.MACOS_RUNNER || 'macos-latest' }}
           - os: windows-latest
-            runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-8core' }}
+            runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
     # A self-hosted runner runs one job at a time, so a hung job must not hold it
     # for GitHub's default of 6 hours.
