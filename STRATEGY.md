@@ -15,9 +15,9 @@ The transcript is the system of record, so the notes can stay lazy: a scratchpad
 
 ## Users
 
-**Primary:** Engineering manager at Epic, also a game master running Pathfinder on Friday nights. They're hiring Longhand to recall what was discussed and agreed to days later without having been the one taking minutes, across sessions from 30 minutes to four hours, in a room or on a call.
+**Primary:** An engineering manager, also a game master running Pathfinder on Friday nights. They're hiring Longhand to recall what was discussed and agreed to days later without having been the one taking minutes, across sessions from 30 minutes to four hours, in a room or on a call.
 
-**Secondary:** Peer managers at Epic with the same meeting load and the same confidentiality constraint. Not a public project.
+**Secondary:** Peer managers with the same meeting load and the same confidentiality constraint. The repository is public to follow, but it does not take outside contributions.
 
 ## Boundaries
 
@@ -36,7 +36,7 @@ _Resist a change when:_ it makes Longhand the place your knowledge lives, or mak
 - **Still in use at one month** — you haven't drifted back to the tools that annoy you. Observational; you'd know.
 - **Coverage** — notes exist from most meetings you attend, and Friday Pathfinder sessions are captured end to end. Visible in the folders.
 - **Time from "record this" to recording** — keyboard-shortcut fast, not 25 seconds of spin-up. You'd feel it the first time it's slow.
-- **Shareable without apology** — you'd hand it to someone at Epic without embarrassment. Binary.
+- **Shareable without apology** — you'd hand it to a colleague without embarrassment. Binary.
 
 ## Tracks
 

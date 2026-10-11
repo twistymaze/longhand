@@ -156,7 +156,7 @@ flowchart TB
 ### Success Criteria
 
 - The user records a real meeting and a Friday Pathfinder session with the redesigned app and reads both afterwards without falling back to another tool.
-- The user would show the app to a peer at Epic without apology (the STRATEGY.md "Shareable without apology" metric).
+- The user would show the app to a peer at work without apology (the STRATEGY.md "Shareable without apology" metric).
 - From the shortcut to typing in My notes takes no longer than it takes today to start recording.
 
 ### Scope Boundaries

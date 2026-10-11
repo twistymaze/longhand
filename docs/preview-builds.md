@@ -6,7 +6,7 @@ Each push to `main` that passes CI publishes a preview build (`CONCEPTS.md`, Upd
 - `preview/latest.json` on `main` is the update manifest. The app reads it from `https://raw.githubusercontent.com/twistymaze/longhand-builds/main/preview/latest.json`.
 - CI keeps the 20 newest preview releases and deletes the others.
 
-The source repository stays private. The builds repository holds only built files.
+The builds repository holds only built files.
 
 ## One-time setup
 
