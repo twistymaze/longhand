@@ -23,6 +23,30 @@ execution: code
 - **Execution profile:** Deep. Four phases: workflow changes (U1–U3) in one worktree from `origin/main` named `self-hosted-ci-runners`, then the Windows runner (U4–U5), then the macOS runners (U6–U8), then settings and docs (U9). Host setup runs over SSH or on this Mac, one approved step at a time. The workflow PR merges only after both home check runners pass a run of it.
 - **Open blockers:** None.
 
+## Scope change (2026-10-10, during ce-work)
+
+The user removed the signing VM from this plan. The preview build stays on GitHub's `macos-latest` runner, and the work goes to the PR checks first. These parts are deferred to `docs/ideas/someday/home-signing-runner.md` and are not part of this plan's Definition of Done: R3, R11 (the preview build keeps today's behaviour on `macos-latest`), R14, KTD7, KTD8, U8, the `PREVIEW_RUNNER` steps of U2, the `longhand-preview` group in U9, and the signing rows of the Verification Contract. The text below keeps them for the future work. (session-settled: user-directed)
+
+The checks VM is now the only macOS VM, so it can use both Apple VM slots later (a second checks VM).
+
+## Scope change (2026-10-11): private setup repository
+
+The setup scripts and the runner guide contain details of the home network, so they are in a private repository, not in this repository. `docs/ci-runners.md` and `scripts/ci-runners/` in the units below refer to that repository. This repository keeps the workflow changes and a short note in `docs/development-workflow.md`. (session-settled: user-directed)
+
+## Results so far
+
+- **U3:** `opt-level = 3` for `pipeline`, `earshot`, `sha2`, `vad` and `recorder` in the dev profile. `runner.rs` takes 46 s in parallel on the Mac Studio (71 s before) and 89 s with three threads (429 s before). The macOS check on `macos-latest` fell from about 14 to 9.5 minutes.
+- **U4:** the Windows VM on the Proxmox host runs the runner `longhand-windows`. Changes from KTD4, KTD6 and KTD11:
+  - 32 vCPUs, not 16. the Proxmox host is mostly idle and Proxmox shares the cores between VMs. (session-settled: user-directed)
+  - LLVM is installed, because `bindgen` needs libclang. GitHub's image has it.
+  - Developer Mode is on, so the standard user `runner` can make symlinks (`oven-sh/setup-bun` needs them).
+  - The Dev Drive is `W:`, because the install ISOs used `D:` to `F:`.
+- **U5:** the Windows check takes 13.4 minutes cold and 4.9 to 5.0 minutes warm, against about 20 minutes on `windows-8core`. 32 vCPUs gave the same times as 16: the warm job is mostly linking and a few long test binaries. A second runner, `longhand-windows-2`, on the same VM lets two Windows jobs run at the same time. (session-settled: user-directed) Each runner has its own cache, so its first job is cold.
+- **U7:** the macOS check on `longhand-macos` takes 7.7 minutes cold and 6.5 minutes warm, against about 9.5 minutes on `macos-latest` after U3. The Rust tests are 3.6 minutes of the warm job. The runner is a LaunchDaemon under the user `runner`, not a LaunchAgent with automatic login: the image user `admin` keeps the automatic login for `tart exec`, and no keychain work needs a login session now that the signing VM is deferred. The Cirrus image lacks Ninja, and links `/Users/runner` to `/Users/admin`; `provision.sh` handles both.
+- **U6:** the agents VLAN bridge works. Tart offers the VLAN interface (IPv4 and IPv6 off). A test VM got an address on the agents VLAN, reached `github.com` and `crates.io`, and could not reach the Mac Studio. Tart is installed from its notarized GitHub release, because the `cirruslabs/cli` Homebrew tap fails on current Homebrew (cirruslabs/homebrew-cli#21).
+- **Code review (2026-10-11):** fixed the review findings: the macOS reset clones before it deletes and always restarts its LaunchAgent; every downloaded Windows installer, MSIs included, must match a published SHA-256 digest or carry a valid signature; a second run of the setup skips a configured runner and always deletes its secret inputs; `create-vm.sh` deletes the answer ISO after the install; the checks job has `timeout-minutes: 60`; the rust-cache key is `v3-rust` for the new profile. Jobs run as the user that owns the runner registration files, so a job can copy them: "stays inside the VM" covers the build output, not the registration. The private setup guide gives the revoke procedure ("Suspected compromise") and the R13 steps for the day the repository becomes public; GitHub refuses the fork approval setting while the repository is private, so R13 waits for that day.
+- **Isolation:** the first test found that VMs on the agents VLAN could open TCP ports on the router. The user changed the router rules. From the Windows VM, those ports are now closed and `github.com` still works. The agents VLAN DHCP server gives public DNS servers, so the CI VMs do not need the router.
+
 ---
 
 ## Product Contract
