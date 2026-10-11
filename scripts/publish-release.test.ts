@@ -95,13 +95,22 @@ function fakeRepo() {
     async uploadAsset(release, name, content) {
       state.beforeUpload(name);
       const found = find(release.id);
-      found.assets.push({ id: nextId++, name });
+      const asset = { id: nextId++, name };
+      found.assets.push(asset);
       found.files[name] = typeof content === "string" ? content : await content.text();
+      return { ...asset };
     },
     async deleteAsset(release, asset) {
       const found = find(release.id);
       found.assets = found.assets.filter((a) => a.id !== asset.id);
       delete found.files[asset.name];
+    },
+    async renameAsset(release, asset, name) {
+      const found = find(release.id);
+      const stored = found.assets.find((a) => a.id === asset.id)!;
+      found.files[name] = found.files[stored.name]!;
+      delete found.files[stored.name];
+      stored.name = name;
     },
     async publishRelease(release) {
       for (const r of state.releases) r.latest = false;
@@ -215,6 +224,18 @@ test("attach replaces an asset with the same name", async () => {
   await attach(api, { ...installer, installer: new Blob(["second"]) }, quiet);
   expect(state.releases[0]!.assets.map((a) => a.name)).toEqual(["Longhand_1.0.0_x64-setup.exe"]);
   expect(state.releases[0]!.files["Longhand_1.0.0_x64-setup.exe"]).toBe("second");
+});
+
+test("a failed re-upload keeps the earlier installer", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  const installer = { tag: "v1.0.0", installerName: "Longhand_1.0.0_x64-setup.exe" };
+  await attach(api, { ...installer, installer: new Blob(["first"]) }, quiet);
+  state.beforeUpload = () => {
+    throw new Error("upload failed");
+  };
+  await expect(attach(api, { ...installer, installer: new Blob(["second"]) }, quiet)).rejects.toThrow("upload failed");
+  expect(state.releases[0]!.files["Longhand_1.0.0_x64-setup.exe"]).toBe("first");
 });
 
 test("attach fails when no release has the tag", async () => {
@@ -353,21 +374,24 @@ test("the GitHub binding publishes a release as the latest release", async () =>
   expect(JSON.parse(String(requests[0]!.init!.body))).toEqual({ draft: false, make_latest: "true" });
 });
 
-test("the GitHub binding uploads an asset by name and deletes an asset by id", async () => {
+test("the GitHub binding uploads, deletes and renames an asset", async () => {
   const asset: Asset = { id: 5, name: "latest.json" };
   const requests = await withFetch(
-    () => new Response(null, { status: 201 }),
+    () => Response.json({ id: 7, name: "latest.json" }, { status: 201 }),
     async () => {
       const api = githubApi(REPO, "t");
       const release = { id: 9, tag_name: "v1.0.0", draft: true, assets: [] };
-      await api.uploadAsset(release, "latest.json", "{}");
+      expect(await api.uploadAsset(release, "latest.json", "{}")).toEqual({ id: 7, name: "latest.json" });
       await api.deleteAsset(release, asset);
+      await api.renameAsset(release, asset, "setup.exe");
     },
   );
   expect(requests.map((r) => r.line)).toEqual([
     `POST https://uploads.github.com/repos/${REPO}/releases/9/assets?name=latest.json`,
     `DELETE ${API}/releases/assets/5`,
+    `PATCH ${API}/releases/assets/5`,
   ]);
+  expect(JSON.parse(String(requests[2]!.init!.body))).toEqual({ name: "setup.exe" });
 });
 
 test("the GitHub binding reads every page of releases", async () => {

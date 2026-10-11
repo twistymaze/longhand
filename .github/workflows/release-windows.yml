@@ -49,8 +49,11 @@ jobs:
       tag: ${{ steps.find.outputs.tag }}
       commit: ${{ steps.find.outputs.commit }}
     steps:
+      # An explicit bash sets pipefail, so a failed API call fails the step
+      # and does not become "no release".
       - name: Find the release
         id: find
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}

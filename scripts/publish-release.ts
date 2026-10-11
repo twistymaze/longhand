@@ -6,7 +6,8 @@
 //     updater archive, its signature and latest.json as assets.
 //   bun scripts/publish-release.ts attach <tag> <installer>
 //     Uploads the installer to the release with the tag. It replaces an asset
-//     with the same name, so a re-run works.
+//     with the same name, so a re-run works. The old asset stays until the new
+//     one is uploaded, so a failed re-run does not remove the installer.
 //
 // The script reads the repository from GITHUB_REPOSITORY and the token from
 // GITHUB_TOKEN. The publish command reads the built commit from GITHUB_SHA.
@@ -16,8 +17,8 @@
 // The publish order is check, draft, upload, publish. A job that stops early
 // leaves at most a draft, which no user sees and which has no tag. A version
 // that is not higher than the latest release publishes nothing and ends
-// without an error. The ci-main concurrency group keeps two publishes from
-// running at the same time. The script uses only Bun built-ins, because the
+// without an error. The concurrency group of the CI workflow keeps two
+// publishes from running at the same time. The script uses only Bun built-ins, because the
 // publish job runs no `bun install`.
 
 import { basename } from "node:path";
@@ -75,8 +76,9 @@ export type ReleasesApi = {
   /// All releases, drafts included.
   listReleases(): Promise<Release[]>;
   createDraft(draft: Draft): Promise<Release>;
-  uploadAsset(release: Release, name: string, content: Blob | string): Promise<void>;
+  uploadAsset(release: Release, name: string, content: Blob | string): Promise<Asset>;
   deleteAsset(release: Release, asset: Asset): Promise<void>;
+  renameAsset(release: Release, asset: Asset, name: string): Promise<void>;
   /// Publishes the draft and marks it as the latest release.
   publishRelease(release: Release): Promise<void>;
   deleteRelease(release: Release): Promise<void>;
@@ -144,11 +146,19 @@ export async function attach(
 ): Promise<void> {
   const release = await api.releaseByTag(args.tag);
   if (!release) throw new Error(`no release has the tag ${args.tag}`);
-  for (const old of release.assets.filter((a) => a.name === args.installerName)) {
-    log(`deleting the earlier ${old.name}`);
-    await api.deleteAsset(release, old);
+  const olds = release.assets.filter((a) => a.name === args.installerName);
+  if (olds.length === 0) {
+    await api.uploadAsset(release, args.installerName, args.installer);
+  } else {
+    // Upload under a temporary name first. Only a successful upload replaces
+    // the earlier installer.
+    const upload = await api.uploadAsset(release, `${args.installerName}.new`, args.installer);
+    for (const old of olds) {
+      log(`deleting the earlier ${old.name}`);
+      await api.deleteAsset(release, old);
+    }
+    await api.renameAsset(release, upload, args.installerName);
   }
-  await api.uploadAsset(release, args.installerName, args.installer);
   log(`attached ${args.installerName} to ${args.tag}`);
 }
 
@@ -210,9 +220,13 @@ export function githubApi(repository: string, token: string): ReleasesApi {
         body: content,
       });
       if (!response.ok) throw new Error(`upload ${name}: ${response.status} ${await response.text()}`);
+      return (await response.json()) as Asset;
     },
     async deleteAsset(_release, asset) {
       await call("DELETE", `${api}/releases/assets/${asset.id}`, undefined, [404]);
+    },
+    async renameAsset(_release, asset, name) {
+      await call("PATCH", `${api}/releases/assets/${asset.id}`, { name });
     },
     async publishRelease(release) {
       // The API takes make_latest as a string.
