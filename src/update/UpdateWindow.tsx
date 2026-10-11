@@ -66,7 +66,7 @@ export function viewOf(state: UpdateState): View | null {
     case "local_build":
       return {
         title: "This build gets no updates",
-        message: "Local builds do not update. To get updates, install the newest preview build.",
+        message: "Local builds do not update. To get updates, install the latest release.",
         buttons: [ok],
       };
     default:

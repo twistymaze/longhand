@@ -51,6 +51,14 @@ UI text uses short, direct plain language with consistent terms, no metaphors, a
 - Write, commit, and push planning documents and docs-only changes directly on `main` in the main checkout. Other sessions can use that checkout. Commit only this session's files by path (`git commit -- <paths>`), and run `git pull --rebase origin main` before each push.
 - Implement (`ce-work`) in a separate worktree, never the main checkout. Push the plan to `origin/main` first. Create new worktrees from `origin/main`, named for the plan's topic. Verify that files listed in `.worktreeinclude` are present.
 - Do not add Compound Engineering branding or badges to pull request descriptions or commit messages.
+- Each PR title is a Conventional Commit (`type: description` or `type(scope): description`). PRs merge by squash, and the PR title becomes the commit on `main`, so the title decides the release. [Releases](docs/releases.md) gives the version rules. Choose the type by the effect on users, not by the kind of work:
+  - `feat` is only for a meaningful new feature. It makes a minor release.
+  - `fix` is for a bug fix, and also for a small change that is not a bug fix (wording, spacing, polish). It makes a patch release. So do `perf`, `refactor`, `revert` and `build`.
+  - A dependency update is `build(deps)`. Use `fix(deps)` only when the update fixes a fault that users see.
+  - `style` is formatting only. A CSS or visual change is a `feat` or a `fix`.
+  - A change to build tools or CI that does not change the shipped app is a `chore` or a `ci`. `docs`, `ci`, `test`, `chore` and `style` make no release.
+  - Never write `!` or `BREAKING CHANGE` in a PR title unless the user asks for a major release.
+  - A commit pushed directly to `main` (docs-only work) uses only `docs`, `chore` or `ci`.
 - After a PR merges, offer cleanup and wait for approval. Before cleanup, read [After a merge](docs/development-workflow.md#after-a-merge).
 - Read relevant `docs/solutions/` entries before changing a documented area. Solutions use category folders and YAML fields `module`, `tags`, and `problem_type`.
 - Record each feature idea in its own file in `docs/ideas/`, even when it also appears in a plan or conversation. The folder is the status. List ideas with `bun scripts/ideas.ts`, and move them only with `bun scripts/ideas.ts move`. Follow `docs/ideas/README.md`. `ce-ideate` does not read or write this folder: before a run, give it the known ideas; after a run, file each survivor that is not brainstormed. The README gives the steps. Raise and resolve conflicts between this convention and plugin updates.

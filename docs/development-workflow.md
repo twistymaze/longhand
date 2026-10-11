@@ -17,7 +17,7 @@ Give both ways to run the build, using the exact checkout path:
 - On this Mac: `open <checkout>/target/release/bundle/macos/Longhand.app`.
 - On a remote Mac: zip the bundle with `ditto -c -k --keepParent`. Provide the `scp`, unzip, `spctl` and `open` steps for that build, and the cleanup step. Start the steps with the cleanup step too: an old build in the folder makes the unzip fail. A remote Mac needs a notarized build or Gatekeeper stops the app. Explain this requirement and notarize when the user tests remotely.
 
-Never put a test build in `/Applications`. The app there is the installed preview build, and it gets updates. Unzip a test build into its own folder, such as `~/Downloads/longhand-test/`, and open it from there. Quit the preview build first: the test build has the same bundle ID, so the preview build can receive the launch instead. The test build uses the same app data as the preview build.
+Never put a test build in `/Applications`. The app there is the installed release, and it gets updates. Unzip a test build into its own folder, such as `~/Downloads/longhand-test/`, and open it from there. Quit the installed release first: the test build has the same bundle ID, so the installed release can receive the launch instead. The test build uses the same app data as the installed release.
 
 After the test, quit the test build and delete its folder:
 
@@ -25,17 +25,17 @@ After the test, quit the test build and delete its folder:
 rm -rf ~/Downloads/longhand-test
 ```
 
-A local build has no track, so it gets no updates. The preview build in `/Applications` keeps its updates.
+A local build is not a release build, so it gets no updates. The release in `/Applications` keeps its updates.
 
 ### Windows
 
-A Mac cannot build the Windows installer. Start a CI run that builds a release installer and uploads it:
+A Mac cannot build the Windows installer. Each release has the Windows installer ([Releases](releases.md)). To test code on `main`, download the installer of the latest release into the gitignored `.context/windows-test/` folder:
 
 ```sh
-gh workflow run ci.yml -R twistymaze/longhand --ref <branch> -f windows_installer=true
+gh release download -R twistymaze/longhand -p '*.exe' -D .context/windows-test
 ```
 
-The Windows job takes about 30 minutes. Download the `longhand-windows-installer` artifact into the gitignored `.context/windows-test/` folder with `gh run download <run-id> -R twistymaze/longhand -n longhand-windows-installer -D .context/windows-test`. Give the PowerShell steps to copy it with `scp` into `$HOME\Downloads\longhand-test\` and run it. Start the steps with the removal of that folder, and give the cleanup steps: uninstall Longhand in Settings, delete the folder, and delete `.context/windows-test/` on the Mac.
+If the latest release has no installer yet, `release-windows.yml` is still building it, or it failed. Download the `release-windows` artifact of a successful run of that workflow in place of the release file: `gh run download <run-id> -R twistymaze/longhand -n release-windows -D .context/windows-test`. Code that is not on `main` has no Windows installer from CI. Give the PowerShell steps to copy it with `scp` into `$HOME\Downloads\longhand-test\` and run it. Start the steps with the removal of that folder, and give the cleanup steps: uninstall Longhand in Settings, delete the folder, and delete `.context/windows-test/` on the Mac.
 
 The installer is not signed. A file copied with `scp` has no Mark of the Web, so SmartScreen does not check it. A browser download shows a SmartScreen warning.
 
@@ -52,7 +52,7 @@ CI runs only on:
 - Pushes to `main` that change more than docs.
 - Explicit runs with `gh workflow run ci.yml --ref <branch>`.
 
-The macOS and Windows checks run on self-hosted runners, which keep the build output of the previous job. The runner setup is in a private repository, because it contains details of the home network. The repository variables `MACOS_RUNNER` and `WINDOWS_RUNNER` select the self-hosted runners. To run the checks on GitHub's runners instead, use `gh workflow run ci.yml --ref <branch> -f hosted=true`. To see whether a runner is offline, use `gh api orgs/twistymaze/actions/runners --jq '.runners[] | [.name, .status] | @tsv'`. A job for an offline self-hosted runner waits in the queue. `cargo deny` and the preview build run on GitHub's runners, and their minutes are billed while the repository is private. On GitHub's runners, runs on `main` save the cache that new pull requests restore. For CI, docs are all Markdown files except `PROVENANCE.md`, plus `docs/`, `.claude/`, `.compound-engineering/` and the root `LICENSE`.
+The macOS and Windows checks run on self-hosted runners, which keep the build output of the previous job. The runner setup is in a private repository, because it contains details of the home network. The repository variables `MACOS_RUNNER` and `WINDOWS_RUNNER` select the self-hosted runners. To run the checks on GitHub's runners instead, use `gh workflow run ci.yml --ref <branch> -f hosted=true`. To see whether a runner is offline, use `gh api orgs/twistymaze/actions/runners --jq '.runners[] | [.name, .status] | @tsv'`. A job for an offline self-hosted runner waits in the queue. `cargo deny` and the release builds run on GitHub's runners. On GitHub's runners, runs on `main` save the cache that new pull requests restore. For CI, docs are all Markdown files except `PROVENANCE.md`, plus `docs/`, `.claude/`, `.compound-engineering/` and the root `LICENSE`.
 
 Docs-only changes need no PR. Commit and push them directly on `main`; CI costs more than it checks for these changes. This includes plans, ideas, solutions, `CONCEPTS.md`, and agent guidance.
 

@@ -1,0 +1,114 @@
+name: Windows build setup
+description: >-
+  Sets up a Windows runner to build Longhand: the Dev Drive, the Vulkan SDK,
+  SPIRV-Headers, the Rust toolchain, the Rust cache, MSVC, bun with the
+  frontend dependencies, and the VC++ runtime dirs. The CI checks and the
+  release installer use this one definition, so they build the same way.
+  The caller enables long paths before the checkout, and runs this action
+  after the checkout.
+
+inputs:
+  prefix-key:
+    description: The rust-cache prefix key. A build with different artifacts needs its own key.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A Dev Drive (ReFS on a VHDX) makes the build's many small reads and
+    # writes faster than NTFS on the runner's disk. A trusted Dev Drive also
+    # stops Defender from scanning each file. The workspace, the target dir,
+    # CARGO_HOME and RUSTUP_HOME all move onto it, so the steps that build
+    # run in DEV_DRIVE_WORKSPACE. The drive is dynamic: the size is a limit,
+    # and the VHDX takes only the space that the build writes. This step
+    # must come before rust-cache: post steps run in reverse order, so
+    # rust-cache saves the cache before this action dismounts the drive.
+    # The self-hosted runner has a permanent Dev Drive that holds its work folder.
+    - name: Set up a Dev Drive
+      if: runner.environment == 'github-hosted'
+      uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4
+      with:
+        drive-size: 40GB
+        workspace-copy: true
+        trusted-dev-drive: true
+        env-mapping: |
+          CARGO_HOME,{{ DEV_DRIVE }}/.cargo
+          RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
+
+    # The Windows x64 build links ggml's Vulkan backend (KTD6), which needs
+    # the SDK's headers and glslc at build time. Version as Handy pins it.
+    # The action's own cache holds only the installer, which downloads in
+    # seconds, and it runs on the deprecated Node 20 `actions/cache@v4`.
+    # The self-hosted runner's image has the same SDK version and sets VULKAN_SDK.
+    - name: Install Vulkan SDK
+      if: runner.environment == 'github-hosted'
+      uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+      with:
+        version: 1.4.309.0
+        cache: false
+
+    # ggml-vulkan does `find_package(SPIRV-Headers CONFIG REQUIRED)`, and the
+    # SDK install exposes no findable SPIRV-HeadersConfig.cmake. The
+    # header-only vcpkg package on CMAKE_PREFIX_PATH resolves it, as Handy's
+    # CI does.
+    - name: Install SPIRV-Headers
+      shell: pwsh
+      run: |
+        vcpkg install spirv-headers:x64-windows
+        if ($LASTEXITCODE -ne 0) { throw "vcpkg install spirv-headers failed" }
+        $prefix = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" -replace '\\','/'
+        $combined = if ($env:CMAKE_PREFIX_PATH) { "$prefix;$env:CMAKE_PREFIX_PATH" } else { $prefix }
+        Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$combined"
+
+    - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
+      with:
+        components: rustfmt, clippy
+
+    # Saved even when a later step fails: otherwise a job that has never
+    # passed never gets a cache, and every run compiles ggml, ONNX Runtime
+    # and SQLite from scratch. The key follows Cargo.lock only, and an exact
+    # hit is never saved again, so a change to how CI builds (flags,
+    # profiles, which cargo commands run) needs `prefix-key` bumped or its
+    # new artifacts are never cached. A self-hosted runner skips this: its target/
+    # stays from the last job, and a cache save would prune it.
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      if: runner.environment == 'github-hosted'
+      with:
+        prefix-key: ${{ inputs.prefix-key }}
+        cache-on-failure: true
+        workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
+
+    # The MSVC environment makes Rust select link.exe from PATH, where Git
+    # Bash can put its own link.exe first. So the caller's Rust steps use
+    # `shell: pwsh`:
+    # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+    - name: Install frontend dependencies
+      shell: bash
+      working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      run: bun install --frozen-lockfile
+
+    # The installer carries the VC++ runtime app-local, so Longhand starts
+    # on a machine without a current redistributable. build.rs stages the
+    # DLLs from these dirs, taken from the Visual Studio install that
+    # compiled the native code, as Handy's CI does.
+    - name: Locate the VC++ runtime
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsRoot = & $vswhere -latest -products * -property installationPath
+        if (-not $vsRoot) { throw "vswhere found no Visual Studio installation" }
+        $version = (Get-Content (Join-Path $vsRoot "VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt")).Trim()
+        $archDir = Join-Path $vsRoot "VC\Redist\MSVC\$version\x64"
+        $crt = Get-ChildItem $archDir -Directory -Filter "Microsoft.VC*.CRT" | Sort-Object Name | Select-Object -Last 1
+        if (-not $crt -or -not (Test-Path (Join-Path $crt.FullName "msvcp140.dll"))) {
+          throw "VC++ CRT redist not found under $archDir"
+        }
+        $dirs = $crt.FullName
+        $omp = Get-ChildItem $archDir -Directory -Filter "Microsoft.VC*.OpenMP" | Sort-Object Name | Select-Object -Last 1
+        if ($omp) { $dirs = "$dirs;$($omp.FullName)" }
+        Add-Content -Path $env:GITHUB_ENV -Value "LONGHAND_VC_REDIST_DIRS=$dirs"

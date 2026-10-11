@@ -1110,7 +1110,7 @@ async openLicences() : Promise<void> {
     await TAURI_INVOKE("open_licences");
 },
 /**
- * Return the version, the short commit and the track of this build.
+ * Return the version, the short commit and the release flag of this build.
  */
 async buildInfo() : Promise<BuildInfo> {
     return await TAURI_INVOKE("build_info");
@@ -1255,7 +1255,7 @@ export type AudioView =
 "waiting"
 export type BuildInfo = { 
 /**
- * The full version, for example `0.1.0-preview.20260928143012`.
+ * The full version, for example `1.0.4`.
  */
 version: string; 
 /**
@@ -1263,9 +1263,9 @@ version: string;
  */
 commit: string | null; 
 /**
- * None for a local build.
+ * True for a release build. Only a release build gets updates.
  */
-track: Track | null }
+release: boolean }
 export type Capabilities = { live_transcription: boolean; live_speaker_analysis: boolean; live_attributed_text: boolean; maximum_speakers: number | null; 
 /**
  * Catalog support is distinct from an installed-package acceptance test.
@@ -2301,7 +2301,7 @@ hide_from_dock: boolean;
  */
 show_recording_widget: boolean; 
 /**
- * A shared setting. The app checks for a newer build of its track at
+ * A shared setting. A release build checks for a newer release at
  * launch, each hour and at each wake (R9, R10). On by default. "Check
  * for Updates…" works when it is off (R11).
  */
@@ -2545,10 +2545,6 @@ key: string;
  */
 count: number }
 /**
- * The update track of a build. Each track has its own update manifest.
- */
-export type Track = "preview"
-/**
  * The transcription model of a Transcribe Again run, for the dialog.
  */
 export type TranscribeAgainCheck = { model_id: string; model_name: string }
@@ -2620,7 +2616,7 @@ export type UpdateState =
  */
 { state: "check_failed"; error: string } | 
 /**
- * The result of a manual check in a build with no track.
+ * The result of a manual check in a build that is not a release build.
  */
 { state: "local_build" } | 
 /**

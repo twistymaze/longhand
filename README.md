@@ -33,7 +33,7 @@ Longhand runs on macOS first. Windows is supported, with less testing.
 
 ## Get Longhand
 
-Official releases are coming soon. Until then, you can build Longhand from source.
+Download Longhand from the [latest release](https://github.com/twistymaze/longhand/releases/latest). The macOS app is signed and notarized, and it updates itself. The Windows installer is not signed yet. You can also build Longhand from source.
 
 ### Build on macOS
 

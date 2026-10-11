@@ -149,7 +149,7 @@ One free-form Markdown text in Settings, above the summary prompts, where the us
 ## Shared settings
 
 ### Shared settings
-The settings that every computer with the same storage folder uses: the summary prompts, the active summary prompt (the default prompt), the note types with their prompt choices, the default note type, the Background and the chosen configuration, and the setting for automatic update checks. They are in the hidden `.longhand` folder of the storage folder, so the sync service delivers them to each computer. Other settings stay on each computer, for example the microphone, the shortcuts, the storage folder itself and the track. A computer changes only the fields that the user changed and keeps the fields it does not know. When the shared settings are not available, Settings shows them as read-only, and the computer uses its last known values.
+The settings that every computer with the same storage folder uses: the summary prompts, the active summary prompt (the default prompt), the note types with their prompt choices, the default note type, the Background and the chosen configuration, and the setting for automatic update checks. They are in the hidden `.longhand` folder of the storage folder, so the sync service delivers them to each computer. Other settings stay on each computer, for example the microphone, the shortcuts and the storage folder itself. A computer changes only the fields that the user changed and keeps the fields it does not know. When the shared settings are not available, Settings shows them as read-only, and the computer uses its last known values.
 
 ### Chosen configuration
 The recognition choices that the user made in Settings and that every computer shares: the transcription model, live transcript, speaker source, speaker processing mode, language and default speaker count. It is what the user wants, not always what a computer can use now. Compare Configuration in use.
@@ -178,14 +178,11 @@ A hand-kept record in the full licence list for a shipped component that no lice
 
 ## Updates
 
-### Track
-The stream of builds that the updater offers to an installed app. A build records its track, and the track is a setting of the one app: switching tracks needs no reinstall. Only the preview track exists now. A stable track comes later.
-
-### Preview build
-A signed, notarized macOS build that CI makes from each push to main that passes CI. Its version is `<next stable version>-preview.<UTC commit time as YYYYMMDDHHMMSS>`, so a later commit on main has a higher version.
+### Release
+A numbered GitHub Release in `twistymaze/longhand`, which CI publishes from a push to main whose commits change the version. Its version is `<major>.<minor>.<patch>`, and git-cliff computes it from the PR titles since the latest release (`docs/releases.md`). It holds the signed, notarized macOS DMG, the updater archive and its signature, the update manifest, the release notes and, after a later workflow run, the unsigned Windows installer. Only the macOS app of a release (a release build) checks for updates. A local build is not a release build and gets no updates.
 
 ### Update manifest
-The file that identifies the newest build of a track: its version, date, archive address and signature. The app reads only this file when it checks for updates. For the preview track, it is `preview/latest.json` in the public builds repository.
+The file that identifies the newest release: its version, date, archive address and signature. The app reads only this file when it checks for updates. It is `latest.json` of the latest release in `twistymaze/longhand`.
 
 ## Flagged ambiguities
 

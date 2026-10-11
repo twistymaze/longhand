@@ -1,7 +1,9 @@
-//! The update manager (KTD6 to KTD10 of the preview builds plan). It checks
-//! the manifest of the build's track, holds an offer while a note records or
-//! processes, keeps the remind and ready delays, downloads after the user's
-//! click, and installs at the click, at quit or at the next launch.
+//! The update manager (KTD6 to KTD10 of
+//! `docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md`). In
+//! a release build, it checks the update manifest of the latest release,
+//! holds an offer while a note records or processes, keeps the remind and
+//! ready delays, downloads after the user's click, and installs at the
+//! click, at quit or at the next launch.
 //!
 //! [`flow::Flow`] makes each decision. This module does the effects: the
 //! network, the saved archives, the store, the window and the restart.
@@ -22,7 +24,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tauri_specta::Event as _;
 use tokio::sync::mpsc;
 
-use crate::commands::build_info::{self, Track};
+use crate::commands::build_info;
 use crate::managers::capture::CaptureManager;
 pub use flow::{Choice, UpdateState};
 use flow::{Delays, Effect, Facts, Flow, Input};
@@ -40,14 +42,10 @@ const LAUNCH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// The least download progress between two state events.
 const PROGRESS_STEP: u64 = 256 * 1024;
 
-/// The update manifest of a track (KTD1).
-pub fn manifest_url(track: Track) -> &'static str {
-    match track {
-        Track::Preview => {
-            "https://raw.githubusercontent.com/twistymaze/longhand-builds/main/preview/latest.json"
-        }
-    }
-}
+/// The update manifest: `latest.json` of the latest release (KTD5 of the
+/// releases plan).
+pub const MANIFEST_URL: &str =
+    "https://github.com/twistymaze/longhand/releases/latest/download/latest.json";
 
 /// The update state changed. The update window follows it.
 #[derive(Serialize, Type, Debug, Clone, tauri_specta::Event)]
@@ -133,8 +131,8 @@ fn write_delays(app: &AppHandle, delays: &Delays) {
     }
 }
 
-async fn check(app: &AppHandle, track: Track, timeout: Duration) -> Result<Option<Update>, String> {
-    let url = tauri::Url::parse(manifest_url(track)).map_err(|e| e.to_string())?;
+async fn check(app: &AppHandle, timeout: Duration) -> Result<Option<Update>, String> {
+    let url = tauri::Url::parse(MANIFEST_URL).map_err(|e| e.to_string())?;
     app.updater_builder()
         .endpoints(vec![url])
         .map_err(|e| e.to_string())?
@@ -220,7 +218,7 @@ impl UpdateManager {
             busy,
             automatic_checks: crate::managers::settings::get_settings(&self.app)
                 .check_updates_automatically,
-            has_track: build_info::track().is_some(),
+            is_release_build: build_info::is_release_build(),
         }
     }
 
@@ -308,11 +306,12 @@ impl UpdateManager {
     fn start_check(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
-            let result = match build_info::track() {
-                Some(track) => check(&manager.app, track, CHECK_TIMEOUT)
+            let result = if build_info::is_release_build() {
+                check(&manager.app, CHECK_TIMEOUT)
                     .await
-                    .map(|u| u.map(Box::new)),
-                None => Ok(None),
+                    .map(|u| u.map(Box::new))
+            } else {
+                Ok(None)
             };
             manager.send(Message::Checked(result));
         });
@@ -387,9 +386,9 @@ pub fn recording_changed(app: &AppHandle) {
 /// when a check within 5 s still names that build or a newer one. On an
 /// install, the app restarts and this does not return.
 pub fn install_at_launch(app: &AppHandle) {
-    let Some(track) = build_info::track() else {
+    if !build_info::is_release_build() {
         return;
-    };
+    }
     let Some(dir) = updates_dir(app) else {
         return;
     };
@@ -404,11 +403,7 @@ pub fn install_at_launch(app: &AppHandle) {
     // request only, so the outer timeout also limits the client build and
     // any other step that does not end.
     let checked = tauri::async_runtime::block_on(async {
-        tokio::time::timeout(
-            LAUNCH_CHECK_TIMEOUT,
-            check(app, track, LAUNCH_CHECK_TIMEOUT),
-        )
-        .await
+        tokio::time::timeout(LAUNCH_CHECK_TIMEOUT, check(app, LAUNCH_CHECK_TIMEOUT)).await
     });
     let update = match checked {
         Ok(Ok(Some(update))) => update,
@@ -443,5 +438,19 @@ pub fn install_at_launch(app: &AppHandle) {
 pub fn check_for_updates(app: &AppHandle) {
     if let Some(manager) = app.try_state::<Arc<UpdateManager>>() {
         manager.check_now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_manifest_is_the_latest_json_of_the_latest_release_of_the_source_repository() {
+        assert_eq!(
+            MANIFEST_URL,
+            "https://github.com/twistymaze/longhand/releases/latest/download/latest.json"
+        );
+        assert!(tauri::Url::parse(MANIFEST_URL).is_ok());
     }
 }
