@@ -79,5 +79,5 @@ Before (`docs/development-workflow.md` linked a guide in the repository with the
 
 ```text
 The runner setup is in a private repository, because it contains details of the home network.
-The repository variables `MACOS_RUNNER` and `WINDOWS_RUNNER` select the home runners.
+The repository variables `MACOS_RUNNER` and `WINDOWS_RUNNER` select the self-hosted runners.
 ```

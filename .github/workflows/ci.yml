@@ -1,6 +1,6 @@
 name: CI
 
-# The macOS and Windows jobs run on home runners when the repository
+# The macOS and Windows jobs run on self-hosted runners when the repository
 # variables MACOS_RUNNER and WINDOWS_RUNNER name them, and
 # on GitHub's runners otherwise. Minutes on GitHub's
 # runners are billed while the repository is private. Local checks gate
@@ -39,7 +39,7 @@ on:
         type: boolean
         default: false
       hosted:
-        description: Run the checks on GitHub's runners, not the home runners
+        description: Run the checks on GitHub's runners, not the self-hosted runners
         type: boolean
         default: false
 
@@ -61,7 +61,7 @@ jobs:
         os: [macos-latest, windows-latest]
         # `os` names the job, and the job names are required checks in the
         # main ruleset, so `os` never changes. `runner` chooses where the job
-        # runs: the home runner that a repository variable names, or GitHub's
+        # runs: the self-hosted runner that a repository variable names, or GitHub's
         # runner when the variable is not set or the `hosted` input is true.
         # On GitHub, Windows runs on the org's larger runner (8 cores, 32 GB,
         # Windows Server 2025, the windows-latest image).
@@ -71,11 +71,11 @@ jobs:
           - os: windows-latest
             runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-8core' }}
     runs-on: ${{ matrix.runner }}
-    # A home runner runs one job at a time, so a hung job must not hold it
+    # A self-hosted runner runs one job at a time, so a hung job must not hold it
     # for GitHub's default of 6 hours. A cold run with the release installer
     # takes about 30 minutes.
     timeout-minutes: 60
-    # A home runner keeps target/ between jobs. Incremental compilation is
+    # A self-hosted runner keeps target/ between jobs. Incremental compilation is
     # off on every runner, as rust-cache sets it on GitHub's runners, so
     # target/ stays smaller and both runners build the same way.
     env:
@@ -85,7 +85,7 @@ jobs:
         shell: bash
     steps:
       # transcribe-cpp builds ggml from source; its deep paths need long-path
-      # support on Windows (as Handy's CI enables it). The home runner's
+      # support on Windows (as Handy's CI enables it). The self-hosted runner's
       # image has this setting already.
       - name: Enable long paths (Windows)
         if: runner.os == 'Windows' && runner.environment == 'github-hosted'
@@ -95,7 +95,7 @@ jobs:
             -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
           git config --system core.longpaths true
 
-      # On a home runner the checkout keeps the ignored build output
+      # On a self-hosted runner the checkout keeps the ignored build output
       # (target/, node_modules/, src-tauri/nemo-runtime/) from the last job,
       # so the build starts warm. Tracked files still match the commit.
       - uses: actions/checkout@v7
@@ -110,7 +110,7 @@ jobs:
       # and the VHDX takes only the space that the build writes. This step
       # must come before rust-cache: post steps run in reverse order, so
       # rust-cache saves the cache before this action dismounts the drive.
-      # The home runner has a permanent Dev Drive that holds its work folder.
+      # The self-hosted runner has a permanent Dev Drive that holds its work folder.
       - name: Set up a Dev Drive (Windows)
         if: runner.os == 'Windows' && runner.environment == 'github-hosted'
         uses: samypr100/setup-dev-drive@v4
@@ -126,7 +126,7 @@ jobs:
       # the SDK's headers and glslc at build time. Version as Handy pins it.
       # The action's own cache holds only the installer, which downloads in
       # seconds, and it runs on the deprecated Node 20 `actions/cache@v4`.
-      # The home runner's image has the same SDK version and sets VULKAN_SDK.
+      # The self-hosted runner's image has the same SDK version and sets VULKAN_SDK.
       - name: Install Vulkan SDK (Windows)
         if: runner.os == 'Windows' && runner.environment == 'github-hosted'
         uses: humbletim/install-vulkan-sdk@v1.2
@@ -159,7 +159,7 @@ jobs:
       # and SQLite from scratch. The key follows Cargo.lock only, and an exact
       # hit is never saved again, so a change to how CI builds (flags,
       # profiles, which cargo commands run) needs `prefix-key` bumped or its
-      # new artifacts are never cached. A home runner skips this: its target/
+      # new artifacts are never cached. A self-hosted runner skips this: its target/
       # stays from the last job, and a cache save would prune it.
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
@@ -212,7 +212,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
           # rust-cache removes non-Cargo files from target during cache save,
           # so on GitHub's runners the NeMo cache goes in the temp folder. A
-          # home runner sets LONGHAND_NEMO_CACHE in its environment file to a
+          # self-hosted runner sets LONGHAND_NEMO_CACHE in its environment file to a
           # folder that stays between jobs.
           NEMO_CACHE_IN_TEMP: ${{ runner.temp }}/longhand-nemo
         run: |
@@ -301,7 +301,7 @@ jobs:
       # These builds prove the app bundles, not how fast it runs, so they
       # use the debug profile the tests just built: a release build compiles
       # every dependency a second time (412 crates) and doubles the cache.
-      # Each build first deletes its bundle folder: on a home runner the
+      # Each build first deletes its bundle folder: on a self-hosted runner the
       # folder keeps the bundles of earlier versions, and a later step must
       # find only this build's bundle.
       - name: Tauri build (macOS, ad-hoc signed)
@@ -372,7 +372,7 @@ jobs:
         run: |
           $installer = Get-ChildItem target/debug/bundle/nsis/*.exe | Select-Object -First 1
           Remove-Item -Recurse -Force target/recognition-installer -ErrorAction SilentlyContinue
-          # A home runner keeps target/. An old helper left here would pass
+          # A self-hosted runner keeps target/. An old helper left here would pass
           # the test for an installer that lacks the helper.
           if (Test-Path target/recognition-installer) { throw "target/recognition-installer is still present" }
           & 7z x $installer.FullName "-otarget/recognition-installer" -y

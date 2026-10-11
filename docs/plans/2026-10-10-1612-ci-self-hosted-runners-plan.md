@@ -55,7 +55,7 @@ Product Contract preservation: no scope change. Dependencies / Assumptions gaine
 
 ### Summary
 
-The macOS checks run in a macOS VM on the Mac Studio. The Windows checks run in a Windows VM on the Proxmox host. A second macOS VM on the Mac Studio builds and signs the preview build, and it runs only jobs from `main`. All runner VMs are on the agents VLAN, which has access to the internet only. The VMs keep their build cache between jobs, and they are reset from a clean image on a schedule. When a home runner is offline, jobs wait. A manual option runs the same checks on GitHub's runners.
+The macOS checks run in a macOS VM on the Mac Studio. The Windows checks run in a Windows VM on the Proxmox host. A second macOS VM on the Mac Studio builds and signs the preview build, and it runs only jobs from `main`. All runner VMs are on the agents VLAN, which has access to the internet only. The VMs keep their build cache between jobs, and they are reset from a clean image on a schedule. When a self-hosted runner is offline, jobs wait. A manual option runs the same checks on GitHub's runners.
 
 ### Problem Frame
 
@@ -67,17 +67,17 @@ The cost is also high. The repository is private, so all runner minutes are bill
 
 The Windows preview build idea (`docs/ideas/someday/windows-preview-builds-and-updates.md`) needs a Windows release build on `main`. A release build compiles all dependencies again with LTO. With the current Windows runner, that would make the time from a merge to a published build much longer.
 
-The repository will become public in about one month, with pull requests limited to collaborators. On a public repository, GitHub's standard runners are free, but the Windows larger runner is not. After that change, speed is the main reason for home runners.
+The repository will become public in about one month, with pull requests limited to collaborators. On a public repository, GitHub's standard runners are free, but the Windows larger runner is not. After that change, speed is the main reason for self-hosted runners.
 
 ### Key Decisions
 
-- **Home runners in VMs, not on GitHub's runners only.** The user wants both speed and lower cost, and the home hardware is much faster. (session-settled: user-directed — chosen over workflow fixes only: workflow fixes alone do not give the speed the Windows preview build needs.) Governs R1.
+- **Self-hosted runners in VMs, not on GitHub's runners only.** The user wants both speed and lower cost, and the home hardware is much faster. (session-settled: user-directed — chosen over workflow fixes only: workflow fixes alone do not give the speed the Windows preview build needs.) Governs R1.
 - **Each runner is a VM on the agents VLAN.** A job is code that runs on the runner, so the runner must not reach the user's account, Keychain or home network. (session-settled: user-directed — chosen over a runner on the host as a dedicated user: that user could still reach the home network.) Governs R2.
 - **The Windows VM runs on the Proxmox host, not on the Windows desktop PC.** the Windows desktop PC runs Windows 11 Home, which has no Hyper-V. the Proxmox host is a Proxmox node with a workstation CPU and enough free memory and disk. (session-settled: user-directed — chosen over a Windows Pro upgrade with Hyper-V, VMware on Home, or no VM on the Windows desktop PC: the user did not want any of these.) Governs R1, R15.
 - **The macOS VMs run on the Mac Studio, not on the Mac mini.** The Mac mini is not set up yet. (session-settled: user-directed — chosen over a dedicated Mac mini on the agents VLAN: the user wants to start on this machine.) Governs R1, R3.
 - **Preview builds are signed at home, in a separate VM.** A GitHub-hosted preview build would keep the time from merge to published build long, and a Windows preview build there would be slower still. (session-settled: user-directed — chosen over GitHub-hosted signing and over signing in the checks VM: a separate VM keeps PR code away from the signing keys.) Governs R3, R11.
 - **Runner VMs keep their state between jobs for now.** A warm build cache makes the builds fastest. With PRs limited to collaborators, the remaining risk is a bad dependency, and it stays inside the VM and the agents VLAN. (session-settled: user-directed — chosen over a new VM for each job: start fast, move to new VMs later.) Governs R4.
-- **When a home runner is offline, jobs wait.** (session-settled: user-directed — chosen over an automatic move to GitHub's runners and over GitHub runners for `main`: waiting is simple, and the manual option covers travel.) Governs R7, R8.
+- **When a self-hosted runner is offline, jobs wait.** (session-settled: user-directed — chosen over an automatic move to GitHub's runners and over GitHub runners for `main`: waiting is simple, and the manual option covers travel.) Governs R7, R8.
 - **The Windows VM starts on an evaluation licence.** The first goal is to see how well the setup works. (session-settled: user-approved — the agent noted that the licence expires and the user accepted this for the short term.) Governs R15, R16.
 - **`main` still runs all the checks after a merge.** At home this costs no money and little time. It also keeps a check of the merged code. (session-settled: user-approved — the agent proposed to keep the checks on `main` and the user confirmed the scope.) Governs R9.
 
@@ -94,7 +94,7 @@ The repository will become public in about one month, with pull requests limited
 
 **Workflow behaviour**
 
-- R7. When a home runner is offline or busy, its jobs wait in the queue. Jobs do not move to GitHub's runners automatically.
+- R7. When a self-hosted runner is offline or busy, its jobs wait in the queue. Jobs do not move to GitHub's runners automatically.
 - R8. A manual workflow run can run the same checks on GitHub-hosted runners.
 - R9. The checks cover the same things as today, on macOS and Windows, for each PR and each push to `main`. The required check names in the `main` ruleset still pass.
 - R10. On a runner that keeps its state, the build outputs and tool caches (the Cargo target folder, the Cargo and Rust toolchain folders, and the NeMo helper cache) stay on the VM between jobs, and no job step deletes them. Such a runner does not upload or download the Rust cache; runs on GitHub-hosted runners keep it.
@@ -103,14 +103,14 @@ The repository will become public in about one month, with pull requests limited
 
 **Security settings**
 
-- R13. Before home runners serve the public repository, the repository and organization have these settings: PRs only from collaborators, approval for workflows from all external contributors, runner groups limited to this repository and set to allow public repositories (the default allows only private ones), and no `pull_request_target` workflow that checks out PR code.
+- R13. Before self-hosted runners serve the public repository, the repository and organization have these settings: PRs only from collaborators, approval for workflows from all external contributors, runner groups limited to this repository and set to allow public repositories (the default allows only private ones), and no `pull_request_target` workflow that checks out PR code.
 - R14. The signing secrets go only to jobs on the signing VM.
 
 **Setup and records**
 
 - R15. The Windows VM is created and set up remotely over SSH to the Proxmox host, one step at a time with the user's approval. It starts on an evaluation licence.
 - R16. A setup guide records each step for each runner VM, so that each VM can be built again from nothing, including the signing VM's inbound firewall rule. The guide includes the date when the evaluation licence expires and what to do before then.
-- R17. A Windows release installer build on the home runner is timed, to show whether a Windows preview build fits the time budget in the Success Criteria.
+- R17. A Windows release installer build on the self-hosted runner is timed, to show whether a Windows preview build fits the time budget in the Success Criteria.
 
 ### Success Criteria
 
@@ -168,10 +168,10 @@ The Planning Contract answers these questions: the macOS VM network (KTD3), the 
 - KTD2. **The macOS VMs use Tart.** Tart runs Apple Virtualization VMs, it can be scripted, it has a guest agent (`tart exec`), and it moves images through an OCI registry (R6). Its licence is free for an organization with up to 100 CPU cores, and the Mac Studio has 32. The VMs start from the `ghcr.io/cirruslabs/macos-tahoe-xcode` image, which has Xcode for `notarytool`, `stapler` and `codesign`. The setup guide pins the image by its digest, and an image update changes the digest only after a review. Governs R1, R6.
 - KTD3. **The macOS VMs bridge to an agents VLAN interface on its Ethernet port.** U6 proves this before any runner is installed. Apple documents bridging only for physical interfaces, so the bridge may refuse the VLAN interface. If it does, U6 stops and the user decides the next step: softnet isolation would give "internet only" but not the agents VLAN, so it does not meet R2 without the user's choice. (The user chose this stop over a softnet fallback in the plan review.) (session-settled: user-directed — chosen over a second Ethernet adapter on the Mac Studio: the user will not connect a second link, and expects the switch port to carry the agents VLAN.) Governs R2.
 - KTD4. **The Windows VM runs Windows Server 2025 Datacenter evaluation on the Proxmox host, with the toolchain of GitHub's `windows-latest` image.** That is Visual Studio 2026 Build Tools with the C++ workload and the VC redist folders, Vulkan SDK 1.4.309.0, vcpkg with `VCPKG_INSTALLATION_ROOT`, Git for Windows, PowerShell 7, 7-Zip, rustup and bun. The same OS and tools keep the home result close to the GitHub-hosted result (R8). The VM is q35 with OVMF, CPU type `host`, VirtIO SCSI single with an IO thread, VirtIO network with the VLAN tag, the QEMU guest agent, and ballooning off. Governs R1, R2, R15.
-- KTD5. **Home runners keep build outputs in place, and GitHub's runners keep today's caches.** Steps that run on GitHub's runners and steps that run on a home runner differ by `runner.environment`:
-  1. On a home runner, `actions/checkout` runs with `clean: false`, so `target/`, `node_modules/` and `src-tauri/nemo-runtime/` stay.
+- KTD5. **Self-hosted runners keep build outputs in place, and GitHub's runners keep today's caches.** Steps that run on GitHub's runners and steps that run on a self-hosted runner differ by `runner.environment`:
+  1. On a self-hosted runner, `actions/checkout` runs with `clean: false`, so `target/`, `node_modules/` and `src-tauri/nemo-runtime/` stay.
   2. `Swatinem/rust-cache`, `setup-dev-drive`, the Vulkan SDK install and the long-paths step run only on GitHub's runners. The VM image provides a permanent Dev Drive, the SDK and the long-paths setting.
-  3. `LONGHAND_NEMO_CACHE` comes from the runner's environment file on a home runner (a fixed folder outside the work folder), and from `runner.temp` on GitHub's runners.
+  3. `LONGHAND_NEMO_CACHE` comes from the runner's environment file on a self-hosted runner (a fixed folder outside the work folder), and from `runner.temp` on GitHub's runners.
   4. `CARGO_INCREMENTAL=0` is set on every runner, as rust-cache sets it today. This keeps `target/` smaller and the build the same on both.
   5. Each `tauri build` step deletes its bundle output folder first, so a step never selects an installer or DMG from an earlier build.
 
@@ -255,7 +255,7 @@ flowchart TB
 
 ### U1. Runner selection and persistent-runner steps in ci.yml
 
-**Goal:** Each job can run on a home runner or a GitHub runner, keeps its required check name, and keeps warm build outputs on a home runner.
+**Goal:** Each job can run on a self-hosted runner or a GitHub runner, keeps its required check name, and keeps warm build outputs on a self-hosted runner.
 
 **Requirements:** R7, R8, R9, R10, R13; KTD1, KTD5.
 
@@ -281,7 +281,7 @@ flowchart TB
 - A second home run of the same commit compiles no dependency crates again.
 - After a version change, the Windows installer check reads only the new installer.
 
-**Verification:** `actionlint` passes. Runs on both GitHub's and home runners report the names `Checks (macos-latest)` and `Checks (windows-latest)`.
+**Verification:** `actionlint` passes. Runs on both GitHub's and self-hosted runners report the names `Checks (macos-latest)` and `Checks (windows-latest)`.
 
 ### U2. Preview job on the signing runner
 
@@ -364,7 +364,7 @@ flowchart TB
 
 **Test scenarios:**
 - From inside the VM, `github.com` and `crates.io` respond, and an address on the home network (for example the router) does not.
-- A manual run on the home runner passes the Windows check.
+- A manual run on the self-hosted runner passes the Windows check.
 - A second run of the same commit takes much less time than the first, and the job log shows no rust-cache restore or Dev Drive creation.
 - After `qm rollback` to `clean`, the runner comes back online and the next run passes.
 
@@ -372,7 +372,7 @@ flowchart TB
 
 ### U5. Windows timing measurements
 
-**Goal:** Measured Windows times on the home runner show the speed-up and whether a Windows preview build fits about 20 minutes.
+**Goal:** Measured Windows times on the self-hosted runner show the speed-up and whether a Windows preview build fits about 20 minutes.
 
 **Requirements:** R17, Success Criteria.
 
@@ -381,7 +381,7 @@ flowchart TB
 **Files:** `docs/reference/ci-runner-timings-2026-10.md`, `docs/development-workflow.md` (the Windows job time).
 
 **Approach:**
-1. Record the warm and cold check-job times on the home runner. A cold run follows a reset or a `Cargo.lock` change.
+1. Record the warm and cold check-job times on the self-hosted runner. A cold run follows a reset or a `Cargo.lock` change.
 2. Run the release installer build once warm and once cold with `windows_installer=true`. This is the one approved use of that input in this plan.
 3. Compare the times with the GitHub baselines in the Problem Frame.
 
@@ -431,7 +431,7 @@ flowchart TB
 5. A LaunchAgent of the Mac Studio user starts the VM headless at login with the U6 network mode.
 
 **Test scenarios:**
-- A manual run on the home runner passes the macOS check, including the Metal build and the installed helper inference.
+- A manual run on the self-hosted runner passes the macOS check, including the Metal build and the installed helper inference.
 - A second run of the same commit takes much less time than the first.
 - The `runner.rs` binary time in the VM is recorded next to the 79-second host baseline.
 - After a reset from the clean copy, the runner comes back online and the next run passes.
@@ -483,7 +483,7 @@ flowchart TB
    - How to switch a job to GitHub's runners.
    - An Expiry dates table with the evaluation licence date.
    - A Problems section.
-3. Update "Checks and CI" in `docs/development-workflow.md`: home runners, no cache from `main`, the switch to GitHub's runners, and how to see an offline runner.
+3. Update "Checks and CI" in `docs/development-workflow.md`: self-hosted runners, no cache from `main`, the switch to GitHub's runners, and how to see an offline runner.
 
 **Test expectation:** none -- settings and documentation.
 
@@ -513,7 +513,7 @@ Read [Checks and CI](../development-workflow.md#checks-and-ci) before each push,
 
 ## Definition of Done
 
-- Every required check runs on the home runners for PRs and `main`, with the same names, and a manual run can still use GitHub's runners (R7–R9).
+- Every required check runs on the self-hosted runners for PRs and `main`, with the same names, and a manual run can still use GitHub's runners (R7–R9).
 - The preview build publishes from the signing VM, and the U8 control tests pass (R3, R11, R14).
 - The Windows check job and the time from merge to published preview build meet the Success Criteria, or the timings doc says by how much they miss.
 - `docs/ci-runners.md` lets the user rebuild and reset each VM, and records the evaluation licence date (R16).
