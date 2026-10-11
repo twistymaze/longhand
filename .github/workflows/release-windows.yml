@@ -121,6 +121,15 @@ jobs:
           echo "LONGHAND_NEMO_CACHE=$RUNNER_TEMP/longhand-nemo" >> "$GITHUB_ENV"
           jq -n --arg version "${TAG#v}" '{version: $version}' > "$RUNNER_TEMP/release.json"
 
+      # As in the Windows checks in ci.yml, the helper is prepared in bash
+      # before the Tauri build. Under pwsh, the Windows PowerShell child that
+      # prepares the Vulkan runtime gets the PowerShell 7 module path, and
+      # Get-FileHash does not load. This step sets LONGHAND_VULKAN_RUNTIME_DIR,
+      # so the Tauri build does not start that child.
+      - name: Build and stage NeMo helper
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: bun scripts/prepare-nemo.ts
+
       # No LONGHAND_RELEASE: Windows builds get no updates yet (R19). The
       # commit shows in About.
       - name: Tauri build (Windows installer, release)
