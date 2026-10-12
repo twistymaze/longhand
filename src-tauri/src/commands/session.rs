@@ -379,6 +379,9 @@ pub struct SessionDetail {
     pub live_transcript: bool,
     /// A Transcribe Again run waits or runs (KTD14). It has no live text.
     pub transcribe_again: bool,
+    /// The same stage failed again after a Retry. The next Retry starts
+    /// over from the recorded audio, after the user confirms.
+    pub retry_starts_over: bool,
     /// Why the last Transcribe Again run failed. The note kept its
     /// previous transcript and summary (R19).
     pub transcribe_again_error: Option<String>,
@@ -616,6 +619,7 @@ pub fn session_detail(
         live_transcript: record.live_transcript == Some(true),
         transcribe_again: again.model.is_some(),
         transcribe_again_error: again.error,
+        retry_starts_over: pipeline::runner::retry_starts_over(&shared, &session_id).map_err(e)?,
         summary_not_updated: again.summary_error,
         waiting: waiting_parts(&note.waiting),
         conflict_files: file_names(&note.other_versions),

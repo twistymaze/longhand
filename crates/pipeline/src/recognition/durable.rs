@@ -268,7 +268,6 @@ fn bind_live(
         return Ok(());
     }
     let mut has_source = false;
-    let mut valid = true;
     for segment in segments {
         let source: Option<crate::live::archive::SourceProof> = checkpoint::get(
             store,
@@ -276,17 +275,32 @@ fn bind_live(
             Stage::Transcribe,
             &crate::live::archive::key(segment.index),
         )?;
-        if source.is_none() {
-            valid = false;
+        has_source |= source.is_some();
+        if source.is_some() && live_source_matches(store, id, dir, segment, spec)? {
             continue;
         }
-        has_source = true;
-        if !live_source_matches(store, id, dir, segment, spec)? {
-            valid = false;
+        // Unverified live output never blocks processing. Recognition of the
+        // recorded audio replaces it, so a lost proof cannot stop a note.
+        if source.is_none() {
+            let rows = crate::live::segment_rows(store, id, segment.index)?;
+            let features = crate::live::features::key(segment.index);
+            let has_features =
+                checkpoint::get::<serde_json::Value>(store, id, Stage::Diarize, &features)?
+                    .is_some();
+            if rows.is_empty() && !has_features {
+                continue;
+            }
+        }
+        {
             let mut reasons: Vec<String> =
                 checkpoint::get(store, id, Stage::Transcribe, "live-invalidation-reasons")?
                     .unwrap_or_default();
-            let reason = if segment.channels == 2 {
+            let reason = if source.is_none() {
+                format!(
+                    "Live text and speaker output for segment {} had no saved source proof. Recognition used the recorded audio.",
+                    segment.index + 1
+                )
+            } else if segment.channels == 2 {
                 format!(
                     "Live text and speaker output for segment {} were invalidated because final stereo level and echo preprocessing differs from the live mix. This segment required recognition of the cleaned audio.",
                     segment.index + 1
@@ -341,9 +355,8 @@ fn bind_live(
         }
     }
     if has_source {
-        if valid {
-            checkpoint::put(store, id, Stage::Transcribe, LIVE_IDENTITY_KEY, next)?;
-        }
+        // Each live row that remains has a verified source proof.
+        checkpoint::put(store, id, Stage::Transcribe, LIVE_IDENTITY_KEY, next)?;
         // Completed native epochs retain their verified durable input. Invalid
         // epochs above are absent and must be computed from the cleaned input.
         if checkpoint::get::<Fingerprints>(store, id, Stage::Transcribe, IDENTITY_KEY)?.is_none() {
@@ -386,7 +399,7 @@ fn prepare_fingerprints(
                 .map_err(|e| failed(e.to_string()))?;
             if file_digest(&dir.join(crate::join::TRANSCRIPT_FILE))? != header.transcript {
                 return Err(failed(
-                    "Transcript changed outside recognition. Choose Transcribe Again explicitly; saved work is preserved.",
+                    "The transcript changed outside Longhand. Saved work is preserved.",
                 ));
             }
         }
@@ -401,9 +414,7 @@ fn prepare_fingerprints(
         f.asr == next.asr && f.audio == next.audio && f.preprocessing == next.preprocessing
     });
     if !live.is_empty() && !live_matches {
-        return Err(failed(
-            "Saved live text has no compatible audio and model identity. Choose Transcribe Again explicitly.",
-        ));
+        return Err(failed("The live text does not match the recorded audio."));
     }
     if old.as_ref() == Some(&next) {
         if let Some(prefix) = &prefix {
@@ -450,7 +461,11 @@ fn prepare_fingerprints(
         }
     }
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
-        let keep_live = live_matches && (key.contains("-live-") || key == LIVE_IDENTITY_KEY);
+        // A source proof describes recorded audio, not a result. A later
+        // Resume must check the proofs of earlier segments again.
+        let keep_proof = key.starts_with("live-source-") || key.starts_with("live-snapshot-");
+        let keep_live =
+            keep_proof || live_matches && (key.contains("-live-") || key == LIVE_IDENTITY_KEY);
         let keep_asr = timed && (key.starts_with("seg-") || key == "recognition-generation-v1");
         let keep_prefix = prefix.is_some()
             && (key == "recognition-generation-v1"

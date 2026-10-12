@@ -17,6 +17,7 @@ import {
   stageRows,
   stoppedAt,
 } from "../processing/describe";
+import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { useFolderChange } from "../settings/OldNotesDialog";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
 import { REMOVED_REASON } from "./RemoveAudio";
@@ -107,6 +108,7 @@ type Outcome = { status: "ok" } | { status: "error"; error: string };
 
 function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
+  const [startOver, setStartOver] = useState(false);
   const folder = useFolderChange();
   const run = (action: () => Promise<Outcome>) =>
     void action().then((r) => {
@@ -125,19 +127,42 @@ function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => vo
           footer={
             removed
               ? REMOVED_REASON
-              : kept.length > 0 &&
-                `The ${kept.join(" and ")} ${kept.length > 1 ? "are" : "is"} kept. Retry continues from where processing stopped.`
+              : detail.retry_starts_over
+                ? "Retry starts over from the recorded audio."
+                : kept.length > 0 &&
+                  `The ${kept.join(" and ")} ${kept.length > 1 ? "are" : "is"} kept. Retry continues from where processing stopped.`
           }
         >
           <Row
             label={<Status tone="negative">{stoppedAt(detail.failed_stage)}</Status>}
             detail={detail.message && sentence(detail.message)}
           >
-            <Button prominent disabled={removed} onClick={() => run(() => commands.retrySession(id))}>
+            <Button
+              prominent
+              disabled={removed}
+              onClick={() =>
+                // The same step failed again after a Retry: the next run
+                // starts over, so the user confirms first.
+                detail.retry_starts_over ? setStartOver(true) : run(() => commands.retrySession(id, false))
+              }
+            >
               Retry
             </Button>
           </Row>
           {error && <ErrorText>{error}</ErrorText>}
+          {startOver && (
+            <ConfirmDialog
+              title="Start Over?"
+              message="Retry stopped at the same step again. Longhand can transcribe the note again from the recorded audio. This takes longer. Your notes and the audio are kept."
+              action="Start Over"
+              destructive={false}
+              onConfirm={() => {
+                setStartOver(false);
+                run(() => commands.retrySession(id, true));
+              }}
+              onCancel={() => setStartOver(false)}
+            />
+          )}
         </Group>
       );
     }
@@ -162,7 +187,7 @@ function Exception({ detail, onDone }: { detail: SessionDetail; onDone: () => vo
             label={<Status tone="caution">Waiting for a folder</Status>}
             detail={detail.message && sentence(detail.message)}
           >
-            <Button onClick={() => run(() => commands.retrySession(id))}>Try Again</Button>
+            <Button onClick={() => run(() => commands.retrySession(id, false))}>Try Again</Button>
             <Button
               prominent
               onClick={() =>

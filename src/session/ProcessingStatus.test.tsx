@@ -38,6 +38,7 @@ const waiting: SessionDetail = {
   live_transcript: false,
   transcribe_again: false,
   transcribe_again_error: null,
+  retry_starts_over: false,
   summary_not_updated: null,
   waiting: [],
   conflict_files: [],

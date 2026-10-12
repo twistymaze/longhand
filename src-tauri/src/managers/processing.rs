@@ -1498,8 +1498,10 @@ impl ProcessingManager {
         }
     }
 
-    pub fn retry(&self, session_id: &str) -> Result<(), String> {
-        self.runner.retry(session_id).map_err(|e| e.to_string())?;
+    pub fn retry(&self, session_id: &str, start_over: bool) -> Result<(), String> {
+        self.runner
+            .retry(session_id, start_over)
+            .map_err(|e| e.to_string())?;
         self.in_use_changed();
         Ok(())
     }

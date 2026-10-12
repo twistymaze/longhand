@@ -89,6 +89,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   live_transcript: false,
   transcribe_again: false,
   transcribe_again_error: null,
+  retry_starts_over: false,
   summary_not_updated: null,
   waiting: [],
   conflict_files: [],
@@ -962,7 +963,26 @@ describe("SessionPage", () => {
     renderPage({ id: "f", sessions: sessionsOf([e]) });
     const retry = await screen.findByRole("button", { name: "Retry" });
     await userEvent.setup().click(retry);
-    expect(tauri.calls.some((c) => c.cmd === "retry_session")).toBe(true);
+    expect(tauri.calls.find((c) => c.cmd === "retry_session")?.args).toEqual({ sessionId: "f", startOver: false });
+  });
+
+  test("a second failure at the same step asks before Retry starts over", async () => {
+    const e = entry("f", { state: "processing_failed", stage: "diarize" });
+    const tauri = mockPage(
+      e,
+      { failed_stage: "diarize", message: "the live text does not match", retry_starts_over: true },
+      { retry_session: () => null },
+    );
+    renderPage({ id: "f", sessions: sessionsOf([e]) });
+    const user = userEvent.setup();
+    expect(await screen.findByText("Retry starts over from the recorded audio.")).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(tauri.calls.some((c) => c.cmd === "retry_session")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Start Over" }));
+    expect(tauri.calls.find((c) => c.cmd === "retry_session")?.args).toEqual({ sessionId: "f", startOver: true });
   });
 
   test("Back returns to Home, and the recording continues", async () => {

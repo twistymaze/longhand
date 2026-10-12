@@ -92,14 +92,16 @@ pub async fn regenerate_summary(
 }
 
 /// Retry a failed session, or one waiting for its destination, from its
-/// checkpoints.
+/// checkpoints. With `start_over`, the run starts again from the recorded
+/// audio (`retry_starts_over` of the note detail).
 #[tauri::command]
 #[specta::specta]
 pub fn retry_session(
     processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
+    start_over: bool,
 ) -> Result<(), String> {
-    processing.retry(&session_id)
+    processing.retry(&session_id, start_over)
 }
 
 /// Try a blocked session's secret store again. Reading a locked keychain
