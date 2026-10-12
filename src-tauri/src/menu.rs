@@ -3,8 +3,9 @@
 //! copy, paste and undo do not work in the app's text fields.
 
 use tauri::AppHandle;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+use crate::commands::build_info::short_commit;
 use crate::window::open_settings;
 
 /// The menu ID of the app menu's Settings item. The tray menu uses its own
@@ -12,15 +13,36 @@ use crate::window::open_settings;
 const SETTINGS: &str = "app-settings";
 const CHECK_FOR_UPDATES: &str = "app-check-updates";
 
+/// The data for the standard macOS About panel (R9–R13 of the About Longhand
+/// plan). AppKit shows "Version <version> (<short version>)", so the short
+/// version holds the commit, as in the About pane. The credits text is plain
+/// text, so the repository address cannot be a link there.
+fn about_metadata(version: &str, commit: Option<String>) -> AboutMetadata<'static> {
+    AboutMetadata {
+        version: Some(version.to_string()),
+        short_version: Some(commit.unwrap_or_else(|| "local build".to_string())),
+        copyright: Some("Copyright © 2026 Erv Walter".to_string()),
+        credits: Some(
+            "Longhand is a note-taking app for meetings and conversations.\n\ngithub.com/twistymaze/longhand"
+                .to_string(),
+        ),
+        ..Default::default()
+    }
+}
+
 /// Set the app menu, and open Settings when the user selects its item.
 pub fn set_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let name = app.package_info().name.clone();
+    let about = about_metadata(
+        &app.package_info().version.to_string(),
+        short_commit(option_env!("LONGHAND_BUILD_COMMIT")),
+    );
     let app_submenu = Submenu::with_items(
         app,
         &name,
         true,
         &[
-            &PredefinedMenuItem::about(app, Some(&format!("About {name}")), None)?,
+            &PredefinedMenuItem::about(app, Some(&format!("About {name}")), Some(about))?,
             &MenuItem::with_id(
                 app,
                 CHECK_FOR_UPDATES,
@@ -69,4 +91,34 @@ pub fn set_app_menu(app: &AppHandle) -> tauri::Result<()> {
         _ => {}
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_panel_shows_the_version_and_the_commit() {
+        let m = about_metadata("1.0.4", Some("abc1234".to_string()));
+        assert_eq!(m.version.as_deref(), Some("1.0.4"));
+        assert_eq!(m.short_version.as_deref(), Some("abc1234"));
+    }
+
+    #[test]
+    fn a_build_with_no_commit_says_local_build() {
+        let m = about_metadata("0.1.0", None);
+        assert_eq!(m.short_version.as_deref(), Some("local build"));
+    }
+
+    #[test]
+    fn the_panel_shows_the_copyright_the_description_and_the_address() {
+        let m = about_metadata("1.0.4", None);
+        assert_eq!(m.copyright.as_deref(), Some("Copyright © 2026 Erv Walter"));
+        assert_eq!(
+            m.credits.as_deref(),
+            Some(
+                "Longhand is a note-taking app for meetings and conversations.\n\ngithub.com/twistymaze/longhand"
+            )
+        );
+    }
 }
