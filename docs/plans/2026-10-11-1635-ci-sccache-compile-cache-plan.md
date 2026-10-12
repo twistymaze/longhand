@@ -53,7 +53,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 **Self-hosted runners**
 
 - R8. The self-hosted macOS and Windows runners get a local sccache disk cache that stays between jobs.
-- R9. On the self-hosted runners, the experiment measures a normal PR run, a run after target/ is removed, and a run after a Cargo.lock change, each once with and once without the local sccache cache.
+- R9. On the self-hosted runners, the experiment measures a switch between two Cargo.lock states, once with and once without the local sccache cache. (Reduced on 2026-10-11: the normal PR run and the run after target/ is removed are not measured. sccache cannot skip the rebuild of a changed workspace crate, and a target/ removal is rare.)
 
 **Safety of the experiment**
 
@@ -225,20 +225,17 @@ U1 is independent and ships first as its own PR. U2 to U4 are the experiment on 
 - `.github/workflows/ci.yml` (a `sccache` input on `workflow_dispatch`, and a step that calls the sccache setup action in local-cache mode on self-hosted runners)
 - `.github/actions/sccache-setup/action.yml` (a local-cache mode, KTD8)
 
-**Approach:**
-1. When the `sccache` input is true and the runner is self-hosted, the step sets the local cache variables (KTD8) and calls the sccache setup action without the GitHub Actions backend.
-2. On the Windows runner, every experiment run, with sccache on or off, sets `CMAKE_GENERATOR=Ninja`, so that only the launcher changes between runs and CMake never finds a build folder made by another generator.
-3. On each runner, run in this order, so that each off and on pair starts from the same target/ state and commit:
-   - After target/ is removed (a dispatch input that removes it at the job start): off, then on with an empty local cache, then on again with the filled cache. The first on run shows the cost of filling the cache, and the second shows the gain.
-   - Normal PR run: the same small workspace source change is applied before the off run and again before the on run, so that both rebuild the same crates.
-   - After a Cargo.lock change: the warm-change commit (KTD5) is applied before the off run, reverted with target/ restored by one build, and applied again before the on run.
+**Approach:** (reduced at the user's request on 2026-10-11: only the Cargo.lock change is measured, and only Rust goes through sccache.)
+1. When the `sccache` input is true and the runner is self-hosted, the step sets the local cache variables (KTD8) and calls the sccache setup action without the GitHub Actions backend. The local mode sets only `RUSTC_WRAPPER`: no CMake launcher and no Ninja generator, because the runners keep CMake build folders that the Visual Studio generator made, and a Cargo.lock change that does not touch the ggml build graph does not run CMake.
+2. Two branches hold the two Cargo.lock states: a base branch with the U4 workflow, and a second branch with the warm-change commit (KTD5) on top. The local cache has no branch scope, so both branches use it. Each dispatch runs the `checks` matrix on both self-hosted runners.
+3. Run in this order, one dispatch at a time: off on the base branch (to set target/ to the base state, not measured), off on the change branch, off on the base branch, on on the change branch, on on the base branch (these two fill the cache), on on the change branch, on on the base branch. The off pair and the last on pair are the measurement: each is a switch between two Cargo.lock states. Cargo can rebuild everything when `RUSTC_WRAPPER` changes, so the first on run can be a full build.
 4. Record the step times, the stats and the folder size with its limit.
 
 **Patterns to follow:** the `LONGHAND_NEMO_CACHE` fallback in the `checks` job; the `runner.environment == 'github-hosted'` gates.
 
 **Test expectation:** none -- workflow configuration and measurement.
 
-**Verification:** Fourteen completed runs (2 runners × 7 runs), each with stats when sccache is on. A normal PR run without the input behaves as before.
+**Verification:** Seven completed dispatches, each on both runners, each with stats when sccache is on. A normal PR run without the input behaves as before.
 
 ### U6. Release profile measurements
 
