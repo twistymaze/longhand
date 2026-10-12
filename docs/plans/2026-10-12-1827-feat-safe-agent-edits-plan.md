@@ -70,19 +70,19 @@ flowchart TB
 
 **Note layout**
 
-- R1. Longhand's records for a note are in one app-owned file in the note folder. These are the session id, the start time, the segments, the recognition data, the speakers found, the transcript and summary fingerprints, the result state, and the bookkeeping of a type move that waits. The `.md` files hold only user data and text that the user may edit.
-- R2. A save writes the app-owned file last, and that file records the fingerprints of `transcript.md` and `summary.md`. A computer that has received only part of a sync still shows "Waiting for a sync".
+- R1. Longhand's records for a note are in one app-owned file in the note folder. These are the session id, the start time, the segments, the recognition data, the speakers found, the transcript and summary fingerprints, the result state, the bookkeeping of a type move that waits, and the title that Longhand last wrote with its source. The `.md` files hold only user data and text that the user may edit.
+- R2. A save writes the app-owned file last, and that file records the fingerprints of `transcript.md` and `summary.md`. A computer that has received only part of a sync still shows "Waiting for a sync", until the hand-edit rule in R7 applies.
 - R3. Transcribe Again, Regenerate Summary and Resume check for a change made during the run only in Longhand's records, compared as parsed values. An edit to a `.md` file never makes a run refuse.
 - R4. When Longhand writes a `.md` file that the user can edit, it changes only the values that it must change. It keeps the rest of the file, including body text and frontmatter fields that it does not know.
-- R5. A title that is edited outside the app counts as set by the user. Processing does not replace it.
-- R6. A frontmatter that does not parse does not hide the note. This applies to `session.md` and to the app-owned file. If the file still does not parse after about one minute, the note shows a notice that names the file and the line. A shorter failure is part of a sync and shows nothing.
+- R5. A title in `session.md` that differs from the title that Longhand last wrote (R1) counts as set by the user. Processing does not replace it.
+- R6. A frontmatter that does not parse does not hide the note. This applies to `session.md` and to the app-owned file. If the file still does not parse after about one minute, the note shows a notice that names the file and the line. A shorter failure is part of a sync and shows nothing. While the file does not parse, the note shows its last known title and type, and actions that write to the note wait. The notice goes away at the next good parse.
 - R7. Edits to `transcript.md` and `summary.md` are permitted. The current rule for hand edits applies: after about one minute, Longhand accepts the edit. Transcribe Again and Regenerate Summary replace the edited file, as they do today.
 - R8. Two tags with one tag key, from an outside edit, count as one tag everywhere, as they do after an edit in the app.
 
 **Conversion of existing notes**
 
 - R9. Before the conversion, every note in the old layout stays visible and readable.
-- R10. The conversion moves each note in the old layout to the new layout. It loses no data.
+- R10. The conversion moves each note in the old layout to the new layout. It loses no data. A note that does not convert stays in the old layout, a notice names it, and Convert stays available.
 - R11. Longhand shows a notice with a Convert action only when the storage folder holds at least one note in the old layout. With no old notes, no conversion control shows.
 - R12. The conversion runs only when the user starts it. A read, a scan or a launch never converts a note.
 - R13. The conversion can run again. It changes only notes that are still in the old layout, for example a note that an older build wrote after the first conversion.
@@ -92,20 +92,20 @@ flowchart TB
 - R14. Edits in the shared files have the same effect on every computer as the same edit in the app. These are edits to the note types, the default type, the prompt of each type, the active prompt, the Background and the other shared settings.
 - R15. Every setting that does not depend on the hardware, the operating system, the disk or the secrets of one computer is a shared setting. Show recording widget becomes shared. Planning checks every other local setting against this rule.
 - R16. The shared settings keep their current files: `settings.json`, `background.md`, and one Markdown file for each prompt.
-- R17. A prompt file that has the id of another prompt and a different `name` is a new prompt. Longhand writes a new id into it at its next write to the shared settings.
+- R17. Two prompt files with one id stay a conflict that the user resolves, as today (rule 6 of the shared settings rules). The skill writes a new id into each prompt that it creates, so an agent's copy never has the id of its original.
 - R18. Longhand writes an id into a prompt file that has none, at its next write to the shared settings. A later rename of the file keeps the prompt.
 - R19. An edit of `name` in a prompt file renames the prompt. Longhand renames the file to match at its next write, and keeps the id.
-- R20. When a prompt file is deleted outside the app, each setting that names that prompt uses the default prompt at once. Longhand clears those references at its next write to the shared settings, with the same rules as a delete in the app. No message shows.
+- R20. When a prompt file is deleted outside the app, each setting that names that prompt uses the default prompt at once. When the prompt has been missing for about one minute, Longhand clears those references at its next write to the shared settings, with the same rules as a delete in the app. The wait keeps references during a rename that a sync service delivers as a delete and then a create. No message shows.
 - R21. A prompt text over 4,000 characters, or title instructions over 1,000 characters, from an outside edit shows as over the limit in Settings. Longhand does not cut the text without telling the user.
-- R22. A shared file that still does not parse after about one minute shows a notice that names the file and the line. Longhand does not overwrite the file.
+- R22. A shared file that still does not parse after about one minute shows a notice that names the file and the line. Longhand does not overwrite the file. The settings in that file stay read-only with their last known values, as today (rule 4 of the shared settings rules), and changes to settings in other files still save.
 - R23. A read, a scan or the folder watcher never writes a shared file (rule 1 of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`). The repairs in R17 to R20 happen only at a write that a user change on this computer causes.
 
 **Skill and distribution**
 
 - R24. The skill is in the Longhand repository, as a plugin marketplace that Claude Code and Codex can each add with one command.
 - R25. The repository gives install steps for Claude Code, Codex, OpenCode and the `npx skills add` installer.
-- R26. The skill describes each file in the storage folder, the files that the user and agents may edit, and the steps for each permitted edit. It tells the agent never to edit the app-owned file or derived data.
-- R27. The skill keeps its scripts to list notes, check the folder, and prove what an edit changed. The scripts use only the Python standard library. Without Python, the skill tells the user that it continues without checks and that the user must check the result with care.
+- R26. The skill describes each file in the storage folder, the files that the user and agents may edit, and the steps for each permitted edit. It names the files that the agent must never edit: the app-owned file, the audio, `recognition.jsonl` and the library marker.
+- R27. The skill keeps its scripts to list notes, check the folder, and prove what an edit changed. The scripts use only the Python standard library. They read Longhand's records without a YAML parser. For a frontmatter that they cannot read, they report the file as not checked and never report a pass for it. Without Python, the skill tells the user that it continues without checks and that the user must check the result with care.
 - R28. The skill never looks for or runs the Longhand app.
 - R29. When the user asks, Longhand writes a managed block into `AGENTS.md` and `CLAUDE.md` in the storage folder, as real files with no symlink. The block tells an agent that this is a Longhand storage folder, gives the install steps for the skill, and gives the main rules. Longhand changes only the text between its markers and keeps the rest of each file.
 - R30. Computers with different Longhand versions never rewrite the managed block in turns.
@@ -133,7 +133,7 @@ flowchart TB
 - AE2. **Covers R2.** **Given** computer A saved a new transcript, and the sync has delivered `transcript.md` but not yet the app-owned file to computer B, **when** B shows the note, **then** the note shows "Waiting for a sync" and its actions wait.
 - AE3. **Covers R6.** **Given** an agent left `session.md` with YAML that does not parse, **when** one minute passes, **then** the note stays in the list and a notice names the file and the line. During the first minute, no notice shows.
 - AE4. **Covers R11, R13.** **Given** a new user with no old notes, **then** no conversion notice or control shows. **Given** a user who converted, and an older build on another computer then wrote one note in the old layout, **when** the new build scans, **then** the notice shows again, and Convert changes only that note.
-- AE5. **Covers R17, R19.** **Given** an agent copied a prompt file to a new file name and changed `name`, **then** Settings lists a new prompt and the original prompt does not change. **When** the agent later edits `name` again, **then** the prompt has the new name, and the note types that use it still use it.
+- AE5. **Covers R17, R19.** **Given** an agent copied a prompt file to a new file name, wrote a new id and changed `name`, **then** Settings lists a new prompt and the original prompt does not change. **When** the agent later edits `name` again, **then** the prompt has the new name, and the note types that use it still use it.
 - AE6. **Covers R20.** **Given** the One-on-One type uses a custom prompt, **when** an agent deletes that prompt file, **then** One-on-One summaries use the default prompt, and no message shows.
 - AE7. **Covers R27.** **Given** a computer with no Python, **when** the agent starts an edit, **then** the skill tells the user that it continues without checks and that the user must check the result.
 
@@ -155,6 +155,8 @@ flowchart TB
 
 ### Dependencies / Assumptions
 
+- Every note is in the new layout before anyone uses the skill. The skill describes only the new layout and has no rules for notes in the old layout.
+- An edit to `transcript.md` or `summary.md` while another computer processes the note can be lost, because that run replaces the file. The skill skips notes that it sees as busy, but the in-use markers arrive through the sync and can be late. This risk is accepted.
 - The user updates Longhand on every computer before starting the conversion. An older build cannot read converted notes. It keeps showing them from its own database, and a scan does not delete them. An edit in the older build writes the old layout again (R13).
 - Python 3.9 or later is usually available where agents run. Claude Code and Cowork can install it.
 - The user starts the agent at the root of the storage folder. Codex outside a git repository reads only the current folder's `AGENTS.md` and `.agents/skills`.
