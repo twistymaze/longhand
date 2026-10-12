@@ -33,7 +33,8 @@ With no `bun-version` input, the requested version is `latest`. The action never
 ## Fix
 `package.json` has `"packageManager": "bun@<version>"`, and every `setup-bun` step has `bun-version-file: package.json`. When `bun.exe` already has the requested version, the action uses it and does not write the file. So a busy or leftover `bun.exe` no longer stops the job.
 
+The pin did not stop all failures. Other files that the two runners shared also failed when two jobs ran at the same time, for example a rename with `EPERM` in the NeMo packaging step. On 2026-10-12 the second Windows runner was removed. The machine has one runner now, so Windows jobs run one at a time and a second job waits.
+
 ## Prevention
-- Change the Bun version only in `packageManager`. The first job after a change replaces `bun.exe` once on each runner. If the other runner runs Bun at that moment, that one job can still fail with `EBUSY`; a rerun passes.
-- A reset of the runner machine to an image with a different Bun version has the same result. Keep the image's Bun version the same as `packageManager`.
-- A tool that a step installs into the home folder is shared by every runner of that user. Pin its version, or install it per runner.
+- Change the Bun version only in `packageManager`. The first job after a change, or after a reset of the runner machine, installs that version into `~/.bun/bin`. The machine image has no Bun, so it never holds an old version.
+- Do not put two runners on one machine as the same user. They share every tool that a step installs into the home folder. To run two jobs at the same time, give each runner its own user or its own machine.
