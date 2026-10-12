@@ -12,7 +12,7 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** A person who opens Settings → About or the app menu's "About Longhand" panel can see what Longhand is, who made it, its licence, and where its source is.
+- **Objective:** A person who opens Settings → About can see what Longhand is, who made it, its licence, and where its source is. A person who opens the app menu's "About Longhand" panel can see what Longhand is, who made it, and where its source is.
 - **Product authority:** This Product Contract. The idea file is `docs/ideas/next/about-longhand-and-readme.md`.
 - **Open blockers:** None.
 
