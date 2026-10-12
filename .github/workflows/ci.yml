@@ -233,7 +233,7 @@ jobs:
 
       - name: Release script tests
         if: runner.os == 'macOS'
-        run: bun test scripts/release-version.test.ts scripts/publish-release.test.ts
+        run: bun test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
 
       - name: rustfmt
         if: runner.os == 'macOS'

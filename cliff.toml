@@ -1,7 +1,8 @@
-# git-cliff configuration for Longhand releases (KTD1).
-# scripts/release-version.ts uses it to compute the next version and the
-# release notes. Only squash-merged PR titles reach main, so each commit
-# subject is one PR title.
+# git-cliff configuration for Longhand releases.
+# scripts/release-version.ts uses it to find whether a release is due, to get
+# the next patch version and to write the release notes. The script then
+# raises the version for a `+` or `!` marker (docs/releases.md). Only
+# squash-merged PR titles reach main, so each commit subject is one PR title.
 
 [changelog]
 # The release notes for one release. The release script removes the header
@@ -17,6 +18,13 @@ body = """
 trim = true
 
 [git]
+# A `+` after the type or scope (`feat+:`, `feat(capture)+:`) marks a minor
+# release. It is not Conventional Commit syntax, so remove it before parsing.
+# Then the commit is a normal `feat`, and the notes do not show the `+`. The
+# release script reads the marker from the original subject.
+commit_preprocessors = [
+  { pattern = '^(\w+(?:\([^)]*\))?)\+:', replace = "${1}:" },
+]
 conventional_commits = true
 # Commits that are not Conventional Commits do not bump the version and do
 # not appear in the notes.
@@ -29,16 +37,16 @@ split_commits = false
 tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
 topo_order = false
 sort_commits = "oldest"
-# R9: these types make a release. The other types are skipped, so they do
-# not bump the version and do not appear in the notes. Their changes go out
-# in the next release.
+# These types make a release. The other types are skipped, so they do not
+# bump the version and do not appear in the notes. Their changes go out in
+# the next release.
 commit_parsers = [
-  # The notes have three headings. `fix` also includes small improvements
-  # that are not bug fixes (CLAUDE.md), so its heading names both. Types with
+  # The notes have three headings. `feat` is any gain that the user can see,
+  # including improvements (CLAUDE.md), so its heading names both. Types with
   # the same group text go under one heading.
-  { message = "^feat", group = "<!-- 0 -->New features" },
-  { message = "^fix", group = "<!-- 1 -->Fixes and improvements" },
-  { message = "^perf", group = "<!-- 1 -->Fixes and improvements" },
+  { message = "^feat", group = "<!-- 0 -->New features and improvements" },
+  { message = "^fix", group = "<!-- 1 -->Fixes" },
+  { message = "^perf", group = "<!-- 1 -->Fixes" },
   { message = "^refactor", group = "<!-- 2 -->Other changes" },
   { message = "^revert", group = "<!-- 2 -->Other changes" },
   { message = "^build", group = "<!-- 2 -->Other changes" },
@@ -46,8 +54,8 @@ commit_parsers = [
 ]
 
 [bump]
-# The standard rules: `feat` gives a minor, `!` gives a major (R9, R11).
-features_always_bump_minor = true
-breaking_always_bump_major = true
-# R8: with no release tag, the first release is 1.0.0 (KTD10).
+# Each release gets the next patch version. The release script raises it to
+# a minor for a `feat+` subject, or to a major for a `!` subject.
+bump_type = "patch"
+# With no release tag, the first release is 1.0.0.
 initial_tag = "v1.0.0"

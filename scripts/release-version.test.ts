@@ -44,9 +44,62 @@ test("a fix after v1.0.3 gives a due release 1.0.4", () => {
   expect(result.version).toBe("1.0.4");
 });
 
-test("a feat and a fix after v1.0.4 give a due release 1.1.0", () => {
+test("a feat and a fix after v1.0.4 give a due patch release 1.0.5", () => {
   const result = facts(["feat: start", "tag:v1.0.4", "feat: add note templates", "fix: keep the timer visible"]);
   expect(result.due).toBe(true);
+  expect(result.version).toBe("1.0.5");
+});
+
+test("a feat with a scope and a fix after v1.1.0 give 1.1.1 under two headings", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "feat(about): show the version", "fix: typo"]);
+  expect(result.version).toBe("1.1.1");
+  const headings = (result.notes ?? "").split("\n").filter((line) => line.startsWith("### "));
+  expect(headings).toEqual(["### New features and improvements", "### Fixes"]);
+});
+
+test("a feat+ commit with a scope after v1.1.0 gives a minor release 1.2.0 and notes without the +", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "feat(capture)+: record system audio", "fix: typo"]);
+  expect(result.due).toBe(true);
+  expect(result.version).toBe("1.2.0");
+  expect(result.notes).toContain("capture: Record system audio");
+  expect(result.notes).not.toContain(")+:");
+  expect(result.notes).not.toContain("audio+");
+});
+
+test("a feat+ commit without a scope after v1.1.0 gives 1.2.0 and appears in the notes", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "feat+: plain plus (#12)"]);
+  expect(result.version).toBe("1.2.0");
+  expect(result.notes).toContain("Plain plus (#12)");
+});
+
+test("a feat+ commit followed by fix and chore commits still gives 1.2.0", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "feat(capture)+: record system audio", "fix: typo", "chore: tidy"]);
+  expect(result.version).toBe("1.2.0");
+});
+
+test("a feat+ commit and a fix! commit after v1.4.2 give 2.0.0", () => {
+  const result = facts(["feat: start", "tag:v1.4.2", "feat(capture)+: record system audio", "fix!: change the file names"]);
+  expect(result.version).toBe("2.0.0");
+});
+
+test("a feat+ commit before v1.1.1 and only a fix after it give 1.1.2", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "feat(capture)+: record system audio", "tag:v1.1.1", "fix: typo"]);
+  expect(result.version).toBe("1.1.2");
+});
+
+test("a revert title that quotes a feat+ title gives a patch release", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "revert: feat(capture)+: record system audio"]);
+  expect(result.version).toBe("1.1.1");
+});
+
+test("a fix+ title gives a patch release", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "fix+: typo"]);
+  expect(result.version).toBe("1.1.1");
+});
+
+test("only a docs! commit after v1.1.0 gives no due release", () => {
+  const result = facts(["feat: start", "tag:v1.1.0", "docs!: rewrite the guide"]);
+  expect(result.due).toBe(false);
   expect(result.version).toBe("1.1.0");
 });
 
@@ -72,13 +125,13 @@ test("a feat! commit after v1.4.2 gives a due release 2.0.0", () => {
   expect(result.version).toBe("2.0.0");
 });
 
-test("a feat commit with an empty body gives a minor release", () => {
+test("a feat commit with an empty body gives a patch release", () => {
   const result = facts(["feat: start", "tag:v1.4.2", "feat: add note templates (#12)"]);
-  expect(result.version).toBe("1.5.0");
+  expect(result.version).toBe("1.4.3");
 });
 
 test("mixed and unconventional history with no tag gives a due release 1.0.0", () => {
-  const result = facts(["Initial commit", "feat: add recording", "fix: stop the crash", "Merge branch x", "feat!: new format"]);
+  const result = facts(["Initial commit", "feat: add recording", "feat+: add notes", "fix: stop the crash", "Merge branch x", "feat!: new format"]);
   expect(result.due).toBe(true);
   expect(result.version).toBe("1.0.0");
   expect(result.notes).toContain("Add recording");
@@ -96,8 +149,8 @@ test("the notes put the commits under three headings in a fixed order", () => {
   ]);
   const notes = result.notes ?? "";
   const headings = notes.split("\n").filter((line) => line.startsWith("### "));
-  expect(headings).toEqual(["### New features", "### Fixes and improvements", "### Other changes"]);
-  const fixes = notes.slice(notes.indexOf("### Fixes and improvements"), notes.indexOf("### Other changes"));
+  expect(headings).toEqual(["### New features and improvements", "### Fixes", "### Other changes"]);
+  const fixes = notes.slice(notes.indexOf("### Fixes"), notes.indexOf("### Other changes"));
   expect(fixes).toContain("Load the note list faster");
   expect(fixes).toContain("Keep the timer visible");
   expect(notes).not.toContain("Bug fixes");
@@ -141,12 +194,16 @@ test("the CLI fails with a clear message when git-cliff is missing", () => {
 
 // Pure logic with a fake git-cliff.
 
-function fakeTools(tags: string[], bumped: string, calls: string[][] = []): Tools {
+function fakeTools(tags: string[], bumped: string, calls: string[][] = [], subjects: string[] = []): Tools {
   return {
     tags: () => tags,
     cliff: (args) => {
       calls.push(args);
-      return args.includes("--bumped-version") ? `${bumped}\n` : "### Fixes and improvements\n- Fix one\n";
+      return args.includes("--bumped-version") ? `${bumped}\n` : "### Fixes\n- Fix one\n";
+    },
+    subjects: (since) => {
+      calls.push(["subjects", since]);
+      return subjects;
     },
   };
 }
@@ -174,8 +231,33 @@ test("a bumped version that is not X.Y.Z fails", () => {
 test("a due release requests the notes for its tag with all headers and footers removed", () => {
   const calls: string[][] = [];
   const result = releaseFacts(fakeTools(["v1.0.3"], "v1.0.4", calls));
-  expect(result).toEqual({ due: true, version: "1.0.4", notes: "### Fixes and improvements\n- Fix one\n" });
-  expect(calls).toEqual([["--bumped-version"], ["--unreleased", "--tag", "v1.0.4", "--strip", "all"]]);
+  expect(result).toEqual({ due: true, version: "1.0.4", notes: "### Fixes\n- Fix one\n" });
+  expect(calls).toEqual([["--bumped-version"], ["subjects", "v1.0.3"], ["--unreleased", "--tag", "v1.0.4", "--strip", "all"]]);
+});
+
+test("a feat+ subject raises the release to the next minor, and the notes use that tag", () => {
+  const calls: string[][] = [];
+  const result = releaseFacts(fakeTools(["v1.1.0"], "v1.1.1", calls, ["fix: typo", "feat(capture)+: record system audio"]));
+  expect(result.version).toBe("1.2.0");
+  expect(calls.at(-1)).toEqual(["--unreleased", "--tag", "v1.2.0", "--strip", "all"]);
+});
+
+test("a git-cliff version that is not the next patch fails", () => {
+  expect(() => releaseFacts(fakeTools(["v1.1.0"], "v1.2.0", [], ["feat(capture)+: record system audio"]))).toThrow(/next patch/);
+});
+
+test("a failed subjects read fails the release decision", () => {
+  const tools = fakeTools(["v1.1.0"], "v1.1.1");
+  tools.subjects = () => {
+    throw new Error("git log failed");
+  };
+  expect(() => releaseFacts(tools)).toThrow(/git log failed/);
+});
+
+test("with no release tag the release decision reads no subjects", () => {
+  const calls: string[][] = [];
+  expect(releaseFacts(fakeTools([], "v1.0.0", calls, ["feat+: add notes"])).version).toBe("1.0.0");
+  expect(calls.some((call) => call[0] === "subjects")).toBe(false);
 });
 
 test("a release that is not due requests no notes", () => {
