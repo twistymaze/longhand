@@ -33,12 +33,15 @@ sort_commits = "oldest"
 # not bump the version and do not appear in the notes. Their changes go out
 # in the next release.
 commit_parsers = [
-  { message = "^feat", group = "<!-- 0 -->Features" },
-  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
-  { message = "^perf", group = "<!-- 2 -->Performance" },
-  { message = "^refactor", group = "<!-- 3 -->Code changes" },
-  { message = "^revert", group = "<!-- 4 -->Reverted changes" },
-  { message = "^build", group = "<!-- 5 -->Build and dependencies" },
+  # The notes have three headings. `fix` also includes small improvements
+  # that are not bug fixes (CLAUDE.md), so its heading names both. Types with
+  # the same group text go under one heading.
+  { message = "^feat", group = "<!-- 0 -->New features" },
+  { message = "^fix", group = "<!-- 1 -->Fixes and improvements" },
+  { message = "^perf", group = "<!-- 1 -->Fixes and improvements" },
+  { message = "^refactor", group = "<!-- 2 -->Other changes" },
+  { message = "^revert", group = "<!-- 2 -->Other changes" },
+  { message = "^build", group = "<!-- 2 -->Other changes" },
   { message = "^(docs|ci|test|chore|style)", skip = true },
 ]
 
