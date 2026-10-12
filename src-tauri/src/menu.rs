@@ -5,7 +5,7 @@
 use tauri::AppHandle;
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
-use crate::commands::build_info::short_commit;
+use crate::commands::build_info::build_info;
 use crate::window::open_settings;
 
 /// The menu ID of the app menu's Settings item. The tray menu uses its own
@@ -33,10 +33,8 @@ fn about_metadata(version: &str, commit: Option<String>) -> AboutMetadata<'stati
 /// Set the app menu, and open Settings when the user selects its item.
 pub fn set_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let name = app.package_info().name.clone();
-    let about = about_metadata(
-        &app.package_info().version.to_string(),
-        short_commit(option_env!("LONGHAND_BUILD_COMMIT")),
-    );
+    let info = build_info(app.clone());
+    let about = about_metadata(&info.version, info.commit);
     let app_submenu = Submenu::with_items(
         app,
         &name,

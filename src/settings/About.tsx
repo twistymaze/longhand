@@ -1,8 +1,7 @@
-// The About pane (R1): a section about Longhand itself, the
-// acknowledgements, one licence row for each model
-// and each major component, and a row that opens the full licence list in
-// its own window. A click on a licence row shows the attribution, the
-// licence address and the source.
+// The About pane (R1): a section about Longhand itself, the acknowledgements,
+// one licence row for each model and each major component, and a row that
+// opens the full licence list in its own window. A click on a licence row
+// shows the attribution, the licence address and the source.
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type ReactNode, useEffect, useState } from "react";
@@ -85,16 +84,11 @@ function LonghandSection() {
   );
 }
 
-/// The name of a project, as a link to its page.
-function ProjectLink({ entry }: { entry: Acknowledgement }) {
-  return <WebLink url={entry.url}>{entry.name}</WebLink>;
-}
-
 function AcknowledgementRow({ entry }: { entry: Acknowledgement }) {
   return (
     <div className="settings-row px-4">
       <div className="py-2.5">
-        <ProjectLink entry={entry} />
+        <WebLink url={entry.url}>{entry.name}</WebLink>
         {entry.text.map((paragraph) => (
           <p key={paragraph} className="mt-1 text-[0.85rem] leading-[1.45] text-label-secondary select-text">
             {paragraph}

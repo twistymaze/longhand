@@ -20,7 +20,7 @@ pub fn is_release_build() -> bool {
 }
 
 /// The first 7 characters of a commit hash. An empty value gives none.
-pub(crate) fn short_commit(value: Option<&str>) -> Option<String> {
+fn short_commit(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|v| !v.is_empty())
