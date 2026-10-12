@@ -57,13 +57,15 @@ runs:
     # target/. This step removes each folder that is not a Ninja build, so
     # that CMake configures it again with Ninja. The libraries that the
     # build scripts installed stay, so cargo rebuilds only when it must.
+    # The MSVC setup puts Windows' own find.exe first on PATH, so the step
+    # names Git Bash's find.
     - name: Remove CMake build folders of another generator
       if: runner.os == 'Windows'
       shell: bash
       working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
       run: |
         [ -d target ] || exit 0
-        find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
+        /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
           if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
             echo "Removing $(dirname "$cache")"
             rm -rf "$(dirname "$cache")"
