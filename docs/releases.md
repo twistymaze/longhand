@@ -1,6 +1,6 @@
 # Releases
 
-Each push to `main` that changes the shipped app goes out in a numbered release on the [Releases page](https://github.com/twistymaze/longhand/releases) of `twistymaze/longhand` (`CONCEPTS.md`, Updates). No person chooses when a minor or patch release occurs. A major release occurs only when the user asks for one.
+Each push to `main` that changes the shipped app goes out in a numbered release on the [Releases page](https://github.com/twistymaze/longhand/releases) of `twistymaze/longhand` (`CONCEPTS.md`, Updates). Each release is a patch release by default. A minor release occurs only when the user chooses one, and a major release occurs only when the user asks for one.
 
 ## Release flow
 
@@ -8,7 +8,7 @@ One CI run on `main` does the checks, the build and the publication. `.github/wo
 
 1. **The checks** (`checks` and `cargo deny`). When a check fails, no later job runs.
 2. **`release-build`** runs on `macos-latest` in the `release` environment. It can only read the repository.
-   1. `scripts/release-version.ts` uses git-cliff and `cliff.toml` to decide whether a release is due, and computes its version and its release notes.
+   1. `scripts/release-version.ts` uses git-cliff and `cliff.toml` to decide whether a release is due, to get the next patch version and to write the release notes. The script then raises the version when a commit subject has a `+` or `!` marker (see [When a release is due](#when-a-release-is-due)).
    2. When a release is due, the job builds the app with that version, and signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature.
    3. The job uploads the DMG, the archive, the signature and the notes as a workflow artifact.
 3. **`release-publish`** runs on `ubuntu-latest` only when a release is due. It is the only job that can write to the repository. It has no secrets and runs no build code. `scripts/publish-release.ts publish` creates a draft release with the tag `v<version>` on the built commit, uploads the 4 files and `latest.json`, and then publishes the draft as the latest release.
@@ -27,31 +27,42 @@ A push of only docs does not start CI (see [Checks and CI](development-workflow.
 
 A release is due when no `v<major>.<minor>.<patch>` tag exists, or when the commits since the latest release tag change the version. Other tags, such as old preview tags, do not count. The first release is 1.0.0.
 
-| Commit type | Effect on the version |
+| Commit subject | Effect on the version |
 |---|---|
-| `feat` | minor (1.0.4 to 1.1.0) |
-| `fix`, `perf`, `refactor`, `revert`, `build` | patch (1.0.3 to 1.0.4) |
-| `docs`, `ci`, `test`, `chore`, `style` | no release; the change goes out in the next release |
+| `feat`, `fix`, `perf`, `refactor`, `revert`, `build` | patch (1.0.3 to 1.0.4) |
+| `feat+: …` or `feat(scope)+: …` | minor (1.0.4 to 1.1.0) |
+| a release type with `!`, for example `feat!: …` | major (1.4.2 to 2.0.0) |
+| `docs`, `ci`, `test`, `chore`, `style` | no release; the change goes out in the next release. `!` on these types has no effect. |
 
-When the commits since the latest release tag have more than one type, the highest effect applies. The release notes list only the commits that make a release, under these headings:
+When the commits since the latest release tag have different effects, the highest effect applies. With no release tag, the first release is 1.0.0, whatever the markers.
+
+git-cliff gives the next patch version (`bump_type = "patch"` in `cliff.toml`). `scripts/release-version.ts` reads the original commit subjects since the latest release tag and raises that version for a `+` or `!` marker. The script fails when git-cliff does not give the next patch. git-cliff does not understand `+`, so `cliff.toml` removes it before parsing. The notes show a `feat+` commit in the same way as a `feat` commit.
+
+The release notes list only the commits that make a release, under these headings:
 
 | Heading | Commit types |
 |---|---|
-| New features | `feat` |
-| Fixes and improvements | `fix`, `perf` |
+| New features and improvements | `feat` |
+| Fixes | `fix`, `perf` |
 | Other changes | `refactor`, `revert`, `build` |
 
 A heading with no commits does not appear.
 
+### Minor releases
+
+A minor release occurs only when the user chooses one. Before an agent opens a `feat` PR while the user is present, it asks "patch or minor?" and gives a recommendation. When the user chooses minor, the agent writes `+` after the type or scope, for example `feat(capture)+: record system audio`. A hands-off run, such as lfg, never writes `+`. The user can add `+` to the title of any `feat` PR before merge. `+` is not valid on other types, so a release with only fixes is never a minor release.
+
 ### Major releases
 
-A major release occurs only when the user tells an agent in chat to make one. The agent then writes `!` after the type in the PR title, for example `feat!: change the storage format`, and the version goes from 1.4.2 to 2.0.0. Agents never write `!` or `BREAKING CHANGE` in a PR title otherwise. A `BREAKING CHANGE` footer in a branch commit has no effect, because the squash commit body is empty.
+A major release occurs only when the user tells an agent in chat to make one. The agent then writes `!` after the type in the PR title, for example `feat!: change the storage format`, and the version goes from 1.4.2 to 2.0.0. Agents never write `!` or `BREAKING CHANGE` in a PR title otherwise. A `BREAKING CHANGE` footer has no effect, because the release script reads only the commit subject.
 
 ### PR titles
 
 The repository allows only squash merges. The squash commit title is the PR title, and the squash commit body is empty. So each commit on `main` is one PR title, and the PR title decides the release.
 
-The workflow `.github/workflows/pr-title.yml` checks that each PR title is a Conventional Commit (`type: description` or `type(scope): description`) with one of the types in the table. Its job, `PR title`, is a required check of the `main` ruleset. A commit pushed directly to `main` (docs-only work) uses only `docs`, `chore` or `ci`. `CLAUDE.md` gives the rules for how agents choose the type.
+The workflow `.github/workflows/pr-title.yml` checks that each PR title is a Conventional Commit (`type: description` or `type(scope): description`) with one of the types in the table. `scripts/check-pr-title.sh` then checks the markers: it rejects `+` on types other than `feat`, `+` together with `!`, and `!` on types that make no release. The job, `PR title`, is a required check of the `main` ruleset. A commit pushed directly to `main` (docs-only work) uses only `docs`, `chore` or `ci`. `CLAUDE.md` gives the rules for how agents choose the type and the markers.
+
+If someone edits the squash commit title in the merge dialog, the edited title becomes the commit on `main`, and no check sees it.
 
 ## One-time setup
 
