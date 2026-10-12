@@ -5,6 +5,7 @@ area: library-and-sharing
 added: 2026-10-08
 source: "conversations on 2026-10-08 and 2026-10-09 about an AGENTS.md file and a hand-made skill in the storage folder"
 related: [suggested-tags, library-and-browsing, agentic-summary, summary-prompt-by-note-type, regenerate-with-another-prompt]
+plan: docs/plans/2026-10-12-1827-feat-safe-agent-edits-plan.md
 ---
 
 # Safe edits by agents
