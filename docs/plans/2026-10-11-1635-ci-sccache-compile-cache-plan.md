@@ -17,14 +17,14 @@ execution: code
 - **Product authority:** The user makes the keep-or-remove decision (R16). This plan does not set a threshold.
 - **Execution profile:** `ce-work` in a worktree from `origin/main`. U1 ships as its own PR. U2 to U4 stay on the experiment branch, which does not merge before the decision (R13).
 - **Stop conditions:** Stop and report when a measurement run would need the `release` environment or its secrets (R11), when the Windows installer smoke test fails under the Ninja generator (KTD4), or when the cache use would pass 10 GB (R12).
-- **Who finishes:** The agent finishes U1 to U4 and presents the report. U5 starts only after the user's decision.
+- **Who finishes:** The agent finishes U1 to U4 and U6, and presents the report. U5 starts only after the user's decision.
 - **Open blockers:** None.
 
 ---
 
 ## Product Contract
 
-**Product Contract preservation:** changed: R1, R2, R5, R6, R7, R9, R15. The user narrowed the measurement to a first approximation: the hosted checks and repeat runs are dropped, existing run times are the baseline, cold runs decide, and one warm run is a guard. R7 states the cause that research found.
+**Product Contract preservation:** changed: R1, R2, R5, R6, R7, R9, R15. The user narrowed the measurement to a first approximation: the hosted checks and repeat runs are dropped, existing run times are the baseline, cold runs decide, and one warm run is a guard. R7 states the cause that research found. Added: R18 to R20. The first warm runs showed that the release profile's last step (full LTO with one codegen unit) takes 8 to 11 min, which sccache cannot cache, so the user added the release profile to the experiment.
 
 ### Summary
 
@@ -63,6 +63,12 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 - R13. Nothing from the experiment merges to `main` before the user's decision (R16).
 - R14. Release builds on `main` read only cache entries that `main`-branch runs wrote.
 
+**Release profile**
+
+- R18. The experiment measures two release profile options next to today's profile (`lto = true`, `codegen-units = 1`) on both release builds: option B, `lto = "thin"` with `codegen-units = 16`, and option C, `lto = false` with `codegen-units = 16` (Rust's default release profile).
+- R19. For each option, the report gives the cold and warm compile step times, the time of the last step (from the last `Compiling` line to `Finished`), the size of the app binary and of the DMG or installer, and the result of the installed-helper smoke test. Runtime speed is not measured: the user accepts a loss of a few percent, and most of the heavy work runs in C/C++ and in the NeMo helper, which the Rust LTO setting does not change. The report says that it was not measured.
+- R20. The release profile decision is separate from the sccache decision (R16), and is made in the same discussion. A profile change goes to `main` in its own PR, because it changes the shipped app.
+
 **Report and decision**
 
 - R15. A report gives, for each release build and setup, the cold and warm job times next to the baseline (R6), the time of each compile step, the cache restore and save times, the sccache hit rate, the cache write errors, and the GitHub Actions cache size that the setup uses. For each self-hosted runner, it gives the measured times, the local cache's disk use and size limit, and the effect of the weekly VM reset on the cache. It notes that the branch release-build times exclude release signing and notarization. It also says what the result means for the `ephemeral-ci-runner-vms` idea.
@@ -74,6 +80,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 - **The scope includes the self-hosted runners as well as the hosted jobs.** The user wants faster PR CI, and a local cache makes a wipe or a Cargo.lock change less costly. The expected gain on a normal PR is small. Governs R8, R9. (session-settled: user-directed — chosen over "hosted jobs only" and over "tie sccache to ephemeral VMs": the user wants every runner covered now, without the larger VM work.)
 - **One decision for all jobs, made from data.** The user does not want a pass/fail threshold before the numbers exist. Governs R16, R17. (session-settled: user-directed — chosen over "keep per job when faster and not slower" and "keep with no gate": it is too early to know what should drive the decision.)
 - **Compare both sccache setups, with C/C++ caching on.** This shows whether rust-cache is still needed, and it targets ggml, the largest single cold cost. Governs R2, R4. (session-settled: user-approved — chosen over "rust-cache plus sccache only" and "both setups, Rust only".)
+- **The release profile is part of the experiment, and only the two fast options are measured.** The user does not need the last few percent of runtime speed, so the cautious option (`lto = "thin"` with `codegen-units = 1`) is not measured. Governs R18, R19, R20. (session-settled: user-directed — the user asked to include the profile change, and said that a few percent of runtime speed is not important to them.)
 - **A first approximation: cold runs decide, one warm run is a guard, existing runs are the baseline, no repeats.** The hosted checks seldom run, because PR checks use the self-hosted runners. Governs R1, R2, R5, R6. (session-settled: user-directed — chosen over a full matrix of 4 jobs, 3 setups, 3 cache states and 3 repeats, about 108 runs: the user wants a first approximation, not a controlled study.)
 
 ### Scope Boundaries
@@ -82,7 +89,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 - Clean VMs for each job (`docs/ideas/someday/ephemeral-ci-runner-vms.md`) are out of scope. R15 only reports what the result means for them.
 - A local cache that survives the weekly VM reset is out of scope. It needs a separate disk in the private runner setup. R15 reports the effect.
 - Moving the release build to a home runner (`docs/ideas/someday/home-signing-runner.md`) is out of scope.
-- Link time is out of scope. sccache does not cache linking, and crates that the linker produces (bin, cdylib, proc-macro) are not cached. The Vulkan shader compiles (`glslc`) are not cached either.
+- Link time is out of scope, except for the LTO setting of the release profile (R18). The choice of linker is out of scope. sccache does not cache linking, and crates that the linker produces (bin, cdylib, proc-macro) are not cached. The Vulkan shader compiles (`glslc`) are not cached either.
 - Test run time is out of scope. sccache does not change it.
 - Turborepo is out of scope (rejected in `docs/ideas/next/sccache-for-hosted-builds.md`).
 - Considered and not built: a retry layer for lost sccache cache writes (GitHub limits cache uploads to 200 a minute, and sccache 0.17 drops a write that gets HTTP 429). R15 reports the write errors instead. A retry layer would be worth it only if the write errors turn out to decide the result.
@@ -117,6 +124,8 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 - KTD7. **Release builds stop saving the rust-cache on failure, and their prefix keys change.** `cache-on-failure: true` exists so that a check job that never passed still gets a cache. A release build runs only after the checks pass, so a failed release build has no such reason. New prefix keys (`v2-release`, `v2-release-windows`) leave the partial entry unused. Governs R7.
 - KTD8. **The self-hosted local cache is a folder in the runner's tool cache, set by a workflow step.** The step sets `SCCACHE_DIR` to `$RUNNER_TOOL_CACHE/sccache` unless the runner environment file already sets it, and it sets `SCCACHE_CACHE_SIZE` to 20G and `SCCACHE_BASEDIRS` to the work folder and Cargo home. This follows the `LONGHAND_NEMO_CACHE` fallback in `ci.yml`, so the experiment needs no change in the private runner repository. A new `sccache` input on the `ci.yml` dispatch turns it on, so normal PR runs do not change. Each runner has its own folder, because the sccache local cache supports one server for each folder. Governs R8, R9.
 
+- KTD9. **The profile options are set by environment variables from a dispatch input, not by edits to `Cargo.toml`.** A `release-profile` input (`current`, `thin-16`, `off-16`) sets `CARGO_PROFILE_RELEASE_LTO` and `CARGO_PROFILE_RELEASE_CODEGEN_UNITS` in both experiment jobs, so the measured commits stay the same as in U3. The codegen-unit count is part of the rustc arguments of every crate, and `lto = false` also changes how the dependencies embed bitcode, so each option has no sccache hits from another option and needs its own cold run. The runs use the sccache setup that U3 measured as faster, and a cache version for each option. Governs R18, R19.
+
 ### Assumptions
 
 - The CMake launcher variables take effect only when CMake configures a build folder for the first time. On a self-hosted runner, the "after target/ is removed" run (R9) configures from scratch. The "after a Cargo.lock change" run may reuse folders that were configured without the launcher, so its C/C++ result can understate sccache.
@@ -124,7 +133,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 
 ### Sequencing
 
-U1 is independent and ships first as its own PR. U2 to U4 are the experiment on one branch: U2 builds the workflow, U3 runs the hosted measurements, and U4 adds and measures the self-hosted cache. U3 and U4 can run in either order. The report follows U3 and U4. U5 waits for the user's decision.
+U1 is independent and ships first as its own PR. U2 to U4 are the experiment on one branch: U2 builds the workflow, U3 runs the hosted measurements, and U4 adds and measures the self-hosted cache. U6 follows U3 on the same branch. U3, U4 and U6 can otherwise run in any order. The report follows U3, U4 and U6. U5 waits for the user's decision.
 
 ---
 
@@ -231,13 +240,35 @@ U1 is independent and ships first as its own PR. U2 to U4 are the experiment on 
 
 **Verification:** Fourteen completed runs (2 runners × 7 runs), each with stats when sccache is on. A normal PR run without the input behaves as before.
 
+### U6. Release profile measurements
+
+**Goal:** One cold and one warm run of each release profile option on each release build, with the data that the report needs.
+
+**Requirements:** R18, R19, R20.
+
+**Dependencies:** U2, U3 (U3 selects the sccache setup and leaves the branch on the reverted state).
+
+**Files:**
+- `.github/workflows/ci.yml` (a `release-profile` dispatch input; both experiment jobs set the two profile variables from it, and write the sizes of the app binary and of the DMG or installer to the job summary)
+
+**Approach:**
+1. When the input is `current`, the jobs set no profile variable, so the U3 runs stay valid as the comparison.
+2. For each option, one at a time: with the branch head at the reverted state, dispatch a cold run on macOS, then on Windows, each with a new cache version. Push the warm-change commit (KTD5) again and dispatch the warm runs with the same cache version. Revert the commit before the next option, and delete the option's cache entries when its runs end (KTD6).
+3. Take the time of the last step from the job log: the time between the last `Compiling` line and the `Finished` line.
+
+**Patterns to follow:** U2's experiment jobs; the sccache stats step for the job summary.
+
+**Test expectation:** none -- workflow configuration and measurement.
+
+**Verification:** Eight completed runs (2 options × 2 OS × cold and warm), each with stats and sizes, and the installed-helper smoke tests pass. A dispatch without the input gives the same build as before.
+
 ### U5. Apply the decision
 
 **Goal:** CI matches the user's decision, and the result is recorded.
 
-**Requirements:** R13, R16, R17.
+**Requirements:** R13, R16, R17, R20.
 
-**Dependencies:** U3, U4, the report, and the user's decision.
+**Dependencies:** U3, U4, U6, the report, and the user's decision.
 
 **Files:**
 - Keep: `.github/workflows/ci.yml` (`release-build`, `checks`, and removal of the experiment jobs and inputs), `.github/workflows/release-windows.yml`, `.github/actions/windows-build-setup/action.yml`, `.github/actions/sccache-setup/action.yml`.
@@ -247,6 +278,7 @@ U1 is independent and ships first as its own PR. U2 to U4 are the experiment on 
 1. Keep: apply the chosen setup to the release builds and the checks, hosted and self-hosted, without the dispatch input. The release builds use sccache in read-write mode only on `main` (R14).
 2. Remove: close the experiment branch without a merge, and remove the local cache folders from the self-hosted runners.
 3. Either way: write the solution doc from the report, and move the idea file with `bun scripts/ideas.ts move`.
+4. If the user chooses a release profile option, change `[profile.release]` in `Cargo.toml` in its own PR (R20), separate from the sccache change.
 
 **Test expectation:** none -- workflow configuration and a docs record.
 
