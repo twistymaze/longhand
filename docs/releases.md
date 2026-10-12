@@ -33,7 +33,15 @@ A release is due when no `v<major>.<minor>.<patch>` tag exists, or when the comm
 | `fix`, `perf`, `refactor`, `revert`, `build` | patch (1.0.3 to 1.0.4) |
 | `docs`, `ci`, `test`, `chore`, `style` | no release; the change goes out in the next release |
 
-When the commits since the latest release tag have more than one type, the highest effect applies. The release notes list only the commits that make a release, grouped by type.
+When the commits since the latest release tag have more than one type, the highest effect applies. The release notes list only the commits that make a release, under these headings:
+
+| Heading | Commit types |
+|---|---|
+| New features | `feat` |
+| Fixes and improvements | `fix`, `perf` |
+| Other changes | `refactor`, `revert`, `build` |
+
+A heading with no commits does not appear.
 
 ### Major releases
 

@@ -85,6 +85,24 @@ test("mixed and unconventional history with no tag gives a due release 1.0.0", (
   expect(result.notes).not.toContain("Initial commit");
 });
 
+test("the notes put the commits under three headings in a fixed order", () => {
+  const result = facts([
+    "feat: start",
+    "tag:v1.0.0",
+    "build(deps): update tauri",
+    "perf: load the note list faster",
+    "fix: keep the timer visible",
+    "feat: add note templates",
+  ]);
+  const notes = result.notes ?? "";
+  const headings = notes.split("\n").filter((line) => line.startsWith("### "));
+  expect(headings).toEqual(["### New features", "### Fixes and improvements", "### Other changes"]);
+  const fixes = notes.slice(notes.indexOf("### Fixes and improvements"), notes.indexOf("### Other changes"));
+  expect(fixes).toContain("Load the note list faster");
+  expect(fixes).toContain("Keep the timer visible");
+  expect(notes).not.toContain("Bug fixes");
+});
+
 test("a build(deps) commit gives a patch release", () => {
   expect(facts(["feat: start", "tag:v1.0.0", "build(deps): update tauri"]).version).toBe("1.0.1");
 });
@@ -128,7 +146,7 @@ function fakeTools(tags: string[], bumped: string, calls: string[][] = []): Tool
     tags: () => tags,
     cliff: (args) => {
       calls.push(args);
-      return args.includes("--bumped-version") ? `${bumped}\n` : "### Bug fixes\n- Fix one\n";
+      return args.includes("--bumped-version") ? `${bumped}\n` : "### Fixes and improvements\n- Fix one\n";
     },
   };
 }
@@ -156,7 +174,7 @@ test("a bumped version that is not X.Y.Z fails", () => {
 test("a due release requests the notes for its tag with all headers and footers removed", () => {
   const calls: string[][] = [];
   const result = releaseFacts(fakeTools(["v1.0.3"], "v1.0.4", calls));
-  expect(result).toEqual({ due: true, version: "1.0.4", notes: "### Bug fixes\n- Fix one\n" });
+  expect(result).toEqual({ due: true, version: "1.0.4", notes: "### Fixes and improvements\n- Fix one\n" });
   expect(calls).toEqual([["--bumped-version"], ["--unreleased", "--tag", "v1.0.4", "--strip", "all"]]);
 });
 
