@@ -582,7 +582,7 @@ fn join_writes_portable_output_referenced_by_the_manifest() {
 }
 
 #[test]
-fn unstamped_live_text_requires_an_explicit_retranscription_choice() {
+fn unstamped_live_text_is_replaced_by_recognition_of_the_recorded_audio() {
     let (temp, store, spec, segments) = setup(SpeakerSource::Off);
     pipeline::live::save_part(
         &store,
@@ -606,7 +606,7 @@ fn unstamped_live_text_requires_an_explicit_retranscription_choice() {
         fail_speaker: false,
         native_tokens: false,
     };
-    let error = pipeline::recognition::execute(
+    pipeline::recognition::execute(
         &store,
         "route",
         &temp.path().join("route"),
@@ -617,9 +617,145 @@ fn unstamped_live_text_requires_an_explicit_retranscription_choice() {
         &Unattended,
         &mut |_| {},
     )
-    .unwrap_err();
-    assert!(error.to_string().contains("Transcribe Again"));
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+    .unwrap();
+    assert!(provider.calls.load(Ordering::SeqCst) > 0);
+    assert!(pipeline::live::rows(&store, "route").unwrap().is_empty());
+    let reasons: Vec<String> = checkpoint::get(
+        &store,
+        "route",
+        Stage::Transcribe,
+        "live-invalidation-reasons",
+    )
+    .unwrap()
+    .unwrap();
+    assert!(reasons[0].contains("no saved source proof"));
+}
+
+/// Save a proof, the live identity, and one live part for `index`.
+fn save_live_segment(
+    store: &pipeline::SharedStore,
+    dir: &std::path::Path,
+    spec: &ExecutionSpec,
+    segments: &[session_core::Segment],
+    index: usize,
+) {
+    let segment = &segments[index];
+    let mut reader =
+        pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+            dir: dir.join(pipeline::RECOVERY_DIR),
+            segment: segment.index,
+            offset_ms: segment.offset_ms,
+            rate: 16000,
+        });
+    while reader.next_frame().unwrap().is_some() {}
+    let mut config =
+        pipeline::live::LiveConfig::new("route", segment.index, &spec.config.asr_model, 16000);
+    config.snapshot = Some(spec.clone());
+    pipeline::live::archive::save_proof(store, &config, &reader).unwrap();
+    pipeline::live::save_part(
+        store,
+        "route",
+        segment.index,
+        0,
+        &asr::LivePart {
+            start_ms: 0,
+            end_ms: segment.duration_ms,
+            words: vec![asr::LiveWord {
+                start_ms: 0,
+                end_ms: segment.duration_ms,
+                text: "Already transcribed".into(),
+            }],
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn resume_before_processing_ends_keeps_live_text_of_earlier_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = common::store();
+    let spec = spec(SpeakerSource::Off);
+    common::queue_session(
+        &store,
+        temp.path(),
+        "route",
+        100,
+        Some(&spec.config.asr_model),
+        &[(16000, common::speech()), (16000, common::speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .set_recognition_snapshot("route", &serde_json::to_value(&spec).unwrap())
+        .unwrap();
+    let segments = store.lock().unwrap().segments("route").unwrap();
+    let dir = temp.path().join("route");
+    pipeline::assemble::run(&store, "route", &dir, &segments, None, &Unattended).unwrap();
+    // The first processing run sees only segment 0 and stops when the user
+    // resumes the note.
+    save_live_segment(&store, &dir, &spec, &segments, 0);
+    pipeline::recognition::durable::stamp_live_identity(
+        &store,
+        "route",
+        &dir,
+        &segments[..1],
+        &spec,
+    )
+    .unwrap();
+    pipeline::recognition::durable::prepare(&store, "route", &dir, &segments[..1], &spec).unwrap();
+    // The resumed segment records its own live text and proof.
+    save_live_segment(&store, &dir, &spec, &segments, 1);
+    pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec).unwrap();
+    for segment in [0, 1] {
+        assert_eq!(
+            pipeline::live::segment_rows(&store, "route", segment)
+                .unwrap()
+                .len(),
+            1,
+            "verified live text of segment {segment} is kept"
+        );
+    }
+}
+
+#[test]
+fn live_text_without_a_source_proof_does_not_block_verified_live_text() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = common::store();
+    let spec = spec(SpeakerSource::Off);
+    common::queue_session(
+        &store,
+        temp.path(),
+        "route",
+        100,
+        Some(&spec.config.asr_model),
+        &[(16000, common::speech()), (16000, common::speech())],
+    );
+    let segments = store.lock().unwrap().segments("route").unwrap();
+    let dir = temp.path().join("route");
+    pipeline::assemble::run(&store, "route", &dir, &segments, None, &Unattended).unwrap();
+    save_live_segment(&store, &dir, &spec, &segments, 0);
+    save_live_segment(&store, &dir, &spec, &segments, 1);
+    store
+        .lock()
+        .unwrap()
+        .delete_checkpoint(
+            "route",
+            Stage::Transcribe,
+            &pipeline::live::archive::key(segments[0].index),
+        )
+        .unwrap();
+    pipeline::recognition::durable::prepare(&store, "route", &dir, &segments, &spec).unwrap();
+    assert!(
+        pipeline::live::segment_rows(&store, "route", 0)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        pipeline::live::segment_rows(&store, "route", 1)
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
