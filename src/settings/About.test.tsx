@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelStatus } from "../bindings";
 import { mockTauri } from "../test/tauri";
-import { About, leadingAddress } from "./About";
+import { About, leadingAddress, longhandAddresses } from "./About";
 import { components, personal, technical } from "./acknowledgements";
 
 const model = (id: string, name: string, role: ModelStatus["role"]): ModelStatus => ({
@@ -54,6 +54,44 @@ describe("the version row", () => {
     render(<About models={models} />);
     const row = await screen.findByText("Version 0.1.0 (local build)");
     expect(row.compareDocumentPosition(section("Acknowledgements")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe("the Longhand section", () => {
+  const opened = (tauri: ReturnType<typeof mock>) =>
+    tauri.calls.filter((c) => c.cmd === "plugin:opener|open_url").map((c) => c.args.url);
+
+  test("tells what Longhand is with the README's two opening paragraphs, above the acknowledgements", () => {
+    render(<About models={models} />);
+    const what = screen.getByText(
+      "Longhand is a note-taking app for meetings and conversations. You write the notes that matter to you, and Longhand records the audio. When the conversation ends, it uses the transcript to turn your short notes into a complete summary.",
+    );
+    const privacy = screen.getByText(
+      "Recording and transcription happen on your computer. Your notes are files that you own, and you decide which AI service, if any, sees them.",
+    );
+    expect(what.compareDocumentPosition(privacy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(privacy.compareDocumentPosition(section("Acknowledgements")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("shows the copyright and the licence, and the licence name opens LICENSE", async () => {
+    const tauri = mock();
+    render(<About models={models} />);
+    expect(screen.getByText(/Copyright © 2026 Erv Walter/)).toBeTruthy();
+    expect(screen.getByText(/Longhand is open source under the/)).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: /^MIT licence.*opens in your browser/ }));
+    expect(opened(tauri)).toEqual(["https://github.com/twistymaze/longhand/blob/main/LICENSE"]);
+  });
+
+  test("the source code and What's new links open the repository and its releases", async () => {
+    const tauri = mock();
+    render(<About models={models} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /^Source code.*opens in your browser/ }));
+    await user.click(screen.getByRole("button", { name: /^What's new.*opens in your browser/ }));
+    expect(opened(tauri)).toEqual([
+      "https://github.com/twistymaze/longhand",
+      "https://github.com/twistymaze/longhand/releases",
+    ]);
   });
 });
 
@@ -182,7 +220,7 @@ describe("About", () => {
       Object.values(v).forEach(walk);
     };
     walk(catalog);
-    const expected = new Set([...personal, ...technical].map((a) => a.url));
+    const expected = new Set([...[...personal, ...technical].map((a) => a.url), ...Object.values(longhandAddresses)]);
     for (const text of details) {
       const address = leadingAddress(text);
       if (address) expected.add(address.url);

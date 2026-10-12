@@ -1,7 +1,7 @@
-// The About pane (R1): the acknowledgements, one licence row for each model
-// and each major component, and a row that opens the full licence list in
-// its own window. A click on a licence row shows the attribution, the
-// licence address and the source.
+// The About pane (R1): a section about Longhand itself, the acknowledgements,
+// one licence row for each model and each major component, and a row that
+// opens the full licence list in its own window. A click on a licence row
+// shows the attribution, the licence address and the source.
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type ReactNode, useEffect, useState } from "react";
@@ -17,33 +17,70 @@ export function versionText(info: BuildInfo): string {
   return `Version ${info.version} (${info.commit ?? "local build"})`;
 }
 
-/// The version and commit of the running build, at the top of the pane.
-function BuildVersion() {
-  const [info, setInfo] = useState<BuildInfo | null>(null);
-  useEffect(() => {
-    // A failed call leaves the row empty.
-    commands.buildInfo().then(setInfo, () => {});
-  }, []);
-  return (
-    <Group>
-      <Row label="Longhand" detail={<span className="select-text">{info ? versionText(info) : " "}</span>} />
-    </Group>
-  );
-}
+/// The pages that the Longhand section opens (R5–R7).
+export const longhandAddresses = {
+  repository: "https://github.com/twistymaze/longhand",
+  licence: "https://github.com/twistymaze/longhand/blob/main/LICENSE",
+  releases: "https://github.com/twistymaze/longhand/releases",
+};
 
-/// The name of a project, as a link that opens its page in the default
-/// browser (R6, KTD8). The webview does not go to the page.
-function ProjectLink({ entry }: { entry: Acknowledgement }) {
+/// The two opening paragraphs of README.md (R2). Change them together.
+const description = [
+  "Longhand is a note-taking app for meetings and conversations. You write the notes that matter to you, and Longhand records the audio. When the conversation ends, it uses the transcript to turn your short notes into a complete summary.",
+  "Recording and transcription happen on your computer. Your notes are files that you own, and you decide which AI service, if any, sees them.",
+];
+
+/// A link that opens a page in the default browser (R6, KTD8 of the
+/// acknowledgements plan). The webview does not go to the page.
+function WebLink({ url, children }: { url: string; children: ReactNode }) {
   return (
     <button
       type="button"
-      onClick={() => void openUrl(entry.url)}
+      onClick={() => void openUrl(url)}
       className="inline-flex items-center gap-0.5 rounded-[3px] font-semibold text-accent select-none hover:underline active:opacity-70 outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
     >
-      {entry.name}
+      {children}
       <ExternalIcon className="size-3" />
       <span className="sr-only"> (opens in your browser)</span>
     </button>
+  );
+}
+
+/// The first section: what Longhand is, the version and commit of the
+/// running build, the copyright and licence, and the source and release
+/// pages (R1–R8).
+function LonghandSection() {
+  const [info, setInfo] = useState<BuildInfo | null>(null);
+  useEffect(() => {
+    // A failed call leaves the version empty.
+    commands.buildInfo().then(setInfo, () => {});
+  }, []);
+  return (
+    <Group
+      footer={
+        <span className="select-text">
+          Copyright © 2026 Erv Walter. Longhand is open source under the{" "}
+          <WebLink url={longhandAddresses.licence}>MIT licence</WebLink>.
+        </span>
+      }
+    >
+      <Row label="Longhand" detail={<span className="select-text">{info ? versionText(info) : " "}</span>} />
+      <div className="settings-row px-4">
+        <div className="py-2.5">
+          {description.map((paragraph) => (
+            <p key={paragraph} className="mt-1 text-[0.85rem] leading-[1.45] text-label-secondary select-text first:mt-0">
+              {paragraph}
+            </p>
+          ))}
+        </div>
+      </div>
+      <div className="settings-row px-4">
+        <div className="flex flex-wrap gap-x-5 gap-y-1 py-2.5">
+          <WebLink url={longhandAddresses.repository}>Source code</WebLink>
+          <WebLink url={longhandAddresses.releases}>What's new</WebLink>
+        </div>
+      </div>
+    </Group>
   );
 }
 
@@ -51,7 +88,7 @@ function AcknowledgementRow({ entry }: { entry: Acknowledgement }) {
   return (
     <div className="settings-row px-4">
       <div className="py-2.5">
-        <ProjectLink entry={entry} />
+        <WebLink url={entry.url}>{entry.name}</WebLink>
         {entry.text.map((paragraph) => (
           <p key={paragraph} className="mt-1 text-[0.85rem] leading-[1.45] text-label-secondary select-text">
             {paragraph}
@@ -167,7 +204,7 @@ const modelEntry = (m: ModelStatus): LicenceEntry => ({
 export function About({ models }: { models: ModelStatus[] }) {
   return (
     <Pane title="About">
-      <BuildVersion />
+      <LonghandSection />
       <Group header="Acknowledgements">
         {personal.map((a) => (
           <AcknowledgementRow key={a.name} entry={a} />
