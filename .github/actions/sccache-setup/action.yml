@@ -1,0 +1,81 @@
+name: sccache setup
+description: >-
+  Installs sccache and makes the Rust, C and C++ compiles of the job go
+  through it. On GitHub's runners the store is the GitHub Actions cache. On
+  a self-hosted runner the store is a folder on the runner. The caller runs
+  this action after the steps that set up the compilers, and before the
+  first compile. On Windows, the caller runs it after the Windows build
+  setup, so that its post step runs before the Dev Drive is removed.
+  (docs/solutions/performance-issues/sccache-compile-cache-experiment.md)
+
+runs:
+  using: composite
+  steps:
+    # v0.18.0 can panic at startup with "no CA certificates loaded"
+    # (mozilla/sccache#2869), so the version is v0.17.0. The post step of
+    # this action writes the stats of the job.
+    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      with:
+        version: v0.17.0
+
+    # cargo passes RUSTC_WRAPPER to rustc and cc-rs, but cmake-rs does not
+    # pass it to CMake, so the CMake builds (ggml) get the launcher
+    # variables. The Visual Studio generator ignores compiler launchers, so
+    # on Windows CMake uses Ninja. CMake reads these variables only when it
+    # configures a build folder for the first time. The server stays up for
+    # the full job, so that the stats at the end count every compile.
+    #
+    # On GitHub's runners, the cache entries are scoped by branch: a run on
+    # main reads only the entries of main, and a pull request also reads
+    # the entries of main. A self-hosted runner keeps its folder between
+    # jobs (the runner's environment file can set SCCACHE_DIR); a VM reset
+    # empties it. The local cache supports one server for each folder, and
+    # each runner has its own folder.
+    - name: Use sccache for the compiles
+      shell: bash
+      env:
+        HOSTED: ${{ runner.environment == 'github-hosted' }}
+      run: |
+        {
+          if [ "$HOSTED" = true ]; then
+            echo "SCCACHE_GHA_ENABLED=true"
+          else
+            dir="${SCCACHE_DIR:-$RUNNER_TOOL_CACHE/sccache}"
+            mkdir -p "$dir"
+            echo "SCCACHE_DIR=$dir"
+            echo "SCCACHE_CACHE_SIZE=20G"
+          fi
+          echo "SCCACHE_IDLE_TIMEOUT=0"
+          echo "RUSTC_WRAPPER=sccache"
+          echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          if [ "$RUNNER_OS" = Windows ]; then echo "CMAKE_GENERATOR=Ninja"; fi
+        } >> "$GITHUB_ENV"
+
+    # CMake refuses a build folder that another generator made, and a
+    # self-hosted runner keeps the CMake build folders of earlier jobs in
+    # target/. This step removes each folder that is not a Ninja build, so
+    # that CMake configures it again with Ninja. The libraries that the
+    # build scripts installed stay, so cargo rebuilds only when it must.
+    - name: Remove CMake build folders of another generator
+      if: runner.os == 'Windows'
+      shell: bash
+      working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      run: |
+        [ -d target ] || exit 0
+        find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
+          if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
+            echo "Removing $(dirname "$cache")"
+            rm -rf "$(dirname "$cache")"
+          fi
+        done
+
+    # Starts the server with the variables above and sets the counts to
+    # zero. A server that an earlier job left on a self-hosted runner has
+    # the variables of that job, so it stops first.
+    - name: Start sccache
+      shell: bash
+      run: |
+        sccache --stop-server > /dev/null 2>&1 || true
+        sccache --zero-stats
+        sccache --version

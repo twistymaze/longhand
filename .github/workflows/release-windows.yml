@@ -111,8 +111,12 @@ jobs:
       - name: Windows build setup
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v2-release-windows
+          prefix-key: v3-release-windows
           cache-on-failure: false
+
+      # After the Windows build setup, so that its post step runs before the
+      # Dev Drive is removed.
+      - uses: ./.github/actions/sccache-setup
 
       # rust-cache removes non-Cargo files from target during cache save,
       # so the NeMo cache goes in the temp folder. The version goes into the
