@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** A person who opens Settings → About can see what Longhand is, who made it, its licence, and where its source is. A person who opens the app menu's "About Longhand" panel can see what Longhand is, who made it, and where its source is.
-- **Product authority:** This Product Contract. The idea file is `docs/ideas/next/about-longhand-and-readme.md`.
+- **Product authority:** This Product Contract. The idea file is `docs/ideas/done/about-longhand-and-readme.md`.
 - **Open blockers:** None.
 
 ---
@@ -35,7 +35,7 @@ The About pane tells only about the projects that Longhand uses: acknowledgement
 - R1. The Longhand section is the first section of the About pane, above the acknowledgements, "Built with", and licences, which do not change.
 - R2. The section shows the two opening paragraphs of `README.md`: what Longhand does, and the privacy statement. The text is the same as the README text.
 - R3. The section shows the version and commit in the current format (`versionText`: "Version 0.x.y (abc1234)", or "local build").
-- R4. The section shows the copyright line "Copyright © 2026 Erv Walter", the same text as `LICENSE`.
+- R4. The section shows the copyright line "Copyright © 2026 Erv Walter", with the same year and name as `LICENSE`.
 - R5. The section says that Longhand is open source under the MIT licence. The licence name is a link that opens `LICENSE` in the repository.
 - R6. The section has a link to the repository, `https://github.com/twistymaze/longhand`.
 - R7. The section has a "What's new" link to the repository's releases page.
@@ -197,4 +197,4 @@ Manual test steps in the signed build:
 - The tests in U1 and U2 pass, and every check in the Verification Contract passes.
 - The manual test passes, including dark mode. If the credits text is not readable in dark mode, the work stops and the user decides (see Risks).
 - The diff has no code from abandoned attempts.
-- The idea file `docs/ideas/next/about-longhand-and-readme.md` moves to `done/` after the PR merges.
+- The idea file `docs/ideas/done/about-longhand-and-readme.md` moves to `done/` after the PR merges.

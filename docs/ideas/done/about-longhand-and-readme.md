@@ -22,6 +22,7 @@ The About pane (Settings → About) starts with a section about Longhand itself,
 The About pane now tells only about the things that Longhand uses. It says almost nothing about Longhand.
 
 ## Notes / Current state
+- Done on 2026-10-12 in [PR 8](https://github.com/twistymaze/longhand/pull/8). Settings → About starts with a Longhand section: the README's two opening paragraphs, the version and commit, the copyright line, the MIT licence link, and the "Source code" and "What's new" links. The About Longhand panel in the app menu shows the version and commit, a one-line description, the copyright line and the repository address.
 - The README part of this idea is done: the repository has `README.md`, `CONTRIBUTING.md` and an MIT `LICENSE` (public repository plan, 2026-10-11). Use the README's description and author ("Copyright (c) 2026 Erv Walter") so the two texts agree.
 - `src/settings/About.tsx` already shows "Longhand" with the version and commit in its first group (`BuildVersion`, `versionText`). The new section can extend that group.
 - The pane opens links through tauri-plugin-opener. The Settings capability already allows `https://*` (`src-tauri/capabilities/settings.json`), so a repository link needs no new permission.

@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** Visitors can follow Longhand on GitHub at `twistymaze/longhand`. They understand what it is and its licence, and they know that the project does not accept outside contributions. The public repository shows no secrets, no private files, no home infrastructure details and no exposure that the user did not accept.
-- **Product authority:** This Product Contract. The audit items in `docs/ideas/done/pre-public-repo-audit.md` are input. The About-pane part of `docs/ideas/next/about-longhand-and-readme.md` is not active scope.
+- **Product authority:** This Product Contract. The audit items in `docs/ideas/done/pre-public-repo-audit.md` are input. The About-pane part of `docs/ideas/done/about-longhand-and-readme.md` is not active scope.
 - **Open blockers:** None.
 
 ---
@@ -113,7 +113,7 @@ On 2026-10-11, the history of `main` was written again to remove home infrastruc
 ### Sources / Research
 
 - `docs/ideas/done/pre-public-repo-audit.md`: the audit items and the old-commit context.
-- `docs/ideas/next/about-longhand-and-readme.md`: the README idea and its About-pane part.
+- `docs/ideas/done/about-longhand-and-readme.md`: the README idea and its About-pane part.
 - `docs/solutions/workflow-issues/keep-home-network-details-out-of-the-repository.md`: what the history rewrite removed, and the search pattern.
 - `docs/preview-builds.md`: the public preview builds, the `preview` environment and the source of each secret.
 - `deny.toml`, `about.toml`, `licences/`, and each `PROVENANCE.md`: licence policy and borrowed-code records (anarlog MIT, none from its `enterprise/` folder; Handy MIT; DTLN-aec MIT; NeMo Apache-2.0).
@@ -355,7 +355,7 @@ flowchart TB
 
 **Files:**
 - Move: `docs/ideas/done/pre-public-repo-audit.md` to `docs/ideas/done/`
-- Modify: `docs/ideas/next/about-longhand-and-readme.md`
+- Modify: `docs/ideas/done/about-longhand-and-readme.md`
 
 **Approach:**
 1. Move the audit idea with `bun scripts/ideas.ts move`, as `docs/ideas/README.md` requires.
