@@ -5,6 +5,7 @@ area: interface
 added: 2026-09-28
 source: "a conversation on 2026-09-28"
 related: [clickable-links-in-notes]
+plan: docs/plans/2026-10-11-2138-feat-about-longhand-plan.md
 ---
 
 # About Longhand
