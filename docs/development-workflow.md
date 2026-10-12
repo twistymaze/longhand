@@ -56,7 +56,7 @@ The macOS and Windows checks run on self-hosted runners, which keep the build ou
 
 Docs-only changes need no PR. Commit and push them directly on `main`; CI costs more than it checks for these changes. This includes plans, ideas, solutions, `CONCEPTS.md`, and agent guidance.
 
-Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, watch it until CI passes.
+Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open, also for a small fix.
 
 ### Before a PR
 
@@ -96,6 +96,6 @@ After approval:
 7. Run `ce-compound` for the work that the PR shipped.
 8. Move the idea of the work to `done/` with `bun scripts/ideas.ts move <slug> done`, and write the PR in its file ([Feature ideas](ideas/README.md)). Also move any other idea that the PR made unnecessary. Then run `bun scripts/ideas.ts check`.
 9. Commit the resulting docs on `main` and push them. Commit only this session's files by path, and run `git pull --rebase origin main` before the push.
-10. Make sure that nothing is left. `git worktree list` shows only the main checkout and the worktrees of open work. `git branch` and `git branch -r` show only `main` and the branches of open PRs. Report each remaining item and its reason.
+10. Make sure that nothing is left. `git worktree list` shows only the main checkout and the worktrees of open work. `git branch` and `git branch -r` show only `main` and the branches of open PRs. Report each remaining item and its reason. Also report whether `ce-babysit-pr` watched the PR until it was ready to merge ([Checks and CI](#checks-and-ci)).
 
 The Claude Code auto mode classifier blocks `git branch -D` and `git push origin --delete`. If it blocks a step, do not try another way. Give the user the exact commands and continue with the other steps.
