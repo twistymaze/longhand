@@ -105,7 +105,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v3-rust
+          prefix-key: v4-rust
 
       - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
         if: runner.os == 'macOS'
@@ -125,8 +125,14 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: runner.os == 'macOS' && runner.environment == 'github-hosted'
         with:
-          prefix-key: v3-rust
+          prefix-key: v4-rust
           cache-on-failure: true
+
+      # After the Windows build setup and rust-cache, before the first
+      # compile. sccache also finds the compiled crates and C/C++ objects
+      # that rust-cache and target/ do not have, for example after a
+      # Cargo.lock change.
+      - uses: ./.github/actions/sccache-setup
 
       # The Bun version comes from packageManager in package.json, so every
       # runner uses the same version and a self-hosted runner keeps its
@@ -433,8 +439,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.version.outputs.due == 'true'
         with:
-          prefix-key: v2-release
+          prefix-key: v3-release
           cache-on-failure: false
+
+      - uses: ./.github/actions/sccache-setup
+        if: steps.version.outputs.due == 'true'
 
       - name: Install frontend dependencies
         if: steps.version.outputs.due == 'true'
