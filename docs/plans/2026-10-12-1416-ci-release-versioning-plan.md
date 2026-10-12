@@ -37,7 +37,7 @@ Longhand is an app, not a library. No other software depends on its version numb
 - **`feat` means any visible gain, and the headings follow.** Governs R6, R8. (session-settled: user-directed — chosen over "new things only" and over a broad `feat` with the current headings: `feat` no longer has a release cost, so it can describe improvements correctly.)
 - **The minor marker is `+` after the type or scope.** Governs R2, R9. It is one character in the same place as `!`, and it has no other meaning. (session-settled: user-directed — chosen over `!` for minor, a `Release: minor` line in the squash commit body, and a `[minor]` word at the end of the title: the user wanted an unobtrusive marker, no new Conventional Commit type, and no change to the standard meaning of `!`.)
 - **No new Conventional Commit types.** Governs R2, R9. (session-settled: user-directed — chosen over a new `minor:` type: the user does not want invented prefixes.)
-- **git-cliff advises; the release script decides.** Governs R5. git-cliff only reads the history and prints; it never creates a tag. (session-settled: user-directed — chosen over `bump_type` in `cliff.toml`, which also turns off the major release from `!`, and over a `cliff.toml`-only rule that renames `feat` before the version calculation.)
+- **git-cliff gives the next patch; the release script raises it.** Governs R5. With `bump_type = "patch"`, git-cliff returns only the latest tag (no release due) or the next patch. The script raises that version to a minor or a major from the markers, and it never lowers a version. git-cliff only reads the history and prints; it never creates a tag. (session-settled: user-directed — chosen over standard semver rules with a script that lowers a minor to a patch, and over a `cliff.toml`-only rule that renames `feat` before the version calculation.)
 - **A major release stays a user request with `!`.** Governs R3. The user said a major release can be a manual operation. The current rule already is one: an agent writes `!` only when the user asks. So no separate manual workflow is needed. (session-settled: user-approved — proposed with that tradeoff in the summary, and the user confirmed it.)
 - **The squash commit body stays empty.** Governs R12. The marker is in the title, so no repository setting changes.
 
@@ -49,7 +49,7 @@ Longhand is an app, not a library. No other software depends on its version numb
 - R2. A commit whose subject has `+` directly after the type or scope and before the colon (`feat+:`, `feat(capture)+:`) makes the release a minor release. `+` is valid only on `feat`.
 - R3. A commit whose subject has `!` after the type or scope makes a major release. A `BREAKING CHANGE` footer has no effect.
 - R4. When the commits since the latest release tag have different effects, the highest effect applies. `docs`, `ci`, `test`, `chore` and `style` commits make no release, as now.
-- R5. git-cliff decides whether a release is due, and it writes the release notes. The release script chooses the version level from the original commit subjects, and does not accept git-cliff's level.
+- R5. git-cliff decides whether a release is due, gives the next patch version, and writes the release notes. The release script raises that version to a minor (R2) or a major (R3) from the original commit subjects.
 
 **Release notes**
 
@@ -101,8 +101,8 @@ Longhand is an app, not a library. No other software depends on its version numb
 All results below came from git-cliff 2.14.2, the version that CI pins (`.github/workflows/ci.yml`), in a scratch repository.
 
 - `features_always_bump_minor = false` has no effect at 1.x: a `feat` still makes a minor.
-- `bump_type = "patch"` makes `feat!` a patch too. This is why the script decides the level and `cliff.toml` keeps the standard rules.
-- A `BREAKING CHANGE:` line in a commit body makes git-cliff return a major (v2.0.0). R3 and R5 make the script ignore it.
+- `bump_type = "patch"` gives the next patch for `feat`, `fix` and also `feat!`, and gives the latest tag (no release) when only skipped types follow it. So the script must detect `!` itself (R3, R5).
+- With the standard rules, a `BREAKING CHANGE:` line in a commit body makes git-cliff return a major (v2.0.0). With `bump_type = "patch"`, git-cliff never returns a major, so that line cannot start one.
 - Without a preprocessor, git-cliff skips `feat(capture)+:` with a parse warning (no release, not in the notes), but it parses `feat+:` as an unknown type `feat+`. A `commit_preprocessors` entry that removes the `+` before parsing makes both forms a normal `feat`, and the notes show them without the `+`.
 - The notes template uses only the commit subject, so a commit body does not appear in the notes.
 - Current behaviour: `cliff.toml`, `scripts/release-version.ts` (it takes git-cliff's version as it is), `.github/workflows/pr-title.yml`, `docs/releases.md`, `CLAUDE.md` (commit type rules).
