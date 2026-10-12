@@ -9,6 +9,8 @@
 #   PR_TITLE='feat(capture)+: record system audio' scripts/check-pr-title.sh
 #
 # The title comes in an environment variable, so the shell never runs it.
+# The marker grammar and the types that make no release are also in
+# scripts/release-version.ts and cliff.toml. Change them together.
 
 set -euo pipefail
 

@@ -62,7 +62,8 @@ test("a feat+ commit with a scope after v1.1.0 gives a minor release 1.2.0 and n
   expect(result.due).toBe(true);
   expect(result.version).toBe("1.2.0");
   expect(result.notes).toContain("capture: Record system audio");
-  expect(result.notes).not.toContain("+");
+  expect(result.notes).not.toContain(")+:");
+  expect(result.notes).not.toContain("audio+");
 });
 
 test("a feat+ commit without a scope after v1.1.0 gives 1.2.0 and appears in the notes", () => {

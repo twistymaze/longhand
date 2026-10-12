@@ -18,6 +18,9 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
+// The marker grammar is also in cliff.toml (commit_preprocessors),
+// scripts/check-pr-title.sh and .github/workflows/pr-title.yml. Change them
+// together.
 /// A subject that asks for a minor release: `feat+:` or `feat(scope)+:`.
 const MINOR_MARKER = /^feat(\([^)]*\))?\+:/;
 /// A subject that asks for a major release: a release type with `!`.
@@ -66,9 +69,8 @@ function raise(latestTag: string, bumped: string, subjects: string[]): string {
 
 export function releaseFacts(tools: Tools): ReleaseFacts {
   const latest = latestReleaseTag(tools.tags());
-  const bumped = decide(latest, tools.cliff(["--bumped-version"]));
-  const due = bumped.due;
-  const version = due && latest !== null ? raise(latest, bumped.version, tools.subjects(latest)) : bumped.version;
+  const { due, version: bumped } = decide(latest, tools.cliff(["--bumped-version"]));
+  const version = due && latest !== null ? raise(latest, bumped, tools.subjects(latest)) : bumped;
   const notes = due ? tools.cliff(["--unreleased", "--tag", `v${version}`, "--strip", "all"]).trim() + "\n" : null;
   return { due, version, notes };
 }
