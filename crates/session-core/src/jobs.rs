@@ -219,6 +219,16 @@ const AGAIN_STAGES: [Stage; 7] = [
     Stage::Save,
 ];
 
+/// The stages whose checkpoints [`Store::start_over`] removes: each stage
+/// that derives the transcript from the recorded audio.
+const START_OVER_STAGES: [Stage; 5] = [
+    Stage::Assemble,
+    Stage::Transcribe,
+    Stage::Diarize,
+    Stage::Join,
+    Stage::Verify,
+];
+
 /// The stage name that holds a copy of `stage`'s checkpoints from before a
 /// Transcribe Again run. [`Store::checkpoints`] never reads it.
 fn previous_key(stage: Stage) -> String {
@@ -962,6 +972,25 @@ impl Store {
                     params![id, key],
                 )?;
             }
+        }
+        tx.execute("DELETE FROM recognition_output WHERE session_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_epochs WHERE session_id=?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove the recognition work of a failed note, so that the next run
+    /// starts again from the recorded audio. The audio, the notes, the
+    /// title and the copies that a Transcribe Again run set aside stay.
+    /// Summarize and Save restart because the transcript identity is gone.
+    pub fn start_over(&mut self, id: &str) -> Result<()> {
+        self.require(id)?;
+        let tx = self.conn.transaction()?;
+        for stage in START_OVER_STAGES {
+            tx.execute(
+                "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                params![id, stage_key(stage)],
+            )?;
         }
         tx.execute("DELETE FROM recognition_output WHERE session_id=?1", [id])?;
         tx.execute("DELETE FROM recognition_epochs WHERE session_id=?1", [id])?;

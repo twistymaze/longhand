@@ -399,7 +399,7 @@ fn prepare_fingerprints(
                 .map_err(|e| failed(e.to_string()))?;
             if file_digest(&dir.join(crate::join::TRANSCRIPT_FILE))? != header.transcript {
                 return Err(failed(
-                    "Transcript changed outside recognition. Choose Transcribe Again explicitly; saved work is preserved.",
+                    "The transcript changed outside Longhand. Saved work is preserved.",
                 ));
             }
         }
@@ -414,9 +414,7 @@ fn prepare_fingerprints(
         f.asr == next.asr && f.audio == next.audio && f.preprocessing == next.preprocessing
     });
     if !live.is_empty() && !live_matches {
-        return Err(failed(
-            "Saved live text has no compatible audio and model identity. Choose Transcribe Again explicitly.",
-        ));
+        return Err(failed("The live text does not match the recorded audio."));
     }
     if old.as_ref() == Some(&next) {
         if let Some(prefix) = &prefix {

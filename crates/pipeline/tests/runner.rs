@@ -1236,7 +1236,7 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
 
     // The decoder recovers; only the blank window runs again.
     r.script.blank_on.lock().unwrap().clear();
-    r.runner.retry("s").unwrap();
+    r.runner.retry("s", false).unwrap();
     assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
@@ -1246,6 +1246,55 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
         transcript.contains(&format!("call {windows}")),
         "{transcript}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_that_fails_at_the_same_stage_offers_to_start_over_from_the_audio() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    *r.script.blank_on.lock().unwrap() = vec![1];
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(
+        outcome,
+        Outcome::Failed {
+            stage: Stage::Verify,
+            ..
+        }
+    ));
+    let windows = plan(&r.store, "s").windows.len();
+    assert!(
+        !pipeline::runner::retry_starts_over(&r.store, "s").unwrap(),
+        "the first failure continues from the checkpoints"
+    );
+
+    // The retry continues from the checkpoints and fails at the same stage.
+    r.script.blank_on.lock().unwrap().push(windows);
+    r.runner.retry("s", false).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(
+        outcome,
+        Outcome::Failed {
+            stage: Stage::Verify,
+            ..
+        }
+    ));
+    assert!(pipeline::runner::retry_starts_over(&r.store, "s").unwrap());
+
+    // The start-over transcribes each window again from the recorded audio.
+    r.script.blank_on.lock().unwrap().clear();
+    let before = r.script.calls.load(Ordering::SeqCst);
+    r.runner.retry("s", true).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(r.script.calls.load(Ordering::SeqCst), before + windows);
+    assert!(!pipeline::runner::retry_starts_over(&r.store, "s").unwrap());
 }
 
 // ------------------------------------------------------------- gap fill (U7)
@@ -3861,7 +3910,7 @@ async fn a_resumed_session_whose_folder_went_missing_names_it_and_retries_once_i
     assert!(r.root.join("s").exists(), "the new recording is kept");
 
     std::fs::rename(&moved, &folder).unwrap();
-    r.runner.retry("s").unwrap();
+    r.runner.retry("s", false).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert!(folder.join("audio/segment-02.opus").exists());
 }
@@ -5890,7 +5939,7 @@ async fn changed_processing_audio_during_summary_stops_save_and_retry_verifies_a
     );
     let calls = r.script.calls.load(Ordering::SeqCst);
     r.events.lock().unwrap().clear();
-    r.runner.retry("s").unwrap();
+    r.runner.retry("s", false).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_fingerprints_match(&saved_folder(&r, "s"));
     assert!(
@@ -6234,7 +6283,7 @@ async fn a_replacement_with_an_unwritable_summary_rolls_forward_on_retry() {
     std::fs::remove_dir_all(folder.join("summary.md")).unwrap();
     std::fs::write(folder.join("summary.md"), summary).unwrap();
     let calls = r.script.calls.load(Ordering::SeqCst);
-    r.runner.retry("s").unwrap();
+    r.runner.retry("s", false).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
         r.script.calls.load(Ordering::SeqCst),
@@ -7499,7 +7548,7 @@ async fn publication_notes_change_keeps_previous_result_and_retry_summarizes_cur
             .exists()
     );
     let calls = r.script.calls.load(Ordering::SeqCst);
-    r.runner.retry("s").unwrap();
+    r.runner.retry("s", false).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(r.script.calls.load(Ordering::SeqCst), calls);
     assert!(
@@ -7711,7 +7760,7 @@ async fn rerun_after_the_transcript(
             doc.transcript_fingerprint = Some(session_core::folder::fingerprint(b"other"));
         }),
     }
-    r.runner.retry("s").unwrap();
+    r.runner.retry("s", false).unwrap();
     let outcome = r.runner.run_next().await.unwrap().1;
     (r, home, summary, outcome)
 }

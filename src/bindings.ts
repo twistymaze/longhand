@@ -865,11 +865,12 @@ async transcribeAgain(sessionId: string, modelId: string) : Promise<Result<null,
 },
 /**
  * Retry a failed session, or one waiting for its destination, from its
- * checkpoints.
+ * checkpoints. With `start_over`, the run starts again from the recorded
+ * audio (`retry_starts_over` of the note detail).
  */
-async retrySession(sessionId: string) : Promise<Result<null, string>> {
+async retrySession(sessionId: string, startOver: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("retry_session", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("retry_session", { sessionId, startOver }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2119,6 +2120,11 @@ live_transcript: boolean;
  * A Transcribe Again run waits or runs (KTD14). It has no live text.
  */
 transcribe_again: boolean; 
+/**
+ * The same stage failed again after a Retry. The next Retry starts
+ * over from the recorded audio, after the user confirms.
+ */
+retry_starts_over: boolean; 
 /**
  * Why the last Transcribe Again run failed. The note kept its
  * previous transcript and summary (R19).

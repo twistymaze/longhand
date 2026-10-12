@@ -41,6 +41,32 @@ pub const STAGES: &[Stage] = &[
     Stage::Save,
 ];
 
+/// The stage that the last Retry of a failed note continued from.
+const RETRIED_STAGE: &str = "retried-stage";
+
+/// The stages whose repeated failure a start-over can clear: each stage
+/// that derives the transcript from the recorded audio.
+const START_OVER_STAGES: [Stage; 4] = [
+    Stage::Transcribe,
+    Stage::Diarize,
+    Stage::Join,
+    Stage::Verify,
+];
+
+/// True when a Retry continued from the checkpoints and the same stage
+/// failed again. The next Retry then starts over from the recorded audio,
+/// so that a checkpoint the run cannot use does not stop the note forever.
+pub fn retry_starts_over(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
+    let store = lock(store);
+    let Some(SessionState::ProcessingFailed { stage, .. }) =
+        store.session(session_id)?.map(|r| r.state)
+    else {
+        return Ok(false);
+    };
+    Ok(START_OVER_STAGES.contains(&stage)
+        && store.result_state(session_id, RETRIED_STAGE)? == Some(serde_json::to_value(stage)?))
+}
+
 const POLL: Duration = Duration::from_secs(2);
 const HEARTBEAT: Duration = Duration::from_secs(10);
 const SUSPENDED_POLL: Duration = Duration::from_millis(250);
@@ -373,9 +399,26 @@ impl Runner {
     /// The user's Retry on a failed session: put it back in line, keeping
     /// its place and its checkpoints. A failed verification first forgets
     /// the windows that missed speech, so only those are transcribed again.
-    pub fn retry(&self, session_id: &str) -> Result<(), StageError> {
+    /// With `start_over`, the recognition work is removed first and the run
+    /// starts again from the recorded audio (see [`retry_starts_over`]).
+    pub fn retry(&self, session_id: &str, start_over: bool) -> Result<(), StageError> {
         let failed = lock(&self.env.store).session(session_id)?.map(|r| r.state);
         if let Some(SessionState::ProcessingFailed { stage, .. }) = failed
+            && START_OVER_STAGES.contains(&stage)
+        {
+            let mut store = lock(&self.env.store);
+            if start_over {
+                log::info!(
+                    "{session_id} starts over from the recorded audio after {stage:?} failed again"
+                );
+                store.start_over(session_id)?;
+                store.clear_result_state(session_id, RETRIED_STAGE)?;
+            } else {
+                store.set_result_state(session_id, RETRIED_STAGE, &serde_json::to_value(stage)?)?;
+            }
+        }
+        if !start_over
+            && let Some(SessionState::ProcessingFailed { stage, .. }) = failed
             && stage == Stage::Verify
         {
             if crate::recognition::snapshot(&self.env.store, session_id)?.is_some() {
@@ -413,7 +456,7 @@ impl Runner {
         let waiting = lock(&self.env.store).sessions_in("awaiting_destination")?;
         let ids: Vec<String> = waiting.into_iter().map(|r| r.id).collect();
         for id in &ids {
-            self.retry(id)?;
+            self.retry(id, false)?;
         }
         Ok(ids)
     }
@@ -1094,6 +1137,9 @@ impl Runner {
             }
         }
         log::info!("processing of {id} finished");
+        if let Err(e) = lock(&self.env.store).clear_result_state(id, RETRIED_STAGE) {
+            log::warn!("could not clear the retried stage of {id}: {e}");
+        }
         emit(RunnerEvent::Finished {
             session_id: id.to_string(),
         });

@@ -798,7 +798,7 @@ fn audio_changes_and_external_transcript_edits_block_stale_reuse() {
         run(Stage::Verify)
             .unwrap_err()
             .to_string()
-            .contains("Transcript changed")
+            .contains("transcript changed outside Longhand")
     );
     assert_eq!(
         std::fs::read_to_string(dir.join("transcript.md")).unwrap(),
