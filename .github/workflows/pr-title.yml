@@ -1,8 +1,8 @@
-# Checks that each PR title is a Conventional Commit with an allowed type.
-# Main allows only squash merges, and the squash commit title is the PR title,
-# so this title decides whether the merge makes a release and which part of
-# the version goes up (docs/releases.md). The job name "PR title" is a
-# required check in the main ruleset, so it never changes.
+# Checks that each PR title is a Conventional Commit with an allowed type and
+# correct release markers. Main allows only squash merges, and the squash
+# commit title is the PR title, so this title decides whether the merge makes
+# a release and which part of the version goes up (docs/releases.md). The job
+# name "PR title" is a required check in the main ruleset, so it never changes.
 #
 # The workflow uses pull_request, not pull_request_target: it needs no
 # secrets and no write permission. It runs for every PR, docs-only PRs too,
@@ -15,6 +15,7 @@ on:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
+  contents: read
   pull-requests: read
 
 jobs:
@@ -43,3 +44,18 @@ jobs:
             chore
             style
           requireScope: false
+          # The default pattern with an optional `+` (a minor release) before
+          # the colon. The action accepts `!` through its own breaking-change
+          # pattern, which no input changes.
+          headerPattern: '^(\w*)(?:\((.*)\))?\+?: (.*)$'
+          headerPatternCorrespondence: type, scope, subject
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The action cannot reject `+` on other types or `!` on types that make
+      # no release. The title goes in an environment variable, so the shell
+      # never runs it.
+      - name: Release markers
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: scripts/check-pr-title.sh
