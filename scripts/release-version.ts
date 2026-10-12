@@ -5,15 +5,23 @@
 //     `version=<X.Y.Z>` for $GITHUB_OUTPUT. When a release is due, it writes
 //     the release notes to <notes file>.
 //
-// git-cliff computes the version from the release tags and the commits with
-// the rules in cliff.toml (R9). With no release tag, git-cliff returns the
-// initial tag v1.0.0 (R8). When the bumped version is the same as the latest
-// release tag, only skipped commits follow that tag, and no release is due.
+// git-cliff finds whether a release is due and gives the next patch version
+// with the rules in cliff.toml. When the bumped version is the same as the
+// latest release tag, only skipped commits follow that tag, and no release is
+// due. With no release tag, git-cliff returns the initial tag v1.0.0, and the
+// script uses it as it is. Otherwise the script reads the original commit
+// subjects since the latest release tag and raises the version: a `!` after
+// the type or scope of a release type gives a major, and a `+` after the type
+// or scope of `feat` gives a minor (docs/releases.md).
 
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
+/// A subject that asks for a minor release: `feat+:` or `feat(scope)+:`.
+const MINOR_MARKER = /^feat(\([^)]*\))?\+:/;
+/// A subject that asks for a major release: a release type with `!`.
+const MAJOR_MARKER = /^(feat|fix|perf|refactor|revert|build)(\([^)]*\))?!:/;
 
 /// The commands that the script runs. Tests replace them with a fake.
 export type Tools = {
@@ -21,6 +29,8 @@ export type Tools = {
   tags(): string[];
   /// Runs git-cliff with the arguments and returns its standard output.
   cliff(args: string[]): string;
+  /// The subjects of the commits after the tag `since`, up to HEAD.
+  subjects(since: string): string[];
 };
 
 export type ReleaseFacts = { due: boolean; version: string; notes: string | null };
@@ -41,9 +51,24 @@ export function decide(latestTag: string | null, bumped: string): { due: boolean
   return { due: latestTag === null || `v${version}` !== latestTag, version };
 }
 
+/// The version of a due release after the latest tag `latestTag`. git-cliff
+/// must give the next patch. A marker in a subject raises it from the tag.
+function raise(latestTag: string, bumped: string, subjects: string[]): string {
+  const [major, minor, patch] = latestTag.slice(1).split(".").map(Number);
+  const nextPatch = `${major}.${minor}.${patch + 1}`;
+  if (bumped !== nextPatch) {
+    throw new Error(`git-cliff gave ${bumped} after ${latestTag}, not the next patch ${nextPatch}; check bump_type in cliff.toml`);
+  }
+  if (subjects.some((subject) => MAJOR_MARKER.test(subject))) return `${major + 1}.0.0`;
+  if (subjects.some((subject) => MINOR_MARKER.test(subject))) return `${major}.${minor + 1}.0`;
+  return nextPatch;
+}
+
 export function releaseFacts(tools: Tools): ReleaseFacts {
   const latest = latestReleaseTag(tools.tags());
-  const { due, version } = decide(latest, tools.cliff(["--bumped-version"]));
+  const bumped = decide(latest, tools.cliff(["--bumped-version"]));
+  const due = bumped.due;
+  const version = due && latest !== null ? raise(latest, bumped.version, tools.subjects(latest)) : bumped.version;
   const notes = due ? tools.cliff(["--unreleased", "--tag", `v${version}`, "--strip", "all"]).trim() + "\n" : null;
   return { due, version, notes };
 }
@@ -66,6 +91,7 @@ export function systemTools(repository: string, config: string): Tools {
   return {
     tags: () => run(["git", "tag", "--merged", "HEAD"], repository).split("\n").filter(Boolean),
     cliff: (args) => run(["git-cliff", "--config", config, "--repository", repository, ...args], repository),
+    subjects: (since) => run(["git", "log", "--format=%s", `${since}..HEAD`], repository).split("\n").filter(Boolean),
   };
 }
 
