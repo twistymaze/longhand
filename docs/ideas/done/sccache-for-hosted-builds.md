@@ -20,6 +20,7 @@ The hosted builds start with an empty disk. When the rust-cache key changes, or 
 
 ## Notes / Current state
 
+- Done on 2026-10-12 in [PR 11](https://github.com/twistymaze/longhand/pull/11). Every CI build of the app (the checks on hosted and self-hosted runners, and both release builds) compiles Rust, C and C++ through sccache, beside rust-cache. The release profile also changed to no LTO and 16 codegen units, which made release builds 7 to 11 minutes shorter. The measurements: `docs/solutions/performance-issues/sccache-compile-cache-experiment.md`.
 - The self-hosted PR runners keep `target/` between jobs, so they would gain little. The idea is for the hosted jobs only.
 - No Windows-specific measurements were found. Test on the Windows release build first, because it is the slowest job.
 - sccache does not cache linking. `link.exe` time on Windows stays.

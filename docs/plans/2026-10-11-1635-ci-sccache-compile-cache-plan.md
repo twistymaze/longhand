@@ -91,7 +91,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 - Moving the release build to a home runner (`docs/ideas/someday/home-signing-runner.md`) is out of scope.
 - Link time is out of scope, except for the LTO setting of the release profile (R18). The choice of linker is out of scope. sccache does not cache linking, and crates that the linker produces (bin, cdylib, proc-macro) are not cached. The Vulkan shader compiles (`glslc`) are not cached either.
 - Test run time is out of scope. sccache does not change it.
-- Turborepo is out of scope (rejected in `docs/ideas/next/sccache-for-hosted-builds.md`).
+- Turborepo is out of scope (rejected in `docs/ideas/done/sccache-for-hosted-builds.md`).
 - Considered and not built: a retry layer for lost sccache cache writes (GitHub limits cache uploads to 200 a minute, and sccache 0.17 drops a write that gets HTTP 429). R15 reports the write errors instead. A retry layer would be worth it only if the write errors turn out to decide the result.
 - Considered and not built: a script that collects the measurements. The report is one table from `gh run view` step times and the uploaded sccache stats, so a script would cost more than it saves. A second experiment would change this.
 
@@ -104,7 +104,7 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 
 ### Sources / Research
 
-- `docs/ideas/next/sccache-for-hosted-builds.md`: the original idea and the Turborepo rejection.
+- `docs/ideas/done/sccache-for-hosted-builds.md`: the original idea and the Turborepo rejection.
 - `docs/solutions/performance-issues/cargo-feature-unification-ci-rebuilds.md`: the cost of ggml builds, rust-cache key behaviour (`prefix-key`, exact-hit no-save), earlier Windows times, and the per-step timing recipe.
 - `.github/actions/windows-build-setup/action.yml`: the shared Windows setup that holds the Windows rust-cache step and the Dev Drive.
 - https://xuanwo.io/en-us/reports/2023-04/: one report of up to about 50% faster warm builds than rust-cache. It is one project, not a controlled test.
