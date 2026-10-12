@@ -93,7 +93,14 @@ runs:
     # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
     - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
+    # The two Windows runners share one VM user, so they share one
+    # ~/.bun/bin/bun.exe. With no fixed version, setup-bun replaces that file
+    # in each job, and Windows refuses while a job on the other runner (or a
+    # leftover process) runs it (EBUSY). With the version fixed, setup-bun
+    # keeps a matching bun.exe and does not write it.
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      with:
+        bun-version-file: package.json
 
     - name: Install frontend dependencies
       shell: bash
