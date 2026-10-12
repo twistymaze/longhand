@@ -1054,15 +1054,10 @@ mod tests {
         assert!(changes.removed.is_empty());
         assert!(store.lock().unwrap().session("A1").unwrap().is_some());
         watcher.stop();
-        assert!(
-            targets
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|t| matches!(t, Target::Folders { .. })),
-            "a change in one folder asks for a targeted scan: {:?}",
-            targets.lock().unwrap()
-        );
+        // Do not assert the target kind here. A busy system makes FSEvents
+        // drop events and send a rescan flag, which correctly asks for a
+        // full scan. The batch tests check targeted scans with fixed events.
+        assert!(!targets.lock().unwrap().is_empty());
     }
 
     #[test]
