@@ -19,4 +19,6 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 pipeline = { path = "../pipeline" }
 # The recognition settings of a Transcribe Again run.
 models = { path = "../models" }
+# The settings file and the prompt files of the test storage folder.
+shared-settings = { path = "../shared-settings" }
 tempfile = "3"

@@ -151,6 +151,30 @@ jobs:
         if: runner.os == 'macOS'
         run: bun scripts/ideas.ts check
 
+      # uv runs the skill scripts and their tests, and a Rust test runs
+      # check.py through uv (KTD13 of the safe agent edits plan). It is
+      # installed before the first `cargo test`. The scripts use only the
+      # standard library, so there is nothing to cache.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.24"
+          enable-cache: false
+
+      # The tests of the skill scripts, on the oldest Python that the
+      # scripts support and on the current Python. uv downloads each
+      # Python. The step passes when the branch has no script tests yet.
+      - name: Skill script tests
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          scripts=plugins/longhand/skills/longhand-notes/scripts
+          if [ ! -d "$scripts/tests" ]; then
+            echo "No skill script tests in $scripts/tests"
+            exit 0
+          fi
+          for python in 3.9 3.15; do
+            uv run --no-project --python "$python" python -m unittest discover -s "$scripts/tests" -t "$scripts"
+          done
+
       # msvc-dev-cmd documents that Git Bash can select GNU link.exe before MSVC.
       # Use the native Windows shell for Rust, as upstream transcribe.cpp does:
       # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
@@ -356,6 +380,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: v1-soak
+      # Each job that runs `cargo test` has uv (KTD13 of the safe agent
+      # edits plan).
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.12.24"
+          enable-cache: false
       - name: Recorder soak
         run: cargo test -p recorder --release --test soak -- --ignored --nocapture
 

@@ -1,0 +1,36 @@
+{
+  "asr_model": "parakeet-unified-en-0.6b-q80",
+  "found_speakers": 2,
+  "layout": 1,
+  "pending_type": {
+    "at": "2026-10-04T12:00:00-05:00",
+    "by": "computer-a",
+    "from": null,
+    "to": "Meetings"
+  },
+  "segments": [
+    {
+      "audio": "audio/segment-01.opus",
+      "duration_ms": 60000,
+      "index": 0,
+      "offset_ms": 0,
+      "wall_end": "2026-10-04T11:01:00-05:00",
+      "wall_start": "2026-10-04T11:00:00-05:00"
+    }
+  ],
+  "session_id": "note-vendor-call",
+  "started": "2026-10-04T11:00:00-05:00",
+  "summary": {
+    "endpoint_host": "llm.example.com",
+    "model": "example-model",
+    "prompt_id": "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10",
+    "prompt_name": "Weekly review",
+    "status": "complete"
+  },
+  "summary_fingerprint": "9ce85be33bf95403de75902208cd89105cfb93263205009276369908dc889454",
+  "transcript_fingerprint": "c9491862377ac47fed58d7a7a7ed1a7bd30420a13d9a063dcbd88c3cf44774df",
+  "written_title": {
+    "source": "proposed",
+    "text": "Vendor call"
+  }
+}
