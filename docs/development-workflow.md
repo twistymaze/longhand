@@ -54,7 +54,7 @@ CI runs only on:
 
 The macOS and Windows checks run on self-hosted runners, which keep the build output of the previous job. The runner setup is in a private repository, because it contains details of the home network. The repository variables `MACOS_RUNNER` and `WINDOWS_RUNNER` select the self-hosted runners. To run the checks on GitHub's runners instead, use `gh workflow run ci.yml --ref <branch> -f hosted=true`. To see whether a runner is offline, use `gh api orgs/twistymaze/actions/runners --jq '.runners[] | [.name, .status] | @tsv'`. A job for an offline self-hosted runner waits in the queue. `cargo deny` and the release builds run on GitHub's runners. On GitHub's runners, runs on `main` save the cache that new pull requests restore. For CI, docs are all Markdown files except `PROVENANCE.md`, plus `docs/`, `.claude/`, `.compound-engineering/` and the root `LICENSE`.
 
-The Markdown files of the agent skill in `plugins/` are docs for CI too: a push to `main` that changes only them runs no CI. The skill scripts (`.py`) are not docs.
+The Markdown files of the agent skill in `plugins/` match the docs pattern of the `main` push filter, so a push to `main` that changes only them runs no CI. They are not docs for the PR rule: each change to `plugins/` goes through a PR, and CI runs on each PR. Agents install the plugin from `main`, so a change there reaches users with no release.
 
 Docs-only changes need no PR. Commit and push them directly on `main`; CI costs more than it checks for these changes. This includes plans, ideas, solutions, `CONCEPTS.md`, and agent guidance.
 
