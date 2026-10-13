@@ -409,23 +409,32 @@ def matches(relative, patterns):
 # ---------------------------------------------------------------- longhand.json
 
 
+def read_json_object(path, file_name):
+    """The JSON object in the file at `path`: (object or None, state). The
+    state is "ok", or a text that tells why the file cannot be used."""
+    try:
+        text = read_text(path)
+    except (OSError, UnicodeDecodeError) as error:
+        return None, "%s cannot be read: %s" % (file_name, error)
+    try:
+        value = json.loads(text)
+    except ValueError as error:
+        line = getattr(error, "lineno", None)
+        return None, Unreadable("does not parse as JSON", line).describe(file_name)
+    if not isinstance(value, dict):
+        return None, "%s is not a JSON object" % file_name
+    return value, "ok"
+
+
 def read_record(folder):
     """The records of a note folder: (record or None, state). The state is
     "ok", or a text that tells why the records cannot be used."""
     path = os.path.join(folder, NOTE_RECORD_FILE)
     if not os.path.isfile(path):
         return None, "no %s yet: the sync has not delivered it" % NOTE_RECORD_FILE
-    try:
-        text = read_text(path)
-    except (OSError, UnicodeDecodeError) as error:
-        return None, "%s cannot be read: %s" % (NOTE_RECORD_FILE, error)
-    try:
-        record = json.loads(text)
-    except ValueError as error:
-        line = getattr(error, "lineno", None)
-        return None, Unreadable("does not parse as JSON", line).describe(NOTE_RECORD_FILE)
-    if not isinstance(record, dict):
-        return None, "%s is not a JSON object" % NOTE_RECORD_FILE
+    record, state = read_json_object(path, NOTE_RECORD_FILE)
+    if record is None:
+        return None, state
     layout = record.get("layout")
     if not isinstance(layout, int) or isinstance(layout, bool):
         return None, "%s has no layout number" % NOTE_RECORD_FILE
@@ -704,7 +713,6 @@ def fresh_markers(folder, at=None):
         if not name.startswith(IN_USE_PREFIX) or len(name) == len(IN_USE_PREFIX):
             continue
         path = os.path.join(folder, name)
-        refreshed = None
         try:
             refreshed = parse_time(json.loads(read_text(path)).get("refreshed_at"))
         except (OSError, ValueError, AttributeError, UnicodeDecodeError):
@@ -765,6 +773,16 @@ def read_note(root, relative, note_type, at=None):
         if record.get("pending_type"):
             note["busy"].append("a move to another type waits (pending_type)")
     return note
+
+
+def unusable_reasons(note):
+    """Why an agent must not edit `note` now. An empty list when it can."""
+    reasons = list(note["busy"])
+    if note["record"] != "ok":
+        reasons.append(note["record"])
+    if note["session_md"] != "ok":
+        reasons.append(note["session_md"])
+    return reasons
 
 
 def notes(root, at=None):
@@ -915,10 +933,6 @@ def safe_file_name(name):
     if any(first.upper() == reserved for reserved in _PROMPT_RESERVED):
         stem = "_" + stem
     return stem + ".md"
-
-
-def same_name(a, b):
-    return a.strip().lower() == b.strip().lower()
 
 
 # ---------------------------------------------------------------- output

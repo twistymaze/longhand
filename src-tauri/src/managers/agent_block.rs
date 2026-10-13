@@ -140,6 +140,11 @@ struct Target {
 }
 
 impl Target {
+    /// Whether the file has a block that an older Longhand wrote.
+    fn has_older_block(&self) -> bool {
+        matches!(self.found, Found::Block { version, .. } if version < BLOCK_VERSION)
+    }
+
     /// The text of the file with `block` in place of the old block, or
     /// after the old text when the file has no block.
     fn with_block(&self) -> String {
@@ -261,18 +266,18 @@ fn damaged(targets: &[Target]) -> Option<AgentBlockStatus> {
         })
 }
 
-/// Why Longhand cannot write the storage folder `root`, or `None` when it
-/// can.
-fn unavailable(root: Option<&Path>) -> Option<String> {
+/// The storage folder `root` when Longhand can write it, or the reason
+/// why it cannot.
+fn writable_root(root: Option<&Path>) -> Result<&Path, String> {
     let Some(root) = root else {
-        return Some("No storage folder is set.".into());
+        return Err("No storage folder is set.".into());
     };
     match destination::check(root, 0) {
-        DestinationStatus::Ready { .. } | DestinationStatus::LowSpace { .. } => None,
+        DestinationStatus::Ready { .. } | DestinationStatus::LowSpace { .. } => Ok(root),
         DestinationStatus::Missing { .. } | DestinationStatus::NotADirectory { .. } => {
-            Some("The storage folder is not available.".into())
+            Err("The storage folder is not available.".into())
         }
-        DestinationStatus::NotWritable { message, .. } => Some(format!(
+        DestinationStatus::NotWritable { message, .. } => Err(format!(
             "Longhand can’t write to the storage folder: {message}"
         )),
     }
@@ -281,13 +286,9 @@ fn unavailable(root: Option<&Path>) -> Option<String> {
 /// The state of the block in the storage folder `root`. This writes
 /// nothing into the files.
 pub fn status(root: Option<&Path>) -> AgentBlockStatus {
-    if let Some(reason) = unavailable(root) {
-        return AgentBlockStatus::Unavailable { reason };
-    }
-    let Some(root) = root else {
-        return AgentBlockStatus::Unavailable {
-            reason: "No storage folder is set.".into(),
-        };
+    let root = match writable_root(root) {
+        Ok(root) => root,
+        Err(reason) => return AgentBlockStatus::Unavailable { reason },
     };
     match targets(root) {
         Err(reason) => AgentBlockStatus::Unavailable { reason },
@@ -309,26 +310,18 @@ pub fn status(root: Option<&Path>) -> AgentBlockStatus {
 /// damaged markers stops the write of both files. Returns the state after
 /// the write, or an error that names the file.
 pub fn add(root: Option<&Path>) -> Result<AgentBlockStatus, String> {
-    if let Some(reason) = unavailable(root) {
-        return Err(reason);
-    }
-    let Some(root) = root else {
-        return Err("No storage folder is set.".into());
-    };
+    let root = writable_root(root)?;
     let targets = targets(root)?;
     if let Some(damaged) = damaged(&targets) {
         return Ok(damaged);
     }
     for target in &targets {
-        let write = match target.found {
-            Found::Block { version, .. } => version < BLOCK_VERSION,
-            _ => true,
-        };
-        if write {
+        if target.found == Found::None || target.has_older_block() {
             target.write()?;
         }
     }
-    Ok(status(Some(root)))
+    // Each target now has a block of this version or of a newer version.
+    Ok(AgentBlockStatus::Added)
 }
 
 /// Replace each block in `root` that an older Longhand wrote (R30, KTD12).
@@ -343,7 +336,7 @@ pub fn update(root: &Path) -> Result<Vec<&'static str>, String> {
     }
     let mut written = Vec::new();
     for target in &targets {
-        if matches!(target.found, Found::Block { version, .. } if version < BLOCK_VERSION) {
+        if target.has_older_block() {
             target.write()?;
             written.push(target.name);
         }

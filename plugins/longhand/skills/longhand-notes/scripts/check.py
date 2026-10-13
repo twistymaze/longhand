@@ -45,22 +45,8 @@ def read_settings(root):
     path = os.path.join(root, lh.LONGHAND_FOLDER, lh.SETTINGS_FILE)
     if not os.path.isfile(path):
         return {"state": "missing", "value": None}
-    try:
-        text = lh.read_text(path)
-    except (OSError, UnicodeDecodeError) as error:
-        return {"state": "%s cannot be read: %s" % (lh.SETTINGS_FILE, error), "value": None}
-    try:
-        value = json.loads(text)
-    except ValueError as error:
-        return {
-            "state": lh.Unreadable("does not parse as JSON", getattr(error, "lineno", None)).describe(
-                lh.SETTINGS_FILE
-            ),
-            "value": None,
-        }
-    if not isinstance(value, dict):
-        return {"state": "%s is not a JSON object" % lh.SETTINGS_FILE, "value": None}
-    return {"state": "ok", "value": value}
+    value, state = lh.read_json_object(path, lh.SETTINGS_FILE)
+    return {"state": state, "value": value}
 
 
 def longhand_files(root):
@@ -156,11 +142,7 @@ def cmd_snapshot(args):
     path, state = take_snapshot(root)
     lines = ["Snapshot: %s" % path, "Notes: %d" % len(state["notes"])]
     for note in state["notes"]:
-        reasons = list(note["busy"])
-        if note["record"] != "ok":
-            reasons.append(note["record"])
-        if note["session_md"] != "ok":
-            reasons.append(note["session_md"])
+        reasons = lh.unusable_reasons(note)
         if reasons:
             lines.append("  Do not edit now: %s (%s)" % (note["path"], "; ".join(reasons)))
     lh.print_lines(lines)
@@ -461,7 +443,7 @@ def compare_prompts(report, before_state, after_state):
     before, after = before_state["prompts"], after_state["prompts"]
     folder = lh.LONGHAND_FOLDER + "/" + lh.PROMPTS_FOLDER + "/"
     settings = after_state["settings"]["value"] or {}
-    for name in sorted(set(after)):
+    for name in sorted(after):
         info = after[name]
         old = before.get(name)
         if old is not None and old == info:
@@ -501,11 +483,10 @@ def compare_prompts(report, before_state, after_state):
                     "%s has the id of %s. A new prompt needs a new id from new_id.py."
                     % (where, ", ".join(folder + h for h in sorted(holders)))
                 )
-        stored = info["name"] if info["name"] is not None else name[: -len(".md")]
-        if info["name"] is not None and lh.safe_file_name(stored) != name:
-            report.changes.append(
-                "%s: Longhand renames the file to %s at its next write." % (where, lh.safe_file_name(stored))
-            )
+        if info["name"] is not None:
+            renamed = lh.safe_file_name(info["name"])
+            if renamed != name:
+                report.changes.append("%s: Longhand renames the file to %s at its next write." % (where, renamed))
     for name in sorted(set(before) - set(after)):
         old = before[name]
         moved = [other for other, info in after.items() if info["id"] == old["id"] and other not in before]
@@ -525,10 +506,9 @@ def compare_prompts(report, before_state, after_state):
 def compare_longhand_files(report, before_state, after_state):
     before, after = before_state["longhand_files"], after_state["longhand_files"]
     added, removed, changed = diff_files(before, after)
-    marker = lh.LONGHAND_FOLDER + "/" + lh.LIBRARY_MARKER
     background = lh.LONGHAND_FOLDER + "/" + lh.BACKGROUND_FILE
     for path in added + removed + changed:
-        if path == marker:
+        if lh.matches(path, lh.PROTECTED_STORAGE_PATTERNS):
             report.problems.append("%s changed. Agents must never edit it." % path)
         elif path == background:
             if path in removed:

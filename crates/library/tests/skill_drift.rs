@@ -281,6 +281,11 @@ fn snapshot(python: &[&str], root: &Path, tmp: &Path) -> String {
          Add it to _longhand.py and the references.\n{}",
         result.out
     );
+    snapshot_path(&result)
+}
+
+/// The snapshot file that a run of `check.py snapshot` names.
+fn snapshot_path(result: &Run) -> String {
     result
         .out
         .lines()
@@ -376,12 +381,7 @@ fn check_does_not_pass_an_edit_of_a_note_with_a_record_that_it_does_not_know() {
     let snapshot = run(&python, "check.py", &["snapshot"], root, tmp.path());
     assert_eq!(snapshot.code, 0, "{}", snapshot.out);
     assert!(snapshot.out.contains("future_record"), "{}", snapshot.out);
-    let path = snapshot
-        .out
-        .lines()
-        .find_map(|line| line.strip_prefix("Snapshot: "))
-        .unwrap()
-        .to_string();
+    let path = snapshot_path(&snapshot);
     add_tag(&dir);
     let result = run(&python, "check.py", &["compare", &path], root, tmp.path());
     assert_eq!(result.code, 2, "{}", result.out);

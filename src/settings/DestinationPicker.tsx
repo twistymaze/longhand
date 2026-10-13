@@ -132,12 +132,21 @@ function MoveGroup({ move, onRetry }: { move: Move; onRetry: () => void }) {
   );
 }
 
+const AGENT_INSTRUCTIONS_ABOUT =
+  "Adds instructions for AI agents, such as Claude Code and Codex, to AGENTS.md and CLAUDE.md in this folder. Your own text in these files stays.";
+
 /// The agent instructions in AGENTS.md and CLAUDE.md of the storage folder
 /// (R29). The pane reads their state when it opens, when the folder or its
 /// status changes, and when the window gets the focus, so a file that the
 /// user fixed shows at once. An automatic update of the instructions shows
 /// nothing here.
-function AgentInstructions({ folder, folderStatus }: { folder: string; folderStatus: string }) {
+function AgentInstructions({
+  folder,
+  folderStatus,
+}: {
+  folder: string;
+  folderStatus: DestinationStatus["kind"];
+}) {
   const [state, setState] = useState<AgentBlockStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -174,10 +183,9 @@ function AgentInstructions({ folder, folderStatus }: { folder: string; folderSta
     }
   };
 
-  const about = "Adds instructions for AI agents, such as Claude Code and Codex, to AGENTS.md and CLAUDE.md in this folder. Your own text in these files stays.";
   return (
     <Group header="AI agents">
-      <Row label="Agent instructions" detail={state.kind === "unavailable" ? state.reason : about}>
+      <Row label="Agent instructions" detail={state.kind === "unavailable" ? state.reason : AGENT_INSTRUCTIONS_ABOUT}>
         {state.kind === "added" ? (
           <Status tone="positive">Added</Status>
         ) : (

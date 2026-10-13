@@ -34,11 +34,7 @@ import _longhand as lh  # noqa: E402
 
 def state(note):
     """The state of a note as one text."""
-    parts = list(note["busy"])
-    if note["record"] != "ok":
-        parts.append(note["record"])
-    if note["session_md"] != "ok":
-        parts.append(note["session_md"])
+    parts = lh.unusable_reasons(note)
     if not parts:
         return "ready"
     prefix = "busy: " if note["busy"] else "not readable: "
