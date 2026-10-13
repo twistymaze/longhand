@@ -107,3 +107,7 @@ Precedents: VS Code `settings.json`, and Obsidian, whose settings and plugins ar
 - Does Longhand also write an `AGENTS.md` that points to the skill? The user's hand-made folder has one, because some agents do not load skills outside a git repository.
 
 **Strategy check:** done on 2026-10-08. The user agreed that an agent edit that the user asks for counts as what the user types. The boundary "Nothing writes into Longhand" in `STRATEGY.md` is about outside context that an integration pulls in. `STRATEGY.md` now says this.
+
+## Outcome
+
+Shipped in [#13](https://github.com/twistymaze/longhand/pull/13) on 2026-10-13, as one release. The skill is not put into the storage folder. It is a plugin in this repository (`plugins/longhand/`) that agents install from the marketplace. Settings > Storage can add agent instructions to `AGENTS.md` and `CLAUDE.md` that point to it. Longhand's own records moved into `longhand.json`, so an agent can edit the Markdown files and the shared settings files safely.

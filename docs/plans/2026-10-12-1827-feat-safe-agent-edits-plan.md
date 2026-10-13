@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** A user who works with an AI agent can ask it to read and change their Longhand notes and shared settings. Each permitted edit is safe on every computer that shares the storage folder, and the agent gets Longhand's rules with one install step.
-- **Product authority:** This Product Contract and the Key Decisions in it. The idea file is `docs/ideas/next/agent-safe-note-edits.md`.
+- **Product authority:** This Product Contract and the Key Decisions in it. The idea file is `docs/ideas/done/agent-safe-note-edits.md`.
 - **Means:** Longhand's records move into `longhand.json` in each note folder, and the skill ships as a plugin in this repository (KTD1, KTD9).
 - **Open blockers:** None.
 - **Stop conditions:** Stop and ask when a change would alter a Requirement or a session-settled Key Decision, or when the conversion could lose data that R10 protects.
@@ -179,7 +179,7 @@ flowchart TB
 
 ### Sources / Research
 
-- The idea and its earlier analysis: `docs/ideas/next/agent-safe-note-edits.md`.
+- The idea and its earlier analysis: `docs/ideas/done/agent-safe-note-edits.md`.
 - Fingerprints and the checks that use them: `crates/session-core/src/folder.rs` (`fingerprint`, `session_fingerprint`), `crates/pipeline/src/reprocess.rs`, `crates/pipeline/src/save.rs`, `crates/pipeline/src/recognition/saved_prefix.rs`. The reasons for fingerprints are KTD2 and KTD12 of `docs/plans/2026-09-25-1217-feat-one-library-across-computers-plan.md`.
 - A `session.md` that does not parse becomes an invalid problem folder with no message: `crates/library/src/scan.rs`, `crates/library/src/status.rs`. A folder that exists but gives no note is not a delete: `crates/library/src/reconcile.rs`.
 - The rules for shared settings in a synced folder: `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`. The prompt ids: `crates/shared-settings/src/prompts.rs`. The local and shared split: R13 of `docs/plans/2026-09-28-2343-feat-one-storage-folder-and-shared-settings-plan.md`.
@@ -532,7 +532,7 @@ flowchart TB
 - **Dependencies:** U5, U6, U7, U10.
 - **Files:** `.claude-plugin/marketplace.json`, `plugins/longhand/.claude-plugin/plugin.json`, `plugins/longhand/.codex-plugin/plugin.json` (KTD10), `plugins/longhand/skills/longhand-notes/SKILL.md`, `plugins/longhand/skills/longhand-notes/references/*.md`, `plugins/longhand/skills/longhand-notes/scripts/{_longhand,list_notes,check,new_id,folder_name}.py`, `plugins/longhand/skills/longhand-notes/scripts/tests/`, `README.md`.
 - **Approach:**
-  1. Start from the user's hand-made skill (`docs/ideas/next/agent-safe-note-edits.md`, "Current state"). Rewrite it for the new layout and ASD-STE100.
+  1. Start from the user's hand-made skill (`docs/ideas/done/agent-safe-note-edits.md`, "Current state"). Rewrite it for the new layout and ASD-STE100.
   2. Keep the protected and editable file patterns as constants in `_longhand.py`, and test that `files.md` names the same patterns.
   3. `settings.md` lists the editable keys of `settings.json`, their types and limits.
   4. Each script uses PEP 723 headers, `sys.dont_write_bytecode` and stdlib only, and writes snapshots to a temporary folder outside the storage folder.
