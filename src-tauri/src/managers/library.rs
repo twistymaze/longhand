@@ -424,11 +424,13 @@ impl Worker {
         }
         let mut changed = BTreeSet::new();
         let mut removed = BTreeSet::new();
+        let mut notices = false;
         for target in &targets {
             match (self.reconcile)(target, &mut self.reconciler) {
                 Ok(changes) => {
                     changed.extend(changes.changed);
                     removed.extend(changes.removed);
+                    notices |= changes.notices;
                 }
                 Err(e) => log::error!("library: a reconcile failed: {e}"),
             }
@@ -437,6 +439,7 @@ impl Worker {
         let changes = Changes {
             changed: changed.into_iter().collect(),
             removed: removed.into_iter().collect(),
+            notices,
         };
         if !changes.is_empty() {
             (self.emit)(changes.into());

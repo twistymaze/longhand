@@ -901,6 +901,32 @@ async listSessions() : Promise<Result<SessionEntry[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The library notices of Home (KTD14). They come from the latest library
+ * scan: the command reads no folder.
+ */
+async libraryNotices() : Promise<Result<LibraryNotices, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("library_notices") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Convert the notes in the old layout to the new layout (U5, R10, R12).
+ * Only the user starts it, from the Convert notice. A note that a
+ * computer works on now is skipped. The notices show the result: the
+ * conversion sends a library change when it ends.
+ */
+async convertOldNotes() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("convert_old_notes") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("session_detail", { sessionId }) };
@@ -1306,6 +1332,29 @@ recorded_ms: number }
  * A choice in the update window. A close of the window is `Close`.
  */
 export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close"
+/**
+ * The Convert notice of Home (R11, F3). It shows only while the storage
+ * folder has a note in the old layout.
+ */
+export type ConversionNotice = { 
+/**
+ * The number of notes in the old layout.
+ */
+old_notes: number; 
+/**
+ * A conversion runs now.
+ */
+running: boolean; 
+/**
+ * The number of notes that the last conversion skipped, because a
+ * computer worked on them. A later run converts them.
+ */
+skipped: number; 
+/**
+ * The notes that the last conversion could not convert and that are
+ * still old.
+ */
+failed: FailedNote[] }
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
@@ -1346,7 +1395,12 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
  * Between segments, where the user paused the note (KTD5 of the pause
  * plan).
  */
-{ kind: "pause"; duration_ms: number } | { kind: "silence"; duration_ms: number }
+{ kind: "pause"; duration_ms: number } | { kind: "silence"; duration_ms: number } | 
+/**
+ * A line in free text, for example from an agent edit (R7, KTD7). It
+ * has no time.
+ */
+{ kind: "text"; text: string }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
 /**
  * The result of a model list request, for the Summaries pane (KTD2). It
@@ -1360,6 +1414,14 @@ export type EndpointView = { host: string; model: string;
  */
 encrypted: boolean }
 export type ExecutionSpec = { schema_version: number; catalog_revision: string; config: RecognitionConfig; artifacts: ArtifactSpec[]; runtimes: RuntimeSpec[]; capabilities: Capabilities; enabled_live_transcription: boolean; enabled_live_speaker_analysis: boolean; preprocessing_revision: string }
+/**
+ * A note that the last conversion could not convert (R10).
+ */
+export type FailedNote = { 
+/**
+ * The title of the note, or the name of its folder.
+ */
+name: string; reason: string }
 /**
  * What a rename did to the session's folder. The title changes in every
  * case.
@@ -1406,6 +1468,21 @@ export type LeaveOutcome =
  * holds notes whose folder is gone.
  */
 export type LibraryChanged = { changed: string[]; removed: string[] }
+/**
+ * The library notices of Home, from the latest library scans (KTD14).
+ * In the normal case each part is empty, and Home then shows nothing.
+ */
+export type LibraryNotices = { 
+/**
+ * `None` when the storage folder has no note in the old layout: then
+ * no conversion control shows (R11).
+ */
+conversion: ConversionNotice | null; 
+/**
+ * The note folders whose files have given no note for about one
+ * minute, sorted by folder (R6).
+ */
+problems: ProblemNote[] }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 /**
  * Why Longhand sent no model list request (R4, R16, R17).
@@ -1629,6 +1706,18 @@ export type NewNoteType =
  */
 { kind: "named"; name: string }
 /**
+ * A file of a note folder that gives no note (R6).
+ */
+export type NoteProblemView = { kind: ProblemKindView; file: string; 
+/**
+ * The line of the error in the file, when the parse tells it.
+ */
+line: number | null; 
+/**
+ * Why the actions wait, and what the user can do.
+ */
+reason: string }
+/**
  * What a type rename, merge or delete did (R6, R31).
  */
 export type NoteTypeEdit = { 
@@ -1734,6 +1823,33 @@ export type OldNotes =
  * Keep the notes in the old folder. The library forgets them (R7).
  */
 "leave"
+/**
+ * What the user can do about a file of a note folder that gives no note
+ * (R6).
+ */
+export type ProblemKindView = 
+/**
+ * `session.md` does not parse. The user can correct it.
+ */
+"user_file" | 
+/**
+ * `longhand.json` does not parse or is not there: wait for the sync,
+ * or update Longhand on the other computer.
+ */
+"record" | 
+/**
+ * A newer Longhand wrote `longhand.json`: update Longhand.
+ */
+"newer_record"
+/**
+ * A note folder whose files give no note, in the notice on Home (R6).
+ */
+export type ProblemNote = { 
+/**
+ * The title of the note, or the name of its folder when the note has
+ * no known title.
+ */
+name: string; problem: NoteProblemView }
 export type ProcessingMode = "during_recording" | "after_stop"
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | 
 /**
@@ -2205,7 +2321,12 @@ note_type: string | null;
 /**
  * The tags of the note, as their exact texts (R9, R11).
  */
-tags: string[] }
+tags: string[]; 
+/**
+ * A file of the note folder gives no note (R6). The actions that
+ * write to the note wait. `None` for a note whose files are valid.
+ */
+problem: NoteProblemView | null }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds

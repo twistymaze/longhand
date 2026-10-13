@@ -207,6 +207,21 @@ fn a_tag_edit_writes_one_tag_for_each_tag_key() {
 }
 
 #[test]
+fn a_tag_edit_of_a_note_whose_session_md_does_not_parse_is_refused_with_no_write() {
+    // R6: the broken file stays as it is, so the user can correct it.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("n", &root, started(), &[]);
+    let broken = "---\ntitle: Note n\n  bad: indent\n---\n";
+    fs::write(home.join("session.md"), broken).unwrap();
+    let records = fs::read(home.join("longhand.json")).unwrap();
+
+    assert!(b.set("n", &["follow-up"], &[]).is_err());
+    assert_eq!(fs::read_to_string(home.join("session.md")).unwrap(), broken);
+    assert_eq!(fs::read(home.join("longhand.json")).unwrap(), records);
+}
+
+#[test]
 fn a_tag_edit_of_an_old_layout_note_goes_through_the_patcher() {
     // KTD6: before the conversion, the tags of an old note still change,
     // and the records stay in `session.md`.

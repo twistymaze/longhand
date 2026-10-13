@@ -64,6 +64,17 @@ describe("TranscriptTab", () => {
     expect(resume.firstElementChild?.className).not.toContain("border-dashed");
   });
 
+  // Covers R7, KTD7: a line that an agent wrote in free text shows as
+  // plain text with no time and no speaker label.
+  test("a free-text line shows as plain text with no time", () => {
+    renderTab([turn(0, 1, "Hello."), { kind: "text", text: "A note from the agent." }, turn(9_000, 1, "Later.")]);
+    const line = screen.getByText("A note from the agent.");
+    expect(line.tagName).toBe("P");
+    expect(line.parentElement?.textContent).toBe("A note from the agent.");
+    // The plain line ends the group, so the next turn shows its label again.
+    expect(screen.getAllByText("Speaker 1")).toHaveLength(2);
+  });
+
   test("a gap with no start time says that time was not recorded", () => {
     renderTab([turn(0, 1, "Before."), { kind: "gap", at_ms: 9_000, duration_ms: 65_000, wall_start: null }]);
     expect(screen.getByText(/Not recorded/)).toBeTruthy();

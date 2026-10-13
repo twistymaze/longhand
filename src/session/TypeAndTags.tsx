@@ -54,6 +54,7 @@ export function TypeAndTags({
   onNotice,
   onChanged,
   onTypeChanged,
+  locked = null,
 }: {
   sessionId: string;
   /// The list has the note. Until then the row is empty.
@@ -69,6 +70,10 @@ export function TypeAndTags({
   /// The user changed the type of the note on this page. A type change
   /// from another computer does not call it (R9, R11, KTD5).
   onTypeChanged: () => void;
+  /// Why the type and the tags cannot change now, for example a
+  /// `session.md` that does not parse (R6). The row then shows the labels
+  /// only.
+  locked?: string | null;
 }) {
   const [shown, setShown] = useState<View | null>(present ? { noteType, tags } : null);
   // The values from the list replace the shown values, except during a
@@ -153,6 +158,23 @@ export function TypeAndTags({
   };
 
   if (!shown) return <div data-testid="type-and-tags" className="mt-2 min-h-5" />;
+
+  if (locked) {
+    return (
+      <div
+        role="group"
+        aria-label="Type and tags"
+        data-testid="type-and-tags"
+        title={locked}
+        className="mt-2 flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1"
+      >
+        <TypeLabel name={shown.noteType ?? GENERAL} />
+        {shown.tags.map((tag) => (
+          <TagLabel key={tag} text={tag} />
+        ))}
+      </div>
+    );
+  }
 
   // General is first. A note of General has the type null.
   const valid = withGeneral(types).filter((t) => t.valid);

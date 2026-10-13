@@ -11,7 +11,7 @@ const entry = (id: string, started: Date, over: Partial<SessionEntry> = {}): Ses
   stage: null,
   title: null,
   found_speakers: null,
-  storage_unavailable: false,
+  storage_unavailable: false, problem: null,
   remote: null,
   note_type: null,
   tags: [],

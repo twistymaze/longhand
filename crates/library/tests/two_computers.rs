@@ -159,6 +159,7 @@ fn changed(ids: &[&str]) -> Changes {
     Changes {
         changed: ids.iter().map(|id| id.to_string()).collect(),
         removed: Vec::new(),
+        notices: false,
     }
 }
 
@@ -166,6 +167,7 @@ fn removed(ids: &[&str]) -> Changes {
     Changes {
         changed: Vec::new(),
         removed: ids.iter().map(|id| id.to_string()).collect(),
+        notices: false,
     }
 }
 
@@ -2446,4 +2448,180 @@ fn an_old_layout_session_md_is_read_for_its_records_also_with_a_longhand_json() 
             .unwrap(),
         Some(fingerprint(HAND_EDIT.as_bytes()))
     );
+}
+
+// ---------------------------------------------------------------- problem folders (U4 of the safe agent edits plan)
+
+/// A `session.md` whose YAML does not parse at line 3 of the file.
+const BROKEN_SESSION_MD: &str = "---\ntitle: Planning\n  bad: indent\n---\n";
+
+// Covers AE3, R6: the note stays, its writes wait at once, and the notice
+// shows only after a minute. The notice goes at the next good parse.
+#[test]
+fn a_session_md_that_does_not_parse_shows_a_notice_after_a_minute() {
+    use library::scan::{FileProblem, ProblemKind};
+    use library::status::PROBLEM_WAIT;
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::write(folder.join("session.md"), BROKEN_SESSION_MD).unwrap();
+    b.sync_at(&root, start);
+    let status = Arc::clone(b.reconciler.status());
+    let problem = FileProblem {
+        kind: ProblemKind::UserFile,
+        file: "session.md",
+        line: Some(3),
+    };
+    assert_eq!(status.note("n1").problem, Some(problem.clone()));
+    assert!(status.problems().is_empty());
+    assert_eq!(b.reconciler.next_due(), Some(start + PROBLEM_WAIT));
+
+    let changes = b.sync_at(&root, start + PROBLEM_WAIT);
+    assert!(changes.notices, "{changes:?}");
+    let problems = status.problems();
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].path, folder);
+    assert_eq!(problems[0].known_id.as_deref(), Some("n1"));
+    assert_eq!(problems[0].problem, problem);
+    // The row keeps its last title.
+    assert_eq!(b.record("n1").unwrap().title, user_title("Planning"));
+    assert!(!b.sync_at(&root, start + PROBLEM_WAIT * 2).notices);
+
+    fs::write(folder.join("session.md"), "---\ntitle: Planning\n---\n").unwrap();
+    let changes = b.sync_at(&root, start + PROBLEM_WAIT * 3);
+    assert!(changes.notices, "{changes:?}");
+    assert!(status.problems().is_empty());
+    assert_eq!(status.note("n1"), NoteStatus::default());
+}
+
+// Covers R6: a normal note shows no notice, also after the wait.
+#[test]
+fn a_normal_note_shows_no_problem() {
+    use library::status::PROBLEM_WAIT;
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    assert!(!b.sync_at(&root, start).notices);
+    assert!(!b.sync_at(&root, start + PROBLEM_WAIT * 2).notices);
+    assert!(b.reconciler.status().problems().is_empty());
+    assert_eq!(b.reconciler.status().note("n1").problem, None);
+}
+
+// Covers R6, KTD1: a `longhand.json` that a newer Longhand wrote keeps the
+// row, read-only, and the notice shows at once: a sync does not change the
+// layout.
+#[test]
+fn a_longhand_json_of_a_newer_layout_keeps_the_row_and_shows_a_notice_at_once() {
+    use library::scan::{FileProblem, ProblemKind};
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    fs::write(
+        folder.join("longhand.json"),
+        "{\"layout\": 2, \"session_id\": \"n1\", \"records\": {}}\n",
+    )
+    .unwrap();
+    assert!(b.sync_at(&root, start).notices);
+    let status = Arc::clone(b.reconciler.status());
+    let problem = FileProblem {
+        kind: ProblemKind::NewerRecord,
+        file: "longhand.json",
+        line: None,
+    };
+    assert_eq!(status.note("n1").problem, Some(problem.clone()));
+    let problems = status.problems();
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].known_id.as_deref(), Some("n1"));
+    assert_eq!(problems[0].problem, problem);
+    b.sync_at(&root, start + DELETE_WAIT * 2);
+    assert_eq!(b.record("n1").unwrap().title, user_title("Planning"));
+}
+
+// Covers R6, KTD6: a folder of a note that this computer has not seen,
+// with no `longhand.json` after a minute, is in the notice by its folder.
+#[test]
+fn an_unknown_folder_that_waits_for_its_longhand_json_is_in_the_notice_after_a_minute() {
+    use library::scan::{FileProblem, ProblemKind};
+    use library::status::PROBLEM_WAIT;
+    let (_dir, root) = shared_root();
+    let mut b = computer();
+    let folder = root.join("Planning");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("session.md"), "---\ntitle: Planning\n---\n").unwrap();
+    let start = Instant::now();
+    b.sync_at(&root, start);
+    assert!(b.reconciler.status().problems().is_empty());
+
+    assert!(b.sync_at(&root, start + PROBLEM_WAIT).notices);
+    let problems = b.reconciler.status().problems();
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].path, folder);
+    assert_eq!(problems[0].known_id, None);
+    assert_eq!(
+        problems[0].problem,
+        FileProblem {
+            kind: ProblemKind::Record,
+            file: "longhand.json",
+            line: None,
+        }
+    );
+}
+
+// Covers AE4, R11, R13 (U5): the status lists the notes in the old layout
+// while they are old. With no old notes, it lists none.
+#[test]
+fn the_status_lists_the_old_layout_notes_while_they_are_old() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    a.save_note("n1", &root, user_title("Planning"), "");
+    let folder = a.save_note("n2", &root, user_title("Budget"), "");
+    let start = Instant::now();
+    assert!(!b.sync_at(&root, start).notices);
+    let status = Arc::clone(b.reconciler.status());
+    assert!(status.old_layout_notes().is_empty());
+
+    // An older build writes n2 in the old layout.
+    edit_old_doc(&folder, |doc| doc.title = Some("Budget".into()));
+    assert!(b.sync_at(&root, start).notices);
+    assert_eq!(
+        status.old_layout_notes(),
+        [("n2".to_string(), folder.clone())]
+    );
+    assert!(!b.sync_at(&root, start).notices);
+
+    // A conversion forgets the note at once, and the next scan agrees.
+    edit_doc(&folder, |_| {});
+    fs::write(folder.join("session.md"), "---\ntitle: Budget\n---\n").unwrap();
+    status.forget_old_layout(&["n2".to_string()]);
+    assert!(status.old_layout_notes().is_empty());
+    b.sync_at(&root, start);
+    assert!(status.old_layout_notes().is_empty());
+}
+
+// Covers R8: two tags with one tag key from an outside edit are one tag
+// in the row.
+#[test]
+fn two_tags_with_one_key_from_an_outside_edit_are_one_tag_in_the_row() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    fs::write(
+        folder.join("session.md"),
+        "---\ntitle: Planning\nlonghand_tags:\n- Person::Nathan\n- person :: nathan\n- Budget\n---\n",
+    )
+    .unwrap();
+    b.sync_at(&root, Instant::now());
+    assert_eq!(b.record("n1").unwrap().tags, ["Person::Nathan", "Budget"]);
 }

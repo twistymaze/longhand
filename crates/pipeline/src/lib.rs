@@ -8,6 +8,7 @@
 
 pub mod assemble;
 pub mod checkpoint;
+pub mod convert;
 pub mod diarize;
 pub mod early_home;
 pub mod echo;

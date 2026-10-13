@@ -14,7 +14,7 @@ const waiting: SessionDetail = {
     stage: null,
     title: null,
     found_speakers: null,
-    storage_unavailable: false,
+    storage_unavailable: false, problem: null,
     remote: null,
     note_type: null,
     tags: [],

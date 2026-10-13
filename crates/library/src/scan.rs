@@ -307,6 +307,91 @@ pub struct ProblemFolder {
     /// the row whose home folder this is.
     pub known_id: Option<String>,
     pub reason: String,
+    /// The file that gives no note, for a folder that is not valid or that
+    /// waits for its `longhand.json` (R6). `None` for a read that failed.
+    pub problem: Option<FileProblem>,
+}
+
+/// What the user can do about a file that gives no note (R6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProblemKind {
+    /// `session.md` does not parse. The user can correct the file.
+    UserFile,
+    /// `longhand.json` does not parse or is not in the folder. The sync can
+    /// still deliver it, or another computer has an older Longhand.
+    Record,
+    /// A newer Longhand wrote `longhand.json`. This computer must update
+    /// Longhand to change the note.
+    NewerRecord,
+}
+
+/// The file of a note folder that gives no note, and the line in it when
+/// the parse tells the line (R6).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileProblem {
+    pub kind: ProblemKind,
+    pub file: &'static str,
+    pub line: Option<usize>,
+}
+
+impl FileProblem {
+    /// The problem of the file `file` that does not parse at `line`.
+    fn parse_error(file: &'static str, line: Option<usize>) -> Self {
+        let kind = if file == NOTE_RECORD_FILE {
+            ProblemKind::Record
+        } else {
+            ProblemKind::UserFile
+        };
+        Self { kind, file, line }
+    }
+
+    /// A new-layout `session.md` with no `longhand.json` (KTD6).
+    fn waiting_for_record() -> Self {
+        Self {
+            kind: ProblemKind::Record,
+            file: NOTE_RECORD_FILE,
+            line: None,
+        }
+    }
+}
+
+/// A note folder whose files are not valid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidNote {
+    pub problem: FileProblem,
+    pub reason: String,
+}
+
+impl std::fmt::Display for InvalidNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl InvalidNote {
+    /// The problem of a parse that gave `error`.
+    fn of(error: NoteFilesError) -> Self {
+        let reason = error.to_string();
+        let problem = match error {
+            NoteFilesError::Newer { .. } => FileProblem {
+                kind: ProblemKind::NewerRecord,
+                file: NOTE_RECORD_FILE,
+                line: None,
+            },
+            NoteFilesError::Invalid(error) => match error {
+                folder::FolderError::MissingFrontmatter { file }
+                | folder::FolderError::Yaml { file, .. } => FileProblem::parse_error(file, None),
+                folder::FolderError::Line { file, line, .. }
+                | folder::FolderError::At { file, line, .. } => {
+                    FileProblem::parse_error(file, Some(line))
+                }
+            },
+            NoteFilesError::NotANote | NoteFilesError::WaitingForRecord => {
+                FileProblem::waiting_for_record()
+            }
+        };
+        Self { problem, reason }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -575,12 +660,13 @@ impl Reads {
         known: &Known,
         options: &ScanOptions,
     ) -> FolderKind {
-        let problem = |reason: String| ProblemFolder {
+        let problem = |reason: String, problem: Option<FileProblem>| ProblemFolder {
             root: root.to_path_buf(),
             known_id: record_id(path, options.read_timeout)
                 .or_else(|| known.id_at(path).map(str::to_string)),
             path: path.to_path_buf(),
             reason,
+            problem,
         };
         match read_folder(path, options) {
             FolderRead::NotANote => return FolderKind::NotANote,
@@ -594,12 +680,15 @@ impl Reads {
             }
             FolderRead::Unreadable(reason) => {
                 log::warn!("library: cannot read {}: {reason}", path.display());
-                self.unreadable.push(problem(reason));
+                self.unreadable.push(problem(reason, None));
             }
-            FolderRead::Invalid(reason) => self.invalid.push(problem(reason)),
-            FolderRead::WaitingForRecord => self
-                .waiting_for_record
-                .push(problem(NoteFilesError::WaitingForRecord.to_string())),
+            FolderRead::Invalid(invalid) => self
+                .invalid
+                .push(problem(invalid.reason, Some(invalid.problem))),
+            FolderRead::WaitingForRecord => self.waiting_for_record.push(problem(
+                NoteFilesError::WaitingForRecord.to_string(),
+                Some(FileProblem::waiting_for_record()),
+            )),
         }
         FolderKind::Problem
     }
@@ -669,7 +758,7 @@ enum FolderRead {
     NotANote,
     Note(Box<Found>),
     Unreadable(String),
-    Invalid(String),
+    Invalid(InvalidNote),
     /// A new-layout `session.md` and no `longhand.json` (KTD6).
     WaitingForRecord,
 }
@@ -685,18 +774,21 @@ pub enum NoteRead {
     /// A file cannot be read, or the read did not finish in time.
     Unreadable(String),
     /// A file is not valid, or a newer build wrote `longhand.json`.
-    Invalid(String),
+    Invalid(InvalidNote),
 }
 
 /// Read `session.md` and `longhand.json` in the note folder `dir`. Each
 /// read stops after `timeout`.
 pub fn read_note(dir: &Path, timeout: Duration) -> NoteRead {
-    let text = |name: &str| match read_timed(dir.join(name), timeout) {
+    let text = |name: &'static str| match read_timed(dir.join(name), timeout) {
         Read::Missing => Ok(None),
         Read::Failed(reason) => Err(NoteRead::Unreadable(reason)),
-        Read::Bytes(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|e| NoteRead::Invalid(format!("{name}: {e}"))),
+        Read::Bytes(bytes) => String::from_utf8(bytes).map(Some).map_err(|e| {
+            NoteRead::Invalid(InvalidNote {
+                problem: FileProblem::parse_error(name, None),
+                reason: format!("{name}: {e}"),
+            })
+        }),
     };
     let session_md = match text(SESSION_FILE) {
         Ok(text) => text,
@@ -710,7 +802,7 @@ pub fn read_note(dir: &Path, timeout: Duration) -> NoteRead {
         Ok(files) => NoteRead::Note(Box::new(files)),
         Err(NoteFilesError::NotANote) => NoteRead::NotANote,
         Err(NoteFilesError::WaitingForRecord) => NoteRead::WaitingForRecord,
-        Err(e) => NoteRead::Invalid(e.to_string()),
+        Err(e) => NoteRead::Invalid(InvalidNote::of(e)),
     }
 }
 
@@ -721,14 +813,20 @@ pub fn is_note_folder(dir: &Path) -> bool {
 }
 
 /// The note id in the `longhand.json` of `dir`, when the file parses. A
-/// folder whose `session.md` does not parse still gives its id.
+/// folder whose `session.md` does not parse still gives its id. A file
+/// that a newer Longhand wrote gives its `session_id` when it has one as
+/// text, so that the row of the note stays.
 fn record_id(dir: &Path, timeout: Duration) -> Option<String> {
     let Read::Bytes(bytes) = read_timed(dir.join(NOTE_RECORD_FILE), timeout) else {
         return None;
     };
-    match session_core::note_record::NoteRecord::parse(std::str::from_utf8(&bytes).ok()?).ok()? {
+    let text = std::str::from_utf8(&bytes).ok()?;
+    match session_core::note_record::NoteRecord::parse(text).ok()? {
         session_core::note_record::NoteRecordRead::Current(record) => Some(record.session_id),
-        session_core::note_record::NoteRecordRead::Newer { .. } => None,
+        session_core::note_record::NoteRecordRead::Newer { .. } => {
+            let value: serde_json::Value = serde_json::from_str(text).ok()?;
+            value.get("session_id")?.as_str().map(str::to_string)
+        }
     }
 }
 

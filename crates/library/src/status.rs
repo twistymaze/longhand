@@ -12,7 +12,10 @@ use std::time::{Duration, Instant};
 use session_core::{SessionRecord, SessionState};
 
 use crate::reconcile::Coverage;
-use crate::scan::{DocumentState, LibraryScan, NoteFolder, RemoteState, RootState, Waiting};
+use crate::scan::{
+    DocumentState, FileProblem, LibraryScan, NoteFolder, ProblemKind, RemoteState, RootState,
+    Waiting,
+};
 
 /// How long the scans must find another version of a note before the
 /// status reports it (R15). A move of the note can show two folders for a
@@ -22,6 +25,32 @@ use crate::scan::{DocumentState, LibraryScan, NoteFolder, RemoteState, RootState
 /// A sync service can also remove a conflict copy that it made for a short
 /// time, so a conflict copy gets the same wait.
 pub const OTHER_VERSION_WAIT: Duration = Duration::from_secs(120);
+
+/// How long a file of a note folder must give no note before the status
+/// reports it (R6). A shorter failure is part of a sync: a partial file, or
+/// a `session.md` that arrived before its `longhand.json`. A file that a
+/// newer Longhand wrote is reported at once, because a sync does not
+/// change it.
+pub const PROBLEM_WAIT: Duration = crate::reconcile::HAND_EDIT_WAIT;
+
+/// A note folder whose files give no note, after [`PROBLEM_WAIT`] (R6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedProblem {
+    pub path: PathBuf,
+    /// The note of the folder, if any ([`crate::scan::ProblemFolder::known_id`]).
+    pub known_id: Option<String>,
+    pub problem: FileProblem,
+}
+
+/// A note folder whose files give no note, reported or not yet.
+#[derive(Debug, Clone)]
+struct Problem {
+    known_id: Option<String>,
+    problem: FileProblem,
+    /// When a scan first found a problem of this kind in this file.
+    since: Instant,
+    reported: bool,
+}
 
 /// Whether the home folder `home` is in one of `roots`, directly or in a
 /// type folder (KTD4 of the note types plan).
@@ -43,6 +72,11 @@ pub struct NoteStatus {
     /// `session.md` exists but cannot be read (KTD5): the note waits as if
     /// its Destination were unavailable.
     pub unreadable: bool,
+    /// A file of the note folder gives no note (R6): it does not parse, a
+    /// newer Longhand wrote it, or `longhand.json` is not there. The writes
+    /// that the file feeds wait at once. Home reports the problem only
+    /// after [`PROBLEM_WAIT`] ([`LibraryStatus::problems`]).
+    pub problem: Option<FileProblem>,
     /// What the folder shows about work on the note on another computer
     /// ([`NoteFolder::remote`]). Read it with [`LibraryStatus::remote`],
     /// which also checks the row.
@@ -95,6 +129,66 @@ struct Inner {
     /// The other versions of each note, reported or not yet, and the
     /// folder of the note that the scan read.
     seen: HashMap<String, (PathBuf, HashMap<PathBuf, Seen>)>,
+    /// The note folders whose files give no note, by folder.
+    problems: HashMap<PathBuf, Problem>,
+    /// The notes in the old layout, with their folders (KTD6).
+    old_layout: HashMap<String, PathBuf>,
+    /// A number that changes each time the reported problems or the notes
+    /// in the old layout change.
+    notices_revision: u64,
+}
+
+impl Inner {
+    /// The reported problems, sorted by folder.
+    fn reported_problems(&self) -> Vec<ReportedProblem> {
+        let mut out: Vec<ReportedProblem> = self
+            .problems
+            .iter()
+            .filter(|(_, p)| p.reported)
+            .map(|(path, p)| ReportedProblem {
+                path: path.clone(),
+                known_id: p.known_id.clone(),
+                problem: p.problem.clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    }
+
+    /// The notes in the old layout, sorted by folder.
+    fn old_layout_notes(&self) -> Vec<(String, PathBuf)> {
+        let mut out: Vec<(String, PathBuf)> = self
+            .old_layout
+            .iter()
+            .map(|(id, path)| (id.clone(), path.clone()))
+            .collect();
+        out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        out
+    }
+}
+
+/// Record the notes of `scan` in the old layout (KTD6). A targeted scan
+/// keeps an old note whose folder it did not read.
+fn apply_old_layout(inner: &mut Inner, scan: &LibraryScan, coverage: &Coverage) {
+    let before = inner.old_layout_notes();
+    let found: HashSet<&str> = scan
+        .notes
+        .iter()
+        .map(|note| note.doc.session_id.as_str())
+        .collect();
+    inner
+        .old_layout
+        .retain(|id, path| !found.contains(id.as_str()) && coverage.keeps_wait(scan, path));
+    for note in &scan.notes {
+        if note.layout == session_core::note_folder::Layout::Old {
+            inner
+                .old_layout
+                .insert(note.doc.session_id.clone(), note.path.clone());
+        }
+    }
+    if inner.old_layout_notes() != before {
+        inner.notices_revision += 1;
+    }
 }
 
 /// The other versions of `note` that the scan found at `now`, and the
@@ -201,13 +295,51 @@ impl LibraryStatus {
     /// not report yet reaches [`OTHER_VERSION_WAIT`]. A scan at or after
     /// this time reports it.
     pub fn next_due(&self) -> Option<Instant> {
-        self.lock()
+        let inner = self.lock();
+        let versions = inner
             .seen
             .values()
             .flat_map(|(_, versions)| versions.values())
             .filter(|s| !s.reported)
-            .map(|s| s.since + OTHER_VERSION_WAIT)
-            .min()
+            .map(|s| s.since + OTHER_VERSION_WAIT);
+        let problems = inner
+            .problems
+            .values()
+            .filter(|p| !p.reported)
+            .map(|p| p.since + PROBLEM_WAIT);
+        versions.chain(problems).min()
+    }
+
+    /// The note folders whose files have given no note for
+    /// [`PROBLEM_WAIT`], sorted by folder (R6). Home shows them in one
+    /// notice.
+    pub fn problems(&self) -> Vec<ReportedProblem> {
+        self.lock().reported_problems()
+    }
+
+    /// A number that changes each time [`LibraryStatus::problems`] or
+    /// [`LibraryStatus::old_layout_notes`] changes.
+    pub fn notices_revision(&self) -> u64 {
+        self.lock().notices_revision
+    }
+
+    /// The notes in the old layout that the latest scans found, each with
+    /// its folder, sorted by folder (R11, KTD6). Empty when the storage
+    /// folder has no old note: Home then shows no conversion control.
+    pub fn old_layout_notes(&self) -> Vec<(String, PathBuf)> {
+        self.lock().old_layout_notes()
+    }
+
+    /// Forget the notes `ids` as old notes: a conversion on this computer
+    /// changed them to the new layout. The next scan reads their folders
+    /// again.
+    pub fn forget_old_layout(&self, ids: &[String]) {
+        let mut inner = self.lock();
+        let before = inner.old_layout.len();
+        inner.old_layout.retain(|id, _| !ids.contains(id));
+        if inner.old_layout.len() != before {
+            inner.notices_revision += 1;
+        }
     }
 
     /// Apply a scan made at `now`. `records` are the rows after the
@@ -260,6 +392,7 @@ impl LibraryStatus {
                 waiting: waiting(note, hand_edits.contains(id)),
                 other_versions: reported(&versions),
                 unreadable: false,
+                problem: None,
                 remote: note.remote,
             };
             found.insert(id.clone(), (note.path.clone(), status));
@@ -276,6 +409,8 @@ impl LibraryStatus {
                 found.insert(id.clone(), (problem.path.clone(), status));
             }
         }
+        apply_problems(&mut inner, scan, coverage, &mut found, now);
+        apply_old_layout(&mut inner, scan, coverage);
 
         // A folder that the scan read and that gave no note has nothing to
         // show now. A full scan also drops a folder outside its roots, for
@@ -311,5 +446,61 @@ impl LibraryStatus {
         let mut changed: Vec<String> = changed.into_iter().collect();
         changed.sort();
         changed
+    }
+}
+
+/// Record the folders of `scan` whose files give no note, at `now` (R6).
+/// A folder keeps the time of its first scan while the kind and the file
+/// of its problem stay. A folder that the scan read and that gives a note,
+/// or no problem, has no problem now. Each note with a problem that the
+/// scan found gets the problem in `found`, so its writes wait at once.
+fn apply_problems(
+    inner: &mut Inner,
+    scan: &LibraryScan,
+    coverage: &Coverage,
+    found: &mut HashMap<String, (PathBuf, NoteStatus)>,
+    now: Instant,
+) {
+    let before = inner.reported_problems();
+    let mut problems: HashMap<PathBuf, Problem> = HashMap::new();
+    for folder in scan.invalid.iter().chain(&scan.waiting_for_record) {
+        let Some(problem) = &folder.problem else {
+            continue;
+        };
+        let since = inner
+            .problems
+            .get(&folder.path)
+            .filter(|p| p.problem.kind == problem.kind && p.problem.file == problem.file)
+            .map_or(now, |p| p.since);
+        let reported = problem.kind == ProblemKind::NewerRecord
+            || now.saturating_duration_since(since) >= PROBLEM_WAIT;
+        problems.insert(
+            folder.path.clone(),
+            Problem {
+                known_id: folder.known_id.clone(),
+                problem: problem.clone(),
+                since,
+                reported,
+            },
+        );
+        if let Some(id) = &folder.known_id
+            && !found.contains_key(id)
+        {
+            let status = NoteStatus {
+                problem: Some(problem.clone()),
+                ..NoteStatus::default()
+            };
+            found.insert(id.clone(), (folder.path.clone(), status));
+        }
+    }
+    // A targeted scan keeps the problem of a folder that it did not read.
+    for (path, problem) in std::mem::take(&mut inner.problems) {
+        if !problems.contains_key(&path) && coverage.keeps_wait(scan, &path) {
+            problems.insert(path, problem);
+        }
+    }
+    inner.problems = problems;
+    if inner.reported_problems() != before {
+        inner.notices_revision += 1;
     }
 }

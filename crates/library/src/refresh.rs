@@ -75,10 +75,10 @@ impl FolderContents {
                     reason,
                 });
             }
-            NoteRead::Invalid(reason) => {
+            NoteRead::Invalid(invalid) => {
                 return Err(RefreshError::Invalid {
                     folder: folder.to_path_buf(),
-                    reason,
+                    reason: invalid.reason,
                 });
             }
         };

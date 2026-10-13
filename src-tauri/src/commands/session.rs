@@ -53,6 +53,50 @@ pub struct SessionEntry {
     pub note_type: Option<String>,
     /// The tags of the note, as their exact texts (R9, R11).
     pub tags: Vec<String>,
+    /// A file of the note folder gives no note (R6). The actions that
+    /// write to the note wait. `None` for a note whose files are valid.
+    pub problem: Option<NoteProblemView>,
+}
+
+/// What the user can do about a file of a note folder that gives no note
+/// (R6).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ProblemKindView {
+    /// `session.md` does not parse. The user can correct it.
+    UserFile,
+    /// `longhand.json` does not parse or is not there: wait for the sync,
+    /// or update Longhand on the other computer.
+    Record,
+    /// A newer Longhand wrote `longhand.json`: update Longhand.
+    NewerRecord,
+}
+
+/// A file of a note folder that gives no note (R6).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct NoteProblemView {
+    pub kind: ProblemKindView,
+    pub file: String,
+    /// The line of the error in the file, when the parse tells it.
+    pub line: Option<u32>,
+    /// Why the actions wait, and what the user can do.
+    pub reason: String,
+}
+
+impl From<&library::scan::FileProblem> for NoteProblemView {
+    fn from(problem: &library::scan::FileProblem) -> Self {
+        use library::scan::ProblemKind;
+        Self {
+            kind: match problem.kind {
+                ProblemKind::UserFile => ProblemKindView::UserFile,
+                ProblemKind::Record => ProblemKindView::Record,
+                ProblemKind::NewerRecord => ProblemKindView::NewerRecord,
+            },
+            file: problem.file.to_string(),
+            line: problem.line.and_then(|line| u32::try_from(line).ok()),
+            reason: crate::managers::processing::problem_reason(problem),
+        }
+    }
 }
 
 /// Work on a note on another computer (KTD5). Record, Resume, Transcribe
@@ -225,10 +269,18 @@ fn record_button(
         waiting: &waiting,
         remote: status.remote(record).map(RemoteView::from),
     });
+    // A file of the folder that gives no note holds the recording too (R6).
+    // The work of another computer still comes first.
+    let reason = match (reason, &note.problem) {
+        (Some(IN_USE_ELSEWHERE | NOT_FINISHED_ELSEWHERE), _) | (_, None) => {
+            reason.map(str::to_string)
+        }
+        (_, Some(problem)) => Some(crate::managers::processing::problem_reason(problem)),
+    };
     Some(RecordButton {
         kind,
         available: reason.is_none(),
-        reason: reason.map(str::to_string),
+        reason,
     })
 }
 
@@ -425,6 +477,11 @@ pub enum DocLine {
     Silence {
         duration_ms: u64,
     },
+    /// A line in free text, for example from an agent edit (R7, KTD7). It
+    /// has no time.
+    Text {
+        text: String,
+    },
 }
 
 #[derive(Serialize, Type)]
@@ -477,6 +534,11 @@ fn entry(
         remote: status.remote(record).map(RemoteView::from),
         note_type: pipeline::type_move::shown_type(record).0,
         tags: record.tags.clone(),
+        problem: status
+            .note(&record.id)
+            .problem
+            .as_ref()
+            .map(NoteProblemView::from),
     }
 }
 
@@ -506,6 +568,172 @@ pub fn list_sessions(
         }
     }
     Ok(out)
+}
+
+/// A note folder whose files give no note, in the notice on Home (R6).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct ProblemNote {
+    /// The title of the note, or the name of its folder when the note has
+    /// no known title.
+    pub name: String,
+    pub problem: NoteProblemView,
+}
+
+/// A note that the last conversion could not convert (R10).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct FailedNote {
+    /// The title of the note, or the name of its folder.
+    pub name: String,
+    pub reason: String,
+}
+
+/// The Convert notice of Home (R11, F3). It shows only while the storage
+/// folder has a note in the old layout.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct ConversionNotice {
+    /// The number of notes in the old layout.
+    pub old_notes: u32,
+    /// A conversion runs now.
+    pub running: bool,
+    /// The number of notes that the last conversion skipped, because a
+    /// computer worked on them. A later run converts them.
+    pub skipped: u32,
+    /// The notes that the last conversion could not convert and that are
+    /// still old.
+    pub failed: Vec<FailedNote>,
+}
+
+/// The library notices of Home, from the latest library scans (KTD14).
+/// In the normal case each part is empty, and Home then shows nothing.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct LibraryNotices {
+    /// `None` when the storage folder has no note in the old layout: then
+    /// no conversion control shows (R11).
+    pub conversion: Option<ConversionNotice>,
+    /// The note folders whose files have given no note for about one
+    /// minute, sorted by folder (R6).
+    pub problems: Vec<ProblemNote>,
+}
+
+/// The state of the conversion on this computer (U5). It stays in memory
+/// only.
+#[derive(Default)]
+pub struct Conversion(std::sync::Mutex<ConversionState>);
+
+#[derive(Default, Clone)]
+struct ConversionState {
+    running: bool,
+    /// The notes that the last run skipped.
+    skipped: Vec<String>,
+    /// The notes that the last run could not convert, with their folders
+    /// and reasons.
+    failed: Vec<(String, PathBuf, String)>,
+}
+
+impl Conversion {
+    fn lock(&self) -> std::sync::MutexGuard<'_, ConversionState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The title of the row `id` in `records`, else the name of `folder`.
+fn note_name(records: &[SessionRecord], id: Option<&str>, folder: &Path) -> String {
+    id.and_then(|id| records.iter().find(|r| r.id == id))
+        .and_then(|r| r.title.as_ref().map(|t| t.text.clone()))
+        .unwrap_or_else(|| {
+            folder.file_name().map_or_else(
+                || folder.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        })
+}
+
+/// The notices of the library: the old notes and the last conversion
+/// (`conversion`), and the reported problems in `status`. Each note is
+/// named by the title of its row in `records`, else by its folder name.
+fn library_notices_of(
+    status: &LibraryStatus,
+    conversion: &ConversionState,
+    records: &[SessionRecord],
+) -> LibraryNotices {
+    let old = status.old_layout_notes();
+    let still_old = |id: &str| old.iter().any(|(old_id, _)| old_id == id);
+    let conversion = (!old.is_empty()).then(|| ConversionNotice {
+        old_notes: u32::try_from(old.len()).unwrap_or(u32::MAX),
+        running: conversion.running,
+        skipped: u32::try_from(conversion.skipped.iter().filter(|id| still_old(id)).count())
+            .unwrap_or(u32::MAX),
+        failed: conversion
+            .failed
+            .iter()
+            .filter(|(id, _, _)| still_old(id))
+            .map(|(id, folder, reason)| FailedNote {
+                name: note_name(records, Some(id), folder),
+                reason: reason.clone(),
+            })
+            .collect(),
+    });
+    let problems = status
+        .problems()
+        .into_iter()
+        .map(|reported| ProblemNote {
+            name: note_name(records, reported.known_id.as_deref(), &reported.path),
+            problem: NoteProblemView::from(&reported.problem),
+        })
+        .collect();
+    LibraryNotices {
+        conversion,
+        problems,
+    }
+}
+
+/// The library notices of Home (KTD14). They come from the latest library
+/// scan: the command reads no folder.
+#[tauri::command]
+#[specta::specta]
+pub fn library_notices(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    conversion: State<'_, Conversion>,
+) -> Result<LibraryNotices, String> {
+    let records = {
+        let store = capture.shared_store();
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store.sessions().map_err(|e| e.to_string())?
+    };
+    let state = conversion.lock().clone();
+    Ok(library_notices_of(
+        processing.library_status(),
+        &state,
+        &records,
+    ))
+}
+
+/// Convert the notes in the old layout to the new layout (U5, R10, R12).
+/// Only the user starts it, from the Convert notice. A note that a
+/// computer works on now is skipped. The notices show the result: the
+/// conversion sends a library change when it ends.
+#[tauri::command]
+#[specta::specta]
+pub async fn convert_old_notes(
+    processing: State<'_, Arc<ProcessingManager>>,
+    conversion: State<'_, Conversion>,
+) -> Result<(), String> {
+    {
+        let mut state = conversion.lock();
+        if state.running {
+            return Ok(());
+        }
+        state.running = true;
+    }
+    let processing = Arc::clone(&processing);
+    let report = tauri::async_runtime::spawn_blocking(move || processing.convert_old_notes()).await;
+    let mut state = conversion.lock();
+    state.running = false;
+    let report = report.map_err(|e| e.to_string())?;
+    state.skipped = report.skipped;
+    state.failed = report.failed;
+    Ok(())
 }
 
 fn has_files(dir: &Path) -> bool {
@@ -1023,9 +1251,15 @@ fn read_document(folder: &Path) -> Result<SessionDocument, String> {
     };
     let files = match library::scan::read_note(folder, READ_TIMEOUT) {
         library::scan::NoteRead::Note(files) => *files,
-        library::scan::NoteRead::Unreadable(why) | library::scan::NoteRead::Invalid(why) => {
+        library::scan::NoteRead::Unreadable(why) => {
             return Err(format!(
                 "could not read the note in {}: {why}",
+                folder.display()
+            ));
+        }
+        library::scan::NoteRead::Invalid(invalid) => {
+            return Err(format!(
+                "could not read the note in {}: {invalid}",
                 folder.display()
             ));
         }
@@ -1038,7 +1272,7 @@ fn read_document(folder: &Path) -> Result<SessionDocument, String> {
         }
     };
     let transcript_markdown = text(pipeline::join::TRANSCRIPT_FILE)?;
-    let transcript = Transcript::parse(&transcript_markdown).map_err(|e| e.to_string())?;
+    let transcript = Transcript::parse(&transcript_markdown);
     let summary_markdown = text(pipeline::summarize::SUMMARY_FILE).ok();
     Ok(SessionDocument {
         has_speakers: transcript.has_speakers,
@@ -1057,7 +1291,8 @@ fn summary_of(files: &NoteFiles, text: Option<&str>) -> Option<Summary> {
     match files.layout {
         Layout::New => Some(Summary {
             meta: files.record.summary.clone()?,
-            body: text.trim().to_string(),
+            // A frontmatter that an agent added is not shown (KTD7).
+            body: Summary::body_of(text).to_string(),
         }),
         Layout::Old => Summary::parse(text).ok(),
     }
@@ -1104,6 +1339,7 @@ fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
                 DocLine::Pause { duration_ms }
             }
             TranscriptLine::Silence { duration_ms } => DocLine::Silence { duration_ms },
+            TranscriptLine::Text { text } => DocLine::Text { text },
         })
         .collect()
 }
@@ -2044,6 +2280,132 @@ mod tests {
         assert_eq!(summary.host.as_deref(), Some("api.example.com"));
         assert_eq!(summary.prompt.as_deref(), Some("Team sync"));
         assert_eq!(summary.prompt_id.as_deref(), Some("b1"));
+    }
+
+    // Covers R7, KTD7: an agent added a free-text line to `transcript.md`
+    // and a frontmatter to `summary.md`. The line shows as plain text, and
+    // the summary shows only its body.
+    #[test]
+    fn agent_edits_of_the_transcript_and_the_summary_still_show() {
+        let folder = tempfile::tempdir().unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:00:00+00:00").unwrap();
+        let mut record = session_core::note_record::NoteRecord::new("s", started);
+        record.summary = Some(SummaryMeta::Stub {
+            failed_stage: "summarize".into(),
+        });
+        std::fs::write(folder.path().join("session.md"), "---\ntitle: Plan\n---\n").unwrap();
+        std::fs::write(folder.path().join("longhand.json"), record.render()).unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: We start.\nA note from the agent.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            folder.path().join("summary.md"),
+            "---\naliases: [Plan]\n---\n\nWe agreed.\n",
+        )
+        .unwrap();
+
+        let document = read_document(folder.path()).unwrap();
+        assert!(matches!(
+            document.lines.last(),
+            Some(DocLine::Text { text }) if text == "A note from the agent."
+        ));
+        assert_eq!(document.summary.unwrap().body, "We agreed.");
+    }
+
+    // Covers AE4, R10, R11 (U5): the Convert notice shows only while an old
+    // note exists, with the failures of the last run that are still old.
+    #[test]
+    fn the_convert_notice_shows_only_while_an_old_note_exists() {
+        use library::reconcile::{Reconciler, Target};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(library::scan::write_marker(&root));
+        let store = std::sync::Mutex::new(session_core::Store::open_in_memory().unwrap());
+        let mut reconciler = Reconciler::default();
+        let target = Target::Full(vec![root.clone()]);
+        let start = std::time::Instant::now();
+        reconciler
+            .run_at(&store, &target, &|_| false, start)
+            .unwrap();
+        let status = Arc::clone(reconciler.status());
+        let failed = ConversionState {
+            running: false,
+            skipped: vec!["o".into(), "gone".into()],
+            failed: vec![(
+                "o".into(),
+                root.join("Old note"),
+                "the frontmatter cannot change".into(),
+            )],
+        };
+        // No old note: no conversion control.
+        assert_eq!(library_notices_of(&status, &failed, &[]).conversion, None);
+
+        let folder = root.join("Old note");
+        std::fs::create_dir(&folder).unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:00:00+00:00").unwrap();
+        let doc = SessionDoc::without_audio("o", started, None);
+        std::fs::write(folder.join("session.md"), doc.render()).unwrap();
+        reconciler
+            .run_at(&store, &target, &|_| false, start)
+            .unwrap();
+
+        let idle = library_notices_of(&status, &ConversionState::default(), &[]);
+        let notice = idle.conversion.unwrap();
+        assert_eq!(notice.old_notes, 1);
+        assert!(!notice.running && notice.skipped == 0 && notice.failed.is_empty());
+
+        let notice = library_notices_of(&status, &failed, &[])
+            .conversion
+            .unwrap();
+        assert_eq!(notice.skipped, 1);
+        assert_eq!(
+            notice.failed,
+            [FailedNote {
+                name: "Old note".into(),
+                reason: "the frontmatter cannot change".into(),
+            }]
+        );
+    }
+
+    // Covers R6, KTD14: the notice names a note with no known title by its
+    // folder, and says what the user can do. Before the wait it is empty.
+    #[test]
+    fn the_library_notices_name_a_folder_with_no_known_title() {
+        use library::reconcile::{Reconciler, Target};
+        use library::status::PROBLEM_WAIT;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(library::scan::write_marker(&root));
+        let folder = root.join("Planning");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("session.md"), "---\ntitle: Planning\n---\n").unwrap();
+        let store = std::sync::Mutex::new(session_core::Store::open_in_memory().unwrap());
+        let mut reconciler = Reconciler::default();
+        let target = Target::Full(vec![root]);
+        let start = std::time::Instant::now();
+        reconciler
+            .run_at(&store, &target, &|_| false, start)
+            .unwrap();
+        let status = Arc::clone(reconciler.status());
+        assert!(
+            library_notices_of(&status, &ConversionState::default(), &[])
+                .problems
+                .is_empty()
+        );
+
+        reconciler
+            .run_at(&store, &target, &|_| false, start + PROBLEM_WAIT)
+            .unwrap();
+        let notices = library_notices_of(&status, &ConversionState::default(), &[]);
+        assert_eq!(notices.problems.len(), 1);
+        assert_eq!(notices.problems[0].name, "Planning");
+        assert_eq!(notices.problems[0].problem.kind, ProblemKindView::Record);
+        assert_eq!(
+            notices.problems[0].problem.reason,
+            "This note waits for longhand.json to sync. If it does not sync, update Longhand on the other computer."
+        );
     }
 }
 

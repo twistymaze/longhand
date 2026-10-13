@@ -322,12 +322,20 @@ export function SessionPage({
   // sync or the storage folder is unavailable (R6, R16). Audio that waits
   // holds only Resume and Transcribe Again (R12).
   const unavailable = entry?.storage_unavailable ?? detail?.entry.storage_unavailable ?? false;
+  // A file of the folder that gives no note holds every write but Delete
+  // (R6). A `session.md` that does not parse leaves the notes editable:
+  // they are in `notes.md`.
+  const problem = entry?.problem ?? detail?.entry.problem ?? null;
+  const recordProblem = problem !== null && problem.kind !== "user_file";
   const waiting = detail?.waiting ?? [];
-  const held = unavailable || waiting.some((part) => part !== "audio");
-  const heldForAudio = unavailable || waiting.length > 0;
+  const held = unavailable || problem !== null || waiting.some((part) => part !== "audio");
+  const heldForAudio = held || waiting.length > 0;
+  const notesHeld = unavailable || recordProblem || waiting.some((part) => part !== "audio");
   const heldReason = unavailable
     ? "The storage folder for this note is unavailable."
-    : "Wait until the note finishes syncing.";
+    : problem
+      ? problem.reason
+      : "Wait until the note finishes syncing.";
   // The note shows no mark for removed audio. The fact shows only as the
   // reason of an action that needs the audio (R14).
   const removed = detail?.audio === "removed";
@@ -551,7 +559,7 @@ export function SessionPage({
   if (!deleted) {
     items.push({
       label: "Rename",
-      disabled: unavailable,
+      disabled: unavailable || problem !== null,
       reason: heldReason,
       onSelect: () => title.current?.edit(),
     });
@@ -561,10 +569,10 @@ export function SessionPage({
   if (phase === "saved" && !deleted && !noAudio) {
     items.push({
       label: "Remove Audio…",
-      disabled: !detail || removed || unavailable || regenerating || remote !== null,
+      disabled: !detail || removed || unavailable || problem !== null || regenerating || remote !== null,
       reason: removed
         ? REMOVED_REASON
-        : unavailable
+        : unavailable || problem !== null
           ? heldReason
           : regenerating
             ? "Wait until the summary is ready."
@@ -810,6 +818,7 @@ export function SessionPage({
               onNotice={setNotice}
               onChanged={() => void sessions.refresh()}
               onTypeChanged={typeChanged}
+              locked={problem?.reason ?? null}
             />
           )}
           {syncLines.map((line) => (
@@ -883,7 +892,7 @@ export function SessionPage({
             key={id}
             sessionId={id}
             autoFocus={phase === "recording" || started}
-            editable={!held && !deleted}
+            editable={!notesHeld && !deleted}
             synced={sessions.synced[id] ?? 0}
             onMarkdown={setNotes}
             onConflict={setDraft}

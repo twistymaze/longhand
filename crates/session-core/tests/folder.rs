@@ -107,7 +107,7 @@ fn transcript_md_round_trips() {
         "{text}"
     );
     assert!(text.contains("--- gap 00:04:12 ---"));
-    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&text), transcript);
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn a_pause_line_round_trips_and_differs_from_a_gap_line() {
     let text = transcript.render();
     assert!(text.contains("\n--- pause 00:15:00 ---\n"), "{text}");
     assert!(text.contains("\n--- gap 00:01:00 ---\n"), "{text}");
-    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&text), transcript);
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn transcript_without_speakers_says_so_and_round_trips() {
     };
     let text = transcript.render();
     assert!(text.contains("no speaker marks"));
-    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&text), transcript);
 }
 
 #[test]
@@ -389,7 +389,7 @@ fn speaker_recognition_off_is_not_reported_as_failure() {
     let rendered = transcript.render_speaker_off();
     assert!(rendered.contains("Speaker recognition was off"));
     assert!(!rendered.contains("failed"));
-    assert_eq!(Transcript::parse(&rendered).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&rendered), transcript);
     assert!(transcript.render().contains("failed"));
 }
 
@@ -815,4 +815,50 @@ fn the_patcher_edits_an_empty_frontmatter() {
         .apply("session.md", "---\n---\nBody.\n")
         .unwrap();
     assert_eq!(patched, "---\ntitle: Budget\n---\nBody.\n");
+}
+
+// Covers R7, KTD7: a line that an agent or a person wrote in free text
+// reads as plain text with no time. The lines that parse stay turns.
+#[test]
+fn a_transcript_line_that_does_not_parse_reads_as_plain_text() {
+    let text = "# Transcript\n\n- [00:00:01] Speaker 1: We start.\nThe agent wrote this line.\n--- note from the agent ---\n- [00:00:09] Speaker 2: We end.\n";
+    let transcript = Transcript::parse(text);
+    assert_eq!(
+        transcript.lines,
+        [
+            TranscriptLine::Turn {
+                position_ms: 1_000,
+                speaker: Some(1),
+                text: "We start.".into(),
+            },
+            TranscriptLine::Text {
+                text: "The agent wrote this line.".into(),
+            },
+            TranscriptLine::Text {
+                text: "--- note from the agent ---".into(),
+            },
+            TranscriptLine::Turn {
+                position_ms: 9_000,
+                speaker: Some(2),
+                text: "We end.".into(),
+            },
+        ]
+    );
+    // A plain line renders as it is.
+    assert_eq!(Transcript::parse(&transcript.render()), transcript);
+}
+
+// Covers R7, KTD7: a frontmatter that an agent adds to `summary.md` is not
+// part of the body.
+#[test]
+fn the_body_of_a_summary_md_has_no_frontmatter() {
+    let text = "---\naliases: [Budget]\ntags: [meeting]\n---\n\n## Decisions\n\n- Ship it.\n";
+    assert_eq!(Summary::body_of(text), "## Decisions\n\n- Ship it.");
+    assert_eq!(
+        Summary::body_of("## Decisions\n\n- Ship it.\n"),
+        "## Decisions\n\n- Ship it."
+    );
+    // A file that starts with a rule and has no end of a frontmatter is
+    // all body.
+    assert_eq!(Summary::body_of("---\nNo end.\n"), "---\nNo end.");
 }

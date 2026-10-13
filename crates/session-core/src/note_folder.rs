@@ -69,7 +69,9 @@ impl NoteFiles {
         if let Some(text) = session_md
             && holds_session_id(text)
         {
-            let doc = SessionDoc::parse(text).map_err(NoteFilesError::Invalid)?;
+            // The parse of the user fields gives the line of a YAML error.
+            let doc = SessionDoc::parse(text)
+                .map_err(|e| NoteFilesError::Invalid(SessionMd::parse(text).err().unwrap_or(e)))?;
             return Ok(Self::old(doc));
         }
         let Some(record) = record else {

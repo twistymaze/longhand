@@ -747,6 +747,10 @@ pub enum TranscriptLine {
     Pause { duration_ms: u64 },
     /// A within-segment silence past the threshold.
     Silence { duration_ms: u64 },
+    /// A line that is not in one of the forms above, for example a line
+    /// that a person or an agent wrote (KTD7 of the safe agent edits
+    /// plan). It has no time.
+    Text { text: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -807,22 +811,23 @@ impl Transcript {
                     "\n--- silence {} ---\n\n",
                     format_position(*duration_ms)
                 )),
+                TranscriptLine::Text { text } => {
+                    out.push_str(text);
+                    out.push('\n');
+                }
             }
         }
         out
     }
 
-    pub fn parse(text: &str) -> Result<Self, FolderError> {
-        const FILE: &str = "transcript.md";
+    /// Read a `transcript.md`. The read never fails: a line that is not in
+    /// a form that Longhand writes is a [`TranscriptLine::Text`] line, so a
+    /// person or an agent can edit the file (R7, KTD7).
+    pub fn parse(text: &str) -> Self {
         let mut has_speakers = true;
         let mut lines = Vec::new();
-        for (i, raw) in text.lines().enumerate() {
+        for raw in text.lines() {
             let line = raw.trim_end();
-            let err = |message: &str| FolderError::Line {
-                file: FILE,
-                line: i + 1,
-                message: message.to_string(),
-            };
             if line.is_empty() || line.starts_with("# ") {
                 continue;
             }
@@ -830,24 +835,16 @@ impl Transcript {
                 has_speakers = false;
                 continue;
             }
-            if let Some(marker) = line
-                .strip_prefix("--- ")
-                .and_then(|l| l.strip_suffix(" ---"))
-            {
-                let (kind, time) = marker
-                    .split_once(' ')
-                    .ok_or_else(|| err("malformed marker"))?;
-                let duration_ms = parse_position(time).ok_or_else(|| err("bad duration"))?;
-                lines.push(match kind {
-                    "gap" => TranscriptLine::Gap { duration_ms },
-                    "pause" => TranscriptLine::Pause { duration_ms },
-                    "silence" => TranscriptLine::Silence { duration_ms },
-                    _ => return Err(err("unknown marker")),
-                });
+            if let Some(marker) = parse_marker(line) {
+                lines.push(marker);
                 continue;
             }
-            let (position_ms, rest) =
-                parse_bracketed(line).ok_or_else(|| err("expected `- [hh:mm:ss] ...`"))?;
+            let Some((position_ms, rest)) = parse_bracketed(line) else {
+                lines.push(TranscriptLine::Text {
+                    text: line.trim_start().to_string(),
+                });
+                continue;
+            };
             let (speaker, text) = match rest
                 .strip_prefix("Speaker ")
                 .and_then(|r| r.split_once(": "))
@@ -862,10 +859,24 @@ impl Transcript {
                 text: text.to_string(),
             });
         }
-        Ok(Self {
+        Self {
             has_speakers,
             lines,
-        })
+        }
+    }
+}
+
+/// A `--- gap hh:mm:ss ---`, `--- pause hh:mm:ss ---` or
+/// `--- silence hh:mm:ss ---` line.
+fn parse_marker(line: &str) -> Option<TranscriptLine> {
+    let marker = line.strip_prefix("--- ")?.strip_suffix(" ---")?;
+    let (kind, time) = marker.split_once(' ')?;
+    let duration_ms = parse_position(time)?;
+    match kind {
+        "gap" => Some(TranscriptLine::Gap { duration_ms }),
+        "pause" => Some(TranscriptLine::Pause { duration_ms }),
+        "silence" => Some(TranscriptLine::Silence { duration_ms }),
+        _ => None,
     }
 }
 
@@ -927,6 +938,16 @@ impl Summary {
     /// no frontmatter. `longhand.json` holds the summary data (R1).
     pub fn render_body(&self) -> String {
         format!("{}\n", self.body.trim_end())
+    }
+
+    /// The body of the `summary.md` text `text`, trimmed. A frontmatter at
+    /// the start, for example one that an agent added, is not part of the
+    /// body (R7, KTD7).
+    pub fn body_of(text: &str) -> &str {
+        match frontmatter_bounds(text) {
+            Some((_, _, body)) => text[body..].trim(),
+            None => text.trim(),
+        }
     }
 
     /// Parse a `summary.md` of the old layout: its frontmatter holds the

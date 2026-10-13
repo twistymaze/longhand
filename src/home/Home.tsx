@@ -27,10 +27,12 @@ import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
 import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
+import { LibraryNotices } from "./LibraryNotices";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
+import { useLibraryNotices } from "./useLibraryNotices";
 import { useTypesAndTags } from "./useTypesAndTags";
 
 export type { RecordingNow };
@@ -104,6 +106,7 @@ export function Home({
   // a note and comes back (R33). A type or a tag that no longer exists drops
   // out of it. General drops out when no other type is left (R3).
   const lists = useTypesAndTags(active);
+  const library = useLibraryNotices();
   const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
   const types = lists.types?.types ?? null;
   const filter = keepExisting(chosenFilter, types, lists.tags, generalIsChoice(types));
@@ -323,6 +326,13 @@ export function Home({
               </Button>
             </CautionBanner>
           )}
+          <LibraryNotices
+            notices={library.notices}
+            onChanged={() => {
+              void library.reload();
+              onChanged();
+            }}
+          />
           {notice && (
             <p
               role="status"

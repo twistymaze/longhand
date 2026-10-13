@@ -624,7 +624,7 @@ pub fn seed_from_transcript(
     let path = folder.join(crate::join::TRANSCRIPT_FILE);
     let transcript = match std::fs::read_to_string(&path)
         .map_err(|e| e.to_string())
-        .and_then(|text| Transcript::parse(&text).map_err(|e| e.to_string()))
+        .map(|text| Transcript::parse(&text))
     {
         Ok(transcript) => transcript,
         Err(e) => {

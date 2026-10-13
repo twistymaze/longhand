@@ -61,7 +61,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   stage: null,
   title: null,
   found_speakers: 3,
-  storage_unavailable: false,
+  storage_unavailable: false, problem: null,
   remote: null,
   note_type: null,
   tags: [],

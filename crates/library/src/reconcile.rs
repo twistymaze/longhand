@@ -124,11 +124,14 @@ pub struct Changes {
     pub changed: Vec<String>,
     /// Forgotten rows.
     pub removed: Vec<String>,
+    /// After [`Reconciler::run`]: the library notices of Home changed, for
+    /// example the folders in [`LibraryStatus::problems`].
+    pub notices: bool,
 }
 
 impl Changes {
     pub fn is_empty(&self) -> bool {
-        self.changed.is_empty() && self.removed.is_empty()
+        self.changed.is_empty() && self.removed.is_empty() && !self.notices
     }
 }
 
@@ -345,6 +348,7 @@ impl Reconciler {
         // folders: the other folder is not another version.
         let moving = moved_here(&store)?;
         let hand_edits = self.track_mismatches(&result, &coverage, now);
+        let notices = self.status.notices_revision();
         let noted = self.status.apply(
             &result,
             &coverage,
@@ -353,6 +357,7 @@ impl Reconciler {
             &hand_edits,
             now,
         );
+        changes.notices = self.status.notices_revision() != notices;
         // A file that changed in a note folder can leave the row as it is,
         // for example a new summary.md. The note is reported as changed, so
         // an open note page reads its documents again.
@@ -653,7 +658,11 @@ impl Reconciler {
         changed.sort();
         changed.dedup();
         removed.sort();
-        Ok(Changes { changed, removed })
+        Ok(Changes {
+            changed,
+            removed,
+            notices: false,
+        })
     }
 }
 

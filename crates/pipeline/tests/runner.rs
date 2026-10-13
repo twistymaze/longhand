@@ -950,7 +950,7 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("call 0"), "{transcript}");
     // The join records the number of speakers it found (KTD11).
-    let parsed = session_core::folder::Transcript::parse(&transcript).unwrap();
+    let parsed = session_core::folder::Transcript::parse(&transcript);
     let found = r.store.lock().unwrap().found_speakers("s").unwrap();
     assert_eq!(found, pipeline::join::found_speakers(&parsed));
     assert!(!speaker_progress(&r).is_empty());
@@ -2962,6 +2962,28 @@ async fn a_regeneration_sends_the_type_and_the_tags_that_the_note_has_now() {
     }
 }
 
+// Covers R7, KTD7: Regenerate Summary accepts a transcript that an agent
+// edited with a line in free text. The model gets that line too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_accepts_a_transcript_with_a_free_text_line() {
+    let r = rig().await;
+    let mock = numbered_summaries(&r).await;
+    let folder = saved_session(&r, None).await;
+    let before = chat_messages(&mock).len();
+    let mut transcript = std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap();
+    transcript.push_str("The agent added this correction.\n");
+    std::fs::write(folder.join(TRANSCRIPT_FILE), &transcript).unwrap();
+    r.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_messages(&mock);
+    assert!(calls.len() > before);
+    assert!(
+        calls[before..]
+            .iter()
+            .any(|(_, user)| user.contains("The agent added this correction.")),
+        "{calls:?}"
+    );
+}
+
 // -------------------------------------------------------------- saving (U11)
 
 const NOTES: &str = "- [00:00:01] the rules changed\n- bring snacks\n";
@@ -3032,7 +3054,7 @@ async fn a_processed_session_is_saved_once_as_a_folder_that_parses_back() {
         NOTES
     );
     let transcript =
-        Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap()).unwrap();
+        Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap());
     assert!(!transcript.lines.is_empty());
 
     assert!(r.events.lock().unwrap().iter().any(|e| matches!(
@@ -3904,7 +3926,7 @@ async fn a_resumed_completed_session_updates_its_folder_in_place() {
         .doc;
     assert_eq!(doc.timeline_segments().len(), 3);
     let transcript =
-        Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap()).unwrap();
+        Transcript::parse(&std::fs::read_to_string(folder.join(TRANSCRIPT_FILE)).unwrap());
     let gaps = transcript
         .lines
         .iter()
@@ -5939,6 +5961,29 @@ async fn regenerate_summary_of_an_old_layout_note_refuses_and_writes_nothing() {
     );
 }
 
+// Covers R10, F3: after the conversion, Regenerate Summary and Transcribe
+// Again work again on an old note.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_layout_note_regenerates_after_the_conversion() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let doc = session_md(&home);
+    std::fs::remove_file(home.join("longhand.json")).unwrap();
+    std::fs::write(home.join("session.md"), doc.render()).unwrap();
+
+    let report = pipeline::convert::convert_notes(
+        &r.store,
+        &[("s".to_string(), home.clone())],
+        &[],
+        &|_| false,
+    );
+    assert_eq!(report.converted, ["s"]);
+    check_with(&r, &settings()).unwrap();
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert_fingerprints_match(&home);
+}
+
 // ------------------------------------------------------------- user fields (KTD2 of the note types and tags plan)
 
 fn pending_type() -> session_core::folder::PendingType {
@@ -6857,7 +6902,6 @@ fn rename_on_other_computer(folder: &std::path::Path, title: &str) -> std::path:
 /// what the first recording said.
 fn first_recording_text(folder: &std::path::Path) -> String {
     Transcript::parse(&read(folder, TRANSCRIPT_FILE))
-        .unwrap()
         .lines
         .into_iter()
         .take_while(|line| !matches!(line, TranscriptLine::Gap { .. }))
@@ -6962,7 +7006,6 @@ async fn a_regeneration_on_a_computer_with_no_recognition_results_summarizes_tra
     let mock = numbered_summaries(&b).await;
     b.runner.regenerate_summary("s").await.unwrap();
     let turns: Vec<String> = Transcript::parse(&read(&folder, TRANSCRIPT_FILE))
-        .unwrap()
         .lines
         .into_iter()
         .filter_map(|line| match line {
@@ -7000,7 +7043,7 @@ async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_
         audio
     );
     assert!(folder.join("audio/segment-02.opus").exists());
-    let transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE)).unwrap();
+    let transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE));
     let gaps = transcript
         .lines
         .iter()
@@ -7288,7 +7331,7 @@ async fn regenerating_a_stub_after_another_computer_replaced_the_transcript_make
 
     // Another computer replaces `transcript.md`, and its `session.md`
     // records the new fingerprint.
-    let mut transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE)).unwrap();
+    let mut transcript = Transcript::parse(&read(&folder, TRANSCRIPT_FILE));
     for line in &mut transcript.lines {
         if let TranscriptLine::Turn { text, .. } = line {
             *text = format!("{text} REMOTE-MARKER");

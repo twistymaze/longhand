@@ -183,7 +183,8 @@ fn write_file(
         NoteRead::WaitingForRecord => {
             return Err(unavailable(format!("{NOTE_RECORD_FILE} is missing")));
         }
-        NoteRead::Invalid(why) | NoteRead::Unreadable(why) => return Err(unavailable(why)),
+        NoteRead::Invalid(invalid) => return Err(unavailable(invalid.reason)),
+        NoteRead::Unreadable(why) => return Err(unavailable(why)),
     };
     if files.doc.session_id != session_id {
         return Err(unavailable(format!(
