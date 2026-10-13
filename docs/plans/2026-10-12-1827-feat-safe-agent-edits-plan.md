@@ -400,6 +400,11 @@ flowchart TB
   3. Block the writes that the broken file feeds: tag, title and type for `session.md`; all writes and runs for `longhand.json`. Delete stays available.
   4. Apply one tag per key in `refresh` and adoption.
   5. Make the transcript and summary reads lenient (KTD7) for the note page and the Regenerate accept path.
+  6. Row and notice states, with the `storage_unavailable` gating pattern for disabled actions:
+     - A broken `session.md`: the notice names the file and the line, and the blocked actions are disabled with a short reason. The user can fix the file.
+     - A broken or missing `longhand.json`: the notice says to wait for the sync or to update Longhand on the other computer. It gives no edit instruction.
+     - A note with no known title shows its folder name.
+     - One grouped notice lists each note with its file and line.
 - **Patterns to follow:** `storage_unavailable` gating in `SessionRow.tsx`; `CautionBanner` in `Home.tsx`; the notice rule doc.
 - **Test scenarios:**
   - Covers AE3. A `session.md` that does not parse shows no notice for the first minute, then a notice with the file and line; the row keeps its last title.
@@ -426,7 +431,12 @@ flowchart TB
   3. Convert notes with no result (empty notes, `no-recording`) too.
   4. Report busy notes as not converted yet, with no failure notice.
   5. Name failed notes in a notice. Convert stays available.
-  6. The Convert notice shows while the scan finds any old-layout note.
+  6. The Convert notice shows while the scan finds any old-layout note. Its states:
+     - Idle: the count of old notes and the Convert button.
+     - Running: the button is disabled with a busy label.
+     - Finished with skipped notes: the notice stays and says how many notes are in use on another computer and to run Convert again later.
+     - Finished with failures: the notice names each failed note (KTD14 order).
+     - All converted: the notice goes away, with no success message.
 - **Execution note:** Start with kill-and-rerun tests at each write step before the conversion code.
 - **Patterns to follow:** Re-check before each write (`docs/solutions/logic-errors/publication-checked-for-another-result-only-at-start-and-end.md`); `CautionBanner` with an action button.
 - **Test scenarios:**
@@ -449,8 +459,15 @@ flowchart TB
   1. In a user-caused save, write the `file_name_id` into id-less prompt files before any rename.
   2. In the same save, rename files whose name does not match `name` (`move_to_name`).
   3. Track how long each referenced prompt has been missing, in memory. A save after about one minute clears its references with the rules of `delete_prompt`.
-  4. Stop dropping over-limit prompts. Flag them in the view.
-  5. Add the line to the "does not parse" reason and the about-one-minute notice.
+  4. Stop dropping over-limit prompts. Flag them in the view:
+     - The prompt row shows the current and the maximum character count.
+     - The editor shows the count in an error state, and a save is possible only at or under the limit.
+     - Rename and delete stay available, and runs use the full text (KTD8).
+     - The same rules apply to the 1,000-character title instructions.
+  5. Add the R22 notice for a shared file that does not parse:
+     - It shows on Home after the Convert and conversion-failure notices (KTD14), and in the Settings pane that holds the file.
+     - It names the file, the line and the settings that are read-only, and says "fix the file, or restore it from another computer".
+     - During the first minute, the current sync-in-progress text stays.
 - **Patterns to follow:** `settle_copies`, `rename_prompt` and `move_to_name` in `prompts.rs`; `prompts_without` in `note_types.rs`.
 - **Test scenarios:**
   - Covers AE5. A new prompt file with a new id and a new `name` is listed as a second prompt, and the original does not change.
@@ -488,7 +505,13 @@ flowchart TB
 - **Files:** new `src-tauri/src/managers/agent_block.rs`, `src-tauri/src/managers/mod.rs`, a command in `src-tauri/src/commands/`, `src/settings/DestinationPicker.tsx`, `src/bindings.ts`, tests in `agent_block.rs`, `src/settings/DestinationPicker.test.tsx`.
 - **Approach:**
   1. Keep the block text and its version in the app, with the install steps from U9.
-  2. The button writes or replaces the block.
+  2. The control in Settings > Storage:
+     - Idle: "Add agent instructions", with one sentence about `AGENTS.md` and `CLAUDE.md`.
+     - After a write: an "Added" status.
+     - An automatic update shows no message (notice rule).
+     - Damaged markers: an error in Settings that names the file, and the button is disabled.
+     - Storage folder unavailable or read-only: the button is disabled with the reason.
+     - A failed write: an error that names the file.
   3. At the next storage-folder write that a user change on this computer causes, read both files again and replace a block whose version is older (KTD12).
   4. Keep the rest of each file, its CRLF and its BOM.
   5. Handle the symlink and `@AGENTS.md` cases once.
