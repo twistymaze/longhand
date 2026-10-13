@@ -236,6 +236,50 @@ describe("DestinationPicker", () => {
       view.unmount();
     });
 
+    test("a storage folder that Longhand can't write turns the button off and gives the reason", async () => {
+      const locked: DestinationStatus = { kind: "not_writable", path: settings.storage_folder, message: "Permission denied" };
+      const { view } = picker({}, { status: locked });
+      expect(await screen.findByText("Longhand can’t write to the storage folder: Permission denied")).toBeTruthy();
+      expect(addButton().disabled).toBe(true);
+      view.unmount();
+    });
+
+    test("a new status read or a folder change removes the error of a failed write", async () => {
+      let fail = true;
+      const { user, view } = picker({
+        add_agent_instructions: () => {
+          throw "Longhand can’t write AGENTS.md: Permission denied";
+        },
+        agent_instructions_status: () => (fail ? { kind: "not_added" } : { kind: "added" }),
+      });
+      await user.click(await screen.findByRole("button", { name: "Add Agent Instructions" }));
+      expect(await screen.findByText("Longhand can’t write AGENTS.md: Permission denied")).toBeTruthy();
+      // The user fixes the file, then comes back to the window.
+      fail = false;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(await screen.findByText("Added")).toBeTruthy();
+      expect(screen.queryByText("Longhand can’t write AGENTS.md: Permission denied")).toBeNull();
+
+      // A folder change removes the error too.
+      fail = true;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await user.click(await screen.findByRole("button", { name: "Add Agent Instructions" }));
+      expect(await screen.findByText("Longhand can’t write AGENTS.md: Permission denied")).toBeTruthy();
+      view.rerender(
+        <DestinationPicker
+          settings={{ ...settings, storage_folder: "/Volumes/Disk/Notes" }}
+          status={{ ...ready, path: "/Volumes/Disk/Notes" }}
+          onSettings={() => {}}
+        />,
+      );
+      await waitFor(() => expect(screen.queryByText("Longhand can’t write AGENTS.md: Permission denied")).toBeNull());
+      view.unmount();
+    });
+
     test("a failed write shows the error that names the file", async () => {
       const { user, view } = picker({
         add_agent_instructions: () => {

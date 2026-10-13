@@ -184,11 +184,43 @@ impl Target {
     }
 }
 
-/// Read the file `name` in `root`. A symlink is followed.
+/// The file that the symlink `link` in `root` points to, when that file
+/// is in `root`. A symlink to a file outside the storage folder gives an
+/// error, so the block never goes into a file that the user did not put
+/// in the storage folder (for example a link that a synced folder brings).
+fn link_target(root: &Path, link: &Path, name: &str) -> Result<PathBuf, String> {
+    let outside = || {
+        format!(
+            "Longhand can’t add the instructions to {name}: it links to a file outside the storage folder."
+        )
+    };
+    let root = root.canonicalize().map_err(|_| outside())?;
+    let target = match link.canonicalize() {
+        Ok(target) => target,
+        // A link to a file that does not exist yet: its folder must exist.
+        Err(_) => {
+            let to = std::fs::read_link(link).map_err(|_| outside())?;
+            let to = link.parent().unwrap_or(&root).join(to);
+            let dir = to
+                .parent()
+                .and_then(|d| d.canonicalize().ok())
+                .ok_or_else(outside)?;
+            dir.join(to.file_name().ok_or_else(outside)?)
+        }
+    };
+    if target.starts_with(&root) {
+        Ok(target)
+    } else {
+        Err(outside())
+    }
+}
+
+/// Read the file `name` in `root`. A symlink to a file in `root` is
+/// followed.
 fn read_target(root: &Path, name: &'static str) -> Result<Target, String> {
     let link = root.join(name);
     let path = match std::fs::symlink_metadata(&link) {
-        Ok(meta) if meta.file_type().is_symlink() => link.canonicalize().unwrap_or(link),
+        Ok(meta) if meta.file_type().is_symlink() => link_target(root, &link, name)?,
         _ => link,
     };
     let (text, bom) = match std::fs::read(&path) {
@@ -283,10 +315,23 @@ fn writable_root(root: Option<&Path>) -> Result<&Path, String> {
     }
 }
 
+/// The storage folder `root` when it exists and is a folder, or the
+/// reason why Longhand cannot read it. This does no write probe.
+fn readable_root(root: Option<&Path>) -> Result<&Path, String> {
+    let Some(root) = root else {
+        return Err("No storage folder is set.".into());
+    };
+    match root.metadata() {
+        Ok(meta) if meta.is_dir() => Ok(root),
+        _ => Err("The storage folder is not available.".into()),
+    }
+}
+
 /// The state of the block in the storage folder `root`. This writes
-/// nothing into the files.
+/// nothing into the storage folder. A folder that Longhand cannot write
+/// shows its state here; the write in [`add`] then names the file.
 pub fn status(root: Option<&Path>) -> AgentBlockStatus {
-    let root = match writable_root(root) {
+    let root = match readable_root(root) {
         Ok(root) => root,
         Err(reason) => return AgentBlockStatus::Unavailable { reason },
     };
@@ -571,6 +616,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_status_read_writes_nothing_into_the_storage_folder() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write(root, AGENTS_FILE, "User text.\n");
+        let entries = |root: &Path| {
+            let mut names: Vec<_> = std::fs::read_dir(root)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = entries(root);
+        let modified = std::fs::metadata(root).unwrap().modified().unwrap();
+
+        assert_eq!(status(Some(root)), AgentBlockStatus::NotAdded);
+
+        assert_eq!(entries(root), before);
+        // A file that is made and removed again changes the folder time.
+        assert_eq!(
+            std::fs::metadata(root).unwrap().modified().unwrap(),
+            modified
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_status_read_of_a_read_only_folder_reads_the_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write(root, AGENTS_FILE, "User text.\n");
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = status(Some(root));
+        let added = add(Some(root));
+
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result, AgentBlockStatus::NotAdded);
+        // The button still does the write probe before it writes.
+        let error = added.unwrap_err();
+        assert!(
+            error.starts_with("Longhand can’t write to the storage folder"),
+            "{error}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_failed_write_names_the_file() {
@@ -578,19 +671,68 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         // CLAUDE.md links to a file in a folder that Longhand cannot write.
-        let locked = TempDir::new().unwrap();
-        write(locked.path(), "rules.md", "Text.\n");
-        std::os::unix::fs::symlink(locked.path().join("rules.md"), root.join(CLAUDE_FILE)).unwrap();
-        std::fs::set_permissions(locked.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        write(&locked, "rules.md", "Text.\n");
+        std::os::unix::fs::symlink(locked.join("rules.md"), root.join(CLAUDE_FILE)).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         let result = add(Some(root));
 
-        std::fs::set_permissions(locked.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         let error = result.unwrap_err();
         assert!(
             error.starts_with("Longhand can’t write CLAUDE.md"),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_file_outside_the_storage_folder_gets_no_block() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let outside = TempDir::new().unwrap();
+        write(outside.path(), "rules.md", "Outside text.\n");
+        std::os::unix::fs::symlink(outside.path().join("rules.md"), root.join(AGENTS_FILE))
+            .unwrap();
+        // A link to an outside file that does not exist yet.
+        std::os::unix::fs::symlink(outside.path().join("new.md"), root.join(CLAUDE_FILE)).unwrap();
+
+        let reason = "Longhand can’t add the instructions to AGENTS.md: it links to a file outside the storage folder.";
+        assert_eq!(
+            status(Some(root)),
+            AgentBlockStatus::Unavailable {
+                reason: reason.into()
+            }
+        );
+        assert_eq!(add(Some(root)).unwrap_err(), reason);
+        assert!(update(root).is_err());
+
+        assert_eq!(read(outside.path(), "rules.md"), "Outside text.\n");
+        assert!(!outside.path().join("new.md").exists());
+        assert!(
+            std::fs::symlink_metadata(root.join(AGENTS_FILE))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_file_in_a_subfolder_of_the_storage_folder_gets_the_block() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("agents")).unwrap();
+        write(&root.join("agents"), "rules.md", "User text.\n");
+        std::os::unix::fs::symlink("agents/rules.md", root.join(AGENTS_FILE)).unwrap();
+
+        assert_eq!(add(Some(root)).unwrap(), AgentBlockStatus::Added);
+
+        let text = read(&root.join("agents"), "rules.md");
+        assert!(text.starts_with("User text.\n"), "{text}");
+        assert!(text.contains(BEGIN_PREFIX), "{text}");
     }
 
     #[test]

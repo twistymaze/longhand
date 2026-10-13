@@ -24,6 +24,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -32,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _longhand as lh  # noqa: E402
 
-SNAPSHOT_FORMAT = 1
+SNAPSHOT_FORMAT = 2
 SNAPSHOT_FOLDER = "longhand-notes-snapshots"
 
 PASS, PROBLEM, NOT_CHECKED = 0, 1, 2
@@ -61,6 +62,49 @@ def longhand_files(root):
     return out
 
 
+# The files at the storage-folder root that are not Longhand files but are
+# allowed there: the agent instructions of the user.
+ROOT_FILES = ("AGENTS.md", "CLAUDE.md")
+FINDER_FILE = ".DS_Store"
+WRITE_PROBE_PREFIX = ".longhand-write-probe-"
+# The temporary file of a Longhand write: `.<name>.<16 hex digits>.tmp`.
+LONGHAND_TEMP = re.compile(r"^\..+\.[0-9a-f]{16}\.tmp$")
+
+
+def is_skipped(name):
+    """Whether `name` is a file that the system or Longhand makes and
+    removes again, so that it does not count."""
+    return name == FINDER_FILE or name.startswith(WRITE_PROBE_PREFIX) or bool(LONGHAND_TEMP.match(name))
+
+
+def other_entries(root):
+    """The files and folders that are not Longhand files, by their paths in
+    the storage folder: names at the root that are not note folders, type
+    folders, `.longhand` or the agent instructions; entries in a type folder
+    that are not note folders; and hidden files in `.longhand`."""
+    types = set(lh.type_folders(root))
+    out = []
+    for name in sorted(os.listdir(root)):
+        path = os.path.join(root, name)
+        if is_skipped(name) or name == lh.LONGHAND_FOLDER or name in ROOT_FILES:
+            continue
+        if name in types:
+            for child in sorted(os.listdir(path)):
+                if is_skipped(child) or lh.is_note_folder(os.path.join(path, child)):
+                    continue
+                out.append(name + "/" + child)
+            continue
+        if not lh.is_hidden(name) and os.path.isdir(path) and lh.is_note_folder(path):
+            continue
+        out.append(name)
+    folder = os.path.join(root, lh.LONGHAND_FOLDER)
+    for relative in lh.folder_files(folder):
+        parts = relative.split("/")
+        if any(lh.is_hidden(part) for part in parts) and not is_skipped(parts[-1]):
+            out.append(lh.LONGHAND_FOLDER + "/" + relative)
+    return out
+
+
 def read_state(root, at=None):
     """The state of the storage folder that a snapshot holds."""
     notes = []
@@ -81,6 +125,7 @@ def read_state(root, at=None):
         "prompts": lh.read_prompts(root),
         "background": background_state(background),
         "type_folders": lh.type_folders(root),
+        "other_entries": other_entries(root),
     }
 
 
@@ -526,8 +571,18 @@ def compare_longhand_files(report, before_state, after_state):
             report.problems.append("%s changed. Agents must not edit it." % path)
 
 
+def compare_other_entries(report, before_state, after_state):
+    """A new file or folder that Longhand does not know is a problem. A type
+    folder that has no note now is not new."""
+    known = set(before_state["other_entries"]) | set(before_state["type_folders"])
+    for path in after_state["other_entries"]:
+        if path not in known:
+            report.problems.append("%s is a new file or folder that Longhand does not know. Remove it." % path)
+
+
 def compare(before_state, after_state):
     report = Report()
+    compare_other_entries(report, before_state, after_state)
     compare_notes(report, before_state, after_state)
     compare_settings(report, before_state, after_state)
     compare_prompts(report, before_state, after_state)

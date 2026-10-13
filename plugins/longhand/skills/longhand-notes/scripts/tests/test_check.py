@@ -205,6 +205,51 @@ class CompareTests(support.StorageFolderTest):
         self.assertEqual(code, PROBLEM, out)
         self.assertIn("draft.md is a new file", out)
 
+    def test_a_new_file_at_the_root_is_a_problem(self):
+        snapshot = self.snapshot()
+        self.write("scratch\n", "draft.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("draft.md is a new file or folder that Longhand does not know. Remove it.", out)
+
+    def test_a_new_file_or_folder_in_a_type_folder_is_a_problem(self):
+        snapshot = self.snapshot()
+        self.write("scratch\n", "Meetings", "draft.md")
+        os.makedirs(self.path("Meetings", "scratch"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("Meetings/draft.md is a new file or folder", out)
+        self.assertIn("Meetings/scratch is a new file or folder", out)
+
+    def test_a_new_hidden_file_in_the_longhand_folder_is_a_problem(self):
+        snapshot = self.snapshot()
+        self.write("x", ".longhand", ".notes")
+        # A temporary file of a Longhand write is not a problem.
+        self.write("x", ".longhand", ".settings.json.0123456789abcdef.tmp")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn(".longhand/.notes is a new file or folder", out)
+        self.assertNotIn(".tmp", out)
+
+    def test_agent_files_finder_files_and_write_probes_at_the_root_pass(self):
+        snapshot = self.snapshot()
+        self.write("# Rules\n", "AGENTS.md")
+        self.write("@AGENTS.md\n", "CLAUDE.md")
+        self.write("", ".DS_Store")
+        self.write("", "Meetings", ".DS_Store")
+        self.write("", ".longhand-write-probe-1-2-3")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertIn("Changes: none", out)
+
+    def test_a_type_folder_that_becomes_empty_passes(self):
+        os.makedirs(self.path("Calls"))
+        shutil.move(self.path(BUDGET), self.path("Calls", BUDGET))
+        snapshot = self.snapshot()
+        shutil.move(self.path("Calls", BUDGET), self.path(BUDGET))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+
     def test_a_tag_that_is_not_valid_is_a_problem(self):
         snapshot = self.snapshot()
         self.write(BUDGET_SESSION.replace("- Finance\n", "- ''\n"), BUDGET, "session.md")

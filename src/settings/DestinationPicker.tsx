@@ -138,24 +138,27 @@ const AGENT_INSTRUCTIONS_ABOUT =
 /// The agent instructions in AGENTS.md and CLAUDE.md of the storage folder
 /// (R29). The pane reads their state when it opens, when the folder or its
 /// status changes, and when the window gets the focus, so a file that the
-/// user fixed shows at once. An automatic update of the instructions shows
-/// nothing here.
-function AgentInstructions({
-  folder,
-  folderStatus,
-}: {
-  folder: string;
-  folderStatus: DestinationStatus["kind"];
-}) {
+/// user fixed shows at once. The status read writes nothing, so a folder
+/// that Longhand can't write gets its reason from the folder status. An
+/// automatic update of the instructions shows nothing here.
+function AgentInstructions({ folder, folderStatus }: { folder: string; folderStatus: DestinationStatus }) {
   const [state, setState] = useState<AgentBlockStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const last = useRef<AgentBlockStatus | null>(null);
 
   useEffect(() => {
     let live = true;
+    // The error of a failed write is about the folder or the files as they were.
+    setError(null);
     const read = () => {
       commands.agentInstructionsStatus().then(
-        (next) => live && setState(next),
+        (next) => {
+          if (!live) return;
+          if (JSON.stringify(next) !== JSON.stringify(last.current)) setError(null);
+          last.current = next;
+          setState(next);
+        },
         () => {},
       );
     };
@@ -165,9 +168,16 @@ function AgentInstructions({
       live = false;
       window.removeEventListener("focus", read);
     };
-  }, [folder, folderStatus]);
+  }, [folder, folderStatus.kind]);
 
   if (!state) return null;
+
+  const unavailable =
+    state.kind === "unavailable"
+      ? state.reason
+      : folderStatus.kind === "not_writable"
+        ? `Longhand can’t write to the storage folder: ${folderStatus.message}`
+        : null;
 
   const add = async () => {
     setBusy(true);
@@ -176,6 +186,7 @@ function AgentInstructions({
       if (result.status === "error") setError(result.error);
       else {
         setError(null);
+        last.current = result.data;
         setState(result.data);
       }
     } finally {
@@ -185,11 +196,11 @@ function AgentInstructions({
 
   return (
     <Group header="AI agents">
-      <Row label="Agent instructions" detail={state.kind === "unavailable" ? state.reason : AGENT_INSTRUCTIONS_ABOUT}>
+      <Row label="Agent instructions" detail={unavailable ?? AGENT_INSTRUCTIONS_ABOUT}>
         {state.kind === "added" ? (
           <Status tone="positive">Added</Status>
         ) : (
-          <Button disabled={busy || state.kind !== "not_added"} onClick={() => void add()}>
+          <Button disabled={busy || state.kind !== "not_added" || unavailable !== null} onClick={() => void add()}>
             Add Agent Instructions
           </Button>
         )}
@@ -299,7 +310,7 @@ export function DestinationPicker({
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
       <AudioRemoval settings={settings} onSettings={onSettings} />
-      <AgentInstructions folder={current} folderStatus={status.kind} />
+      <AgentInstructions folder={current} folderStatus={status} />
       {dialog}
     </Pane>
   );
