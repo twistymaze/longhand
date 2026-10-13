@@ -61,6 +61,7 @@ UI text uses short, direct plain language with consistent terms, no metaphors, a
   - A dependency update is `build(deps)`. Use `fix(deps)` only when the update fixes a fault that users see.
   - `style` is formatting only. A CSS or visual change is a `feat` or a `fix`.
   - A change to build tools or CI that does not change the shipped app is a `chore` or a `ci`. `docs`, `ci`, `test`, `chore` and `style` make no release.
+  - A change only to `plugins/` (the agent skill) makes no app release, because the plugin updates from `main`, not from a release. Use `docs` for a change to the skill text, and `chore` for other changes, such as a change to the skill scripts. Do not use `feat` or `fix`. A PR that also changes the app uses the rules above for the app change.
   - Never write `!` or `BREAKING CHANGE` in a PR title unless the user asks for a major release. `!` on a release type makes a major release.
   - A commit pushed directly to `main` (docs-only work) uses only `docs`, `chore` or `ci`.
 - After a PR merges, offer cleanup and wait for approval. Before cleanup, read [After a merge](docs/development-workflow.md#after-a-merge).

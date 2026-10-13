@@ -54,6 +54,8 @@ CI runs only on:
 
 The macOS and Windows checks run on self-hosted runners, which keep the build output of the previous job. The runner setup is in a private repository, because it contains details of the home network. The repository variables `MACOS_RUNNER` and `WINDOWS_RUNNER` select the self-hosted runners. To run the checks on GitHub's runners instead, use `gh workflow run ci.yml --ref <branch> -f hosted=true`. To see whether a runner is offline, use `gh api orgs/twistymaze/actions/runners --jq '.runners[] | [.name, .status] | @tsv'`. A job for an offline self-hosted runner waits in the queue. `cargo deny` and the release builds run on GitHub's runners. On GitHub's runners, runs on `main` save the cache that new pull requests restore. For CI, docs are all Markdown files except `PROVENANCE.md`, plus `docs/`, `.claude/`, `.compound-engineering/` and the root `LICENSE`.
 
+The Markdown files of the agent skill in `plugins/` are docs for CI too: a push to `main` that changes only them runs no CI. The skill scripts (`.py`) are not docs.
+
 Docs-only changes need no PR. Commit and push them directly on `main`; CI costs more than it checks for these changes. This includes plans, ideas, solutions, `CONCEPTS.md`, and agent guidance.
 
 Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open, also for a small fix.
@@ -70,6 +72,25 @@ Other worktrees often merge into `main` while a branch is in progress. Immediate
 6. Run the local checks again, then create the PR. In the PR, identify the manual and real-audio results that come from before the rebase.
 
 [Rebase before a PR when main moved](solutions/workflow-issues/rebase-before-pr-when-main-moved.md) records the example that caused this rule.
+
+### Skill script tests and the test storage folder
+
+The scripts of the `longhand-notes` skill support Python 3.9 and later. Run their tests on Python 3.9 and on the current Python. uv downloads each Python:
+
+```sh
+uv run --no-project --python 3.9 python -m unittest discover -s plugins/longhand/skills/longhand-notes/scripts/tests -t plugins/longhand/skills/longhand-notes/scripts
+uv run --no-project python -m unittest discover -s plugins/longhand/skills/longhand-notes/scripts/tests -t plugins/longhand/skills/longhand-notes/scripts
+```
+
+CI runs the same tests on Python 3.9 and 3.15, on macOS and Windows.
+
+The Rust tests and the script tests read one checked-in test storage folder, `testdata/storage-folder/`. It is synthetic, and its files have LF line ends (`.gitattributes`). The real writers make it: `crates/library/tests/test_storage_folder.rs` writes the folder into a temporary folder and fails when the checked-in folder has other files or other bytes. After a change to a writer, write the folder again, and then read the diff of `testdata/`:
+
+```sh
+LONGHAND_UPDATE_TESTDATA=1 cargo test -p library --test test_storage_folder
+```
+
+`crates/library/tests/skill_drift.rs` runs the skill scripts on a folder that the real writers make, so a change to the format of a note or of the shared settings fails when the scripts do not know it. These tests use `uv run --no-project python`, or `python3` when uv is not installed. With neither, each test prints why it does not run and passes, except when `CI` is set: then it fails.
 
 ### Local recognition checks
 
