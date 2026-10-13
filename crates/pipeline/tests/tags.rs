@@ -153,7 +153,7 @@ fn storage() -> (tempfile::TempDir, PathBuf) {
 }
 
 fn document(home: &Path) -> SessionDoc {
-    session_core::note_folder::NoteFiles::read(&home)
+    session_core::note_folder::NoteFiles::read(home)
         .unwrap()
         .doc
 }
@@ -161,7 +161,7 @@ fn document(home: &Path) -> SessionDoc {
 fn edit_doc(home: &Path, edit: impl FnOnce(&mut SessionDoc)) {
     let mut doc = document(home);
     edit(&mut doc);
-    session_save::note_files::write_doc(&home, &doc).unwrap();
+    session_save::note_files::write_doc(home, &doc).unwrap();
 }
 
 #[test]

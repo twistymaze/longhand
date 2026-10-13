@@ -2334,7 +2334,7 @@ fn a_new_session_md_with_no_longhand_json_waits_and_is_not_adopted() {
     assert_eq!(b.sync_at(&root, start), Changes::default());
     assert!(b.record("n1").is_none());
     assert_eq!(files(&root), before, "the reconcile wrote a file");
-    let result = scan(&[root.clone()], &Known::default(), &options());
+    let result = scan(std::slice::from_ref(&root), &Known::default(), &options());
     assert_eq!(result.waiting_for_record.len(), 1);
     assert_eq!(result.waiting_for_record[0].path, folder);
 
