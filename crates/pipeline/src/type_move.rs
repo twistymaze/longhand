@@ -26,7 +26,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
-use library::scan::{self, NoteRead, Place, READ_TIMEOUT, read_note};
+use library::scan::{self, Place, READ_TIMEOUT, read_note_files};
 use session_core::folder::{PendingType, ResultFlag, SessionDoc};
 use session_core::jobs::{Claims, busy};
 use session_core::note_folder::{Layout, NoteFiles};
@@ -244,11 +244,11 @@ fn settle(
         store.clear_type_move(session_id)?;
         return Ok(TypeChange::Unchanged);
     }
-    let Some(doc) = read_document(&home) else {
+    let Some(files) = read_files(&home) else {
         return Ok(TypeChange::Later);
     };
     if !claim {
-        match &doc.record.pending_type {
+        match &files.record.pending_type {
             Some(field) if field.by != me => {
                 log::info!(
                     "the type move of {session_id} is now the move of computer {}",
@@ -269,7 +269,7 @@ fn settle(
     if !same_optional_type(&place.note_type, &owed.from) {
         // The move is done, or a person moved the folder: the folder wins
         // (KTD3, R29).
-        if doc.record.pending_type.is_some() {
+        if files.record.pending_type.is_some() {
             clear_pending(store, session_id, &home)?;
         }
         store.set_pending_type(session_id, None)?;
@@ -288,8 +288,8 @@ fn settle(
     {
         return Ok(TypeChange::Later);
     }
-    if !free(store, &record, &home, &doc.doc, ctx)? {
-        write_pending(store, session_id, &home, doc, &pending, &mut owed)?;
+    if !free(store, &record, &home, &files.doc, ctx)? {
+        write_pending(store, session_id, &home, files, &pending, &mut owed)?;
         return Ok(TypeChange::Later);
     }
     let parent = match &owed.to {
@@ -333,8 +333,8 @@ fn settle(
                 return Ok(TypeChange::Moved(path));
             }
             log::warn!("could not move the folder of {session_id}: {e}");
-            if let Some(doc) = read_document(&home) {
-                write_pending(store, session_id, &home, doc, &pending, &mut owed)?;
+            if let Some(files) = read_files(&home) {
+                write_pending(store, session_id, &home, files, &pending, &mut owed)?;
             }
             Ok(TypeChange::Kept(e.to_string()))
         }
@@ -388,9 +388,9 @@ fn free(
     Ok(!crate::in_use::in_use_except(home, ctx.own_runs, ctx.now).unwrap_or(true))
 }
 
-/// Write `pending` into `longhand.json` in `home` with a read-modify-write of
-/// the records in `files`, so every computer shows the new type, and into the row. A write
-/// that fails is logged, and the next scan tries again.
+/// Write `pending` into the row, and into `longhand.json` in `home` with a
+/// read-modify-write of the records in `files`, so every computer shows the
+/// new type. A write that fails is logged, and the next scan tries again.
 fn write_pending(
     store: &Store,
     session_id: &str,
@@ -422,7 +422,7 @@ fn write_pending(
 /// write that fails is logged: the folder decides the type (KTD3).
 fn clear_pending(store: &Store, session_id: &str, home: &Path) -> Result<(), StageError> {
     store.set_pending_type(session_id, None)?;
-    let Some(files) = read_document(home) else {
+    let Some(files) = read_files(home) else {
         return Ok(());
     };
     let mut record = files.record;
@@ -465,7 +465,7 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let Some(place) = scan::storage_place(&home) else {
         return Ok(false);
     };
-    let Some(field) = read_document(&home).and_then(|doc| doc.record.pending_type) else {
+    let Some(field) = read_files(&home).and_then(|files| files.record.pending_type) else {
         return Ok(false);
     };
     if field.by != store.computer_id()? {
@@ -517,15 +517,15 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     if !same_optional_type(&place.note_type, &seen.from) {
         return Ok(false);
     }
-    let Some(doc) = read_document(&home) else {
+    let Some(files) = read_files(&home) else {
         return Ok(false);
     };
     // A note in the old layout waits for the conversion (KTD6).
-    if doc.layout == Layout::Old {
+    if files.layout == Layout::Old {
         return Ok(false);
     }
     // The file must still have the field that the row has.
-    if doc.record.pending_type.as_ref() != Some(&seen) {
+    if files.record.pending_type.as_ref() != Some(&seen) {
         return Ok(false);
     }
     // The target comes from a synced file: it goes through the type name
@@ -538,7 +538,7 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
         );
         return Ok(false);
     }
-    if !free(store, &record, &home, &doc.doc, ctx)? {
+    if !free(store, &record, &home, &files.doc, ctx)? {
         return Ok(false);
     }
     let me = store.computer_id()?;
@@ -560,9 +560,9 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
             field_written: true,
         },
     )?;
-    let mut taken_record = doc.record;
+    let mut taken_record = files.record;
     taken_record.pending_type = Some(taken.clone());
-    if let Err(e) = write_records(&home, doc.layout, &taken_record) {
+    if let Err(e) = write_records(&home, files.layout, &taken_record) {
         log::warn!("could not take over the type move of {session_id}: {e}");
         store.clear_type_move(session_id)?;
         return Ok(false);
@@ -852,8 +852,8 @@ fn rename_case(
     if !resumed {
         for record in &notes {
             let home = Path::new(record.home_path.as_deref().unwrap_or_default());
-            let free = match read_document(home) {
-                Some(doc) => free(&guard, record, home, &doc.doc, ctx)?,
+            let free = match read_files(home) {
+                Some(files) => free(&guard, record, home, &files.doc, ctx)?,
                 None => false,
             };
             if !free {
@@ -899,11 +899,8 @@ fn rename_case(
 /// not give a note. The read stops after [`READ_TIMEOUT`]: the store lock
 /// is held, and a file that does not download must not stop each user of
 /// the store.
-fn read_document(folder: &Path) -> Option<NoteFiles> {
-    match read_note(folder, READ_TIMEOUT) {
-        NoteRead::Note(files) => Some(*files),
-        _ => None,
-    }
+fn read_files(folder: &Path) -> Option<NoteFiles> {
+    read_note_files(folder, READ_TIMEOUT)
 }
 
 fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {

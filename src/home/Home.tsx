@@ -1,7 +1,6 @@
 // The library keeps one selected note and its preview through navigation.
 
 import {
-  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -22,12 +21,12 @@ import {
 } from "../processing/describe";
 import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
-import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
+import { AppIcon, NoteIcon } from "../settings/icons";
 import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
 import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
-import { LibraryNotices } from "./LibraryNotices";
+import { CautionBanner, LibraryNotices } from "./LibraryNotices";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
@@ -469,15 +468,6 @@ export function Home({
         )}
       </div>
       {deletion.dialog}
-    </div>
-  );
-}
-
-function CautionBanner({ children }: { children: ReactNode }) {
-  return (
-    <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
-      <CautionIcon className="size-4 text-caution" />
-      {children}
     </div>
   );
 }

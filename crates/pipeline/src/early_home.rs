@@ -53,12 +53,12 @@ use chrono::Local;
 use library::scan::{self, Known, NoteRead, READ_TIMEOUT, Read, ScanOptions, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{self, ResultFlag, SessionDoc};
-use session_core::note_folder::{Layout, written_fingerprint};
+use session_core::note_folder::{Layout, SESSION_FILE, written_fingerprint};
 use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
 use session_core::{SessionRecord, SessionState, Store};
 use session_save::{Fs, RealFs, fsync, home_write, naming, note_files, rename, rename_home};
 
-use crate::save::{NOTES_FILE, SESSION_FILE, note_started};
+use crate::save::{NOTES_FILE, note_started};
 use crate::{SharedStore, StageError, in_use, lock, type_move};
 
 /// The `result_state` key of the early write.
@@ -283,8 +283,9 @@ fn storage(root: &Path, e: io::Error) -> StageError {
 }
 
 /// Whether `path` is the folder of the note `id`: its `longhand.json`, or
-/// an old-layout `session.md`, names `id`. The read has a time limit, because a synced folder can hold a
-/// file that does not download. Such a file gives [`NoteAt::Unknown`].
+/// an old-layout `session.md`, names `id`. The read has a time limit,
+/// because a synced folder can hold a file that does not download. Such a
+/// file gives [`NoteAt::Unknown`].
 fn note_at(path: &Path, id: &str) -> NoteAt {
     match scan::read_note(path, READ_TIMEOUT) {
         NoteRead::Note(files) if files.doc.session_id == id => NoteAt::Yes,

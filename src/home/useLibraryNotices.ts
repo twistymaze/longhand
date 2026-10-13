@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type LibraryNotices } from "../bindings";
 import { useReloadOn } from "../lib/useReloadOn";
 
+const ignore = () => {};
+
 /// The library notices, or null until the first read. A read that fails
 /// keeps the last notices.
 export function useLibraryNotices(): { notices: LibraryNotices | null; reload: () => Promise<void> } {
@@ -24,7 +26,6 @@ export function useLibraryNotices(): { notices: LibraryNotices | null; reload: (
   useEffect(() => {
     void reload();
   }, [reload]);
-  const ignore = useCallback(() => {}, []);
   useReloadOn(ignore, reload);
   return { notices, reload };
 }

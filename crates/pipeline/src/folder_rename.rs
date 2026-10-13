@@ -15,16 +15,16 @@
 
 use std::path::{Path, PathBuf};
 
-use library::scan::{NoteRead, READ_TIMEOUT, read_note};
+use library::scan::{READ_TIMEOUT, read_note_files};
 use session_core::folder::ResultFlag;
 use session_core::jobs::busy;
-use session_core::note_folder::{Layout, NoteFiles};
+use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE};
 use session_core::{RenameIntent, SessionRecord, SessionState, Store, TitleSource};
 use session_save::Fs;
 use session_save::note_files;
 use session_save::rename_home::{self, Move, RenameError, Resolved};
 
-use crate::save::{SESSION_FILE, note_started};
+use crate::save::note_started;
 use crate::{SharedStore, StageError, lock};
 
 /// What a reconcile did to a session's home folder.
@@ -190,10 +190,7 @@ fn try_write_title_in(record: &SessionRecord, home: &Path) -> Result<(), StageEr
 /// The note files in `folder`, or `None` when they cannot be read or do
 /// not give a note. The read stops after [`READ_TIMEOUT`].
 fn read_files(folder: &Path) -> Option<NoteFiles> {
-    match read_note(folder, READ_TIMEOUT) {
-        NoteRead::Note(files) => Some(*files),
-        _ => None,
-    }
+    read_note_files(folder, READ_TIMEOUT)
 }
 
 /// Compare a saved, idle session's folder name with the name its title

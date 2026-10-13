@@ -2,7 +2,10 @@
 use super::{RouteResult, TaskGraph, failed};
 use crate::{SharedStore, StageError, checkpoint, lock};
 use models::recognition::ExecutionSpec;
-use session_core::{Segment, Stage, recognition::*};
+use session_core::folder::audio_removed;
+use session_core::note_folder::NoteFiles;
+use session_core::{Segment, SessionState, Stage, recognition::*};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(super) const KEY: &str = "recognition-saved-prefix-v1";
@@ -31,7 +34,7 @@ pub(super) fn read(
 ) -> Result<Option<Prefix>, StageError> {
     if lock(store)
         .session(id)?
-        .is_some_and(|record| record.state == session_core::SessionState::Saved)
+        .is_some_and(|record| record.state == SessionState::Saved)
     {
         return Ok(None);
     }
@@ -100,22 +103,20 @@ fn same_segments(saved: &[Segment], note: &[Segment]) -> bool {
 ///
 /// [`NoteRecord::run_fingerprint`]: session_core::note_record::NoteRecord::run_fingerprint
 fn session_manifest(home: &Path) -> std::io::Result<String> {
-    Ok(session_core::note_folder::NoteFiles::read(home)?
-        .record
-        .run_fingerprint())
+    Ok(NoteFiles::read(home)?.record.run_fingerprint())
 }
 
 fn same_audio(
     dir: &Path,
     home: &Path,
     old: &[Segment],
-    audio: &std::collections::BTreeMap<String, String>,
+    audio: &BTreeMap<String, String>,
 ) -> Result<bool, StageError> {
     for segment in old {
         let local = dir.join(&segment.audio_file);
         let source = if local.is_file() {
             local
-        } else if session_core::folder::audio_removed(home, &segment.audio_file)
+        } else if audio_removed(home, &segment.audio_file)
             || !home.join(&segment.audio_file).is_file()
         {
             return Ok(false);
@@ -137,12 +138,12 @@ fn old_audio_gone(store: &SharedStore, id: &str, dir: &Path) -> Result<bool, Sta
         return Ok(false);
     };
     let home = Path::new(&home);
-    let Ok(doc) = session_core::note_folder::NoteFiles::read(home).map(|files| files.doc) else {
+    let Ok(doc) = NoteFiles::read(home).map(|files| files.doc) else {
         return Ok(false);
     };
     Ok(doc.timeline_segments().iter().any(|segment| {
         !dir.join(&segment.audio_file).is_file()
-            && (session_core::folder::audio_removed(home, &segment.audio_file)
+            && (audio_removed(home, &segment.audio_file)
                 || !home.join(&segment.audio_file).is_file())
     }))
 }
@@ -173,8 +174,9 @@ fn candidate(
     if route == super::Route::SeparatePyannote && record.speaker_count.is_some() {
         return Ok(None);
     }
-    let manifest = session_manifest(home)?;
-    let doc = session_core::note_folder::NoteFiles::read(home)?.doc;
+    let files = NoteFiles::read(home)?;
+    let manifest = files.record.run_fingerprint();
+    let doc = files.doc;
     let old = doc.timeline_segments();
     if old.is_empty()
         || old.len() > segments.len()
@@ -550,9 +552,7 @@ mod tests {
         // The resume clears the flag in the store only (KTD4 of the pause
         // plan), and the audio is the same.
         let case = Case::new();
-        let mut doc = session_core::note_folder::NoteFiles::read(case.temp.path())
-            .unwrap()
-            .doc;
+        let mut doc = NoteFiles::read(case.temp.path()).unwrap().doc;
         for segment in &mut doc.segments {
             segment.ends_in_pause = true;
         }
@@ -582,9 +582,7 @@ mod tests {
         let case = Case::new();
         let prefix = case.read().unwrap().unwrap();
         retain(&case.store, "s", &prefix).unwrap();
-        let mut doc = session_core::note_folder::NoteFiles::read(case.temp.path())
-            .unwrap()
-            .doc;
+        let mut doc = NoteFiles::read(case.temp.path()).unwrap().doc;
         doc.tags = vec!["Topic::Security".into()];
         doc.pending_type = Some(session_core::folder::PendingType {
             to: Some("One on One".into()),
@@ -639,9 +637,7 @@ mod tests {
             case.read().is_err(),
             "an unrelated full parent is not our publication"
         );
-        let doc = session_core::note_folder::NoteFiles::read(case.temp.path())
-            .unwrap()
-            .doc;
+        let doc = NoteFiles::read(case.temp.path()).unwrap().doc;
         checkpoint::put(
             &case.store,
             "s",

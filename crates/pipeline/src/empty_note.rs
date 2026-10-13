@@ -53,14 +53,14 @@ use chrono::{DateTime, FixedOffset};
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 use session_core::folder;
 use session_core::jobs::{Claims, MoveStep, RECORDED_INTO, TitleSource, WrittenFingerprints};
-use session_core::note_folder::written_fingerprint;
+use session_core::note_folder::{SESSION_FILE, written_fingerprint};
 use session_core::note_record::NOTE_RECORD_FILE;
 use session_core::{SessionState, Store};
 use session_save::{RealFs, fsync, naming};
 
 use crate::early_home::{self, EarlyHomes, EarlyState, Location};
 use crate::in_use::{is_marker_name, marker_fresh, marker_name, remove_marker};
-use crate::save::{NOTES_FILE, SESSION_FILE};
+use crate::save::NOTES_FILE;
 use crate::{SharedStore, StageError, lock};
 
 /// The `result_state` key that records the folder whose files the removal
@@ -85,8 +85,8 @@ pub enum Kept {
     /// The storage folder is not available, or a file of the note cannot be
     /// read. The launch pass tries again at the next launch.
     Unavailable,
-    /// `session.md`, `longhand.json` or `notes.md` is not the file that this computer last
-    /// wrote: another computer can have changed it.
+    /// `session.md`, `longhand.json` or `notes.md` is not the file that
+    /// this computer last wrote: another computer can have changed it.
     Changed,
     /// An in-use marker of another run is fresh.
     InUse,
@@ -411,8 +411,8 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
 }
 
 /// Check the folder of an empty note (R18). Returns the files to delete:
-/// the old in-use markers, then `notes.md`, `session.md` and `longhand.json`. This run's
-/// own marker goes first. A marker of one of the `earlier_runs` on this
+/// the old in-use markers, then `notes.md`, `session.md` and
+/// `longhand.json`. This run's own marker goes first. A marker of one of the `earlier_runs` on this
 /// computer is an old marker, also when it is fresh. `removing` is true
 /// when an earlier removal of this note started to delete the files of
 /// this folder: a missing `notes.md` then does not keep the note.

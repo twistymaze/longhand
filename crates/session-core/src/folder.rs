@@ -13,6 +13,7 @@ use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
 use crate::jobs::{Title, TitleSource};
+use crate::note_folder::SESSION_FILE;
 use crate::timeline::Segment;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -403,8 +404,8 @@ impl SessionDoc {
 
     /// Only the frontmatter is authoritative; the body is for people.
     pub fn parse(text: &str) -> Result<Self, FolderError> {
-        let (yaml, _) = split_frontmatter("session.md", text)?;
-        serde_yaml::from_str(yaml).map_err(yaml_error("session.md"))
+        let (yaml, _) = split_frontmatter(SESSION_FILE, text)?;
+        serde_yaml::from_str(yaml).map_err(yaml_error(SESSION_FILE))
     }
 }
 
@@ -424,10 +425,9 @@ impl SessionMd {
     /// Parse the frontmatter of a `session.md`. An error gives the line in
     /// the file.
     pub fn parse(text: &str) -> Result<Self, FolderError> {
-        const FILE: &str = "session.md";
-        let (start, end, _) =
-            frontmatter_bounds(text).ok_or(FolderError::MissingFrontmatter { file: FILE })?;
-        let map = parse_mapping(FILE, &text[start..end])?;
+        let (start, end, _) = frontmatter_bounds(text)
+            .ok_or(FolderError::MissingFrontmatter { file: SESSION_FILE })?;
+        let map = parse_mapping(SESSION_FILE, &text[start..end])?;
         let tags = match map.get("longhand_tags") {
             Some(serde_yaml::Value::Sequence(items)) => {
                 items.iter().filter_map(scalar_text).collect()
@@ -920,6 +920,15 @@ pub enum SummaryMeta {
     },
     /// Summarization failed; the session was saved anyway (R22).
     Stub { failed_stage: String },
+}
+
+impl SummaryMeta {
+    /// The data of the summary stub: the Summarize stage failed.
+    pub fn stub() -> Self {
+        Self::Stub {
+            failed_stage: "summarize".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

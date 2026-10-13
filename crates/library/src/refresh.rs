@@ -398,39 +398,58 @@ fn updates(store: &Store, id: &str, contents: &FolderContents) -> Result<Updates
 /// title and no source: when the title is the stored one, the row keeps
 /// its source (KTD3). Otherwise a title with no source is the user's (R5).
 fn folder_title(contents: &FolderContents, stored: Option<&Title>) -> Option<Title> {
-    let doc = &contents.doc;
     // The store keeps a title trimmed, and keeps no empty title.
-    let text = doc
+    let text = contents
+        .doc
         .title
         .as_deref()
         .map(str::trim)
         .filter(|t| !t.is_empty());
-    if contents.layout == Layout::New {
-        let written = contents.written_title.as_ref();
-        if doc.title.as_deref() == written.map(|w| w.text.as_str()) {
-            return text.map(|text| Title {
-                text: text.to_string(),
-                source: written.map_or(TitleSource::User, |w| w.source),
-            });
-        }
-        if !contents.title_settled {
-            return stored.cloned();
-        }
+    match contents.layout {
+        Layout::New => new_layout_title(contents, text, stored),
+        Layout::Old => text.map(|text| old_layout_title(contents.doc.title_source, text, stored)),
+    }
+}
+
+/// The title of a new-layout note, from the trimmed title `text` of its
+/// `session.md`. See [`folder_title`].
+fn new_layout_title(
+    contents: &FolderContents,
+    text: Option<&str>,
+    stored: Option<&Title>,
+) -> Option<Title> {
+    let written = contents.written_title.as_ref();
+    if contents.doc.title.as_deref() == written.map(|w| w.text.as_str()) {
         return text.map(|text| Title {
             text: text.to_string(),
-            source: TitleSource::User,
+            source: written.map_or(TitleSource::User, |w| w.source),
         });
     }
-    let text = text?;
-    let source = match (doc.title_source, stored) {
+    if !contents.title_settled {
+        return stored.cloned();
+    }
+    text.map(|text| Title {
+        text: text.to_string(),
+        source: TitleSource::User,
+    })
+}
+
+/// The title of an old-layout note, from the trimmed title `text` of its
+/// `session.md` and its title source. See [`folder_title`].
+fn old_layout_title(
+    title_source: Option<TitleSource>,
+    text: &str,
+    stored: Option<&Title>,
+) -> Title {
+    let source = match (title_source, stored) {
         (Some(source), _) => source,
         (None, Some(stored)) if stored.text == text => stored.source,
         (None, _) => TitleSource::User,
     };
-    Some(Title {
+    Title {
         text: text.to_string(),
         source,
-    })
+    }
 }
 
 fn write(store: &mut Store, id: &str, updates: Updates) -> Result<Refresh, StoreError> {

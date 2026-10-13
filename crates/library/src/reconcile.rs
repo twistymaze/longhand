@@ -193,24 +193,31 @@ struct Mismatch {
 /// the title. When a scan finds other values, the wait starts again.
 #[derive(Debug, Clone)]
 struct TitleWait {
-    /// The title of `session.md` and the last-written title.
-    key: (Option<String>, Option<String>),
+    key: TitleKey,
     since: Instant,
     /// A scan found the difference at or after its deadline.
     expired: bool,
     folder: PathBuf,
 }
 
+/// The values that a [`TitleWait`] waits on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TitleKey {
+    /// The title of `session.md`.
+    session_md: Option<String>,
+    /// The last-written title.
+    written: Option<String>,
+}
+
 impl TitleWait {
     /// The key of `doc` with the last-written title `written`, in the new
     /// layout. `None` when the titles are equal, or in the old layout.
-    fn key_of(
-        layout: Layout,
-        doc: &SessionDoc,
-        written: Option<&Title>,
-    ) -> Option<(Option<String>, Option<String>)> {
+    fn key_of(layout: Layout, doc: &SessionDoc, written: Option<&Title>) -> Option<TitleKey> {
         let written = written.map(|w| w.text.clone());
-        (layout == Layout::New && doc.title != written).then(|| (doc.title.clone(), written))
+        (layout == Layout::New && doc.title != written).then(|| TitleKey {
+            session_md: doc.title.clone(),
+            written,
+        })
     }
 }
 

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use crate::folder::{FolderError, SessionDoc, SessionMd, SummaryMeta, fingerprint};
+use crate::folder::{FolderError, SessionDoc, SessionMd, fingerprint};
 use crate::jobs::{Title, TitleSource};
 use crate::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead};
 
@@ -173,7 +173,7 @@ impl NoteFiles {
 }
 
 /// The text of the file at `path`, or `None` when it is not there.
-fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
+pub fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -247,16 +247,4 @@ impl NoteRecord {
 /// `longhand.json` (KTD8 of the notes without a recording plan).
 pub fn written_fingerprint(session_md: &[u8], record: &[u8]) -> String {
     format!("{}+{}", fingerprint(session_md), fingerprint(record))
-}
-
-/// The summary data of a note: from `longhand.json` in the new layout, and
-/// from the frontmatter of `summary.md` (its text in `summary_md`) in the
-/// old layout.
-pub fn summary_meta(files: &NoteFiles, summary_md: Option<&str>) -> Option<SummaryMeta> {
-    match files.layout {
-        Layout::New => files.record.summary.clone(),
-        Layout::Old => summary_md
-            .and_then(|text| crate::folder::Summary::parse(text).ok())
-            .map(|summary| summary.meta),
-    }
 }

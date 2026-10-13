@@ -7,10 +7,11 @@ use std::io;
 use std::path::Path;
 
 use session_core::folder::{FrontmatterPatch, SessionDoc};
-use session_core::note_folder::SESSION_FILE;
+use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE, read_optional};
 use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord, NoteRecordRead};
 
 use crate::home_write;
+use crate::publication::OLD_LAYOUT;
 
 /// The frontmatter key of the title in `session.md`.
 pub const TITLE_KEY: &str = "title";
@@ -24,6 +25,16 @@ pub fn write_record(dir: &Path, record: &NoteRecord) -> io::Result<Vec<u8>> {
     let bytes = record.render().into_bytes();
     home_write::write_atomic(dir, NOTE_RECORD_FILE, &bytes)?;
     Ok(bytes)
+}
+
+/// The records of the note in `dir`. A note in the old layout gives an
+/// error with the text [`OLD_LAYOUT`] (KTD6).
+pub fn new_layout_record(dir: &Path) -> io::Result<NoteRecord> {
+    let files = NoteFiles::read(dir)?;
+    if files.layout == Layout::Old {
+        return Err(io::Error::other(OLD_LAYOUT));
+    }
+    Ok(files.record)
 }
 
 /// The patch that sets the title of `session.md`. `None` removes it.
@@ -65,7 +76,9 @@ pub fn new_session_md(title: Option<&str>, tags: &[String]) -> String {
 pub fn write_doc(dir: &Path, doc: &SessionDoc) -> io::Result<()> {
     let mut record = NoteRecord::from_doc(doc);
     if let Ok(text) = std::fs::read_to_string(dir.join(NOTE_RECORD_FILE))
-        && let Ok(NoteRecordRead::Current(current)) = NoteRecord::parse(&text)
+        && let Some(current) = NoteRecord::parse(&text)
+            .ok()
+            .and_then(NoteRecordRead::current)
     {
         record.summary = current.summary;
     }
@@ -82,11 +95,7 @@ pub fn write_doc(dir: &Path, doc: &SessionDoc) -> io::Result<()> {
 /// it is.
 pub fn patch_session_md(dir: &Path, patch: &FrontmatterPatch) -> io::Result<String> {
     let path = dir.join(SESSION_FILE);
-    let current = match std::fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e),
-    };
+    let current = read_optional(&path)?;
     let text = match &current {
         Some(text) => patch
             .apply(SESSION_FILE, text)

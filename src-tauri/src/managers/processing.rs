@@ -1974,8 +1974,11 @@ pub(crate) fn refuse_while_syncing(
     status: &library::status::LibraryStatus,
     id: &str,
 ) -> Result<(), String> {
-    refuse_with_problem(status, id)?;
-    if status.note(id).result_waits() {
+    let note = status.note(id);
+    if let Some(problem) = &note.problem {
+        return Err(problem_reason(problem));
+    }
+    if note.result_waits() {
         Err(WAIT_FOR_SYNC.to_string())
     } else {
         Ok(())

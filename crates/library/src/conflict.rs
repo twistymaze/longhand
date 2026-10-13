@@ -8,14 +8,17 @@
 //! - `notes-DESKTOP-ABC` (OneDrive adds the computer name).
 //! - `notes 2` (iCloud).
 
+use session_core::note_folder::SESSION_FILE;
+use session_core::note_record::NOTE_RECORD_FILE;
+
 /// The documents of a note folder: the four `.md` files and
 /// `longhand.json`.
 pub const DOCUMENTS: [&str; 5] = [
-    "session.md",
+    SESSION_FILE,
     "transcript.md",
     "summary.md",
     "notes.md",
-    session_core::note_record::NOTE_RECORD_FILE,
+    NOTE_RECORD_FILE,
 ];
 
 /// Whether `name` is a conflict copy of `base`: `base` plus one suffix of

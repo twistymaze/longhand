@@ -23,13 +23,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
-use session_core::folder::{FrontmatterPatch, SessionDoc, Summary, fingerprint};
-use session_core::note_folder::{SESSION_FILE, written_fingerprint};
+use session_core::folder::{FolderError, FrontmatterPatch, Summary, fingerprint};
+use session_core::jobs::busy;
+use session_core::note_folder::{
+    Layout, NoteFiles, SESSION_FILE, read_optional, written_fingerprint,
+};
 use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord, NoteRecordRead};
 use session_save::{home_write, in_use_marker, note_files};
 
-use crate::SharedStore;
 use crate::summarize::SUMMARY_FILE;
+use crate::{SharedStore, lock};
 
 /// The frontmatter keys of the records in an old-layout `session.md`. The
 /// conversion removes them. `result_generation` is a record of an older
@@ -99,7 +102,7 @@ pub fn convert_notes(
 ) -> ConvertReport {
     let mut report = ConvertReport::default();
     for (id, folder) in notes {
-        let guard = crate::lock(store);
+        let guard = lock(store);
         let record = match guard.session(id) {
             Ok(record) => record,
             Err(e) => {
@@ -109,10 +112,7 @@ pub fn convert_notes(
                 continue;
             }
         };
-        if record
-            .as_ref()
-            .is_some_and(|r| session_core::jobs::busy(r, claimed(id)))
-        {
+        if record.as_ref().is_some_and(|r| busy(r, claimed(id))) {
             report.skipped.push(id.clone());
             continue;
         }
@@ -166,37 +166,30 @@ pub fn convert_folder(
     folder: &Path,
     before: &mut dyn FnMut(Step) -> io::Result<()>,
 ) -> io::Result<FolderConversion> {
-    let invalid = |e: session_core::folder::FolderError| {
-        io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-    };
-    let original = match std::fs::read_to_string(folder.join(SESSION_FILE)) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FolderConversion::NotOld),
-        Err(e) => return Err(e),
+    let invalid = |e: FolderError| io::Error::new(io::ErrorKind::InvalidData, e.to_string());
+    let Some(original) = read_optional(&folder.join(SESSION_FILE))? else {
+        return Ok(FolderConversion::NotOld);
     };
     let existing = read_optional(&folder.join(NOTE_RECORD_FILE))?;
-    let files =
-        match session_core::note_folder::NoteFiles::parse(Some(&original), existing.as_deref()) {
-            Ok(files) if files.layout == session_core::note_folder::Layout::Old => files,
-            Ok(_) => return Ok(FolderConversion::NotOld),
-            Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
-        };
-    let doc = SessionDoc::parse(&original).map_err(invalid)?;
+    let files = match NoteFiles::parse(Some(&original), existing.as_deref()) {
+        Ok(files) if files.layout == Layout::Old => files,
+        Ok(_) => return Ok(FolderConversion::NotOld),
+        Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
+    };
+    let doc = files.doc;
     // The records of a `longhand.json` that an earlier run of the
     // conversion wrote. They give the summary data after a stop between
     // the `summary.md` write and the `session.md` write.
     let earlier = existing
         .as_deref()
         .and_then(|text| NoteRecord::parse(text).ok())
-        .and_then(|read| match read {
-            NoteRecordRead::Current(record) => Some(*record),
-            NoteRecordRead::Newer { .. } => None,
-        });
+        .and_then(NoteRecordRead::current);
 
     let mut record = files.record;
     let summary = read_optional(&folder.join(SUMMARY_FILE))?;
     let final_summary = match &summary {
         Some(text) => {
+            let current = Some(fingerprint(text.as_bytes()));
             let (meta, final_text) = match Summary::parse(text) {
                 Ok(parsed) => (Some(parsed.meta.clone()), parsed.render_body()),
                 // A `summary.md` with no summary data: the conversion
@@ -204,7 +197,7 @@ pub fn convert_folder(
                 Err(_) => {
                     let meta = earlier
                         .as_ref()
-                        .filter(|e| e.summary_fingerprint == Some(fingerprint(text.as_bytes())))
+                        .filter(|e| e.summary_fingerprint == current)
                         .and_then(|e| e.summary.clone());
                     (meta, text.clone())
                 }
@@ -212,10 +205,10 @@ pub fn convert_folder(
             record.summary = meta;
             // A summary that matched its fingerprint matches after the
             // conversion too. A summary that differed still differs.
-            let now_matches = doc.summary_fingerprint == Some(fingerprint(text.as_bytes()))
+            let now_matches = doc.summary_fingerprint == current
                 || earlier
                     .as_ref()
-                    .is_some_and(|e| e.summary_fingerprint == Some(fingerprint(text.as_bytes())));
+                    .is_some_and(|e| e.summary_fingerprint == current);
             if now_matches {
                 record.summary_fingerprint = Some(fingerprint(final_text.as_bytes()));
             }
@@ -266,16 +259,88 @@ fn unchanged(folder: &Path, original: &str) -> io::Result<bool> {
 /// Whether the text of a `session.md` still gives an old-layout note.
 fn holds_records(session_md: &str) -> bool {
     matches!(
-        session_core::note_folder::NoteFiles::parse(Some(session_md), None),
-        Ok(files) if files.layout == session_core::note_folder::Layout::Old
+        NoteFiles::parse(Some(session_md), None),
+        Ok(files) if files.layout == Layout::Old
     )
 }
 
-/// The text of the file at `path`, or `None` when it is not there.
-fn read_optional(path: &Path) -> io::Result<Option<String>> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use chrono::DateTime;
+    use session_core::TitleSource;
+    use session_core::folder::{PendingType, ResultFlag, SegmentRecord, SessionDoc, SpeakerCount};
+    use session_core::recognition::ArtifactReference;
+    use session_save::note_files::{TAGS_KEY, TITLE_KEY};
+
+    use super::RECORD_KEYS;
+
+    /// The top-level keys of the frontmatter of `text`.
+    fn frontmatter_keys(text: &str) -> Vec<String> {
+        let rest = text.strip_prefix("---\n").expect("a frontmatter");
+        let (yaml, _) = rest.split_once("\n---\n").expect("a frontmatter end");
+        yaml.lines()
+            .filter(|line| !line.starts_with([' ', '-', '#']))
+            .filter_map(|line| line.split_once(':').map(|(key, _)| key.to_string()))
+            .collect()
+    }
+
+    /// Each key of an old-layout `session.md` is a record that the
+    /// conversion removes, or a user field that stays. The document sets
+    /// every optional field, so that each key is in the file. A new field
+    /// of `SessionDoc` does not compile here until it is set.
+    #[test]
+    fn record_keys_cover_each_record_of_session_md() {
+        let at = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let doc = SessionDoc {
+            session_id: "s".into(),
+            started: at,
+            title: Some("Budget".into()),
+            title_source: Some(TitleSource::User),
+            tags: vec!["work".into()],
+            pending_type: Some(PendingType {
+                to: Some("Meetings".into()),
+                from: None,
+                by: "computer".into(),
+                at,
+            }),
+            speaker_count: Some(SpeakerCount::Exact(2)),
+            asr_model: Some("model".into()),
+            recognition_snapshot: Some(serde_json::json!({ "model": "model" })),
+            recognition_artifact: Some(ArtifactReference {
+                version: 1,
+                filename: "recognition.jsonl".into(),
+                sha256: "0".repeat(64),
+            }),
+            recognition_audio: Some(BTreeMap::from([("a.wav".into(), "digest".into())])),
+            found_speakers: Some(2),
+            transcript_fingerprint: Some("transcript".into()),
+            summary_fingerprint: Some("summary".into()),
+            result: Some(ResultFlag::NotSaved),
+            segments: vec![SegmentRecord {
+                index: 0,
+                wall_start: at,
+                wall_end: at,
+                offset_ms: 0,
+                duration_ms: 1_000,
+                audio: "a.wav".into(),
+                channels: 2,
+                ends_in_pause: true,
+            }],
+        };
+        let keys = frontmatter_keys(&doc.render());
+        assert_eq!(keys.len(), 16, "each field gives a key: {keys:?}");
+        let unknown: Vec<_> = keys
+            .iter()
+            .filter(|key| {
+                !RECORD_KEYS.contains(&key.as_str())
+                    && ![TITLE_KEY, TAGS_KEY].contains(&key.as_str())
+            })
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "keys that the conversion keeps: {unknown:?}"
+        );
     }
 }

@@ -11,6 +11,7 @@ use session_core::{
     folder::SessionDoc,
     recognition::{self, Reuse},
 };
+use session_save::note_files;
 use std::path::Path;
 
 /// Whether the artifacts of a run are on disk. `artifact` is the catalog id
@@ -276,14 +277,8 @@ pub fn queue(
     // or a type move does not count (R3).
     let baseline = match home {
         Some(home) => {
-            let files = session_core::note_folder::NoteFiles::read(Path::new(&home))?;
-            if files.layout == session_core::note_folder::Layout::Old {
-                return Err(Cause::OldLayout.into());
-            }
-            Some(serde_json::to_value((
-                home,
-                files.record.run_fingerprint(),
-            ))?)
+            let record = note_files::new_layout_record(Path::new(&home))?;
+            Some(serde_json::to_value((home, record.run_fingerprint()))?)
         }
         None => None,
     };
@@ -449,6 +444,7 @@ pub(crate) fn read_reusable(
 mod tests {
     use super::*;
     use models::recognition::{ProcessingMode, SpeakerSource};
+    use session_core::note_folder::NoteFiles;
     use session_core::recognition::*;
 
     fn saved(config: &RecognitionConfig) -> tempfile::TempDir {
@@ -511,14 +507,14 @@ mod tests {
         doc.recognition_audio = Some(Default::default());
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), b"Summary").unwrap();
-        session_save::note_files::write_doc(home, &doc).unwrap();
+        note_files::write_doc(home, &doc).unwrap();
         temp
     }
 
     /// Whether a run with `config` uses the saved timed text in `home` again.
     fn reuses(home: &Path, config: &RecognitionConfig) -> Result<bool, StageError> {
         let spec = models::recognition::resolve(config).unwrap();
-        let doc = session_core::note_folder::NoteFiles::read(home)?.doc;
+        let doc = NoteFiles::read(home)?.doc;
         Ok(read_reusable(home, &doc, &spec, |_| {})?.is_some())
     }
 
@@ -597,12 +593,10 @@ mod tests {
             home.file_name().unwrap().to_string_lossy()
         ));
         std::fs::copy(home.join(ARTIFACT_FILE), &outside).unwrap();
-        let mut doc = session_core::note_folder::NoteFiles::read(home)
-            .unwrap()
-            .doc;
+        let mut doc = NoteFiles::read(home).unwrap().doc;
         doc.recognition_artifact.as_mut().unwrap().filename =
             outside.to_string_lossy().into_owned();
-        session_save::note_files::write_doc(home, &doc).unwrap();
+        note_files::write_doc(home, &doc).unwrap();
         let reused = reuses(home, &config);
         std::fs::remove_file(&outside).unwrap();
         assert!(!reused.unwrap());

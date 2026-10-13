@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, FixedOffset};
 
 use library::refresh::Scope;
-use library::scan::{NoteRead, READ_TIMEOUT, Read, read_note, read_timed};
+use library::scan::{READ_TIMEOUT, Read, read_note_files, read_timed};
 pub use session_core::folder::AudioState;
 use session_core::folder::{self, ResultFlag, SessionDoc, Summary, SummaryMeta};
-use session_core::note_folder::{Layout, NoteFiles};
+use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE};
 use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 pub use session_save::publication::OLD_LAYOUT;
@@ -27,7 +27,6 @@ use crate::join::TRANSCRIPT_FILE;
 use crate::summarize::{self, Prompt, SUMMARY_FILE, SummaryEndpoint};
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
-pub const SESSION_FILE: &str = session_core::note_folder::SESSION_FILE;
 pub const NOTES_FILE: &str = "notes.md";
 /// The save's progress, a [`SaveState`]. Its presence means saving has
 /// begun and the session can no longer be resumed.
@@ -392,11 +391,11 @@ fn tree_size(dir: &Path, skip: &[&str]) -> std::io::Result<u64> {
 /// A resumed session completes into the folder it completed into before
 /// (R6d): new audio is added beside the old, which is never rewritten, then
 /// the new result is published, `longhand.json` last because the folder
-/// parses back from it (KTD5). The working directory is the local staging of the
-/// publication, and holds its record (KTD1). Every step can run again, so a
-/// crash reruns the update: with a record, the rerun only rolls forward
-/// (KTD3). The working directory goes only once the folder is complete
-/// (R22b).
+/// parses back from it (KTD5). The working directory is the local staging
+/// of the publication, and holds its record (KTD1). Every step can run
+/// again, so a crash reruns the update: with a record, the rerun only rolls
+/// forward (KTD3). The working directory goes only once the folder is
+/// complete (R22b).
 fn update_home(
     store: &SharedStore,
     session_id: &str,
@@ -562,7 +561,9 @@ fn stage_publication(
     // Only the records count (KTD4): an edit of a `.md` file, a title
     // proposal or a type move does not make the run refuse (R3).
     let changed = match expected {
-        Some((path, hash)) if path == home => run_records(&home)?.run_fingerprint() != hash,
+        Some((path, hash)) if path == home => {
+            note_files::new_layout_record(&home)?.run_fingerprint() != hash
+        }
         Some(_) => {
             return Err(StageError::Failed(
                 "the note folder moved during processing; the previous result was kept".into(),
@@ -575,8 +576,10 @@ fn stage_publication(
             "the note changed during processing; the previous result was kept".into(),
         ));
     }
-    let mut staged = NoteRecord::from_doc(&session_doc(&record, segments, working)?);
-    staged.summary = summary_meta(&guard, session_id, segments)?;
+    let staged = with_summary(
+        &session_doc(&record, segments, working)?,
+        summary_meta(&guard, session_id, segments)?,
+    );
     let publication = Publication::new(&home, staged, WriteSet::Result)?;
     publication.record(working)?;
     // This marker prevents generic failure cleanup from discarding the
@@ -719,8 +722,9 @@ fn release(store: &SharedStore, session_id: &str) {
     }
 }
 
-/// `notes.md`, the summary stub when summarization failed, `session.md`
-/// and `longhand.json`, beside the audio, the transcript and any summary.
+/// Write these files in this order beside the audio, the transcript and
+/// any summary: `notes.md`, the summary stub when summarization failed,
+/// `session.md`, then `longhand.json`.
 fn render(
     store: &SharedStore,
     session_id: &str,
@@ -755,10 +759,17 @@ fn render(
         SESSION_FILE,
         &note_files::new_session_md(doc.title.as_deref(), &doc.tags),
     )?;
-    let mut staged = NoteRecord::from_doc(&doc);
-    staged.summary = summary_meta(&lock(store), session_id, segments)?;
+    let staged = with_summary(&doc, summary_meta(&lock(store), session_id, segments)?);
     write_working(working, NOTE_RECORD_FILE, &staged.render())?;
     Ok(())
+}
+
+/// The records of `doc` with the summary data `summary`.
+fn with_summary(doc: &SessionDoc, summary: Option<SummaryMeta>) -> NoteRecord {
+    NoteRecord {
+        summary,
+        ..NoteRecord::from_doc(doc)
+    }
 }
 
 /// The data of the summary in the working folder of `session_id`: the data
@@ -775,28 +786,18 @@ fn summary_meta(
         .transpose()?
         .is_some_and(|done| done.segments == segments.len());
     if !done {
-        return Ok(Some(stub("").meta));
+        return Ok(Some(SummaryMeta::stub()));
     }
     Ok(value(summarize::META)?
         .map(|text| serde_json::from_str(&text))
         .transpose()?)
 }
 
-/// The records of the note in `home` for a run check, or an error for a
-/// note in the old layout (KTD6).
-fn run_records(home: &Path) -> Result<NoteRecord, StageError> {
-    let files = NoteFiles::read(home)?;
-    if files.layout == Layout::Old {
-        return Err(StageError::Failed(OLD_LAYOUT.into()));
-    }
-    Ok(files.record)
-}
-
 /// Whether the note folder `home` is in the old layout (KTD6): the actions
 /// that change its records wait for the conversion. A folder that cannot
 /// be read now is not.
 pub fn old_layout(home: &Path) -> bool {
-    matches!(read_note(home, READ_TIMEOUT), NoteRead::Note(files) if files.layout == Layout::Old)
+    read_note_files(home, READ_TIMEOUT).is_some_and(|files| files.layout == Layout::Old)
 }
 
 /// The start time of the note of `record` (R16, KTD9): the time it opened,
@@ -805,9 +806,10 @@ pub fn note_started(record: &SessionRecord, segments: &[Segment]) -> DateTime<Fi
     record.start(segments)
 }
 
-/// The records and the user fields of the note: the session's record, and the fingerprints
-/// of the `transcript.md` and `summary.md` that are in `folder` now (KTD2).
-/// Write `longhand.json` after those files, so that the fingerprints match.
+/// The note as one document, with its records and its user fields: from
+/// the session's record, with the fingerprints of the `transcript.md` and
+/// `summary.md` that are in `folder` now (KTD2). Write `longhand.json`
+/// after those files, so that the fingerprints match.
 pub fn session_doc(
     record: &SessionRecord,
     segments: &[Segment],
@@ -966,9 +968,7 @@ fn moved_to(session_id: &str, reconciled: Result<FolderRename, StageError>) -> O
 
 pub fn stub(why: &str) -> Summary {
     Summary {
-        meta: SummaryMeta::Stub {
-            failed_stage: "summarize".into(),
-        },
+        meta: SummaryMeta::stub(),
         body: format!(
             "# Summary\n\nNo summary was produced: {why}\n\nThe transcript and notes are complete. Regenerate the summary from the note in Longhand."
         ),
@@ -1280,7 +1280,7 @@ fn summarize_again(
     let active = resolve(note_type.as_deref());
     // A note in the old layout waits for the conversion: nothing is
     // written (KTD6).
-    let mut current = run_records(&home)?;
+    let mut current = note_files::new_layout_record(&home)?;
     // Regenerate Summary explicitly accepts the current transcript text.
     // An external edit removes the reusable recognition reference.
     // A missing transcript counts as a hand edit after the wait for the
@@ -1365,7 +1365,7 @@ fn summarize_again(
             return Err(changed());
         }
         keep_folder_user_title(&guard, session_id, &path)?;
-        let previous = run_records(&path)?;
+        let previous = note_files::new_layout_record(&path)?;
         if previous.run_fingerprint() != expected {
             return Err(changed());
         }
@@ -1385,7 +1385,10 @@ fn summarize_again(
             // `longhand.json` (R1).
             home_write::write_atomic(&local, SUMMARY_FILE, summary.render_body().as_bytes())?;
             let record = guard.session(session_id)?.ok_or_else(not_saved)?;
-            let mut staged = NoteRecord::from_doc(&session_doc(&record, &segments, &local)?);
+            let mut staged = with_summary(
+                &session_doc(&record, &segments, &local)?,
+                Some(summary.meta.clone()),
+            );
             // The summary is made from the transcript that the folder
             // holds. `transcript.md` and `recognition.jsonl` are not
             // written, so their references stay as they are (KTD5).
@@ -1393,7 +1396,6 @@ fn summarize_again(
             staged.recognition_snapshot = previous.recognition_snapshot;
             staged.recognition_artifact = previous.recognition_artifact;
             staged.recognition_audio = previous.recognition_audio;
-            staged.summary = Some(summary.meta.clone());
             Ok(Publication::new(&path, staged, WriteSet::Summary)?)
         })();
         // A failure before the record changes nothing in the note folder
@@ -1440,7 +1442,7 @@ fn keep_folder_user_title(
     session_id: &str,
     folder: &Path,
 ) -> Result<(), StageError> {
-    let NoteRead::Note(files) = read_note(folder, READ_TIMEOUT) else {
+    let Some(files) = read_note_files(folder, READ_TIMEOUT) else {
         return Ok(());
     };
     if files.title_changed_outside() {

@@ -29,7 +29,7 @@ use std::time::{Duration, SystemTime};
 use chrono::{Local, TimeDelta};
 use session_core::folder::{self, ResultFlag, SessionDoc, fingerprint};
 use session_core::note_folder::{Layout, NoteFiles, NoteFilesError, SESSION_FILE};
-use session_core::note_record::NOTE_RECORD_FILE;
+use session_core::note_record::{NOTE_RECORD_FILE, session_id_of};
 use session_core::{SessionRecord, Title};
 use session_save::in_use_marker;
 
@@ -806,6 +806,14 @@ pub fn read_note(dir: &Path, timeout: Duration) -> NoteRead {
     }
 }
 
+/// The note files in `dir`, or `None` when [`read_note`] gives no note.
+pub fn read_note_files(dir: &Path, timeout: Duration) -> Option<NoteFiles> {
+    match read_note(dir, timeout) {
+        NoteRead::Note(files) => Some(*files),
+        _ => None,
+    }
+}
+
 /// Whether the folder `dir` holds `session.md` or `longhand.json`: it is a
 /// note folder, not a type folder. This reads metadata only.
 pub fn is_note_folder(dir: &Path) -> bool {
@@ -820,14 +828,7 @@ fn record_id(dir: &Path, timeout: Duration) -> Option<String> {
     let Read::Bytes(bytes) = read_timed(dir.join(NOTE_RECORD_FILE), timeout) else {
         return None;
     };
-    let text = std::str::from_utf8(&bytes).ok()?;
-    match session_core::note_record::NoteRecord::parse(text).ok()? {
-        session_core::note_record::NoteRecordRead::Current(record) => Some(record.session_id),
-        session_core::note_record::NoteRecordRead::Newer { .. } => {
-            let value: serde_json::Value = serde_json::from_str(text).ok()?;
-            value.get("session_id")?.as_str().map(str::to_string)
-        }
-    }
+    session_id_of(std::str::from_utf8(&bytes).ok()?)
 }
 
 fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {

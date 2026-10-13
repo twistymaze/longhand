@@ -327,15 +327,15 @@ export function SessionPage({
   // they are in `notes.md`.
   const problem = entry?.problem ?? detail?.entry.problem ?? null;
   const recordProblem = problem !== null && problem.kind !== "user_file";
+  // The folder holds the writes that do not wait for the sync.
+  const folderHeld = unavailable || problem !== null;
   const waiting = detail?.waiting ?? [];
-  const held = unavailable || problem !== null || waiting.some((part) => part !== "audio");
+  const held = folderHeld || waiting.some((part) => part !== "audio");
   const heldForAudio = held || waiting.length > 0;
   const notesHeld = unavailable || recordProblem || waiting.some((part) => part !== "audio");
   const heldReason = unavailable
     ? "The storage folder for this note is unavailable."
-    : problem
-      ? problem.reason
-      : "Wait until the note finishes syncing.";
+    : (problem?.reason ?? "Wait until the note finishes syncing.");
   // The note shows no mark for removed audio. The fact shows only as the
   // reason of an action that needs the audio (R14).
   const removed = detail?.audio === "removed";
@@ -559,7 +559,7 @@ export function SessionPage({
   if (!deleted) {
     items.push({
       label: "Rename",
-      disabled: unavailable || problem !== null,
+      disabled: folderHeld,
       reason: heldReason,
       onSelect: () => title.current?.edit(),
     });
@@ -569,10 +569,10 @@ export function SessionPage({
   if (phase === "saved" && !deleted && !noAudio) {
     items.push({
       label: "Remove Audio…",
-      disabled: !detail || removed || unavailable || problem !== null || regenerating || remote !== null,
+      disabled: !detail || removed || folderHeld || regenerating || remote !== null,
       reason: removed
         ? REMOVED_REASON
-        : unavailable || problem !== null
+        : folderHeld
           ? heldReason
           : regenerating
             ? "Wait until the summary is ready."

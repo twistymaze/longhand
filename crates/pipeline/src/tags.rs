@@ -21,13 +21,13 @@ use chrono::{DateTime, FixedOffset};
 use library::scan::{NoteRead, READ_TIMEOUT, read_note};
 use session_core::folder::FrontmatterPatch;
 use session_core::jobs::Claims;
+use session_core::note_folder::SESSION_FILE;
 use session_core::note_record::NOTE_RECORD_FILE;
 use session_core::tags::{tag_key, unique};
 use session_core::{BulkEdit, SessionState, Store};
 use session_save::note_files;
 
 use crate::early_home::{self, EarlyState};
-use crate::save::SESSION_FILE;
 use crate::{SharedStore, StageError, lock};
 
 /// The error text for a tag that is empty after trimming.

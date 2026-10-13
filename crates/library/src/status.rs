@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use session_core::note_folder::Layout;
 use session_core::{SessionRecord, SessionState};
 
 use crate::reconcile::Coverage;
@@ -180,7 +181,7 @@ fn apply_old_layout(inner: &mut Inner, scan: &LibraryScan, coverage: &Coverage) 
         .old_layout
         .retain(|id, path| !found.contains(id.as_str()) && coverage.keeps_wait(scan, path));
     for note in &scan.notes {
-        if note.layout == session_core::note_folder::Layout::Old {
+        if note.layout == Layout::Old {
             inner
                 .old_layout
                 .insert(note.doc.session_id.clone(), note.path.clone());

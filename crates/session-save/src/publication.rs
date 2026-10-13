@@ -21,7 +21,7 @@ use crate::note_files;
 use serde::{Deserialize, Serialize};
 use session_core::SpeakerCount;
 use session_core::folder::fingerprint;
-use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE};
+use session_core::note_folder::SESSION_FILE;
 use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
 use session_core::recognition::{ARTIFACT_FILE, ArtifactReference};
 use std::collections::BTreeMap;
@@ -137,22 +137,12 @@ fn digest(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-/// The records of the note in `home`, or an error for a note in the old
-/// layout (KTD6).
-fn current(home: &Path) -> io::Result<NoteRecord> {
-    let files = NoteFiles::read(home)?;
-    if files.layout == Layout::Old {
-        return Err(io::Error::other(OLD_LAYOUT));
-    }
-    Ok(files.record)
-}
-
 impl Publication {
     /// A publication of `after` into `home`, with the result fields that
     /// `home` holds now as the fields before the first write. A note in the
     /// old layout gives an error, and nothing is written.
     pub fn new(home: &Path, after: NoteRecord, set: WriteSet) -> io::Result<Self> {
-        let before = ResultFields::of(&current(home)?);
+        let before = ResultFields::of(&note_files::new_layout_record(home)?);
         if before.session_id != after.session_id {
             return Err(conflict());
         }
@@ -203,7 +193,7 @@ impl Publication {
         let before = self.before.clone().compared(self.set);
         let after = ResultFields::of(&self.after).compared(self.set);
         let fields = || -> io::Result<ResultFields> {
-            Ok(ResultFields::of(&current(home)?).compared(self.set))
+            Ok(ResultFields::of(&note_files::new_layout_record(home)?).compared(self.set))
         };
         let now = fields()?;
         if now == after && now != before {
@@ -231,7 +221,7 @@ impl Publication {
         }
         // Read the records again just before the write, so that a title or
         // a pending type written in the meantime stays.
-        let current = current(home)?;
+        let current = note_files::new_layout_record(home)?;
         if ResultFields::of(&current).compared(self.set) != before {
             return Ok(Outcome::Conflict);
         }

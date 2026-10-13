@@ -10,11 +10,12 @@ use pipeline::folder_rename::FolderRename;
 use serde::Serialize;
 use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::note_folder::{Layout, NoteFiles};
+use session_core::note_record::NOTE_RECORD_FILE;
 use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
 
-use library::scan::{READ_TIMEOUT, Read, RemoteState, Waiting, read_timed};
+use library::scan::{NoteRead, READ_TIMEOUT, Read, RemoteState, Waiting, read_note, read_timed};
 use library::status::LibraryStatus;
 
 use crate::managers::capture::CaptureManager;
@@ -1249,26 +1250,22 @@ fn read_document(folder: &Path) -> Result<SessionDocument, String> {
     let text = |name: &str| {
         read(name).and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
     };
-    let files = match library::scan::read_note(folder, READ_TIMEOUT) {
-        library::scan::NoteRead::Note(files) => *files,
-        library::scan::NoteRead::Unreadable(why) => {
+    let files = match read_note(folder, READ_TIMEOUT) {
+        NoteRead::Note(files) => *files,
+        NoteRead::Unreadable(why) => {
             return Err(format!(
                 "could not read the note in {}: {why}",
                 folder.display()
             ));
         }
-        library::scan::NoteRead::Invalid(invalid) => {
+        NoteRead::Invalid(invalid) => {
             return Err(format!(
                 "could not read the note in {}: {invalid}",
                 folder.display()
             ));
         }
-        library::scan::NoteRead::NotANote | library::scan::NoteRead::WaitingForRecord => {
-            return Err(format!(
-                "{} is not in {}",
-                session_core::note_record::NOTE_RECORD_FILE,
-                folder.display()
-            ));
+        NoteRead::NotANote | NoteRead::WaitingForRecord => {
+            return Err(format!("{NOTE_RECORD_FILE} is not in {}", folder.display()));
         }
     };
     let transcript_markdown = text(pipeline::join::TRANSCRIPT_FILE)?;

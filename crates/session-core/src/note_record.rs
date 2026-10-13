@@ -124,13 +124,46 @@ impl NoteRecord {
     /// column. A file with a layout above [`LAYOUT`] gives
     /// [`NoteRecordRead::Newer`].
     pub fn parse(text: &str) -> Result<NoteRecordRead, FolderError> {
+        let error = match serde_json::from_str::<NoteRecord>(text) {
+            Ok(record) if record.layout > LAYOUT => {
+                return Ok(NoteRecordRead::Newer {
+                    layout: record.layout,
+                });
+            }
+            Ok(record) => return Ok(NoteRecordRead::Current(Box::new(record))),
+            Err(e) => e,
+        };
+        // A newer layout can have other fields. A file that has no valid
+        // layout gives the error of the layout.
         let LayoutOnly { layout } = serde_json::from_str(text).map_err(json_error)?;
         if layout > LAYOUT {
             return Ok(NoteRecordRead::Newer { layout });
         }
-        serde_json::from_str(text)
-            .map(|record| NoteRecordRead::Current(Box::new(record)))
-            .map_err(json_error)
+        Err(json_error(error))
+    }
+}
+
+impl NoteRecordRead {
+    /// The records of a file in [`LAYOUT`]. `None` for a file that a newer
+    /// build wrote.
+    pub fn current(self) -> Option<NoteRecord> {
+        match self {
+            Self::Current(record) => Some(*record),
+            Self::Newer { .. } => None,
+        }
+    }
+}
+
+/// The `session_id` in the `longhand.json` text `text`, when the file
+/// parses. A file that a newer build wrote gives its `session_id` when it
+/// has one as text.
+pub fn session_id_of(text: &str) -> Option<String> {
+    match NoteRecord::parse(text).ok()? {
+        NoteRecordRead::Current(record) => Some(record.session_id),
+        NoteRecordRead::Newer { .. } => {
+            let value: serde_json::Value = serde_json::from_str(text).ok()?;
+            value.get("session_id")?.as_str().map(str::to_string)
+        }
     }
 }
 
