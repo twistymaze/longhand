@@ -423,7 +423,9 @@ fn active_prompt(
 /// the last copy in the cache, the folder copy with a conflict copy, and
 /// else missing. A prompt whose file is missing is missing at once: the
 /// cache copy stands in only for a file that exists and cannot be used now
-/// (R20). `scan` is `None` when the view comes from the cache.
+/// (R20). A file over the size limit with no conflict copy gives missing
+/// too, so the default prompt applies (R21). `scan` is `None` when the
+/// view comes from the cache.
 fn resolve(id: &str, scan: Option<&PromptScan>, cache: Option<&Cache>) -> ActivePrompt {
     if let Some(prompt) = summarize::prompts::built_in(id) {
         return ActivePrompt::BuiltIn(prompt);
@@ -433,7 +435,12 @@ fn resolve(id: &str, scan: Option<&PromptScan>, cache: Option<&Cache>) -> Active
     }
     let in_folder = scan.and_then(|scan| scan.get(id));
     let conflicted = scan.is_some_and(|scan| scan.conflicted.contains(id));
-    // The scan has no text of a file over the size limit.
+    // The scan has no text of a file over the size limit, and the cache
+    // copy is an old text. The default prompt applies, as Settings says
+    // (R21). The file exists, so the prompt is not missing.
+    if !conflicted && in_folder.is_some_and(|p| p.too_large) {
+        return ActivePrompt::Missing(id.to_string());
+    }
     let in_folder = in_folder.filter(|p| !p.too_large).map(Prompt::from);
     // While the id has a conflict copy, or its file cannot be used, the
     // text comes from the cache (R14).

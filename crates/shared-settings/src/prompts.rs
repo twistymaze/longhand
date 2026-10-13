@@ -150,6 +150,10 @@ pub struct PromptScan {
     /// example a file that a sync delivered in parts. Such a prompt is not
     /// in `prompts`, and it is not missing (KTD8).
     pub unusable: BTreeSet<String>,
+    /// The folder has a prompt file that the scan cannot read, so its id
+    /// is not known. Each custom prompt can be in that file, so no custom
+    /// prompt is missing.
+    pub unknown_unusable: bool,
 }
 
 impl PromptScan {
@@ -160,6 +164,9 @@ impl PromptScan {
 
     /// The folder has no file of the prompt `id`.
     pub fn is_missing(&self, id: &str) -> bool {
+        if self.unknown_unusable && !is_built_in(id) {
+            return false;
+        }
         self.get(id).is_none() && !self.unusable.contains(id)
     }
 }
@@ -320,6 +327,10 @@ struct Parsed {
     extra: Vec<String>,
     text: String,
     title_text: String,
+    /// The first line opens a front matter block and no line closes it.
+    /// A sync can deliver the start of a file before its end, so the file
+    /// cannot be used now. The texts are empty.
+    open: bool,
 }
 
 fn parse_prompt_file(contents: &str) -> Parsed {
@@ -332,12 +343,14 @@ fn parse_prompt_file(contents: &str) -> Parsed {
             extra: Vec::new(),
             text,
             title_text,
+            open: false,
         }
     })
 }
 
-/// The front matter and the body of `contents`, or `None` when the file
-/// has no complete front matter block.
+/// The front matter and the body of `contents`, or `None` when the first
+/// line does not open a front matter block. When no line closes the block,
+/// the result is [`Parsed::open`].
 fn front_matter(contents: &str) -> Option<Parsed> {
     let mut lines = contents.split_inclusive('\n');
     if lines.next()?.trim_end() != FRONT_MATTER_LINE {
@@ -349,6 +362,7 @@ fn front_matter(contents: &str) -> Option<Parsed> {
         extra: Vec::new(),
         text: String::new(),
         title_text: String::new(),
+        open: false,
     };
     let mut consumed = contents.split_inclusive('\n').next()?.len();
     for line in lines {
@@ -373,7 +387,8 @@ fn front_matter(contents: &str) -> Option<Parsed> {
             _ => parsed.extra.push(line.to_string()),
         }
     }
-    None
+    parsed.open = true;
+    Some(parsed)
 }
 
 /// A front matter value: a JSON string in quotes, or the text as it is.
@@ -459,6 +474,7 @@ pub fn scan_prompts(root: &Path) -> Result<PromptScan, Unavailable> {
     };
     let mut entries = Vec::new();
     let mut unusable = BTreeSet::new();
+    let mut unknown_unusable = false;
     for item in dir {
         let item = item.map_err(|e| Unavailable::Unreadable(e.to_string()))?;
         let Ok(file_name) = item.file_name().into_string() else {
@@ -466,12 +482,16 @@ pub fn scan_prompts(root: &Path) -> Result<PromptScan, Unavailable> {
         };
         match read_entry(&folder, file_name) {
             Found::Prompt(entry) => entries.push(entry),
-            Found::Unusable(id) => unusable.extend(id),
+            Found::Unusable(Some(id)) => {
+                unusable.insert(id);
+            }
+            Found::Unusable(None) => unknown_unusable = true,
             Found::Other => {}
         }
     }
     let mut scan = resolve(entries);
     scan.unusable = unusable;
+    scan.unknown_unusable = unknown_unusable;
     Ok(scan)
 }
 
@@ -483,9 +503,10 @@ const HEAD_BYTES: u64 = 8192;
 enum Found {
     Prompt(Entry),
     /// The file is a prompt file that cannot be used now: it is not text,
-    /// it cannot be read, or it has no prompt text. A sync can deliver a
-    /// file in parts. The value is the id in the file, when the scan
-    /// found one.
+    /// it cannot be read, it has no prompt text, or its front matter has
+    /// no closing line. A sync can deliver a file in parts. The value is
+    /// the id in the file, or the id from its file name when the file has
+    /// no id. It is `None` when the file cannot be read.
     Unusable(Option<String>),
     /// The file is not a prompt file.
     Other,
@@ -531,19 +552,24 @@ fn read_entry(folder: &Path, file_name: String) -> Found {
             return Found::Unusable(None);
         }
     };
+    // A file that cannot be used now keeps the id that the scan gives it
+    // when it can be used, so the prompt is not missing (KTD8).
+    let unusable = |id_in_file: Option<String>| {
+        Found::Unusable(Some(id_in_file.unwrap_or_else(|| file_name_id(&file_name))))
+    };
     let parsed = match String::from_utf8(bytes) {
         Ok(contents) => parse_prompt_file(&contents),
         // The head of a large file can stop in a character.
         Err(e) if too_large => parse_prompt_file(&String::from_utf8_lossy(e.as_bytes())),
         Err(e) => {
             let id = parse_prompt_file(&String::from_utf8_lossy(e.as_bytes())).id;
-            return Found::Unusable(id.filter(|id| !is_built_in(id)));
+            return unusable(id.filter(|id| !is_built_in(id)));
         }
     };
     // A file cannot take the id of a built-in prompt.
     let id_in_file = parsed.id.filter(|id| !is_built_in(id));
-    if !too_large && parsed.text.trim().is_empty() {
-        return Found::Unusable(id_in_file);
+    if parsed.open || (!too_large && parsed.text.trim().is_empty()) {
+        return unusable(id_in_file);
     }
     let stored_name = parsed
         .name
@@ -682,6 +708,7 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
         prompts,
         conflicted,
         unusable: BTreeSet::new(),
+        unknown_unusable: false,
     }
 }
 

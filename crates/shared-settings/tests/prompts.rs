@@ -495,13 +495,13 @@ fn a_file_with_no_text_is_not_a_prompt_and_is_not_deleted() {
 }
 
 #[test]
-fn a_file_with_no_closing_front_matter_line_is_all_text() {
+fn a_file_with_no_closing_front_matter_line_cannot_be_used() {
+    // A sync can deliver the start of a file before its end.
     let root = folder();
     write_file(root.path(), "Odd.md", "---\nid: x\nText with no end line.");
     let scan = scan(root.path());
-    assert_eq!(scan.prompts.len(), 1);
-    assert_eq!(scan.prompts[0].name, "Odd");
-    assert_eq!(scan.prompts[0].text, "---\nid: x\nText with no end line.");
+    assert!(scan.prompts.is_empty());
+    assert!(scan.unusable.contains("x"));
 }
 
 #[test]
@@ -1065,4 +1065,102 @@ fn a_repair_keeps_the_settings_of_a_prompt_whose_file_cannot_be_used() {
         settings_on_disk(root.path())["active_summary_prompt"],
         "recap-id"
     );
+}
+
+/// The settings name `id`, a repair with `id` missing clears nothing, and
+/// the file `file_name` keeps `contents`.
+fn assert_repair_keeps(root: &Path, id: &str, file_name: &str, contents: &[u8]) {
+    save_settings(root, &[SharedValue::ActiveSummaryPrompt(id.into())]).unwrap();
+    let missing: BTreeSet<String> = [id.to_string()].into();
+    assert!(repair_prompts(root, &missing).unwrap().is_empty());
+    assert_eq!(settings_on_disk(root)["active_summary_prompt"], id);
+    assert_eq!(
+        fs::read(prompts_dir(root).join(file_name)).unwrap(),
+        contents
+    );
+}
+
+#[test]
+fn a_file_with_no_id_that_cannot_be_used_is_not_missing() {
+    // KTD8: an empty file and a file that is not text exist.
+    let cases: [&[u8]; 2] = [b"", b"Recap \xff text."];
+    for contents in cases {
+        let root = folder();
+        write_file(root.path(), "Recap.md", "Write a recap.");
+        let id = id_of(root.path(), "Recap.md");
+        fs::write(prompts_dir(root.path()).join("Recap.md"), contents).unwrap();
+        let scan = scan(root.path());
+        assert!(scan.get(&id).is_none());
+        assert!(scan.unusable.contains(&id));
+        assert!(!scan.is_missing(&id));
+        assert!(scan.is_missing("other-id"));
+        assert_repair_keeps(root.path(), &id, "Recap.md", contents);
+    }
+}
+
+#[test]
+fn a_file_that_cannot_be_read_makes_no_custom_prompt_missing() {
+    // The id in the file is not known, so each custom prompt can be in it.
+    use std::os::unix::fs::PermissionsExt;
+    let root = folder();
+    let contents = render_prompt_file("recap-id", "Recap", "Recap text.");
+    write_file(root.path(), "Recap.md", &contents);
+    let path = prompts_dir(root.path()).join("Recap.md");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let scan = scan(root.path());
+    assert!(scan.get("recap-id").is_none());
+    assert!(!scan.is_missing("recap-id"));
+    assert!(!scan.is_missing("other-id"));
+    save_settings(
+        root.path(),
+        &[SharedValue::ActiveSummaryPrompt("recap-id".into())],
+    )
+    .unwrap();
+    let missing: BTreeSet<String> = ["recap-id".to_string()].into();
+    assert!(repair_prompts(root.path(), &missing).unwrap().is_empty());
+    assert_eq!(
+        settings_on_disk(root.path())["active_summary_prompt"],
+        "recap-id"
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(read_file(root.path(), "Recap.md"), contents);
+}
+
+#[test]
+fn a_file_with_an_open_front_matter_is_unusable_and_a_repair_does_not_change_it() {
+    // A sync delivered only the start of the file.
+    let root = folder();
+    let partial = "---\nid: recap-id\nname: Recap\n";
+    write_file(root.path(), "Recap.md", partial);
+    let scan = scan(root.path());
+    assert!(scan.prompts.is_empty());
+    assert!(scan.unusable.contains("recap-id"));
+    assert!(!scan.is_missing("recap-id"));
+    assert_repair_keeps(root.path(), "recap-id", "Recap.md", partial.as_bytes());
+}
+
+#[test]
+fn a_file_with_an_open_front_matter_and_no_id_is_unusable_under_its_file_name_id() {
+    let root = folder();
+    write_file(root.path(), "Notes.md", "Write notes.");
+    let id = id_of(root.path(), "Notes.md");
+    let partial = "---\nname: Recap\n";
+    write_file(root.path(), "Notes.md", partial);
+    let scan = scan(root.path());
+    assert!(scan.prompts.is_empty());
+    assert!(scan.unusable.contains(&id));
+    assert_repair_keeps(root.path(), &id, "Notes.md", partial.as_bytes());
+}
+
+#[test]
+fn a_repair_does_not_rewrite_a_file_with_no_id_over_the_size_limit() {
+    let root = folder();
+    let contents = format!("---\nname: Huge\n---\n\n{}", "z".repeat(60_000));
+    write_file(root.path(), "Huge.md", &contents);
+    assert!(
+        repair_prompts(root.path(), &BTreeSet::new())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(read_file(root.path(), "Huge.md"), contents);
 }

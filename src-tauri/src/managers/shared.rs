@@ -3061,6 +3061,133 @@ mod tests {
         );
     }
 
+    /// A manager with a zero wait whose active prompt and General choice
+    /// are the prompt of the file `Recap.md`, which held no id at first.
+    /// Returns the folder, the computer, the manager and the prompt id.
+    fn with_active_recap_with_no_id() -> (TempDir, Computer, SharedSettingsManager, String) {
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("Recap.md"), "Recap text.").unwrap();
+        manager.reread();
+        let recap = settings_of(&manager).summary_prompts[0].id.clone();
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("General", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        (folder, computer, manager, recap)
+    }
+
+    /// The references to `recap` stay after a save, and a run uses the
+    /// cache copy of `recap`.
+    fn assert_recap_kept(manager: &SharedSettingsManager, root: &Path, recap: &str) {
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        manager.reread();
+        let written = file_of(root);
+        assert_eq!(written["active_summary_prompt"], recap);
+        assert_eq!(written["note_type_prompts"]["General"], recap);
+        let settings = settings_of(manager);
+        assert_eq!(
+            settings.active_summary_prompt_snapshot().text,
+            "Recap text."
+        );
+        assert_eq!(settings.summary_prompt_for_type(None).text, "Recap text.");
+    }
+
+    #[test]
+    fn a_prompt_file_that_cannot_be_used_now_keeps_its_references_and_the_cache_copy() {
+        // KTD8, R20: the file exists, so the prompt is not missing.
+        let cases: [(&str, &[u8]); 2] = [("empty", b""), ("not text", b"Recap \xff text.")];
+        for (case, contents) in cases {
+            let (folder, _computer, manager, recap) = with_active_recap_with_no_id();
+            let path = prompt_file_of(folder.path(), &recap);
+            // The file holds no id again, so its id comes from its file name.
+            std::fs::write(&path, contents).unwrap();
+            assert_recap_kept(&manager, folder.path(), &recap);
+            assert_eq!(std::fs::read(&path).unwrap(), contents, "{case}");
+        }
+    }
+
+    #[test]
+    fn a_prompt_file_that_cannot_be_read_keeps_its_references_and_the_cache_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let (folder, _computer, manager, recap) = with_active_recap_with_no_id();
+        let path = prompt_file_of(folder.path(), &recap);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_recap_kept(&manager, folder.path(), &recap);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn a_prompt_file_with_an_open_front_matter_is_not_rewritten_and_keeps_its_references() {
+        // A sync delivered only the start of the file.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(
+            prompts_dir.join("Recap.md"),
+            prompts::render_prompt_file("recap-id", "Recap", "Recap text."),
+        )
+        .unwrap();
+        manager.reread();
+        manager.activate_prompt("recap-id").unwrap();
+        manager
+            .set_note_type_prompt("General", Some("recap-id"), &StorageFolders::default())
+            .unwrap();
+        let partial = "---\nid: recap-id\nname: Recap\n";
+        std::fs::write(prompts_dir.join("Recap.md"), partial).unwrap();
+        manager.reread();
+        manager.set_background("I am Erv Walter.").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(prompts_dir.join("Recap.md")).unwrap(),
+            partial
+        );
+        assert_eq!(prompt_files(folder.path()), vec!["Recap.md"]);
+        assert_recap_kept(&manager, folder.path(), "recap-id");
+    }
+
+    #[test]
+    fn a_cached_prompt_whose_file_grows_too_large_runs_the_default_and_keeps_its_references() {
+        // R21: Settings says that summaries use the default prompt.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("General", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        assert_eq!(
+            settings_of(&manager).active_summary_prompt_snapshot().text,
+            "Recap text."
+        );
+        std::fs::write(
+            prompt_file_of(folder.path(), &recap),
+            prompts::render_prompt_file(&recap, "Recap", &"h".repeat(60_000)),
+        )
+        .unwrap();
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        manager.reread();
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.active_summary_prompt_snapshot().id,
+            TOPIC_SUMMARY_ID
+        );
+        assert_eq!(settings.summary_prompt_for_type(None).id, TOPIC_SUMMARY_ID);
+        let written = file_of(folder.path());
+        assert_eq!(written["active_summary_prompt"], recap.as_str());
+        assert_eq!(written["note_type_prompts"]["General"], recap.as_str());
+    }
+
     #[test]
     fn a_save_writes_the_id_of_a_prompt_with_no_id_and_a_type_keeps_it_after_a_rename() {
         // R18: an agent made a prompt file with no id, and a type uses it.
