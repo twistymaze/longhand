@@ -1098,6 +1098,7 @@ fn a_file_with_no_id_that_cannot_be_used_is_not_missing() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_file_that_cannot_be_read_makes_no_custom_prompt_missing() {
     // The id in the file is not known, so each custom prompt can be in it.

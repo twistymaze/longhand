@@ -3147,6 +3147,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_prompt_file_that_cannot_be_read_keeps_its_references_and_the_cache_copy() {
         use std::os::unix::fs::PermissionsExt;
