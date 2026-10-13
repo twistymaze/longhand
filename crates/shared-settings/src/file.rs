@@ -42,6 +42,8 @@ pub const KEY_AUDIO_REMOVAL: &str = "audio_removal";
 pub const KEY_NOTE_TYPES: &str = "note_types";
 pub const KEY_DEFAULT_NOTE_TYPE: &str = "default_note_type";
 pub const KEY_NOTE_TYPE_PROMPTS: &str = "note_type_prompts";
+pub const KEY_SHOW_RECORDING_WIDGET: &str = "show_recording_widget";
+pub const KEY_NEW_NOTE_RECORDS: &str = "new_note_records";
 
 /// The delay of a new storage folder: the audio of a saved note goes 30
 /// days after the note last recorded (R2).
@@ -196,6 +198,12 @@ pub struct SharedFields {
     /// map is one value: the last change wins. Find the choice of a type
     /// with [`crate::note_types::prompt_choice`].
     pub note_type_prompts: Field<BTreeMap<String, String>>,
+    /// Whether a new note shows the recording widget. An absent field is
+    /// on.
+    pub show_recording_widget: Field<bool>,
+    /// Whether New Note and the recording shortcut start a note that
+    /// records. An absent field is on.
+    pub new_note_records: Field<bool>,
 }
 
 impl SharedFields {
@@ -221,6 +229,8 @@ impl SharedFields {
             note_types: parse(raw, KEY_NOTE_TYPES, |_| true),
             default_note_type: parse(raw, KEY_DEFAULT_NOTE_TYPE, |_| true),
             note_type_prompts: parse(raw, KEY_NOTE_TYPE_PROMPTS, |_| true),
+            show_recording_widget: parse(raw, KEY_SHOW_RECORDING_WIDGET, |_| true),
+            new_note_records: parse(raw, KEY_NEW_NOTE_RECORDS, |_| true),
         }
     }
 
@@ -273,6 +283,11 @@ impl SharedFields {
             (KEY_NOTE_TYPES, unknown(&self.note_types)),
             (KEY_DEFAULT_NOTE_TYPE, unknown(&self.default_note_type)),
             (KEY_NOTE_TYPE_PROMPTS, unknown(&self.note_type_prompts)),
+            (
+                KEY_SHOW_RECORDING_WIDGET,
+                unknown(&self.show_recording_widget),
+            ),
+            (KEY_NEW_NOTE_RECORDS, unknown(&self.new_note_records)),
         ]
         .into_iter()
         .filter_map(|(key, value)| Some((key, value?)))
@@ -323,6 +338,8 @@ pub enum SharedValue {
     NoteTypes(Vec<String>),
     DefaultNoteType(Option<String>),
     NoteTypePrompts(BTreeMap<String, String>),
+    ShowRecordingWidget(bool),
+    NewNoteRecords(bool),
 }
 
 impl SharedValue {
@@ -341,6 +358,8 @@ impl SharedValue {
             SharedValue::NoteTypes(_) => KEY_NOTE_TYPES,
             SharedValue::DefaultNoteType(_) => KEY_DEFAULT_NOTE_TYPE,
             SharedValue::NoteTypePrompts(_) => KEY_NOTE_TYPE_PROMPTS,
+            SharedValue::ShowRecordingWidget(_) => KEY_SHOW_RECORDING_WIDGET,
+            SharedValue::NewNoteRecords(_) => KEY_NEW_NOTE_RECORDS,
         }
     }
 
@@ -359,6 +378,8 @@ impl SharedValue {
             SharedValue::NoteTypes(names) => serde_json::to_value(names),
             SharedValue::DefaultNoteType(name) => serde_json::to_value(name),
             SharedValue::NoteTypePrompts(map) => serde_json::to_value(map),
+            SharedValue::ShowRecordingWidget(on) => serde_json::to_value(on),
+            SharedValue::NewNoteRecords(on) => serde_json::to_value(on),
         };
         value.expect("a shared setting serializes")
     }
@@ -535,6 +556,8 @@ pub fn default_settings() -> Map<String, Value> {
         SharedValue::RecognitionLanguage(None),
         SharedValue::CheckUpdatesAutomatically(true),
         SharedValue::AudioRemoval(AudioRemoval::default()),
+        SharedValue::ShowRecordingWidget(true),
+        SharedValue::NewNoteRecords(true),
     ];
     apply_patch(&Map::new(), &defaults)
 }

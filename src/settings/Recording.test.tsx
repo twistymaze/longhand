@@ -293,6 +293,20 @@ describe("Recording pane", () => {
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
   });
 
+  // Safe agent edits U7: the two switches are shared settings, so they are
+  // read-only while the shared settings are read-only.
+  test("the New Note and widget switches are read-only while the shared settings are", async () => {
+    await open({
+      extra: { shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [] } },
+    });
+    for (const name of ["New Note starts recording", "Show the recording widget"]) {
+      const toggle = screen.getByRole("switch", { name });
+      expect(toggle.hasAttribute("disabled")).toBe(true);
+      const row = toggle.closest(".settings-row") as HTMLElement;
+      expect(row.textContent).toContain("The storage folder is not available. This setting can’t be changed now.");
+    }
+  });
+
   test("the widget shortcut shows Off with no chord", async () => {
     await open();
     const row = screen.getByText("Widget shortcut").closest(".settings-row") as HTMLElement;

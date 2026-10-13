@@ -183,7 +183,8 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 },
 /**
  * Choose what New Note and the recording shortcut do (R8): start a note
- * that records, or open a note that does not record.
+ * that records, or open a note that does not record. The value goes into
+ * the shared settings file.
  */
 async setNewNoteRecords(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
@@ -207,7 +208,8 @@ async setAlertSound(enabled: boolean) : Promise<Result<Settings, string>> {
 },
 /**
  * Choose whether a new note shows the recording widget (R11). The next
- * note reads the new value (R14).
+ * note reads the new value (R14). The value goes into the shared settings
+ * file.
  */
 async setShowRecordingWidget(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
@@ -2285,9 +2287,9 @@ microphone: MicrophoneChoice | null;
  */
 system_audio_default: boolean; 
 /**
- * What New Note and the recording shortcut do (R8, R10): start a note
- * that records, or open a note that does not record. On by default,
- * as before the setting.
+ * A shared setting. What New Note and the recording shortcut do (R8,
+ * R10): start a note that records, or open a note that does not
+ * record. On by default.
  */
 new_note_records: boolean; 
 /**
@@ -2301,9 +2303,9 @@ alert_sound: boolean;
  */
 hide_from_dock: boolean; 
 /**
- * Whether a new note shows the recording widget: the pill that is on
- * screen while a note is open (R11). On by default. Local to this
- * computer. A change applies to the next note (R14).
+ * A shared setting. Whether a new note shows the recording widget: the
+ * pill that is on screen while a note is open (R11). On by default. A
+ * change applies to the next note (R14).
  */
 show_recording_widget: boolean; 
 /**

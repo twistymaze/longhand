@@ -264,8 +264,9 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
 }
 
 /// Choose what New Note and the recording shortcut do (R8): start a note
-/// that records, or open a note that does not record.
-#[tauri::command]
+/// that records, or open a note that does not record. The value goes into
+/// the shared settings file.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_new_note_records(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
@@ -286,8 +287,9 @@ pub fn set_alert_sound(app: AppHandle, enabled: bool) -> Result<Settings, String
 }
 
 /// Choose whether a new note shows the recording widget (R11). The next
-/// note reads the new value (R14).
-#[tauri::command]
+/// note reads the new value (R14). The value goes into the shared settings
+/// file.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn set_show_recording_widget(app: AppHandle, enabled: bool) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {

@@ -1699,6 +1699,40 @@ mod tests {
     }
 
     #[test]
+    fn the_widget_and_new_note_settings_show_the_same_value_on_two_computers() {
+        // Safe agent edits U7, R14, R15: A changes the two settings, and an
+        // agent edits the file. B reads each change at its next read.
+        let folder = TempDir::new().unwrap();
+        let (a, b) = (Computer::new(), Computer::new());
+        let a = a.manager(Some(folder.path()));
+        a.join_at_launch();
+        let b = b.manager(Some(folder.path()));
+        b.join_at_launch();
+        assert!(settings_of(&b).show_recording_widget);
+        assert!(settings_of(&b).new_note_records);
+
+        a.save(&[
+            SharedValue::ShowRecordingWidget(false),
+            SharedValue::NewNoteRecords(false),
+        ])
+        .unwrap();
+        assert!(b.reread());
+        assert!(!settings_of(&b).show_recording_widget);
+        assert!(!settings_of(&b).new_note_records);
+
+        let mut raw = file_of(folder.path());
+        raw.insert("show_recording_widget".into(), json!(true));
+        std::fs::write(
+            file::settings_path(folder.path()),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        assert!(b.reread());
+        assert!(settings_of(&b).show_recording_widget);
+        assert!(!settings_of(&b).new_note_records);
+    }
+
+    #[test]
     fn a_read_after_this_computers_own_change_gives_no_change() {
         // KTD13: the event of this computer's own write causes no loop.
         let folder = TempDir::new().unwrap();

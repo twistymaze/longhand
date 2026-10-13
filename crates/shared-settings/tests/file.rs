@@ -817,3 +817,55 @@ fn an_absent_type_prompts_field_is_absent() {
     write_raw(root.path(), &full());
     assert_eq!(parsed(root.path()).fields.note_type_prompts, Field::Absent);
 }
+
+// Show recording widget and New Note records are shared settings (U7 of
+// the safe agent edits plan: R14, R15).
+
+#[test]
+fn a_save_of_another_field_keeps_the_widget_and_new_note_fields() {
+    let root = folder();
+    let mut before = full();
+    before["show_recording_widget"] = json!(false);
+    before["new_note_records"] = json!(false);
+    write_raw(root.path(), &before);
+    save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).unwrap();
+    let after = on_disk(root.path());
+    assert_eq!(after["show_recording_widget"], json!(false));
+    assert_eq!(after["new_note_records"], json!(false));
+}
+
+#[test]
+fn the_widget_and_new_note_fields_parse_and_save_under_their_own_keys() {
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"schema_version": 1, "show_recording_widget": false, "new_note_records": "yes"}),
+    );
+    let fields = parsed(root.path()).fields;
+    assert_eq!(fields.show_recording_widget, Field::Known(false));
+    assert_eq!(fields.new_note_records, Field::Unknown(json!("yes")));
+    save_settings(
+        root.path(),
+        &[
+            SharedValue::ShowRecordingWidget(true),
+            SharedValue::NewNoteRecords(false),
+        ],
+    )
+    .unwrap();
+    let after = on_disk(root.path());
+    assert_eq!(after["show_recording_widget"], json!(true));
+    assert_eq!(after["new_note_records"], json!(false));
+}
+
+#[test]
+fn a_file_without_the_widget_and_new_note_keys_has_them_absent() {
+    let root = folder();
+    write_raw(root.path(), &full());
+    let fields = parsed(root.path()).fields;
+    assert_eq!(fields.show_recording_widget, Field::Absent);
+    assert_eq!(fields.new_note_records, Field::Absent);
+    let defaults =
+        shared_settings::file::SharedFields::from_raw(&shared_settings::file::default_settings());
+    assert_eq!(defaults.show_recording_widget, Field::Known(true));
+    assert_eq!(defaults.new_note_records, Field::Known(true));
+}
