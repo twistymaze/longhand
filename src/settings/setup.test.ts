@@ -17,7 +17,7 @@ const ready: Readiness = {
 // Only the fields that the function reads.
 const settings = {
   system_audio_default: false,
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 
 const ids = (r: Readiness, s: Settings = settings, systemAudio = false) =>
@@ -56,7 +56,7 @@ describe("the outstanding setup items", () => {
     expect(ids({ ...ready, destination: { kind: "low_space", path: "/x", free_bytes: 1 } } as Readiness)).toEqual(["storage"]);
     const readOnly = {
       ...settings,
-      shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [] },
+      shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [], files_writable: false, damaged_file: null },
     } as unknown as Settings;
     expect(ids(ready, readOnly)).toEqual(["storage"]);
   });

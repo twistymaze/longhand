@@ -11,8 +11,8 @@ const key = (text: string) => text.trim().replace(/\s*::\s*/g, "::").toLowerCase
 
 const prompts: SummaryPromptList = {
   prompts: [
-    { id: "topic-summary", name: "Topic summary", text: "", title_text: "", built_in: true },
-    { id: "play-by-play", name: "Play-by-play summary", text: "", title_text: "", built_in: false },
+    { id: "topic-summary", name: "Topic summary", text: "", title_text: "", built_in: true, over_limit: false, too_large: false },
+    { id: "play-by-play", name: "Play-by-play summary", text: "", title_text: "", built_in: false, over_limit: false, too_large: false },
   ],
   active: "topic-summary",
   text_limit: 1000,

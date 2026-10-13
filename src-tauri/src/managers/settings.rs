@@ -212,6 +212,13 @@ pub struct SummaryPromptEntry {
     pub title_text: String,
     /// A built-in prompt cannot be renamed, edited or deleted (R2).
     pub built_in: bool,
+    /// The prompt text or the title instructions are over their limit, for
+    /// example after an edit outside Longhand (R21). A run uses the whole
+    /// text. Rename and delete stay available.
+    pub over_limit: bool,
+    /// The file is over the size limit that Longhand reads, so the list has
+    /// no texts of the prompt (R21). The texts are empty.
+    pub too_large: bool,
 }
 
 /// The built-in prompts first, then the custom prompts, and the id of the
@@ -251,14 +258,10 @@ pub struct LocalSettings {
     pub default_speaker_count: Option<SpeakerCountSetting>,
     pub microphone: Option<MicrophoneChoice>,
     pub system_audio_default: bool,
-    pub new_note_records: bool,
     /// Whether a recording that stops and cannot restart plays the alert
     /// sound (R9). Local to this computer (KTD1).
     pub alert_sound: bool,
     pub hide_from_dock: bool,
-    /// Whether a new note shows the recording widget (R11). Local to this
-    /// computer.
-    pub show_recording_widget: bool,
     pub learned_context_limits: std::collections::BTreeMap<String, u32>,
 }
 
@@ -501,9 +504,9 @@ pub struct Settings {
     pub microphone: Option<MicrophoneChoice>,
     /// Whether a new note starts with system audio on (R6, KD13).
     pub system_audio_default: bool,
-    /// What New Note and the recording shortcut do (R8, R10): start a note
-    /// that records, or open a note that does not record. On by default,
-    /// as before the setting.
+    /// A shared setting. What New Note and the recording shortcut do (R8,
+    /// R10): start a note that records, or open a note that does not
+    /// record. On by default.
     pub new_note_records: bool,
     /// Whether a recording that stops and cannot restart plays the alert
     /// sound (R9, KTD1). On by default. Test Sound plays when it is off.
@@ -511,9 +514,9 @@ pub struct Settings {
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
-    /// Whether a new note shows the recording widget: the pill that is on
-    /// screen while a note is open (R11). On by default. Local to this
-    /// computer. A change applies to the next note (R14).
+    /// A shared setting. Whether a new note shows the recording widget: the
+    /// pill that is on screen while a note is open (R11). On by default. A
+    /// change applies to the next note (R14).
     pub show_recording_widget: bool,
     /// A shared setting. A release build checks for a newer release at
     /// launch, each hour and at each wake (R9, R10). On by default. "Check
@@ -562,6 +565,10 @@ pub struct Settings {
     /// A prompt that this computer never read is not here.
     #[serde(skip)]
     pub type_prompts: std::collections::BTreeMap<String, summarize::Prompt>,
+    /// The ids of the custom prompts whose files are over the size limit
+    /// that Longhand reads (R21).
+    #[serde(skip)]
+    pub too_large_prompts: std::collections::BTreeSet<String>,
 }
 
 /// The most characters the Background can have (R6).
@@ -572,8 +579,12 @@ const BACKGROUND_LIMIT: u32 = summarize::prompts::BACKGROUND_TEXT_LIMIT as u32;
 /// Background file cannot be used (R5, KTD3).
 fn background_read_only(shared: &SharedSnapshot) -> Option<String> {
     match &shared.availability {
-        SharedAvailability::ReadOnly { cause } => Some(cause.message().to_string()),
-        SharedAvailability::Available => shared
+        // While only the settings file does not parse, the Background can
+        // change (R22).
+        SharedAvailability::ReadOnly { cause } if !shared.files_writable() => {
+            Some(cause.message().to_string())
+        }
+        SharedAvailability::ReadOnly { .. } | SharedAvailability::Available => shared
             .view
             .background_unavailable
             .as_ref()
@@ -719,6 +730,7 @@ impl Default for Settings {
             cached_active_prompt: None,
             note_type_prompts: Default::default(),
             type_prompts: Default::default(),
+            too_large_prompts: Default::default(),
         }
     }
 }
@@ -758,10 +770,13 @@ impl Settings {
             chosen_recognition,
             microphone: local.microphone,
             system_audio_default: local.system_audio_default,
-            new_note_records: local.new_note_records,
+            new_note_records: known_or(&fields.new_note_records, defaults.new_note_records),
             alert_sound: local.alert_sound,
             hide_from_dock: local.hide_from_dock,
-            show_recording_widget: local.show_recording_widget,
+            show_recording_widget: known_or(
+                &fields.show_recording_widget,
+                defaults.show_recording_widget,
+            ),
             check_updates_automatically: known_or(
                 &fields.check_updates_automatically,
                 defaults.check_updates_automatically,
@@ -796,6 +811,7 @@ impl Settings {
                 .iter()
                 .filter_map(|(id, prompt)| Some((id.clone(), prompt.prompt()?.clone())))
                 .collect(),
+            too_large_prompts: shared.view.too_large_prompts.clone(),
         }
     }
 
@@ -820,10 +836,8 @@ impl Settings {
             default_speaker_count: self.default_speaker_count,
             microphone: self.microphone.clone(),
             system_audio_default: self.system_audio_default,
-            new_note_records: self.new_note_records,
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
-            show_recording_widget: self.show_recording_widget,
             learned_context_limits: self.learned_context_limits.clone(),
         }
     }
@@ -955,13 +969,22 @@ impl Settings {
                 text: p.text,
                 title_text: p.title_text,
                 built_in: true,
+                over_limit: false,
+                too_large: false,
             });
-        let custom = self.summary_prompts.iter().map(|p| SummaryPromptEntry {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            text: p.text.clone(),
-            title_text: p.title_text.clone(),
-            built_in: false,
+        let custom = self.summary_prompts.iter().map(|p| {
+            let too_large = self.too_large_prompts.contains(&p.id);
+            SummaryPromptEntry {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                text: p.text.clone(),
+                title_text: p.title_text.clone(),
+                built_in: false,
+                over_limit: too_large
+                    || p.text.chars().count() > summarize::prompts::PROMPT_TEXT_LIMIT
+                    || p.title_text.chars().count() > summarize::prompts::TITLE_TEXT_LIMIT,
+                too_large,
+            }
         });
         SummaryPromptList {
             prompts: built_ins.chain(custom).collect(),
@@ -971,11 +994,13 @@ impl Settings {
         }
     }
 
+    /// The prompt `id` with its text. A prompt whose file is over the size
+    /// limit has no text here, so a summary never uses it (R21).
     fn find_summary_prompt(&self, id: &str) -> Option<summarize::Prompt> {
         summarize::prompts::built_in(id).or_else(|| {
             self.summary_prompts
                 .iter()
-                .find(|p| p.id == id)
+                .find(|p| p.id == id && !self.too_large_prompts.contains(id))
                 .map(summarize::Prompt::from)
         })
     }
@@ -1028,6 +1053,14 @@ pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
     }
     if before.audio_removal != after.audio_removal {
         patch.push(SharedValue::AudioRemoval(after.audio_removal.into()));
+    }
+    if before.show_recording_widget != after.show_recording_widget {
+        patch.push(SharedValue::ShowRecordingWidget(
+            after.show_recording_widget,
+        ));
+    }
+    if before.new_note_records != after.new_note_records {
+        patch.push(SharedValue::NewNoteRecords(after.new_note_records));
     }
     patch
 }
@@ -1908,32 +1941,6 @@ mod tests {
         assert!(!Settings::default().system_audio_default);
     }
 
-    // Covers R8: a store from before the setting starts to record at New
-    // Note, as before.
-    #[test]
-    fn a_store_without_the_new_note_key_reads_as_new_note_records() {
-        let stored = json!({
-            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "kept",
-        });
-        let (settings, updated) = settings_from_value(&stored);
-        assert!(!updated, "the new key needs no migration");
-        assert!(settings.new_note_records);
-        assert!(Settings::default().new_note_records);
-    }
-
-    #[test]
-    fn the_new_note_setting_stays_local() {
-        let settings = Settings {
-            new_note_records: false,
-            ..Settings::default()
-        };
-        let stored = serde_json::to_value(settings.local()).unwrap();
-        assert_eq!(stored["new_note_records"], json!(false));
-        let (read, _) = settings_from_value(&stored);
-        assert!(!read.new_note_records);
-    }
-
     // Covers R9: a store from before the setting plays the alert sound, as
     // before.
     #[test]
@@ -1960,31 +1967,77 @@ mod tests {
         assert!(!read.alert_sound);
     }
 
-    // Covers R11: the recording widget is on by default, also for a store
-    // from before the setting.
-    #[test]
-    fn a_store_without_the_recording_widget_key_reads_as_on() {
-        let stored = json!({
-            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "kept",
-        });
-        let (settings, updated) = settings_from_value(&stored);
-        assert!(!updated, "the new key needs no migration");
-        assert!(settings.show_recording_widget);
-        assert!(Settings::default().show_recording_widget);
+    /// The settings with the shared settings file `raw`, as a view of a
+    /// storage folder that is available.
+    fn with_shared_file(raw: serde_json::Map<String, Value>) -> Settings {
+        use shared_settings::view::{self, Availability};
+        let cache = shared_settings::cache::Cache {
+            source: PathBuf::from("/Volumes/Notes"),
+            settings: raw,
+            prompts: Vec::new(),
+            active_prompt: None,
+            type_prompts: Vec::new(),
+            background: String::new(),
+        };
+        let shared = SharedSnapshot {
+            view: view::cached(Some(&cache), Availability::Available),
+            availability: crate::managers::shared::SharedAvailability::Available,
+            damaged_file: None,
+        };
+        Settings::from_parts(LocalSettings::default(), &shared)
     }
 
-    // Covers R11: the setting is local to this computer.
+    // Covers R15 (safe agent edits U7): Show recording widget and New Note
+    // records are shared settings. A change goes only into the shared
+    // file, and the local store has no value for them.
     #[test]
-    fn the_recording_widget_setting_stays_local() {
-        let settings = Settings {
-            show_recording_widget: false,
-            ..Settings::default()
-        };
-        let stored = serde_json::to_value(settings.local()).unwrap();
-        assert_eq!(stored["show_recording_widget"], json!(false));
-        let (read, _) = settings_from_value(&stored);
-        assert!(!read.show_recording_widget);
+    fn the_widget_and_new_note_settings_are_shared() {
+        let before = Settings::default();
+        assert!(before.show_recording_widget);
+        assert!(before.new_note_records);
+        let mut after = before.clone();
+        after.show_recording_widget = false;
+        after.new_note_records = false;
+        assert_eq!(
+            shared_patch(&before, &after),
+            [
+                SharedValue::ShowRecordingWidget(false),
+                SharedValue::NewNoteRecords(false),
+            ]
+        );
+        assert_eq!(after.local(), before.local());
+        let stored = serde_json::to_value(after.local()).unwrap();
+        assert!(stored.get("show_recording_widget").is_none());
+        assert!(stored.get("new_note_records").is_none());
+    }
+
+    // A shared file without the keys gives the defaults on every computer,
+    // also when an old local store has a value (no installs to migrate).
+    #[test]
+    fn a_shared_file_without_the_widget_and_new_note_keys_gives_on() {
+        let mut raw = shared_settings::file::default_settings();
+        raw.remove("show_recording_widget");
+        raw.remove("new_note_records");
+        let settings = with_shared_file(raw);
+        assert!(settings.show_recording_widget);
+        assert!(settings.new_note_records);
+        let (local, _) = settings_from_value(&json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "show_recording_widget": false,
+            "new_note_records": false,
+        }));
+        assert_eq!(local, LocalSettings::default());
+    }
+
+    // An edit of the shared file changes the setting at the next read.
+    #[test]
+    fn the_widget_and_new_note_settings_come_from_the_shared_file() {
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert("show_recording_widget".into(), json!(false));
+        raw.insert("new_note_records".into(), json!(false));
+        let settings = with_shared_file(raw);
+        assert!(!settings.show_recording_widget);
+        assert!(!settings.new_note_records);
     }
 
     #[test]
@@ -2477,6 +2530,7 @@ mod tests {
         let shared = SharedSnapshot {
             view: view::cached(Some(&cache), Availability::Available),
             availability: crate::managers::shared::SharedAvailability::Available,
+            damaged_file: None,
         };
         let settings = Settings::from_parts(LocalSettings::default(), &shared);
         assert_eq!(settings.audio_removal, AudioRemovalSetting::default());

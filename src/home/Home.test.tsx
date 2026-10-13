@@ -1324,6 +1324,19 @@ describe("Home: notes with no audio and other computers", () => {
     expect(screen.getAllByRole("button", { name: "Open Settings…" })).toHaveLength(1);
   });
 
+  // Safe agent edits U6, R22: a settings file that did not parse for about
+  // one minute names the file and the line. The normal path shows nothing.
+  test("a damaged shared settings file shows a notice with the file and the line", () => {
+    mockTauri();
+    const view = render(home([], { readiness: ready }));
+    expect(screen.queryByText(/can’t read the settings file/)).toBeNull();
+    view.rerender(home([], { readiness: ready, damagedFile: { path: ".longhand/settings.json", line: 3 } }));
+    const notice = screen.getByText(/can’t read the settings file/);
+    expect(notice.textContent).toContain("(.longhand/settings.json, line 3)");
+    expect(notice.textContent).toContain("Fix the file, or restore it from another computer.");
+    expect(notice.textContent).toContain("the recording widget and New Note");
+  });
+
   test("when a note can start but not record, the record banner shows", () => {
     mockTauri();
     render(home([], { readiness: { ...ready, armed: false } }));

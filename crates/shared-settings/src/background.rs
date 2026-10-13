@@ -126,10 +126,11 @@ fn unreadable(cause: String) -> BackgroundRead {
 /// change that the user made calls this. The write is atomic, and an
 /// empty text writes an empty file (KTD2). The save writes nothing while
 /// the shared settings are read-only or the Background file cannot be
-/// used (KTD3).
+/// used (KTD3). A settings file that does not parse does not stop the
+/// save, because the save does not write it (R22).
 pub fn save_background(root: &Path, text: &str) -> Result<(), BackgroundError> {
     match read_settings(root) {
-        FileRead::Parsed(_) => {}
+        FileRead::Parsed(_) | FileRead::NotAvailable(Unavailable::DoesNotParse(_)) => {}
         FileRead::Missing => return Err(BackgroundError::NoSettingsFile),
         FileRead::NotAvailable(cause) => return Err(BackgroundError::NotAvailable(cause)),
     }

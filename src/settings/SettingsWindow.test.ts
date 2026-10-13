@@ -16,7 +16,7 @@ const ready: Readiness = {
 
 const settings = {
   system_audio_default: false,
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 
 const tones = (r: Readiness) => Object.fromEntries(paneOrder.map((id) => [id, paneTone(id, r, settings)]));

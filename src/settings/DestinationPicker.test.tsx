@@ -7,7 +7,7 @@ import { DestinationPicker } from "./DestinationPicker";
 
 const settings = {
   storage_folder: "/Users/me/Library/Application Support/Longhand/Notes",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 const readOnly = {
   ...settings,

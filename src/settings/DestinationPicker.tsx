@@ -14,7 +14,7 @@ import {
 } from "../bindings";
 import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
-import { readOnlyReason } from "./shared";
+import { damagedFileText, readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes, notes } from "./ui";
 
 export function describeDestination(status: DestinationStatus): { tone: Tone; text: string } {
@@ -200,7 +200,13 @@ export function DestinationPicker({
         {readOnly ? (
           <Row
             label={<Status tone="caution">{readOnly}</Status>}
-            detail="Longhand uses the last settings it read. Summary prompts and transcription choices can’t be changed until the folder is available."
+            detail={
+              settings.shared.damaged_file
+                ? damagedFileText(settings.shared.damaged_file)
+                : settings.shared.files_writable
+                  ? "Longhand uses the last settings it read. Summary prompts and the Background can still be changed."
+                  : "Longhand uses the last settings it read. Summary prompts and transcription choices can’t be changed until the folder is available."
+            }
           />
         ) : (
           <Row label={<Status tone={described.tone}>{described.text}</Status>} />

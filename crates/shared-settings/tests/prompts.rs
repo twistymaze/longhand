@@ -2,14 +2,15 @@
 //! the file, and a sync conflict copy shows as one more prompt (R14, KTD4,
 //! KTD5).
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use shared_settings::file::{Unavailable, default_settings};
+use shared_settings::file::{SharedValue, Unavailable, default_settings, save_settings};
 use shared_settings::prompts::{
     PromptError, PromptScan, TITLE_MARKER, create_prompt, create_prompt_with_title, delete_prompt,
     free_prompt_name, rename_prompt, render_prompt_file, render_prompt_file_with_title,
-    safe_file_name, scan_prompts, set_prompt_text, set_prompt_title_text,
+    repair_prompts, safe_file_name, scan_prompts, set_prompt_text, set_prompt_title_text,
 };
 use summarize::prompts::{PROMPT_TEXT_LIMIT, TITLE_TEXT_LIMIT};
 
@@ -470,11 +471,6 @@ fn files_that_are_not_prompts_are_skipped() {
     write_file(root.path(), ".Recap.md.0123456789abcdef.tmp", "Partial.");
     write_file(root.path(), ".Recap.md", "Hidden.");
     write_file(root.path(), "notes.txt", "Not markdown.");
-    write_file(
-        root.path(),
-        "Long.md",
-        &"x".repeat(summarize::prompts::PROMPT_TEXT_LIMIT + 1),
-    );
     fs::create_dir(prompts_dir(root.path()).join("Folder.md")).unwrap();
     let scan = scan(root.path());
     let names: Vec<&str> = scan.prompts.iter().map(|p| p.name.as_str()).collect();
@@ -499,13 +495,13 @@ fn a_file_with_no_text_is_not_a_prompt_and_is_not_deleted() {
 }
 
 #[test]
-fn a_file_with_no_closing_front_matter_line_is_all_text() {
+fn a_file_with_no_closing_front_matter_line_cannot_be_used() {
+    // A sync can deliver the start of a file before its end.
     let root = folder();
     write_file(root.path(), "Odd.md", "---\nid: x\nText with no end line.");
     let scan = scan(root.path());
-    assert_eq!(scan.prompts.len(), 1);
-    assert_eq!(scan.prompts[0].name, "Odd");
-    assert_eq!(scan.prompts[0].text, "---\nid: x\nText with no end line.");
+    assert!(scan.prompts.is_empty());
+    assert!(scan.unusable.contains("x"));
 }
 
 #[test]
@@ -548,19 +544,17 @@ fn a_folder_that_does_not_exist_has_no_prompts_and_refuses_changes() {
 }
 
 #[test]
-fn a_settings_file_that_does_not_parse_makes_the_prompts_read_only() {
+fn a_settings_file_that_does_not_parse_stays_and_the_prompts_still_change() {
+    // R22: a change of a prompt does not write the settings file.
     let root = folder();
     let made = create_prompt(root.path(), "Recap", "Text.").unwrap();
-    fs::write(
-        root.path().join(".longhand").join("settings.json"),
-        "{\"sche",
-    )
-    .unwrap();
-    assert!(matches!(
-        set_prompt_text(root.path(), &made.id, "New."),
-        Err(PromptError::NotAvailable(Unavailable::DoesNotParse(_)))
-    ));
-    assert_eq!(scan(root.path()).get(&made.id).unwrap().text, "Text.");
+    let settings = root.path().join(".longhand").join("settings.json");
+    fs::write(&settings, "{\"sche").unwrap();
+    set_prompt_text(root.path(), &made.id, "New.").unwrap();
+    assert_eq!(scan(root.path()).get(&made.id).unwrap().text, "New.");
+    assert_eq!(delete_prompt(root.path(), &made.id).unwrap(), None);
+    assert!(file_names(root.path()).is_empty());
+    assert_eq!(fs::read_to_string(&settings).unwrap(), "{\"sche");
 }
 
 #[test]
@@ -803,12 +797,370 @@ fn two_files_with_one_id_and_one_summary_text_but_two_title_texts_are_a_conflict
 }
 
 #[test]
-fn a_file_with_a_title_text_over_the_limit_is_not_a_prompt() {
+fn a_file_with_a_title_text_over_the_limit_is_listed_as_over_the_limit() {
+    // R21: an outside edit made the title instructions too long.
     let root = folder();
+    let title = "x".repeat(TITLE_TEXT_LIMIT + 1);
     write_file(
         root.path(),
         "Long.md",
-        &render_prompt_file_with_title("abc", "Long", "Text.", &"x".repeat(TITLE_TEXT_LIMIT + 1)),
+        &render_prompt_file_with_title("abc", "Long", "Text.", &title),
     );
-    assert!(scan(root.path()).prompts.is_empty());
+    let scan = scan(root.path());
+    let prompt = scan.get("abc").unwrap();
+    assert!(prompt.over_limit());
+    assert!(!prompt.too_large);
+    assert_eq!(prompt.title_text, title);
+}
+
+// Outside edits of the prompt files (U6 of the safe agent edits plan: R17
+// to R23, KTD8).
+
+#[test]
+fn a_prompt_text_over_the_limit_is_listed_with_its_whole_text() {
+    // R21: a 5,000-character prompt from an outside edit.
+    let root = folder();
+    let text = "y".repeat(5000);
+    write_file(
+        root.path(),
+        "Long.md",
+        &render_prompt_file("long-id", "Long", &text),
+    );
+    let scan = scan(root.path());
+    let prompt = scan.get("long-id").unwrap();
+    assert!(prompt.over_limit());
+    assert_eq!(prompt.text, text);
+    let made = create_prompt(root.path(), "Short", "Short text.").unwrap();
+    assert!(
+        !scan_prompts(root.path())
+            .unwrap()
+            .get(&made.id)
+            .unwrap()
+            .over_limit()
+    );
+}
+
+#[test]
+fn a_file_over_the_size_limit_is_listed_with_no_text_and_can_be_renamed() {
+    let root = folder();
+    let text = "z".repeat(60_000);
+    write_file(
+        root.path(),
+        "Huge.md",
+        &render_prompt_file("huge-id", "Huge", &text),
+    );
+    let scan = scan(root.path());
+    let prompt = scan.get("huge-id").unwrap();
+    assert!(prompt.too_large);
+    assert!(prompt.over_limit());
+    assert_eq!(prompt.name, "Huge");
+    assert_eq!(prompt.text, "");
+    // A rename keeps the whole text in the file.
+    rename_prompt(root.path(), "huge-id", "Huge notes").unwrap();
+    assert_eq!(file_names(root.path()), vec!["Huge notes.md"]);
+    assert_eq!(
+        read_file(root.path(), "Huge notes.md"),
+        render_prompt_file("huge-id", "Huge notes", &text)
+    );
+    delete_prompt(root.path(), "huge-id").unwrap();
+    assert!(file_names(root.path()).is_empty());
+}
+
+#[test]
+fn a_prompt_file_with_no_text_is_not_missing() {
+    // KTD8: a file that a sync delivers in parts exists, so the prompt is
+    // not missing.
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        &render_prompt_file("recap-id", "Recap", " "),
+    );
+    let scan = scan(root.path());
+    assert!(scan.get("recap-id").is_none());
+    assert!(scan.unusable.contains("recap-id"));
+    assert!(!scan.is_missing("recap-id"));
+    assert!(scan.is_missing("other-id"));
+}
+
+/// The id that the scan gives the file `file_name` with no id in it.
+fn id_of(root: &Path, file_name: &str) -> String {
+    let scan = scan(root);
+    let prompt = scan
+        .prompts
+        .iter()
+        .find(|p| p.file_name == file_name)
+        .unwrap();
+    assert_eq!(prompt.id_in_file, None);
+    prompt.id.clone()
+}
+
+#[test]
+fn a_repair_writes_the_id_of_a_file_with_no_id_and_a_rename_then_keeps_it() {
+    // R18.
+    let root = folder();
+    write_file(root.path(), "Recap.md", "Write a recap.");
+    let id = id_of(root.path(), "Recap.md");
+    let repaired = repair_prompts(root.path(), &BTreeSet::new()).unwrap();
+    assert_eq!(repaired.ids_written, vec!["Recap.md"]);
+    assert_eq!(
+        read_file(root.path(), "Recap.md"),
+        render_prompt_file(&id, "Recap", "Write a recap.")
+    );
+    fs::rename(
+        prompts_dir(root.path()).join("Recap.md"),
+        prompts_dir(root.path()).join("Weekly.md"),
+    )
+    .unwrap();
+    let after = scan(root.path());
+    assert_eq!(after.get(&id).unwrap().file_name, "Weekly.md");
+}
+
+#[test]
+fn a_repair_gives_a_file_the_file_name_of_its_name_and_keeps_the_id() {
+    // R19: an agent changed `name`.
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text.").unwrap();
+    write_file(
+        root.path(),
+        "Recap.md",
+        &render_prompt_file(&made.id, "Weekly recap", "Text."),
+    );
+    assert_eq!(
+        scan(root.path()).get(&made.id).unwrap().name,
+        "Weekly recap"
+    );
+    let repaired = repair_prompts(root.path(), &BTreeSet::new()).unwrap();
+    assert_eq!(
+        repaired.renamed,
+        vec![("Recap.md".to_string(), "Weekly recap.md".to_string())]
+    );
+    assert_eq!(file_names(root.path()), vec!["Weekly recap.md"]);
+    assert_eq!(
+        scan(root.path()).get(&made.id).unwrap().name,
+        "Weekly recap"
+    );
+    // A second repair changes nothing.
+    assert!(
+        repair_prompts(root.path(), &BTreeSet::new())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_file_with_no_id_and_another_name_gets_its_id_before_its_rename() {
+    // R18, R19: the id is the id that the settings name, also after the
+    // rename.
+    let root = folder();
+    write_file(root.path(), "Notes.md", "---\nname: Recap\n---\n\nText.");
+    let id = id_of(root.path(), "Notes.md");
+    repair_prompts(root.path(), &BTreeSet::new()).unwrap();
+    assert_eq!(file_names(root.path()), vec!["Recap.md"]);
+    assert_eq!(scan(root.path()).get(&id).unwrap().name, "Recap");
+}
+
+#[test]
+fn a_copy_with_a_new_id_and_name_is_a_second_prompt_and_the_original_stays() {
+    // AE5, R17.
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Recap text.").unwrap();
+    let original = read_file(root.path(), "Recap.md");
+    write_file(
+        root.path(),
+        "Recap copy.md",
+        &render_prompt_file("new-id", "Weekly", "Weekly text."),
+    );
+    let after = scan(root.path());
+    assert_eq!(after.prompts.len(), 2);
+    assert!(after.conflicted.is_empty());
+    assert_eq!(after.get("new-id").unwrap().name, "Weekly");
+    assert_eq!(after.get(&made.id).unwrap().text, "Recap text.");
+    repair_prompts(root.path(), &BTreeSet::new()).unwrap();
+    assert_eq!(file_names(root.path()), vec!["Recap.md", "Weekly.md"]);
+    assert_eq!(read_file(root.path(), "Recap.md"), original);
+}
+
+#[test]
+fn a_repair_leaves_a_conflict_for_the_user() {
+    // R17: two files with one id and different texts.
+    let root = folder();
+    let made = create_prompt(root.path(), "Recap", "Text from A.").unwrap();
+    write_file(
+        root.path(),
+        "Recap 2.md",
+        &render_prompt_file(&made.id, "Recap", "Text from B."),
+    );
+    let before: Vec<(String, String)> = file_names(root.path())
+        .into_iter()
+        .map(|n| (read_file(root.path(), &n), n))
+        .collect();
+    assert!(
+        repair_prompts(root.path(), &BTreeSet::new())
+            .unwrap()
+            .is_empty()
+    );
+    let after: Vec<(String, String)> = file_names(root.path())
+        .into_iter()
+        .map(|n| (read_file(root.path(), &n), n))
+        .collect();
+    assert_eq!(after, before);
+    assert!(scan(root.path()).conflicted.contains(&made.id));
+}
+
+fn settings_on_disk(root: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(root.join(".longhand").join("settings.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn a_repair_clears_the_settings_that_name_a_missing_prompt() {
+    // R20: the rules of a delete in the app.
+    let root = folder();
+    let kept = create_prompt(root.path(), "Kept", "Kept text.").unwrap();
+    save_settings(
+        root.path(),
+        &[
+            SharedValue::ActiveSummaryPrompt("gone-id".into()),
+            SharedValue::NoteTypePrompts(
+                [
+                    ("Pathfinder".to_string(), "gone-id".to_string()),
+                    ("Standup".to_string(), kept.id.clone()),
+                ]
+                .into(),
+            ),
+        ],
+    )
+    .unwrap();
+    let missing: BTreeSet<String> = ["gone-id".to_string(), kept.id.clone()].into();
+    let repaired = repair_prompts(root.path(), &missing).unwrap();
+    assert_eq!(repaired.cleared, vec!["gone-id"]);
+    let on_disk = settings_on_disk(root.path());
+    assert_eq!(
+        on_disk["active_summary_prompt"],
+        summarize::prompts::TOPIC_SUMMARY_ID
+    );
+    assert_eq!(
+        on_disk["note_type_prompts"],
+        serde_json::json!({ "Standup": kept.id })
+    );
+}
+
+#[test]
+fn a_repair_keeps_the_settings_of_a_prompt_whose_file_cannot_be_used() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        &render_prompt_file("recap-id", "Recap", ""),
+    );
+    save_settings(
+        root.path(),
+        &[SharedValue::ActiveSummaryPrompt("recap-id".into())],
+    )
+    .unwrap();
+    let missing: BTreeSet<String> = ["recap-id".to_string()].into();
+    assert!(repair_prompts(root.path(), &missing).unwrap().is_empty());
+    assert_eq!(
+        settings_on_disk(root.path())["active_summary_prompt"],
+        "recap-id"
+    );
+}
+
+/// The settings name `id`, a repair with `id` missing clears nothing, and
+/// the file `file_name` keeps `contents`.
+fn assert_repair_keeps(root: &Path, id: &str, file_name: &str, contents: &[u8]) {
+    save_settings(root, &[SharedValue::ActiveSummaryPrompt(id.into())]).unwrap();
+    let missing: BTreeSet<String> = [id.to_string()].into();
+    assert!(repair_prompts(root, &missing).unwrap().is_empty());
+    assert_eq!(settings_on_disk(root)["active_summary_prompt"], id);
+    assert_eq!(
+        fs::read(prompts_dir(root).join(file_name)).unwrap(),
+        contents
+    );
+}
+
+#[test]
+fn a_file_with_no_id_that_cannot_be_used_is_not_missing() {
+    // KTD8: an empty file and a file that is not text exist.
+    let cases: [&[u8]; 2] = [b"", b"Recap \xff text."];
+    for contents in cases {
+        let root = folder();
+        write_file(root.path(), "Recap.md", "Write a recap.");
+        let id = id_of(root.path(), "Recap.md");
+        fs::write(prompts_dir(root.path()).join("Recap.md"), contents).unwrap();
+        let scan = scan(root.path());
+        assert!(scan.get(&id).is_none());
+        assert!(scan.unusable.contains(&id));
+        assert!(!scan.is_missing(&id));
+        assert!(scan.is_missing("other-id"));
+        assert_repair_keeps(root.path(), &id, "Recap.md", contents);
+    }
+}
+
+#[test]
+fn a_file_that_cannot_be_read_makes_no_custom_prompt_missing() {
+    // The id in the file is not known, so each custom prompt can be in it.
+    use std::os::unix::fs::PermissionsExt;
+    let root = folder();
+    let contents = render_prompt_file("recap-id", "Recap", "Recap text.");
+    write_file(root.path(), "Recap.md", &contents);
+    let path = prompts_dir(root.path()).join("Recap.md");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    let scan = scan(root.path());
+    assert!(scan.get("recap-id").is_none());
+    assert!(!scan.is_missing("recap-id"));
+    assert!(!scan.is_missing("other-id"));
+    save_settings(
+        root.path(),
+        &[SharedValue::ActiveSummaryPrompt("recap-id".into())],
+    )
+    .unwrap();
+    let missing: BTreeSet<String> = ["recap-id".to_string()].into();
+    assert!(repair_prompts(root.path(), &missing).unwrap().is_empty());
+    assert_eq!(
+        settings_on_disk(root.path())["active_summary_prompt"],
+        "recap-id"
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(read_file(root.path(), "Recap.md"), contents);
+}
+
+#[test]
+fn a_file_with_an_open_front_matter_is_unusable_and_a_repair_does_not_change_it() {
+    // A sync delivered only the start of the file.
+    let root = folder();
+    let partial = "---\nid: recap-id\nname: Recap\n";
+    write_file(root.path(), "Recap.md", partial);
+    let scan = scan(root.path());
+    assert!(scan.prompts.is_empty());
+    assert!(scan.unusable.contains("recap-id"));
+    assert!(!scan.is_missing("recap-id"));
+    assert_repair_keeps(root.path(), "recap-id", "Recap.md", partial.as_bytes());
+}
+
+#[test]
+fn a_file_with_an_open_front_matter_and_no_id_is_unusable_under_its_file_name_id() {
+    let root = folder();
+    write_file(root.path(), "Notes.md", "Write notes.");
+    let id = id_of(root.path(), "Notes.md");
+    let partial = "---\nname: Recap\n";
+    write_file(root.path(), "Notes.md", partial);
+    let scan = scan(root.path());
+    assert!(scan.prompts.is_empty());
+    assert!(scan.unusable.contains(&id));
+    assert_repair_keeps(root.path(), &id, "Notes.md", partial.as_bytes());
+}
+
+#[test]
+fn a_repair_does_not_rewrite_a_file_with_no_id_over_the_size_limit() {
+    let root = folder();
+    let contents = format!("---\nname: Huge\n---\n\n{}", "z".repeat(60_000));
+    write_file(root.path(), "Huge.md", &contents);
+    assert!(
+        repair_prompts(root.path(), &BTreeSet::new())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(read_file(root.path(), "Huge.md"), contents);
 }

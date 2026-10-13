@@ -160,6 +160,7 @@ function MainWindow() {
             !settings ? "the shortcut" : settings.shortcut ? formatChord(settings.shortcut, isMac) : null
           }
           newNoteRecords={settings?.new_note_records ?? true}
+          damagedFile={settings?.shared.damaged_file ?? null}
           onOpen={(id) => setView({ kind: "session", id })}
           // A note that does not record opens when the list knows it.
           onStarted={requestStarted}

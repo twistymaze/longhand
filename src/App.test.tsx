@@ -5,7 +5,7 @@ import type { Readiness, RecordingStatus, SessionEntry, Settings } from "./bindi
 import App from "./App";
 import { mockTauri, shortcutStatuses } from "./test/tauri";
 
-const available: Settings["shared"] = { availability: { kind: "available" }, newer_version: false, unknown_values: [] };
+const available: Settings["shared"] = { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null };
 
 const readiness: Readiness = {
   microphone_authorized: true,

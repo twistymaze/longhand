@@ -2153,7 +2153,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
 });
 
 describe("SessionPage regenerate offer", () => {
-  const prompt = (id: string, name: string) => ({ id, name, text: "", title_text: "", built_in: false });
+  const prompt = (id: string, name: string) => ({ id, name, text: "", title_text: "", built_in: false, over_limit: false, too_large: false });
   const prompts = {
     prompts: [prompt("topic-summary", "Topic summary"), prompt("play", "Play-by-play summary"), prompt("decisions", "Decisions")],
     active: "topic-summary",
