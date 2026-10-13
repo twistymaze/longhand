@@ -1,0 +1,24 @@
+{
+  "name": "longhand",
+  "description": "Read and change the notes, tags, note types, summary prompts and shared settings in a Longhand storage folder",
+  "author": {
+    "name": "Erv Walter"
+  },
+  "homepage": "https://github.com/twistymaze/longhand",
+  "repository": "https://github.com/twistymaze/longhand",
+  "license": "MIT",
+  "keywords": ["longhand", "notes", "transcripts", "summaries"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Longhand",
+    "shortDescription": "Read and change Longhand notes and shared settings safely",
+    "developerName": "Erv Walter",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/twistymaze/longhand",
+    "defaultPrompt": [
+      "List my Longhand notes from last week",
+      "Add the tag Person::Nathan to my notes about Nathan"
+    ]
+  }
+}

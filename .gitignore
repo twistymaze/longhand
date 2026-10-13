@@ -25,3 +25,6 @@ src-tauri/gen/
 src-tauri/transcribe-libs/
 
 src-tauri/nemo-runtime/
+
+# Python bytecode, for example from the skill script tests.
+__pycache__/
