@@ -2,18 +2,27 @@
 //! result copies plan). The new result is complete in a local staging
 //! folder first. The owner then writes a small record into that staging
 //! folder, copies the staged files that differ into the note folder, and
-//! writes `session.md` last. The note folder keeps no copies of earlier
-//! results.
+//! writes `longhand.json` last (KTD2 of the safe agent edits plan). The
+//! note folder keeps no copies of earlier results.
 //!
 //! The record never syncs. Its presence means "unfinished publication":
 //! after a crash, a rerun reads it and only rolls forward. The rerun
-//! writes the staged files that differ and then `session.md`, whatever the
-//! note folder holds, unless the result fields of `session.md` changed on
+//! writes the staged files that differ and then `longhand.json`, whatever
+//! the note folder holds, unless the result fields of the note changed on
 //! another computer. Then the owner drops its result (KTD4).
+//!
+//! A publication never changes the title or the tags in `session.md`: the
+//! title and tag writers own them. It makes `session.md` only when the
+//! folder has none, before `longhand.json`. A note in the old layout gets
+//! no publication (KTD6): its records are in `session.md` until the
+//! conversion.
 use crate::home_write;
+use crate::note_files;
 use serde::{Deserialize, Serialize};
 use session_core::SpeakerCount;
-use session_core::folder::{SessionDoc, fingerprint};
+use session_core::folder::fingerprint;
+use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE};
+use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
 use session_core::recognition::{ARTIFACT_FILE, ArtifactReference};
 use std::collections::BTreeMap;
 use std::io;
@@ -22,18 +31,23 @@ use std::path::Path;
 /// The name of the record in the local staging folder.
 pub const RECORD: &str = "publication.json";
 
+/// The error text for an action that changes the records of a note in the
+/// old layout (KTD6).
+pub const OLD_LAYOUT: &str =
+    "An older version of Longhand saved this note. Convert your notes to use this action.";
+
 /// The files that a publication writes into the note folder before
-/// `session.md` (KTD5).
+/// `longhand.json` (KTD5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteSet {
     /// Save, Resume and Transcribe Again: `recognition.jsonl` when the
     /// result has one, `transcript.md` and `summary.md`, in that order.
     /// Most sync clients upload in write order, so `recognition.jsonl`
-    /// does not arrive after `session.md`.
+    /// does not arrive after `longhand.json`.
     Result,
     /// Regenerate Summary: `summary.md` only. The recognition references
-    /// in `session.md` come from the note folder at write time, and go
+    /// in `longhand.json` come from the note folder at write time, and go
     /// when its `recognition.jsonl` is not there. The publication never
     /// writes `recognition.jsonl` back.
     Summary,
@@ -48,9 +62,9 @@ impl WriteSet {
     }
 }
 
-/// The fields of `session.md` that tell which result the note folder
-/// holds (KTD2). A publication compares only these fields, so a title
-/// write or a rename between two writes is not a conflict.
+/// The records that tell which result the note folder holds (KTD2). A
+/// publication compares only these fields, so a title write or a rename
+/// between two writes is not a conflict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultFields {
     pub session_id: String,
@@ -63,15 +77,15 @@ pub struct ResultFields {
 }
 
 impl ResultFields {
-    pub fn of(doc: &SessionDoc) -> Self {
+    pub fn of(record: &NoteRecord) -> Self {
         Self {
-            session_id: doc.session_id.clone(),
-            transcript_fingerprint: doc.transcript_fingerprint.clone(),
-            summary_fingerprint: doc.summary_fingerprint.clone(),
-            recognition_artifact: doc.recognition_artifact.clone(),
-            recognition_audio: doc.recognition_audio.clone(),
-            speaker_count: doc.speaker_count,
-            recognition_snapshot: doc.recognition_snapshot.clone(),
+            session_id: record.session_id.clone(),
+            transcript_fingerprint: record.transcript_fingerprint.clone(),
+            summary_fingerprint: record.summary_fingerprint.clone(),
+            recognition_artifact: record.recognition_artifact.clone(),
+            recognition_audio: record.recognition_audio.clone(),
+            speaker_count: record.speaker_count,
+            recognition_snapshot: record.recognition_snapshot.clone(),
         }
     }
 
@@ -92,9 +106,9 @@ impl ResultFields {
 pub enum Outcome {
     /// The note folder holds the staged result.
     Committed,
-    /// The result fields of `session.md` equal neither the fields before
-    /// the first write nor the staged fields: another computer published
-    /// a result. This computer writes nothing after it finds the conflict
+    /// The result fields of the note equal neither the fields before the
+    /// first write nor the staged fields: another computer published a
+    /// result. This computer writes nothing after it finds the conflict
     /// (KTD4). The files it wrote before that stay, and the note waits for
     /// a sync until the mismatch counts as a hand edit.
     Conflict,
@@ -104,11 +118,10 @@ pub enum Outcome {
 /// the staged files are beside it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Publication {
-    /// The result fields of the note folder's `session.md` before the first
-    /// write.
+    /// The result fields of the note folder before the first write.
     pub before: ResultFields,
-    /// The staged `session.md`.
-    pub after: SessionDoc,
+    /// The staged `longhand.json`.
+    pub after: NoteRecord,
     pub set: WriteSet,
 }
 
@@ -124,11 +137,22 @@ fn digest(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
+/// The records of the note in `home`, or an error for a note in the old
+/// layout (KTD6).
+fn current(home: &Path) -> io::Result<NoteRecord> {
+    let files = NoteFiles::read(home)?;
+    if files.layout == Layout::Old {
+        return Err(io::Error::other(OLD_LAYOUT));
+    }
+    Ok(files.record)
+}
+
 impl Publication {
     /// A publication of `after` into `home`, with the result fields that
-    /// `home` holds now as the fields before the first write.
-    pub fn new(home: &Path, after: SessionDoc, set: WriteSet) -> io::Result<Self> {
-        let before = ResultFields::of(&SessionDoc::read(home)?);
+    /// `home` holds now as the fields before the first write. A note in the
+    /// old layout gives an error, and nothing is written.
+    pub fn new(home: &Path, after: NoteRecord, set: WriteSet) -> io::Result<Self> {
+        let before = ResultFields::of(&current(home)?);
         if before.session_id != after.session_id {
             return Err(conflict());
         }
@@ -166,8 +190,8 @@ impl Publication {
     }
 
     /// Write the staged files in `local` that differ from the files in
-    /// `home`, then `session.md`. Each step can run again: a rerun from the
-    /// record after any write reaches the same end state. `after_write`
+    /// `home`, then `longhand.json`. Each step can run again: a rerun from
+    /// the record after any write reaches the same end state. `after_write`
     /// runs after each write with the name of the file. An error from it
     /// stops the publication, as a crash does.
     pub fn publish_with(
@@ -179,7 +203,7 @@ impl Publication {
         let before = self.before.clone().compared(self.set);
         let after = ResultFields::of(&self.after).compared(self.set);
         let fields = || -> io::Result<ResultFields> {
-            Ok(ResultFields::of(&SessionDoc::read(home)?).compared(self.set))
+            Ok(ResultFields::of(&current(home)?).compared(self.set))
         };
         let now = fields()?;
         if now == after && now != before {
@@ -196,7 +220,7 @@ impl Publication {
             if digest(&home.join(name))?.as_ref() == Some(&staged) {
                 continue;
             }
-            // Another computer's `session.md` can arrive during the
+            // Another computer's `longhand.json` can arrive during the
             // writes. Check before each write, so that at most the file in
             // progress replaces a file of the other result.
             if fields()? != before {
@@ -205,34 +229,43 @@ impl Publication {
             home_write::copy_atomic(home, name, &local.join(name))?;
             after_write(name)?;
         }
-        // Read `session.md` again just before the write, so that a title
-        // written in the meantime stays.
-        let current = SessionDoc::read(home)?;
+        // Read the records again just before the write, so that a title or
+        // a pending type written in the meantime stays.
+        let current = current(home)?;
         if ResultFields::of(&current).compared(self.set) != before {
             return Ok(Outcome::Conflict);
         }
-        let doc = self.patch(home, &current);
-        home_write::write_atomic(home, "session.md", doc.render().as_bytes())?;
-        after_write("session.md")?;
+        // An agent can delete `session.md`. The note gets it back with the
+        // title that Longhand last wrote.
+        if !home.join(SESSION_FILE).exists() {
+            let title = current.written_title.as_ref().map(|t| t.text.as_str());
+            home_write::write_atomic(
+                home,
+                SESSION_FILE,
+                note_files::new_session_md(title, &[]).as_bytes(),
+            )?;
+            after_write(SESSION_FILE)?;
+        }
+        let record = self.patch(home, &current);
+        note_files::write_record(home, &record)?;
+        after_write(NOTE_RECORD_FILE)?;
         Ok(Outcome::Committed)
     }
 
-    /// The staged `session.md` with the title, the tags and the pending
-    /// type of `current`: the title belongs to the title and rename writers
-    /// (KTD2), and the tags and the pending type are user fields (KTD2 of
-    /// the note types and tags plan). With [`WriteSet::Summary`], the
-    /// recognition references also come from `current` (KTD5).
-    fn patch(&self, home: &Path, current: &SessionDoc) -> SessionDoc {
-        let mut doc = self.after.clone();
-        doc.title = current.title.clone();
-        doc.title_source = current.title_source;
-        doc.tags = current.tags.clone();
-        doc.pending_type = current.pending_type.clone();
+    /// The staged records with the last-written title and the pending type
+    /// of `current`: the title belongs to the title and rename writers
+    /// (KTD2), and the pending type to the type move. With
+    /// [`WriteSet::Summary`], the recognition references also come from
+    /// `current` (KTD5).
+    fn patch(&self, home: &Path, current: &NoteRecord) -> NoteRecord {
+        let mut record = self.after.clone();
+        record.written_title = current.written_title.clone();
+        record.pending_type = current.pending_type.clone();
         if self.set == WriteSet::Summary {
             let present = home.join(ARTIFACT_FILE).is_file();
-            doc.recognition_artifact = current.recognition_artifact.clone().filter(|_| present);
-            doc.recognition_audio = current.recognition_audio.clone().filter(|_| present);
+            record.recognition_artifact = current.recognition_artifact.clone().filter(|_| present);
+            record.recognition_audio = current.recognition_audio.clone().filter(|_| present);
         }
-        doc
+        record
     }
 }

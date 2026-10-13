@@ -153,13 +153,79 @@ fn storage() -> (tempfile::TempDir, PathBuf) {
 }
 
 fn document(home: &Path) -> SessionDoc {
-    SessionDoc::parse(&fs::read_to_string(home.join("session.md")).unwrap()).unwrap()
+    session_core::note_folder::NoteFiles::read(&home)
+        .unwrap()
+        .doc
 }
 
 fn edit_doc(home: &Path, edit: impl FnOnce(&mut SessionDoc)) {
     let mut doc = document(home);
     edit(&mut doc);
-    fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
+}
+
+#[test]
+fn a_tag_edit_changes_only_the_tag_lines_of_session_md() {
+    // R4, KTD3: the agent's key, comment, quote style and body stay.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("n", &root, started(), &[]);
+    let agent = "---\n# set by an agent\ntitle: 'Note n'\nlonghand_tags:\n- Person::Nathan\nsource: agent\n---\n\nThe agent's text.\n";
+    fs::write(home.join("session.md"), agent).unwrap();
+    let records = fs::read(home.join("longhand.json")).unwrap();
+
+    b.set("n", &["follow-up"], &[]).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(home.join("session.md")).unwrap(),
+        "---\n# set by an agent\ntitle: 'Note n'\nlonghand_tags:\n- Person::Nathan\n- follow-up\nsource: agent\n---\n\nThe agent's text.\n"
+    );
+    // A tag edit changes no record.
+    assert_eq!(fs::read(home.join("longhand.json")).unwrap(), records);
+}
+
+#[test]
+fn a_tag_edit_writes_one_tag_for_each_tag_key() {
+    // R8: an agent wrote one tag key two times.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("n", &root, started(), &[]);
+    fs::write(
+        home.join("session.md"),
+        "---\ntitle: Note n\nlonghand_tags:\n- Person::Nathan\n- person :: nathan\n---\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        b.set("n", &["follow-up"], &[]),
+        Ok(texts(&["Person::Nathan", "follow-up"]))
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("session.md")).unwrap(),
+        "---\ntitle: Note n\nlonghand_tags:\n- Person::Nathan\n- follow-up\n---\n"
+    );
+}
+
+#[test]
+fn a_tag_edit_of_an_old_layout_note_goes_through_the_patcher() {
+    // KTD6: before the conversion, the tags of an old note still change,
+    // and the records stay in `session.md`.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("n", &root, started(), &[]);
+    let doc = document(&home);
+    fs::remove_file(home.join("longhand.json")).unwrap();
+    let old = format!("{}A line that a person added.\n", doc.render());
+    fs::write(home.join("session.md"), &old).unwrap();
+
+    assert_eq!(b.set("n", &["follow-up"], &[]), Ok(texts(&["follow-up"])));
+    let text = fs::read_to_string(home.join("session.md")).unwrap();
+    assert!(text.ends_with("A line that a person added.\n"), "{text}");
+    assert!(!home.join("longhand.json").exists());
+    let files = session_core::note_folder::NoteFiles::read(&home).unwrap();
+    assert_eq!(files.layout, session_core::note_folder::Layout::Old);
+    assert_eq!(files.doc.tags, texts(&["follow-up"]));
+    assert_eq!(files.doc.segments, doc.segments);
 }
 
 #[test]
@@ -332,7 +398,8 @@ fn a_tag_edit_of_a_note_that_cannot_be_read_changes_nothing_and_says_why() {
     let (_dir, root) = storage();
     let b = computer();
     let home = b.save_note("n", &root, started(), &["Person::Nathan"]);
-    fs::remove_file(home.join("session.md")).unwrap();
+    // A `session.md` with no `longhand.json` waits for a sync (KTD6).
+    fs::remove_file(home.join("longhand.json")).unwrap();
 
     assert_eq!(
         b.set("n", &["follow-up"], &[]),
@@ -555,8 +622,8 @@ fn a_tag_edit_that_waits_keeps_the_tag_that_the_user_adds_after_the_edit() {
     b.store = Arc::new(Mutex::new(Store::open(&db).unwrap()));
     let stuck = b.save_note("stuck", &root, started(), &["follow-up"]);
     b.save_note("later", &root, started(), &[]);
-    let text = fs::read(stuck.join("session.md")).unwrap();
-    fs::remove_file(stuck.join("session.md")).unwrap();
+    let text = fs::read(stuck.join("longhand.json")).unwrap();
+    fs::remove_file(stuck.join("longhand.json")).unwrap();
 
     let edit = BulkEdit::DeleteTag {
         name: "follow-up".into(),
@@ -581,7 +648,7 @@ fn a_tag_edit_that_waits_keeps_the_tag_that_the_user_adds_after_the_edit() {
     assert!(!pass.done);
     assert_eq!(b.record("later").tags, texts(&["follow-up"]));
 
-    fs::write(stuck.join("session.md"), &text).unwrap();
+    fs::write(stuck.join("longhand.json"), &text).unwrap();
     let pass = continue_recorded(&b, id);
     assert_eq!(
         (pass.changed.as_slice(), pass.done),

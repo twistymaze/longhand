@@ -7,6 +7,7 @@ pub mod folder;
 pub mod inspect;
 pub mod jobs;
 pub mod lock;
+pub mod note_folder;
 pub mod note_record;
 pub mod recognition;
 pub mod schema;

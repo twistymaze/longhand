@@ -186,11 +186,13 @@ fn storage() -> (tempfile::TempDir, PathBuf) {
 }
 
 fn document(home: &Path) -> SessionDoc {
-    SessionDoc::parse(&fs::read_to_string(home.join("session.md")).unwrap()).unwrap()
+    session_core::note_folder::NoteFiles::read(&home)
+        .unwrap()
+        .doc
 }
 
 fn write_document(home: &Path, doc: &SessionDoc) {
-    fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
 }
 
 /// The visible entries of `dir`, sorted.

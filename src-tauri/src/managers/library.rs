@@ -182,14 +182,15 @@ impl Watched {
             return Place::Skipped;
         }
         let folder = self.root.join(first);
-        // A folder with no `session.md` is a type folder (KTD4 of the note
-        // types plan): an event below it marks the home folder in it. An
+        // A folder with no `session.md` and no `longhand.json` is a type
+        // folder (KTD4 of the note types plan, KTD1 of the safe agent edits
+        // plan): an event below it marks the home folder in it. An
         // event on the type folder itself marks the type folder, and the
         // targeted scan then reads each home folder in it. A folder that is
         // gone is marked itself.
         match relative.components().nth(1) {
             Some(Component::Normal(second))
-                if folder.is_dir() && !folder.join("session.md").exists() =>
+                if folder.is_dir() && !library::scan::is_note_folder(&folder) =>
             {
                 Place::Folder(folder.join(second))
             }
@@ -825,6 +826,27 @@ mod tests {
         );
     }
 
+    // KTD1 of the safe agent edits plan: a home folder with only
+    // `longhand.json` is a note folder, not a type folder.
+    #[test]
+    fn an_event_in_a_home_folder_with_only_longhand_json_marks_that_folder() {
+        let root = marked_root();
+        let top = note(root.path(), "Standup", "B1");
+        std::fs::remove_file(top.join("session.md")).unwrap();
+        let w = watched_dir(root.path());
+        let b = batch(
+            &w,
+            vec![event(
+                data(),
+                &[top.join("audio/segment-01.opus").to_str().unwrap()],
+            )],
+        );
+        assert_eq!(
+            folders(&b, root.path().to_str().unwrap()),
+            BTreeSet::from([top])
+        );
+    }
+
     // KTD4: a renamed type folder marks both names, and the targeted scan
     // reads its notes.
     #[test]
@@ -959,7 +981,7 @@ mod tests {
         std::fs::write(dir.join("summary.md"), SUMMARY).unwrap();
         std::fs::write(dir.join("notes.md"), "My notes\n").unwrap();
         std::fs::write(dir.join("audio/segment-01.opus"), b"opus").unwrap();
-        std::fs::write(dir.join("session.md"), doc(id).render()).unwrap();
+        session_save::note_files::write_doc(&dir, &doc(id)).unwrap();
         dir
     }
 
@@ -1046,7 +1068,7 @@ mod tests {
                     break;
                 }
                 Ok(_) => {}
-                Err(_) => std::fs::write(dir.join("session.md"), doc("A1").render()).unwrap(),
+                Err(_) => session_save::note_files::write_doc(&dir, &doc("A1")).unwrap(),
             }
         }
         let changes = changes.expect("no LibraryChanged in 10 seconds");

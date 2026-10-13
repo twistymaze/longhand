@@ -8,8 +8,15 @@
 //! - `notes-DESKTOP-ABC` (OneDrive adds the computer name).
 //! - `notes 2` (iCloud).
 
-/// The four documents of a note folder.
-pub const DOCUMENTS: [&str; 4] = ["session.md", "transcript.md", "summary.md", "notes.md"];
+/// The documents of a note folder: the four `.md` files and
+/// `longhand.json`.
+pub const DOCUMENTS: [&str; 5] = [
+    "session.md",
+    "transcript.md",
+    "summary.md",
+    "notes.md",
+    session_core::note_record::NOTE_RECORD_FILE,
+];
 
 /// Whether `name` is a conflict copy of `base`: `base` plus one suffix of
 /// the forms above. Both are file names without the `.md` extension, or
@@ -31,12 +38,15 @@ pub fn is_copy_name(name: &str, base: &str) -> bool {
 }
 
 /// The document that the file `file_name` is a conflict copy of, such as
-/// `notes.md`. `None` for any other file.
+/// `notes.md`. `None` for any other file. The copy has the extension of
+/// its document.
 pub fn document_copy(file_name: &str) -> Option<&'static str> {
-    let stem = file_name.strip_suffix(".md")?;
-    DOCUMENTS
-        .into_iter()
-        .find(|document| is_copy_name(stem, document.trim_end_matches(".md")))
+    let (stem, extension) = file_name.rsplit_once('.')?;
+    DOCUMENTS.into_iter().find(|document| {
+        document
+            .rsplit_once('.')
+            .is_some_and(|(base, ext)| ext == extension && is_copy_name(stem, base))
+    })
 }
 
 #[cfg(test)]
@@ -66,5 +76,8 @@ mod tests {
         assert_eq!(document_copy("session-LAPTOP.md"), Some("session.md"));
         assert_eq!(document_copy("notes.md"), None);
         assert_eq!(document_copy("notes (1).txt"), None);
+        assert_eq!(document_copy("longhand 2.json"), Some("longhand.json"));
+        assert_eq!(document_copy("longhand (1).md"), None);
+        assert_eq!(document_copy("longhand.json"), None);
     }
 }

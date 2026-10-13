@@ -2216,7 +2216,7 @@ mod tests {
         let mut doc = SessionDoc::new("A1", None, &[segment]).unwrap();
         doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
         doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
-        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(&home, &doc).unwrap();
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), summary).unwrap();
         std::fs::write(home.join("notes.md"), "My notes\n").unwrap();

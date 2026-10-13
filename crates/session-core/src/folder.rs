@@ -186,28 +186,6 @@ pub struct PendingType {
     pub at: DateTime<FixedOffset>,
 }
 
-/// The keys of the user fields in the frontmatter of `session.md` (KTD2).
-const USER_FIELDS: [&str; 2] = ["longhand_tags", "longhand_pending_type"];
-
-/// The [`fingerprint`] of the bytes of a `session.md`, with the user
-/// fields removed from its frontmatter (KTD2). A check that compares a
-/// whole `session.md` uses it, so a tag or type edit does not fail a run.
-/// The body counts. Bytes that are not a `session.md` with a frontmatter
-/// mapping give the [`fingerprint`] of the bytes.
-pub fn session_fingerprint(bytes: &[u8]) -> String {
-    let without = std::str::from_utf8(bytes).ok().and_then(|text| {
-        let (yaml, body) = split_frontmatter("session.md", text).ok()?;
-        let mut map: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
-        // `shift_remove` keeps the order of the other keys.
-        for key in USER_FIELDS {
-            map.shift_remove(key);
-        }
-        let yaml = serde_yaml::to_string(&map).ok()?;
-        Some(format!("---\n{yaml}---\n{body}"))
-    });
-    fingerprint(without.as_deref().map_or(bytes, str::as_bytes))
-}
-
 /// The `result` field of `session.md` (R6, KTD1): the note has no result
 /// yet, and this tells why. A missing transcript, summary or audio of a
 /// note with this flag does not mean that the note waits for a sync.
@@ -427,12 +405,6 @@ impl SessionDoc {
     pub fn parse(text: &str) -> Result<Self, FolderError> {
         let (yaml, _) = split_frontmatter("session.md", text)?;
         serde_yaml::from_str(yaml).map_err(yaml_error("session.md"))
-    }
-
-    /// Read and parse the `session.md` in the note folder `folder`.
-    pub fn read(folder: &Path) -> std::io::Result<Self> {
-        Self::parse(&std::fs::read_to_string(folder.join("session.md"))?)
-            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 
@@ -951,6 +923,14 @@ impl Summary {
         format!("---\n{yaml}---\n\n{}\n", self.body.trim_end())
     }
 
+    /// The text of a `summary.md` in the new layout: the body only, with
+    /// no frontmatter. `longhand.json` holds the summary data (R1).
+    pub fn render_body(&self) -> String {
+        format!("{}\n", self.body.trim_end())
+    }
+
+    /// Parse a `summary.md` of the old layout: its frontmatter holds the
+    /// summary data.
     pub fn parse(text: &str) -> Result<Self, FolderError> {
         let (yaml, body) = split_frontmatter("summary.md", text)?;
         Ok(Self {

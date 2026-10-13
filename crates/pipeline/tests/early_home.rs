@@ -106,7 +106,9 @@ fn a_recording_note_gets_a_home_folder_with_its_notes_and_the_pending_flag() {
         std::fs::read_to_string(path.join("notes.md")).unwrap(),
         "Agenda\n"
     );
-    let doc = SessionDoc::read(&path).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.session_id, "s");
     assert_eq!(doc.result, Some(ResultFlag::NotSaved));
     assert!(doc.segments.is_empty());
@@ -116,8 +118,24 @@ fn a_recording_note_gets_a_home_folder_with_its_notes_and_the_pending_flag() {
     // The store knows the files as this computer's (KTD8).
     let written = store.lock().unwrap().written_fingerprints("s").unwrap();
     let of = |name: &str| Some(fingerprint(&std::fs::read(path.join(name)).unwrap()));
-    assert_eq!(written.session, of("session.md"));
+    assert_eq!(written.session, Some(files_written(&path)));
     assert_eq!(written.notes, of("notes.md"));
+    // The new layout (KTD1, KTD3): `longhand.json` holds the identity and
+    // the records, and `session.md` has only a frontmatter.
+    let files = session_core::note_folder::NoteFiles::read(&path).unwrap();
+    assert_eq!(files.layout, session_core::note_folder::Layout::New);
+    assert_eq!(files.record.session_id, "s");
+    assert_eq!(
+        std::fs::read_to_string(path.join("session.md")).unwrap(),
+        "---\n---\n"
+    );
+}
+
+/// The value that the store records for the `session.md` and the
+/// `longhand.json` in `path`.
+fn files_written(path: &Path) -> String {
+    let read = |name: &str| std::fs::read(path.join(name)).unwrap();
+    session_core::note_folder::written_fingerprint(&read("session.md"), &read("longhand.json"))
 }
 
 #[test]
@@ -140,7 +158,9 @@ fn the_early_write_puts_the_tags_and_the_pending_type_of_the_row_in_session_md()
 
     let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
 
-    let doc = SessionDoc::read(&path).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.tags, vec!["Topic::Security".to_string()]);
     assert_eq!(doc.pending_type, Some(pending));
 }
@@ -153,10 +173,15 @@ fn a_notes_only_note_gets_a_home_folder_with_the_no_recording_flag_and_no_marker
 
     let path = write(&store, "n", Some(dest.path())).unwrap().unwrap();
 
-    let doc = SessionDoc::read(&path).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.result, Some(ResultFlag::NoRecording));
     assert!(!path.join(marker_name(RUN)).exists());
-    assert_eq!(names(&path), vec!["notes.md", "session.md"]);
+    assert_eq!(
+        names(&path),
+        vec!["longhand.json", "notes.md", "session.md"]
+    );
     // The row is no longer busy: it has its home folder.
     let record = store.lock().unwrap().session("n").unwrap().unwrap();
     assert!(!session_core::jobs::busy(&record, false));
@@ -197,7 +222,13 @@ fn a_crash_while_the_staging_folder_is_partly_written_completes_it_in_one_folder
 
     assert_eq!(folders(dest.path()).len(), 1);
     assert!(!staging.exists());
-    assert_eq!(SessionDoc::read(&path).unwrap().session_id, "s");
+    assert_eq!(
+        session_core::note_folder::NoteFiles::read(&path)
+            .map(|files| files.doc)
+            .unwrap()
+            .session_id,
+        "s"
+    );
     assert_eq!(
         std::fs::read_to_string(path.join("notes.md")).unwrap(),
         "typed\n"
@@ -307,7 +338,13 @@ fn a_folder_of_another_note_at_the_name_is_not_taken_for_this_one() {
     let path = write(&store, "s", Some(dest.path())).unwrap().unwrap();
 
     assert_eq!(path, dest.path().join("2027-01-15 0800 Longhand session-2"));
-    assert_eq!(SessionDoc::read(&other).unwrap().session_id, "other");
+    assert_eq!(
+        session_core::note_folder::NoteFiles::read(&other)
+            .map(|files| files.doc)
+            .unwrap()
+            .session_id,
+        "other"
+    );
 }
 
 #[test]
@@ -494,7 +531,9 @@ fn record_into_a_notes_only_note_writes_the_marker_and_then_the_pending_flag() {
     early_home::sync(&store, "n", RUN).unwrap();
 
     assert!(path.join(marker_name(RUN)).is_file());
-    let doc = SessionDoc::read(&path).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.result, Some(ResultFlag::NotSaved));
     let written = store
         .lock()
@@ -502,12 +541,7 @@ fn record_into_a_notes_only_note_writes_the_marker_and_then_the_pending_flag() {
         .written_fingerprints("n")
         .unwrap()
         .session;
-    assert_eq!(
-        written,
-        Some(fingerprint(
-            &std::fs::read(path.join("session.md")).unwrap()
-        ))
-    );
+    assert_eq!(written, Some(files_written(&path)));
 }
 
 #[test]
@@ -516,10 +550,12 @@ fn a_flag_update_keeps_a_title_from_another_computer() {
     let store = store();
     notes_only_note(&store, "n", "");
     let path = write(&store, "n", Some(dest.path())).unwrap().unwrap();
-    let mut doc = SessionDoc::read(&path).unwrap();
+    let mut doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     doc.title = Some("Planning".into());
     doc.title_source = Some(session_core::TitleSource::User);
-    std::fs::write(path.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&path, &doc).unwrap();
     store
         .lock()
         .unwrap()
@@ -533,7 +569,9 @@ fn a_flag_update_keeps_a_title_from_another_computer() {
 
     early_home::sync(&store, "n", RUN).unwrap();
 
-    let doc = SessionDoc::read(&path).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.title.as_deref(), Some("Planning"));
     assert_eq!(doc.result, Some(ResultFlag::NotSaved));
 }
@@ -670,7 +708,10 @@ fn a_pending_update_queued_on_a_job_writes_the_flag_in_order() {
 
     let path = home(&store, "queue-n").unwrap();
     assert_eq!(
-        SessionDoc::read(&path).unwrap().result,
+        session_core::note_folder::NoteFiles::read(&path)
+            .map(|files| files.doc)
+            .unwrap()
+            .result,
         Some(ResultFlag::NotSaved)
     );
     assert!(path.join(marker_name(RUN)).is_file());
@@ -706,7 +747,10 @@ fn a_dropped_recording_into_a_notes_only_note_writes_the_no_recording_flag_again
         .unwrap();
     early_home::sync(&store, "n", RUN).unwrap();
     assert_eq!(
-        SessionDoc::read(&path).unwrap().result,
+        session_core::note_folder::NoteFiles::read(&path)
+            .map(|files| files.doc)
+            .unwrap()
+            .result,
         Some(ResultFlag::NotSaved)
     );
     assert!(path.join(marker_name(RUN)).is_file());
@@ -721,7 +765,9 @@ fn a_dropped_recording_into_a_notes_only_note_writes_the_no_recording_flag_again
         .unwrap();
     early_home::sync(&store, "n", RUN).unwrap();
 
-    let doc = SessionDoc::read(&path).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.result, Some(ResultFlag::NoRecording));
     // The note does not record any more: this run's marker goes, so other
     // computers do not show the note as in use.
@@ -785,7 +831,10 @@ fn a_notes_save_after_the_home_folder_was_removed_makes_a_new_note_with_the_text
         "Second\n"
     );
     assert_eq!(
-        SessionDoc::read(&placed).unwrap().result,
+        session_core::note_folder::NoteFiles::read(&placed)
+            .map(|files| files.doc)
+            .unwrap()
+            .result,
         Some(ResultFlag::NoRecording)
     );
 }
@@ -923,7 +972,13 @@ fn a_note_of_a_type_gets_its_home_folder_in_the_type_folder() {
             .join("Pathfinder")
             .join("2027-01-15 0800 Longhand session")
     );
-    assert_eq!(SessionDoc::read(&path).unwrap().session_id, "s");
+    assert_eq!(
+        session_core::note_folder::NoteFiles::read(&path)
+            .map(|files| files.doc)
+            .unwrap()
+            .session_id,
+        "s"
+    );
     assert_eq!(home(&store, "s"), Some(path.clone()));
     assert_eq!(note_type(&store, "s"), Some("Pathfinder".to_string()));
     assert_eq!(folders(dest.path()), vec!["Pathfinder"]);

@@ -367,7 +367,7 @@ fn transcribe_route(
             .and_then(|r| r.home_path)
             .map(std::path::PathBuf::from);
         if let Some(home) = home {
-            let doc = session_core::folder::SessionDoc::read(&home)?;
+            let doc = session_core::note_folder::NoteFiles::read(&home)?.doc;
             let mut rows = Vec::new();
             if let Some(header) = crate::reprocess::read_reusable(&home, &doc, spec, |block| {
                 for mut row in block.rows {

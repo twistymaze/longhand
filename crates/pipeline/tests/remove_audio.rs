@@ -78,7 +78,7 @@ fn saved_note(segments: &[Segment]) -> Note {
     let home = root_path.join("Planning");
     fs::create_dir_all(home.join("audio")).unwrap();
     let doc = doc(segments);
-    fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
     fs::write(home.join("transcript.md"), TRANSCRIPT).unwrap();
     fs::write(home.join("summary.md"), SUMMARY).unwrap();
     fs::write(home.join("notes.md"), NOTES).unwrap();
@@ -583,7 +583,7 @@ fn the_step_follows_the_folder_first() {
     let segments = three_segments();
     let note = saved_note(&segments[..1]);
     fs::write(note.home.join(audio(1)), b"opus").unwrap();
-    fs::write(note.home.join("session.md"), doc(&segments[..2]).render()).unwrap();
+    session_save::note_files::write_doc(&note.home, &doc(&segments[..2])).unwrap();
 
     let removal = run(&note);
 

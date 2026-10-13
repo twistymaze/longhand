@@ -9,6 +9,7 @@ use std::sync::Arc;
 use pipeline::folder_rename::FolderRename;
 use serde::Serialize;
 use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine};
+use session_core::note_folder::{Layout, NoteFiles};
 use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
@@ -1020,18 +1021,46 @@ fn read_document(folder: &Path) -> Result<SessionDocument, String> {
     let text = |name: &str| {
         read(name).and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
     };
-    let doc = SessionDoc::parse(&text(pipeline::save::SESSION_FILE)?).map_err(|e| e.to_string())?;
+    let files = match library::scan::read_note(folder, READ_TIMEOUT) {
+        library::scan::NoteRead::Note(files) => *files,
+        library::scan::NoteRead::Unreadable(why) | library::scan::NoteRead::Invalid(why) => {
+            return Err(format!(
+                "could not read the note in {}: {why}",
+                folder.display()
+            ));
+        }
+        library::scan::NoteRead::NotANote | library::scan::NoteRead::WaitingForRecord => {
+            return Err(format!(
+                "{} is not in {}",
+                session_core::note_record::NOTE_RECORD_FILE,
+                folder.display()
+            ));
+        }
+    };
     let transcript_markdown = text(pipeline::join::TRANSCRIPT_FILE)?;
     let transcript = Transcript::parse(&transcript_markdown).map_err(|e| e.to_string())?;
+    let summary_markdown = text(pipeline::summarize::SUMMARY_FILE).ok();
     Ok(SessionDocument {
         has_speakers: transcript.has_speakers,
-        lines: doc_lines(&doc, transcript),
+        lines: doc_lines(&files.doc, transcript),
         transcript_markdown,
-        summary: text(pipeline::summarize::SUMMARY_FILE)
-            .ok()
-            .and_then(|text| Summary::parse(&text).ok())
-            .map(summary_view),
+        summary: summary_of(&files, summary_markdown.as_deref()).map(summary_view),
     })
+}
+
+/// The summary of a note, from its `summary.md` text. In the new layout,
+/// the summary data comes from `longhand.json` and the file is the body
+/// (R1). In the old layout, the data is the frontmatter of `summary.md`
+/// (KTD6). `None` when the note has no summary or no summary data.
+fn summary_of(files: &NoteFiles, text: Option<&str>) -> Option<Summary> {
+    let text = text?;
+    match files.layout {
+        Layout::New => Some(Summary {
+            meta: files.record.summary.clone()?,
+            body: text.trim().to_string(),
+        }),
+        Layout::Old => Summary::parse(text).ok(),
+    }
 }
 
 /// Transcript lines, each gap placed at the end of the segment before it
@@ -1608,7 +1637,7 @@ mod remove_audio_tests {
         let mut doc = SessionDoc::new(ID, None, &segments).unwrap();
         doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
         doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
-        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(&home, &doc).unwrap();
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), summary).unwrap();
         std::fs::write(home.join("notes.md"), "My notes\n").unwrap();
@@ -1642,7 +1671,13 @@ mod remove_audio_tests {
         let note = saved_note();
         run_removal(&note.store, &Claims::default(), ID, NoteSync::Synced).unwrap();
         assert!(!note.home.join("audio/segment-01.opus").exists());
-        for name in ["session.md", "transcript.md", "summary.md", "notes.md"] {
+        for name in [
+            "session.md",
+            "longhand.json",
+            "transcript.md",
+            "summary.md",
+            "notes.md",
+        ] {
             assert!(note.home.join(name).is_file(), "{name}");
         }
         let store = note.store.lock().unwrap();
@@ -1980,6 +2015,36 @@ mod tests {
         assert!(summary.stub);
         assert_eq!(summary.body.trim(), "The old summary.");
     }
+
+    // R1: in the new layout, the summary data comes from `longhand.json`,
+    // and `summary.md` is the body only.
+    #[test]
+    fn a_new_layout_summary_takes_its_data_from_longhand_json() {
+        let folder = tempfile::tempdir().unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:00:00+00:00").unwrap();
+        let mut record = session_core::note_record::NoteRecord::new("s", started);
+        record.summary = Some(SummaryMeta::Complete {
+            endpoint_host: "api.example.com".into(),
+            model: "m".into(),
+            prompt_name: Some("Team sync".into()),
+            prompt_id: Some("b1".into()),
+        });
+        std::fs::write(folder.path().join("session.md"), "---\ntitle: Plan\n---\n").unwrap();
+        std::fs::write(folder.path().join("longhand.json"), record.render()).unwrap();
+        std::fs::write(folder.path().join("transcript.md"), "# Transcript\n").unwrap();
+        std::fs::write(
+            folder.path().join("summary.md"),
+            "# Summary\n\nWe agreed.\n",
+        )
+        .unwrap();
+
+        let summary = read_document(folder.path()).unwrap().summary.unwrap();
+        assert!(!summary.stub);
+        assert_eq!(summary.body, "# Summary\n\nWe agreed.");
+        assert_eq!(summary.host.as_deref(), Some("api.example.com"));
+        assert_eq!(summary.prompt.as_deref(), Some("Team sync"));
+        assert_eq!(summary.prompt_id.as_deref(), Some("b1"));
+    }
 }
 
 #[cfg(test)]
@@ -2125,7 +2190,7 @@ mod entry_tests {
         let opened = chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
         let mut doc = SessionDoc::without_audio("s", opened, None);
         doc.result = Some(session_core::folder::ResultFlag::NotSaved);
-        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(&home, &doc).unwrap();
         std::fs::write(home.join("notes.md"), "").unwrap();
         let store = Arc::new(std::sync::Mutex::new(
             session_core::Store::open_in_memory().unwrap(),

@@ -1,7 +1,7 @@
 //! The refresh step (KTD3): bring one row up to date from its note folder.
 //!
 //! The folder is the authority for a saved note on every computer (KD4).
-//! The refresh reads `session.md`, `notes.md` and the fingerprints of
+//! The refresh reads `longhand.json`, `session.md`, `notes.md` and the fingerprints of
 //! `transcript.md` and `summary.md`, and asks whether each segment's
 //! removal marker exists. It updates the title, title source, recognition
 //! model, speakers found, speaker count, segments, removed flags, notes,
@@ -12,8 +12,8 @@
 //! was written by another computer. The refresh then removes this
 //! computer's stored recognition results for the note (KTD12, R18).
 //!
-//! The row takes the result snapshot of `session.md` only when both
-//! documents have the fingerprints that `session.md` records (KTD10 of the
+//! The row takes the result snapshot of the records only when both
+//! documents have the fingerprints that the records hold (KTD10 of the
 //! result copies plan). While the sync delivers the documents, the row
 //! keeps its snapshot.
 //!
@@ -26,15 +26,25 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use session_core::folder::{PendingType, SessionDoc, fingerprint};
+use session_core::note_folder::Layout;
 use session_core::{Segment, SpeakerCount, Store, StoreError, Title, TitleSource};
 
-use crate::scan::{NoteFolder, Read, read_notes, read_timed, removed_audio};
+use crate::scan::{NoteFolder, NoteRead, Read, read_note, read_notes, read_timed, removed_audio};
 
 /// What the refresh reads from a note folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderContents {
-    /// The parsed `session.md`.
+    /// The records and the user fields of the note
+    /// ([`session_core::note_folder::NoteFiles::doc`]).
     pub doc: SessionDoc,
+    pub layout: Layout,
+    /// The title that Longhand last wrote into `session.md` (KTD5). `None`
+    /// in the old layout.
+    pub written_title: Option<Title>,
+    /// The title of `session.md` has differed from `written_title` for
+    /// about one minute: it is a user title (KTD5). Until then, the row
+    /// keeps its title. The reconcile sets it ([`crate::reconcile`]).
+    pub title_settled: bool,
     /// The text of `notes.md`. `None` while the sync has not delivered it:
     /// the row keeps its notes.
     pub notes: Option<String>,
@@ -53,22 +63,28 @@ impl FolderContents {
     /// Read the documents of the note folder `folder`. Each read stops
     /// after `timeout`.
     pub fn read(folder: &Path, timeout: Duration) -> Result<Self, RefreshError> {
-        let doc = match read_timed(folder.join("session.md"), timeout) {
-            Read::Missing => return Err(RefreshError::NoNote(folder.to_path_buf())),
-            Read::Failed(reason) => {
+        let files = match read_note(folder, timeout) {
+            NoteRead::Note(files) => *files,
+            NoteRead::NotANote => return Err(RefreshError::NoNote(folder.to_path_buf())),
+            NoteRead::WaitingForRecord => {
+                return Err(RefreshError::WaitingForRecord(folder.to_path_buf()));
+            }
+            NoteRead::Unreadable(reason) => {
                 return Err(RefreshError::Unreadable {
                     folder: folder.to_path_buf(),
                     reason,
                 });
             }
-            Read::Bytes(bytes) => String::from_utf8(bytes)
-                .map_err(|e| e.to_string())
-                .and_then(|text| SessionDoc::parse(&text).map_err(|e| e.to_string()))
-                .map_err(|reason| RefreshError::Invalid {
+            NoteRead::Invalid(reason) => {
+                return Err(RefreshError::Invalid {
                     folder: folder.to_path_buf(),
                     reason,
-                })?,
+                });
+            }
         };
+        let layout = files.layout;
+        let written_title = files.written_title().cloned();
+        let doc = files.doc;
         let document_fingerprint = |name: &str| match read_timed(folder.join(name), timeout) {
             Read::Bytes(bytes) => Some(fingerprint(&bytes)),
             Read::Missing | Read::Failed(_) => None,
@@ -79,6 +95,9 @@ impl FolderContents {
             transcript_fingerprint: document_fingerprint("transcript.md"),
             summary_fingerprint: document_fingerprint("summary.md"),
             doc,
+            layout,
+            written_title,
+            title_settled: false,
         })
     }
 
@@ -86,6 +105,9 @@ impl FolderContents {
     pub fn from_scan(note: &NoteFolder) -> Self {
         Self {
             doc: note.doc.clone(),
+            layout: note.layout,
+            written_title: note.written_title.clone(),
+            title_settled: false,
             notes: note.notes.clone(),
             transcript_fingerprint: note.transcript_fingerprint.clone(),
             summary_fingerprint: note.summary_fingerprint.clone(),
@@ -111,11 +133,13 @@ impl FolderContents {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RefreshError {
-    #[error("the folder {} has no session.md", .0.display())]
+    #[error("the folder {} has no session.md and no longhand.json", .0.display())]
     NoNote(PathBuf),
-    #[error("the session.md in {} cannot be read: {reason}", folder.display())]
+    #[error("the folder {} waits for its longhand.json", .0.display())]
+    WaitingForRecord(PathBuf),
+    #[error("the note files in {} cannot be read: {reason}", folder.display())]
     Unreadable { folder: PathBuf, reason: String },
-    #[error("the session.md in {} is not valid: {reason}", folder.display())]
+    #[error("the note files in {} are not valid: {reason}", folder.display())]
     Invalid { folder: PathBuf, reason: String },
     #[error("the folder holds note {found}, not note {expected}")]
     OtherNote { expected: String, found: String },
@@ -301,7 +325,7 @@ fn updates(store: &Store, id: &str, contents: &FolderContents) -> Result<Updates
     let doc = &contents.doc;
     let mut updates = Updates::default();
 
-    let title = folder_title(doc, record.title.as_ref());
+    let title = folder_title(contents, record.title.as_ref());
     if title != record.title {
         updates.title = Some(title);
     }
@@ -362,17 +386,42 @@ fn updates(store: &Store, id: &str, contents: &FolderContents) -> Result<Updates
     Ok(updates)
 }
 
-/// The title that the folder gives. A `session.md` from an older Longhand
-/// has a title and no source: when the title is the stored one, the row
-/// keeps its source (KTD3). Otherwise a title with no source is the user's
-/// (R5).
-fn folder_title(doc: &SessionDoc, stored: Option<&Title>) -> Option<Title> {
+/// The title that the folder gives.
+///
+/// In the new layout, a `session.md` title that equals the title that
+/// Longhand last wrote has the source of that title. A title that differs
+/// is the user's once it has differed for about one minute
+/// ([`FolderContents::title_settled`], KTD5). Until then, a sync can still
+/// deliver the other file of a title write, and the row keeps its title.
+///
+/// In the old layout, a `session.md` from an older Longhand can have a
+/// title and no source: when the title is the stored one, the row keeps
+/// its source (KTD3). Otherwise a title with no source is the user's (R5).
+fn folder_title(contents: &FolderContents, stored: Option<&Title>) -> Option<Title> {
+    let doc = &contents.doc;
     // The store keeps a title trimmed, and keeps no empty title.
     let text = doc
         .title
         .as_deref()
         .map(str::trim)
-        .filter(|t| !t.is_empty())?;
+        .filter(|t| !t.is_empty());
+    if contents.layout == Layout::New {
+        let written = contents.written_title.as_ref();
+        if doc.title.as_deref() == written.map(|w| w.text.as_str()) {
+            return text.map(|text| Title {
+                text: text.to_string(),
+                source: written.map_or(TitleSource::User, |w| w.source),
+            });
+        }
+        if !contents.title_settled {
+            return stored.cloned();
+        }
+        return text.map(|text| Title {
+            text: text.to_string(),
+            source: TitleSource::User,
+        });
+    }
+    let text = text?;
     let source = match (doc.title_source, stored) {
         (Some(source), _) => source,
         (None, Some(stored)) if stored.text == text => stored.source,

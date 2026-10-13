@@ -176,12 +176,25 @@ fn user_title(text: &str) -> Option<Title> {
     })
 }
 
-/// Change `session.md` in `folder`, as another computer's write does.
+/// Change the note files in `folder`, as another computer's write does:
+/// `session.md` and `longhand.json` in the new layout.
 fn edit_doc(folder: &Path, edit: impl FnOnce(&mut SessionDoc)) {
-    let path = folder.join("session.md");
-    let mut doc = SessionDoc::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut doc = session_core::note_folder::NoteFiles::read(folder)
+        .unwrap()
+        .doc;
     edit(&mut doc);
-    fs::write(&path, doc.render()).unwrap();
+    session_save::note_files::write_doc(folder, &doc).unwrap();
+}
+
+/// Change the note in `folder` as an older build does: it writes the old
+/// layout, a `session.md` with `session_id` and all the records (KTD6).
+/// The `longhand.json` of the folder stays.
+fn edit_old_doc(folder: &Path, edit: impl FnOnce(&mut SessionDoc)) {
+    let mut doc = session_core::note_folder::NoteFiles::read(folder)
+        .unwrap()
+        .doc;
+    edit(&mut doc);
+    fs::write(folder.join("session.md"), doc.render()).unwrap();
 }
 
 /// Move `folder` out of the Destination, as a sync does when it removes it.
@@ -483,7 +496,7 @@ fn the_wait_before_a_forget_is_2_minutes() {
 }
 
 #[test]
-fn a_typed_note_in_a_partial_sync_with_no_session_md_keeps_its_id_and_nothing_is_written() {
+fn a_typed_note_in_a_partial_sync_with_no_longhand_json_keeps_its_id_and_nothing_is_written() {
     let (dir, root) = shared_root();
     let mut a = computer();
     let b = computer();
@@ -491,10 +504,11 @@ fn a_typed_note_in_a_partial_sync_with_no_session_md_keeps_its_id_and_nothing_is
     let now = Instant::now();
     a.sync(&root, now);
 
-    // The folder arrives at its new place without its session.md.
+    // The folder arrives at its new place without its `longhand.json`: it
+    // waits for a sync, and is not a note yet (KTD6).
     let away = take_away(&saved, dir.path());
-    let session = fs::read(away.join("session.md")).unwrap();
-    fs::remove_file(away.join("session.md")).unwrap();
+    let session = fs::read(away.join("longhand.json")).unwrap();
+    fs::remove_file(away.join("longhand.json")).unwrap();
     let typed = into_type(&away, &root, "Pathfinder");
     let before = files(&root);
     assert_eq!(a.sync(&root, now), Changes::default());
@@ -505,7 +519,7 @@ fn a_typed_note_in_a_partial_sync_with_no_session_md_keeps_its_id_and_nothing_is
     assert_eq!(files(&root), before, "the reconcile wrote a file");
     assert!(a.record("n1").is_some());
 
-    fs::write(typed.join("session.md"), session).unwrap();
+    fs::write(typed.join("longhand.json"), session).unwrap();
     assert_eq!(
         a.sync(&root, now + Duration::from_secs(60)),
         changed(&["n1"])
@@ -847,13 +861,14 @@ fn an_older_session_md_without_a_title_source_keeps_the_rows_title_source() {
     b.sync(&root, now);
     assert_eq!(b.record("n1").unwrap().title, proposed);
 
-    // An older Longhand rewrites `session.md` with the same title.
-    edit_doc(&folder, |doc| doc.title_source = None);
+    // An older Longhand rewrites `session.md` in the old layout with the
+    // same title (KTD6).
+    edit_old_doc(&folder, |doc| doc.title_source = None);
     assert_eq!(b.sync(&root, now), Changes::default());
     assert_eq!(b.record("n1").unwrap().title, proposed);
 
     // A new title with no source is the user's (R5).
-    edit_doc(&folder, |doc| doc.title = Some("Budget".into()));
+    edit_old_doc(&folder, |doc| doc.title = Some("Budget".into()));
     assert_eq!(b.sync(&root, now), changed(&["n1"]));
     assert_eq!(b.record("n1").unwrap().title, user_title("Budget"));
 }
@@ -1133,7 +1148,9 @@ fn a_rename_on_b_during_a_sync_keeps_the_old_fingerprints_and_the_note_waits() {
     let mut b = computer();
     let folder = a.save_note("n1", &root, user_title("Planning"), "");
     b.sync_roots(&[&root]);
-    let written = SessionDoc::read(&folder).unwrap();
+    let written = session_core::note_folder::NoteFiles::read(&folder)
+        .map(|files| files.doc)
+        .unwrap();
 
     // The sync delivers the new transcript.md of A before its session.md.
     fs::write(
@@ -1158,7 +1175,9 @@ fn a_rename_on_b_during_a_sync_keeps_the_old_fingerprints_and_the_note_waits() {
         rename("Planning?"),
         pipeline::folder_rename::FolderRename::Unchanged
     );
-    let doc = SessionDoc::read(&folder).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&folder)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.title.as_deref(), Some("Planning?"));
     assert_eq!(doc.transcript_fingerprint, written.transcript_fingerprint);
     assert_eq!(doc.summary_fingerprint, written.summary_fingerprint);
@@ -1166,7 +1185,9 @@ fn a_rename_on_b_during_a_sync_keeps_the_old_fingerprints_and_the_note_waits() {
     let pipeline::folder_rename::FolderRename::Moved(moved) = rename("Budget") else {
         panic!("the folder did not move");
     };
-    let doc = SessionDoc::read(&moved).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&moved)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.title.as_deref(), Some("Budget"));
     assert_eq!(doc.transcript_fingerprint, written.transcript_fingerprint);
     assert_eq!(doc.summary_fingerprint, written.summary_fingerprint);
@@ -2078,13 +2099,13 @@ impl Computer {
     }
 }
 
-/// Make the file time of `session.md` in `folder` older than the time an
+/// Make the file time of `longhand.json` in `folder` older than the time an
 /// in-use marker stays fresh.
-fn age_session_md(folder: &Path) {
+fn age_records(folder: &Path) {
     let old = SystemTime::now() - FRESH_FOR.to_std().unwrap() - Duration::from_secs(60);
     fs::File::options()
         .write(true)
-        .open(folder.join("session.md"))
+        .open(folder.join("longhand.json"))
         .unwrap()
         .set_modified(old)
         .unwrap();
@@ -2140,7 +2161,7 @@ fn b_shows_a_note_that_a_did_not_finish_as_not_finished() {
     // A crashed an hour ago: its marker is old, and so is `session.md`.
     let old = now() - chrono::TimeDelta::hours(1);
     assert!(pipeline::in_use::write_marker(&folder, RUN_A, old).unwrap());
-    age_session_md(&folder);
+    age_records(&folder);
 
     assert_eq!(b.sync_roots(&[&root]), changed(&["n1"]));
     assert_eq!(b.remote("n1"), Some(RemoteState::NotFinished));
@@ -2207,7 +2228,9 @@ fn the_result_of_a_reaches_the_open_note_on_b_and_ends_its_remote_state() {
     assert_eq!(b.remote("n1"), None);
     assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
     assert_eq!(b.store.lock().unwrap().segments("n1").unwrap().len(), 1);
-    let doc = SessionDoc::parse(&fs::read_to_string(folder.join("session.md")).unwrap()).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&folder)
+        .unwrap()
+        .doc;
     assert_eq!(doc.result_flag(), None);
 }
 
@@ -2230,7 +2253,9 @@ fn a_rename_on_b_of_a_note_that_a_records_changes_only_the_title() {
     .unwrap();
     assert_eq!(renamed, pipeline::folder_rename::FolderRename::Later);
     assert!(folder.is_dir(), "the folder keeps its name");
-    let doc = SessionDoc::parse(&fs::read_to_string(folder.join("session.md")).unwrap()).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&folder)
+        .unwrap()
+        .doc;
     assert_eq!(doc.title.as_deref(), Some("Budget"));
     assert_eq!(doc.result_flag(), Some(ResultFlag::NotSaved));
     assert!(b.store.lock().unwrap().owed_renames().unwrap().is_empty());
@@ -2242,4 +2267,183 @@ fn a_rename_on_b_of_a_note_that_a_records_changes_only_the_title() {
         session_save::naming::folder_name(started(), Some("Budget"))
     );
     assert!(!folder.exists());
+}
+
+// ------------------------------------------------- the new layout (U3 of the safe agent edits plan)
+
+/// The title that Longhand writes into `session.md` and, as the
+/// last-written title, into `longhand.json`, as two separate files that a
+/// sync can deliver in either order. Returns the two files' texts.
+fn title_write(folder: &Path, title: &Title) -> (String, String) {
+    let session_md = session_save::note_files::new_session_md(Some(&title.text), &[]);
+    let mut record = session_core::note_folder::NoteFiles::read(folder)
+        .unwrap()
+        .record;
+    record.written_title = Some(title.clone());
+    (session_md, record.render())
+}
+
+fn proposed(text: &str) -> Title {
+    Title {
+        text: text.into(),
+        source: TitleSource::Proposed,
+    }
+}
+
+// Covers AE2 (R2, KTD2).
+#[test]
+fn a_transcript_that_arrives_before_its_longhand_json_waits_and_then_matches() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    // A saved a new transcript. The sync delivers `transcript.md` first.
+    let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: A new result.\n";
+    let mut record = session_core::note_folder::NoteFiles::read(&folder)
+        .unwrap()
+        .record;
+    record.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
+    fs::write(folder.join("transcript.md"), transcript).unwrap();
+    b.sync_at(&root, start);
+    assert_eq!(b.waiting("n1"), [Waiting::Transcript]);
+
+    // `longhand.json` arrives before the minute ends: no hand edit.
+    session_save::note_files::write_record(&folder, &record).unwrap();
+    b.sync_at(&root, start + HAND_EDIT_WAIT / 2);
+    assert!(b.waiting("n1").is_empty());
+    assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+}
+
+// Covers KTD6.
+#[test]
+fn a_new_session_md_with_no_longhand_json_waits_and_is_not_adopted() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let record = fs::read(folder.join("longhand.json")).unwrap();
+    fs::remove_file(folder.join("longhand.json")).unwrap();
+    let before = files(&root);
+
+    let start = Instant::now();
+    assert_eq!(b.sync_at(&root, start), Changes::default());
+    assert!(b.record("n1").is_none());
+    assert_eq!(files(&root), before, "the reconcile wrote a file");
+    let result = scan(&[root.clone()], &Known::default(), &options());
+    assert_eq!(result.waiting_for_record.len(), 1);
+    assert_eq!(result.waiting_for_record[0].path, folder);
+
+    // A row whose folder waits for its `longhand.json` is not a delete.
+    let mut a = a;
+    a.sync_at(&root, start);
+    a.sync_at(&root, start + DELETE_WAIT * 2);
+    assert!(a.record("n1").is_some());
+
+    fs::write(folder.join("longhand.json"), record).unwrap();
+    assert_eq!(b.sync_at(&root, start), changed(&["n1"]));
+    assert_eq!(b.record("n1").unwrap().title, user_title("Planning"));
+}
+
+// Covers KTD5: a sync delivers the two files of a title proposal in
+// either order.
+#[test]
+fn a_proposed_title_stays_proposed_in_either_order_of_its_two_files() {
+    for session_md_first in [true, false] {
+        let (_dir, root) = shared_root();
+        let a = computer();
+        let mut b = computer();
+        let folder = a.save_note("n1", &root, None, "");
+        let start = Instant::now();
+        b.sync_at(&root, start);
+        assert_eq!(b.record("n1").unwrap().title, None);
+
+        let (session_md, record) = title_write(&folder, &proposed("Weekly sync"));
+        let (first, second) = if session_md_first {
+            (("session.md", &session_md), ("longhand.json", &record))
+        } else {
+            (("longhand.json", &record), ("session.md", &session_md))
+        };
+        fs::write(folder.join(first.0), first.1).unwrap();
+        b.sync_at(&root, start);
+        // During the sync the row keeps its title.
+        assert_eq!(b.record("n1").unwrap().title, None, "{first:?}");
+        fs::write(folder.join(second.0), second.1).unwrap();
+        b.sync_at(&root, start + Duration::from_secs(5));
+        assert_eq!(
+            b.record("n1").unwrap().title,
+            Some(proposed("Weekly sync")),
+            "session.md first: {session_md_first}"
+        );
+        // After the minute, nothing changes.
+        b.sync_at(&root, start + HAND_EDIT_WAIT * 2);
+        assert_eq!(b.record("n1").unwrap().title, Some(proposed("Weekly sync")));
+    }
+}
+
+// Covers R5, KTD5.
+#[test]
+fn a_title_that_an_agent_changed_is_a_user_title_after_about_one_minute() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, Some(proposed("Weekly sync")), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+    assert_eq!(b.record("n1").unwrap().title, Some(proposed("Weekly sync")));
+
+    // An agent writes a new title into `session.md` only.
+    fs::write(
+        folder.join("session.md"),
+        "---\ntitle: 'Budget plan'\nagent: yes\n---\n\nThe agent's text.\n",
+    )
+    .unwrap();
+    let before = files(&root);
+    b.sync_at(&root, start);
+    assert_eq!(b.record("n1").unwrap().title, Some(proposed("Weekly sync")));
+    b.sync_at(&root, start + HAND_EDIT_WAIT - Duration::from_secs(1));
+    assert_eq!(b.record("n1").unwrap().title, Some(proposed("Weekly sync")));
+    assert_eq!(
+        b.reconciler.next_due(),
+        Some(start + HAND_EDIT_WAIT),
+        "the worker scans again when the title wait ends"
+    );
+
+    let changes = b.sync_at(&root, start + HAND_EDIT_WAIT);
+    assert_eq!(changes, changed(&["n1"]));
+    assert_eq!(b.record("n1").unwrap().title, user_title("Budget plan"));
+    // The reconcile wrote no file.
+    assert_eq!(files(&root), before);
+}
+
+// Covers KTD6, R9: an older build's `session.md` is the old layout, also
+// with a `longhand.json` in the folder. Its records are the current ones.
+#[test]
+fn an_old_layout_session_md_is_read_for_its_records_also_with_a_longhand_json() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    let start = Instant::now();
+    b.sync_at(&root, start);
+
+    // An older build saves a new transcript, and writes the old layout.
+    fs::write(folder.join("transcript.md"), HAND_EDIT).unwrap();
+    edit_old_doc(&folder, |doc| {
+        doc.transcript_fingerprint = Some(fingerprint(HAND_EDIT.as_bytes()));
+        doc.title = Some("Old build title".into());
+    });
+    b.sync_at(&root, start);
+    assert!(b.waiting("n1").is_empty(), "{:?}", b.waiting("n1"));
+    assert_eq!(b.record("n1").unwrap().title, user_title("Old build title"));
+    assert_eq!(
+        b.store
+            .lock()
+            .unwrap()
+            .transcript_fingerprint("n1")
+            .unwrap(),
+        Some(fingerprint(HAND_EDIT.as_bytes()))
+    );
 }

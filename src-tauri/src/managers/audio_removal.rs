@@ -657,7 +657,7 @@ mod tests {
             let mut doc = SessionDoc::new(id, None, &segments).unwrap();
             doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
             doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
-            std::fs::write(home.join("session.md"), doc.render()).unwrap();
+            session_save::note_files::write_doc(&home, &doc).unwrap();
             std::fs::write(home.join("transcript.md"), transcript).unwrap();
             std::fs::write(home.join("summary.md"), summary).unwrap();
             std::fs::write(home.join("notes.md"), "My notes\n").unwrap();
@@ -847,10 +847,16 @@ mod tests {
     }
 
     fn documents(home: &Path) -> Vec<Vec<u8>> {
-        ["session.md", "transcript.md", "summary.md", "notes.md"]
-            .iter()
-            .map(|name| std::fs::read(home.join(name)).unwrap())
-            .collect()
+        [
+            "session.md",
+            "longhand.json",
+            "transcript.md",
+            "summary.md",
+            "notes.md",
+        ]
+        .iter()
+        .map(|name| std::fs::read(home.join(name)).unwrap())
+        .collect()
     }
 
     // Covers AE1: with the default delay, a note that stopped 31 days ago

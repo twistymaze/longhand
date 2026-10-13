@@ -247,7 +247,7 @@ fn saved_note() -> Note {
     fs::create_dir_all(home.join("audio")).unwrap();
     let segments = vec![segment(0, "2026-09-01T09:01:00-05:00")];
     let doc = SessionDoc::new(ID, None, &segments).unwrap();
-    fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
     fs::write(home.join("audio/segment-01.opus"), b"opus").unwrap();
     let store = common::store();
     let adoption = Adoption::from_doc(
@@ -518,8 +518,9 @@ fn two_keepers_on_one_note_the_second_still_blocks_after_the_first_ends() {
     let note = saved_note();
     let other = common::store();
     {
-        let doc =
-            SessionDoc::parse(&fs::read_to_string(note.home.join("session.md")).unwrap()).unwrap();
+        let doc = session_core::note_folder::NoteFiles::read(&note.home)
+            .unwrap()
+            .doc;
         let adoption = Adoption::from_doc(
             &doc,
             String::new(),
@@ -583,8 +584,9 @@ fn two_keepers_on_one_note_the_second_still_blocks_after_the_first_ends() {
 /// A third store with the saved row of `note`.
 fn saved_note_row_for(note: &Note) -> SharedStore {
     let store = common::store();
-    let doc =
-        SessionDoc::parse(&fs::read_to_string(note.home.join("session.md")).unwrap()).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&note.home)
+        .unwrap()
+        .doc;
     let adoption = Adoption::from_doc(
         &doc,
         String::new(),

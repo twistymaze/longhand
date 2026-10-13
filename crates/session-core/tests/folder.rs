@@ -2,7 +2,7 @@ use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
     AudioState, FolderError, FrontmatterPatch, PendingType, REMOVAL_MARKER_TEXT, ResultFlag,
     SessionDoc, SessionMd, Summary, SummaryMeta, Transcript, TranscriptLine, audio_removed,
-    audio_state, fingerprint, format_position, removal_marker, render_notes, session_fingerprint,
+    audio_state, fingerprint, format_position, removal_marker, render_notes,
 };
 use session_core::{Segment, SpeakerCount, Timeline};
 
@@ -599,57 +599,6 @@ fn a_pending_change_to_no_type_round_trips() {
         ..pending_type()
     });
     assert_eq!(SessionDoc::parse(&doc.render()).unwrap(), doc);
-}
-
-#[test]
-fn the_session_fingerprint_ignores_the_user_fields() {
-    // Keys after the user fields must keep their order.
-    let mut doc = SessionDoc::new("01J8Z", Some(SpeakerCount::Exact(2)), &one_segment(1)).unwrap();
-    doc.asr_model = Some("parakeet-tdt-0.6b-v3".into());
-    doc.found_speakers = Some(2);
-    doc.transcript_fingerprint = Some(fingerprint(b"transcript"));
-    doc.summary_fingerprint = Some(fingerprint(b"summary"));
-    let plain = doc.render();
-    let mut tagged = doc.clone();
-    tagged.tags = vec!["Topic::Security".into()];
-    tagged.pending_type = Some(pending_type());
-    let tagged = tagged.render();
-    assert_ne!(
-        fingerprint(plain.as_bytes()),
-        fingerprint(tagged.as_bytes())
-    );
-    assert_eq!(
-        session_fingerprint(plain.as_bytes()),
-        session_fingerprint(tagged.as_bytes())
-    );
-}
-
-#[test]
-fn the_session_fingerprint_sees_other_changes() {
-    let doc = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
-    let plain = doc.render();
-    let mut titled = doc.clone();
-    titled.title = Some("Budget".into());
-    assert_ne!(
-        session_fingerprint(plain.as_bytes()),
-        session_fingerprint(titled.render().as_bytes())
-    );
-    let edited = format!("{plain}\nA line that a person added.\n");
-    assert_ne!(
-        session_fingerprint(plain.as_bytes()),
-        session_fingerprint(edited.as_bytes())
-    );
-}
-
-#[test]
-fn the_session_fingerprint_of_bytes_with_no_frontmatter_is_their_fingerprint() {
-    for bytes in [
-        &b"no frontmatter"[..],
-        &[0xff, 0xfe, 0x00][..],
-        b"---\n- a\n---\n",
-    ] {
-        assert_eq!(session_fingerprint(bytes), fingerprint(bytes));
-    }
 }
 
 #[test]

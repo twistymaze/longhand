@@ -62,6 +62,10 @@ pub const TITLE_REQUEST: &str = "title-request";
 /// were made from, a string. A run whose input has another fingerprint
 /// makes every call again.
 pub const INPUT: &str = "input";
+/// The data of the summary that the stage wrote, a [`SummaryMeta`]. The
+/// save writes it into `longhand.json`, because `summary.md` has no
+/// frontmatter (R1).
+pub const META: &str = "meta";
 /// How far a context rejection shrinks the budget, and the floor below
 /// which a model is too small to summarize with.
 const SHRINK: f64 = 0.7;
@@ -421,11 +425,14 @@ pub fn run(
         control,
         progress,
     )?;
+    // `summary.md` has no frontmatter: the save writes the summary data
+    // into `longhand.json` (R1).
     let path = session_dir.join(SUMMARY_FILE);
     let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
-    std::fs::write(&temp, summary.render())?;
+    std::fs::write(&temp, summary.render_body())?;
     crate::sync_file(&temp)?;
     std::fs::rename(&temp, &path)?;
+    checkpoint::put(store, session_id, Stage::Summarize, META, &summary.meta)?;
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
 }
 

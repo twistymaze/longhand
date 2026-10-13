@@ -6,7 +6,7 @@
 //!   row before the move. The row holds no path: the move finds the home
 //!   folder by session id at move time.
 //! - When no computer works on the note (KTD6), the folder moves at once.
-//!   Otherwise the change writes `longhand_pending_type` into `session.md`,
+//!   Otherwise the change writes the pending type into `longhand.json`,
 //!   so every computer shows the new type, and the move waits.
 //! - Each library scan and each launch runs the owed moves again. A move
 //!   is done when the folder is at the target, found there by session id.
@@ -26,15 +26,17 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
-use library::scan::{self, Place, READ_TIMEOUT, Read, read_timed};
+use library::scan::{self, NoteRead, Place, READ_TIMEOUT, read_note};
 use session_core::folder::{PendingType, ResultFlag, SessionDoc};
 use session_core::jobs::{Claims, busy};
+use session_core::note_folder::{Layout, NoteFiles};
+use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
 use session_core::{BulkEdit, MoveStep, SessionRecord, SessionState, Store, TypeMove};
 use session_save::naming::{check_type_name, same_optional_type, same_type_name};
+use session_save::publication::OLD_LAYOUT;
 use session_save::rename_home::{self, RenameError};
-use session_save::{Fs, home_write};
+use session_save::{Fs, note_files};
 
-use crate::save::SESSION_FILE;
 use crate::{SharedStore, StageError, folder_rename, lock};
 
 /// A pending type this old can be taken over by any computer (KTD13, R35).
@@ -116,6 +118,11 @@ pub fn change_type_locked(
         store.set_note_type(session_id, to.as_deref())?;
         return Ok(TypeChange::NoFolder);
     };
+    // A note in the old layout waits for the conversion, and nothing
+    // changes (KTD6).
+    if crate::save::old_layout(&home) {
+        return Err(StageError::Failed(OLD_LAYOUT.into()));
+    }
     // The type of the folder now. While the storage folder is not
     // available, the row has the type of the last scan.
     let from = scan::storage_place(&home).map_or_else(|| record.note_type.clone(), |p| p.note_type);
@@ -241,7 +248,7 @@ fn settle(
         return Ok(TypeChange::Later);
     };
     if !claim {
-        match &doc.pending_type {
+        match &doc.record.pending_type {
             Some(field) if field.by != me => {
                 log::info!(
                     "the type move of {session_id} is now the move of computer {}",
@@ -262,7 +269,7 @@ fn settle(
     if !same_optional_type(&place.note_type, &owed.from) {
         // The move is done, or a person moved the folder: the folder wins
         // (KTD3, R29).
-        if doc.pending_type.is_some() {
+        if doc.record.pending_type.is_some() {
             clear_pending(store, session_id, &home)?;
         }
         store.set_pending_type(session_id, None)?;
@@ -281,7 +288,7 @@ fn settle(
     {
         return Ok(TypeChange::Later);
     }
-    if !free(store, &record, &home, &doc, ctx)? {
+    if !free(store, &record, &home, &doc.doc, ctx)? {
         write_pending(store, session_id, &home, doc, &pending, &mut owed)?;
         return Ok(TypeChange::Later);
     }
@@ -360,7 +367,7 @@ fn finish(
 }
 
 /// Whether no computer works on the note (KTD6): no fresh in-use marker of
-/// another computer's run, no `result: pending` in `session.md`, and this
+/// another computer's run, no `result: pending` in the records, and this
 /// computer does not record, queue, process, resume, regenerate, remove
 /// audio from or Move the note. A folder whose markers cannot be read
 /// counts as in use.
@@ -381,23 +388,24 @@ fn free(
     Ok(!crate::in_use::in_use_except(home, ctx.own_runs, ctx.now).unwrap_or(true))
 }
 
-/// Write `pending` into `session.md` in `home` with a read-modify-write of
-/// `doc`, so every computer shows the new type, and into the row. A write
+/// Write `pending` into `longhand.json` in `home` with a read-modify-write of
+/// the records in `files`, so every computer shows the new type, and into the row. A write
 /// that fails is logged, and the next scan tries again.
 fn write_pending(
     store: &Store,
     session_id: &str,
     home: &Path,
-    mut doc: SessionDoc,
+    files: NoteFiles,
     pending: &PendingType,
     owed: &mut TypeMove,
 ) -> Result<(), StageError> {
     store.set_pending_type(session_id, Some(pending))?;
-    if doc.pending_type.as_ref() != Some(pending) {
-        doc.pending_type = Some(pending.clone());
-        if let Err(e) = home_write::write_atomic(home, SESSION_FILE, doc.render().as_bytes()) {
+    if files.record.pending_type.as_ref() != Some(pending) {
+        let mut record = files.record;
+        record.pending_type = Some(pending.clone());
+        if let Err(e) = write_records(home, files.layout, &record) {
             log::warn!(
-                "could not write the pending type into {SESSION_FILE} in {}: {e}",
+                "could not write the pending type into {NOTE_RECORD_FILE} in {}: {e}",
                 home.display()
             );
             return Ok(());
@@ -410,23 +418,34 @@ fn write_pending(
     Ok(())
 }
 
-/// Remove the pending type from `session.md` in `home` and from the row. A
+/// Remove the pending type from `longhand.json` in `home` and from the row. A
 /// write that fails is logged: the folder decides the type (KTD3).
 fn clear_pending(store: &Store, session_id: &str, home: &Path) -> Result<(), StageError> {
     store.set_pending_type(session_id, None)?;
-    let Some(mut doc) = read_document(home) else {
+    let Some(files) = read_document(home) else {
         return Ok(());
     };
-    if doc.pending_type.take().is_none() {
+    let mut record = files.record;
+    if record.pending_type.take().is_none() {
         return Ok(());
     }
-    if let Err(e) = home_write::write_atomic(home, SESSION_FILE, doc.render().as_bytes()) {
+    if let Err(e) = write_records(home, files.layout, &record) {
         log::warn!(
-            "could not remove the pending type from {SESSION_FILE} in {}: {e}",
+            "could not remove the pending type from {NOTE_RECORD_FILE} in {}: {e}",
             home.display()
         );
     }
     Ok(())
+}
+
+/// Write the records of a note into `longhand.json` in `home`. A note in
+/// the old layout gets no write: its records stay in `session.md` until the
+/// conversion (KTD6).
+fn write_records(home: &Path, layout: Layout, record: &NoteRecord) -> io::Result<()> {
+    match layout {
+        Layout::New => note_files::write_record(home, record).map(|_| ()),
+        Layout::Old => Err(io::Error::other(OLD_LAYOUT)),
+    }
 }
 
 /// A pending type that names this computer and has no row (KTD3): a move
@@ -446,7 +465,7 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let Some(place) = scan::storage_place(&home) else {
         return Ok(false);
     };
-    let Some(field) = read_document(&home).and_then(|doc| doc.pending_type) else {
+    let Some(field) = read_document(&home).and_then(|doc| doc.record.pending_type) else {
         return Ok(false);
     };
     if field.by != store.computer_id()? {
@@ -498,11 +517,15 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     if !same_optional_type(&place.note_type, &seen.from) {
         return Ok(false);
     }
-    let Some(mut doc) = read_document(&home) else {
+    let Some(doc) = read_document(&home) else {
         return Ok(false);
     };
+    // A note in the old layout waits for the conversion (KTD6).
+    if doc.layout == Layout::Old {
+        return Ok(false);
+    }
     // The file must still have the field that the row has.
-    if doc.pending_type.as_ref() != Some(&seen) {
+    if doc.record.pending_type.as_ref() != Some(&seen) {
         return Ok(false);
     }
     // The target comes from a synced file: it goes through the type name
@@ -515,7 +538,7 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
         );
         return Ok(false);
     }
-    if !free(store, &record, &home, &doc, ctx)? {
+    if !free(store, &record, &home, &doc.doc, ctx)? {
         return Ok(false);
     }
     let me = store.computer_id()?;
@@ -537,8 +560,9 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
             field_written: true,
         },
     )?;
-    doc.pending_type = Some(taken.clone());
-    if let Err(e) = home_write::write_atomic(&home, SESSION_FILE, doc.render().as_bytes()) {
+    let mut taken_record = doc.record;
+    taken_record.pending_type = Some(taken.clone());
+    if let Err(e) = write_records(&home, doc.layout, &taken_record) {
         log::warn!("could not take over the type move of {session_id}: {e}");
         store.clear_type_move(session_id)?;
         return Ok(false);
@@ -829,7 +853,7 @@ fn rename_case(
         for record in &notes {
             let home = Path::new(record.home_path.as_deref().unwrap_or_default());
             let free = match read_document(home) {
-                Some(doc) => free(&guard, record, home, &doc, ctx)?,
+                Some(doc) => free(&guard, record, home, &doc.doc, ctx)?,
                 None => false,
             };
             if !free {
@@ -871,16 +895,15 @@ fn rename_case(
     })
 }
 
-/// The `session.md` in `folder`, or `None` when it cannot be read. The
-/// read stops after [`READ_TIMEOUT`]: the store lock is held, and a file
-/// that does not download must not stop each user of the store.
-fn read_document(folder: &Path) -> Option<SessionDoc> {
-    let Read::Bytes(bytes) = read_timed(folder.join(SESSION_FILE), READ_TIMEOUT) else {
-        return None;
-    };
-    std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|text| SessionDoc::parse(text).ok())
+/// The note files in `folder`, or `None` when they cannot be read or do
+/// not give a note. The read stops after [`READ_TIMEOUT`]: the store lock
+/// is held, and a file that does not download must not stop each user of
+/// the store.
+fn read_document(folder: &Path) -> Option<NoteFiles> {
+    match read_note(folder, READ_TIMEOUT) {
+        NoteRead::Note(files) => Some(*files),
+        _ => None,
+    }
 }
 
 fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {

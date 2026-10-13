@@ -4,7 +4,8 @@
 //! 1. record the intended move (`Store::set_rename_intent`);
 //! 2. rename the folder with no-replace semantics, then fsync the parent
 //!    (`session_save::rename_home::rename`);
-//! 3. rewrite `session.md` in the new folder with the title;
+//! 3. write the title into `session.md` in the new folder, and then into
+//!    `longhand.json` as the last-written title (KTD3, KTD5);
 //! 4. set `home_path`, then clear the intent.
 //!
 //! At launch, [`resolve_intents`] settles each intent that is left from
@@ -14,13 +15,16 @@
 
 use std::path::{Path, PathBuf};
 
-use session_core::folder::{ResultFlag, SessionDoc};
+use library::scan::{NoteRead, READ_TIMEOUT, read_note};
+use session_core::folder::ResultFlag;
 use session_core::jobs::busy;
-use session_core::{RenameIntent, Segment, SessionRecord, SessionState, Store, TitleSource};
+use session_core::note_folder::{Layout, NoteFiles};
+use session_core::{RenameIntent, SessionRecord, SessionState, Store, TitleSource};
+use session_save::Fs;
+use session_save::note_files;
 use session_save::rename_home::{self, Move, RenameError, Resolved};
-use session_save::{Fs, home_write};
 
-use crate::save::{SESSION_FILE, note_started, session_doc};
+use crate::save::{SESSION_FILE, note_started};
 use crate::{SharedStore, StageError, lock};
 
 /// What a reconcile did to a session's home folder.
@@ -96,6 +100,14 @@ fn retitle_locked(
 ) -> Result<Option<FolderRename>, StageError> {
     let claimed = claimed(session_id);
     crate::follow::follow_folder(guard, session_id, claimed)?;
+    // A title that a person or an agent wrote into `session.md` is not
+    // replaced by a proposal, also before the row takes it (R5, KTD5).
+    if source == TitleSource::Proposed
+        && let Some(home) = guard.session(session_id)?.and_then(|r| r.home_path)
+        && read_files(Path::new(&home)).is_some_and(|files| files.title_changed_outside())
+    {
+        return Ok(None);
+    }
     if !guard.set_title(session_id, title, source)? {
         return Ok(None);
     }
@@ -129,25 +141,58 @@ fn write_title(store: &Store, session_id: &str) {
     write_title_in(&record, home);
 }
 
-/// Write the title of `record` into the `session.md` in `home`, and change
-/// nothing else in the document. Nothing is written when the document
-/// holds the title.
+/// Write the title of `record` into the note folder `home`, and change
+/// nothing else (R4, KTD3). In the new layout, the patch changes only the
+/// title of `session.md`, and then `longhand.json` records it as the
+/// last-written title. Nothing is written when the row has the title that
+/// Longhand last wrote: a `session.md` title that differs from it then is
+/// a change from outside, which this write must not undo (KTD5). In the
+/// old layout, the patch changes the title and its source in `session.md`.
 fn write_title_in(record: &SessionRecord, home: &Path) {
-    let Some(mut doc) = read_document(home) else {
-        return;
-    };
-    let title = record.title.as_ref().map(|t| t.text.clone());
-    let source = record.title.as_ref().map(|t| t.source);
-    if doc.title == title && doc.title_source == source {
-        return;
-    }
-    doc.title = title;
-    doc.title_source = source;
-    if let Err(e) = home_write::write_atomic(home, SESSION_FILE, doc.render().as_bytes()) {
+    if let Err(e) = try_write_title_in(record, home) {
         log::warn!(
             "could not write the title into {SESSION_FILE} in {}: {e}",
             home.display()
         );
+    }
+}
+
+fn try_write_title_in(record: &SessionRecord, home: &Path) -> Result<(), StageError> {
+    let Some(files) = read_files(home) else {
+        return Ok(());
+    };
+    let title = record.title.as_ref().map(|t| t.text.as_str());
+    match files.layout {
+        Layout::New => {
+            if files.record.written_title == record.title {
+                return Ok(());
+            }
+            note_files::patch_session_md(home, &note_files::title_patch(title))?;
+            let mut written = files.record;
+            written.written_title = record.title.clone();
+            note_files::write_record(home, &written)?;
+        }
+        Layout::Old => {
+            let source = record.title.as_ref().map(|t| t.source);
+            if files.doc.title.as_deref() == title && files.doc.title_source == source {
+                return Ok(());
+            }
+            let patch = match source {
+                Some(source) => note_files::title_patch(title).set("title_source", source),
+                None => note_files::title_patch(title).remove("title_source"),
+            };
+            note_files::patch_session_md(home, &patch)?;
+        }
+    }
+    Ok(())
+}
+
+/// The note files in `folder`, or `None` when they cannot be read or do
+/// not give a note. The read stops after [`READ_TIMEOUT`].
+fn read_files(folder: &Path) -> Option<NoteFiles> {
+    match read_note(folder, READ_TIMEOUT) {
+        NoteRead::Note(files) => Some(*files),
+        _ => None,
     }
 }
 
@@ -219,7 +264,7 @@ fn reconcile_once(
         .unwrap_or_default();
     if rename_home::has_name(current, &name) {
         if check_document {
-            refresh_document(&record, &segments, &home);
+            write_title_in(&record, &home);
         }
         return Ok(FolderRename::Unchanged);
     }
@@ -232,7 +277,7 @@ fn reconcile_once(
     match renamed {
         Ok(path) if path == home => {
             if check_document {
-                refresh_document(&record, &segments, &home);
+                write_title_in(&record, &home);
             }
             Ok(FolderRename::Unchanged)
         }
@@ -350,33 +395,24 @@ pub(crate) fn settle(
     }
 }
 
-/// Steps 3 and 4 of the rename: rewrite `session.md` in the folder at
+/// Steps 3 and 4 of the rename: write the title into the folder at
 /// `path`, set `home_path`, then clear the intent. Each step can run
-/// again. A `session.md` that cannot be rewritten does not stop the
-/// rename, because the folder has moved: the title then goes into the
-/// document as it is, so that a library refresh keeps the title, and the
-/// next reconcile with the document check writes the rest.
+/// again. A title that cannot be written does not stop the rename, because
+/// the folder has moved: the next reconcile with the document check writes
+/// it. The other records stay as `longhand.json` has them (KTD6 of the
+/// result copies plan).
 fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), StageError> {
-    let segments = store.segments(&record.id)?;
-    if let Err(e) = write_document(record, &segments, path) {
-        log::warn!(
-            "could not rewrite {SESSION_FILE} in {}: {e}",
-            path.display()
-        );
-        write_title_in(record, path);
-    }
+    write_title_in(record, path);
     store.set_home_path(&record.id, &path.to_string_lossy())?;
     store.clear_rename_intent(&record.id)?;
     Ok(())
 }
 
-/// The `session.md` in `folder`, or `None` when it is not there or does not
-/// parse.
 /// Whether another computer records into the note `session_id` and has not
 /// saved the recording (KTD9): this computer does no work on the note (its
-/// row is Saved and idle), and `session.md` in the home folder says
-/// "recording not saved". A folder or a document that cannot be read
-/// gives `false`, and the rename goes on as before.
+/// row is Saved and idle), and the records in the home folder say
+/// "recording not saved". A folder whose files cannot be read gives
+/// `false`, and the rename goes on as before.
 fn not_saved_elsewhere(store: &Store, session_id: &str, claimed: bool) -> Result<bool, StageError> {
     let record = require(store, session_id)?;
     if busy(&record, claimed) {
@@ -385,78 +421,8 @@ fn not_saved_elsewhere(store: &Store, session_id: &str, claimed: bool) -> Result
     Ok(record
         .home_path
         .as_deref()
-        .and_then(|home| read_document(Path::new(home)))
-        .is_some_and(|doc| doc.result_flag() == Some(ResultFlag::NotSaved)))
-}
-
-fn read_document(folder: &Path) -> Option<SessionDoc> {
-    std::fs::read_to_string(folder.join(SESSION_FILE))
-        .ok()
-        .and_then(|text| SessionDoc::parse(&text).ok())
-}
-
-/// Rewrite `session.md` in `folder` when the stored record gives a
-/// different document, for example a new title or title source. The
-/// result fields stay as `session.md` records them (KTD6).
-fn refresh_document(record: &SessionRecord, segments: &[Segment], folder: &Path) {
-    let Some(written) = read_document(folder) else {
-        return;
-    };
-    let result = match document(record, segments, folder, Some(written.clone())) {
-        Ok(doc) if doc == written => Ok(()),
-        Ok(doc) => home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())
-            .map_err(StageError::from),
-        Err(e) => Err(e),
-    };
-    if let Err(e) = result {
-        log::warn!(
-            "could not rewrite {SESSION_FILE} in {}: {e}",
-            folder.display()
-        );
-    }
-}
-
-/// Write `session.md` in `folder` from the stored record. The result
-/// fields stay as the present `session.md` records them (KTD6).
-pub(crate) fn write_document(
-    record: &SessionRecord,
-    segments: &[Segment],
-    folder: &Path,
-) -> Result<(), StageError> {
-    let doc = document(record, segments, folder, read_document(folder))?;
-    home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())?;
-    Ok(())
-}
-
-/// The `session.md` that the stored record gives, with the result fields
-/// and the user fields (the tags and the pending type) of `previous`. Only the publication and the accept of a hand edit set
-/// the result fingerprints (KTD6). A rename or a Move on a computer that
-/// receives a sync thus does not record the fingerprints of files that
-/// are only partly synced.
-fn document(
-    record: &SessionRecord,
-    segments: &[Segment],
-    folder: &Path,
-    previous: Option<SessionDoc>,
-) -> Result<SessionDoc, StageError> {
-    let mut doc = session_doc(record, segments, folder)?;
-    if let Some(previous) = previous {
-        doc.recognition_artifact = previous.recognition_artifact;
-        doc.recognition_snapshot = previous.recognition_snapshot;
-        doc.recognition_audio = previous.recognition_audio;
-        doc.transcript_fingerprint = previous.transcript_fingerprint;
-        doc.summary_fingerprint = previous.summary_fingerprint;
-        // The user fields stay as the file has them (KTD2 of the note
-        // types and tags plan).
-        doc.tags = previous.tags;
-        doc.pending_type = previous.pending_type;
-        // A note with no segment here can have a recording that another
-        // computer has not saved yet (R6).
-        if doc.segments.is_empty() && previous.result.is_some() {
-            doc.result = previous.result;
-        }
-    }
-    Ok(doc)
+        .and_then(|home| read_files(Path::new(home)))
+        .is_some_and(|files| files.doc.result_flag() == Some(ResultFlag::NotSaved)))
 }
 
 fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {

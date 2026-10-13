@@ -82,9 +82,10 @@ impl SessionRecord {
     }
 }
 
-/// The fingerprints of the `session.md` and `notes.md` that this computer
-/// last wrote into a note's home folder (KTD8). `None` until this computer
-/// writes the file.
+/// What this computer last wrote into a note's home folder (KTD8): the
+/// [`crate::note_folder::written_fingerprint`] of its `session.md` and
+/// `longhand.json` in `session`, and the fingerprint of its `notes.md`.
+/// `None` until this computer writes the files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WrittenFingerprints {
     pub session: Option<String>,
@@ -926,8 +927,9 @@ impl Store {
             .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
     }
 
-    /// Record the fingerprint of the `session.md` that this computer wrote
-    /// for the note. Call it after each write of the file.
+    /// Record the [`crate::note_folder::written_fingerprint`] of the
+    /// `session.md` and `longhand.json` that this computer wrote for the
+    /// note. Call it after each write of the files.
     pub fn set_written_session_fingerprint(
         &self,
         id: &str,

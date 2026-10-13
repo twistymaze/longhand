@@ -3,11 +3,17 @@
 //! Destination is available.
 //!
 //! The scan lists the top-level folders of a Destination and reads only
-//! the documents of each one. A top-level folder with no `session.md` is a
-//! type folder when it holds note folders: the scan also reads the folders
-//! in it, and gives their notes that type (KTD4 of the note types plan).
-//! It also reads the folders in a top-level folder whose `session.md`
-//! cannot be read or is not valid, so that no note in it is forgotten.
+//! the documents of each one. A folder that holds `session.md` or
+//! `longhand.json` is a note folder. The note's identity and records come
+//! from `longhand.json`, and its title and tags from `session.md`. A
+//! `session.md` that holds `session_id` is a note in the old layout, whose
+//! records are in `session.md` (KTD6 of the safe agent edits plan). A
+//! new-layout `session.md` with no `longhand.json` waits for a sync, and is
+//! not a note yet. A top-level folder with neither file is a type folder
+//! when it holds note folders: the scan also reads the folders in it, and
+//! gives their notes that type (KTD4 of the note types plan). It also
+//! reads the folders in a top-level folder whose files cannot be read or
+//! are not valid, so that no note in it is forgotten.
 //! Hidden folders and anything deeper are not read. It never opens audio: it only asks whether
 //! each segment's audio file exists, so an online-only audio file is not
 //! downloaded (R12). It also asks whether each segment's removal marker
@@ -21,8 +27,10 @@ use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 use chrono::{Local, TimeDelta};
-use session_core::SessionRecord;
 use session_core::folder::{self, ResultFlag, SessionDoc, fingerprint};
+use session_core::note_folder::{Layout, NoteFiles, NoteFilesError, SESSION_FILE};
+use session_core::note_record::NOTE_RECORD_FILE;
+use session_core::{SessionRecord, Title};
 use session_save::in_use_marker;
 
 use crate::conflict;
@@ -255,7 +263,12 @@ pub struct NoteFolder {
     /// The type folder that holds the note folder (KTD1). `None` for a
     /// note folder directly in `root`.
     pub note_type: Option<String>,
+    /// The records and the user fields of the note ([`NoteFiles::doc`]).
     pub doc: SessionDoc,
+    pub layout: Layout,
+    /// The title that Longhand last wrote into `session.md` (KTD5). `None`
+    /// in the old layout.
+    pub written_title: Option<Title>,
     pub waiting: Vec<Waiting>,
     /// The state of `transcript.md`. A state other than
     /// [`DocumentState::Matches`] puts [`Waiting::Transcript`] in `waiting`.
@@ -284,12 +297,14 @@ pub struct NoteFolder {
     pub remote: Option<RemoteState>,
 }
 
-/// A folder whose `session.md` exists but gives no note.
+/// A folder whose `session.md` or `longhand.json` exists but gives no
+/// note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProblemFolder {
     pub root: PathBuf,
     pub path: PathBuf,
-    /// The row whose home folder this is, if any.
+    /// The note of the folder, if any: the id in its `longhand.json`, else
+    /// the row whose home folder this is.
     pub known_id: Option<String>,
     pub reason: String,
 }
@@ -300,11 +315,16 @@ pub struct LibraryScan {
     pub roots: Vec<RootScan>,
     /// The notes in the available Destinations, one for each note id.
     pub notes: Vec<NoteFolder>,
-    /// Folders whose `session.md` cannot be read: an I/O error or a read
-    /// that timed out. Such a note is not missing (KTD5).
+    /// Folders whose `session.md` or `longhand.json` cannot be read: an I/O
+    /// error or a read that timed out. Such a note is not missing (KTD5).
     pub unreadable: Vec<ProblemFolder>,
-    /// Folders whose `session.md` is not valid. They are not notes yet.
+    /// Folders whose `session.md` or `longhand.json` is not valid. They
+    /// are not notes yet.
     pub invalid: Vec<ProblemFolder>,
+    /// Folders with a new-layout `session.md` and no `longhand.json`: the
+    /// sync has not delivered the records yet (KTD6). They are not notes
+    /// yet, and are not missing.
+    pub waiting_for_record: Vec<ProblemFolder>,
 }
 
 impl LibraryScan {
@@ -375,7 +395,7 @@ pub fn scan_folders(
             // a home folder.
             Some(Some(note_type)) => {
                 let parent = path.parent().unwrap_or(root);
-                if !exists(&parent.join("session.md")) {
+                if !is_note_folder(parent) {
                     reads.read(root, path, Some(&note_type), known, options);
                 }
             }
@@ -420,6 +440,7 @@ pub fn scan_folders(
         notes: choose_real_folders(reads.notes, known),
         unreadable: reads.unreadable,
         invalid: reads.invalid,
+        waiting_for_record: reads.waiting_for_record,
     };
     Some((result, read))
 }
@@ -500,6 +521,7 @@ fn scan_root(
         notes,
         unreadable,
         invalid,
+        waiting_for_record,
     } = reads;
 
     let mut marker_written = false;
@@ -511,6 +533,7 @@ fn scan_root(
     }
     result.unreadable.extend(unreadable);
     result.invalid.extend(invalid);
+    result.waiting_for_record.extend(waiting_for_record);
     (
         RootScan {
             root: root.to_path_buf(),
@@ -524,10 +547,11 @@ fn scan_root(
 /// What one folder is, from its `session.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FolderKind {
-    /// No `session.md`.
+    /// No `session.md` and no `longhand.json`.
     NotANote,
     Note,
-    /// The `session.md` cannot be read or is not valid.
+    /// A file cannot be read or is not valid, or the folder waits for its
+    /// `longhand.json`.
     Problem,
 }
 
@@ -537,6 +561,7 @@ struct Reads {
     notes: Vec<Found>,
     unreadable: Vec<ProblemFolder>,
     invalid: Vec<ProblemFolder>,
+    waiting_for_record: Vec<ProblemFolder>,
 }
 
 impl Reads {
@@ -552,7 +577,8 @@ impl Reads {
     ) -> FolderKind {
         let problem = |reason: String| ProblemFolder {
             root: root.to_path_buf(),
-            known_id: known.id_at(path).map(str::to_string),
+            known_id: record_id(path, options.read_timeout)
+                .or_else(|| known.id_at(path).map(str::to_string)),
             path: path.to_path_buf(),
             reason,
         };
@@ -571,6 +597,9 @@ impl Reads {
                 self.unreadable.push(problem(reason));
             }
             FolderRead::Invalid(reason) => self.invalid.push(problem(reason)),
+            FolderRead::WaitingForRecord => self
+                .waiting_for_record
+                .push(problem(NoteFilesError::WaitingForRecord.to_string())),
         }
         FolderKind::Problem
     }
@@ -622,6 +651,8 @@ struct Found {
     name: String,
     created: Option<SystemTime>,
     doc: SessionDoc,
+    layout: Layout,
+    written_title: Option<Title>,
     waiting: Vec<Waiting>,
     transcript: DocumentState,
     summary: DocumentState,
@@ -634,25 +665,84 @@ struct Found {
 }
 
 enum FolderRead {
-    /// No `session.md`.
+    /// No `session.md` and no `longhand.json`.
     NotANote,
     Note(Box<Found>),
     Unreadable(String),
     Invalid(String),
+    /// A new-layout `session.md` and no `longhand.json` (KTD6).
+    WaitingForRecord,
+}
+
+/// What the two files that define a note folder give (KTD1, KTD6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteRead {
+    Note(Box<NoteFiles>),
+    /// No `session.md` and no `longhand.json`.
+    NotANote,
+    /// A new-layout `session.md` and no `longhand.json`.
+    WaitingForRecord,
+    /// A file cannot be read, or the read did not finish in time.
+    Unreadable(String),
+    /// A file is not valid, or a newer build wrote `longhand.json`.
+    Invalid(String),
+}
+
+/// Read `session.md` and `longhand.json` in the note folder `dir`. Each
+/// read stops after `timeout`.
+pub fn read_note(dir: &Path, timeout: Duration) -> NoteRead {
+    let text = |name: &str| match read_timed(dir.join(name), timeout) {
+        Read::Missing => Ok(None),
+        Read::Failed(reason) => Err(NoteRead::Unreadable(reason)),
+        Read::Bytes(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|e| NoteRead::Invalid(format!("{name}: {e}"))),
+    };
+    let session_md = match text(SESSION_FILE) {
+        Ok(text) => text,
+        Err(read) => return read,
+    };
+    let record = match text(NOTE_RECORD_FILE) {
+        Ok(text) => text,
+        Err(read) => return read,
+    };
+    match NoteFiles::parse(session_md.as_deref(), record.as_deref()) {
+        Ok(files) => NoteRead::Note(Box::new(files)),
+        Err(NoteFilesError::NotANote) => NoteRead::NotANote,
+        Err(NoteFilesError::WaitingForRecord) => NoteRead::WaitingForRecord,
+        Err(e) => NoteRead::Invalid(e.to_string()),
+    }
+}
+
+/// Whether the folder `dir` holds `session.md` or `longhand.json`: it is a
+/// note folder, not a type folder. This reads metadata only.
+pub fn is_note_folder(dir: &Path) -> bool {
+    exists(&dir.join(SESSION_FILE)) || exists(&dir.join(NOTE_RECORD_FILE))
+}
+
+/// The note id in the `longhand.json` of `dir`, when the file parses. A
+/// folder whose `session.md` does not parse still gives its id.
+fn record_id(dir: &Path, timeout: Duration) -> Option<String> {
+    let Read::Bytes(bytes) = read_timed(dir.join(NOTE_RECORD_FILE), timeout) else {
+        return None;
+    };
+    match session_core::note_record::NoteRecord::parse(std::str::from_utf8(&bytes).ok()?).ok()? {
+        session_core::note_record::NoteRecordRead::Current(record) => Some(record.session_id),
+        session_core::note_record::NoteRecordRead::Newer { .. } => None,
+    }
 }
 
 fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
-    let doc = match read_timed(dir.join("session.md"), options.read_timeout) {
-        Read::Missing => return FolderRead::NotANote,
-        Read::Failed(reason) => return FolderRead::Unreadable(reason),
-        Read::Bytes(bytes) => match String::from_utf8(bytes) {
-            Err(e) => return FolderRead::Invalid(e.to_string()),
-            Ok(text) => match SessionDoc::parse(&text) {
-                Err(e) => return FolderRead::Invalid(e.to_string()),
-                Ok(doc) => doc,
-            },
-        },
+    let files = match read_note(dir, options.read_timeout) {
+        NoteRead::Note(files) => *files,
+        NoteRead::NotANote => return FolderRead::NotANote,
+        NoteRead::WaitingForRecord => return FolderRead::WaitingForRecord,
+        NoteRead::Unreadable(reason) => return FolderRead::Unreadable(reason),
+        NoteRead::Invalid(reason) => return FolderRead::Invalid(reason),
     };
+    let layout = files.layout;
+    let written_title = files.written_title().cloned();
+    let doc = files.doc;
 
     // A note with the result flag has no result yet: a missing transcript,
     // summary or audio does not wait for the sync (R6, KTD1). Its notes
@@ -692,7 +782,7 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
             waiting.push(Waiting::Audio(segment.audio.clone()));
         }
     }
-    let remote = remote_state(dir, flag, options);
+    let remote = remote_state(dir, layout, flag, options);
 
     let mut conflict_copies: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
@@ -719,6 +809,8 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
             .ok()
             .and_then(|m| m.created().or_else(|_| m.modified()).ok()),
         doc,
+        layout,
+        written_title,
         waiting,
         transcript,
         summary,
@@ -736,9 +828,11 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
 /// whatever `flag` says. A marker that cannot be read counts by its file
 /// time ([`in_use_marker::marker_fresh`]), and a folder whose names cannot
 /// be listed shows no marker. This reads the names in `dir`, the small
-/// marker files and the file time of `session.md` only.
+/// marker files and the file time of the file that holds the records only:
+/// `longhand.json`, or `session.md` in the old layout.
 fn remote_state(
     dir: &Path,
+    layout: Layout,
     flag: Option<ResultFlag>,
     options: &ScanOptions,
 ) -> Option<RemoteState> {
@@ -756,9 +850,13 @@ fn remote_state(
     if flag != Some(ResultFlag::NotSaved) {
         return None;
     }
-    // A new note's marker can sync after its `session.md`. Until the file
-    // is as old as a marker stays fresh, the note counts as in use.
-    let age = std::fs::metadata(dir.join("session.md"))
+    // A new note's marker can sync after its records. Until the file is as
+    // old as a marker stays fresh, the note counts as in use.
+    let records = match layout {
+        Layout::New => NOTE_RECORD_FILE,
+        Layout::Old => SESSION_FILE,
+    };
+    let age = std::fs::metadata(dir.join(records))
         .and_then(|m| m.modified())
         .ok()
         .and_then(|modified| SystemTime::now().duration_since(modified).ok())
@@ -869,6 +967,8 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
                 path: real.path,
                 note_type: real.note_type,
                 doc: real.doc,
+                layout: real.layout,
+                written_title: real.written_title,
                 waiting: real.waiting,
                 transcript: real.transcript,
                 summary: real.summary,

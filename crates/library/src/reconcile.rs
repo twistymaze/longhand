@@ -34,8 +34,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use session_core::folder::SessionDoc;
 use session_core::jobs::busy;
-use session_core::{Adoption, Segment, SessionRecord, Store, StoreError};
+use session_core::note_folder::Layout;
+use session_core::{Adoption, Segment, SessionRecord, Store, StoreError, Title};
 
 use crate::refresh::{self, FolderContents, RefreshError, Scope};
 use crate::scan::{self, DocumentState, Known, LibraryScan, NoteFolder, ScanOptions};
@@ -181,6 +183,34 @@ struct Mismatch {
     expired: bool,
 }
 
+/// The title of a `session.md` that differs from the title that Longhand
+/// last wrote into it (KTD5). A title write changes `session.md` and
+/// `longhand.json`, and a sync can deliver them in either order. When the
+/// two still differ after [`HAND_EDIT_WAIT`], a person or an agent changed
+/// the title. When a scan finds other values, the wait starts again.
+#[derive(Debug, Clone)]
+struct TitleWait {
+    /// The title of `session.md` and the last-written title.
+    key: (Option<String>, Option<String>),
+    since: Instant,
+    /// A scan found the difference at or after its deadline.
+    expired: bool,
+    folder: PathBuf,
+}
+
+impl TitleWait {
+    /// The key of `doc` with the last-written title `written`, in the new
+    /// layout. `None` when the titles are equal, or in the old layout.
+    fn key_of(
+        layout: Layout,
+        doc: &SessionDoc,
+        written: Option<&Title>,
+    ) -> Option<(Option<String>, Option<String>)> {
+        let written = written.map(|w| w.text.clone());
+        (layout == Layout::New && doc.title != written).then(|| (doc.title.clone(), written))
+    }
+}
+
 /// Applies scans to the store, and keeps the pending deletes and the
 /// mismatches between two scans. They stay in memory only (KTD7, KTD8).
 #[derive(Debug, Clone)]
@@ -189,6 +219,9 @@ pub struct Reconciler {
     pending: HashMap<String, Instant>,
     /// The notes whose result documents do not match `session.md`, by id.
     mismatches: HashMap<String, Mismatch>,
+    /// The notes whose `session.md` title differs from the title that
+    /// Longhand last wrote, by id (KTD5).
+    titles: HashMap<String, TitleWait>,
     read_timeout: Duration,
     /// The run IDs of this computer's in-use markers ([`ScanOptions::own_runs`]).
     own_runs: Vec<String>,
@@ -208,6 +241,7 @@ impl Reconciler {
         Self {
             pending: HashMap::new(),
             mismatches: HashMap::new(),
+            titles: HashMap::new(),
             read_timeout: options.read_timeout,
             own_runs: options.own_runs.clone(),
             status: Arc::default(),
@@ -250,8 +284,14 @@ impl Reconciler {
             .values()
             .filter(|mismatch| !mismatch.expired && mismatch.key.can_expire())
             .map(|mismatch| mismatch.since + HAND_EDIT_WAIT);
+        let titles = self
+            .titles
+            .values()
+            .filter(|wait| !wait.expired)
+            .map(|wait| wait.since + HAND_EDIT_WAIT);
         deletes
             .chain(hand_edits)
+            .chain(titles)
             .chain(self.status.next_due())
             .min()
     }
@@ -295,6 +335,7 @@ impl Reconciler {
                 }
             }
         };
+        self.track_titles(&result, &coverage, now);
         let stale = self.stale(&lock(), &result, claimed)?;
         // A cloud file can take seconds to read: the lock is free meanwhile.
         let rereads = self.read_again(stale);
@@ -396,9 +437,66 @@ impl Reconciler {
         now: Instant,
         claimed: &dyn Fn(&str) -> bool,
     ) -> Result<Changes, StoreError> {
+        self.track_titles(scan, coverage, now);
         let stale = self.stale(store, scan, claimed)?;
         let rereads = self.read_again(stale);
         self.apply(store, scan, coverage, now, claimed, &rereads)
+    }
+
+    /// Record the titles that `scan` found at `now` that differ from the
+    /// title that Longhand last wrote (KTD5). A note whose titles are
+    /// equal, or that the scan read and did not find, has no wait.
+    fn track_titles(&mut self, scan: &LibraryScan, coverage: &Coverage, now: Instant) {
+        let found: HashMap<&str, &NoteFolder> = scan
+            .notes
+            .iter()
+            .map(|note| (note.doc.session_id.as_str(), note))
+            .collect();
+        self.titles.retain(|id, wait| {
+            found.contains_key(id.as_str()) || coverage.keeps_wait(scan, &wait.folder)
+        });
+        for (id, note) in found {
+            let Some(key) = TitleWait::key_of(note.layout, &note.doc, note.written_title.as_ref())
+            else {
+                self.titles.remove(id);
+                continue;
+            };
+            let wait = self
+                .titles
+                .entry(id.to_string())
+                .or_insert_with(|| TitleWait {
+                    key: key.clone(),
+                    since: now,
+                    expired: false,
+                    folder: note.path.clone(),
+                });
+            wait.folder = note.path.clone();
+            if wait.key != key {
+                wait.key = key;
+                wait.since = now;
+                wait.expired = false;
+            }
+            if now.saturating_duration_since(wait.since) >= HAND_EDIT_WAIT {
+                wait.expired = true;
+            }
+        }
+    }
+
+    /// `contents` of the note `id`, with the title rule of [`TitleWait`]
+    /// applied: the title of `session.md` is a user title only when the
+    /// wait for the same values has expired.
+    fn with_title_rule(&self, id: &str, mut contents: FolderContents) -> FolderContents {
+        let key = TitleWait::key_of(
+            contents.layout,
+            &contents.doc,
+            contents.written_title.as_ref(),
+        );
+        contents.title_settled = key.is_some_and(|key| {
+            self.titles
+                .get(id)
+                .is_some_and(|wait| wait.expired && wait.key == key)
+        });
+        contents
     }
 
     /// The known rows that `scan` changes: a new home path or a refresh.
@@ -427,9 +525,12 @@ impl Reconciler {
                 .is_some_and(|home| Path::new(home) != note.path);
             let retyped = record.note_type != note.note_type;
             let refreshes = match refresh_scope(&record, claimed) {
-                Some(scope) => {
-                    refresh::differs(store, id, &FolderContents::from_scan(note), scope)?
-                }
+                Some(scope) => refresh::differs(
+                    store,
+                    id,
+                    &self.with_title_rule(id, FolderContents::from_scan(note)),
+                    scope,
+                )?,
                 None => false,
             };
             let changes = moved || retyped || refreshes;
@@ -453,7 +554,8 @@ impl Reconciler {
         stale
             .into_iter()
             .map(|stale| {
-                let contents = FolderContents::read(&stale.folder, self.read_timeout);
+                let contents = FolderContents::read(&stale.folder, self.read_timeout)
+                    .map(|contents| self.with_title_rule(&stale.id, contents));
                 (
                     stale.id,
                     Reread {
@@ -507,6 +609,7 @@ impl Reconciler {
                 scan.unreadable
                     .iter()
                     .chain(&scan.invalid)
+                    .chain(&scan.waiting_for_record)
                     .filter_map(|problem| problem.known_id.as_deref()),
             )
             .collect();
@@ -783,7 +886,7 @@ mod tests {
         let folder = root.path().join("2026-09-25 0900 Planning");
         fs::create_dir(&folder).unwrap();
         let doc = SessionDoc::new("A1", None, &[segment]).unwrap();
-        fs::write(folder.join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(&folder, &doc).unwrap();
         fs::write(folder.join("notes.md"), "first\n").unwrap();
         let store = Mutex::new(Store::open_in_memory().unwrap());
         let mut reconciler = Reconciler::default();
@@ -901,6 +1004,7 @@ mod tests {
         let placed = new.path().join("2026-09-25 0900 Planning");
         fs::create_dir(&placed).unwrap();
         fs::copy(folder.join("session.md"), placed.join("session.md")).unwrap();
+        fs::copy(folder.join("longhand.json"), placed.join("longhand.json")).unwrap();
         fs::write(placed.join("notes.md"), "placed\n").unwrap();
         fs::write(folder.join("notes.md"), "theirs\n").unwrap();
         store

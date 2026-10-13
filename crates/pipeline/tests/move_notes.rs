@@ -14,7 +14,6 @@ use library::reconcile::{Reconciler, Target};
 use library::scan::{Known, ScanOptions};
 use pipeline::move_notes::{self, MARKER, Mover, PassEnd, STAGING_PREFIX, Taken};
 use pipeline::{SharedStore, StageError};
-use session_core::folder::SessionDoc;
 use session_core::jobs::Claims;
 use session_core::{Event, MoveJournal, MovePause, MoveStep, Segment, SessionState, Stage, Store};
 use session_save::{Fs, RealFs};
@@ -288,10 +287,8 @@ fn folders_of(root: &Path, id: &str) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|path| {
-            std::fs::read_to_string(path.join("session.md"))
-                .ok()
-                .and_then(|text| SessionDoc::parse(&text).ok())
-                .is_some_and(|doc| doc.session_id == id)
+            session_core::note_folder::NoteFiles::read(path)
+                .is_ok_and(|files| files.doc.session_id == id)
         })
         .collect();
     found.sort();
@@ -811,7 +808,9 @@ fn a_moved_note_whose_files_match_keeps_fingerprints_equal_to_the_files() {
     let m = mover(&f, &fs);
     finish(&m);
     let home = assert_moved(&f, "a");
-    let doc = SessionDoc::read(&home).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&home)
+        .map(|files| files.doc)
+        .unwrap();
     assert_eq!(doc.title.as_deref(), Some("Budget?"));
     let of = |name: &str| {
         std::fs::read(home.join(name))

@@ -17,6 +17,20 @@ pub fn tag_key(text: &str) -> String {
         .to_lowercase()
 }
 
+/// `tags` with one tag for each key: the first tag with a key stays (R8).
+pub fn unique(tags: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut out = Vec::new();
+    for tag in tags {
+        let key = tag_key(&tag);
+        if !keys.contains(&key) {
+            keys.push(key);
+            out.push(tag);
+        }
+    }
+    out
+}
+
 /// The scope and the value of a scoped tag, with the spaces at their ends
 /// removed. The split is at the first `::`, so the value can contain `::`.
 /// A tag with no `::`, or with an empty scope or an empty value, has no

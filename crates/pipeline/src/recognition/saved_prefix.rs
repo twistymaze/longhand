@@ -81,9 +81,6 @@ pub(super) fn read(
 /// is one (KTD8 of the audio removal plan), so the check reads it too. A
 /// segment with no copy whose home file has a removal marker or is missing
 /// does not match: no prefix is reused, and no error occurs.
-/// The fingerprint of the `session.md` in `home` with the user fields
-/// removed, so a tag or type edit does not change the saved prefix (KTD2
-/// of the note types and tags plan).
 /// True when the saved segments are the same audio as the note's first
 /// segments. The pause flag does not count: a resume clears it on the last
 /// saved segment, and the audio does not change (KTD4 of the pause plan).
@@ -97,10 +94,15 @@ fn same_segments(saved: &[Segment], note: &[Segment]) -> bool {
         })
 }
 
+/// The [`NoteRecord::run_fingerprint`] of the records of the note in
+/// `home` (KTD4): an edit of a `.md` file, a title proposal or a type move
+/// does not change the saved prefix.
+///
+/// [`NoteRecord::run_fingerprint`]: session_core::note_record::NoteRecord::run_fingerprint
 fn session_manifest(home: &Path) -> std::io::Result<String> {
-    Ok(session_core::folder::session_fingerprint(&std::fs::read(
-        home.join("session.md"),
-    )?))
+    Ok(session_core::note_folder::NoteFiles::read(home)?
+        .record
+        .run_fingerprint())
 }
 
 fn same_audio(
@@ -135,7 +137,7 @@ fn old_audio_gone(store: &SharedStore, id: &str, dir: &Path) -> Result<bool, Sta
         return Ok(false);
     };
     let home = Path::new(&home);
-    let Ok(doc) = session_core::folder::SessionDoc::read(home) else {
+    let Ok(doc) = session_core::note_folder::NoteFiles::read(home).map(|files| files.doc) else {
         return Ok(false);
     };
     Ok(doc.timeline_segments().iter().any(|segment| {
@@ -172,7 +174,7 @@ fn candidate(
         return Ok(None);
     }
     let manifest = session_manifest(home)?;
-    let doc = session_core::folder::SessionDoc::read(home)?;
+    let doc = session_core::note_folder::NoteFiles::read(home)?.doc;
     let old = doc.timeline_segments();
     if old.is_empty()
         || old.len() > segments.len()
@@ -426,7 +428,7 @@ mod tests {
                     })
                     .collect(),
             );
-            std::fs::write(self.temp.path().join("session.md"), doc.render()).unwrap();
+            session_save::note_files::write_doc(self.temp.path(), &doc).unwrap();
         }
         fn read(&self) -> Result<Option<Prefix>, StageError> {
             read(
@@ -520,7 +522,12 @@ mod tests {
 
     #[test]
     fn saved_prefix_rechecks_parent_after_reuse_and_allows_retry() {
-        for filename in ["session.md", "transcript.md", "audio/0.opus", ARTIFACT_FILE] {
+        for filename in [
+            session_core::note_record::NOTE_RECORD_FILE,
+            "transcript.md",
+            "audio/0.opus",
+            ARTIFACT_FILE,
+        ] {
             let case = Case::new();
             let prefix = case.read().unwrap().unwrap();
             retain(&case.store, "s", &prefix).unwrap();
@@ -543,11 +550,28 @@ mod tests {
         // The resume clears the flag in the store only (KTD4 of the pause
         // plan), and the audio is the same.
         let case = Case::new();
-        let mut doc = session_core::folder::SessionDoc::read(case.temp.path()).unwrap();
+        let mut doc = session_core::note_folder::NoteFiles::read(case.temp.path())
+            .unwrap()
+            .doc;
         for segment in &mut doc.segments {
             segment.ends_in_pause = true;
         }
-        std::fs::write(case.temp.path().join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(case.temp.path(), &doc).unwrap();
+        assert!(case.read().unwrap().is_some());
+    }
+
+    #[test]
+    fn saved_prefix_accepts_an_edit_of_session_md_during_processing() {
+        // R3: an agent's edit of `session.md` is not a change of the saved
+        // prefix.
+        let case = Case::new();
+        let prefix = case.read().unwrap().unwrap();
+        retain(&case.store, "s", &prefix).unwrap();
+        std::fs::write(
+            case.temp.path().join("session.md"),
+            "---\ntitle: 'An agent title'\nsource: agent\n---\n\nAgent text.\n",
+        )
+        .unwrap();
         assert!(case.read().unwrap().is_some());
     }
 
@@ -558,7 +582,9 @@ mod tests {
         let case = Case::new();
         let prefix = case.read().unwrap().unwrap();
         retain(&case.store, "s", &prefix).unwrap();
-        let mut doc = session_core::folder::SessionDoc::read(case.temp.path()).unwrap();
+        let mut doc = session_core::note_folder::NoteFiles::read(case.temp.path())
+            .unwrap()
+            .doc;
         doc.tags = vec!["Topic::Security".into()];
         doc.pending_type = Some(session_core::folder::PendingType {
             to: Some("One on One".into()),
@@ -566,7 +592,7 @@ mod tests {
             by: "computer-b".into(),
             at: doc.started,
         });
-        std::fs::write(case.temp.path().join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(case.temp.path(), &doc).unwrap();
         assert!(case.read().unwrap().is_some());
     }
 
@@ -613,7 +639,9 @@ mod tests {
             case.read().is_err(),
             "an unrelated full parent is not our publication"
         );
-        let doc = session_core::folder::SessionDoc::read(case.temp.path()).unwrap();
+        let doc = session_core::note_folder::NoteFiles::read(case.temp.path())
+            .unwrap()
+            .doc;
         checkpoint::put(
             &case.store,
             "s",
