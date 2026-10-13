@@ -33,6 +33,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   title: null,
   found_speakers: 3,
   storage_unavailable: false,
+  problem: null,
   remote: null,
   note_type: null,
   tags: [],
@@ -647,6 +648,156 @@ describe("Home", () => {
         .hasAttribute("disabled"),
     ).toBe(true);
   });
+
+  // Covers R6: a note whose file does not parse stays listed. Rename waits,
+  // and Delete stays available.
+  test("a note whose session.md does not parse cannot be renamed and can be deleted", async () => {
+    mockTauri({ library_notices: () => ({ conversion: null, problems: [] }) });
+    const reason = "session.md has an error on line 3. Correct the file to change this note.";
+    renderHome({
+      entries: [
+        entry("a", {
+          title: "Planning",
+          problem: { kind: "user_file", file: "session.md", line: 3, reason },
+        }),
+      ],
+    });
+    await userEvent.setup().click(within(row("Planning")).getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Rename" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("menuitem", { name: "Delete…" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  // Covers AE3, R6, KTD14: one notice counts the notes whose files do not
+  // parse and lists each with what to do.
+  test("notes whose files do not parse show in one notice", async () => {
+    mockTauri({
+      library_notices: () => ({
+        conversion: null,
+        problems: [
+          {
+            name: "Planning",
+            problem: {
+              kind: "user_file",
+              file: "session.md",
+              line: 3,
+              reason: "session.md has an error on line 3. Correct the file to change this note.",
+            },
+          },
+          {
+            name: "2026-09-24 1405 Budget",
+            problem: {
+              kind: "record",
+              file: "longhand.json",
+              line: null,
+              reason: "This note waits for longhand.json to sync. If it does not sync, update Longhand on the other computer.",
+            },
+          },
+        ],
+      }),
+    });
+    renderHome({ entries: [entry("a", { title: "Planning" })] });
+    const notice = await screen.findByRole("region", { name: "Notes that Longhand can’t read" });
+    expect(within(notice).getByText("Longhand can’t read 2 notes.")).toBeTruthy();
+    expect(within(notice).getByText(/^session\.md has an error on line 3/)).toBeTruthy();
+    expect(within(notice).getByText("2026-09-24 1405 Budget")).toBeTruthy();
+    expect(within(notice).getByText(/^This note waits for longhand\.json/)).toBeTruthy();
+  });
+
+  // Covers R6: the normal path shows nothing.
+  test("a library with no problem shows no library notice", async () => {
+    const tauri = mockTauri({ library_notices: () => ({ conversion: null, problems: [] }) });
+    renderHome({ entries: [entry("a", { title: "Planning" })] });
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "library_notices")).toBe(true));
+    expect(screen.queryByRole("region", { name: "Notes that Longhand can’t read" })).toBeNull();
+    // Covers AE4: with no old notes, no conversion control shows.
+    expect(screen.queryByRole("region", { name: "Notes in an older format" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Convert" })).toBeNull();
+  });
+
+  // Covers F3, R11, R12: the Convert notice counts the old notes, and only
+  // the user starts the conversion. While it runs, the button waits.
+  test("the convert notice converts when the user selects Convert", async () => {
+    let finish = () => {};
+    let old = 2;
+    const tauri = mockTauri({
+      library_notices: () => ({
+        conversion: old > 0 ? { old_notes: old, running: false, skipped: 0, failed: [] } : null,
+        problems: [],
+      }),
+      convert_old_notes: () =>
+        new Promise<null>((resolve) => {
+          finish = () => {
+            old = 0;
+            resolve(null);
+          };
+        }),
+    });
+    renderHome({ entries: [entry("a", { title: "Planning" })] });
+    const notice = await screen.findByRole("region", { name: "Notes in an older format" });
+    expect(within(notice).getByText(/^2 notes are in an older format\./)).toBeTruthy();
+    expect(tauri.calls.some((c) => c.cmd === "convert_old_notes")).toBe(false);
+
+    await userEvent.setup().click(within(notice).getByRole("button", { name: "Convert" }));
+    const busy = await within(notice).findByRole("button", { name: "Converting…" });
+    expect(busy.hasAttribute("disabled")).toBe(true);
+    await act(async () => finish());
+    // All notes converted: the notice goes, with no success message.
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Notes in an older format" })).toBeNull());
+  });
+
+  // Covers R10: skipped notes and failures stay in the notice, after the
+  // count, and Convert stays available.
+  test("the convert notice says which notes are in use and which did not convert", async () => {
+    mockTauri({
+      library_notices: () => ({
+        conversion: {
+          old_notes: 3,
+          running: false,
+          skipped: 1,
+          failed: [{ name: "Budget", reason: "the frontmatter cannot change" }],
+        },
+        problems: [],
+      }),
+    });
+    renderHome({ entries: [] });
+    const notice = await screen.findByRole("region", { name: "Notes in an older format" });
+    expect(within(notice).getByText(/1 note could not be converted yet because it was in use\. Select Convert again later\./)).toBeTruthy();
+    expect(within(notice).getByText(/These notes could not be converted: Budget\./)).toBeTruthy();
+    expect(within(notice).getByRole("button", { name: "Convert" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  // Covers R10: a conversion that fails as a whole says so, and Convert
+  // stays available. The error does not escape the notice.
+  for (const [kind, fail] of [
+    ["an error", () => Promise.reject(new Error("the call failed"))],
+    ["an error result", () => Promise.reject("the run stopped")],
+  ] as const) {
+    test(`the convert notice shows a failure when the conversion returns ${kind}`, async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (event: PromiseRejectionEvent) => {
+        unhandled.push(event.reason);
+        event.preventDefault();
+      };
+      window.addEventListener("unhandledrejection", onUnhandled);
+      try {
+        mockTauri({
+          library_notices: () => ({
+            conversion: { old_notes: 2, running: false, skipped: 0, failed: [] },
+            problems: [],
+          }),
+          convert_old_notes: fail,
+        });
+        renderHome({ entries: [] });
+        const notice = await screen.findByRole("region", { name: "Notes in an older format" });
+        await userEvent.setup().click(within(notice).getByRole("button", { name: "Convert" }));
+        expect(await within(notice).findByText("The conversion did not finish. Select Convert to try again.")).toBeTruthy();
+        expect(within(notice).getByRole("button", { name: "Convert" }).hasAttribute("disabled")).toBe(false);
+        expect(unhandled).toEqual([]);
+      } finally {
+        window.removeEventListener("unhandledrejection", onUnhandled);
+      }
+    });
+  }
 });
 
 const ready = {
@@ -1171,6 +1322,19 @@ describe("Home: notes with no audio and other computers", () => {
     // One banner only, with the way to the fix.
     expect(screen.queryByText(/Not ready to record|To record,/)).toBeNull();
     expect(screen.getAllByRole("button", { name: "Open Settings…" })).toHaveLength(1);
+  });
+
+  // Safe agent edits U6, R22: a settings file that did not parse for about
+  // one minute names the file and the line. The normal path shows nothing.
+  test("a damaged shared settings file shows a notice with the file and the line", () => {
+    mockTauri();
+    const view = render(home([], { readiness: ready }));
+    expect(screen.queryByText(/can’t read the settings file/)).toBeNull();
+    view.rerender(home([], { readiness: ready, damagedFile: { path: ".longhand/settings.json", line: 3 } }));
+    const notice = screen.getByText(/can’t read the settings file/);
+    expect(notice.textContent).toContain("(.longhand/settings.json, line 3)");
+    expect(notice.textContent).toContain("Fix the file, or restore it from another computer.");
+    expect(notice.textContent).toContain("the recording widget and New Note");
   });
 
   test("when a note can start but not record, the record banner shows", () => {

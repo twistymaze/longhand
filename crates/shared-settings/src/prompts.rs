@@ -34,7 +34,8 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::file::{
-    FileRead, SettingsFile, Unavailable, check_root, longhand_folder, read_settings, write_new,
+    FileRead, SaveError, SettingsFile, SharedFields, SharedValue, Unavailable, check_root,
+    longhand_folder, read_settings, save_settings, write_new,
 };
 
 /// The folder in the hidden Longhand folder that holds the prompt files.
@@ -108,6 +109,19 @@ pub struct PromptFile {
     /// The id that the file holds. It differs from [`Self::id`] for a
     /// conflict copy, and it is `None` for a file with no id.
     pub id_in_file: Option<String>,
+    /// The file is over the size limit that the scan reads. The scan read
+    /// only its front matter, so `text` and `title_text` are empty (R21).
+    pub too_large: bool,
+}
+
+impl PromptFile {
+    /// The prompt text or the title text is over its limit, for example
+    /// after an edit outside Longhand (R21). A run uses the whole text.
+    pub fn over_limit(&self) -> bool {
+        self.too_large
+            || self.text.chars().count() > summarize::prompts::PROMPT_TEXT_LIMIT
+            || self.title_text.chars().count() > summarize::prompts::TITLE_TEXT_LIMIT
+    }
 }
 
 impl From<&PromptFile> for summarize::Prompt {
@@ -132,12 +146,28 @@ pub struct PromptScan {
     /// title texts holds. Such an
     /// id has a conflict copy (KTD5).
     pub conflicted: BTreeSet<String>,
+    /// The ids of the prompt files that exist and cannot be used now, for
+    /// example a file that a sync delivered in parts. Such a prompt is not
+    /// in `prompts`, and it is not missing (KTD8).
+    pub unusable: BTreeSet<String>,
+    /// The folder has a prompt file that the scan cannot read, so its id
+    /// is not known. Each custom prompt can be in that file, so no custom
+    /// prompt is missing.
+    pub unknown_unusable: bool,
 }
 
 impl PromptScan {
     /// The prompt with `id`.
     pub fn get(&self, id: &str) -> Option<&PromptFile> {
         self.prompts.iter().find(|p| p.id == id)
+    }
+
+    /// The folder has no file of the prompt `id`.
+    pub fn is_missing(&self, id: &str) -> bool {
+        if self.unknown_unusable && !is_built_in(id) {
+            return false;
+        }
+        self.get(id).is_none() && !self.unusable.contains(id)
     }
 }
 
@@ -297,6 +327,10 @@ struct Parsed {
     extra: Vec<String>,
     text: String,
     title_text: String,
+    /// The first line opens a front matter block and no line closes it.
+    /// A sync can deliver the start of a file before its end, so the file
+    /// cannot be used now. The texts are empty.
+    open: bool,
 }
 
 fn parse_prompt_file(contents: &str) -> Parsed {
@@ -309,12 +343,14 @@ fn parse_prompt_file(contents: &str) -> Parsed {
             extra: Vec::new(),
             text,
             title_text,
+            open: false,
         }
     })
 }
 
-/// The front matter and the body of `contents`, or `None` when the file
-/// has no complete front matter block.
+/// The front matter and the body of `contents`, or `None` when the first
+/// line does not open a front matter block. When no line closes the block,
+/// the result is [`Parsed::open`].
 fn front_matter(contents: &str) -> Option<Parsed> {
     let mut lines = contents.split_inclusive('\n');
     if lines.next()?.trim_end() != FRONT_MATTER_LINE {
@@ -326,6 +362,7 @@ fn front_matter(contents: &str) -> Option<Parsed> {
         extra: Vec::new(),
         text: String::new(),
         title_text: String::new(),
+        open: false,
     };
     let mut consumed = contents.split_inclusive('\n').next()?.len();
     for line in lines {
@@ -350,7 +387,8 @@ fn front_matter(contents: &str) -> Option<Parsed> {
             _ => parsed.extra.push(line.to_string()),
         }
     }
-    None
+    parsed.open = true;
+    Some(parsed)
 }
 
 /// A front matter value: a JSON string in quotes, or the text as it is.
@@ -404,13 +442,18 @@ struct Entry {
     stored_name: String,
     text: String,
     title_text: String,
+    too_large: bool,
 }
 
 impl Entry {
     /// Two files are the same prompt only when both texts are the same
-    /// (KTD9).
+    /// (KTD9). The scan has no texts of a file over the size limit, so such
+    /// a file is never the same as another file.
     fn same_texts(&self, other: &Entry) -> bool {
-        self.text == other.text && self.title_text == other.title_text
+        !self.too_large
+            && !other.too_large
+            && self.text == other.text
+            && self.title_text == other.title_text
     }
 
     /// The file name is the safe file name of the prompt's own name.
@@ -430,67 +473,148 @@ pub fn scan_prompts(root: &Path) -> Result<PromptScan, Unavailable> {
         Err(e) => return Err(Unavailable::Unreadable(e.to_string())),
     };
     let mut entries = Vec::new();
+    let mut unusable = BTreeSet::new();
+    let mut unknown_unusable = false;
     for item in dir {
         let item = item.map_err(|e| Unavailable::Unreadable(e.to_string()))?;
         let Ok(file_name) = item.file_name().into_string() else {
             continue;
         };
-        if let Some(entry) = read_entry(&folder, file_name) {
-            entries.push(entry);
+        match read_entry(&folder, file_name) {
+            Found::Prompt(entry) => entries.push(entry),
+            Found::Unusable(Some(id)) => {
+                unusable.insert(id);
+            }
+            Found::Unusable(None) => unknown_unusable = true,
+            Found::Other => {}
         }
     }
-    Ok(resolve(entries))
+    let mut scan = resolve(entries);
+    scan.unusable = unusable;
+    scan.unknown_unusable = unknown_unusable;
+    Ok(scan)
 }
 
-/// The prompt in `folder/file_name`, or `None` when that file is not a
-/// prompt: a hidden or temporary name, a name that is not `.md`, a file
-/// over the text limit, or a file with no text.
-fn read_entry(folder: &Path, file_name: String) -> Option<Entry> {
+/// The bytes at the start of a file over [`MAX_FILE_BYTES`] that the scan
+/// reads for the front matter.
+const HEAD_BYTES: u64 = 8192;
+
+/// What the scan found in one file of the prompt folder.
+enum Found {
+    Prompt(Entry),
+    /// The file is a prompt file that cannot be used now: it is not text,
+    /// it cannot be read, it has no prompt text, or its front matter has
+    /// no closing line. A sync can deliver a file in parts. The value is
+    /// the id in the file, or the id from its file name when the file has
+    /// no id. It is `None` when the file cannot be read.
+    Unusable(Option<String>),
+    /// The file is not a prompt file.
+    Other,
+}
+
+/// The prompt in `folder/file_name`. A hidden or temporary name, and a
+/// name that is not `.md`, are not prompt files. A file over
+/// [`MAX_FILE_BYTES`] is a prompt with no text (R21): the scan reads only
+/// its front matter.
+fn read_entry(folder: &Path, file_name: String) -> Found {
     if file_name.starts_with('.') || file_name.starts_with("~$") {
-        return None;
+        return Found::Other;
     }
-    let stem_end = file_name.len().checked_sub(EXTENSION.len())?;
+    let Some(stem_end) = file_name.len().checked_sub(EXTENSION.len()) else {
+        return Found::Other;
+    };
     if stem_end == 0
         || !file_name.is_char_boundary(stem_end)
         || !file_name[stem_end..].eq_ignore_ascii_case(EXTENSION)
     {
-        return None;
+        return Found::Other;
     }
     let path = folder.join(&file_name);
-    let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
-        return None;
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return Found::Other;
+    };
+    if !meta.is_file() {
+        return Found::Other;
     }
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
+    let too_large = meta.len() > MAX_FILE_BYTES;
+    let read = if too_large {
+        read_head(&path)
+    } else {
+        std::fs::read(&path)
+    };
+    let bytes = match read {
+        Ok(bytes) => bytes,
         Err(e) => {
             log::warn!(
                 "shared settings: cannot read the prompt file {}: {e}",
                 path.display()
             );
-            return None;
+            return Found::Unusable(None);
         }
     };
-    let parsed = parse_prompt_file(&contents);
-    if parsed.text.trim().is_empty()
-        || parsed.text.chars().count() > summarize::prompts::PROMPT_TEXT_LIMIT
-        || parsed.title_text.chars().count() > summarize::prompts::TITLE_TEXT_LIMIT
-    {
-        return None;
-    }
+    // A file that cannot be used now keeps the id that the scan gives it
+    // when it can be used, so the prompt is not missing (KTD8).
+    let unusable = |id_in_file: Option<String>| {
+        Found::Unusable(Some(id_in_file.unwrap_or_else(|| file_name_id(&file_name))))
+    };
+    let parsed = match String::from_utf8(bytes) {
+        Ok(contents) => parse_prompt_file(&contents),
+        // The head of a large file can stop in a character.
+        Err(e) if too_large => parse_prompt_file(&String::from_utf8_lossy(e.as_bytes())),
+        Err(e) => {
+            let id = parse_prompt_file(&String::from_utf8_lossy(e.as_bytes())).id;
+            return unusable(id.filter(|id| !is_built_in(id)));
+        }
+    };
     // A file cannot take the id of a built-in prompt.
     let id_in_file = parsed.id.filter(|id| !is_built_in(id));
+    if parsed.open || (!too_large && parsed.text.trim().is_empty()) {
+        return unusable(id_in_file);
+    }
     let stored_name = parsed
         .name
         .map(|name| name.trim().to_string())
         .unwrap_or_else(|| file_name[..stem_end].to_string());
-    Some(Entry {
+    let (text, title_text) = if too_large {
+        (String::new(), String::new())
+    } else {
+        (parsed.text, parsed.title_text)
+    };
+    Found::Prompt(Entry {
         file_name,
         id_in_file,
         stored_name,
-        text: parsed.text,
-        title_text: parsed.title_text,
+        text,
+        title_text,
+        too_large,
     })
+}
+
+/// The first [`HEAD_BYTES`] of the file at `path`.
+fn read_head(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(HEAD_BYTES)
+        .read_to_end(&mut head)?;
+    Ok(head)
+}
+
+/// The summary text and the title text of the file of `prompt`. For a file
+/// over [`MAX_FILE_BYTES`], this reads the whole file: the scan has no text
+/// for it. Only a change of the prompt calls this.
+fn full_texts(folder: &Path, prompt: &PromptFile) -> Result<(String, String), PromptError> {
+    if !prompt.too_large {
+        return Ok((prompt.text.clone(), prompt.title_text.clone()));
+    }
+    let contents = match std::fs::read(folder.join(&prompt.file_name)) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.utf8_error()))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(PromptError::NoSuchPrompt),
+        Err(e) => return Err(e.into()),
+    };
+    let parsed = parse_prompt_file(&contents);
+    Ok((parsed.text, parsed.title_text))
 }
 
 /// Give each file its id (KTD5), join the files with one id and the same
@@ -552,6 +676,7 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
                     file_name: entry.file_name,
                     duplicates: group.into_iter().map(|f| f.file_name).collect(),
                     id_in_file: entry.id_in_file,
+                    too_large: entry.too_large,
                 },
                 qualifies,
             ));
@@ -582,14 +707,19 @@ fn resolve(entries: Vec<Entry>) -> PromptScan {
     PromptScan {
         prompts,
         conflicted,
+        unusable: BTreeSet::new(),
+        unknown_unusable: false,
     }
 }
 
-/// Refuse a change while the shared settings are read-only (R16, KTD3).
-/// Returns the settings file that it read.
-fn ensure_writable(root: &Path) -> Result<SettingsFile, PromptError> {
+/// Refuse a change while the prompt files are read-only (R16, KTD3).
+/// Returns the settings file that it read, or `None` when the settings
+/// file exists and does not parse. The prompt files can still change then,
+/// because a change of a prompt does not write the settings file (R22).
+fn ensure_writable(root: &Path) -> Result<Option<SettingsFile>, PromptError> {
     match read_settings(root) {
-        FileRead::Parsed(settings) => Ok(settings),
+        FileRead::Parsed(settings) => Ok(Some(settings)),
+        FileRead::NotAvailable(Unavailable::DoesNotParse(_)) => Ok(None),
         FileRead::Missing => Err(PromptError::NoSettingsFile),
         FileRead::NotAvailable(cause) => Err(PromptError::NotAvailable(cause)),
     }
@@ -737,6 +867,7 @@ pub fn create_prompt_with_title(
         file_name,
         duplicates: Vec::new(),
         id_in_file: Some(id),
+        too_large: false,
     })
 }
 
@@ -757,7 +888,8 @@ pub fn rename_prompt(root: &Path, id: &str, name: &str) -> Result<PromptFile, Pr
     }
     settle_copies(root, &scan, id)?;
     let folder = prompts_folder(root);
-    rewrite(&folder, &prompt, name, &prompt.text, &prompt.title_text)?;
+    let (text, title_text) = full_texts(&folder, &prompt)?;
+    rewrite(&folder, &prompt, name, &text, &title_text)?;
     let file_name = move_to_name(&folder, &prompt.file_name, name)?;
     Ok(PromptFile {
         name: name.to_string(),
@@ -777,17 +909,15 @@ pub fn set_prompt_text(root: &Path, id: &str, text: &str) -> Result<PromptFile, 
     let scan = scan_for_change(root)?;
     let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?.clone();
     settle_copies(root, &scan, id)?;
-    rewrite(
-        &prompts_folder(root),
-        &prompt,
-        &prompt.stored_name,
-        text,
-        &prompt.title_text,
-    )?;
+    let folder = prompts_folder(root);
+    let (_, title_text) = full_texts(&folder, &prompt)?;
+    rewrite(&folder, &prompt, &prompt.stored_name, text, &title_text)?;
     Ok(PromptFile {
         text: text.to_string(),
+        title_text,
         duplicates: Vec::new(),
         id_in_file: Some(prompt.id.clone()),
+        too_large: false,
         ..prompt
     })
 }
@@ -805,24 +935,23 @@ pub fn set_prompt_title_text(
     let scan = scan_for_change(root)?;
     let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?.clone();
     settle_copies(root, &scan, id)?;
-    rewrite(
-        &prompts_folder(root),
-        &prompt,
-        &prompt.stored_name,
-        &prompt.text,
-        title_text,
-    )?;
+    let folder = prompts_folder(root);
+    let (text, _) = full_texts(&folder, &prompt)?;
+    rewrite(&folder, &prompt, &prompt.stored_name, &text, title_text)?;
     Ok(PromptFile {
+        text,
         title_text: title_text.to_string(),
         duplicates: Vec::new(),
         id_in_file: Some(prompt.id.clone()),
+        too_large: false,
         ..prompt
     })
 }
 
 /// Remove each file of the prompt `id`. Returns the shared settings file
-/// as it was before the delete.
-pub fn delete_prompt(root: &Path, id: &str) -> Result<SettingsFile, PromptError> {
+/// as it was before the delete, or `None` when it does not parse: the
+/// settings that name the prompt then do not change.
+pub fn delete_prompt(root: &Path, id: &str) -> Result<Option<SettingsFile>, PromptError> {
     check_custom(id)?;
     let settings = ensure_writable(root)?;
     let scan = scan_for_change(root)?;
@@ -834,6 +963,113 @@ pub fn delete_prompt(root: &Path, id: &str) -> Result<SettingsFile, PromptError>
     }
     session_save::fsync::sync_dir(&folder)?;
     Ok(settings)
+}
+
+/// The settings that a delete of the prompts `ids` changes (R4, R5, KTD6):
+/// an active prompt that is one of them becomes the Topic summary, and each
+/// type that chooses one of them changes to "Default".
+pub fn patch_without_prompts(fields: &SharedFields, ids: &[&str]) -> Vec<SharedValue> {
+    let mut patch = Vec::new();
+    if fields
+        .active_summary_prompt
+        .known()
+        .is_some_and(|active| ids.contains(&active.as_str()))
+    {
+        patch.push(SharedValue::ActiveSummaryPrompt(
+            summarize::prompts::TOPIC_SUMMARY_ID.into(),
+        ));
+    }
+    let before = fields.type_prompt_map();
+    let mut map = before.clone();
+    for id in ids {
+        if let Some(without) = crate::note_types::prompts_without(&map, id) {
+            map = without;
+        }
+    }
+    if map != before {
+        patch.push(SharedValue::NoteTypePrompts(map));
+    }
+    patch
+}
+
+/// What [`repair_prompts`] wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Repaired {
+    /// The files that had no id and got their id.
+    pub ids_written: Vec<String>,
+    /// The files that got the file name of their name, as (old, new).
+    pub renamed: Vec<(String, String)>,
+    /// The missing prompts whose references the settings no longer have.
+    pub cleared: Vec<String>,
+}
+
+impl Repaired {
+    pub fn is_empty(&self) -> bool {
+        self.ids_written.is_empty() && self.renamed.is_empty() && self.cleared.is_empty()
+    }
+}
+
+/// Repair the outside edits of the prompt files (R18, R19, R20). Only a
+/// write that a user change on this computer causes calls this, never a
+/// read (R23). The steps are in this order:
+///
+/// 1. A file with no id gets the id that the scan made from its file name
+///    (`file_name_id`), so the settings that name the prompt keep it.
+/// 2. A file whose name is not the file name of its `name` gets that file
+///    name. The id stays.
+/// 3. The settings stop naming each prompt of `missing` that the folder
+///    still does not have, with the rules of a delete in the app.
+///
+/// A prompt with a conflict copy or a duplicate file changes in no step:
+/// the user resolves the conflict. Step 3 needs a settings file that
+/// parses.
+pub fn repair_prompts(root: &Path, missing: &BTreeSet<String>) -> Result<Repaired, PromptError> {
+    let settings = ensure_writable(root)?;
+    let scan = scan_for_change(root)?;
+    let folder = prompts_folder(root);
+    let mut repaired = Repaired::default();
+    let settled = |p: &PromptFile| !scan.conflicted.contains(&p.id) && p.duplicates.is_empty();
+    for prompt in scan.prompts.iter().filter(|p| settled(p)) {
+        let has_id = match &prompt.id_in_file {
+            Some(id) => *id == prompt.id,
+            None if prompt.too_large => false,
+            None => {
+                rewrite(
+                    &folder,
+                    prompt,
+                    &prompt.stored_name,
+                    &prompt.text,
+                    &prompt.title_text,
+                )?;
+                repaired.ids_written.push(prompt.file_name.clone());
+                true
+            }
+        };
+        // A rename of a file with no id would change its id.
+        if has_id && prompt.file_name != safe_file_name(&prompt.stored_name) {
+            let file_name = move_to_name(&folder, &prompt.file_name, &prompt.stored_name)?;
+            if file_name != prompt.file_name {
+                repaired.renamed.push((prompt.file_name.clone(), file_name));
+            }
+        }
+    }
+    if let Some(settings) = settings {
+        let gone: Vec<&str> = missing
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !is_built_in(id) && scan.is_missing(id))
+            .collect();
+        let patch = patch_without_prompts(&settings.fields, &gone);
+        if !patch.is_empty() {
+            save_settings(root, &patch).map_err(|e| match e {
+                SaveError::NotAvailable(cause) => PromptError::NotAvailable(cause),
+                SaveError::Missing => PromptError::NoSettingsFile,
+                SaveError::Io(e) => PromptError::Io(e),
+            })?;
+            repaired.cleared = gone.iter().map(|id| id.to_string()).collect();
+        }
+    }
+    Ok(repaired)
 }
 
 /// Write the made id into each conflict copy of `id` before Longhand
@@ -849,13 +1085,8 @@ fn settle_copies(root: &Path, scan: &PromptScan, id: &str) -> Result<(), PromptE
         .iter()
         .filter(|p| p.id != id && p.id_in_file.as_deref() == Some(id))
     {
-        rewrite(
-            &folder,
-            copy,
-            &copy.stored_name,
-            &copy.text,
-            &copy.title_text,
-        )?;
+        let (text, title_text) = full_texts(&folder, copy)?;
+        rewrite(&folder, copy, &copy.stored_name, &text, &title_text)?;
     }
     Ok(())
 }

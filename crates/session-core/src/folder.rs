@@ -13,6 +13,7 @@ use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
 use crate::jobs::{Title, TitleSource};
+use crate::note_folder::SESSION_FILE;
 use crate::timeline::Segment;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -25,6 +26,13 @@ pub enum FolderError {
     Line {
         file: &'static str,
         line: usize,
+        message: String,
+    },
+    #[error("{file} line {line}, column {column}: {message}")]
+    At {
+        file: &'static str,
+        line: usize,
+        column: usize,
         message: String,
     },
 }
@@ -177,28 +185,6 @@ pub struct PendingType {
     pub by: String,
     /// The time of the change, or of the takeover of the move (KTD13).
     pub at: DateTime<FixedOffset>,
-}
-
-/// The keys of the user fields in the frontmatter of `session.md` (KTD2).
-const USER_FIELDS: [&str; 2] = ["longhand_tags", "longhand_pending_type"];
-
-/// The [`fingerprint`] of the bytes of a `session.md`, with the user
-/// fields removed from its frontmatter (KTD2). A check that compares a
-/// whole `session.md` uses it, so a tag or type edit does not fail a run.
-/// The body counts. Bytes that are not a `session.md` with a frontmatter
-/// mapping give the [`fingerprint`] of the bytes.
-pub fn session_fingerprint(bytes: &[u8]) -> String {
-    let without = std::str::from_utf8(bytes).ok().and_then(|text| {
-        let (yaml, body) = split_frontmatter("session.md", text).ok()?;
-        let mut map: serde_yaml::Mapping = serde_yaml::from_str(yaml).ok()?;
-        // `shift_remove` keeps the order of the other keys.
-        for key in USER_FIELDS {
-            map.shift_remove(key);
-        }
-        let yaml = serde_yaml::to_string(&map).ok()?;
-        Some(format!("---\n{yaml}---\n{body}"))
-    });
-    fingerprint(without.as_deref().map_or(bytes, str::as_bytes))
 }
 
 /// The `result` field of `session.md` (R6, KTD1): the note has no result
@@ -418,15 +404,251 @@ impl SessionDoc {
 
     /// Only the frontmatter is authoritative; the body is for people.
     pub fn parse(text: &str) -> Result<Self, FolderError> {
-        let (yaml, _) = split_frontmatter("session.md", text)?;
-        serde_yaml::from_str(yaml).map_err(yaml_error("session.md"))
+        let (yaml, _) = split_frontmatter(SESSION_FILE, text)?;
+        serde_yaml::from_str(yaml).map_err(yaml_error(SESSION_FILE))
+    }
+}
+
+// ---------------------------------------------------------------- session.md user fields (KTD3)
+
+/// The user fields of a `session.md`: its title and its tags. The read
+/// accepts any other key, because the file is the user's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionMd {
+    /// A number or a boolean reads as its text.
+    pub title: Option<String>,
+    /// The `longhand_tags` list. One text value reads as one tag.
+    pub tags: Vec<String>,
+}
+
+impl SessionMd {
+    /// Parse the frontmatter of a `session.md`. An error gives the line in
+    /// the file.
+    pub fn parse(text: &str) -> Result<Self, FolderError> {
+        let (start, end, _) = frontmatter_bounds(text)
+            .ok_or(FolderError::MissingFrontmatter { file: SESSION_FILE })?;
+        let map = parse_mapping(SESSION_FILE, &text[start..end])?;
+        let tags = match map.get("longhand_tags") {
+            Some(serde_yaml::Value::Sequence(items)) => {
+                items.iter().filter_map(scalar_text).collect()
+            }
+            Some(value) => scalar_text(value).into_iter().collect(),
+            None => Vec::new(),
+        };
+        Ok(Self {
+            title: map.get("title").and_then(scalar_text),
+            tags,
+        })
+    }
+}
+
+fn scalar_text(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(text) => Some(text.clone()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// The byte ranges of a frontmatter in `text`: the start and the end of
+/// its YAML, and the start of the body. The YAML includes the line end of
+/// its last line. The frontmatter can be empty, and the file can have LF or
+/// CRLF line ends.
+fn frontmatter_bounds(text: &str) -> Option<(usize, usize, usize)> {
+    let start = if text.starts_with("---\n") {
+        4
+    } else if text.starts_with("---\r\n") {
+        5
+    } else {
+        return None;
+    };
+    let mut at = start;
+    for line in text[start..].split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            return Some((start, at, at + line.len()));
+        }
+        at += line.len();
+    }
+    None
+}
+
+/// Parse frontmatter YAML as a mapping. An empty frontmatter, or one with
+/// only comments, is an empty mapping. An error gives the line in the file:
+/// the YAML starts on line 2.
+fn parse_mapping(file: &'static str, yaml: &str) -> Result<serde_yaml::Mapping, FolderError> {
+    let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| {
+        let line = e.location().map_or(1, |l| l.line()) + 1;
+        let mut message = e.to_string();
+        if let Some(at) = message.find(" at line ") {
+            message.truncate(at);
+        }
+        FolderError::Line {
+            file,
+            line,
+            message,
+        }
+    })?;
+    match value {
+        serde_yaml::Value::Null => Ok(serde_yaml::Mapping::new()),
+        serde_yaml::Value::Mapping(map) => Ok(map),
+        _ => Err(FolderError::Line {
+            file,
+            line: 2,
+            message: "the frontmatter is not a mapping".into(),
+        }),
+    }
+}
+
+/// A change to named keys of a frontmatter that keeps all other text
+/// (R4, KTD3). The patch replaces only the lines of the keys that it
+/// changes. Other keys, comments, the key order, the line ends and the
+/// body stay as they are.
+#[derive(Debug, Clone, Default)]
+pub struct FrontmatterPatch {
+    /// The edits in order. `None` removes the key.
+    edits: Vec<(String, Option<serde_yaml::Value>)>,
+}
+
+impl FrontmatterPatch {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Read and parse the `session.md` in the note folder `folder`.
-    pub fn read(folder: &Path) -> std::io::Result<Self> {
-        Self::parse(&std::fs::read_to_string(folder.join("session.md"))?)
-            .map_err(|e| std::io::Error::other(e.to_string()))
+    /// Set `key` to `value`. A key with this value already keeps its lines.
+    /// An absent key goes at the end of the frontmatter.
+    pub fn set(mut self, key: &str, value: impl Serialize) -> Self {
+        let value = serde_yaml::to_value(value).expect("frontmatter value serializes");
+        self.edits.push((key.to_string(), Some(value)));
+        self
     }
+
+    /// Remove `key` with all its continuation lines. An absent key is not
+    /// an error.
+    pub fn remove(mut self, key: &str) -> Self {
+        self.edits.push((key.to_string(), None));
+        self
+    }
+
+    /// The text of a new file: a frontmatter with the set keys and no body.
+    pub fn create(&self) -> String {
+        self.apply("new file", "---\n---\n")
+            .expect("a new frontmatter patches")
+    }
+
+    /// Apply the patch to `text`, the content of the file `file`. A file
+    /// with no frontmatter, or a frontmatter that does not parse, gives an
+    /// error and no text.
+    pub fn apply(&self, file: &'static str, text: &str) -> Result<String, FolderError> {
+        let (start, end, _) =
+            frontmatter_bounds(text).ok_or(FolderError::MissingFrontmatter { file })?;
+        let before = parse_mapping(file, &text[start..end])?;
+        let crlf = text[..start].ends_with("\r\n");
+        let mut lines: Vec<String> = text[start..end]
+            .split_inclusive('\n')
+            .map(String::from)
+            .collect();
+        let mut changed: Vec<&str> = Vec::new();
+        for (key, value) in &self.edits {
+            let block = key_block(&lines, key);
+            match value {
+                None => {
+                    if let Some(block) = block {
+                        lines.drain(block);
+                    }
+                }
+                Some(value) => {
+                    if block.is_some()
+                        && !changed.contains(&key.as_str())
+                        && before.get(key.as_str()) == Some(value)
+                    {
+                        continue;
+                    }
+                    let new = entry_lines(key, value, crlf);
+                    match block {
+                        Some(block) => {
+                            lines.splice(block, new);
+                        }
+                        None => lines.extend(new),
+                    }
+                }
+            }
+            changed.push(key);
+        }
+        let yaml = lines.concat();
+        // A key that the line scan cannot find, for example in a flow
+        // mapping, must not give a file with a duplicate or a stale key.
+        let after = parse_mapping(file, &yaml)?;
+        let mut checked: Vec<&str> = Vec::new();
+        for (key, value) in self.edits.iter().rev() {
+            if checked.contains(&key.as_str()) {
+                continue;
+            }
+            checked.push(key);
+            if after.get(key.as_str()) != value.as_ref() {
+                return Err(FolderError::Yaml {
+                    file,
+                    message: format!("the key `{key}` cannot be changed in this frontmatter"),
+                });
+            }
+        }
+        Ok(format!("{}{yaml}{}", &text[..start], &text[end..]))
+    }
+}
+
+/// The lines of `key: value` in YAML, with CRLF line ends when `crlf`.
+fn entry_lines(key: &str, value: &serde_yaml::Value, crlf: bool) -> Vec<String> {
+    let mut entry = serde_yaml::Mapping::new();
+    entry.insert(serde_yaml::Value::String(key.to_string()), value.clone());
+    let text = serde_yaml::to_string(&entry).expect("frontmatter entry serializes");
+    text.split_inclusive('\n')
+        .map(|line| {
+            if crlf {
+                line.replace('\n', "\r\n")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect()
+}
+
+/// The range of the lines of the top-level key `key`: its key line and the
+/// continuation lines after it. A continuation line is indented or is a
+/// sequence item at column 0. A blank line counts only when a continuation
+/// line follows it.
+fn key_block(lines: &[String], key: &str) -> Option<std::ops::Range<usize>> {
+    let start = lines.iter().position(|l| top_level_key(l) == Some(key))?;
+    let mut end = start + 1;
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with([' ', '\t']) || line == "-" || line.starts_with("- ") {
+            end = i + 1;
+        } else {
+            break;
+        }
+    }
+    Some(start..end)
+}
+
+/// The key of a top-level `key: value` line, without quotes. `None` for an
+/// indented line, a comment or a sequence item.
+fn top_level_key(line: &str) -> Option<&str> {
+    if line.starts_with([' ', '\t', '#', '-']) {
+        return None;
+    }
+    let (key, rest) = line.split_once(':')?;
+    if !(rest.is_empty() || rest.starts_with([' ', '\t', '\r', '\n'])) {
+        return None;
+    }
+    let key = key.trim_end();
+    let unquoted = key
+        .strip_prefix('"')
+        .and_then(|k| k.strip_suffix('"'))
+        .or_else(|| key.strip_prefix('\'').and_then(|k| k.strip_suffix('\'')));
+    Some(unquoted.unwrap_or(key))
 }
 
 // ---------------------------------------------------------------- removal markers
@@ -525,6 +747,10 @@ pub enum TranscriptLine {
     Pause { duration_ms: u64 },
     /// A within-segment silence past the threshold.
     Silence { duration_ms: u64 },
+    /// A line that is not in one of the forms above, for example a line
+    /// that a person or an agent wrote (KTD7 of the safe agent edits
+    /// plan). It has no time.
+    Text { text: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -585,22 +811,23 @@ impl Transcript {
                     "\n--- silence {} ---\n\n",
                     format_position(*duration_ms)
                 )),
+                TranscriptLine::Text { text } => {
+                    out.push_str(text);
+                    out.push('\n');
+                }
             }
         }
         out
     }
 
-    pub fn parse(text: &str) -> Result<Self, FolderError> {
-        const FILE: &str = "transcript.md";
+    /// Read a `transcript.md`. The read never fails: a line that is not in
+    /// a form that Longhand writes is a [`TranscriptLine::Text`] line, so a
+    /// person or an agent can edit the file (R7, KTD7).
+    pub fn parse(text: &str) -> Self {
         let mut has_speakers = true;
         let mut lines = Vec::new();
-        for (i, raw) in text.lines().enumerate() {
+        for raw in text.lines() {
             let line = raw.trim_end();
-            let err = |message: &str| FolderError::Line {
-                file: FILE,
-                line: i + 1,
-                message: message.to_string(),
-            };
             if line.is_empty() || line.starts_with("# ") {
                 continue;
             }
@@ -608,24 +835,16 @@ impl Transcript {
                 has_speakers = false;
                 continue;
             }
-            if let Some(marker) = line
-                .strip_prefix("--- ")
-                .and_then(|l| l.strip_suffix(" ---"))
-            {
-                let (kind, time) = marker
-                    .split_once(' ')
-                    .ok_or_else(|| err("malformed marker"))?;
-                let duration_ms = parse_position(time).ok_or_else(|| err("bad duration"))?;
-                lines.push(match kind {
-                    "gap" => TranscriptLine::Gap { duration_ms },
-                    "pause" => TranscriptLine::Pause { duration_ms },
-                    "silence" => TranscriptLine::Silence { duration_ms },
-                    _ => return Err(err("unknown marker")),
-                });
+            if let Some(marker) = parse_marker(line) {
+                lines.push(marker);
                 continue;
             }
-            let (position_ms, rest) =
-                parse_bracketed(line).ok_or_else(|| err("expected `- [hh:mm:ss] ...`"))?;
+            let Some((position_ms, rest)) = parse_bracketed(line) else {
+                lines.push(TranscriptLine::Text {
+                    text: line.trim_start().to_string(),
+                });
+                continue;
+            };
             let (speaker, text) = match rest
                 .strip_prefix("Speaker ")
                 .and_then(|r| r.split_once(": "))
@@ -640,10 +859,24 @@ impl Transcript {
                 text: text.to_string(),
             });
         }
-        Ok(Self {
+        Self {
             has_speakers,
             lines,
-        })
+        }
+    }
+}
+
+/// A `--- gap hh:mm:ss ---`, `--- pause hh:mm:ss ---` or
+/// `--- silence hh:mm:ss ---` line.
+fn parse_marker(line: &str) -> Option<TranscriptLine> {
+    let marker = line.strip_prefix("--- ")?.strip_suffix(" ---")?;
+    let (kind, time) = marker.split_once(' ')?;
+    let duration_ms = parse_position(time)?;
+    match kind {
+        "gap" => Some(TranscriptLine::Gap { duration_ms }),
+        "pause" => Some(TranscriptLine::Pause { duration_ms }),
+        "silence" => Some(TranscriptLine::Silence { duration_ms }),
+        _ => None,
     }
 }
 
@@ -689,6 +922,15 @@ pub enum SummaryMeta {
     Stub { failed_stage: String },
 }
 
+impl SummaryMeta {
+    /// The data of the summary stub: the Summarize stage failed.
+    pub fn stub() -> Self {
+        Self::Stub {
+            failed_stage: "summarize".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
     pub meta: SummaryMeta,
@@ -701,6 +943,24 @@ impl Summary {
         format!("---\n{yaml}---\n\n{}\n", self.body.trim_end())
     }
 
+    /// The text of a `summary.md` in the new layout: the body only, with
+    /// no frontmatter. `longhand.json` holds the summary data (R1).
+    pub fn render_body(&self) -> String {
+        format!("{}\n", self.body.trim_end())
+    }
+
+    /// The body of the `summary.md` text `text`, trimmed. A frontmatter at
+    /// the start, for example one that an agent added, is not part of the
+    /// body (R7, KTD7).
+    pub fn body_of(text: &str) -> &str {
+        match frontmatter_bounds(text) {
+            Some((_, _, body)) => text[body..].trim(),
+            None => text.trim(),
+        }
+    }
+
+    /// Parse a `summary.md` of the old layout: its frontmatter holds the
+    /// summary data.
     pub fn parse(text: &str) -> Result<Self, FolderError> {
         let (yaml, body) = split_frontmatter("summary.md", text)?;
         Ok(Self {

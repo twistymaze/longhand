@@ -183,7 +183,8 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 },
 /**
  * Choose what New Note and the recording shortcut do (R8): start a note
- * that records, or open a note that does not record.
+ * that records, or open a note that does not record. The value goes into
+ * the shared settings file.
  */
 async setNewNoteRecords(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
@@ -207,7 +208,8 @@ async setAlertSound(enabled: boolean) : Promise<Result<Settings, string>> {
 },
 /**
  * Choose whether a new note shows the recording widget (R11). The next
- * note reads the new value (R14).
+ * note reads the new value (R14). The value goes into the shared settings
+ * file.
  */
 async setShowRecordingWidget(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
@@ -527,6 +529,25 @@ async retryMove() : Promise<Result<null, string>> {
 async showStorageFolder() : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("show_storage_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The state of the agent instructions in `AGENTS.md` and `CLAUDE.md` of
+ * the storage folder (R29). This writes nothing.
+ */
+async agentInstructionsStatus() : Promise<AgentBlockStatus> {
+    return await TAURI_INVOKE("agent_instructions_status");
+},
+/**
+ * Add the agent instructions to `AGENTS.md` and `CLAUDE.md` of the storage
+ * folder (R29). The error names the file that Longhand could not write.
+ */
+async addAgentInstructions() : Promise<Result<AgentBlockStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_agent_instructions") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -901,6 +922,32 @@ async listSessions() : Promise<Result<SessionEntry[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The library notices of Home (KTD14). They come from the latest library
+ * scan: the command reads no folder.
+ */
+async libraryNotices() : Promise<Result<LibraryNotices, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("library_notices") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Convert the notes in the old layout to the new layout (U5, R10, R12).
+ * Only the user starts it, from the Convert notice. A note that a
+ * computer works on now is skipped. The notices show the result: the
+ * conversion sends a library change when it ends.
+ */
+async convertOldNotes() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("convert_old_notes") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("session_detail", { sessionId }) };
@@ -1223,6 +1270,29 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 /** user-defined types **/
 
+/**
+ * The state of the managed block, as Settings > Storage shows it.
+ */
+export type AgentBlockStatus = 
+/**
+ * At least one of the files has no block. The button adds it.
+ */
+{ kind: "not_added" } | 
+/**
+ * Each file has a block.
+ */
+{ kind: "added" } | 
+/**
+ * Longhand cannot write the files now. `reason` tells why.
+ */
+{ kind: "unavailable"; reason: string } | 
+/**
+ * The markers in `file` are damaged: a begin marker with no end
+ * marker, an end marker with no begin marker, two blocks, or a begin
+ * marker with no version. Longhand writes nothing until the user
+ * fixes the file.
+ */
+{ kind: "damaged"; file: string }
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
 /**
@@ -1306,11 +1376,47 @@ recorded_ms: number }
  * A choice in the update window. A close of the window is `Close`.
  */
 export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close"
+/**
+ * The Convert notice of Home (R11, F3). It shows only while the storage
+ * folder has a note in the old layout.
+ */
+export type ConversionNotice = { 
+/**
+ * The number of notes in the old layout.
+ */
+old_notes: number; 
+/**
+ * A conversion runs now.
+ */
+running: boolean; 
+/**
+ * The number of notes that the last conversion skipped, because a
+ * computer worked on them. A later run converts them.
+ */
+skipped: number; 
+/**
+ * The notes that the last conversion could not convert and that are
+ * still old.
+ */
+failed: FailedNote[] }
 export type CredentialStatus = { kind: "present"; host: string; length: number; fingerprint: string } | { kind: "absent"; host: string } | 
 /**
  * Locked or refused: the user can recover it (R20b).
  */
 { kind: "needs_unlock"; message: string } | { kind: "failed"; message: string }
+/**
+ * The shared settings file that did not parse for about one minute (R22).
+ */
+export type DamagedFile = { 
+/**
+ * The path of the file in the storage folder.
+ */
+path: string; 
+/**
+ * The line where the error is, from 1. `None` when the file is JSON,
+ * but not an object.
+ */
+line: number | null }
 /**
  * Why a delete did not complete (R8, R33). Nothing after the failed step
  * changed.
@@ -1346,7 +1452,12 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
  * Between segments, where the user paused the note (KTD5 of the pause
  * plan).
  */
-{ kind: "pause"; duration_ms: number } | { kind: "silence"; duration_ms: number }
+{ kind: "pause"; duration_ms: number } | { kind: "silence"; duration_ms: number } | 
+/**
+ * A line in free text, for example from an agent edit (R7, KTD7). It
+ * has no time.
+ */
+{ kind: "text"; text: string }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
 /**
  * The result of a model list request, for the Summaries pane (KTD2). It
@@ -1360,6 +1471,14 @@ export type EndpointView = { host: string; model: string;
  */
 encrypted: boolean }
 export type ExecutionSpec = { schema_version: number; catalog_revision: string; config: RecognitionConfig; artifacts: ArtifactSpec[]; runtimes: RuntimeSpec[]; capabilities: Capabilities; enabled_live_transcription: boolean; enabled_live_speaker_analysis: boolean; preprocessing_revision: string }
+/**
+ * A note that the last conversion could not convert (R10).
+ */
+export type FailedNote = { 
+/**
+ * The title of the note, or the name of its folder.
+ */
+name: string; reason: string }
 /**
  * What a rename did to the session's folder. The title changes in every
  * case.
@@ -1406,6 +1525,21 @@ export type LeaveOutcome =
  * holds notes whose folder is gone.
  */
 export type LibraryChanged = { changed: string[]; removed: string[] }
+/**
+ * The library notices of Home, from the latest library scans (KTD14).
+ * In the normal case each part is empty, and Home then shows nothing.
+ */
+export type LibraryNotices = { 
+/**
+ * `None` when the storage folder has no note in the old layout: then
+ * no conversion control shows (R11).
+ */
+conversion: ConversionNotice | null; 
+/**
+ * The note folders whose files have given no note for about one
+ * minute, sorted by folder (R6).
+ */
+problems: ProblemNote[] }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 /**
  * Why Longhand sent no model list request (R4, R16, R17).
@@ -1629,6 +1763,18 @@ export type NewNoteType =
  */
 { kind: "named"; name: string }
 /**
+ * A file of a note folder that gives no note (R6).
+ */
+export type NoteProblemView = { kind: ProblemKindView; file: string; 
+/**
+ * The line of the error in the file, when the parse tells it.
+ */
+line: number | null; 
+/**
+ * Why the actions wait, and what the user can do.
+ */
+reason: string }
+/**
  * What a type rename, merge or delete did (R6, R31).
  */
 export type NoteTypeEdit = { 
@@ -1734,6 +1880,33 @@ export type OldNotes =
  * Keep the notes in the old folder. The library forgets them (R7).
  */
 "leave"
+/**
+ * What the user can do about a file of a note folder that gives no note
+ * (R6).
+ */
+export type ProblemKindView = 
+/**
+ * `session.md` does not parse. The user can correct it.
+ */
+"user_file" | 
+/**
+ * `longhand.json` does not parse or is not there: wait for the sync,
+ * or update Longhand on the other computer.
+ */
+"record" | 
+/**
+ * A newer Longhand wrote `longhand.json`: update Longhand.
+ */
+"newer_record"
+/**
+ * A note folder whose files give no note, in the notice on Home (R6).
+ */
+export type ProblemNote = { 
+/**
+ * The title of the note, or the name of its folder when the note has
+ * no known title.
+ */
+name: string; problem: NoteProblemView }
 export type ProcessingMode = "during_recording" | "after_stop"
 export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | 
 /**
@@ -1805,7 +1978,12 @@ export type ReadOnlyCause =
  * The storage folder has no settings file, and Longhand did not write
  * one into it.
  */
-"no_settings_file"
+"no_settings_file" | 
+/**
+ * The settings file did not parse for about one minute, so it is not a
+ * sync in progress (R22). The user must fix the file.
+ */
+"settings_file_damaged"
 export type Readiness = { microphone_authorized: boolean; 
 /**
  * The system audio permission (R9). It does not change `armed`: the
@@ -2205,7 +2383,12 @@ note_type: string | null;
 /**
  * The tags of the note, as their exact texts (R9, R11).
  */
-tags: string[] }
+tags: string[]; 
+/**
+ * A file of the note folder gives no note (R6). The actions that
+ * write to the note wait. `None` for a note whose files are valid.
+ */
+problem: NoteProblemView | null }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds
@@ -2285,9 +2468,9 @@ microphone: MicrophoneChoice | null;
  */
 system_audio_default: boolean; 
 /**
- * What New Note and the recording shortcut do (R8, R10): start a note
- * that records, or open a note that does not record. On by default,
- * as before the setting.
+ * A shared setting. What New Note and the recording shortcut do (R8,
+ * R10): start a note that records, or open a note that does not
+ * record. On by default.
  */
 new_note_records: boolean; 
 /**
@@ -2301,9 +2484,9 @@ alert_sound: boolean;
  */
 hide_from_dock: boolean; 
 /**
- * Whether a new note shows the recording widget: the pill that is on
- * screen while a note is open (R11). On by default. Local to this
- * computer. A change applies to the next note (R14).
+ * A shared setting. Whether a new note shows the recording widget: the
+ * pill that is on screen while a note is open (R11). On by default. A
+ * change applies to the next note (R14).
  */
 show_recording_widget: boolean; 
 /**
@@ -2378,7 +2561,16 @@ export type SharedState = { availability: SharedAvailability;
  * The settings file comes from a newer version of Longhand, so it can
  * hold settings that this version does not show.
  */
-newer_version: boolean; unknown_values: UnknownSharedValue[] }
+newer_version: boolean; unknown_values: UnknownSharedValue[]; 
+/**
+ * The prompt files and the Background file can change now. This is
+ * also true while only the settings file does not parse (R22).
+ */
+files_writable: boolean; 
+/**
+ * The settings file did not parse for about one minute (R22).
+ */
+damaged_file: DamagedFile | null }
 /**
  * Which of the four shortcuts a command acts on.
  */
@@ -2475,7 +2667,18 @@ export type SummaryPromptEntry = { id: string; name: string; text: string; title
 /**
  * A built-in prompt cannot be renamed, edited or deleted (R2).
  */
-built_in: boolean }
+built_in: boolean; 
+/**
+ * The prompt text or the title instructions are over their limit, for
+ * example after an edit outside Longhand (R21). A run uses the whole
+ * text. Rename and delete stay available.
+ */
+over_limit: boolean; 
+/**
+ * The file is over the size limit that Longhand reads, so the list has
+ * no texts of the prompt (R21). The texts are empty.
+ */
+too_large: boolean }
 /**
  * The built-in prompts first, then the custom prompts, and the id of the
  * prompt that the next summary uses.

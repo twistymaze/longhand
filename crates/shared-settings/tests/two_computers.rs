@@ -16,6 +16,7 @@ use shared_settings::prompts::{
     create_prompt, render_prompt_file, set_prompt_text, set_prompt_title_text,
 };
 use shared_settings::view::{ActivePrompt, Availability, SharedView, refresh};
+use shared_settings::view::{MISSING_PROMPT_WAIT, MissingSince};
 
 /// One computer: its local cache folder.
 struct Computer {
@@ -525,11 +526,14 @@ fn a_change_of_the_type_prompts_on_a_shows_on_b_and_a_save_of_b_keeps_it() {
 }
 
 #[test]
-fn a_type_prompt_whose_file_is_gone_is_the_last_copy_that_this_computer_read() {
-    // R7, KTD2.
+fn a_type_prompt_whose_file_is_gone_gives_the_default_prompt_at_once() {
+    // AE6, R20, KTD8: an agent deleted the prompt file. The cache keeps
+    // the last copy, so each computer that read it knows the prompt, but
+    // the copy does not stand in for the file.
     let folder = tempfile::tempdir().unwrap();
-    let a = computer();
+    let (a, b) = (computer(), computer());
     a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::ChangeOfFolder);
     let standup = create_prompt(folder.path(), "Standup", "A's standup.").unwrap();
     a.save(
         folder.path(),
@@ -538,18 +542,205 @@ fn a_type_prompt_whose_file_is_gone_is_the_last_copy_that_this_computer_read() {
             SharedValue::NoteTypePrompts(map(&[("Pathfinder", &standup.id)])),
         ],
     );
-    shared_settings::prompts::delete_prompt(folder.path(), &standup.id).unwrap();
-    // Each read after the file went keeps the copy.
-    a.refresh(folder.path());
-    let view = a.refresh(folder.path());
-    assert!(view.prompts.is_empty());
-    match type_prompt(&view, Some("Pathfinder")) {
-        Some(ActivePrompt::Custom { prompt, from_cache }) => {
-            assert_eq!(prompt.text, "A's standup.");
-            assert!(from_cache);
-        }
-        other => panic!("expected the cached Standup prompt, got {other:?}"),
+    b.refresh(folder.path());
+    fs::remove_file(
+        folder
+            .path()
+            .join(".longhand")
+            .join("prompts")
+            .join(&standup.file_name),
+    )
+    .unwrap();
+    let before = tree(folder.path());
+    for computer in [&a, &b] {
+        computer.refresh(folder.path());
+        let view = computer.refresh(folder.path());
+        assert!(view.prompts.is_empty());
+        assert_eq!(type_prompt(&view, Some("Pathfinder")), None);
+        assert_eq!(view.missing_prompts, [standup.id.clone()].into());
+        let cache = read_cache(computer.cache.path()).unwrap();
+        assert_eq!(cache.type_prompts[0].text, "A's standup.");
     }
+    assert_eq!(tree(folder.path()), before, "a read never writes");
+}
+
+#[test]
+fn a_missing_prompt_is_due_for_a_clear_after_about_one_minute() {
+    // R20: a rename that a sync delivers as a delete and a create keeps
+    // the references.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    let made = create_prompt(folder.path(), "Recap", "Recap.").unwrap();
+    a.save(
+        folder.path(),
+        &[SharedValue::ActiveSummaryPrompt(made.id.clone())],
+    );
+    let file = folder
+        .path()
+        .join(".longhand")
+        .join("prompts")
+        .join(&made.file_name);
+    let contents = fs::read(&file).unwrap();
+    fs::remove_file(&file).unwrap();
+    let start = std::time::Instant::now();
+    let mut missing = MissingSince::default();
+    missing.update(&a.refresh(folder.path()), start);
+    let soon = start + std::time::Duration::from_secs(59);
+    missing.update(&a.refresh(folder.path()), soon);
+    assert!(missing.due(soon, MISSING_PROMPT_WAIT).is_empty());
+    let later = start + MISSING_PROMPT_WAIT;
+    assert_eq!(
+        missing.due(later, MISSING_PROMPT_WAIT),
+        [made.id.clone()].into()
+    );
+    // The file comes back under another name: the record goes.
+    fs::write(file.with_file_name("Recap 2.md"), &contents).unwrap();
+    missing.update(&a.refresh(folder.path()), later);
+    assert!(missing.due(later, MISSING_PROMPT_WAIT).is_empty());
+}
+
+#[test]
+fn a_computer_that_never_read_a_missing_prompt_does_not_name_it_missing() {
+    // R20: only a computer that read the prompt clears its references.
+    let folder = tempfile::tempdir().unwrap();
+    let c = computer();
+    c.join(folder.path(), JoinKind::ChangeOfFolder);
+    let view = c.save(
+        folder.path(),
+        &[SharedValue::ActiveSummaryPrompt("never-read-id".into())],
+    );
+    assert_eq!(view.active, ActivePrompt::Missing("never-read-id".into()));
+    assert!(view.missing_prompts.is_empty());
+}
+
+#[test]
+fn a_prompt_file_that_cannot_be_used_keeps_the_last_copy() {
+    // KTD8: a sync delivered the file in parts.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    let standup = create_prompt(folder.path(), "Standup", "A's standup.").unwrap();
+    a.save(
+        folder.path(),
+        &[SharedValue::ActiveSummaryPrompt(standup.id.clone())],
+    );
+    fs::write(
+        folder
+            .path()
+            .join(".longhand")
+            .join("prompts")
+            .join(&standup.file_name),
+        render_prompt_file(&standup.id, "Standup", ""),
+    )
+    .unwrap();
+    let view = a.refresh(folder.path());
+    assert_eq!(active_text(&view), "A's standup.");
+    assert!(view.missing_prompts.is_empty());
+}
+
+/// Each file under `root` and its bytes.
+fn tree(root: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                out.push((path.clone(), fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_read_of_outside_edits_writes_no_shared_file() {
+    // R23: a file with no id, a file whose name is not its file name, a
+    // missing prompt, a file over the limit and a settings file that does
+    // not parse change nothing at a read.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    let made = create_prompt(folder.path(), "Recap", "Recap.").unwrap();
+    a.save(
+        folder.path(),
+        &[SharedValue::ActiveSummaryPrompt(made.id.clone())],
+    );
+    let prompts = folder.path().join(".longhand").join("prompts");
+    fs::write(prompts.join("No id.md"), "Text.").unwrap();
+    fs::write(
+        prompts.join("Old name.md"),
+        render_prompt_file("named-id", "New name", "Text."),
+    )
+    .unwrap();
+    fs::write(
+        prompts.join("Long.md"),
+        render_prompt_file("long-id", "Long", &"x".repeat(5000)),
+    )
+    .unwrap();
+    fs::remove_file(prompts.join(&made.file_name)).unwrap();
+    let before = tree(folder.path());
+    a.refresh(folder.path());
+    a.join(folder.path(), JoinKind::SameFolder);
+    assert_eq!(tree(folder.path()), before);
+    fs::write(settings_path(folder.path()), "{\"schema").unwrap();
+    let before = tree(folder.path());
+    a.refresh(folder.path());
+    a.join(folder.path(), JoinKind::SameFolder);
+    assert_eq!(tree(folder.path()), before);
+}
+
+#[test]
+fn a_settings_file_that_does_not_parse_keeps_the_settings_and_shows_the_folder_prompts() {
+    // R22: the settings in the file are read-only with their last values,
+    // and the prompts and the Background still change.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    a.save(folder.path(), &[SharedValue::LiveTranscript(false)]);
+    fs::write(
+        settings_path(folder.path()),
+        "{\n  \"schema_version\": 1,\n  \"live",
+    )
+    .unwrap();
+    let made = create_prompt(folder.path(), "Recap", "Recap.").unwrap();
+    save_background(folder.path(), "Background.").unwrap();
+    let view = a.refresh(folder.path());
+    assert!(!view.writable());
+    assert!(view.files_writable);
+    assert!(view.background_writable());
+    assert_eq!(view.parse_error().unwrap().line, Some(3));
+    assert_eq!(view.fields.live_transcript, Field::Known(false));
+    assert_eq!(names(&view), vec!["Recap"]);
+    assert_eq!(view.prompts[0].id, made.id);
+    assert_eq!(view.background, "Background.");
+    assert!(save_settings(folder.path(), &[SharedValue::LiveTranscript(true)]).is_err());
+}
+
+#[test]
+fn a_prompt_over_the_limit_gives_a_run_its_whole_text() {
+    // R21, KTD8.
+    let folder = tempfile::tempdir().unwrap();
+    let a = computer();
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    let text = "w".repeat(5000);
+    let prompts = folder.path().join(".longhand").join("prompts");
+    fs::create_dir_all(&prompts).unwrap();
+    fs::write(
+        prompts.join("Long.md"),
+        render_prompt_file("long-id", "Long", &text),
+    )
+    .unwrap();
+    let view = a.save(
+        folder.path(),
+        &[SharedValue::ActiveSummaryPrompt("long-id".into())],
+    );
+    assert_eq!(active_text(&view), text);
+    assert!(view.too_large_prompts.is_empty());
 }
 
 #[test]

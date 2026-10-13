@@ -60,7 +60,7 @@ fn note_with_copies() -> Note {
     let mut doc = SessionDoc::new(ID, None, &segments).unwrap();
     doc.transcript_fingerprint = Some(fingerprint(TRANSCRIPT.as_bytes()));
     doc.summary_fingerprint = Some(fingerprint(SUMMARY.as_bytes()));
-    fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
     fs::write(home.join("transcript.md"), TRANSCRIPT).unwrap();
     fs::write(home.join("summary.md"), SUMMARY).unwrap();
     fs::write(home.join("notes.md"), NOTES).unwrap();

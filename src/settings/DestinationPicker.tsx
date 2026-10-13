@@ -1,10 +1,11 @@
 // Settings > Storage (R3, R4, R6, R10, R16): the one storage folder, Show
-// in Finder, Change, the Move of the notes to a new folder, and the removal
-// of old audio. Change is not available while a Move runs or is paused
-// (KTD11).
+// in Finder, Change, the Move of the notes to a new folder, the removal
+// of old audio, and the agent instructions (R29). Change is not available
+// while a Move runs or is paused (KTD11).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type AgentBlockStatus,
   commands,
   events,
   type DestinationStatus,
@@ -14,7 +15,7 @@ import {
 } from "../bindings";
 import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
-import { readOnlyReason } from "./shared";
+import { damagedFileText, readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes, notes } from "./ui";
 
 export function describeDestination(status: DestinationStatus): { tone: Tone; text: string } {
@@ -131,6 +132,90 @@ function MoveGroup({ move, onRetry }: { move: Move; onRetry: () => void }) {
   );
 }
 
+const AGENT_INSTRUCTIONS_ABOUT =
+  "Adds instructions for AI agents, such as Claude Code and Codex, to AGENTS.md and CLAUDE.md in this folder. Your own text in these files stays.";
+
+/// The agent instructions in AGENTS.md and CLAUDE.md of the storage folder
+/// (R29). The pane reads their state when it opens, when the folder or its
+/// status changes, and when the window gets the focus, so a file that the
+/// user fixed shows at once. The status read writes nothing, so a folder
+/// that Longhand can't write gets its reason from the folder status. An
+/// automatic update of the instructions shows nothing here.
+function AgentInstructions({ folder, folderStatus }: { folder: string; folderStatus: DestinationStatus }) {
+  const [state, setState] = useState<AgentBlockStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const last = useRef<AgentBlockStatus | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    // The error of a failed write is about the folder or the files as they were.
+    setError(null);
+    const read = () => {
+      commands.agentInstructionsStatus().then(
+        (next) => {
+          if (!live) return;
+          if (JSON.stringify(next) !== JSON.stringify(last.current)) setError(null);
+          last.current = next;
+          setState(next);
+        },
+        () => {},
+      );
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", read);
+    };
+  }, [folder, folderStatus.kind]);
+
+  if (!state) return null;
+
+  const unavailable =
+    state.kind === "unavailable"
+      ? state.reason
+      : folderStatus.kind === "not_writable"
+        ? `Longhand can’t write to the storage folder: ${folderStatus.message}`
+        : null;
+
+  const add = async () => {
+    setBusy(true);
+    try {
+      const result = await commands.addAgentInstructions();
+      if (result.status === "error") setError(result.error);
+      else {
+        setError(null);
+        last.current = result.data;
+        setState(result.data);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Group header="AI agents">
+      <Row label="Agent instructions" detail={unavailable ?? AGENT_INSTRUCTIONS_ABOUT}>
+        {state.kind === "added" ? (
+          <Status tone="positive">Added</Status>
+        ) : (
+          <Button disabled={busy || state.kind !== "not_added" || unavailable !== null} onClick={() => void add()}>
+            Add Agent Instructions
+          </Button>
+        )}
+      </Row>
+      {state.kind === "damaged" && (
+        <ErrorText>
+          The agent instructions in {state.file} are damaged, so Longhand can’t change them. Delete the
+          instructions from {state.file}, from the BEGIN line to the END line, then add them again.
+        </ErrorText>
+      )}
+      {error && <ErrorText>{error}</ErrorText>}
+    </Group>
+  );
+}
+
 export function DestinationPicker({
   settings,
   status,
@@ -200,7 +285,13 @@ export function DestinationPicker({
         {readOnly ? (
           <Row
             label={<Status tone="caution">{readOnly}</Status>}
-            detail="Longhand uses the last settings it read. Summary prompts and transcription choices can’t be changed until the folder is available."
+            detail={
+              settings.shared.damaged_file
+                ? damagedFileText(settings.shared.damaged_file)
+                : settings.shared.files_writable
+                  ? "Longhand uses the last settings it read. Summary prompts and the Background can still be changed."
+                  : "Longhand uses the last settings it read. Summary prompts and transcription choices can’t be changed until the folder is available."
+            }
           />
         ) : (
           <Row label={<Status tone={described.tone}>{described.text}</Status>} />
@@ -219,6 +310,7 @@ export function DestinationPicker({
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
       <AudioRemoval settings={settings} onSettings={onSettings} />
+      <AgentInstructions folder={current} folderStatus={status} />
       {dialog}
     </Pane>
   );

@@ -89,6 +89,7 @@ fn a_recognition_transcript_has_a_line_between_segments() {
             TranscriptLine::Pause { duration_ms } => format!("pause {duration_ms}"),
             TranscriptLine::Gap { duration_ms } => format!("gap {duration_ms}"),
             TranscriptLine::Silence { .. } => "silence".into(),
+            TranscriptLine::Text { text } => format!("text {text}"),
         })
         .collect();
     assert_eq!(

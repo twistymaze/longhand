@@ -11,6 +11,7 @@ use session_core::{
     folder::SessionDoc,
     recognition::{self, Reuse},
 };
+use session_save::note_files;
 use std::path::Path;
 
 /// Whether the artifacts of a run are on disk. `artifact` is the catalog id
@@ -98,6 +99,9 @@ pub enum Cause {
     RemovedAudio,
     AlreadyQueued,
     NotSaved,
+    /// An older version of Longhand saved the note: its records are in
+    /// `session.md` until the conversion (KTD6).
+    OldLayout,
 }
 
 impl From<Cause> for Refusal {
@@ -173,6 +177,7 @@ impl From<Cause> for Refusal {
                 "This note can be transcribed again only after it is saved.".into(),
                 false,
             ),
+            Cause::OldLayout => (save::OLD_LAYOUT.into(), false),
         };
         Self {
             message,
@@ -266,15 +271,14 @@ pub fn queue(
         crate::follow::follow_folder(store, session_id, false)?;
     }
     let (spec, home) = resolve_run(store, session_id, guards, settings, Some(model_id), ready)?;
-    // The save compares `session.md` with this value. A change that another
-    // computer makes during the run then keeps the previous result. A tag
-    // or type edit does not count (KTD2).
+    // The save compares the records of the note with this value (KTD4). A
+    // change to the records that another computer makes during the run then
+    // keeps the previous result. An edit of a `.md` file, a title proposal
+    // or a type move does not count (R3).
     let baseline = match home {
         Some(home) => {
-            let hash = session_core::folder::session_fingerprint(&std::fs::read(
-                Path::new(&home).join(save::SESSION_FILE),
-            )?);
-            Some(serde_json::to_value((home, hash))?)
+            let record = note_files::new_layout_record(Path::new(&home))?;
+            Some(serde_json::to_value((home, record.run_fingerprint()))?)
         }
         None => None,
     };
@@ -322,6 +326,14 @@ fn resolve_run(
             }
             .into(),
         );
+    }
+    // A note in the old layout waits for the conversion (KTD6).
+    if record
+        .home_path
+        .as_deref()
+        .is_some_and(|home| save::old_layout(Path::new(home)))
+    {
+        return Err(Cause::OldLayout.into());
     }
     // Removed audio does not come back, so its reason differs from the
     // reason for audio that the sync can still deliver (R14).
@@ -432,6 +444,7 @@ pub(crate) fn read_reusable(
 mod tests {
     use super::*;
     use models::recognition::{ProcessingMode, SpeakerSource};
+    use session_core::note_folder::NoteFiles;
     use session_core::recognition::*;
 
     fn saved(config: &RecognitionConfig) -> tempfile::TempDir {
@@ -494,14 +507,14 @@ mod tests {
         doc.recognition_audio = Some(Default::default());
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), b"Summary").unwrap();
-        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        note_files::write_doc(home, &doc).unwrap();
         temp
     }
 
     /// Whether a run with `config` uses the saved timed text in `home` again.
     fn reuses(home: &Path, config: &RecognitionConfig) -> Result<bool, StageError> {
         let spec = models::recognition::resolve(config).unwrap();
-        let doc = SessionDoc::read(home)?;
+        let doc = NoteFiles::read(home)?.doc;
         Ok(read_reusable(home, &doc, &spec, |_| {})?.is_some())
     }
 
@@ -580,10 +593,10 @@ mod tests {
             home.file_name().unwrap().to_string_lossy()
         ));
         std::fs::copy(home.join(ARTIFACT_FILE), &outside).unwrap();
-        let mut doc = SessionDoc::read(home).unwrap();
+        let mut doc = NoteFiles::read(home).unwrap().doc;
         doc.recognition_artifact.as_mut().unwrap().filename =
             outside.to_string_lossy().into_owned();
-        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        note_files::write_doc(home, &doc).unwrap();
         let reused = reuses(home, &config);
         std::fs::remove_file(&outside).unwrap();
         assert!(!reused.unwrap());

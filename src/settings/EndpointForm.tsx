@@ -9,7 +9,7 @@ import {
 import { Background } from "./Background";
 import { ModelPicker } from "./ModelPicker";
 import { SummaryPrompts } from "./SummaryPrompts";
-import { readOnlyReason } from "./shared";
+import { filesReadOnlyReason, readOnlyReason } from "./shared";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, type Tone, fieldClass } from "./ui";
 
 // A function, not a constant, so that a test can set the platform.
@@ -369,7 +369,11 @@ export function EndpointForm({
 
       <Background settings={settings} onSettings={onSettings} />
 
-      <SummaryPrompts onSettings={onSettings} readOnly={readOnlyReason(settings)} />
+      <SummaryPrompts
+        onSettings={onSettings}
+        readOnly={filesReadOnlyReason(settings)}
+        settingsReadOnly={readOnlyReason(settings)}
+      />
 
       <Group
         header="Context"

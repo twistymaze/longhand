@@ -1,0 +1,30 @@
+{
+  "asr_model": "parakeet-unified-en-0.6b-q80",
+  "found_speakers": 2,
+  "layout": 1,
+  "segments": [
+    {
+      "audio": "audio/segment-01.opus",
+      "duration_ms": 60000,
+      "index": 0,
+      "offset_ms": 0,
+      "wall_end": "2026-10-03T10:01:00-05:00",
+      "wall_start": "2026-10-03T10:00:00-05:00"
+    }
+  ],
+  "session_id": "note-design-review",
+  "started": "2026-10-03T10:00:00-05:00",
+  "summary": {
+    "endpoint_host": "llm.example.com",
+    "model": "example-model",
+    "prompt_id": "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10",
+    "prompt_name": "Weekly review",
+    "status": "complete"
+  },
+  "summary_fingerprint": "e9d84ceb585646acfe47b2603448cf19bf87fc6073ae0e136eb5daa140b2ef7a",
+  "transcript_fingerprint": "e62bce60e0ed508a4d74d36439ce5e98e5d6c3b8b9364e538e8e7bf6fec52bf8",
+  "written_title": {
+    "source": "proposed",
+    "text": "Design review"
+  }
+}

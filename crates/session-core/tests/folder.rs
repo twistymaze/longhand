@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
-    AudioState, PendingType, REMOVAL_MARKER_TEXT, ResultFlag, SessionDoc, Summary, SummaryMeta,
-    Transcript, TranscriptLine, audio_removed, audio_state, fingerprint, format_position,
-    removal_marker, render_notes, session_fingerprint,
+    AudioState, FolderError, FrontmatterPatch, PendingType, REMOVAL_MARKER_TEXT, ResultFlag,
+    SessionDoc, SessionMd, Summary, SummaryMeta, Transcript, TranscriptLine, audio_removed,
+    audio_state, fingerprint, format_position, removal_marker, render_notes,
 };
 use session_core::{Segment, SpeakerCount, Timeline};
 
@@ -107,7 +107,7 @@ fn transcript_md_round_trips() {
         "{text}"
     );
     assert!(text.contains("--- gap 00:04:12 ---"));
-    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&text), transcript);
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn a_pause_line_round_trips_and_differs_from_a_gap_line() {
     let text = transcript.render();
     assert!(text.contains("\n--- pause 00:15:00 ---\n"), "{text}");
     assert!(text.contains("\n--- gap 00:01:00 ---\n"), "{text}");
-    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&text), transcript);
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn transcript_without_speakers_says_so_and_round_trips() {
     };
     let text = transcript.render();
     assert!(text.contains("no speaker marks"));
-    assert_eq!(Transcript::parse(&text).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&text), transcript);
 }
 
 #[test]
@@ -389,7 +389,7 @@ fn speaker_recognition_off_is_not_reported_as_failure() {
     let rendered = transcript.render_speaker_off();
     assert!(rendered.contains("Speaker recognition was off"));
     assert!(!rendered.contains("failed"));
-    assert_eq!(Transcript::parse(&rendered).unwrap(), transcript);
+    assert_eq!(Transcript::parse(&rendered), transcript);
     assert!(transcript.render().contains("failed"));
 }
 
@@ -602,57 +602,6 @@ fn a_pending_change_to_no_type_round_trips() {
 }
 
 #[test]
-fn the_session_fingerprint_ignores_the_user_fields() {
-    // Keys after the user fields must keep their order.
-    let mut doc = SessionDoc::new("01J8Z", Some(SpeakerCount::Exact(2)), &one_segment(1)).unwrap();
-    doc.asr_model = Some("parakeet-tdt-0.6b-v3".into());
-    doc.found_speakers = Some(2);
-    doc.transcript_fingerprint = Some(fingerprint(b"transcript"));
-    doc.summary_fingerprint = Some(fingerprint(b"summary"));
-    let plain = doc.render();
-    let mut tagged = doc.clone();
-    tagged.tags = vec!["Topic::Security".into()];
-    tagged.pending_type = Some(pending_type());
-    let tagged = tagged.render();
-    assert_ne!(
-        fingerprint(plain.as_bytes()),
-        fingerprint(tagged.as_bytes())
-    );
-    assert_eq!(
-        session_fingerprint(plain.as_bytes()),
-        session_fingerprint(tagged.as_bytes())
-    );
-}
-
-#[test]
-fn the_session_fingerprint_sees_other_changes() {
-    let doc = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
-    let plain = doc.render();
-    let mut titled = doc.clone();
-    titled.title = Some("Budget".into());
-    assert_ne!(
-        session_fingerprint(plain.as_bytes()),
-        session_fingerprint(titled.render().as_bytes())
-    );
-    let edited = format!("{plain}\nA line that a person added.\n");
-    assert_ne!(
-        session_fingerprint(plain.as_bytes()),
-        session_fingerprint(edited.as_bytes())
-    );
-}
-
-#[test]
-fn the_session_fingerprint_of_bytes_with_no_frontmatter_is_their_fingerprint() {
-    for bytes in [
-        &b"no frontmatter"[..],
-        &[0xff, 0xfe, 0x00][..],
-        b"---\n- a\n---\n",
-    ] {
-        assert_eq!(session_fingerprint(bytes), fingerprint(bytes));
-    }
-}
-
-#[test]
 fn a_session_md_with_no_pause_renders_as_before() {
     // KTD4 of the pause plan: a note with no pause writes no new key.
     let doc = SessionDoc::new("01J8Z", None, &one_segment(1)).unwrap();
@@ -693,4 +642,223 @@ fn a_paused_segment_round_trips_through_session_md() {
         .map(|s| Segment::from(s).ends_in_pause)
         .collect();
     assert_eq!(flags, [true, false]);
+}
+
+// ---------------------------------------------------------------- session.md patcher (KTD3)
+
+const HAND_EDITED: &str = "---\n\
+# Written by hand\n\
+title: Old title\n\
+mood: calm\n\
+longhand_tags: [Person::Nathan, \"follow up\"]\n\
+---\n\
+\n\
+# Heading\n\
+\n\
+Body text.\n";
+
+#[test]
+fn the_reduced_session_md_read_takes_the_title_and_the_tags_and_accepts_other_keys() {
+    let read = SessionMd::parse(HAND_EDITED).unwrap();
+    assert_eq!(read.title.as_deref(), Some("Old title"));
+    assert_eq!(read.tags, ["Person::Nathan", "follow up"]);
+
+    let old_layout = SessionDoc::new("01J8Z", None, &one_segment(1))
+        .unwrap()
+        .render();
+    let read = SessionMd::parse(&old_layout).unwrap();
+    assert_eq!(read, SessionMd::default());
+
+    let read = SessionMd::parse("---\ntitle: 2026\nlonghand_tags:\nextra:\n  a: 1\n---\n").unwrap();
+    assert_eq!(read.title.as_deref(), Some("2026"));
+    assert!(read.tags.is_empty());
+}
+
+#[test]
+fn the_patcher_changes_only_the_title_line() {
+    let patched = FrontmatterPatch::new()
+        .set("title", "New title")
+        .apply("session.md", HAND_EDITED)
+        .unwrap();
+    assert_eq!(
+        patched,
+        HAND_EDITED.replace("title: Old title\n", "title: New title\n")
+    );
+}
+
+#[test]
+fn the_patcher_keeps_a_key_whose_value_does_not_change() {
+    let patched = FrontmatterPatch::new()
+        .set("title", "Old title")
+        .set("longhand_tags", ["Person::Nathan", "follow up"])
+        .apply("session.md", HAND_EDITED)
+        .unwrap();
+    assert_eq!(patched, HAND_EDITED);
+}
+
+#[test]
+fn the_patcher_adds_an_absent_key_and_keeps_the_other_text() {
+    let text = "---\n# A comment\ntitle: Budget\nmood: calm\n---\nBody.\n";
+    let patched = FrontmatterPatch::new()
+        .set("longhand_tags", ["a", "b c"])
+        .apply("session.md", text)
+        .unwrap();
+    assert_eq!(
+        patched,
+        "---\n# A comment\ntitle: Budget\nmood: calm\nlonghand_tags:\n- a\n- b c\n---\nBody.\n"
+    );
+}
+
+#[test]
+fn a_crlf_file_stays_crlf_after_a_patch() {
+    let text = HAND_EDITED.replace('\n', "\r\n");
+    let patched = FrontmatterPatch::new()
+        .set("title", "New title")
+        .set("speaker_note", "added")
+        .apply("session.md", &text)
+        .unwrap();
+    let expected = HAND_EDITED
+        .replace("title: Old title\n", "title: New title\n")
+        .replace(
+            "longhand_tags: [Person::Nathan, \"follow up\"]\n",
+            "longhand_tags: [Person::Nathan, \"follow up\"]\nspeaker_note: added\n",
+        )
+        .replace('\n', "\r\n");
+    assert_eq!(patched, expected);
+}
+
+#[test]
+fn removing_records_from_an_old_session_md_keeps_unknown_keys_comments_and_the_body() {
+    let mut full = SessionDoc::new("01J8Z", Some(SpeakerCount::Exact(2)), &one_segment(1)).unwrap();
+    full.title = Some("Budget".into());
+    full.tags = vec!["Topic::Security".into()];
+    full.found_speakers = Some(2);
+    full.recognition_snapshot = Some(serde_json::json!({"model": "m", "options": {"a": [1, 2]}}));
+    let mut reduced = full.clone();
+    reduced.found_speakers = None;
+    reduced.recognition_snapshot = None;
+    reduced.segments.clear();
+
+    let rendered = full.render();
+    let (full_yaml, body) = rendered
+        .strip_prefix("---\n")
+        .and_then(|t| t.split_once("\n---\n"))
+        .unwrap();
+    let reduced_text = reduced.render();
+    let (reduced_yaml, _) = reduced_text
+        .strip_prefix("---\n")
+        .and_then(|t| t.split_once("\n---\n"))
+        .unwrap();
+    // `segments: []` is the render of no segments; the patcher removes the key.
+    let reduced_yaml = reduced_yaml.replace("\nsegments: []", "");
+    let extra = "# Kept comment\nmy_key: kept\n";
+    let text = format!("---\n{extra}{full_yaml}\n---\n{body}");
+    assert!(text.contains("found_speakers: 2\n"), "{text}");
+    assert!(text.contains("recognition_snapshot:\n  model: m"), "{text}");
+    assert!(text.contains("segments:\n- index: 0"), "{text}");
+
+    let patched = FrontmatterPatch::new()
+        .remove("segments")
+        .remove("recognition_snapshot")
+        .remove("found_speakers")
+        .remove("not_present")
+        .apply("session.md", &text)
+        .unwrap();
+    assert_eq!(patched, format!("---\n{extra}{reduced_yaml}\n---\n{body}"));
+}
+
+#[test]
+fn removing_a_key_removes_its_block_scalar_with_blank_lines() {
+    let text = "---\nnotes: |\n  line one\n\n  line three\n# after\ntitle: T\n---\n";
+    let patched = FrontmatterPatch::new()
+        .remove("notes")
+        .apply("session.md", text)
+        .unwrap();
+    assert_eq!(patched, "---\n# after\ntitle: T\n---\n");
+}
+
+#[test]
+fn a_frontmatter_that_does_not_parse_gives_the_line_and_the_patcher_writes_nothing() {
+    let text = "---\ntitle: a\nmood: b: c\n---\nBody.\n";
+    match FrontmatterPatch::new()
+        .set("title", "B")
+        .apply("session.md", text)
+    {
+        Err(FolderError::Line { file, line, .. }) => {
+            assert_eq!(file, "session.md");
+            assert_eq!(line, 3);
+        }
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+    match SessionMd::parse(text) {
+        Err(FolderError::Line { line, .. }) => assert_eq!(line, 3),
+        other => panic!("expected a parse error, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_patcher_makes_a_new_file_with_frontmatter_and_no_body() {
+    let text = FrontmatterPatch::new()
+        .set("title", "Budget")
+        .set("longhand_tags", ["a"])
+        .create();
+    assert_eq!(text, "---\ntitle: Budget\nlonghand_tags:\n- a\n---\n");
+    let read = SessionMd::parse(&text).unwrap();
+    assert_eq!(read.title.as_deref(), Some("Budget"));
+    assert_eq!(read.tags, ["a"]);
+}
+
+#[test]
+fn the_patcher_edits_an_empty_frontmatter() {
+    let patched = FrontmatterPatch::new()
+        .set("title", "Budget")
+        .apply("session.md", "---\n---\nBody.\n")
+        .unwrap();
+    assert_eq!(patched, "---\ntitle: Budget\n---\nBody.\n");
+}
+
+// Covers R7, KTD7: a line that an agent or a person wrote in free text
+// reads as plain text with no time. The lines that parse stay turns.
+#[test]
+fn a_transcript_line_that_does_not_parse_reads_as_plain_text() {
+    let text = "# Transcript\n\n- [00:00:01] Speaker 1: We start.\nThe agent wrote this line.\n--- note from the agent ---\n- [00:00:09] Speaker 2: We end.\n";
+    let transcript = Transcript::parse(text);
+    assert_eq!(
+        transcript.lines,
+        [
+            TranscriptLine::Turn {
+                position_ms: 1_000,
+                speaker: Some(1),
+                text: "We start.".into(),
+            },
+            TranscriptLine::Text {
+                text: "The agent wrote this line.".into(),
+            },
+            TranscriptLine::Text {
+                text: "--- note from the agent ---".into(),
+            },
+            TranscriptLine::Turn {
+                position_ms: 9_000,
+                speaker: Some(2),
+                text: "We end.".into(),
+            },
+        ]
+    );
+    // A plain line renders as it is.
+    assert_eq!(Transcript::parse(&transcript.render()), transcript);
+}
+
+// Covers R7, KTD7: a frontmatter that an agent adds to `summary.md` is not
+// part of the body.
+#[test]
+fn the_body_of_a_summary_md_has_no_frontmatter() {
+    let text = "---\naliases: [Budget]\ntags: [meeting]\n---\n\n## Decisions\n\n- Ship it.\n";
+    assert_eq!(Summary::body_of(text), "## Decisions\n\n- Ship it.");
+    assert_eq!(
+        Summary::body_of("## Decisions\n\n- Ship it.\n"),
+        "## Decisions\n\n- Ship it."
+    );
+    // A file that starts with a rule and has no end of a frontmatter is
+    // all body.
+    assert_eq!(Summary::body_of("---\nNo end.\n"), "---\nNo end.");
 }

@@ -62,6 +62,10 @@ pub const TITLE_REQUEST: &str = "title-request";
 /// were made from, a string. A run whose input has another fingerprint
 /// makes every call again.
 pub const INPUT: &str = "input";
+/// The data of the summary that the stage wrote, a [`SummaryMeta`]. The
+/// save writes it into `longhand.json`, because `summary.md` has no
+/// frontmatter (R1).
+pub const META: &str = "meta";
 /// How far a context rejection shrinks the budget, and the floor below
 /// which a model is too small to summarize with.
 const SHRINK: f64 = 0.7;
@@ -260,16 +264,13 @@ fn read_transcript(folder: &Path) -> Result<String, StageError> {
     })
 }
 
-/// The turns and pause lines of `text`, the `transcript.md` in `folder`.
-/// The summary model sees each pause at its position (R13).
-fn lines_of(folder: &Path, text: &str) -> Result<Vec<Line>, StageError> {
-    let transcript = Transcript::parse(text).map_err(|e| {
-        StageError::Failed(format!(
-            "the transcript {} is not valid: {e}",
-            folder.join(TRANSCRIPT_FILE).display()
-        ))
-    })?;
-    Ok(transcript
+/// The turns and pause lines of `text`, a `transcript.md`. The summary
+/// model sees each pause at its position (R13). A line in free text
+/// (KTD7 of the safe agent edits plan) is a turn with no speaker at the
+/// position of the turn before it, so the model also gets that text.
+fn lines_of(text: &str) -> Vec<Line> {
+    let mut position = 0;
+    Transcript::parse(text)
         .lines
         .into_iter()
         .filter_map(|line| match line {
@@ -277,15 +278,23 @@ fn lines_of(folder: &Path, text: &str) -> Result<Vec<Line>, StageError> {
                 position_ms,
                 speaker,
                 text,
-            } => Some(Line::Turn(Turn {
-                position_ms,
-                speaker,
+            } => {
+                position = position_ms;
+                Some(Line::Turn(Turn {
+                    position_ms,
+                    speaker,
+                    text,
+                }))
+            }
+            TranscriptLine::Text { text } => Some(Line::Turn(Turn {
+                position_ms: position,
+                speaker: None,
                 text,
             })),
             TranscriptLine::Pause { duration_ms } => Some(Line::Pause { duration_ms }),
-            _ => None,
+            TranscriptLine::Gap { .. } | TranscriptLine::Silence { .. } => None,
         })
-        .collect())
+        .collect()
 }
 
 /// The fingerprint of the input to the calls: the transcript text, the
@@ -421,11 +430,14 @@ pub fn run(
         control,
         progress,
     )?;
+    // `summary.md` has no frontmatter: the save writes the summary data
+    // into `longhand.json` (R1).
     let path = session_dir.join(SUMMARY_FILE);
     let temp = session_dir.join(format!("{SUMMARY_FILE}.tmp"));
-    std::fs::write(&temp, summary.render())?;
+    std::fs::write(&temp, summary.render_body())?;
     crate::sync_file(&temp)?;
     std::fs::rename(&temp, &path)?;
+    checkpoint::put(store, session_id, Stage::Summarize, META, &summary.meta)?;
     checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
 }
 
@@ -446,7 +458,7 @@ pub fn produce(
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
     let transcript = read_transcript(folder)?;
-    let lines = lines_of(folder, &transcript)?;
+    let lines = lines_of(&transcript);
     let said = lines.iter().any(|line| matches!(line, Line::Turn(_)));
     let notes = session_notes(store, session_id)?;
     let raw_notes = lock(store).notes(session_id)?;
@@ -1019,8 +1031,6 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use summarize::chunk::{Line, Turn};
 
     use super::{Details, clean_title, input_fingerprint, lines_of, read_transcript};
@@ -1071,7 +1081,7 @@ mod tests {
     #[test]
     fn a_pause_line_stays_between_its_turns_in_the_summary_input() {
         let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- pause 00:14:00 ---\n\n- [00:01:00] Speaker 2: After.\n";
-        let lines = lines_of(Path::new("f"), text).unwrap();
+        let lines = lines_of(text);
         assert_eq!(
             lines,
             vec![
@@ -1094,7 +1104,7 @@ mod tests {
     #[test]
     fn a_transcript_with_a_gap_line_and_no_pause_gives_only_its_turns() {
         let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- gap 00:00:30 ---\n\n- [00:01:00] Speaker 2: After.\n\n--- silence 00:00:40 ---\n\n";
-        let lines = lines_of(Path::new("f"), text).unwrap();
+        let lines = lines_of(text);
         assert_eq!(
             lines,
             vec![turn(0, 1, "Before."), turn(60_000, 2, "After.")]

@@ -1,0 +1,30 @@
+{
+  "asr_model": "parakeet-unified-en-0.6b-q80",
+  "found_speakers": 2,
+  "layout": 1,
+  "segments": [
+    {
+      "audio": "audio/segment-01.opus",
+      "duration_ms": 60000,
+      "index": 0,
+      "offset_ms": 0,
+      "wall_end": "2026-10-02T14:01:00-05:00",
+      "wall_start": "2026-10-02T14:00:00-05:00"
+    }
+  ],
+  "session_id": "note-hiring-sync",
+  "started": "2026-10-02T14:00:00-05:00",
+  "summary": {
+    "endpoint_host": "llm.example.com",
+    "model": "example-model",
+    "prompt_id": "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10",
+    "prompt_name": "Weekly review",
+    "status": "complete"
+  },
+  "summary_fingerprint": "e032439040e0036c7cc542fcd14c3d107679c8ba68b626690fe9c6f714287640",
+  "transcript_fingerprint": "00b3b03f3e684384b096fdb85d141520974ce43b606b32f135c7e83ecddb0158",
+  "written_title": {
+    "source": "user",
+    "text": "Hiring sync"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "asr_model": "parakeet-unified-en-0.6b-q80",
+  "found_speakers": 2,
+  "layout": 1,
+  "recognition_artifact": {
+    "filename": "recognition.jsonl",
+    "sha256": "c16031189c4ac63963db8b73280491d0ff699fac4202d20444e7b22915bbbf01",
+    "version": 1
+  },
+  "segments": [
+    {
+      "audio": "audio/segment-01.opus",
+      "duration_ms": 60000,
+      "index": 0,
+      "offset_ms": 0,
+      "wall_end": "2026-10-01T09:01:00-05:00",
+      "wall_start": "2026-10-01T09:00:00-05:00"
+    }
+  ],
+  "session_id": "note-budget-review",
+  "started": "2026-10-01T09:00:00-05:00",
+  "summary": {
+    "endpoint_host": "llm.example.com",
+    "model": "example-model",
+    "prompt_id": "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10",
+    "prompt_name": "Weekly review",
+    "status": "complete"
+  },
+  "summary_fingerprint": "0f798665236afda10b31f67bcbf0c742980c67ae8ff6e2f610e929f8f6c8852a",
+  "transcript_fingerprint": "adc65131dae2086e4473d052ee8276cebd4cf22797daa374f7cdac4012ce1bd3",
+  "written_title": {
+    "source": "proposed",
+    "text": "Budget review"
+  }
+}

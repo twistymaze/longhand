@@ -1,0 +1,119 @@
+{
+  "description": "Folder names of notes. crates/library/tests/skill_drift.rs checks them against crates/session-save/src/naming.rs, and the skill script tests check them against folder_name.py. The title null is a note with no title.",
+  "cases": [
+    {
+      "case": "A plain title",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "Budget review",
+      "name": "2026-10-01 0900 Budget review"
+    },
+    {
+      "case": "No title",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": null,
+      "name": "2026-10-01 0900 Longhand session"
+    },
+    {
+      "case": "An empty title",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "",
+      "name": "2026-10-01 0900 Longhand session"
+    },
+    {
+      "case": "Characters that macOS or Windows refuse",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "a/b\\c:d*e?f\"g<h>i|j",
+      "name": "2026-10-01 0900 abcdefghij"
+    },
+    {
+      "case": "Runs of white space, a tab and a line break",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "  Lots   of\tspace\nhere  ",
+      "name": "2026-10-01 0900 Lots of space here"
+    },
+    {
+      "case": "Dots and spaces at the ends",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": " ...Leading and trailing dots... ",
+      "name": "2026-10-01 0900 Leading and trailing dots"
+    },
+    {
+      "case": "A leading dot",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "  .hidden name",
+      "name": "2026-10-01 0900 hidden name"
+    },
+    {
+      "case": "A control character",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "Control\u0007char",
+      "name": "2026-10-01 0900 Controlchar"
+    },
+    {
+      "case": "A control character that Python counts as white space",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "File\u001cseparator",
+      "name": "2026-10-01 0900 Fileseparator"
+    },
+    {
+      "case": "A no-break space",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "No\u00a0break space",
+      "name": "2026-10-01 0900 No break space"
+    },
+    {
+      "case": "A reserved name",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "CON",
+      "name": "2026-10-01 0900 CON_"
+    },
+    {
+      "case": "A reserved name with an extension",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "con.txt",
+      "name": "2026-10-01 0900 con_.txt"
+    },
+    {
+      "case": "A reserved file name",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "thumbs.db",
+      "name": "2026-10-01 0900 thumbs_.db"
+    },
+    {
+      "case": "Nothing left after the rules",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "???",
+      "name": "2026-10-01 0900 Longhand session"
+    },
+    {
+      "case": "A long title cut at a space",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA BBBBBBBBBB",
+      "name": "2026-10-01 0900 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "case": "A long title cut at dots",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.. tail",
+      "name": "2026-10-01 0900 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "case": "A long title of characters that use two bytes",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+      "name": "2026-10-01 0900 \u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+    },
+    {
+      "case": "Letters with accents and a symbol",
+      "started": "2026-10-01T09:00:00-05:00",
+      "title": "R\u00e9union d'\u00e9quipe \u2615",
+      "name": "2026-10-01 0900 R\u00e9union d'\u00e9quipe \u2615"
+    },
+    {
+      "case": "Another offset",
+      "started": "2026-12-31T23:30:00+05:30",
+      "title": "New year",
+      "name": "2026-12-31 2330 New year"
+    }
+  ]
+}

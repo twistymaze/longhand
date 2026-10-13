@@ -11,6 +11,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use session_core::BulkEdit;
@@ -21,9 +22,11 @@ use shared_settings::file::{self, SaveError, SharedValue, Unavailable};
 use shared_settings::join::{self, JoinKind};
 use shared_settings::note_types;
 use shared_settings::prompts::{self, PromptError};
-use shared_settings::view::{self, Availability, SharedView};
+use shared_settings::view::{self, Availability, MissingSince, SharedView};
 use specta::Type;
 use summarize::prompts::{TOPIC_SUMMARY_ID, topic_summary};
+
+use crate::managers::agent_block::{self, AgentBlockStatus};
 
 /// The name of a prompt that the user adds (R3).
 const NEW_PROMPT_NAME: &str = "New prompt";
@@ -60,6 +63,9 @@ pub enum ReadOnlyCause {
     /// The storage folder has no settings file, and Longhand did not write
     /// one into it.
     NoSettingsFile,
+    /// The settings file did not parse for about one minute, so it is not a
+    /// sync in progress (R22). The user must fix the file.
+    SettingsFileDamaged,
 }
 
 impl ReadOnlyCause {
@@ -78,8 +84,21 @@ impl ReadOnlyCause {
                 "The shared settings file in the storage folder is not complete. Try again after the sync ends."
             }
             Self::NoSettingsFile => "The storage folder has no shared settings yet.",
+            Self::SettingsFileDamaged => {
+                "The shared settings file in the storage folder has an error, so this setting can't be changed now. Fix the file, or restore it from another computer."
+            }
         }
     }
+}
+
+/// The shared settings file that did not parse for about one minute (R22).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct DamagedFile {
+    /// The path of the file in the storage folder.
+    pub path: String,
+    /// The line where the error is, from 1. `None` when the file is JSON,
+    /// but not an object.
+    pub line: Option<u32>,
 }
 
 impl From<&Unavailable> for ReadOnlyCause {
@@ -109,6 +128,11 @@ pub struct SharedState {
     /// hold settings that this version does not show.
     pub newer_version: bool,
     pub unknown_values: Vec<UnknownSharedValue>,
+    /// The prompt files and the Background file can change now. This is
+    /// also true while only the settings file does not parse (R22).
+    pub files_writable: bool,
+    /// The settings file did not parse for about one minute (R22).
+    pub damaged_file: Option<DamagedFile>,
 }
 
 impl Default for SharedState {
@@ -122,6 +146,8 @@ impl Default for SharedState {
 pub struct SharedSnapshot {
     pub view: SharedView,
     pub availability: SharedAvailability,
+    /// The settings file did not parse for about one minute (R22).
+    pub damaged_file: Option<DamagedFile>,
 }
 
 impl Default for SharedSnapshot {
@@ -132,11 +158,24 @@ impl Default for SharedSnapshot {
             availability: SharedAvailability::ReadOnly {
                 cause: ReadOnlyCause::NotReadYet,
             },
+            damaged_file: None,
         }
     }
 }
 
 impl SharedSnapshot {
+    /// Whether a change of a prompt or of the Background can write now.
+    /// While only the settings file does not parse, it can (R22).
+    pub fn files_writable(&self) -> bool {
+        match &self.availability {
+            SharedAvailability::Available => true,
+            SharedAvailability::ReadOnly {
+                cause: ReadOnlyCause::DoesNotParse | ReadOnlyCause::SettingsFileDamaged,
+            } => self.view.files_writable,
+            SharedAvailability::ReadOnly { .. } => false,
+        }
+    }
+
     /// The delay in whole days for the automatic removal of old audio, or
     /// `None` when no audio goes automatically (R2, KTD3). This is the only
     /// value that the removal pass reads. It is `None` unless the view comes
@@ -163,6 +202,8 @@ impl SharedSnapshot {
                     value: value.to_string(),
                 })
                 .collect(),
+            files_writable: self.files_writable(),
+            damaged_file: self.damaged_file.clone(),
         }
     }
 }
@@ -242,6 +283,36 @@ struct Inner {
     /// no lock held keeps its result only when no join or change came
     /// during the read (KTD13).
     generation: u64,
+    /// When each missing prompt that this computer read before went
+    /// missing (R20).
+    missing: MissingSince,
+    /// When the settings file stopped parsing, while it does not parse.
+    parse_failed_since: Option<Instant>,
+    /// The settings file did not parse for the wait of the manager (R22).
+    damaged_file: Option<DamagedFile>,
+}
+
+impl Inner {
+    /// Use `view` from now on, and update the times of the missing prompts
+    /// and of the settings file that does not parse.
+    fn set_view(&mut self, view: SharedView, now: Instant, wait: Duration) {
+        self.missing.update(&view, now);
+        match view.parse_error() {
+            Some(error) => {
+                let since = *self.parse_failed_since.get_or_insert(now);
+                self.damaged_file =
+                    (now.saturating_duration_since(since) >= wait).then(|| DamagedFile {
+                        path: format!("{}/{}", file::LONGHAND_FOLDER, file::SETTINGS_FILE),
+                        line: error.line.and_then(|line| u32::try_from(line).ok()),
+                    });
+            }
+            None => {
+                self.parse_failed_since = None;
+                self.damaged_file = None;
+            }
+        }
+        self.view = view;
+    }
 }
 
 /// A read of the shared files that runs with no lock held (KTD13).
@@ -273,6 +344,10 @@ pub struct SharedSettingsManager {
     /// holder of this lock changes `inner.root`. A read waits for it before
     /// it starts.
     writer: Mutex<()>,
+    /// The time after which a missing prompt loses its references, and
+    /// after which a settings file that does not parse shows a notice
+    /// (R20, R22). Tests make it shorter.
+    wait: Duration,
 }
 
 impl SharedSettingsManager {
@@ -280,6 +355,10 @@ impl SharedSettingsManager {
     /// view comes from the cache and is read-only. This reads only the
     /// local cache.
     pub fn new(cache_dir: PathBuf, root: Option<PathBuf>) -> Self {
+        Self::with_wait(cache_dir, root, view::MISSING_PROMPT_WAIT)
+    }
+
+    fn with_wait(cache_dir: PathBuf, root: Option<PathBuf>, wait: Duration) -> Self {
         let view = view::cached(
             cache::read_cache(&cache_dir).as_ref(),
             Availability::MissingFile,
@@ -291,8 +370,12 @@ impl SharedSettingsManager {
                 read: false,
                 view,
                 generation: 0,
+                missing: MissingSince::default(),
+                parse_failed_since: None,
+                damaged_file: None,
             }),
             writer: Mutex::new(()),
+            wait,
         }
     }
 
@@ -405,7 +488,7 @@ impl SharedSettingsManager {
         }
         view::store(&self.cache_dir, loaded.cache.as_ref());
         let before = snapshot_of(&inner);
-        inner.view = loaded.view;
+        inner.set_view(loaded.view, Instant::now(), self.wait);
         snapshot_of(&inner) != before
     }
 
@@ -477,20 +560,12 @@ impl SharedSettingsManager {
     /// "Default" in the same save (R5, KTD6).
     pub fn delete_prompt(&self, id: &str) -> Result<(), String> {
         self.change(|root| {
-            let settings = prompts::delete_prompt(root, id)?;
-            let fields = &settings.fields;
-            let mut patch = Vec::new();
-            if fields
-                .active_summary_prompt
-                .known()
-                .is_some_and(|active| active == id)
-            {
-                patch.push(SharedValue::ActiveSummaryPrompt(TOPIC_SUMMARY_ID.into()));
-            }
-            patch.extend(
-                note_types::prompts_without(&fields.type_prompt_map(), id)
-                    .map(SharedValue::NoteTypePrompts),
-            );
+            // While the settings file does not parse, the settings that name
+            // the prompt stay, and the prompt is missing (R20, R22).
+            let Some(settings) = prompts::delete_prompt(root, id)? else {
+                return Ok(());
+            };
+            let patch = prompts::patch_without_prompts(&settings.fields, &[id]);
             if !patch.is_empty() {
                 file::save_settings(root, &patch)?;
             }
@@ -516,6 +591,22 @@ impl SharedSettingsManager {
         })
     }
 
+    /// The state of the managed block in `AGENTS.md` and `CLAUDE.md` of
+    /// the storage folder (R29). This writes nothing.
+    pub fn agent_block_status(&self) -> AgentBlockStatus {
+        let root = self.lock().root.clone();
+        agent_block::status(root.as_deref())
+    }
+
+    /// Add the managed block to `AGENTS.md` and `CLAUDE.md` of the storage
+    /// folder, because the user asked for it (R29). It takes the writer
+    /// lock, so it does not run at the same time as the update in a change.
+    pub fn add_agent_block(&self) -> Result<AgentBlockStatus, String> {
+        let _writer = self.writer();
+        let root = self.lock().root.clone();
+        agent_block::add(root.as_deref())
+    }
+
     /// Run `op` on the storage folder, then read the result into the view.
     /// A view that is not writable is joined again first, so a folder that
     /// came back is used. A folder with no settings file gets one from the
@@ -539,8 +630,30 @@ impl SharedSettingsManager {
             self.join(Some(JoinKind::SameFolder));
             result = op(&root);
         }
+        if result.is_ok() {
+            self.repair(&root);
+            update_agent_block(&root);
+        }
         self.store_view(view::refresh(&root, &self.cache_dir));
         result.map_err(Failure::message)
+    }
+
+    /// Repair the outside edits of the prompt files after a change that the
+    /// user made on this computer (R18, R19, R20, R23). A failed repair is
+    /// logged: the change itself is saved, and the next change tries again.
+    /// The caller holds the writer lock.
+    fn repair(&self, root: &Path) {
+        let due = self.lock().missing.due(Instant::now(), self.wait);
+        match prompts::repair_prompts(root, &due) {
+            Ok(repaired) if !repaired.is_empty() => log::info!(
+                "shared settings: wrote the id of {} prompt file(s), gave {} prompt file(s) the file name of their name, and cleared the settings of {} missing prompt(s)",
+                repaired.ids_written.len(),
+                repaired.renamed.len(),
+                repaired.cleared.len()
+            ),
+            Ok(_) => {}
+            Err(e) => log::warn!("shared settings: the repair of the prompt files failed: {e}"),
+        }
     }
 
     /// Join the storage folder. With no `kind`, the join is a change of
@@ -559,7 +672,7 @@ impl SharedSettingsManager {
         let view = self.joined_view(&root, kind);
         let mut inner = self.lock();
         inner.generation += 1;
-        inner.view = view;
+        inner.set_view(view, Instant::now(), self.wait);
         inner.read = true;
         snapshot_of(&inner) != before
     }
@@ -599,7 +712,23 @@ impl SharedSettingsManager {
     fn store_view(&self, view: SharedView) {
         let mut inner = self.lock();
         inner.generation += 1;
-        inner.view = view;
+        inner.set_view(view, Instant::now(), self.wait);
+    }
+}
+
+/// Replace a managed block that an older Longhand wrote, after a change
+/// that the user made on this computer (R30, KTD12). The update shows no
+/// message. A failed update is logged, and the next change tries again.
+fn update_agent_block(root: &Path) {
+    match agent_block::update(root) {
+        Ok(written) if !written.is_empty() => {
+            log::info!(
+                "agent instructions: replaced an older block in {}",
+                written.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("agent instructions: the update of the block failed: {e}"),
     }
 }
 
@@ -615,6 +744,13 @@ fn snapshot_of(inner: &Inner) -> SharedSnapshot {
         (Some(_), true, Availability::MissingFile) => SharedAvailability::ReadOnly {
             cause: ReadOnlyCause::NoSettingsFile,
         },
+        (Some(_), true, Availability::NotAvailable(Unavailable::DoesNotParse(_)))
+            if inner.damaged_file.is_some() =>
+        {
+            SharedAvailability::ReadOnly {
+                cause: ReadOnlyCause::SettingsFileDamaged,
+            }
+        }
         (Some(_), true, Availability::NotAvailable(cause)) => SharedAvailability::ReadOnly {
             cause: cause.into(),
         },
@@ -622,6 +758,7 @@ fn snapshot_of(inner: &Inner) -> SharedSnapshot {
     SharedSnapshot {
         view: inner.view.clone(),
         availability,
+        damaged_file: inner.damaged_file.clone(),
     }
 }
 
@@ -1219,10 +1356,11 @@ mod tests {
         );
         let settings = settings_of(&manager);
         assert!(settings.summary_prompts.is_empty());
-        // The active prompt's file is gone, so the last copy applies (R14).
+        // The active prompt's file is gone, so the Topic summary applies at
+        // once (R20, KTD8).
         assert_eq!(
-            settings.active_summary_prompt_snapshot().text,
-            "Standup text."
+            settings.active_summary_prompt_snapshot().id,
+            TOPIC_SUMMARY_ID
         );
     }
 
@@ -1346,12 +1484,13 @@ mod tests {
             read_only(ReadOnlyCause::DoesNotParse)
         );
         assert!(manager.save(&[SharedValue::LiveTranscript(false)]).is_err());
-        assert!(manager.create_prompt().is_err());
+        // R22: a prompt is in another file, so it still saves.
+        assert!(manager.create_prompt().is_ok());
         assert_eq!(
             std::fs::read(file::settings_path(folder.path())).unwrap(),
             b"{\"asr_model\": \"par"
         );
-        assert!(prompt_files(folder.path()).is_empty());
+        assert_eq!(prompt_files(folder.path()), vec!["New prompt.md"]);
     }
 
     #[test]
@@ -1696,6 +1835,40 @@ mod tests {
         assert!(b.reread());
         assert_eq!(settings_of(&b).active_summary_prompt, id);
         assert!(!b.reread());
+    }
+
+    #[test]
+    fn the_widget_and_new_note_settings_show_the_same_value_on_two_computers() {
+        // Safe agent edits U7, R14, R15: A changes the two settings, and an
+        // agent edits the file. B reads each change at its next read.
+        let folder = TempDir::new().unwrap();
+        let (a, b) = (Computer::new(), Computer::new());
+        let a = a.manager(Some(folder.path()));
+        a.join_at_launch();
+        let b = b.manager(Some(folder.path()));
+        b.join_at_launch();
+        assert!(settings_of(&b).show_recording_widget);
+        assert!(settings_of(&b).new_note_records);
+
+        a.save(&[
+            SharedValue::ShowRecordingWidget(false),
+            SharedValue::NewNoteRecords(false),
+        ])
+        .unwrap();
+        assert!(b.reread());
+        assert!(!settings_of(&b).show_recording_widget);
+        assert!(!settings_of(&b).new_note_records);
+
+        let mut raw = file_of(folder.path());
+        raw.insert("show_recording_widget".into(), json!(true));
+        std::fs::write(
+            file::settings_path(folder.path()),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        assert!(b.reread());
+        assert!(settings_of(&b).show_recording_widget);
+        assert!(!settings_of(&b).new_note_records);
     }
 
     #[test]
@@ -2787,7 +2960,8 @@ mod tests {
         );
         assert_eq!(settings.summary_prompt_for_type(None).id, PLAY_BY_PLAY_ID);
 
-        // The file of the prompt goes away: the last copy read applies.
+        // AE6, R20, KTD8: the file of the prompt goes away, and the type
+        // uses the default prompt at once.
         let file_name = prompt_files(folder.path())
             .into_iter()
             .find(|name| name.starts_with("Recap"))
@@ -2798,15 +2972,19 @@ mod tests {
         assert!(settings.summary_prompts.iter().all(|p| p.id != recap));
         assert_eq!(
             settings.summary_prompt_for_type(Some("Pathfinder")).text,
-            "Recap text."
+            "Standup text."
         );
         let list = manager.note_types(&StorageFolders::default());
-        assert_eq!(choice(&list, "Pathfinder"), (Some(recap.clone()), recap));
+        assert_eq!(choice(&list, "Pathfinder"), (None, standup));
+        // No message: the shared state names no problem.
+        assert_eq!(settings.shared.availability, SharedAvailability::Available);
+        assert!(settings.shared.damaged_file.is_none());
     }
 
     #[test]
-    fn the_type_list_names_the_chosen_prompt_also_when_its_file_is_missing() {
-        // R7: Settings shows the prompt that a summary of the type uses.
+    fn the_type_list_shows_default_when_the_file_of_the_chosen_prompt_is_missing() {
+        // R7, R20: Settings shows the prompt that a summary of the type
+        // uses.
         let (folder, _computer, manager) = with_types(&["Pathfinder", "Board"]);
         let recap = custom_prompt(&manager, "Recap", "Recap text.");
         manager
@@ -2819,10 +2997,425 @@ mod tests {
         std::fs::remove_file(prompts::prompts_folder(folder.path()).join(file_name)).unwrap();
         manager.reread();
         let list = manager.note_types(&StorageFolders::default());
-        assert_eq!(
-            entry(&list, "Pathfinder").prompt_name.as_deref(),
-            Some("Recap")
-        );
+        assert_eq!(entry(&list, "Pathfinder").prompt_name, None);
         assert_eq!(entry(&list, "Board").prompt_name, None);
+        // The choice stays in the file until the prompt is missing for
+        // about one minute (R20).
+        assert_eq!(type_prompts_on_disk(folder.path())["Pathfinder"], recap);
+    }
+
+    /// A manager whose wait for a missing prompt and for a settings file
+    /// that does not parse is `wait`.
+    fn manager_with_wait(
+        computer: &Computer,
+        root: &Path,
+        wait: Duration,
+    ) -> SharedSettingsManager {
+        SharedSettingsManager::with_wait(
+            computer.cache.path().to_path_buf(),
+            Some(root.to_path_buf()),
+            wait,
+        )
+    }
+
+    /// The file of the prompt `id`.
+    fn prompt_file_of(root: &Path, id: &str) -> PathBuf {
+        let scan = prompts::scan_prompts(root).unwrap();
+        prompts::prompts_folder(root).join(&scan.get(id).unwrap().file_name)
+    }
+
+    #[test]
+    fn a_save_soon_after_a_prompt_goes_missing_keeps_its_references() {
+        // R20: a sync can deliver a rename as a delete and then a create.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("General", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        std::fs::remove_file(prompt_file_of(folder.path(), &recap)).unwrap();
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        let written = file_of(folder.path());
+        assert_eq!(written["active_summary_prompt"], recap.as_str());
+        assert_eq!(written["note_type_prompts"]["General"], recap.as_str());
+    }
+
+    #[test]
+    fn a_save_after_the_wait_clears_the_references_of_a_missing_prompt() {
+        // R20: the rules of a delete in the app, at a user save, never at a
+        // read.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("General", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        std::fs::remove_file(prompt_file_of(folder.path(), &recap)).unwrap();
+        let before = tree(folder.path());
+        manager.reread();
+        manager.reread();
+        assert_eq!(tree(folder.path()), before, "a read never writes");
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        let written = file_of(folder.path());
+        assert_eq!(written["active_summary_prompt"], TOPIC_SUMMARY_ID);
+        assert_eq!(written["note_type_prompts"], json!({}));
+        assert_eq!(written["live_transcript"], false);
+    }
+
+    #[test]
+    fn a_computer_that_never_read_a_prompt_never_clears_its_references() {
+        // R20: B gets the settings that name A's new prompt before the
+        // prompt file arrives.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let mut raw = file_of(folder.path());
+        raw.insert("active_summary_prompt".into(), json!("not-arrived-id"));
+        std::fs::write(
+            file::settings_path(folder.path()),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        assert_eq!(
+            file_of(folder.path())["active_summary_prompt"],
+            "not-arrived-id"
+        );
+        assert_eq!(
+            settings_of(&manager).active_summary_prompt_snapshot().id,
+            TOPIC_SUMMARY_ID
+        );
+    }
+
+    /// A manager with a zero wait whose active prompt and General choice
+    /// are the prompt of the file `Recap.md`, which held no id at first.
+    /// Returns the folder, the computer, the manager and the prompt id.
+    fn with_active_recap_with_no_id() -> (TempDir, Computer, SharedSettingsManager, String) {
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("Recap.md"), "Recap text.").unwrap();
+        manager.reread();
+        let recap = settings_of(&manager).summary_prompts[0].id.clone();
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("General", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        (folder, computer, manager, recap)
+    }
+
+    /// The references to `recap` stay after a save, and a run uses the
+    /// cache copy of `recap`.
+    fn assert_recap_kept(manager: &SharedSettingsManager, root: &Path, recap: &str) {
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        manager.reread();
+        let written = file_of(root);
+        assert_eq!(written["active_summary_prompt"], recap);
+        assert_eq!(written["note_type_prompts"]["General"], recap);
+        let settings = settings_of(manager);
+        assert_eq!(
+            settings.active_summary_prompt_snapshot().text,
+            "Recap text."
+        );
+        assert_eq!(settings.summary_prompt_for_type(None).text, "Recap text.");
+    }
+
+    #[test]
+    fn a_prompt_file_that_cannot_be_used_now_keeps_its_references_and_the_cache_copy() {
+        // KTD8, R20: the file exists, so the prompt is not missing.
+        let cases: [(&str, &[u8]); 2] = [("empty", b""), ("not text", b"Recap \xff text.")];
+        for (case, contents) in cases {
+            let (folder, _computer, manager, recap) = with_active_recap_with_no_id();
+            let path = prompt_file_of(folder.path(), &recap);
+            // The file holds no id again, so its id comes from its file name.
+            std::fs::write(&path, contents).unwrap();
+            assert_recap_kept(&manager, folder.path(), &recap);
+            assert_eq!(std::fs::read(&path).unwrap(), contents, "{case}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prompt_file_that_cannot_be_read_keeps_its_references_and_the_cache_copy() {
+        use std::os::unix::fs::PermissionsExt;
+        let (folder, _computer, manager, recap) = with_active_recap_with_no_id();
+        let path = prompt_file_of(folder.path(), &recap);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_recap_kept(&manager, folder.path(), &recap);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn a_prompt_file_with_an_open_front_matter_is_not_rewritten_and_keeps_its_references() {
+        // A sync delivered only the start of the file.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(
+            prompts_dir.join("Recap.md"),
+            prompts::render_prompt_file("recap-id", "Recap", "Recap text."),
+        )
+        .unwrap();
+        manager.reread();
+        manager.activate_prompt("recap-id").unwrap();
+        manager
+            .set_note_type_prompt("General", Some("recap-id"), &StorageFolders::default())
+            .unwrap();
+        let partial = "---\nid: recap-id\nname: Recap\n";
+        std::fs::write(prompts_dir.join("Recap.md"), partial).unwrap();
+        manager.reread();
+        manager.set_background("I am Erv Walter.").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(prompts_dir.join("Recap.md")).unwrap(),
+            partial
+        );
+        assert_eq!(prompt_files(folder.path()), vec!["Recap.md"]);
+        assert_recap_kept(&manager, folder.path(), "recap-id");
+    }
+
+    #[test]
+    fn a_cached_prompt_whose_file_grows_too_large_runs_the_default_and_keeps_its_references() {
+        // R21: Settings says that summaries use the default prompt.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::ZERO);
+        manager.join_at_launch();
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        manager.activate_prompt(&recap).unwrap();
+        manager
+            .set_note_type_prompt("General", Some(&recap), &StorageFolders::default())
+            .unwrap();
+        assert_eq!(
+            settings_of(&manager).active_summary_prompt_snapshot().text,
+            "Recap text."
+        );
+        std::fs::write(
+            prompt_file_of(folder.path(), &recap),
+            prompts::render_prompt_file(&recap, "Recap", &"h".repeat(60_000)),
+        )
+        .unwrap();
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        manager.reread();
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.active_summary_prompt_snapshot().id,
+            TOPIC_SUMMARY_ID
+        );
+        assert_eq!(settings.summary_prompt_for_type(None).id, TOPIC_SUMMARY_ID);
+        let written = file_of(folder.path());
+        assert_eq!(written["active_summary_prompt"], recap.as_str());
+        assert_eq!(written["note_type_prompts"]["General"], recap.as_str());
+    }
+
+    #[test]
+    fn a_save_writes_the_id_of_a_prompt_with_no_id_and_a_type_keeps_it_after_a_rename() {
+        // R18: an agent made a prompt file with no id, and a type uses it.
+        let (folder, _computer, manager) = with_types(&["Pathfinder"]);
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("Recap.md"), "Recap text.").unwrap();
+        manager.reread();
+        let id = settings_of(&manager).summary_prompts[0].id.clone();
+        let before = tree(folder.path());
+        manager.reread();
+        assert_eq!(tree(folder.path()), before, "a read never writes");
+        manager
+            .set_note_type_prompt("Pathfinder", Some(&id), &StorageFolders::default())
+            .unwrap();
+        assert!(
+            std::fs::read_to_string(prompts_dir.join("Recap.md"))
+                .unwrap()
+                .contains(&format!("id: {id}"))
+        );
+        std::fs::rename(prompts_dir.join("Recap.md"), prompts_dir.join("Weekly.md")).unwrap();
+        manager.reread();
+        let settings = settings_of(&manager);
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("Pathfinder")).text,
+            "Recap text."
+        );
+    }
+
+    #[test]
+    fn an_edit_of_the_name_renames_the_file_at_the_next_save_and_types_keep_the_prompt() {
+        // AE5, R19: an agent copied a prompt with a new id and a new name,
+        // and later changed the name again.
+        let (folder, _computer, manager) = with_types(&["Pathfinder"]);
+        let recap = custom_prompt(&manager, "Recap", "Recap text.");
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::write(
+            prompts_dir.join("Recap copy.md"),
+            prompts::render_prompt_file("agent-id", "Weekly", "Weekly text."),
+        )
+        .unwrap();
+        manager.reread();
+        let settings = settings_of(&manager);
+        assert_eq!(names(&settings), vec!["Recap", "Weekly"]);
+        manager
+            .set_note_type_prompt("Pathfinder", Some("agent-id"), &StorageFolders::default())
+            .unwrap();
+        assert_eq!(prompt_files(folder.path()), vec!["Recap.md", "Weekly.md"]);
+        std::fs::write(
+            prompts_dir.join("Weekly.md"),
+            prompts::render_prompt_file("agent-id", "Weekly review", "Weekly text."),
+        )
+        .unwrap();
+        manager.reread();
+        manager.save(&[SharedValue::LiveTranscript(false)]).unwrap();
+        assert_eq!(
+            prompt_files(folder.path()),
+            vec!["Recap.md", "Weekly review.md"]
+        );
+        let settings = settings_of(&manager);
+        assert_eq!(names(&settings), vec!["Recap", "Weekly review"]);
+        assert_eq!(
+            settings.summary_prompt_for_type(Some("Pathfinder")).text,
+            "Weekly text."
+        );
+        assert!(settings.summary_prompts.iter().any(|p| p.id == recap));
+    }
+
+    #[test]
+    fn a_prompt_over_the_limit_is_flagged_and_a_run_uses_its_whole_text() {
+        // R21: a 5,000-character prompt from an outside edit.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let prompts_dir = prompts::prompts_folder(folder.path());
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        let text = "q".repeat(5000);
+        std::fs::write(
+            prompts_dir.join("Long.md"),
+            prompts::render_prompt_file("long-id", "Long", &text),
+        )
+        .unwrap();
+        std::fs::write(
+            prompts_dir.join("Huge.md"),
+            prompts::render_prompt_file("huge-id", "Huge", &"h".repeat(60_000)),
+        )
+        .unwrap();
+        manager.reread();
+        manager.activate_prompt("long-id").unwrap();
+        let settings = settings_of(&manager);
+        let list = settings.summary_prompt_list();
+        let long = list.prompts.iter().find(|p| p.id == "long-id").unwrap();
+        assert!(long.over_limit && !long.too_large);
+        assert_eq!(long.text, text);
+        let huge = list.prompts.iter().find(|p| p.id == "huge-id").unwrap();
+        assert!(huge.over_limit && huge.too_large);
+        assert_eq!(huge.text, "");
+        assert_eq!(settings.active_summary_prompt_snapshot().text, text);
+        // A file over the size limit has no text for a run: the default
+        // prompt applies.
+        manager.activate_prompt("huge-id").unwrap();
+        assert_eq!(
+            settings_of(&manager).active_summary_prompt_snapshot().id,
+            TOPIC_SUMMARY_ID
+        );
+    }
+
+    #[test]
+    fn a_settings_file_that_does_not_parse_for_the_wait_names_the_file_and_the_line() {
+        // R22: during the wait the cause is a sync in progress. After it,
+        // the shared state names the file and the line.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = manager_with_wait(&computer, folder.path(), Duration::from_millis(50));
+        manager.join_at_launch();
+        std::fs::write(
+            file::settings_path(folder.path()),
+            b"{\n  \"schema_version\": 1,\n  \"live",
+        )
+        .unwrap();
+        manager.reread();
+        let state = settings_of(&manager).shared;
+        assert_eq!(state.availability, read_only(ReadOnlyCause::DoesNotParse));
+        assert_eq!(state.damaged_file, None);
+        assert!(state.files_writable);
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(manager.reread(), "the notice is a change of the settings");
+        let state = settings_of(&manager).shared;
+        assert_eq!(
+            state.availability,
+            read_only(ReadOnlyCause::SettingsFileDamaged)
+        );
+        assert_eq!(
+            state.damaged_file,
+            Some(DamagedFile {
+                path: ".longhand/settings.json".into(),
+                line: Some(3)
+            })
+        );
+        // The settings in other files still save, and the file stays.
+        manager.set_background("Background.").unwrap();
+        assert!(manager.create_prompt().is_ok());
+        assert!(manager.save(&[SharedValue::LiveTranscript(false)]).is_err());
+        assert_eq!(
+            std::fs::read(file::settings_path(folder.path())).unwrap(),
+            b"{\n  \"schema_version\": 1,\n  \"live"
+        );
+        // The file parses again: the notice goes.
+        let mut raw = file::default_settings();
+        raw.insert("live_transcript".into(), json!(false));
+        std::fs::write(
+            file::settings_path(folder.path()),
+            serde_json::to_vec(&raw).unwrap(),
+        )
+        .unwrap();
+        assert!(manager.reread());
+        let state = settings_of(&manager).shared;
+        assert_eq!(state.availability, SharedAvailability::Available);
+        assert_eq!(state.damaged_file, None);
+    }
+
+    #[test]
+    fn an_older_agent_block_is_replaced_at_a_user_change_and_not_at_a_launch_or_a_read() {
+        // KTD12: only a write that a change of the user causes replaces the
+        // block. The join at launch and a read write nothing.
+        use crate::managers::agent_block::{AGENTS_FILE, AgentBlockStatus, CLAUDE_FILE};
+        let folder = TempDir::new().unwrap();
+        let root = folder.path();
+        let old = "User text.\n\n<!-- BEGIN:longhand-agent-instructions version=0 -->\nOld rules.\n<!-- END:longhand-agent-instructions -->\n";
+        std::fs::write(root.join(AGENTS_FILE), old).unwrap();
+        let manager = Computer::new().manager(Some(root));
+
+        manager.join_at_launch();
+        manager.reread();
+        assert_eq!(
+            std::fs::read_to_string(root.join(AGENTS_FILE)).unwrap(),
+            old
+        );
+        assert!(!root.join(CLAUDE_FILE).exists());
+
+        manager
+            .save(&[SharedValue::AsrModel("whisper-large-v3-turbo-q5km".into())])
+            .unwrap();
+
+        let agents = std::fs::read_to_string(root.join(AGENTS_FILE)).unwrap();
+        assert!(agents.starts_with("User text.\n\n"));
+        assert!(!agents.contains("Old rules."));
+        assert!(agents.contains("version=1 -->"));
+        // The update adds no block to a file that had none.
+        assert!(!root.join(CLAUDE_FILE).exists());
+        assert_eq!(manager.agent_block_status(), AgentBlockStatus::NotAdded);
+        assert_eq!(manager.add_agent_block(), Ok(AgentBlockStatus::Added));
     }
 }

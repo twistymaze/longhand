@@ -7,7 +7,7 @@ import { DestinationPicker } from "./DestinationPicker";
 
 const settings = {
   storage_folder: "/Users/me/Library/Application Support/Longhand/Notes",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 const readOnly = {
   ...settings,
@@ -28,7 +28,7 @@ function picker(
   handlers: Record<string, CommandHandler> = {},
   options: { settings?: Settings; status?: DestinationStatus } = {},
 ) {
-  const tauri = mockTauri({ move_status: () => null, ...handlers });
+  const tauri = mockTauri({ move_status: () => null, agent_instructions_status: () => ({ kind: "not_added" }), ...handlers });
   const received: Settings[] = [];
   const view = render(
     <DestinationPicker
@@ -42,7 +42,7 @@ function picker(
 
 const change = () => screen.getByRole("button", { name: "Change…" }) as HTMLButtonElement;
 const show = () => screen.getByRole("button", { name: /^Show in / }) as HTMLButtonElement;
-const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status");
+const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status" && c !== "agent_instructions_status");
 
 describe("DestinationPicker", () => {
   test("shows the one storage folder and no earlier folders", () => {
@@ -198,6 +198,99 @@ describe("DestinationPicker", () => {
     expect(show().disabled).toBe(true);
     expect(change().disabled).toBe(false);
     view.unmount();
+  });
+
+  describe("agent instructions", () => {
+    const addButton = () => screen.getByRole("button", { name: "Add Agent Instructions" }) as HTMLButtonElement;
+
+    test("the button adds the instructions and shows Added", async () => {
+      const { tauri, user, view } = picker({ add_agent_instructions: () => ({ kind: "added" }) });
+      expect(await screen.findByText(/AGENTS\.md and CLAUDE\.md/)).toBeTruthy();
+      await user.click(addButton());
+      expect(cmds(tauri)).toEqual(["add_agent_instructions"]);
+      expect(await screen.findByText("Added")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Add Agent Instructions" })).toBeNull();
+      view.unmount();
+    });
+
+    test("instructions that are in the files already show Added and no button", async () => {
+      const { view } = picker({ agent_instructions_status: () => ({ kind: "added" }) });
+      expect(await screen.findByText("Added")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Add Agent Instructions" })).toBeNull();
+      view.unmount();
+    });
+
+    test("damaged markers show an error that names the file, and the button is off", async () => {
+      const { view } = picker({ agent_instructions_status: () => ({ kind: "damaged", file: "CLAUDE.md" }) });
+      expect(await screen.findByText(/The agent instructions in CLAUDE\.md are damaged/)).toBeTruthy();
+      expect(addButton().disabled).toBe(true);
+      view.unmount();
+    });
+
+    test("a folder that Longhand can't write turns the button off and gives the reason", async () => {
+      const { view } = picker({
+        agent_instructions_status: () => ({ kind: "unavailable", reason: "The storage folder is not available." }),
+      });
+      await waitFor(() => expect(addButton().disabled).toBe(true));
+      expect(screen.getAllByText("The storage folder is not available.").length).toBeGreaterThan(0);
+      view.unmount();
+    });
+
+    test("a storage folder that Longhand can't write turns the button off and gives the reason", async () => {
+      const locked: DestinationStatus = { kind: "not_writable", path: settings.storage_folder, message: "Permission denied" };
+      const { view } = picker({}, { status: locked });
+      expect(await screen.findByText("Longhand can’t write to the storage folder: Permission denied")).toBeTruthy();
+      expect(addButton().disabled).toBe(true);
+      view.unmount();
+    });
+
+    test("a new status read or a folder change removes the error of a failed write", async () => {
+      let fail = true;
+      const { user, view } = picker({
+        add_agent_instructions: () => {
+          throw "Longhand can’t write AGENTS.md: Permission denied";
+        },
+        agent_instructions_status: () => (fail ? { kind: "not_added" } : { kind: "added" }),
+      });
+      await user.click(await screen.findByRole("button", { name: "Add Agent Instructions" }));
+      expect(await screen.findByText("Longhand can’t write AGENTS.md: Permission denied")).toBeTruthy();
+      // The user fixes the file, then comes back to the window.
+      fail = false;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(await screen.findByText("Added")).toBeTruthy();
+      expect(screen.queryByText("Longhand can’t write AGENTS.md: Permission denied")).toBeNull();
+
+      // A folder change removes the error too.
+      fail = true;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await user.click(await screen.findByRole("button", { name: "Add Agent Instructions" }));
+      expect(await screen.findByText("Longhand can’t write AGENTS.md: Permission denied")).toBeTruthy();
+      view.rerender(
+        <DestinationPicker
+          settings={{ ...settings, storage_folder: "/Volumes/Disk/Notes" }}
+          status={{ ...ready, path: "/Volumes/Disk/Notes" }}
+          onSettings={() => {}}
+        />,
+      );
+      await waitFor(() => expect(screen.queryByText("Longhand can’t write AGENTS.md: Permission denied")).toBeNull());
+      view.unmount();
+    });
+
+    test("a failed write shows the error that names the file", async () => {
+      const { user, view } = picker({
+        add_agent_instructions: () => {
+          throw "Longhand can’t write AGENTS.md: Permission denied";
+        },
+      });
+      await user.click(await screen.findByRole("button", { name: "Add Agent Instructions" }));
+      expect(await screen.findByText("Longhand can’t write AGENTS.md: Permission denied")).toBeTruthy();
+      expect(addButton().disabled).toBe(false);
+      view.unmount();
+    });
   });
 
   for (const [agent, label] of [

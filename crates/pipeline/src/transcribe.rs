@@ -607,8 +607,9 @@ fn read_span(
 ///
 /// Call it under the store lock, after the resume, before the new segment
 /// is added. Returns false and writes nothing when the note has stored
-/// recognition results, or when `transcript.md` cannot be read: then every
-/// segment is transcribed from its audio.
+/// recognition results, when `transcript.md` cannot be read, or when it has
+/// a line that is not a turn: then every segment is transcribed from its
+/// audio.
 pub fn seed_from_transcript(
     store: &Store,
     session_id: &str,
@@ -624,7 +625,7 @@ pub fn seed_from_transcript(
     let path = folder.join(crate::join::TRANSCRIPT_FILE);
     let transcript = match std::fs::read_to_string(&path)
         .map_err(|e| e.to_string())
-        .and_then(|text| Transcript::parse(&text).map_err(|e| e.to_string()))
+        .map(|text| Transcript::parse(&text))
     {
         Ok(transcript) => transcript,
         Err(e) => {
@@ -635,6 +636,19 @@ pub fn seed_from_transcript(
             return Ok(false);
         }
     };
+    // A line that is not a turn has no position, so the seed cannot give
+    // its text to a segment.
+    if transcript
+        .lines
+        .iter()
+        .any(|line| matches!(line, TranscriptLine::Text { .. }))
+    {
+        log::warn!(
+            "{session_id} is transcribed again from its audio: {} has lines that are not turns",
+            path.display()
+        );
+        return Ok(false);
+    }
     segments.sort_by_key(|s| s.offset_ms);
     let mut turns: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
     for line in transcript.lines {
@@ -745,4 +759,77 @@ pub fn results(store: &SharedStore, session_id: &str) -> Result<Vec<WindowResult
     }
     out.sort_by_key(|r| (r.segment, r.start_ms, r.live, r.window));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, TimeDelta};
+    use session_core::{Segment, Stage, Store};
+
+    use super::seed_from_transcript;
+
+    /// A store with the note "n" and one recorded segment of one minute.
+    fn store_with_segment() -> Store {
+        let started = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("n", started, None).unwrap();
+        store
+            .put_segment(
+                "n",
+                &Segment {
+                    index: 0,
+                    offset_ms: 0,
+                    duration_ms: 60_000,
+                    wall_start: started,
+                    wall_end: started + TimeDelta::minutes(1),
+                    audio_file: "audio/segment-01.opus".into(),
+                    channels: 1,
+                    ends_in_pause: false,
+                },
+            )
+            .unwrap();
+        store
+    }
+
+    // Covers KTD12: a `transcript.md` in the form that Longhand writes
+    // gives the text of the recorded segments.
+    #[test]
+    fn a_transcript_of_turns_seeds_the_recorded_segments() {
+        let store = store_with_segment();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n",
+        )
+        .unwrap();
+        assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert!(
+            !store
+                .checkpoints("n", Stage::Transcribe)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // Covers KTD12: a line that is not a turn, for example prose that an
+    // agent wrote, has no position. The seed would lose its text, so every
+    // segment is transcribed again from its audio.
+    #[test]
+    fn a_transcript_with_a_line_that_is_not_a_turn_seeds_nothing() {
+        let store = store_with_segment();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n\
+             The team then agreed on the plan.\n",
+        )
+        .unwrap();
+        assert!(!seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert!(
+            store
+                .checkpoints("n", Stage::Transcribe)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

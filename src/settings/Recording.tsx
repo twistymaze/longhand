@@ -9,6 +9,7 @@ import { sentence } from "../processing/describe";
 import { CheckIcon } from "./icons";
 import { MicrophoneAccessRow, SystemAudioAccessRow } from "./Permissions";
 import { ShortcutField } from "./ShortcutField";
+import { readOnlyReason } from "./shared";
 import { SettingSwitch } from "./Status";
 import { Button, ErrorText, Group, Pane, Row, Status as StatusText, Switch } from "./ui";
 import { features } from "../lib/features";
@@ -183,25 +184,24 @@ function SystemAudio({ settings, onSettings, readiness, onRefresh }: PaneProps) 
   );
 }
 
+/// The detail of the switch of a shared setting: `normal`, or why the setting
+/// can't be changed now.
+function sharedDetail(settings: Settings, normal: string): string {
+  const readOnly = readOnlyReason(settings);
+  return readOnly ? `${readOnly} This setting can’t be changed now.` : normal;
+}
+
 function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
-  const [error, setError] = useState<string | null>(null);
-  const change = async (enabled: boolean) => {
-    const result = await commands.setNewNoteRecords(enabled);
-    if (result.status === "error") setError(sentence(result.error));
-    else {
-      setError(null);
-      onSettings(result.data);
-    }
-  };
   return (
     <Group footer="When off, New Note opens a note without recording. The recording shortcut then records into the open note, or opens a new note if that note can’t record.">
-      <Row label="New Note starts recording" detail="Start recording as soon as a new note opens">
-        <Switch
-          label="New Note starts recording"
-          checked={settings.new_note_records}
-          onChange={(v) => void change(v)}
-        />
-      </Row>
+      <SettingSwitch
+        label="New Note starts recording"
+        detail={sharedDetail(settings, "Start recording as soon as a new note opens")}
+        checked={settings.new_note_records}
+        set={commands.setNewNoteRecords}
+        onSettings={onSettings}
+        disabled={readOnlyReason(settings) !== null}
+      />
       <RecordingShortcut readiness={readiness} onRefresh={onRefresh} />
       <OptionalShortcut
         kind="pause"
@@ -209,7 +209,6 @@ function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
         does="Pauses and continues a recording from any app"
         onRefresh={onRefresh}
       />
-      {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );
 }
@@ -291,10 +290,11 @@ function WidgetGroup({ settings, onSettings, onRefresh }: PaneProps) {
     >
       <SettingSwitch
         label="Show the recording widget"
-        detail="A change applies from the next note"
+        detail={sharedDetail(settings, "A change applies from the next note")}
         checked={settings.show_recording_widget}
         set={commands.setShowRecordingWidget}
         onSettings={onSettings}
+        disabled={readOnlyReason(settings) !== null}
       />
       <OptionalShortcut
         kind="widget"

@@ -1,3 +1,4 @@
+pub mod agent_block;
 pub mod alerts;
 pub mod audio_removal;
 pub mod capture;

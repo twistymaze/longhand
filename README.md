@@ -57,6 +57,59 @@ APPLE_SIGNING_IDENTITY="-" bun tauri build --bundles app
 
 A Windows build also needs the Microsoft C++ build tools, Git Bash and the Vulkan SDK.
 
+## Use your notes with an AI agent
+
+An AI agent such as Claude Code or Codex can read your notes and answer questions about them. It can also change them for you: add tags to old notes, change a note's type or title, edit a transcript, or write a new summary prompt. The `longhand-notes` skill tells the agent which files it can change and how to change them safely. It also includes small Python scripts that check each change.
+
+The skill works on the files only. It does not need Longhand to run on that computer. The scripts need Python 3.9 or later. Without Python, the agent still works, but it tells you that it cannot check its changes.
+
+Install the skill once on each computer where you use an agent. Then start the agent in your storage folder.
+
+### Claude Code
+
+In Claude Code:
+
+```text
+/plugin marketplace add twistymaze/longhand
+/plugin install longhand@longhand
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add twistymaze/longhand
+claude plugin install longhand@longhand
+```
+
+Claude Code does not update plugins from this marketplace automatically. To get a new version, run `/plugin marketplace update longhand`, or turn on auto-update for the marketplace in `/plugin` > Marketplaces.
+
+### Codex
+
+```bash
+codex plugin marketplace add twistymaze/longhand
+codex plugin add longhand@longhand
+```
+
+You can also run `/plugins` in Codex and install **longhand** from the **longhand** marketplace. Restart Codex after the install. To get a new version, run `codex plugin marketplace upgrade longhand`.
+
+### Other agents, with `npx skills`
+
+The [`skills`](https://github.com/vercel-labs/skills) installer copies the skill into the skill folder of many agents:
+
+```bash
+npx skills add twistymaze/longhand --skill longhand-notes -g
+```
+
+Use `-g` to install the skill for your user. Do not install it into the storage folder: a sync service can copy an old version of the skill between your computers, and some sync services do not copy the links that the installer makes. To get a new version, run `npx skills update`.
+
+### OpenCode
+
+OpenCode reads skills from the same folders that `npx skills` writes:
+
+```bash
+npx skills add twistymaze/longhand --skill longhand-notes -g -a opencode
+```
+
 ## How Longhand is built
 
 Longhand is built with a lot of AI help. Claude Code and Codex plan, write and review most of the code. I direct the work, test it and review it. Some people want to know this about a project, so I say it here.

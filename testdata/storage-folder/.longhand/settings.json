@@ -1,0 +1,20 @@
+{
+  "active_summary_prompt": "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10",
+  "asr_model": "parakeet-unified-en-0.6b-q80",
+  "audio_removal": 30,
+  "check_updates_automatically": true,
+  "default_speaker_count": null,
+  "live_transcript": true,
+  "new_note_records": true,
+  "note_type_prompts": {
+    "Meetings": "8b2e4f60-7a13-4d9c-b5e2-1c0d9f3a6e21"
+  },
+  "note_types": [
+    "Meetings"
+  ],
+  "recognition_language": null,
+  "schema_version": 1,
+  "show_recording_widget": true,
+  "speaker_processing_mode": "after_stop",
+  "speaker_source": "pyannote"
+}

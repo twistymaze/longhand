@@ -1346,7 +1346,7 @@ fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
     ] {
         std::fs::copy(dir.join(filename), home.join(filename)).unwrap();
     }
-    std::fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     {
         let mut guard = store.lock().unwrap();
@@ -1577,7 +1577,9 @@ fn completed_nemo_resume(separate: bool) {
         .promote_result_snapshot("route", Some(&serde_json::to_value(&case.spec).unwrap()))
         .unwrap();
     // This synthetic native result uses the same neutral saved-artifact contract.
-    let mut doc = session_core::folder::SessionDoc::read(&case.home).unwrap();
+    let mut doc = session_core::note_folder::NoteFiles::read(&case.home)
+        .map(|files| files.doc)
+        .unwrap();
     let mut blocks = vec![];
     if separate {
         case.original.speakers.clear();
@@ -1618,7 +1620,7 @@ fn completed_nemo_resume(separate: bool) {
     doc.recognition_artifact =
         Some(write_artifact(&case.home.join("recognition.jsonl"), &header, blocks).unwrap());
     doc.recognition_snapshot = Some(header.snapshot.clone());
-    std::fs::write(case.home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&case.home, &doc).unwrap();
     let appended = &case.segments[1];
     let range = SampleRange {
         start: appended.offset_ms * 16,

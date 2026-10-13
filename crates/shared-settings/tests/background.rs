@@ -283,16 +283,16 @@ fn a_save_over_the_limit_is_refused_and_writes_nothing() {
 }
 
 #[test]
-fn a_save_when_the_settings_file_does_not_parse_is_refused() {
+fn a_save_when_the_settings_file_does_not_parse_writes_only_the_background() {
+    // R22: the settings in other files still save.
     let root = folder();
     let settings = root.path().join(".longhand").join("settings.json");
     fs::write(&settings, "{ \"schema_version\": ").unwrap();
-    let err = save_background(root.path(), "Text.").unwrap_err();
-    assert!(matches!(
-        err,
-        BackgroundError::NotAvailable(Unavailable::DoesNotParse(_))
-    ));
-    assert!(!background_path(root.path()).exists());
+    save_background(root.path(), "Text.").unwrap();
+    assert_eq!(
+        fs::read_to_string(background_path(root.path())).unwrap(),
+        "Text."
+    );
     assert_eq!(
         fs::read_to_string(&settings).unwrap(),
         "{ \"schema_version\": "
@@ -330,7 +330,8 @@ fn a_read_of_a_missing_folder_is_not_available() {
 }
 
 #[test]
-fn a_settings_file_that_does_not_parse_gives_the_cached_background_read_only() {
+fn a_settings_file_that_does_not_parse_gives_the_folder_background_and_keeps_the_cache() {
+    // R22: the Background is in another file, so it still changes.
     let root = folder();
     write_background(root.path(), "The folder's text.");
     fs::write(root.path().join(".longhand").join("settings.json"), "{").unwrap();
@@ -340,8 +341,8 @@ fn a_settings_file_that_does_not_parse_gives_the_cached_background_read_only() {
         loaded.view.availability,
         Availability::NotAvailable(_)
     ));
-    assert_eq!(loaded.view.background, "The cached text.");
-    assert!(!loaded.view.background_writable());
+    assert_eq!(loaded.view.background, "The folder's text.");
+    assert!(loaded.view.background_writable());
     assert_eq!(loaded.cache, None);
 }
 

@@ -14,7 +14,7 @@
 //!   have no text, and it has no title from the user. No delete, Move,
 //!   summary or folder rename works on it.
 //! - The folder: the storage folder is available, the home folder is a real
-//!   folder, `session.md` and `notes.md` are the files that this computer
+//!   folder, `session.md`, `longhand.json` and `notes.md` are the files that this computer
 //!   last wrote (their fingerprints, KTD8), no in-use marker of another run
 //!   is fresh, and the folder holds no other file.
 //!
@@ -32,7 +32,8 @@
 //! Before the first file goes, the row records the folder ([`REMOVING`]).
 //! When a removal stops after `notes.md` went, the next removal finds that
 //! record, and a missing `notes.md` in that folder does not keep the note.
-//! `session.md` must still be the file that this computer last wrote.
+//! `session.md` and `longhand.json` must still be the files that this computer
+//! last wrote.
 //!
 //! The main window can show the note again while the removal runs. The
 //! caller then gives a `shown` check, and the note stays while it is true.
@@ -52,12 +53,14 @@ use chrono::{DateTime, FixedOffset};
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 use session_core::folder;
 use session_core::jobs::{Claims, MoveStep, RECORDED_INTO, TitleSource, WrittenFingerprints};
+use session_core::note_folder::{SESSION_FILE, written_fingerprint};
+use session_core::note_record::NOTE_RECORD_FILE;
 use session_core::{SessionState, Store};
 use session_save::{RealFs, fsync, naming};
 
 use crate::early_home::{self, EarlyHomes, EarlyState, Location};
 use crate::in_use::{is_marker_name, marker_fresh, marker_name, remove_marker};
-use crate::save::{NOTES_FILE, SESSION_FILE};
+use crate::save::NOTES_FILE;
 use crate::{SharedStore, StageError, lock};
 
 /// The `result_state` key that records the folder whose files the removal
@@ -82,8 +85,8 @@ pub enum Kept {
     /// The storage folder is not available, or a file of the note cannot be
     /// read. The launch pass tries again at the next launch.
     Unavailable,
-    /// `session.md` or `notes.md` is not the file that this computer last
-    /// wrote: another computer can have changed it.
+    /// `session.md`, `longhand.json` or `notes.md` is not the file that
+    /// this computer last wrote: another computer can have changed it.
     Changed,
     /// An in-use marker of another run is fresh.
     InUse,
@@ -408,8 +411,8 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
 }
 
 /// Check the folder of an empty note (R18). Returns the files to delete:
-/// the old in-use markers, then `notes.md`, then `session.md`. This run's
-/// own marker goes first. A marker of one of the `earlier_runs` on this
+/// the old in-use markers, then `notes.md`, `session.md` and
+/// `longhand.json`. This run's own marker goes first. A marker of one of the `earlier_runs` on this
 /// computer is an old marker, also when it is fresh. `removing` is true
 /// when an earlier removal of this note started to delete the files of
 /// this folder: a missing `notes.md` then does not keep the note.
@@ -449,6 +452,7 @@ fn check_folder(
     remove_marker(folder, run_id).map_err(|_| Kept::Unavailable)?;
     let mut files = Vec::new();
     let mut session = false;
+    let mut record = false;
     let mut notes = false;
     let entries = std::fs::read_dir(folder).map_err(|_| Kept::Unavailable)?;
     for entry in entries {
@@ -461,6 +465,8 @@ fn check_folder(
         };
         if name == SESSION_FILE {
             session = true;
+        } else if name == NOTE_RECORD_FILE {
+            record = true;
         } else if name == NOTES_FILE {
             notes = true;
         } else if is_marker_name(name) {
@@ -472,32 +478,32 @@ fn check_folder(
             return Err(Kept::OtherFiles);
         }
     }
-    if !session || !(notes || removing) {
+    if !session || !record || !(notes || removing) {
         return Err(Kept::Changed);
     }
-    let mut checked = vec![(SESSION_FILE, &written.session)];
-    if notes {
-        checked.insert(0, (NOTES_FILE, &written.notes));
+    let bytes = |name: &str| match read_timed(folder.join(name), READ_TIMEOUT) {
+        Read::Bytes(bytes) => Ok(bytes),
+        Read::Missing => Err(Kept::Changed),
+        Read::Failed(_) => Err(Kept::Unavailable),
+    };
+    if notes && written.notes.as_deref() != Some(folder::fingerprint(&bytes(NOTES_FILE)?).as_str())
+    {
+        return Err(Kept::Changed);
     }
-    for (name, last) in checked {
-        let current = match read_timed(folder.join(name), READ_TIMEOUT) {
-            Read::Bytes(bytes) => folder::fingerprint(&bytes),
-            Read::Missing => return Err(Kept::Changed),
-            Read::Failed(_) => return Err(Kept::Unavailable),
-        };
-        if last.as_deref() != Some(current.as_str()) {
-            return Err(Kept::Changed);
-        }
+    let current = written_fingerprint(&bytes(SESSION_FILE)?, &bytes(NOTE_RECORD_FILE)?);
+    if written.session.as_deref() != Some(current.as_str()) {
+        return Err(Kept::Changed);
     }
     if notes {
         files.push(folder.join(NOTES_FILE));
     }
     files.push(folder.join(SESSION_FILE));
+    files.push(folder.join(NOTE_RECORD_FILE));
     Ok(files)
 }
 
-/// Delete `files` from `folder`, then the empty folder. `session.md` is the
-/// last file: until it goes, the folder is still a note. A file that came
+/// Delete `files` from `folder`, then the empty folder. `longhand.json` is
+/// the last file: until it goes, the folder is still a note. A file that came
 /// after the check stays, with the folder. When a file cannot be deleted,
 /// the row keeps its [`REMOVING`] record, and the next removal continues.
 fn remove_folder(folder: &Path, files: &[PathBuf]) -> Result<(), StageError> {

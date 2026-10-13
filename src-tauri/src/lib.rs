@@ -71,6 +71,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::move_status,
             commands::settings::retry_move,
             commands::settings::show_storage_folder,
+            commands::settings::agent_instructions_status,
+            commands::settings::add_agent_instructions,
             commands::settings::credential_status,
             commands::settings::set_credential,
             commands::settings::delete_credential,
@@ -106,6 +108,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::processing::retry_session,
             commands::processing::unblock_session,
             commands::session::list_sessions,
+            commands::session::library_notices,
+            commands::session::convert_old_notes,
             commands::session::session_detail,
             commands::session::load_session_notes,
             commands::session::save_session_notes,
@@ -231,6 +235,7 @@ fn setup_app(
     log::info!("startup launch reason: {launch_reason:?}");
     specta_builder.mount_events(app);
     app.manage(commands::session::ShownNote::default());
+    app.manage(commands::session::Conversion::default());
 
     let handle = app.handle().clone();
     let liveness = take_instance_lock(&handle)?;

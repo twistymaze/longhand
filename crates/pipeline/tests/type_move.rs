@@ -186,11 +186,13 @@ fn storage() -> (tempfile::TempDir, PathBuf) {
 }
 
 fn document(home: &Path) -> SessionDoc {
-    SessionDoc::parse(&fs::read_to_string(home.join("session.md")).unwrap()).unwrap()
+    session_core::note_folder::NoteFiles::read(home)
+        .unwrap()
+        .doc
 }
 
 fn write_document(home: &Path, doc: &SessionDoc) {
-    fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(home, doc).unwrap();
 }
 
 /// The visible entries of `dir`, sorted.
@@ -1069,4 +1071,81 @@ fn a_move_whose_session_file_does_not_download_waits_and_does_not_block() {
     fs::remove_file(&file).unwrap();
     fs::write(&file, &text).unwrap();
     assert_eq!(b.run(now()), ["s"]);
+}
+
+/// Write the note in `home` in the old layout, as an older Longhand wrote
+/// it: the records in `session.md` and no `longhand.json`.
+fn write_old_layout(home: &Path, edit: impl FnOnce(&mut SessionDoc)) {
+    let mut doc = document(home);
+    edit(&mut doc);
+    fs::write(home.join("session.md"), doc.render()).unwrap();
+    fs::remove_file(home.join(session_core::note_record::NOTE_RECORD_FILE)).unwrap();
+}
+
+/// Each file of `dir` with its bytes, by name.
+fn contents(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_type_change_of_an_old_layout_note_is_refused_and_writes_nothing() {
+    // Covers KTD6: a note in the old layout waits for the conversion.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("s", &root, "Standup");
+    write_old_layout(&home, |_| {});
+    let before = contents(&home);
+
+    let mut store = b.store.lock().unwrap();
+    let refused = change_type_locked(&mut store, "s", Some("One on One"), false, &b.ctx(now()));
+    drop(store);
+    assert!(
+        matches!(
+            &refused,
+            Err(pipeline::StageError::Failed(why))
+                if why == session_save::publication::OLD_LAYOUT
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(contents(&home), before);
+    assert_eq!(entries(&root), [name_of(&home)]);
+    assert!(!b.owes("s"));
+}
+
+#[test]
+fn a_waiting_move_of_an_old_layout_note_is_not_taken_over_and_writes_nothing() {
+    // Covers KTD6 and KTD13: the takeover waits for the conversion.
+    let (_dir, root) = storage();
+    let mut b = computer();
+    let home = b.save_note("s", &root, "Standup");
+    write_old_layout(&home, |doc| {
+        doc.pending_type = Some(PendingType {
+            to: Some("One on One".into()),
+            from: None,
+            by: "computer-a".into(),
+            at: now() - TimeDelta::days(8),
+        });
+    });
+    b.sync(&root);
+    assert!(b.record("s").pending_type.is_some());
+    let before = contents(&home);
+
+    assert!(b.run(now()).is_empty());
+    assert!(
+        b.run(now() + TAKEOVER_WAIT + TimeDelta::minutes(1))
+            .is_empty()
+    );
+    assert!(!b.owes("s"));
+    assert_eq!(contents(&home), before);
+    assert_eq!(entries(&root), [name_of(&home)]);
 }

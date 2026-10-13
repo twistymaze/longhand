@@ -1812,6 +1812,16 @@ impl CaptureManager {
             if !completed && pipeline::save::begun(&store, id).map_err(other)? {
                 return Err(CaptureError::Save);
             }
+            // A saved note in the old layout waits for the conversion: a
+            // Resume changes its records (KTD6 of the safe agent edits plan).
+            if completed
+                && record
+                    .as_ref()
+                    .and_then(|r| r.home_path.as_deref())
+                    .is_some_and(|home| pipeline::save::old_layout(Path::new(home)))
+            {
+                return Err(CaptureError::Other(pipeline::save::OLD_LAYOUT.into()));
+            }
             // Removed audio refuses as missing audio does (KTD9 of the audio
             // removal plan).
             let audio_intact = pipeline::save::audio_state(&store, id).map_err(other)?

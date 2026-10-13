@@ -1236,6 +1236,7 @@ impl ProcessingManager {
                     library::reconcile::Changes {
                         changed: vec![id.to_string()],
                         removed: Vec::new(),
+                        notices: false,
                     }
                     .into(),
                 );
@@ -1347,6 +1348,7 @@ impl ProcessingManager {
             let changes = library::reconcile::Changes {
                 changed: Vec::new(),
                 removed,
+                notices: false,
             };
             emit_library_changed(&self.app, changes.into());
         }
@@ -1524,6 +1526,28 @@ impl ProcessingManager {
         self.runner.claims().clone()
     }
 
+    /// Convert the notes in the old layout that the latest library scans
+    /// found (U5 of the safe agent edits plan, R10, R12). A note that a
+    /// computer works on now is skipped, and the next run converts it. Only
+    /// the user starts this. It reads and writes note folders, so call it
+    /// off the main thread.
+    pub fn convert_old_notes(&self) -> pipeline::convert::ConvertReport {
+        let notes = self.library_status.old_layout_notes();
+        let claims = self.claims();
+        let report = pipeline::convert::convert_notes(&self.store, &notes, &self.own_runs, &|id| {
+            claims.busy(id)
+        });
+        self.library_status.forget_old_layout(&report.converted);
+        emit_library_changed(
+            &self.app,
+            LibraryChanged {
+                changed: report.converted.clone(),
+                removed: Vec::new(),
+            },
+        );
+        report
+    }
+
     /// Rename a session (R9). The title changes at once; see
     /// [`Runner::rename_session`] for the folder. This can reach a synced
     /// folder, so call it off the main thread.
@@ -1532,6 +1556,7 @@ impl ProcessingManager {
         session_id: &str,
         title: &str,
     ) -> Result<pipeline::folder_rename::FolderRename, String> {
+        refuse_with_problem(&self.library_status, session_id)?;
         self.runner
             .rename_session(session_id, title)
             .map_err(|e| e.to_string())
@@ -1546,6 +1571,7 @@ impl ProcessingManager {
         session_id: &str,
         to: Option<&str>,
     ) -> Result<pipeline::type_move::TypeChange, String> {
+        refuse_with_problem(&self.library_status, session_id)?;
         let changed = self
             .runner
             .change_note_type(session_id, to, &self.own_runs)
@@ -1681,6 +1707,7 @@ impl ProcessingManager {
         add: &[String],
         remove: &[String],
     ) -> Result<Vec<String>, String> {
+        refuse_with_problem(&self.library_status, session_id)?;
         let tags = self
             .runner
             .set_note_tags(session_id, add, remove)
@@ -1947,10 +1974,52 @@ pub(crate) fn refuse_while_syncing(
     status: &library::status::LibraryStatus,
     id: &str,
 ) -> Result<(), String> {
-    if status.note(id).result_waits() {
+    let note = status.note(id);
+    if let Some(problem) = &note.problem {
+        return Err(problem_reason(problem));
+    }
+    if note.result_waits() {
         Err(WAIT_FOR_SYNC.to_string())
     } else {
         Ok(())
+    }
+}
+
+/// Why the actions that write to a note wait while a file of its folder
+/// gives no note (R6). The text tells the user what to do.
+pub(crate) fn problem_reason(problem: &library::scan::FileProblem) -> String {
+    use library::scan::ProblemKind;
+    match problem.kind {
+        ProblemKind::UserFile => match problem.line {
+            Some(line) => format!(
+                "{} has an error on line {line}. Correct the file to change this note.",
+                problem.file
+            ),
+            None => format!(
+                "{} has an error. Correct the file to change this note.",
+                problem.file
+            ),
+        },
+        ProblemKind::Record => format!(
+            "This note waits for {} to sync. If it does not sync, update Longhand on the other computer.",
+            problem.file
+        ),
+        ProblemKind::NewerRecord => {
+            "A newer version of Longhand saved this note. Update Longhand to change it.".to_string()
+        }
+    }
+}
+
+/// Refuse a write to the note `id` while a file of its folder gives no
+/// note (R6): a title, tag or type change, and the actions that read or
+/// replace the result. Delete does not call this.
+pub(crate) fn refuse_with_problem(
+    status: &library::status::LibraryStatus,
+    id: &str,
+) -> Result<(), String> {
+    match status.note(id).problem {
+        Some(problem) => Err(problem_reason(&problem)),
+        None => Ok(()),
     }
 }
 
@@ -2216,7 +2285,7 @@ mod tests {
         let mut doc = SessionDoc::new("A1", None, &[segment]).unwrap();
         doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
         doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
-        std::fs::write(home.join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(&home, &doc).unwrap();
         std::fs::write(home.join("transcript.md"), transcript).unwrap();
         std::fs::write(home.join("summary.md"), summary).unwrap();
         std::fs::write(home.join("notes.md"), "My notes\n").unwrap();
@@ -2260,5 +2329,86 @@ mod tests {
             .run_at(&store, &target, &|_| false, start + HAND_EDIT_WAIT)
             .unwrap();
         assert_eq!(refuse_while_syncing(&status, "A1"), Ok(()));
+    }
+
+    // Covers R6: a `session.md` that does not parse holds the writes at
+    // once, with a reason that names the file and the line. A good parse
+    // releases them.
+    #[test]
+    fn a_note_whose_session_md_does_not_parse_refuses_its_writes() {
+        use library::reconcile::Target;
+        let start = std::time::Instant::now();
+        let (dir, home, store, mut reconciler) = scanned_note(start);
+        let status = Arc::clone(reconciler.status());
+        let target = Target::Full(vec![dir.path().canonicalize().unwrap()]);
+        let good = std::fs::read_to_string(home.join("session.md")).unwrap();
+
+        std::fs::write(
+            home.join("session.md"),
+            "---\ntitle: A\n  bad: indent\n---\n",
+        )
+        .unwrap();
+        reconciler
+            .run_at(&store, &target, &|_| false, start)
+            .unwrap();
+        let reason =
+            "session.md has an error on line 3. Correct the file to change this note.".to_string();
+        assert_eq!(refuse_with_problem(&status, "A1"), Err(reason.clone()));
+        assert_eq!(refuse_while_syncing(&status, "A1"), Err(reason));
+
+        std::fs::write(home.join("session.md"), good).unwrap();
+        reconciler
+            .run_at(&store, &target, &|_| false, start)
+            .unwrap();
+        assert_eq!(refuse_with_problem(&status, "A1"), Ok(()));
+    }
+
+    // Covers R6, KTD6: a `longhand.json` that is not valid JSON, or that a
+    // newer Longhand wrote, holds the writes, each with its reason. A good
+    // `longhand.json` releases them.
+    #[test]
+    fn a_note_whose_longhand_json_cannot_be_read_refuses_its_writes() {
+        use library::reconcile::Target;
+        use session_core::note_record::NOTE_RECORD_FILE;
+        let start = std::time::Instant::now();
+        let (dir, home, store, mut reconciler) = scanned_note(start);
+        let status = Arc::clone(reconciler.status());
+        let target = Target::Full(vec![dir.path().canonicalize().unwrap()]);
+        let good = std::fs::read_to_string(home.join(NOTE_RECORD_FILE)).unwrap();
+        let mut newer: serde_json::Value = serde_json::from_str(&good).unwrap();
+        newer["layout"] = serde_json::json!(99);
+
+        for (text, reason) in [
+            (
+                "{ not json".to_string(),
+                "This note waits for longhand.json to sync. If it does not sync, update \
+                 Longhand on the other computer.",
+            ),
+            (
+                serde_json::to_string_pretty(&newer).unwrap(),
+                "A newer version of Longhand saved this note. Update Longhand to change it.",
+            ),
+        ] {
+            std::fs::write(home.join(NOTE_RECORD_FILE), &text).unwrap();
+            reconciler
+                .run_at(&store, &target, &|_| false, start)
+                .unwrap();
+            assert_eq!(
+                refuse_with_problem(&status, "A1"),
+                Err(reason.to_string()),
+                "{text}"
+            );
+            assert_eq!(
+                refuse_while_syncing(&status, "A1"),
+                Err(reason.to_string()),
+                "{text}"
+            );
+
+            std::fs::write(home.join(NOTE_RECORD_FILE), &good).unwrap();
+            reconciler
+                .run_at(&store, &target, &|_| false, start)
+                .unwrap();
+            assert_eq!(refuse_with_problem(&status, "A1"), Ok(()), "{text}");
+        }
     }
 }

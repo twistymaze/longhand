@@ -8,7 +8,7 @@ import { DestinationPicker } from "./DestinationPicker";
 
 const base = {
   storage_folder: "/Users/me/Notes",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 const withRemoval = (audio_removal: AudioRemovalSetting) => ({ ...base, audio_removal }) as Settings;
 const after = (days: number) => withRemoval({ kind: "after_days", days });
@@ -146,7 +146,7 @@ describe("AudioRemoval", () => {
   });
 
   test("the Storage pane shows the audio setting", () => {
-    mockTauri({ move_status: () => null });
+    mockTauri({ move_status: () => null, agent_instructions_status: () => ({ kind: "not_added" }) });
     const view = render(
       <DestinationPicker
         settings={after(30)}

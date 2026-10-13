@@ -46,7 +46,7 @@ const baseSettings: Settings = {
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
   background: "",
   background_limit: 4000,
   background_read_only: null,
@@ -76,7 +76,7 @@ function backend({
   const pending: Deferred[] = [];
   const mock = mockTauri({
     summary_prompts: () => ({
-      prompts: [{ id: "topic-summary", name: "Topic summary", text: "Topic text", built_in: true }],
+      prompts: [{ id: "topic-summary", name: "Topic summary", text: "Topic text", built_in: true, over_limit: false, too_large: false }],
       active: "topic-summary",
       text_limit: 4000,
     }),

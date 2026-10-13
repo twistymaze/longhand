@@ -444,7 +444,9 @@ fn a_note_that_another_computer_started_is_never_removed() {
     let store = store();
     let home = placed_note(&store, "n", dest.path());
     // The same folder, adopted as a note from another computer.
-    let doc = session_core::folder::SessionDoc::read(&home).unwrap();
+    let doc = session_core::note_folder::NoteFiles::read(&home)
+        .map(|files| files.doc)
+        .unwrap();
     let mut other = session_core::Adoption::from_doc(
         &doc,
         String::new(),
@@ -549,10 +551,12 @@ fn a_session_md_that_another_computer_changed_keeps_the_note() {
     let dest = tempfile::tempdir().unwrap();
     let store = store();
     let home = placed_note(&store, "n", dest.path());
-    let mut doc = session_core::folder::SessionDoc::read(&home).unwrap();
+    let mut doc = session_core::note_folder::NoteFiles::read(&home)
+        .map(|files| files.doc)
+        .unwrap();
     doc.title = Some("Typed on B".into());
     doc.title_source = Some(TitleSource::User);
-    std::fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
 
     assert_eq!(leave(&store, dest.path(), "n"), Leave::Kept(Kept::Changed));
     assert!(home.join("session.md").is_file());
@@ -602,10 +606,12 @@ fn a_stopped_removal_keeps_the_note_when_another_computer_changed_session_md() {
     let store = store();
     let home = placed_note(&store, "n", dest.path());
     stopped_removal(&store, &home);
-    let mut doc = session_core::folder::SessionDoc::read(&home).unwrap();
+    let mut doc = session_core::note_folder::NoteFiles::read(&home)
+        .map(|files| files.doc)
+        .unwrap();
     doc.title = Some("Typed on B".into());
     doc.title_source = Some(TitleSource::User);
-    std::fs::write(home.join("session.md"), doc.render()).unwrap();
+    session_save::note_files::write_doc(&home, &doc).unwrap();
 
     assert_eq!(leave(&store, dest.path(), "n"), Leave::Kept(Kept::Changed));
     assert!(home.join("session.md").is_file());
@@ -658,7 +664,10 @@ fn a_note_that_the_main_window_shows_stays() {
         leave_shown(&store, dest.path(), &|id| id == "n"),
         Leave::Kept(Kept::Shown)
     );
-    assert_eq!(names(&home), vec!["notes.md", "session.md"]);
+    assert_eq!(
+        names(&home),
+        vec!["longhand.json", "notes.md", "session.md"]
+    );
     assert!(row_exists(&store, "n"));
 }
 
@@ -680,7 +689,10 @@ fn a_note_that_the_main_window_shows_again_during_the_removal_stays() {
         Leave::Kept(Kept::Shown)
     );
     assert_eq!(checks.get(), 2);
-    assert_eq!(names(&home), vec!["notes.md", "session.md"]);
+    assert_eq!(
+        names(&home),
+        vec!["longhand.json", "notes.md", "session.md"]
+    );
     assert!(row_exists(&store, "n"));
     assert_eq!(
         store.lock().unwrap().result_state("n", REMOVING).unwrap(),
@@ -714,7 +726,10 @@ fn an_extra_file_in_the_folder_keeps_the_note() {
         leave(&store, dest.path(), "n"),
         Leave::Kept(Kept::OtherFiles)
     );
-    assert_eq!(names(&home), vec!["notes (1).md", "notes.md", "session.md"]);
+    assert_eq!(
+        names(&home),
+        vec!["longhand.json", "notes (1).md", "notes.md", "session.md"]
+    );
 }
 
 #[test]
@@ -758,14 +773,17 @@ fn a_home_folder_that_is_a_link_keeps_the_note_and_the_target() {
     let store = store();
     let home = placed_note(&store, "n", dest.path());
     // The same files in another folder, and the home path links there.
-    for name in ["notes.md", "session.md"] {
+    for name in ["longhand.json", "notes.md", "session.md"] {
         std::fs::copy(home.join(name), other.path().join(name)).unwrap();
     }
     std::fs::remove_dir_all(&home).unwrap();
     std::os::unix::fs::symlink(other.path(), &home).unwrap();
 
     assert!(matches!(leave(&store, dest.path(), "n"), Leave::Kept(_)));
-    assert_eq!(names(other.path()), vec!["notes.md", "session.md"]);
+    assert_eq!(
+        names(other.path()),
+        vec!["longhand.json", "notes.md", "session.md"]
+    );
 }
 
 #[test]
@@ -835,7 +853,9 @@ fn the_launch_pass_removes_only_empty_notes_that_this_computer_started_before_th
     }
     // A note from another computer.
     {
-        let doc = session_core::folder::SessionDoc::read(&empty).unwrap();
+        let doc = session_core::note_folder::NoteFiles::read(&empty)
+            .map(|files| files.doc)
+            .unwrap();
         let mut other = session_core::Adoption::from_doc(
             &doc,
             String::new(),

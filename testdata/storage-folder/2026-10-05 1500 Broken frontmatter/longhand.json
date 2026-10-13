@@ -1,0 +1,30 @@
+{
+  "asr_model": "parakeet-unified-en-0.6b-q80",
+  "found_speakers": 2,
+  "layout": 1,
+  "segments": [
+    {
+      "audio": "audio/segment-01.opus",
+      "duration_ms": 60000,
+      "index": 0,
+      "offset_ms": 0,
+      "wall_end": "2026-10-05T15:01:00-05:00",
+      "wall_start": "2026-10-05T15:00:00-05:00"
+    }
+  ],
+  "session_id": "note-broken-frontmatter",
+  "started": "2026-10-05T15:00:00-05:00",
+  "summary": {
+    "endpoint_host": "llm.example.com",
+    "model": "example-model",
+    "prompt_id": "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10",
+    "prompt_name": "Weekly review",
+    "status": "complete"
+  },
+  "summary_fingerprint": "adf7450630c3db1ba0369b82b1afbfc5345b017814d51c918dd843d642aa539b",
+  "transcript_fingerprint": "a85dd9cbc2ad9e226e5ecf7b5fbaa17a3447a25a711d3794c360aa7d2213b2d1",
+  "written_title": {
+    "source": "proposed",
+    "text": "Broken frontmatter"
+  }
+}

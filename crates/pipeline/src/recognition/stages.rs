@@ -8,6 +8,7 @@ use asr::{
     SpeakerTurn, TimingPrecision,
 };
 use models::recognition::{ExecutionSpec, SpeakerCount};
+use session_core::note_folder::NoteFiles;
 use session_core::{Segment, Stage};
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
 
@@ -367,7 +368,7 @@ fn transcribe_route(
             .and_then(|r| r.home_path)
             .map(std::path::PathBuf::from);
         if let Some(home) = home {
-            let doc = session_core::folder::SessionDoc::read(&home)?;
+            let doc = NoteFiles::read(&home)?.doc;
             let mut rows = Vec::new();
             if let Some(header) = crate::reprocess::read_reusable(&home, &doc, spec, |block| {
                 for mut row in block.rows {

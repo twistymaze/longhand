@@ -44,7 +44,7 @@ fn doc(id: &str) -> SessionDoc {
 fn note(root: &Path, name: &str, id: &str) -> PathBuf {
     let dir = root.join(name);
     fs::create_dir_all(dir.join("audio")).unwrap();
-    fs::write(dir.join("session.md"), doc(id).render()).unwrap();
+    session_save::note_files::write_doc(&dir, &doc(id)).unwrap();
     fs::write(dir.join("transcript.md"), TRANSCRIPT).unwrap();
     fs::write(dir.join("summary.md"), SUMMARY).unwrap();
     fs::write(dir.join("notes.md"), "My notes\n").unwrap();
@@ -200,7 +200,7 @@ fn a_session_md_without_fingerprints_accepts_any_transcript() {
     let mut older = doc("A1");
     older.transcript_fingerprint = None;
     older.summary_fingerprint = None;
-    fs::write(dir.join("session.md"), older.render()).unwrap();
+    session_save::note_files::write_doc(&dir, &older).unwrap();
     fs::write(dir.join("transcript.md"), "# Transcript\n").unwrap();
     let result = run(root.path(), &Known::default());
     assert!(result.notes[0].waiting.is_empty());
@@ -852,14 +852,13 @@ fn mark(dir: &Path, audio: &str) {
 
 /// Add a second segment, with its audio, to the note in `dir`.
 fn add_second_segment(dir: &Path) {
-    let path = dir.join("session.md");
-    let mut doc = SessionDoc::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut doc = session_core::note_folder::NoteFiles::read(dir).unwrap().doc;
     let mut second = doc.segments[0].clone();
     second.index = 1;
     second.offset_ms = 120_000;
     second.audio = SECOND.into();
     doc.segments.push(second);
-    fs::write(&path, doc.render()).unwrap();
+    session_save::note_files::write_doc(dir, &doc).unwrap();
     fs::write(dir.join(SECOND), b"opus").unwrap();
 }
 
@@ -1115,7 +1114,7 @@ mod result_flag {
         fs::create_dir_all(&dir).unwrap();
         let mut doc = SessionDoc::without_audio(id, opened(), None);
         doc.result = result;
-        fs::write(dir.join("session.md"), doc.render()).unwrap();
+        session_save::note_files::write_doc(&dir, &doc).unwrap();
         fs::write(dir.join("notes.md"), "Agenda\n").unwrap();
         dir
     }
@@ -1124,13 +1123,13 @@ mod result_flag {
         Local::now().fixed_offset()
     }
 
-    /// Make the file time of `session.md` in `dir` older than the time a
+    /// Make the file time of `longhand.json` in `dir` older than the time a
     /// marker stays fresh.
-    fn age_session_md(dir: &Path) {
+    fn age_records(dir: &Path) {
         let old = SystemTime::now() - FRESH_FOR.to_std().unwrap() - Duration::from_secs(60);
         fs::File::options()
             .write(true)
-            .open(dir.join("session.md"))
+            .open(dir.join("longhand.json"))
             .unwrap()
             .set_modified(old)
             .unwrap();
@@ -1235,7 +1234,7 @@ mod result_flag {
         let dir = early_note(root.path(), "n1", Some(ResultFlag::NotSaved));
         let old = now() - FRESH_FOR - TimeDelta::minutes(1);
         assert!(write_marker(&dir, "run-a", old).unwrap());
-        age_session_md(&dir);
+        age_records(&dir);
         assert_eq!(remote(root.path(), None), Some(RemoteState::NotFinished));
 
         // A fresh marker wins over the flag.
@@ -1249,7 +1248,112 @@ mod result_flag {
         let dir = early_note(root.path(), "n1", Some(ResultFlag::NoRecording));
         let old = now() - FRESH_FOR - TimeDelta::minutes(1);
         assert!(write_marker(&dir, "run-a", old).unwrap());
-        age_session_md(&dir);
+        age_records(&dir);
         assert_eq!(remote(root.path(), None), None);
     }
+}
+
+// ------------------------------------------------- the new layout (U3 of the safe agent edits plan)
+
+// Covers KTD1: the identity and the records come from `longhand.json`, and
+// the title and the tags from `session.md`.
+#[test]
+fn a_note_takes_its_identity_from_longhand_json_and_its_title_from_session_md() {
+    let root = marked_root();
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    assert!(
+        !fs::read_to_string(dir.join("session.md"))
+            .unwrap()
+            .contains("session_id")
+    );
+    fs::write(
+        dir.join("session.md"),
+        "---\ntitle: Agent title\nlonghand_tags:\n- follow-up\n---\nBody.\n",
+    )
+    .unwrap();
+    let result = run(root.path(), &Known::default());
+    let found = &result.notes[0];
+    assert_eq!(found.doc.session_id, "A1");
+    assert_eq!(found.layout, session_core::note_folder::Layout::New);
+    assert_eq!(found.doc.title.as_deref(), Some("Agent title"));
+    assert_eq!(found.doc.tags, vec!["follow-up".to_string()]);
+    assert_eq!(found.written_title.as_ref().unwrap().text, "Planning");
+    assert!(found.waiting.is_empty(), "{:?}", found.waiting);
+}
+
+// Covers KTD6.
+#[test]
+fn a_new_session_md_with_no_longhand_json_waits_for_a_sync_and_is_not_a_note() {
+    let root = marked_root();
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    fs::remove_file(dir.join("longhand.json")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes.is_empty());
+    assert!(result.invalid.is_empty());
+    assert_eq!(result.waiting_for_record.len(), 1);
+    assert_eq!(result.waiting_for_record[0].path, dir);
+    // A known folder keeps its id.
+    let mut known = Known::default();
+    known.add("A1", &dir);
+    let result = run(root.path(), &known);
+    assert_eq!(result.waiting_for_record[0].known_id.as_deref(), Some("A1"));
+}
+
+// Covers KTD1: a folder with only `longhand.json` is a note folder, not a
+// type folder, in the full scan and in the targeted scan.
+#[test]
+fn a_folder_with_only_longhand_json_is_a_note_not_a_type_folder() {
+    let root = marked_root();
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    fs::remove_file(dir.join("session.md")).unwrap();
+    // A folder inside it is not a note of a type.
+    note(&dir, "Inner", "B1");
+    let result = run(root.path(), &Known::default());
+    assert_eq!(types(&result), [typed("A1", None)]);
+    assert_eq!(result.notes[0].doc.title.as_deref(), Some("Planning"));
+    let (targeted, _) = scan_folders(
+        root.path(),
+        &HashSet::from([dir.join("Inner")]),
+        &Known::default(),
+        &options(),
+    )
+    .unwrap();
+    assert!(targeted.notes.is_empty(), "{:?}", targeted.notes);
+}
+
+// Covers KTD1: the scan reads only the exact name.
+#[test]
+fn a_conflict_copy_of_longhand_json_has_no_effect() {
+    let root = marked_root();
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let mut other = doc("B1");
+    other.title = Some("Other".into());
+    fs::write(
+        dir.join("longhand 2.json"),
+        session_core::note_record::NoteRecord::from_doc(&other).render(),
+    )
+    .unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(types(&result), [typed("A1", None)]);
+    assert_eq!(
+        result.notes[0].conflict_copies,
+        [dir.join("longhand 2.json")]
+    );
+}
+
+// Covers KTD6, R9: a `session.md` that holds `session_id` is the old
+// layout, and its records are read, also with a `longhand.json`.
+#[test]
+fn an_old_layout_session_md_gives_the_records_also_with_a_longhand_json() {
+    let root = marked_root();
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let mut old = doc("A1");
+    old.title = Some("Old".into());
+    old.transcript_fingerprint = Some(fingerprint(b"another transcript"));
+    fs::write(dir.join("session.md"), old.render()).unwrap();
+    let result = run(root.path(), &Known::default());
+    let found = &result.notes[0];
+    assert_eq!(found.layout, session_core::note_folder::Layout::Old);
+    assert_eq!(found.doc.title.as_deref(), Some("Old"));
+    assert_eq!(found.waiting, [Waiting::Transcript]);
 }

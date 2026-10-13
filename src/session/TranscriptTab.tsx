@@ -14,7 +14,8 @@ type Turn = Extract<DocLine, { kind: "turn" }>;
 
 type Part =
   | { kind: "speaker"; speaker: number | null; turns: Turn[] }
-  | { kind: "marker"; label: string; dashed?: boolean };
+  | { kind: "marker"; label: string; dashed?: boolean }
+  | { kind: "text"; text: string };
 
 /// "35:48", or "4:02:03" with hours.
 export function formatClock(ms: number): string {
@@ -58,6 +59,9 @@ function parts(lines: DocLine[]): Part[] {
       });
     } else if (line.kind === "pause") {
       out.push({ kind: "marker", label: pausedLabel(line.duration_ms), dashed: true });
+    } else if (line.kind === "text") {
+      // A line in free text, for example from an agent, has no time (KTD7).
+      out.push({ kind: "text", text: line.text });
     } else {
       out.push({ kind: "marker", label: `Silence for ${formatClock(line.duration_ms)}` });
     }
@@ -111,6 +115,11 @@ export function TranscriptTab({
       {parts(lines).map((part, i) =>
         part.kind === "marker" ? (
           <Marker key={i} label={part.label} dashed={part.dashed} />
+        ) : part.kind === "text" ? (
+          <div key={i} className="grid grid-cols-[4.5rem_1fr] py-1">
+            <span aria-hidden />
+            <p className="leading-[1.55]">{part.text}</p>
+          </div>
         ) : (
           <section key={i} className="mt-5">
             {part.speaker !== null && (

@@ -1,9 +1,10 @@
 //! The early write of a note's home folder (U3, R1, R4, R5, KTD3, KTD4).
 //!
 //! Every new note gets its home folder in the storage folder at its start,
-//! with `notes.md` and `session.md`, so the note exists and syncs before it
-//! has audio. The audio and the processing files stay in the working
-//! location. The first Save then publishes into this folder (KTD3).
+//! with `notes.md`, `session.md` and `longhand.json`, so the note exists and
+//! syncs before it has audio. The audio and the processing files stay in
+//! the working location. The first Save then publishes into this folder
+//! (KTD3).
 //!
 //! The write follows the Save staging pattern, one [`EarlyState`] at a time,
 //! and the store records each state before the next step (step, then
@@ -12,7 +13,8 @@
 //! 1. [`EarlyState::Begun`]: [`begin`] records it when the row is made, so
 //!    a crash before any write still gets one folder at the next launch.
 //!    The step writes this run's in-use marker (a note that records),
-//!    `notes.md`, then `session.md` into the hidden staging folder
+//!    `notes.md`, `session.md`, then `longhand.json` into the hidden
+//!    staging folder
 //!    `.longhand-staging-<id>` in the storage folder.
 //! 2. [`EarlyState::Filled`]: the staging folder is complete. The step
 //!    moves it to the first free name candidate with `rename_new`.
@@ -21,7 +23,7 @@
 //!    folder up to date until the first Save.
 //!
 //! Every file in the folder is identifiable by the `session_id` in its
-//! `session.md`. When the staging folder is gone in the Filled state, the
+//! `longhand.json`. When the staging folder is gone in the Filled state, the
 //! rename happened and its record did not: the step finds the folder at a
 //! name candidate by `session_id` before it does anything again. So a crash
 //! at any step leaves at most one folder (R4). When no candidate holds the
@@ -48,13 +50,15 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use chrono::Local;
-use library::scan::{self, Known, READ_TIMEOUT, Read, ScanOptions, read_timed};
+use library::scan::{self, Known, NoteRead, READ_TIMEOUT, Read, ScanOptions, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{self, ResultFlag, SessionDoc};
+use session_core::note_folder::{Layout, SESSION_FILE, written_fingerprint};
+use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
 use session_core::{SessionRecord, SessionState, Store};
-use session_save::{Fs, RealFs, fsync, home_write, naming, rename, rename_home};
+use session_save::{Fs, RealFs, fsync, home_write, naming, note_files, rename, rename_home};
 
-use crate::save::{NOTES_FILE, SESSION_FILE, note_started};
+use crate::save::{NOTES_FILE, note_started};
 use crate::{SharedStore, StageError, in_use, lock, type_move};
 
 /// The `result_state` key of the early write.
@@ -278,20 +282,15 @@ fn storage(root: &Path, e: io::Error) -> StageError {
     ))
 }
 
-/// Whether `path` is the folder of the note `id`: its `session.md` names
-/// `id`. The read has a time limit, because a synced folder can hold a
-/// file that does not download. Such a file gives [`NoteAt::Unknown`].
+/// Whether `path` is the folder of the note `id`: its `longhand.json`, or
+/// an old-layout `session.md`, names `id`. The read has a time limit,
+/// because a synced folder can hold a file that does not download. Such a
+/// file gives [`NoteAt::Unknown`].
 fn note_at(path: &Path, id: &str) -> NoteAt {
-    match read_timed(path.join(SESSION_FILE), READ_TIMEOUT) {
-        Read::Bytes(bytes) => {
-            let named = std::str::from_utf8(&bytes)
-                .ok()
-                .and_then(|text| SessionDoc::parse(text).ok())
-                .is_some_and(|doc| doc.session_id == id);
-            if named { NoteAt::Yes } else { NoteAt::No }
-        }
-        Read::Missing => NoteAt::No,
-        Read::Failed(why) => NoteAt::Unknown(why.to_string()),
+    match scan::read_note(path, READ_TIMEOUT) {
+        NoteRead::Note(files) if files.doc.session_id == id => NoteAt::Yes,
+        NoteRead::Unreadable(why) => NoteAt::Unknown(why),
+        _ => NoteAt::No,
     }
 }
 
@@ -299,7 +298,7 @@ fn note_at(path: &Path, id: &str) -> NoteAt {
 enum NoteAt {
     Yes,
     No,
-    /// The `session.md` of the folder cannot be read now.
+    /// The files of the folder cannot be read now.
     Unknown(String),
 }
 
@@ -348,14 +347,21 @@ pub fn step(
                 Err(e) => return Err(storage(root, e)),
             }
             // The marker first: the folder is in use by this run before its
-            // `session.md` is anywhere (KTD4).
+            // records are anywhere (KTD4).
             if records {
                 in_use::write_marker(&staging, run_id, Local::now().fixed_offset())
                     .map_err(|e| storage(root, e))?;
             }
-            let session = doc.render();
+            // `notes.md`, `session.md` with the title and the tags, then
+            // `longhand.json` with the records and the identity, last
+            // (KTD2 of the safe agent edits plan).
+            let session = note_files::new_session_md(doc.title.as_deref(), &doc.tags);
+            let record = NoteRecord::from_doc(&doc).render();
             home_write::write_atomic(&staging, NOTES_FILE, notes.as_bytes())
                 .and_then(|()| home_write::write_atomic(&staging, SESSION_FILE, session.as_bytes()))
+                .and_then(|()| {
+                    home_write::write_atomic(&staging, NOTE_RECORD_FILE, record.as_bytes())
+                })
                 .and_then(|()| fsync::sync_dir(root))
                 .map_err(|e| storage(root, e))?;
             {
@@ -366,7 +372,7 @@ pub fn step(
                 )?;
                 guard.set_written_session_fingerprint(
                     id,
-                    Some(&folder::fingerprint(session.as_bytes())),
+                    Some(&written_fingerprint(session.as_bytes(), record.as_bytes())),
                 )?;
             }
             Ok(EarlyState::Filled {
@@ -597,30 +603,31 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
     {
         return Ok(());
     }
-    let doc = match read_timed(home.join(SESSION_FILE), READ_TIMEOUT) {
-        Read::Bytes(bytes) => std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| SessionDoc::parse(text).ok()),
-        Read::Missing => None,
-        Read::Failed(why) => {
+    let files = match scan::read_note(&home, READ_TIMEOUT) {
+        NoteRead::Note(files) => Some(*files),
+        NoteRead::Unreadable(why) => {
             return Err(StageError::NoDestination(format!(
-                "{} cannot be read: {why}",
-                home.join(SESSION_FILE).display()
+                "the files of {} cannot be read: {why}",
+                home.display()
             )));
         }
+        _ => None,
     };
-    if let Some(mut doc) = doc
-        && doc.session_id == id
-        && doc.result != Some(flag)
+    // A note in the old layout gets no write: its records stay in
+    // `session.md` until the conversion (KTD6).
+    if let Some(files) = files
+        && files.layout == Layout::New
+        && files.record.session_id == id
+        && files.record.result != Some(flag)
     {
-        // Only the flag changes: the title and the rest stay as the file
-        // has them, also when another computer wrote them.
-        doc.result = Some(flag);
-        let text = doc.render();
-        home_write::write_atomic(&home, SESSION_FILE, text.as_bytes())
-            .map_err(|e| storage(&root, e))?;
+        // Only the flag changes: the title and the rest stay as the files
+        // have them, also when another computer wrote them.
+        let mut record = files.record;
+        record.result = Some(flag);
+        let text = note_files::write_record(&home, &record).map_err(|e| storage(&root, e))?;
+        let session = std::fs::read(home.join(SESSION_FILE)).unwrap_or_default();
         lock(store)
-            .set_written_session_fingerprint(id, Some(&folder::fingerprint(text.as_bytes())))?;
+            .set_written_session_fingerprint(id, Some(&written_fingerprint(&session, &text)))?;
     }
     // The note does not record any more: a recording that kept no audio
     // went back to "no recording". This job wrote the marker, and the

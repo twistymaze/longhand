@@ -32,8 +32,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
-use session_core::folder::{self, SessionDoc};
+use session_core::folder;
 use session_core::jobs::{Claim, Claims};
+use session_core::note_folder::NoteFiles;
 use session_core::{MoveJournal, MovePause, MoveStep, SessionState, Store, StoreError};
 use session_save::{Fs, fsync, naming, rename};
 
@@ -238,15 +239,13 @@ fn pause_for(e: &io::Error, folder: &Path) -> MoveError {
 
 /// Whether `path` is this note's folder in the new folder: it has the
 /// Move's marker with the note id, or it is the same note (its
-/// `session.md` has the note id), so a second copy is never placed.
+/// `longhand.json`, or an old-layout `session.md`, has the note id), so a
+/// second copy is never placed.
 fn is_ours(path: &Path, session_id: &str) -> bool {
     if std::fs::read_to_string(path.join(MARKER)).is_ok_and(|m| m.trim() == session_id) {
         return true;
     }
-    std::fs::read_to_string(path.join(crate::save::SESSION_FILE))
-        .ok()
-        .and_then(|text| SessionDoc::parse(&text).ok())
-        .is_some_and(|doc| doc.session_id == session_id)
+    NoteFiles::read(path).is_ok_and(|files| files.doc.session_id == session_id)
 }
 
 /// The note's folder in the new folder, among the names that a rename

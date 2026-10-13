@@ -66,6 +66,28 @@ describe("TypeAndTags", () => {
     expect(screen.getByRole("button", { name: "Add Tag" })).toBeTruthy();
   });
 
+  // Covers R6: while session.md does not parse, the type and the tags
+  // show and do not change.
+  test("a locked row shows the type and the tags with no controls", () => {
+    mockRow();
+    render(
+      <TypeAndTags
+        sessionId="s1"
+        present
+        noteType="One on One"
+        tags={["urgent"]}
+        recording={false}
+        onNotice={() => {}}
+        onChanged={() => {}}
+        onTypeChanged={() => {}}
+        locked="session.md has an error on line 3. Correct the file to change this note."
+      />,
+    );
+    expect(row().textContent).toContain("One on One");
+    expect(row().textContent).toContain("urgent");
+    expect(within(row()).queryAllByRole("button")).toHaveLength(0);
+  });
+
   test("the type menu lists General, the valid types and New Type…, and the first item has the focus", async () => {
     mockRow();
     const { user } = renderRow({ noteType: "One on One", tags: [] });

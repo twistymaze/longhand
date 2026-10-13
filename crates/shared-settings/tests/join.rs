@@ -479,7 +479,7 @@ fn a_settings_file_that_does_not_parse_stays_and_the_cache_is_read_only() {
 }
 
 #[test]
-fn a_settings_file_that_names_a_prompt_that_has_not_arrived_uses_the_cached_text() {
+fn a_settings_file_that_names_a_prompt_that_has_not_arrived_uses_the_default_prompt() {
     let root = folder_of_a();
     // B already uses this folder, and its cache has A's prompt "Standup".
     let standup = prompt("standup-a", "Standup", "A's standup.");
@@ -503,17 +503,19 @@ fn a_settings_file_that_names_a_prompt_that_has_not_arrived_uses_the_cached_text
     .unwrap();
     let before = snapshot(root.path());
     let joined = join(root.path(), Some(&cache), JoinKind::SameFolder).unwrap();
+    // KTD8: the cache copy does not stand in for a missing file.
     assert_eq!(
         joined.view.active,
-        ActivePrompt::Custom {
-            prompt: standup.clone(),
-            from_cache: true
-        }
+        ActivePrompt::Missing("standup-a".into())
+    );
+    assert_eq!(
+        joined.view.missing_prompts,
+        ["standup-a".to_string()].into()
     );
     assert!(!joined.written.settings_file);
     assert!(joined.written.prompt_files.is_empty());
     assert_eq!(snapshot(root.path()), before);
-    // The new cache keeps the active prompt's text.
+    // The new cache keeps the last copy that this computer read.
     assert_eq!(joined.cache.unwrap().active_prompt, Some(standup));
 }
 

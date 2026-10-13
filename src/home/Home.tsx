@@ -1,7 +1,6 @@
 // The library keeps one selected note and its preview through navigation.
 
 import {
-  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -9,6 +8,7 @@ import {
 } from "react";
 import {
   commands,
+  type DamagedFile,
   type NewNoteType,
   type Readiness,
   type SessionEntry,
@@ -22,15 +22,18 @@ import {
 } from "../processing/describe";
 import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
-import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
+import { AppIcon, NoteIcon } from "../settings/icons";
+import { damagedFileText } from "../settings/shared";
 import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
 import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
+import { CautionBanner, LibraryNotices } from "./LibraryNotices";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
+import { useLibraryNotices } from "./useLibraryNotices";
 import { useTypesAndTags } from "./useTypesAndTags";
 
 export type { RecordingNow };
@@ -49,6 +52,7 @@ export function Home({
   readiness,
   chord,
   newNoteRecords = true,
+  damagedFile = null,
   onOpen,
   onStarted,
   onChanged,
@@ -73,6 +77,9 @@ export function Home({
   chord: string | null;
   /// The default of Settings > Recording: New Note starts to record (R8).
   newNoteRecords?: boolean;
+  /// The shared settings file that did not parse for about one minute, or
+  /// null (R22). The user must fix it.
+  damagedFile?: DamagedFile | null;
   onOpen: (id: string) => void;
   /// A note that does not record started. A note that records opens from
   /// the recording event.
@@ -104,6 +111,7 @@ export function Home({
   // a note and comes back (R33). A type or a tag that no longer exists drops
   // out of it. General drops out when no other type is left (R3).
   const lists = useTypesAndTags(active);
+  const library = useLibraryNotices();
   const [chosenFilter, setFilter] = useState<NoteFilter>(noFilter);
   const types = lists.types?.types ?? null;
   const filter = keepExisting(chosenFilter, types, lists.tags, generalIsChoice(types));
@@ -323,6 +331,21 @@ export function Home({
               </Button>
             </CautionBanner>
           )}
+          <LibraryNotices
+            notices={library.notices}
+            onChanged={() => {
+              void library.reload();
+              onChanged();
+            }}
+          />
+          {/* KTD14: the parse notices come after the conversion notices. */}
+          {damagedFile && (
+            <CautionBanner>
+              <span role="status" className="min-w-0 flex-1">
+                {damagedFileText(damagedFile)}
+              </span>
+            </CautionBanner>
+          )}
           {notice && (
             <p
               role="status"
@@ -459,15 +482,6 @@ export function Home({
         )}
       </div>
       {deletion.dialog}
-    </div>
-  );
-}
-
-function CautionBanner({ children }: { children: ReactNode }) {
-  return (
-    <div className="mx-[24px] mt-1 mb-2 flex items-center gap-2.5 rounded-[10px] bg-caution/10 px-3 py-2 text-[0.85rem] shadow-[inset_0_0_0_0.5px_color-mix(in_srgb,var(--caution)_35%,transparent)]">
-      <CautionIcon className="size-4 text-caution" />
-      {children}
     </div>
   );
 }

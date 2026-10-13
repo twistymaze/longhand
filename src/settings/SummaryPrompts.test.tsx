@@ -38,7 +38,7 @@ const baseSettings: Settings = {
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
   background: "",
   background_limit: 4000,
   background_read_only: null,
@@ -58,8 +58,8 @@ const readiness: Readiness = {
 /// The backend lists the custom prompts by name.
 function backend(over: Record<string, CommandHandler> = {}) {
   const builtIns = [
-    { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true },
-    { id: "play-by-play", name: "Play-by-play summary", text: "Play text", title_text: "Built-in title text", built_in: true },
+    { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+    { id: "play-by-play", name: "Play-by-play summary", text: "Play text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
   ];
   let custom: SummaryPrompt[] = [{ id: "c1", name: "Team sync", text: "Sync text", title_text: "Sync title" }];
   let active = "topic-summary";
@@ -73,7 +73,7 @@ function backend(over: Record<string, CommandHandler> = {}) {
   const find = (id: unknown) => [...builtIns, ...custom].find((p) => p.id === id)!;
   return mockTauri({
     summary_prompts: () => ({
-      prompts: [...builtIns, ...byName().map((p) => ({ ...p, built_in: false }))],
+      prompts: [...builtIns, ...byName().map((p) => ({ ...p, built_in: false, over_limit: false, too_large: false }))],
       active,
       text_limit: 4000,
       title_text_limit: 1000,
@@ -570,9 +570,9 @@ describe("SummaryPrompts", () => {
       },
       summary_prompts: () => ({
         prompts: [
-          { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true },
-          { id: "play-by-play", name: "Play-by-play summary", text: "Play text", title_text: "Built-in title text", built_in: true },
-          { id: "c1", name: "Team sync", text, title_text: "Sync title", built_in: false },
+          { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+          { id: "play-by-play", name: "Play-by-play summary", text: "Play text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+          { id: "c1", name: "Team sync", text, title_text: "Sync title", built_in: false, over_limit: false, too_large: false },
         ],
         active: "topic-summary",
         text_limit: 4000,
@@ -610,9 +610,9 @@ describe("SummaryPrompts", () => {
       },
       summary_prompts: () => ({
         prompts: [
-          { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true },
-          { id: "play-by-play", name: "Play-by-play summary", text: "Play text", title_text: "Built-in title text", built_in: true },
-          { id: "c1", name: "Team sync", text, title_text: "Sync title", built_in: false },
+          { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+          { id: "play-by-play", name: "Play-by-play summary", text: "Play text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+          { id: "c1", name: "Team sync", text, title_text: "Sync title", built_in: false, over_limit: false, too_large: false },
         ],
         active: "topic-summary",
         text_limit: 4000,
@@ -787,6 +787,94 @@ describe("SummaryPrompts", () => {
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
   });
 
+  // Safe agent edits U6, R21: an outside edit made a prompt too long.
+  const overLimitList = (custom: Record<string, unknown>[]) => () => ({
+    prompts: [
+      { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+      ...custom,
+    ],
+    active: "topic-summary",
+    text_limit: 4000,
+    title_text_limit: 1000,
+  });
+
+  test("a prompt over the limit shows its counts in the list and saves only at the limit", async () => {
+    const long = "b".repeat(5000);
+    const tauri = backend({
+      summary_prompts: overLimitList([
+        { id: "c1", name: "Team sync", text: long, title_text: "", built_in: false, over_limit: true, too_large: false },
+      ]),
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    expect((await screen.findByRole("radio", { name: /^Team sync/ })).textContent).toContain("5,000 / 4,000 characters");
+    await user.click(row("Team sync"));
+    await waitFor(() => expect(textArea().textContent).toBe(long));
+    expect(screen.getByText("5,000 / 4,000").className).toContain("text-negative");
+    expect(screen.getByText(/The prompt text is over the limit. Summaries use the whole text./)).toBeTruthy();
+    // Rename, delete and Make default stay available.
+    expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).disabled).toBe(false);
+    expect((button("Delete") as HTMLButtonElement).disabled).toBe(false);
+    expect((button("Make default Team sync") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.blur(textArea());
+    await pause(50);
+    expect(textCalls(tauri)).toEqual([]);
+    await setText(textArea(), "a".repeat(4000));
+    expect(screen.queryByText(/is over the limit/)).toBeNull();
+    fireEvent.blur(textArea());
+    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
+  });
+
+  test("title instructions over the limit show the title counts in the list", async () => {
+    backend({
+      summary_prompts: overLimitList([
+        { id: "c1", name: "Team sync", text: "Sync text", title_text: "t".repeat(1200), built_in: false, over_limit: true, too_large: false },
+      ]),
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    expect((await screen.findByRole("radio", { name: /^Team sync/ })).textContent).toContain("Title 1,200 / 1,000 characters");
+    await user.click(row("Team sync"));
+    expect(await screen.findByText(/The title instructions are over the limit/)).toBeTruthy();
+  });
+
+  test("a prompt whose file is too large shows no text and offers rename and delete", async () => {
+    backend({
+      summary_prompts: overLimitList([
+        { id: "c1", name: "Team sync", text: "", title_text: "", built_in: false, over_limit: true, too_large: true },
+      ]),
+    });
+    renderPrompts();
+    const user = userEvent.setup();
+    expect((await screen.findByRole("radio", { name: /^Team sync/ })).textContent).toContain("File too large");
+    await user.click(row("Team sync"));
+    expect(await screen.findByText(/The file of this prompt is too large to show/)).toBeTruthy();
+    expect(textArea().getAttribute("aria-readonly")).toBe("true");
+    expect(screen.queryByText("A prompt can’t be empty.")).toBeNull();
+    expect((button("Duplicate") as HTMLButtonElement).disabled).toBe(true);
+    expect((button("Delete") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  test("with only the settings file read-only, prompts change and Make default does not", async () => {
+    // R22: the default prompt is in the settings file, the prompts are not.
+    backend();
+    mockWindows("settings");
+    render(
+      <SummaryPrompts
+        onSettings={() => {}}
+        readOnly={null}
+        settingsReadOnly="The settings file in the storage folder has an error."
+      />,
+    );
+    const user = userEvent.setup();
+    await selectCustom(user);
+    expect((button("Make default Team sync") as HTMLButtonElement).disabled).toBe(true);
+    expect(textArea().getAttribute("aria-readonly")).toBeNull();
+    expect((button("New Prompt") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText(/has an error. The default prompt can’t be changed now./)).toBeTruthy();
+  });
+
   test("the count counts characters, not UTF-16 units", async () => {
     const tauri = backend();
     renderPrompts();
@@ -907,8 +995,8 @@ describe("SummaryPrompts", () => {
     const tauri = backend({
       summary_prompts: () => ({
         prompts: [
-          { id: "topic-summary", name: "Topic summary", text: "## Topics\n\n- one\n- two", title_text: "Built-in title text", built_in: true },
-          { id: "c1", name: "Team sync", text: "Sync text", title_text: "Sync title", built_in: false },
+          { id: "topic-summary", name: "Topic summary", text: "## Topics\n\n- one\n- two", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+          { id: "c1", name: "Team sync", text: "Sync text", title_text: "Sync title", built_in: false, over_limit: false, too_large: false },
         ],
         active: "topic-summary",
         text_limit: 4000,
@@ -1042,8 +1130,8 @@ describe("shared prompts", () => {
     const state = { active: "topic-summary", text: "Sync text", title_text: "Sync title" };
     const list = () => ({
       prompts: [
-        { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true },
-        { id: "c1", name: "Team sync", text: state.text, title_text: state.title_text, built_in: false },
+        { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+        { id: "c1", name: "Team sync", text: state.text, title_text: state.title_text, built_in: false, over_limit: false, too_large: false },
       ],
       active: state.active,
       text_limit: 4000,

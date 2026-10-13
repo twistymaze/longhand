@@ -33,11 +33,25 @@ function CheckIcon() {
   );
 }
 
+const format = (n: number) => n.toLocaleString("en-US");
+
+/// The text of a prompt that is over a limit (R21): the current and the
+/// maximum character count of the text that is over, or null.
+function overLimitText(prompt: SummaryPromptEntry, limits: Record<Field, number>): string | null {
+  if (!prompt.over_limit) return null;
+  if (prompt.too_large) return "File too large";
+  const text = [...prompt.text].length;
+  if (text > limits.text) return `${format(text)} / ${format(limits.text)} characters`;
+  const title = [...(prompt.title_text ?? "")].length;
+  return `Title ${format(title)} / ${format(limits.title)} characters`;
+}
+
 function PromptRow({
   prompt,
   selected,
   active,
   disabled,
+  overLimit,
   onSelect,
   onUse,
 }: {
@@ -45,6 +59,8 @@ function PromptRow({
   selected: boolean;
   active: boolean;
   disabled: boolean;
+  /// The counts of a prompt that is over a limit, or null.
+  overLimit: string | null;
   onSelect: () => void;
   onUse: () => void;
 }) {
@@ -60,6 +76,7 @@ function PromptRow({
         >
           <span className="truncate font-medium">{prompt.name}</span>
           {prompt.built_in && <span className="shrink-0 text-[0.85rem] text-label-secondary">Built-in</span>}
+          {overLimit && <span className="shrink-0 text-[0.85rem] text-negative tabular-nums">{overLimit}</span>}
         </button>
         {active ? (
           <span className="flex shrink-0 items-center gap-1 text-label-secondary">
@@ -104,11 +121,15 @@ function without<T>(map: Record<string, T>, id: string): Record<string, T> {
 export function SummaryPrompts({
   onSettings,
   readOnly = null,
+  settingsReadOnly = readOnly,
   closeSaveLimit = defaultCloseSaveLimit,
 }: {
   onSettings: (s: Settings) => void;
-  /// Why the shared settings are read-only now, or null (R16).
+  /// Why the prompt files are read-only now, or null (R16).
   readOnly?: string | null;
+  /// Why the settings file is read-only now, or null. The default prompt
+  /// is in that file, so Make Default needs it (R22).
+  settingsReadOnly?: string | null;
   /// Tests set a shorter limit.
   closeSaveLimit?: number;
 }) {
@@ -366,7 +387,9 @@ export function SummaryPrompts({
   }
 
   const id = selected.id;
-  const empty = !selected.built_in && draftOf(selected, "text").trim() === "";
+  // A file over the size limit has no text in the list (R21).
+  const tooLarge = selected.too_large;
+  const empty = !selected.built_in && !tooLarge && draftOf(selected, "text").trim() === "";
   // The copy gets the texts that the editor shows.
   const duplicate = async () => {
     if (!(await flush(id))) return;
@@ -432,6 +455,7 @@ export function SummaryPrompts({
     }
   };
   const locked = readOnly !== null;
+  const defaultLocked = settingsReadOnly !== null;
   const fieldProps = (field: Field) => ({
     field,
     inputId: `prompt-${field}-${id}`,
@@ -440,8 +464,8 @@ export function SummaryPrompts({
     editorKey: `${keyOf(id, field)}\n${generations[keyOf(id, field)] ?? 0}`,
     value: draftOf(selected, field),
     limit: limits[field],
-    readOnly: selected.built_in || locked,
-    showCount: !selected.built_in,
+    readOnly: selected.built_in || locked || tooLarge,
+    showCount: !selected.built_in && !tooLarge,
     changed: changedElsewhere(selected, field),
     saveError: saveErrors[keyOf(id, field)] ?? null,
     onChange: (text: string) => change(field, text),
@@ -457,7 +481,9 @@ export function SummaryPrompts({
         footer={
           locked
             ? `${readOnly} Prompts can’t be changed now.`
-            : "The default prompt writes the summary of each type set to “Default”. Summaries you already have don’t change."
+            : defaultLocked
+              ? `${settingsReadOnly} The default prompt can’t be changed now.`
+              : "The default prompt writes the summary of each type set to “Default”. Summaries you already have don’t change."
         }
       >
         <div role="radiogroup" aria-label="Summary prompts">
@@ -467,7 +493,8 @@ export function SummaryPrompts({
               prompt={p}
               selected={p.id === id}
               active={p.id === list.active}
-              disabled={locked}
+              disabled={defaultLocked}
+              overLimit={overLimitText(p, limits)}
               onSelect={() => select(p.id)}
               onUse={() => void run(() => commands.activateSummaryPrompt(p.id), setListError)}
             />
@@ -493,14 +520,22 @@ export function SummaryPrompts({
             onCommit={(v) => void run(() => commands.renameSummaryPrompt(id, v), setEditorError)}
           />
         </Row>
+        {tooLarge && (
+          <ErrorText>
+            The file of this prompt is too large to show. Summaries use the default prompt instead. Make the file
+            shorter, or delete the prompt.
+          </ErrorText>
+        )}
         <PromptField {...fieldProps("text")} label="Prompt text" detail="How to write the summary." rows={14} />
         {empty && <ErrorText>A prompt can’t be empty.</ErrorText>}
+        {!tooLarge && <OverLimitText field="text" text={draftOf(selected, "text")} limit={limits.text} />}
         <PromptField
           {...fieldProps("title")}
           label="Title instructions"
           detail="How to write the note title. This can be empty."
           rows={5}
         />
+        {!tooLarge && <OverLimitText field="title" text={draftOf(selected, "title")} limit={limits.title} />}
         <div className="settings-row px-4">
           <div className="flex min-h-[3.25rem] items-center gap-2 py-2.5">
             {selected.built_in ? (
@@ -510,7 +545,7 @@ export function SummaryPrompts({
             ) : (
               <span className="flex-1" />
             )}
-            <Button disabled={locked} onClick={() => void duplicate()}>
+            <Button disabled={locked || tooLarge} onClick={() => void duplicate()}>
               Duplicate
             </Button>
             {!selected.built_in && (
@@ -524,6 +559,18 @@ export function SummaryPrompts({
       </Group>
       {dialog}
     </>
+  );
+}
+
+/// What to do with a text over its limit (R21). A save is possible only at or
+/// under the limit, and summaries use the whole text until then.
+function OverLimitText({ field, text, limit }: { field: Field; text: string; limit: number }) {
+  if ([...text].length <= limit) return null;
+  const what = field === "text" ? "The prompt text is" : "The title instructions are";
+  return (
+    <ErrorText>
+      {`${what} over the limit. Summaries use the whole text. To save a change, use ${format(limit)} characters or fewer.`}
+    </ErrorText>
   );
 }
 

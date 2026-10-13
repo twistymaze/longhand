@@ -3,8 +3,8 @@
 //!
 //! A tag edit is a read-modify-write of `longhand_tags` in the note's
 //! `session.md`, under the store lock, followed by the row. It does not
-//! wait for a busy note: every writer of `session.md` copies the tags from
-//! the file that it replaces (KTD2), and a run on another computer takes
+//! wait for a busy note: no other writer changes the tags in `session.md`
+//! (KTD3 of the safe agent edits plan), and a run on another computer takes
 //! them from the synced file. Two tags are the same tag when their keys are
 //! equal ([`tag_key`]). A note never keeps two tags with one key.
 //!
@@ -18,15 +18,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset};
-use library::scan::{READ_TIMEOUT, Read, read_timed};
-use session_core::folder::SessionDoc;
+use library::scan::{NoteRead, READ_TIMEOUT, read_note};
+use session_core::folder::FrontmatterPatch;
 use session_core::jobs::Claims;
-use session_core::tags::tag_key;
+use session_core::note_folder::SESSION_FILE;
+use session_core::note_record::NOTE_RECORD_FILE;
+use session_core::tags::{tag_key, unique};
 use session_core::{BulkEdit, SessionState, Store};
-use session_save::home_write;
+use session_save::note_files;
 
 use crate::early_home::{self, EarlyState};
-use crate::save::SESSION_FILE;
 use crate::{SharedStore, StageError, lock};
 
 /// The error text for a tag that is empty after trimming.
@@ -53,20 +54,6 @@ pub fn check_tag(text: &str) -> Result<String, String> {
         return Err(CONTROL_IN_TAG.into());
     }
     Ok(text.to_string())
-}
-
-/// `tags` with one tag for each key: the first tag with a key stays.
-fn unique(tags: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut keys = Vec::new();
-    let mut out = Vec::new();
-    for tag in tags {
-        let key = tag_key(&tag);
-        if !keys.contains(&key) {
-            keys.push(key);
-            out.push(tag);
-        }
-    }
-    out
 }
 
 /// `tags` without the tags that have a key of `remove`, then with each tag
@@ -174,8 +161,10 @@ fn write_locked(
     Ok(tags)
 }
 
-/// Read `session.md` in `folder`, apply `edit` to its tags and write it
-/// when the tags change. Returns the tags of the file after the edit.
+/// Read the tags of `session.md` in `folder`, apply `edit` to them and
+/// write them when they change. The patch changes only the tag lines of
+/// the file (R4, KTD3), in both layouts, and writes one tag for each tag
+/// key (R8). Returns the tags of the file after the edit.
 fn write_file(
     folder: &Path,
     session_id: &str,
@@ -188,24 +177,31 @@ fn write_file(
         );
         StageError::NoDestination(NOTE_UNAVAILABLE.into())
     };
-    let mut doc = match read_timed(folder.join(SESSION_FILE), READ_TIMEOUT) {
-        Read::Bytes(bytes) => std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|text| SessionDoc::parse(text).ok())
-            .ok_or_else(|| unavailable("the file is not valid".into()))?,
-        Read::Missing => return Err(unavailable("the file is missing".into())),
-        Read::Failed(why) => return Err(unavailable(why)),
+    let files = match read_note(folder, READ_TIMEOUT) {
+        NoteRead::Note(files) => *files,
+        NoteRead::NotANote => return Err(unavailable("the files are missing".into())),
+        NoteRead::WaitingForRecord => {
+            return Err(unavailable(format!("{NOTE_RECORD_FILE} is missing")));
+        }
+        NoteRead::Invalid(invalid) => return Err(unavailable(invalid.reason)),
+        NoteRead::Unreadable(why) => return Err(unavailable(why)),
     };
-    if doc.session_id != session_id {
+    if files.doc.session_id != session_id {
         return Err(unavailable(format!(
-            "the file is of the note {}",
-            doc.session_id
+            "the files are of the note {}",
+            files.doc.session_id
         )));
     }
-    let tags = edit(&doc.tags);
-    if tags != doc.tags {
-        doc.tags = tags.clone();
-        home_write::write_atomic(folder, SESSION_FILE, doc.render().as_bytes())
+    let tags = unique(edit(&files.doc.tags));
+    if tags != files.doc.tags {
+        // A `session.md` that an agent deleted comes back with the title
+        // that Longhand last wrote.
+        let patch = if folder.join(SESSION_FILE).exists() {
+            FrontmatterPatch::new()
+        } else {
+            note_files::title_patch(files.doc.title.as_deref())
+        };
+        note_files::patch_session_md(folder, &note_files::with_tags(patch, &tags))
             .map_err(|e| unavailable(e.to_string()))?;
     }
     Ok(tags)

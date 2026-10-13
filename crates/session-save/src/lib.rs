@@ -13,6 +13,7 @@ pub mod fsync;
 pub mod home_write;
 pub mod in_use_marker;
 pub mod naming;
+pub mod note_files;
 pub mod publication;
 pub mod rename;
 pub mod rename_home;

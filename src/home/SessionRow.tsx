@@ -190,6 +190,10 @@ export function SessionRow({
             items={[
               {
                 label: "Rename",
+                // A file of the folder that does not parse holds the title
+                // (R6).
+                disabled: entry.problem !== null,
+                reason: entry.problem?.reason,
                 onSelect: () => {
                   setMenuOpen(false);
                   onRename();
