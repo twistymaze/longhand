@@ -625,6 +625,18 @@ impl Reconciler {
                     .filter_map(|problem| problem.known_id.as_deref()),
             )
             .collect();
+        // A folder that waits for its `longhand.json`, or that is not
+        // valid, and has no id can be the moved folder of any row of its
+        // Destination: a rename moves the folder, and the sync can deliver
+        // `session.md` first. While such a folder is there, no row of that
+        // Destination is forgotten.
+        let unidentified: HashSet<&Path> = scan
+            .invalid
+            .iter()
+            .chain(&scan.waiting_for_record)
+            .filter(|problem| problem.known_id.is_none())
+            .map(|problem| problem.root.as_path())
+            .collect();
         let roots = scan_roots(scan);
         let mut removed = Vec::new();
         for record in records.values() {
@@ -638,7 +650,9 @@ impl Reconciler {
             let Some(place) = scan::place_in(home, &roots) else {
                 continue;
             };
-            if !scan.is_available(&place.root) {
+            // The wait starts again when the Destination is available and
+            // has no folder with no id.
+            if !scan.is_available(&place.root) || unidentified.contains(place.root.as_path()) {
                 self.pending.remove(&record.id);
                 continue;
             }

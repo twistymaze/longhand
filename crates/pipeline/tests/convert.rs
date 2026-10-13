@@ -399,3 +399,127 @@ fn the_summary_data_of_an_old_note_moves_into_longhand_json() {
         Some(fingerprint(summary.render_body().as_bytes()))
     );
 }
+
+/// Copy each file of `from` into a new folder.
+fn copy_of(from: &BTreeMap<String, Vec<u8>>) -> tempfile::TempDir {
+    let folder = tempfile::tempdir().unwrap();
+    for (name, bytes) in from {
+        fs::write(folder.path().join(name), bytes).unwrap();
+    }
+    folder
+}
+
+/// Set the summary fingerprint of the old-layout `session.md` in `home`.
+fn set_summary_fingerprint(home: &Path, value: Option<String>) {
+    let mut doc = NoteFiles::read(home).unwrap().doc;
+    doc.summary_fingerprint = value;
+    fs::write(home.join("session.md"), old_session_md(&doc)).unwrap();
+}
+
+// Covers R10, R13: a summary that differs from its fingerprint, or that
+// has no fingerprint, keeps its summary data after a stop between the
+// `summary.md` write and the `session.md` write and a second run.
+#[test]
+fn a_crash_keeps_the_summary_data_of_a_summary_that_differs_from_its_fingerprint() {
+    for fingerprint in [Some("another summary".to_string()), None] {
+        let (_dir, root) = storage();
+        let working = tempfile::tempdir().unwrap();
+        let store = store();
+        let home = save_note(&store, working.path(), "n", &root);
+        let before = write_old_layout(&home);
+        set_summary_fingerprint(&home, fingerprint.clone());
+        let old = contents(&home);
+
+        let clean = copy_of(&old);
+        convert::convert_folder(clean.path(), &mut no_crash).unwrap();
+        let expected = contents(clean.path());
+        let one_run = NoteFiles::read(clean.path()).unwrap().record;
+        assert_eq!(one_run.summary, before.record.summary, "{fingerprint:?}");
+
+        // A stop before the `session.md` write.
+        let folder = copy_of(&old);
+        let mut stop = |step: Step| {
+            if step == Step::SessionMd {
+                Err(io::Error::other("the computer stopped"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(convert::convert_folder(folder.path(), &mut stop).is_err());
+        convert::convert_folder(folder.path(), &mut no_crash).unwrap();
+        assert_eq!(contents(folder.path()), expected, "{fingerprint:?}");
+
+        // A sync changes `session.md` after the `summary.md` write.
+        let folder = copy_of(&old);
+        let session_md = folder.path().join("session.md");
+        let mut sync = |step: Step| {
+            if step == Step::Summary {
+                let text = fs::read_to_string(&session_md).unwrap();
+                fs::write(&session_md, format!("{text}A line from a sync.\n")).unwrap();
+            }
+            Ok(())
+        };
+        assert_eq!(
+            convert::convert_folder(folder.path(), &mut sync).unwrap(),
+            FolderConversion::Changed
+        );
+        convert::convert_folder(folder.path(), &mut no_crash).unwrap();
+        let after = NoteFiles::read(folder.path()).unwrap();
+        assert_eq!(after.layout, Layout::New);
+        assert_eq!(after.record.summary, one_run.summary, "{fingerprint:?}");
+        assert_eq!(
+            after.record.summary_fingerprint, one_run.summary_fingerprint,
+            "{fingerprint:?}"
+        );
+    }
+}
+
+// Covers R10: the conversion removes only the summary data from the
+// frontmatter of `summary.md`. A key and a comment that a person added
+// stay, also after a stop and a second run.
+#[test]
+fn the_conversion_keeps_other_keys_and_comments_of_the_summary_frontmatter() {
+    let (_dir, root) = storage();
+    let working = tempfile::tempdir().unwrap();
+    let store = store();
+    let home = save_note(&store, working.path(), "n", &root);
+    let body_only = fs::read_to_string(home.join("summary.md")).unwrap();
+    let before = write_old_layout(&home);
+    let old_summary = fs::read_to_string(home.join("summary.md")).unwrap();
+    let edited = old_summary.replacen("---\n", "---\nreviewed_by: Alice\n# A comment.\n", 1);
+    fs::write(home.join("summary.md"), &edited).unwrap();
+    set_summary_fingerprint(&home, Some(fingerprint(edited.as_bytes())));
+    let old = contents(&home);
+
+    let report = convert_all(&store, &[("n", &home)]);
+    assert_eq!(report.converted, ["n"], "{report:?}");
+    let summary = fs::read_to_string(home.join("summary.md")).unwrap();
+    assert_eq!(
+        summary,
+        format!("---\nreviewed_by: Alice\n# A comment.\n---\n\n{body_only}")
+    );
+    let after = NoteFiles::read(&home).unwrap();
+    assert_eq!(after.layout, Layout::New);
+    assert_eq!(after.record.summary, before.record.summary);
+    assert_eq!(
+        after.record.summary_fingerprint,
+        Some(fingerprint(summary.as_bytes()))
+    );
+    // The note page shows the body only.
+    assert_eq!(Summary::body_of(&summary), body_only.trim());
+    let expected = contents(&home);
+
+    for crash in [Step::Summary, Step::SessionMd] {
+        let folder = copy_of(&old);
+        let mut stop = |step: Step| {
+            if step == crash {
+                Err(io::Error::other("the computer stopped"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(convert::convert_folder(folder.path(), &mut stop).is_err());
+        convert::convert_folder(folder.path(), &mut no_crash).unwrap();
+        assert_eq!(contents(folder.path()), expected, "{crash:?}");
+    }
+}

@@ -2362,4 +2362,53 @@ mod tests {
             .unwrap();
         assert_eq!(refuse_with_problem(&status, "A1"), Ok(()));
     }
+
+    // Covers R6, KTD6: a `longhand.json` that is not valid JSON, or that a
+    // newer Longhand wrote, holds the writes, each with its reason. A good
+    // `longhand.json` releases them.
+    #[test]
+    fn a_note_whose_longhand_json_cannot_be_read_refuses_its_writes() {
+        use library::reconcile::Target;
+        use session_core::note_record::NOTE_RECORD_FILE;
+        let start = std::time::Instant::now();
+        let (dir, home, store, mut reconciler) = scanned_note(start);
+        let status = Arc::clone(reconciler.status());
+        let target = Target::Full(vec![dir.path().canonicalize().unwrap()]);
+        let good = std::fs::read_to_string(home.join(NOTE_RECORD_FILE)).unwrap();
+        let mut newer: serde_json::Value = serde_json::from_str(&good).unwrap();
+        newer["layout"] = serde_json::json!(99);
+
+        for (text, reason) in [
+            (
+                "{ not json".to_string(),
+                "This note waits for longhand.json to sync. If it does not sync, update \
+                 Longhand on the other computer.",
+            ),
+            (
+                serde_json::to_string_pretty(&newer).unwrap(),
+                "A newer version of Longhand saved this note. Update Longhand to change it.",
+            ),
+        ] {
+            std::fs::write(home.join(NOTE_RECORD_FILE), &text).unwrap();
+            reconciler
+                .run_at(&store, &target, &|_| false, start)
+                .unwrap();
+            assert_eq!(
+                refuse_with_problem(&status, "A1"),
+                Err(reason.to_string()),
+                "{text}"
+            );
+            assert_eq!(
+                refuse_while_syncing(&status, "A1"),
+                Err(reason.to_string()),
+                "{text}"
+            );
+
+            std::fs::write(home.join(NOTE_RECORD_FILE), &good).unwrap();
+            reconciler
+                .run_at(&store, &target, &|_| false, start)
+                .unwrap();
+            assert_eq!(refuse_with_problem(&status, "A1"), Ok(()), "{text}");
+        }
+    }
 }

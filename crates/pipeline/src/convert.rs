@@ -7,7 +7,9 @@
 //!
 //! 1. `longhand.json`, from the unchanged `session.md` and `summary.md`,
 //!    with the fingerprints of the files as they are after the conversion.
-//! 2. `summary.md` with no frontmatter.
+//! 2. `summary.md` without the summary data. Other frontmatter keys, the
+//!    comments and the body stay. With no other key, the file is the body
+//!    only.
 //! 3. `session.md` with no records. The title, the tags, other keys and the
 //!    body stay.
 //!
@@ -53,6 +55,17 @@ const RECORD_KEYS: &[&str] = &[
     "result",
     "segments",
     "result_generation",
+];
+
+/// The frontmatter keys of the summary data in an old-layout `summary.md`
+/// (the fields of `SummaryMeta`). The conversion removes them.
+const SUMMARY_KEYS: &[&str] = &[
+    "status",
+    "endpoint_host",
+    "model",
+    "prompt_name",
+    "prompt_id",
+    "failed_stage",
 ];
 
 /// A write step of the conversion of one folder.
@@ -191,16 +204,19 @@ pub fn convert_folder(
         Some(text) => {
             let current = Some(fingerprint(text.as_bytes()));
             let (meta, final_text) = match Summary::parse(text) {
-                Ok(parsed) => (Some(parsed.meta.clone()), parsed.render_body()),
+                Ok(parsed) => (
+                    Some(parsed.meta.clone()),
+                    without_summary_data(text).map_err(invalid)?,
+                ),
                 // A `summary.md` with no summary data: the conversion
                 // stopped after its write, or the note has a body only.
-                Err(_) => {
-                    let meta = earlier
-                        .as_ref()
-                        .filter(|e| e.summary_fingerprint == current)
-                        .and_then(|e| e.summary.clone());
-                    (meta, text.clone())
-                }
+                // The `longhand.json` of an earlier run holds the summary
+                // data, also for a summary that differs from its
+                // fingerprint.
+                Err(_) => (
+                    earlier.as_ref().and_then(|e| e.summary.clone()),
+                    text.clone(),
+                ),
             };
             record.summary = meta;
             // A summary that matched its fingerprint matches after the
@@ -251,6 +267,32 @@ pub fn convert_folder(
     })
 }
 
+/// The text of the old-layout `summary.md` text `text` without the summary
+/// data. The other keys, the comments and the body stay. When no other key
+/// or comment stays, the text is the body only.
+fn without_summary_data(text: &str) -> Result<String, FolderError> {
+    let patched = SUMMARY_KEYS
+        .iter()
+        .fold(FrontmatterPatch::new(), |patch, key| patch.remove(key))
+        .apply(SUMMARY_FILE, text)?;
+    Ok(if empty_frontmatter(&patched) {
+        format!("{}\n", Summary::body_of(&patched))
+    } else {
+        patched
+    })
+}
+
+/// Whether the frontmatter at the start of `text` has only blank lines.
+fn empty_frontmatter(text: &str) -> bool {
+    text.strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+        .is_some_and(|rest| {
+            rest.lines()
+                .take_while(|line| line.trim_end() != "---")
+                .all(|line| line.trim().is_empty())
+        })
+}
+
 /// Whether the `session.md` in `folder` still has the text `original`.
 fn unchanged(folder: &Path, original: &str) -> io::Result<bool> {
     Ok(read_optional(&folder.join(SESSION_FILE))?.as_deref() == Some(original))
@@ -274,7 +316,39 @@ mod tests {
     use session_core::recognition::ArtifactReference;
     use session_save::note_files::{TAGS_KEY, TITLE_KEY};
 
-    use super::RECORD_KEYS;
+    use session_core::folder::{Summary, SummaryMeta};
+
+    use super::{RECORD_KEYS, SUMMARY_KEYS};
+
+    /// Each key of the summary data of an old-layout `summary.md` is a key
+    /// that the conversion removes.
+    #[test]
+    fn summary_keys_cover_each_field_of_the_summary_data() {
+        for meta in [
+            SummaryMeta::Complete {
+                endpoint_host: "api.example.com".into(),
+                model: "m".into(),
+                prompt_name: Some("Team sync".into()),
+                prompt_id: Some("b1".into()),
+            },
+            SummaryMeta::stub(),
+        ] {
+            let text = Summary {
+                meta,
+                body: "Body".into(),
+            }
+            .render();
+            let keys = frontmatter_keys(&text);
+            let unknown: Vec<_> = keys
+                .iter()
+                .filter(|key| !SUMMARY_KEYS.contains(&key.as_str()))
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "keys that the conversion keeps: {unknown:?}"
+            );
+        }
+    }
 
     /// The top-level keys of the frontmatter of `text`.
     fn frontmatter_keys(text: &str) -> Vec<String> {

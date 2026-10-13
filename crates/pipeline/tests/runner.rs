@@ -7024,6 +7024,106 @@ async fn a_regeneration_on_a_computer_with_no_recognition_results_summarizes_tra
     assert!(read(&folder, "summary.md").contains("Summary number"));
 }
 
+/// Put a new FIFO at `path`.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn fifo_at(path: &std::path::Path) {
+    let part = path.with_extension("fifo");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&part)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::rename(&part, path).unwrap();
+}
+
+/// Open the FIFO at `path` to write when a reader has it open. `None` when
+/// `done` is set first.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn open_fifo_for_a_reader(path: &std::path::Path, done: &AtomicBool) -> Option<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    #[cfg(target_os = "macos")]
+    const O_NONBLOCK: i32 = 0x0004;
+    #[cfg(target_os = "linux")]
+    const O_NONBLOCK: i32 = 0o4000;
+    while !done.load(Ordering::SeqCst) {
+        // With no reader, the open fails at once.
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(O_NONBLOCK)
+            .open(path)
+        {
+            return Some(file);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    None
+}
+
+// Covers KTD4: a result of another computer that reaches `longhand.json`
+// after the regeneration read it, and before the regeneration accepts the
+// new `transcript.md`, stays. The regeneration refuses. `transcript.md` is
+// a FIFO, so the other result arrives exactly while the regeneration reads
+// `transcript.md`. The first read of `transcript.md` is the refresh of the
+// row (KTD3); the second read is the read of the regeneration.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_keeps_a_record_that_another_computer_wrote_after_the_read() {
+    use session_core::note_record::NOTE_RECORD_FILE;
+    use std::io::Write as _;
+
+    let a = rig().await;
+    let folder = saved_note(&a, None).await;
+    let _mock = numbered_summaries(&a).await;
+    let own_transcript = read(&folder, TRANSCRIPT_FILE);
+    let other_transcript =
+        "# Transcript\n\n- [00:00:01] Speaker 1: The other computer heard this.\n";
+    let mut other = session_core::note_folder::NoteFiles::read(&folder)
+        .unwrap()
+        .record;
+    other.transcript_fingerprint = Some(session_core::folder::fingerprint(
+        other_transcript.as_bytes(),
+    ));
+    other.recognition_artifact = None;
+    other.recognition_audio = None;
+    other.found_speakers = Some(3);
+    let other_record = other.render();
+
+    let transcript = folder.join(TRANSCRIPT_FILE);
+    fifo_at(&transcript);
+    let done = Arc::new(AtomicBool::new(false));
+    let other_computer = {
+        let folder = folder.clone();
+        let other_record = other_record.clone();
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let transcript = folder.join(TRANSCRIPT_FILE);
+            let Some(mut refresh) = open_fifo_for_a_reader(&transcript, &done) else {
+                return;
+            };
+            // A new FIFO, so that only a new read connects to it.
+            fifo_at(&transcript);
+            refresh.write_all(own_transcript.as_bytes()).unwrap();
+            drop(refresh);
+            let Some(mut regeneration) = open_fifo_for_a_reader(&transcript, &done) else {
+                return;
+            };
+            std::fs::write(folder.join(NOTE_RECORD_FILE), &other_record).unwrap();
+            let part = folder.join("transcript.md.part");
+            std::fs::write(&part, other_transcript).unwrap();
+            std::fs::rename(&part, &transcript).unwrap();
+            regeneration.write_all(other_transcript.as_bytes()).unwrap();
+        })
+    };
+
+    let regenerated = a.runner.regenerate_summary("s").await;
+    done.store(true, Ordering::SeqCst);
+    other_computer.join().unwrap();
+    assert!(regenerated.is_err(), "{regenerated:?}");
+    assert_eq!(read(&folder, NOTE_RECORD_FILE), other_record);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_the_new_segment() {
     // Covers AE3.

@@ -1293,12 +1293,27 @@ fn summarize_again(
         }
     })?;
     let current_hash = folder::fingerprint(&canonical);
+    let changed = || {
+        StageError::Failed(
+            "the note changed while its summary was being made; the previous result was kept"
+                .into(),
+        )
+    };
     if current.transcript_fingerprint.as_ref() != Some(&current_hash) {
-        current.transcript_fingerprint = Some(current_hash.clone());
-        current.summary_fingerprint = fingerprint_of(&home, SUMMARY_FILE)?;
-        current.recognition_artifact = None;
-        current.recognition_audio = None;
-        note_files::write_record(&home, &current)?;
+        let summary_fingerprint = fingerprint_of(&home, SUMMARY_FILE)?;
+        // A result of another computer can reach `longhand.json` after the
+        // read above. Read it again just before the write, and refuse when
+        // its records changed, as the publication does.
+        let mut now = note_files::new_layout_record(&home)?;
+        if now.run_fingerprint() != current.run_fingerprint() {
+            return Err(changed());
+        }
+        now.transcript_fingerprint = Some(current_hash.clone());
+        now.summary_fingerprint = summary_fingerprint;
+        now.recognition_artifact = None;
+        now.recognition_audio = None;
+        note_files::write_record(&home, &now)?;
+        current = now;
     }
     // A stub resumes from the calls made before the failure, but only when
     // they were made with the active prompt's text (KTD5) and the current
@@ -1354,12 +1369,6 @@ fn summarize_again(
         // The model calls can take long. A user title that another
         // computer wrote in the meantime goes into the row first, so the
         // `session.md` below keeps it.
-        let changed = || {
-            StageError::Failed(
-                "the note changed while its summary was being made; the previous result was kept"
-                    .into(),
-            )
-        };
         if path != home || source_notes != folder::fingerprint(guard.notes(session_id)?.as_bytes())
         {
             return Err(changed());

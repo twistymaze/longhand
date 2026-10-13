@@ -330,6 +330,77 @@ fn a_rename_delivered_as_a_removed_folder_and_a_new_one_keeps_the_row_and_follow
     assert!(a.record("n1").is_some());
 }
 
+// Covers KTD5, KTD6: a rename on B moves the folder. The sync delivers the
+// new folder with its `session.md` and not yet its `longhand.json`, so the
+// folder has no id. While it waits, A keeps the row, also after the wait
+// before a forget. When `longhand.json` arrives, the row follows the folder.
+#[test]
+fn a_moved_folder_that_waits_for_its_longhand_json_keeps_the_row_after_the_wait() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let old = b.save_note("n1", &root, user_title("Planning"), "");
+    let now = Instant::now();
+    a.sync(&root, now);
+    assert_eq!(a.home("n1"), old);
+
+    let renamed = pipeline::folder_rename::rename_session(
+        &b.store,
+        "n1",
+        "Budget review",
+        &never_claimed,
+        &session_save::RealFs,
+    )
+    .unwrap();
+    let pipeline::folder_rename::FolderRename::Moved(new) = renamed else {
+        panic!("the folder did not move: {renamed:?}");
+    };
+    let away = take_away(&new, dir.path());
+    let record = fs::read(away.join("longhand.json")).unwrap();
+    fs::remove_file(away.join("longhand.json")).unwrap();
+    fs::rename(&away, &new).unwrap();
+
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 2), Changes::default());
+    assert!(a.record("n1").is_some());
+    assert_eq!(a.home("n1"), old);
+
+    fs::write(new.join("longhand.json"), record).unwrap();
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 3), changed(&["n1"]));
+    assert_eq!(a.home("n1"), new);
+    assert!(!a.reconciler.is_pending("n1"));
+}
+
+// Covers KTD5: when the folder that waits for its `longhand.json` goes, the
+// wait before a forget starts again, and then the row is forgotten.
+#[test]
+fn a_row_is_forgotten_after_the_folder_that_waits_for_its_longhand_json_goes() {
+    let (dir, root) = shared_root();
+    let mut a = computer();
+    let b = computer();
+    let gone = b.save_note("n1", &root, user_title("Planning"), "");
+    let waiting = b.save_note("n2", &root, user_title("Budget"), "");
+    let now = Instant::now();
+    assert_eq!(a.sync(&root, now), changed(&["n1", "n2"]));
+
+    // A third folder with no id waits for its `longhand.json`.
+    let unknown = root.join("2026-09-25 1000 Arrives");
+    fs::create_dir(&unknown).unwrap();
+    fs::copy(waiting.join("session.md"), unknown.join("session.md")).unwrap();
+    take_away(&gone, dir.path());
+    assert_eq!(a.sync(&root, now), Changes::default());
+    assert_eq!(a.sync(&root, now + DELETE_WAIT * 2), Changes::default());
+    assert!(a.record("n1").is_some());
+    // A suspended forget does not wake the reconcile.
+    assert!(a.reconciler.next_due().is_none());
+
+    fs::remove_dir_all(&unknown).unwrap();
+    let resumed = now + DELETE_WAIT * 3;
+    assert_eq!(a.sync(&root, resumed), Changes::default());
+    assert_eq!(a.sync(&root, resumed + DELETE_WAIT), removed(&["n1"]));
+    assert!(a.record("n2").is_some());
+}
+
 // ---------------------------------------------------------------- type folders (note types U3)
 
 /// Move the home folder `folder` into the type folder `name` of `root`, as

@@ -38,11 +38,16 @@ export function CautionBanner({ children, label }: { children: ReactNode; label?
 /// that skipped or could not convert notes (R10).
 function ConvertNotice({ notice, onChanged }: { notice: ConversionNotice; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const running = busy || notice.running;
   const convert = async () => {
     setBusy(true);
+    setStopped(false);
     try {
-      await commands.convertOldNotes();
+      const result = await commands.convertOldNotes();
+      setStopped(result.status === "error");
+    } catch {
+      setStopped(true);
     } finally {
       setBusy(false);
       onChanged();
@@ -67,6 +72,7 @@ function ConvertNotice({ notice, onChanged }: { notice: ConversionNotice; onChan
             These notes could not be converted: {notice.failed.map((note) => note.name).join(", ")}.
           </p>
         )}
+        {stopped && <p className="mt-1">The conversion did not finish. Select Convert to try again.</p>}
       </div>
       <Button disabled={running} onClick={() => void convert()}>
         {running ? "Converting…" : "Convert"}

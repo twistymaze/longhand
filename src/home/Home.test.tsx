@@ -765,6 +765,39 @@ describe("Home", () => {
     expect(within(notice).getByText(/These notes could not be converted: Budget\./)).toBeTruthy();
     expect(within(notice).getByRole("button", { name: "Convert" }).hasAttribute("disabled")).toBe(false);
   });
+
+  // Covers R10: a conversion that fails as a whole says so, and Convert
+  // stays available. The error does not escape the notice.
+  for (const [kind, fail] of [
+    ["an error", () => Promise.reject(new Error("the call failed"))],
+    ["an error result", () => Promise.reject("the run stopped")],
+  ] as const) {
+    test(`the convert notice shows a failure when the conversion returns ${kind}`, async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (event: PromiseRejectionEvent) => {
+        unhandled.push(event.reason);
+        event.preventDefault();
+      };
+      window.addEventListener("unhandledrejection", onUnhandled);
+      try {
+        mockTauri({
+          library_notices: () => ({
+            conversion: { old_notes: 2, running: false, skipped: 0, failed: [] },
+            problems: [],
+          }),
+          convert_old_notes: fail,
+        });
+        renderHome({ entries: [] });
+        const notice = await screen.findByRole("region", { name: "Notes in an older format" });
+        await userEvent.setup().click(within(notice).getByRole("button", { name: "Convert" }));
+        expect(await within(notice).findByText("The conversion did not finish. Select Convert to try again.")).toBeTruthy();
+        expect(within(notice).getByRole("button", { name: "Convert" }).hasAttribute("disabled")).toBe(false);
+        expect(unhandled).toEqual([]);
+      } finally {
+        window.removeEventListener("unhandledrejection", onUnhandled);
+      }
+    });
+  }
 });
 
 const ready = {
