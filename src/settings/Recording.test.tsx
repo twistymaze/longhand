@@ -70,6 +70,7 @@ async function open({
   const mock = mockTauri({
     get_settings: () => state.settings,
     move_status: () => null,
+    agent_instructions_status: () => ({ kind: "not_added" }),
     readiness: () => ({
       microphone_authorized: true,
       system_audio: "allowed",

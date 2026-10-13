@@ -28,7 +28,7 @@ function picker(
   handlers: Record<string, CommandHandler> = {},
   options: { settings?: Settings; status?: DestinationStatus } = {},
 ) {
-  const tauri = mockTauri({ move_status: () => null, ...handlers });
+  const tauri = mockTauri({ move_status: () => null, agent_instructions_status: () => ({ kind: "not_added" }), ...handlers });
   const received: Settings[] = [];
   const view = render(
     <DestinationPicker
@@ -42,7 +42,7 @@ function picker(
 
 const change = () => screen.getByRole("button", { name: "Change…" }) as HTMLButtonElement;
 const show = () => screen.getByRole("button", { name: /^Show in / }) as HTMLButtonElement;
-const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status");
+const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status" && c !== "agent_instructions_status");
 
 describe("DestinationPicker", () => {
   test("shows the one storage folder and no earlier folders", () => {
@@ -198,6 +198,55 @@ describe("DestinationPicker", () => {
     expect(show().disabled).toBe(true);
     expect(change().disabled).toBe(false);
     view.unmount();
+  });
+
+  describe("agent instructions", () => {
+    const addButton = () => screen.getByRole("button", { name: "Add Agent Instructions" }) as HTMLButtonElement;
+
+    test("the button adds the instructions and shows Added", async () => {
+      const { tauri, user, view } = picker({ add_agent_instructions: () => ({ kind: "added" }) });
+      expect(await screen.findByText(/AGENTS\.md and CLAUDE\.md/)).toBeTruthy();
+      await user.click(addButton());
+      expect(cmds(tauri)).toEqual(["add_agent_instructions"]);
+      expect(await screen.findByText("Added")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Add Agent Instructions" })).toBeNull();
+      view.unmount();
+    });
+
+    test("instructions that are in the files already show Added and no button", async () => {
+      const { view } = picker({ agent_instructions_status: () => ({ kind: "added" }) });
+      expect(await screen.findByText("Added")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Add Agent Instructions" })).toBeNull();
+      view.unmount();
+    });
+
+    test("damaged markers show an error that names the file, and the button is off", async () => {
+      const { view } = picker({ agent_instructions_status: () => ({ kind: "damaged", file: "CLAUDE.md" }) });
+      expect(await screen.findByText(/The agent instructions in CLAUDE\.md are damaged/)).toBeTruthy();
+      expect(addButton().disabled).toBe(true);
+      view.unmount();
+    });
+
+    test("a folder that Longhand can't write turns the button off and gives the reason", async () => {
+      const { view } = picker({
+        agent_instructions_status: () => ({ kind: "unavailable", reason: "The storage folder is not available." }),
+      });
+      await waitFor(() => expect(addButton().disabled).toBe(true));
+      expect(screen.getAllByText("The storage folder is not available.").length).toBeGreaterThan(0);
+      view.unmount();
+    });
+
+    test("a failed write shows the error that names the file", async () => {
+      const { user, view } = picker({
+        add_agent_instructions: () => {
+          throw "Longhand can’t write AGENTS.md: Permission denied";
+        },
+      });
+      await user.click(await screen.findByRole("button", { name: "Add Agent Instructions" }));
+      expect(await screen.findByText("Longhand can’t write AGENTS.md: Permission denied")).toBeTruthy();
+      expect(addButton().disabled).toBe(false);
+      view.unmount();
+    });
   });
 
   for (const [agent, label] of [

@@ -146,7 +146,7 @@ describe("AudioRemoval", () => {
   });
 
   test("the Storage pane shows the audio setting", () => {
-    mockTauri({ move_status: () => null });
+    mockTauri({ move_status: () => null, agent_instructions_status: () => ({ kind: "not_added" }) });
     const view = render(
       <DestinationPicker
         settings={after(30)}

@@ -534,6 +534,25 @@ async showStorageFolder() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The state of the agent instructions in `AGENTS.md` and `CLAUDE.md` of
+ * the storage folder (R29). This writes nothing.
+ */
+async agentInstructionsStatus() : Promise<AgentBlockStatus> {
+    return await TAURI_INVOKE("agent_instructions_status");
+},
+/**
+ * Add the agent instructions to `AGENTS.md` and `CLAUDE.md` of the storage
+ * folder (R29). The error names the file that Longhand could not write.
+ */
+async addAgentInstructions() : Promise<Result<AgentBlockStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_agent_instructions") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async credentialStatus(baseUrl: string) : Promise<Result<CredentialStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("credential_status", { baseUrl }) };
@@ -1251,6 +1270,29 @@ export const DEFAULT_SHORTCUT = "CommandOrControl+Alt+Shift+L" as const;
 
 /** user-defined types **/
 
+/**
+ * The state of the managed block, as Settings > Storage shows it.
+ */
+export type AgentBlockStatus = 
+/**
+ * At least one of the files has no block. The button adds it.
+ */
+{ kind: "not_added" } | 
+/**
+ * Each file has a block.
+ */
+{ kind: "added" } | 
+/**
+ * Longhand cannot write the files now. `reason` tells why.
+ */
+{ kind: "unavailable"; reason: string } | 
+/**
+ * The markers in `file` are damaged: a begin marker with no end
+ * marker, an end marker with no begin marker, two blocks, or a begin
+ * marker with no version. Longhand writes nothing until the user
+ * fixes the file.
+ */
+{ kind: "damaged"; file: string }
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
 /**

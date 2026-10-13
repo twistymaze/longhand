@@ -1,10 +1,11 @@
 // Settings > Storage (R3, R4, R6, R10, R16): the one storage folder, Show
-// in Finder, Change, the Move of the notes to a new folder, and the removal
-// of old audio. Change is not available while a Move runs or is paused
-// (KTD11).
+// in Finder, Change, the Move of the notes to a new folder, the removal
+// of old audio, and the agent instructions (R29). Change is not available
+// while a Move runs or is paused (KTD11).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  type AgentBlockStatus,
   commands,
   events,
   type DestinationStatus,
@@ -131,6 +132,71 @@ function MoveGroup({ move, onRetry }: { move: Move; onRetry: () => void }) {
   );
 }
 
+/// The agent instructions in AGENTS.md and CLAUDE.md of the storage folder
+/// (R29). The pane reads their state when it opens, when the folder or its
+/// status changes, and when the window gets the focus, so a file that the
+/// user fixed shows at once. An automatic update of the instructions shows
+/// nothing here.
+function AgentInstructions({ folder, folderStatus }: { folder: string; folderStatus: string }) {
+  const [state, setState] = useState<AgentBlockStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    const read = () => {
+      commands.agentInstructionsStatus().then(
+        (next) => live && setState(next),
+        () => {},
+      );
+    };
+    read();
+    window.addEventListener("focus", read);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", read);
+    };
+  }, [folder, folderStatus]);
+
+  if (!state) return null;
+
+  const add = async () => {
+    setBusy(true);
+    try {
+      const result = await commands.addAgentInstructions();
+      if (result.status === "error") setError(result.error);
+      else {
+        setError(null);
+        setState(result.data);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const about = "Adds instructions for AI agents, such as Claude Code and Codex, to AGENTS.md and CLAUDE.md in this folder. Your own text in these files stays.";
+  return (
+    <Group header="AI agents">
+      <Row label="Agent instructions" detail={state.kind === "unavailable" ? state.reason : about}>
+        {state.kind === "added" ? (
+          <Status tone="positive">Added</Status>
+        ) : (
+          <Button disabled={busy || state.kind !== "not_added"} onClick={() => void add()}>
+            Add Agent Instructions
+          </Button>
+        )}
+      </Row>
+      {state.kind === "damaged" && (
+        <ErrorText>
+          The agent instructions in {state.file} are damaged, so Longhand can’t change them. Delete the
+          instructions from {state.file}, from the BEGIN line to the END line, then add them again.
+        </ErrorText>
+      )}
+      {error && <ErrorText>{error}</ErrorText>}
+    </Group>
+  );
+}
+
 export function DestinationPicker({
   settings,
   status,
@@ -225,6 +291,7 @@ export function DestinationPicker({
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
       <AudioRemoval settings={settings} onSettings={onSettings} />
+      <AgentInstructions folder={current} folderStatus={status.kind} />
       {dialog}
     </Pane>
   );

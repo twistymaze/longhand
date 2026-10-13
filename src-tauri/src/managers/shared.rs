@@ -26,6 +26,8 @@ use shared_settings::view::{self, Availability, MissingSince, SharedView};
 use specta::Type;
 use summarize::prompts::{TOPIC_SUMMARY_ID, topic_summary};
 
+use crate::managers::agent_block::{self, AgentBlockStatus};
+
 /// The name of a prompt that the user adds (R3).
 const NEW_PROMPT_NAME: &str = "New prompt";
 const NO_SUCH_PROMPT: &str = "That prompt no longer exists.";
@@ -589,6 +591,22 @@ impl SharedSettingsManager {
         })
     }
 
+    /// The state of the managed block in `AGENTS.md` and `CLAUDE.md` of
+    /// the storage folder (R29). This writes nothing.
+    pub fn agent_block_status(&self) -> AgentBlockStatus {
+        let root = self.lock().root.clone();
+        agent_block::status(root.as_deref())
+    }
+
+    /// Add the managed block to `AGENTS.md` and `CLAUDE.md` of the storage
+    /// folder, because the user asked for it (R29). It takes the writer
+    /// lock, so it does not run at the same time as the update in a change.
+    pub fn add_agent_block(&self) -> Result<AgentBlockStatus, String> {
+        let _writer = self.writer();
+        let root = self.lock().root.clone();
+        agent_block::add(root.as_deref())
+    }
+
     /// Run `op` on the storage folder, then read the result into the view.
     /// A view that is not writable is joined again first, so a folder that
     /// came back is used. A folder with no settings file gets one from the
@@ -614,6 +632,7 @@ impl SharedSettingsManager {
         }
         if result.is_ok() {
             self.repair(&root);
+            update_agent_block(&root);
         }
         self.store_view(view::refresh(&root, &self.cache_dir));
         result.map_err(Failure::message)
@@ -694,6 +713,22 @@ impl SharedSettingsManager {
         let mut inner = self.lock();
         inner.generation += 1;
         inner.set_view(view, Instant::now(), self.wait);
+    }
+}
+
+/// Replace a managed block that an older Longhand wrote, after a change
+/// that the user made on this computer (R30, KTD12). The update shows no
+/// message. A failed update is logged, and the next change tries again.
+fn update_agent_block(root: &Path) {
+    match agent_block::update(root) {
+        Ok(written) if !written.is_empty() => {
+            log::info!(
+                "agent instructions: replaced an older block in {}",
+                written.join(", ")
+            );
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("agent instructions: the update of the block failed: {e}"),
     }
 }
 
@@ -3348,5 +3383,38 @@ mod tests {
         let state = settings_of(&manager).shared;
         assert_eq!(state.availability, SharedAvailability::Available);
         assert_eq!(state.damaged_file, None);
+    }
+
+    #[test]
+    fn an_older_agent_block_is_replaced_at_a_user_change_and_not_at_a_launch_or_a_read() {
+        // KTD12: only a write that a change of the user causes replaces the
+        // block. The join at launch and a read write nothing.
+        use crate::managers::agent_block::{AGENTS_FILE, AgentBlockStatus, CLAUDE_FILE};
+        let folder = TempDir::new().unwrap();
+        let root = folder.path();
+        let old = "User text.\n\n<!-- BEGIN:longhand-agent-instructions version=0 -->\nOld rules.\n<!-- END:longhand-agent-instructions -->\n";
+        std::fs::write(root.join(AGENTS_FILE), old).unwrap();
+        let manager = Computer::new().manager(Some(root));
+
+        manager.join_at_launch();
+        manager.reread();
+        assert_eq!(
+            std::fs::read_to_string(root.join(AGENTS_FILE)).unwrap(),
+            old
+        );
+        assert!(!root.join(CLAUDE_FILE).exists());
+
+        manager
+            .save(&[SharedValue::AsrModel("whisper-large-v3-turbo-q5km".into())])
+            .unwrap();
+
+        let agents = std::fs::read_to_string(root.join(AGENTS_FILE)).unwrap();
+        assert!(agents.starts_with("User text.\n\n"));
+        assert!(!agents.contains("Old rules."));
+        assert!(agents.contains("version=1 -->"));
+        // The update adds no block to a file that had none.
+        assert!(!root.join(CLAUDE_FILE).exists());
+        assert_eq!(manager.agent_block_status(), AgentBlockStatus::NotAdded);
+        assert_eq!(manager.add_agent_block(), Ok(AgentBlockStatus::Added));
     }
 }

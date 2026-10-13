@@ -13,6 +13,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::managers::agent_block::AgentBlockStatus;
 use crate::managers::audio_removal::{self, AudioRemovalManager};
 use crate::managers::capture::CaptureManager;
 use crate::managers::models::ModelsManager;
@@ -543,6 +544,26 @@ pub fn set_background(
 ) -> Result<Settings, String> {
     shared.set_background(&text)?;
     Ok(settings::get_settings(&app))
+}
+
+/// The state of the agent instructions in `AGENTS.md` and `CLAUDE.md` of
+/// the storage folder (R29). This writes nothing.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn agent_instructions_status(
+    shared: State<'_, Arc<SharedSettingsManager>>,
+) -> AgentBlockStatus {
+    shared.agent_block_status()
+}
+
+/// Add the agent instructions to `AGENTS.md` and `CLAUDE.md` of the storage
+/// folder (R29). The error names the file that Longhand could not write.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn add_agent_instructions(
+    shared: State<'_, Arc<SharedSettingsManager>>,
+) -> Result<AgentBlockStatus, String> {
+    shared.add_agent_block()
 }
 
 /// The type folders and the home folders of the storage folder, from the

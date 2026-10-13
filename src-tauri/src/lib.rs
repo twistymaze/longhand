@@ -71,6 +71,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::move_status,
             commands::settings::retry_move,
             commands::settings::show_storage_folder,
+            commands::settings::agent_instructions_status,
+            commands::settings::add_agent_instructions,
             commands::settings::credential_status,
             commands::settings::set_credential,
             commands::settings::delete_credential,
