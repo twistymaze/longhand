@@ -246,7 +246,9 @@ pub enum TitleSource {
     User,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `longhand.json` records the title that Longhand last wrote as this
+/// value (KTD5).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Title {
     pub text: String,
     pub source: TitleSource,
