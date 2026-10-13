@@ -4,11 +4,14 @@
 //! A load reads the storage folder and never writes into it. When the
 //! folder is available, the view comes from its files, and the load gives
 //! a new cache when the result differs from the old cache. When the folder
-//! is missing, not reachable, or has a settings file that does not parse,
-//! the view comes from the cache and is read-only.
+//! is missing or not reachable, the view comes from the cache and is
+//! read-only. When the settings file exists and does not parse, the
+//! settings come from the cache and are read-only, and the prompts and the
+//! Background come from the folder and can change (R22).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use summarize::prompts::Prompt;
@@ -16,7 +19,8 @@ use summarize::prompts::Prompt;
 use crate::background::{BackgroundRead, BackgroundUnavailable, read_background};
 use crate::cache::{Cache, read_cache, write_cache};
 use crate::file::{
-    AudioRemoval, Field, FileRead, SharedFields, Unavailable, default_settings, read_settings,
+    AudioRemoval, Field, FileRead, ParseError, SettingsFile, SharedFields, Unavailable,
+    default_settings, read_settings,
 };
 use crate::prompts::{PromptScan, scan_prompts};
 
@@ -81,10 +85,22 @@ pub struct SharedView {
     /// Why the Background file cannot be used, when the rest of the view
     /// comes from the storage folder. The Background is then read-only.
     pub background_unavailable: Option<BackgroundUnavailable>,
+    /// The prompts and the Background come from the storage folder, and a
+    /// change of a prompt or of the Background can write. This is also
+    /// true while the settings file does not parse (R22).
+    pub files_writable: bool,
+    /// The custom prompts that the settings name, that the folder does not
+    /// have, and that this computer read before (R20, KTD8). A summary uses
+    /// the default prompt for them. Empty unless the view comes from a
+    /// settings file that parsed.
+    pub missing_prompts: BTreeSet<String>,
+    /// The ids of the prompts whose files are over the size limit of the
+    /// scan. Such a prompt shows with no text (R21).
+    pub too_large_prompts: BTreeSet<String>,
 }
 
 impl SharedView {
-    /// Whether a save or a change of a prompt can write now. The shared
+    /// Whether a save of the settings file can write now. The shared
     /// settings are read-only in every other case (R16).
     pub fn writable(&self) -> bool {
         self.availability == Availability::Available
@@ -92,7 +108,16 @@ impl SharedView {
 
     /// Whether a save of the Background can write now (R5, KTD3).
     pub fn background_writable(&self) -> bool {
-        self.writable() && self.background_unavailable.is_none()
+        self.files_writable && self.background_unavailable.is_none()
+    }
+
+    /// The settings file exists and does not parse (R22). The settings come
+    /// from the cache, and the prompts and the Background from the folder.
+    pub fn parse_error(&self) -> Option<&ParseError> {
+        match &self.availability {
+            Availability::NotAvailable(Unavailable::DoesNotParse(error)) => Some(error),
+            _ => None,
+        }
     }
 
     /// The delay in whole days after which the removal pass removes the
@@ -111,6 +136,41 @@ impl SharedView {
             Field::Known(removal) => removal.days(),
             Field::Unknown(_) => None,
         }
+    }
+}
+
+/// The time after which a write that a user change causes clears the
+/// settings that name a missing prompt (R20). The wait keeps the settings
+/// while a sync service delivers a rename as a delete and then a create.
+pub const MISSING_PROMPT_WAIT: Duration = Duration::from_secs(60);
+
+/// When each missing prompt of the views went missing (R20). The app keeps
+/// this in memory only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MissingSince {
+    since: BTreeMap<String, Instant>,
+}
+
+impl MissingSince {
+    /// Record the missing prompts of `view` at `now`. A view that does not
+    /// come from a settings file that parsed changes nothing.
+    pub fn update(&mut self, view: &SharedView, now: Instant) {
+        if !view.writable() {
+            return;
+        }
+        self.since.retain(|id, _| view.missing_prompts.contains(id));
+        for id in &view.missing_prompts {
+            self.since.entry(id.clone()).or_insert(now);
+        }
+    }
+
+    /// The prompts that are missing since `wait` or longer at `now`.
+    pub fn due(&self, now: Instant, wait: Duration) -> BTreeSet<String> {
+        self.since
+            .iter()
+            .filter(|(_, since)| now.saturating_duration_since(**since) >= wait)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 }
 
@@ -140,9 +200,18 @@ pub fn load(root: &Path, cache: Option<&Cache>) -> Loaded {
 /// [`load`] after a join that merged `cache` into `root`. The new cache
 /// replaces a cache from any folder.
 pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
-    let file = match read_settings(root) {
-        FileRead::Parsed(file) => file,
+    let (file, parse_error) = match read_settings(root) {
+        FileRead::Parsed(file) => (file, None),
         FileRead::Missing => return from_cache(cache, Availability::MissingFile),
+        // The settings come from the cache, and the prompt files and the
+        // Background file from the folder (R22). A cache from another
+        // folder waits for the join, so the whole view comes from it.
+        FileRead::NotAvailable(Unavailable::DoesNotParse(error))
+            if cache.is_none_or(|c| c.source == root) =>
+        {
+            let raw = cache.map_or_else(default_settings, |c| c.settings.clone());
+            (SettingsFile::from_raw(raw), Some(error))
+        }
         FileRead::NotAvailable(cause) => {
             return from_cache(cache, Availability::NotAvailable(cause));
         }
@@ -154,6 +223,13 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
     let active = active_prompt(&file.fields.active_summary_prompt, Some(&scan), cache);
     let type_prompts = type_prompts(&file.fields.note_type_prompts, Some(&scan), cache);
     let prompts: Vec<Prompt> = scan.prompts.iter().map(Prompt::from).collect();
+    let too_large_prompts: BTreeSet<String> = scan
+        .prompts
+        .iter()
+        .filter(|p| p.too_large)
+        .map(|p| p.id.clone())
+        .collect();
+    let missing = missing_prompts(&file.fields, &scan, cache);
     // A missing file in a folder with a settings file is an empty
     // Background. A file that cannot be used keeps the cached text.
     let (background, background_unavailable) = match read_background(root) {
@@ -161,16 +237,46 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         BackgroundRead::Missing => (String::new(), None),
         BackgroundRead::NotAvailable(cause) => (cached_background(cache), Some(cause)),
     };
+    // The cache keeps the last copy of a missing prompt that the settings
+    // name, so this computer knows later that it read the prompt (KTD8). A
+    // prompt with no text in the scan is not a copy.
+    let kept = |id: &str| {
+        missing
+            .contains(id)
+            .then(|| cached_prompt(cache, id))
+            .flatten()
+    };
+    let active_copy = match &file.fields.active_summary_prompt {
+        Field::Known(id) => custom_prompt(&active).or_else(|| kept(id)),
+        _ => custom_prompt(&active),
+    };
+    let mut type_copies: Vec<Prompt> = type_prompts.values().filter_map(custom_prompt).collect();
+    for id in file.fields.type_prompt_map().values() {
+        if !type_copies.iter().any(|p| p.id == *id)
+            && let Some(copy) = kept(id)
+        {
+            type_copies.push(copy);
+        }
+    }
     let new_cache = Cache {
         source: root.to_path_buf(),
         settings: file.raw.clone(),
-        prompts: prompts.clone(),
-        active_prompt: custom_prompt(&active),
-        type_prompts: type_prompts.values().filter_map(custom_prompt).collect(),
+        prompts: prompts
+            .iter()
+            .filter(|p| !too_large_prompts.contains(&p.id))
+            .cloned()
+            .collect(),
+        active_prompt: active_copy,
+        type_prompts: type_copies,
         background: background.clone(),
     };
+    let availability = match parse_error {
+        None => Availability::Available,
+        Some(error) => Availability::NotAvailable(Unavailable::DoesNotParse(error)),
+    };
+    let from_folder = availability == Availability::Available;
     let view = SharedView {
-        availability: Availability::Available,
+        availability,
         raw: file.raw,
         fields: file.fields,
         prompts,
@@ -178,12 +284,42 @@ pub(crate) fn load_after_join(root: &Path, cache: Option<&Cache>) -> Loaded {
         type_prompts,
         background,
         background_unavailable,
+        files_writable: true,
+        // Only a view of a settings file that parsed names the missing
+        // prompts: the repair writes the settings file (R20).
+        missing_prompts: if from_folder {
+            missing
+        } else {
+            BTreeSet::new()
+        },
+        too_large_prompts,
     };
-    let changed = cache != Some(&new_cache);
+    // While the settings file does not parse, the cache stays as it is.
+    let changed = from_folder && cache != Some(&new_cache);
     Loaded {
         view,
         cache: changed.then_some(new_cache),
     }
+}
+
+/// The custom prompts that the settings `fields` name and the folder of
+/// `scan` does not have, of which `cache` has a copy: this computer read
+/// them before (R20, KTD8). A prompt that this computer never read is not
+/// here, so this computer never clears the settings that name it.
+fn missing_prompts(
+    fields: &SharedFields,
+    scan: &PromptScan,
+    cache: Option<&Cache>,
+) -> BTreeSet<String> {
+    fields
+        .active_summary_prompt
+        .known()
+        .into_iter()
+        .chain(fields.type_prompt_map().values())
+        .filter(|id| summarize::prompts::built_in(id).is_none())
+        .filter(|id| scan.is_missing(id) && cached_prompt(cache, id).is_some())
+        .cloned()
+        .collect()
 }
 
 /// The custom prompt of `prompt`, for the cache. A built-in prompt and a
@@ -242,6 +378,9 @@ fn from_cache(cache: Option<&Cache>, availability: Availability) -> Loaded {
             type_prompts,
             background: cached_background(cache),
             background_unavailable: None,
+            files_writable: false,
+            missing_prompts: BTreeSet::new(),
+            too_large_prompts: BTreeSet::new(),
         },
         cache: None,
     }
@@ -279,18 +418,25 @@ fn active_prompt(
     }
 }
 
-/// The prompt with the id `id` (KTD2), in this order: the built-in
-/// prompt, the folder copy when it has no conflict copy, the last copy in
-/// the cache, the folder copy with a conflict copy, and else missing.
-/// `scan` is `None` when the view comes from the cache.
+/// The prompt with the id `id` (KTD2, KTD8), in this order: the built-in
+/// prompt, the folder copy when it has no conflict copy and has its text,
+/// the last copy in the cache, the folder copy with a conflict copy, and
+/// else missing. A prompt whose file is missing is missing at once: the
+/// cache copy stands in only for a file that exists and cannot be used now
+/// (R20). `scan` is `None` when the view comes from the cache.
 fn resolve(id: &str, scan: Option<&PromptScan>, cache: Option<&Cache>) -> ActivePrompt {
     if let Some(prompt) = summarize::prompts::built_in(id) {
         return ActivePrompt::BuiltIn(prompt);
     }
-    let in_folder = scan.and_then(|scan| scan.get(id)).map(Prompt::from);
+    if scan.is_some_and(|scan| scan.is_missing(id)) {
+        return ActivePrompt::Missing(id.to_string());
+    }
+    let in_folder = scan.and_then(|scan| scan.get(id));
     let conflicted = scan.is_some_and(|scan| scan.conflicted.contains(id));
-    // While the id has a conflict copy, or its file is missing, the text
-    // comes from the cache (R14).
+    // The scan has no text of a file over the size limit.
+    let in_folder = in_folder.filter(|p| !p.too_large).map(Prompt::from);
+    // While the id has a conflict copy, or its file cannot be used, the
+    // text comes from the cache (R14).
     if !conflicted && let Some(prompt) = &in_folder {
         return ActivePrompt::Custom {
             prompt: prompt.clone(),

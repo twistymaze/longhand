@@ -212,6 +212,13 @@ pub struct SummaryPromptEntry {
     pub title_text: String,
     /// A built-in prompt cannot be renamed, edited or deleted (R2).
     pub built_in: bool,
+    /// The prompt text or the title instructions are over their limit, for
+    /// example after an edit outside Longhand (R21). A run uses the whole
+    /// text. Rename and delete stay available.
+    pub over_limit: bool,
+    /// The file is over the size limit that Longhand reads, so the list has
+    /// no texts of the prompt (R21). The texts are empty.
+    pub too_large: bool,
 }
 
 /// The built-in prompts first, then the custom prompts, and the id of the
@@ -558,6 +565,10 @@ pub struct Settings {
     /// A prompt that this computer never read is not here.
     #[serde(skip)]
     pub type_prompts: std::collections::BTreeMap<String, summarize::Prompt>,
+    /// The ids of the custom prompts whose files are over the size limit
+    /// that Longhand reads (R21).
+    #[serde(skip)]
+    pub too_large_prompts: std::collections::BTreeSet<String>,
 }
 
 /// The most characters the Background can have (R6).
@@ -568,8 +579,12 @@ const BACKGROUND_LIMIT: u32 = summarize::prompts::BACKGROUND_TEXT_LIMIT as u32;
 /// Background file cannot be used (R5, KTD3).
 fn background_read_only(shared: &SharedSnapshot) -> Option<String> {
     match &shared.availability {
-        SharedAvailability::ReadOnly { cause } => Some(cause.message().to_string()),
-        SharedAvailability::Available => shared
+        // While only the settings file does not parse, the Background can
+        // change (R22).
+        SharedAvailability::ReadOnly { cause } if !shared.files_writable() => {
+            Some(cause.message().to_string())
+        }
+        SharedAvailability::ReadOnly { .. } | SharedAvailability::Available => shared
             .view
             .background_unavailable
             .as_ref()
@@ -715,6 +730,7 @@ impl Default for Settings {
             cached_active_prompt: None,
             note_type_prompts: Default::default(),
             type_prompts: Default::default(),
+            too_large_prompts: Default::default(),
         }
     }
 }
@@ -795,6 +811,7 @@ impl Settings {
                 .iter()
                 .filter_map(|(id, prompt)| Some((id.clone(), prompt.prompt()?.clone())))
                 .collect(),
+            too_large_prompts: shared.view.too_large_prompts.clone(),
         }
     }
 
@@ -952,13 +969,22 @@ impl Settings {
                 text: p.text,
                 title_text: p.title_text,
                 built_in: true,
+                over_limit: false,
+                too_large: false,
             });
-        let custom = self.summary_prompts.iter().map(|p| SummaryPromptEntry {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            text: p.text.clone(),
-            title_text: p.title_text.clone(),
-            built_in: false,
+        let custom = self.summary_prompts.iter().map(|p| {
+            let too_large = self.too_large_prompts.contains(&p.id);
+            SummaryPromptEntry {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                text: p.text.clone(),
+                title_text: p.title_text.clone(),
+                built_in: false,
+                over_limit: too_large
+                    || p.text.chars().count() > summarize::prompts::PROMPT_TEXT_LIMIT
+                    || p.title_text.chars().count() > summarize::prompts::TITLE_TEXT_LIMIT,
+                too_large,
+            }
         });
         SummaryPromptList {
             prompts: built_ins.chain(custom).collect(),
@@ -968,11 +994,13 @@ impl Settings {
         }
     }
 
+    /// The prompt `id` with its text. A prompt whose file is over the size
+    /// limit has no text here, so a summary never uses it (R21).
     fn find_summary_prompt(&self, id: &str) -> Option<summarize::Prompt> {
         summarize::prompts::built_in(id).or_else(|| {
             self.summary_prompts
                 .iter()
-                .find(|p| p.id == id)
+                .find(|p| p.id == id && !self.too_large_prompts.contains(id))
                 .map(summarize::Prompt::from)
         })
     }
@@ -1954,6 +1982,7 @@ mod tests {
         let shared = SharedSnapshot {
             view: view::cached(Some(&cache), Availability::Available),
             availability: crate::managers::shared::SharedAvailability::Available,
+            damaged_file: None,
         };
         Settings::from_parts(LocalSettings::default(), &shared)
     }
@@ -2501,6 +2530,7 @@ mod tests {
         let shared = SharedSnapshot {
             view: view::cached(Some(&cache), Availability::Available),
             availability: crate::managers::shared::SharedAvailability::Available,
+            damaged_file: None,
         };
         let settings = Settings::from_parts(LocalSettings::default(), &shared);
         assert_eq!(settings.audio_removal, AudioRemovalSetting::default());

@@ -37,7 +37,7 @@ const baseSettings: Settings = {
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
   background: "",
   background_limit: 4000,
   background_read_only: null,
@@ -172,10 +172,18 @@ describe("Background", () => {
 
   test("a read-only shared state makes the Background read-only", () => {
     setup({
-      shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [] },
+      shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [], files_writable: false, damaged_file: null },
     });
     expect(box().getAttribute("aria-readonly")).toBe("true");
     expect(screen.getByText(/The storage folder is not available\./)).toBeTruthy();
+  });
+
+  test("a settings file that does not parse leaves the Background editable", () => {
+    // R22: the Background is in another file.
+    setup({
+      shared: { availability: { kind: "read_only", cause: "settings_file_damaged" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: { path: ".longhand/settings.json", line: 3 } },
+    });
+    expect(box().getAttribute("aria-readonly")).toBeNull();
   });
 
   test("a change from another computer with no draft shows the new text", async () => {

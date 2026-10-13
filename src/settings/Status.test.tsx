@@ -47,7 +47,7 @@ const baseSettings: Settings = {
   learned_context_limits: {},
   summary_prompts: [],
   active_summary_prompt: "topic-summary",
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
   background: "",
   background_limit: 4000,
   background_read_only: null,

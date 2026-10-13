@@ -412,7 +412,17 @@ pub enum Unavailable {
     /// The file exists but is not one complete JSON object, for example
     /// because a sync delivered only a part of it.
     #[error("the shared settings file does not parse: {0}")]
-    DoesNotParse(String),
+    DoesNotParse(ParseError),
+}
+
+/// Why the shared settings file does not parse.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct ParseError {
+    pub message: String,
+    /// The line of the file where the parse stopped, from 1. `None` when
+    /// the file is JSON, but not an object.
+    pub line: Option<usize>,
 }
 
 /// The result of a read of the shared settings file.
@@ -450,10 +460,14 @@ pub fn read_settings(root: &Path) -> FileRead {
     };
     match serde_json::from_slice::<Value>(&bytes) {
         Ok(Value::Object(raw)) => FileRead::Parsed(SettingsFile::from_raw(raw)),
-        Ok(_) => FileRead::NotAvailable(Unavailable::DoesNotParse(
-            "the file is not a JSON object".into(),
-        )),
-        Err(e) => FileRead::NotAvailable(Unavailable::DoesNotParse(e.to_string())),
+        Ok(_) => FileRead::NotAvailable(Unavailable::DoesNotParse(ParseError {
+            message: "the file is not a JSON object".into(),
+            line: None,
+        })),
+        Err(e) => FileRead::NotAvailable(Unavailable::DoesNotParse(ParseError {
+            message: e.to_string(),
+            line: Some(e.line()).filter(|&line| line > 0),
+        })),
     }
 }
 

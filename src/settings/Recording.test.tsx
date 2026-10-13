@@ -37,7 +37,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     learned_context_limits: {},
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
-    shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+    shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
     background: "",
     background_limit: 4000,
     background_read_only: null,
@@ -297,7 +297,7 @@ describe("Recording pane", () => {
   // read-only while the shared settings are read-only.
   test("the New Note and widget switches are read-only while the shared settings are", async () => {
     await open({
-      extra: { shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [] } },
+      extra: { shared: { availability: { kind: "read_only", cause: "folder_not_available" }, newer_version: false, unknown_values: [], files_writable: false, damaged_file: null } },
     });
     for (const name of ["New Note starts recording", "Show the recording widget"]) {
       const toggle = screen.getByRole("switch", { name });

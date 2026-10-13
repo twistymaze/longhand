@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type Settings } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
-import { readOnlyReason } from "./shared";
+import { filesReadOnlyReason } from "./shared";
 import { ChangedElsewhereNotice, ErrorText, Group } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
@@ -30,7 +30,7 @@ export function Background({
 }) {
   const saved = settings.background;
   const limit = settings.background_limit;
-  const readOnly = settings.background_read_only ?? readOnlyReason(settings);
+  const readOnly = settings.background_read_only ?? filesReadOnlyReason(settings);
   // The unsaved text, or null when the editor shows the saved text.
   const [draft, setDraft] = useState<string | null>(null);
   // The saved text that the draft started from. When the saved text changes

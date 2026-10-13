@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   commands,
+  type DamagedFile,
   type NewNoteType,
   type Readiness,
   type SessionEntry,
@@ -23,6 +24,7 @@ import {
 import { useDeleteSession } from "../session/DeleteSession";
 import { commitTitle, type Notice } from "../session/TitleField";
 import { AppIcon, CautionIcon, NoteIcon } from "../settings/icons";
+import { damagedFileText } from "../settings/shared";
 import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
 import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
@@ -49,6 +51,7 @@ export function Home({
   readiness,
   chord,
   newNoteRecords = true,
+  damagedFile = null,
   onOpen,
   onStarted,
   onChanged,
@@ -73,6 +76,9 @@ export function Home({
   chord: string | null;
   /// The default of Settings > Recording: New Note starts to record (R8).
   newNoteRecords?: boolean;
+  /// The shared settings file that did not parse for about one minute, or
+  /// null (R22). The user must fix it.
+  damagedFile?: DamagedFile | null;
   onOpen: (id: string) => void;
   /// A note that does not record started. A note that records opens from
   /// the recording event.
@@ -321,6 +327,14 @@ export function Home({
               <Button onClick={() => void commands.openSettings()}>
                 Open Settings…
               </Button>
+            </CautionBanner>
+          )}
+          {/* KTD14: the parse notices come after the conversion notices. */}
+          {damagedFile && (
+            <CautionBanner>
+              <span role="status" className="min-w-0 flex-1">
+                {damagedFileText(damagedFile)}
+              </span>
             </CautionBanner>
           )}
           {notice && (

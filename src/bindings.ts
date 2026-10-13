@@ -1314,6 +1314,19 @@ export type CredentialStatus = { kind: "present"; host: string; length: number; 
  */
 { kind: "needs_unlock"; message: string } | { kind: "failed"; message: string }
 /**
+ * The shared settings file that did not parse for about one minute (R22).
+ */
+export type DamagedFile = { 
+/**
+ * The path of the file in the storage folder.
+ */
+path: string; 
+/**
+ * The line where the error is, from 1. `None` when the file is JSON,
+ * but not an object.
+ */
+line: number | null }
+/**
  * Why a delete did not complete (R8, R33). Nothing after the failed step
  * changed.
  */
@@ -1807,7 +1820,12 @@ export type ReadOnlyCause =
  * The storage folder has no settings file, and Longhand did not write
  * one into it.
  */
-"no_settings_file"
+"no_settings_file" | 
+/**
+ * The settings file did not parse for about one minute, so it is not a
+ * sync in progress (R22). The user must fix the file.
+ */
+"settings_file_damaged"
 export type Readiness = { microphone_authorized: boolean; 
 /**
  * The system audio permission (R9). It does not change `armed`: the
@@ -2380,7 +2398,16 @@ export type SharedState = { availability: SharedAvailability;
  * The settings file comes from a newer version of Longhand, so it can
  * hold settings that this version does not show.
  */
-newer_version: boolean; unknown_values: UnknownSharedValue[] }
+newer_version: boolean; unknown_values: UnknownSharedValue[]; 
+/**
+ * The prompt files and the Background file can change now. This is
+ * also true while only the settings file does not parse (R22).
+ */
+files_writable: boolean; 
+/**
+ * The settings file did not parse for about one minute (R22).
+ */
+damaged_file: DamagedFile | null }
 /**
  * Which of the four shortcuts a command acts on.
  */
@@ -2477,7 +2504,18 @@ export type SummaryPromptEntry = { id: string; name: string; text: string; title
 /**
  * A built-in prompt cannot be renamed, edited or deleted (R2).
  */
-built_in: boolean }
+built_in: boolean; 
+/**
+ * The prompt text or the title instructions are over their limit, for
+ * example after an edit outside Longhand (R21). A run uses the whole
+ * text. Rename and delete stay available.
+ */
+over_limit: boolean; 
+/**
+ * The file is over the size limit that Longhand reads, so the list has
+ * no texts of the prompt (R21). The texts are empty.
+ */
+too_large: boolean }
 /**
  * The built-in prompts first, then the custom prompts, and the id of the
  * prompt that the next summary uses.

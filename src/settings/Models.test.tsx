@@ -63,7 +63,7 @@ const settings = {
   ...inUse,
   chosen_recognition: inUse,
   recognition: settled,
-  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [] },
+  shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 
 /// The settings with `config` chosen and the configuration in use kept.
