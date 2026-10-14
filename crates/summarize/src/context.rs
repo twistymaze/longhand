@@ -111,29 +111,27 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 
 /// Ask the endpoint, in order, until one answer names the model's context.
 /// `Ok(None)` when the endpoint answers and no answer names it. An error
-/// when the first probe cannot reach the endpoint: then nothing is known
-/// about the context, and the default budget must not be kept for the run.
-/// After the endpoint answered once, a later probe that fails is a miss.
+/// when nothing is known about the context, so that the default budget is
+/// not kept for the run: the first probe cannot reach the endpoint, or a
+/// probe gets a server error ([`is_server_problem`]). After the endpoint
+/// answered once, a later probe that cannot connect is a miss.
 pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
 
-    let first = match client.probe_json(&client.api_url("model/info")).await {
-        Ok(body) => Some(body),
-        Err(e @ SummarizeError::Transport(_)) => return Err(e),
-        Err(_) => None,
-    };
+    let first = answer(client.probe_json(&client.api_url("model/info")).await, true)?;
     if let Some(body) = first
         && let Some(b) = found(parse_litellm(&body, &model), BudgetSource::Litellm)
     {
         return Ok(Some(b));
     }
-    if let Ok(body) = client.probe_json(&client.root_url("api/v0/models")).await
+    let lm_studio = client.probe_json(&client.root_url("api/v0/models")).await;
+    if let Some(body) = answer(lm_studio, false)?
         && let Some(b) = found(parse_lm_studio(&body, &model), BudgetSource::LmStudio)
     {
         return Ok(Some(b));
     }
-    if let Ok(body) = client.probe_json(&client.api_url("models")).await {
+    if let Some(body) = answer(client.probe_json(&client.api_url("models")).await, false)? {
         if let Some(b) = found(parse_vllm(&body, &model), BudgetSource::Vllm) {
             return Ok(Some(b));
         }
@@ -141,10 +139,31 @@ pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
             return Ok(Some(b));
         }
     }
-    if let Ok(body) = client.probe_json(&client.root_url("props")).await
+    if let Some(body) = answer(client.probe_json(&client.root_url("props")).await, false)?
         && let Some(b) = found(parse_llama_cpp(&body), BudgetSource::LlamaCpp)
     {
         return Ok(Some(b));
     }
     Ok(None)
+}
+
+/// The body of a probe's answer, `None` for a miss, or the error that stops
+/// the probe. `first` is true for the first probe of the chain.
+fn answer(
+    result: Result<Value, SummarizeError>,
+    first: bool,
+) -> Result<Option<Value>, SummarizeError> {
+    match result {
+        Ok(body) => Ok(Some(body)),
+        Err(e @ SummarizeError::Transport(_)) if first => Err(e),
+        Err(e) if is_server_problem(&e) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// A server error (5xx), a timeout (408) or a rate limit (429). The server
+/// has a problem now, so its answer tells nothing about the context. A
+/// route that the server does not have (404) is a miss.
+fn is_server_problem(e: &SummarizeError) -> bool {
+    matches!(e, SummarizeError::Http { status, .. } if *status >= 500 || matches!(status, 408 | 429))
 }

@@ -153,6 +153,41 @@ async fn an_endpoint_that_cannot_be_reached_is_an_error_not_the_default() {
 }
 
 #[tokio::test]
+async fn a_server_error_from_a_probe_is_an_error_not_the_default() {
+    // A proxy that restarts answers 502 for a few seconds. That tells
+    // nothing about the context, so the run must not use the small default
+    // budget and keep it with the note.
+    for status in [500, 502, 503, 504, 408, 429] {
+        let mock = serve(HashMap::from([(
+            "/v1/model/info",
+            Reply::Json(status, "{}".into()),
+        )]))
+        .await;
+        let probed = context::probe(&client(&mock.base, "m")).await;
+        assert!(
+            matches!(probed, Err(summarize::SummarizeError::Http { status: s, .. }) if s == status),
+            "HTTP {status}: {probed:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_server_error_from_a_later_probe_is_an_error_not_the_default() {
+    // LiteLLM's route is absent on other servers (404), so the chain goes
+    // on. A 503 on the next route is a server problem, not a miss.
+    let mock = serve(HashMap::from([(
+        "/v1/models",
+        Reply::Json(503, "{}".into()),
+    )]))
+    .await;
+    let probed = context::probe(&client(&mock.base, "m")).await;
+    assert!(
+        matches!(probed, Err(summarize::SummarizeError::Http { status: 503, .. })),
+        "{probed:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_later_probe_that_fails_after_an_answer_is_a_miss() {
     // The first probe got an answer, so the endpoint is reachable. A later
     // probe that the server drops tells nothing more about the context.
