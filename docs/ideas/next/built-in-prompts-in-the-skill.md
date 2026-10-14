@@ -5,6 +5,7 @@ area: transcript-and-summary
 added: 2026-10-14
 source: "a conversation: an agent could name the built-in prompts but not read their text"
 related: [summary-prompts, app-command-line-tool]
+plan: docs/plans/2026-10-14-1345-docs-built-in-prompts-in-skill-plan.md
 ---
 
 # Built-in prompt text in the agent skill
