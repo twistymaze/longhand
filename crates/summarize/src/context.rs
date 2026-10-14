@@ -111,23 +111,29 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 
 /// Ask the endpoint, in order, until one answer names the model's context.
 /// `Ok(None)` when the endpoint answers and no answer names it. An error
-/// when a probe cannot reach the endpoint: then nothing is known about
-/// the context, and the default budget must not be kept for the run.
+/// when the first probe cannot reach the endpoint: then nothing is known
+/// about the context, and the default budget must not be kept for the run.
+/// After the endpoint answered once, a later probe that fails is a miss.
 pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
 
-    if let Some(body) = answer(client, &client.api_url("model/info")).await?
+    let first = match client.probe_json(&client.api_url("model/info")).await {
+        Ok(body) => Some(body),
+        Err(e @ SummarizeError::Transport(_)) => return Err(e),
+        Err(_) => None,
+    };
+    if let Some(body) = first
         && let Some(b) = found(parse_litellm(&body, &model), BudgetSource::Litellm)
     {
         return Ok(Some(b));
     }
-    if let Some(body) = answer(client, &client.root_url("api/v0/models")).await?
+    if let Ok(body) = client.probe_json(&client.root_url("api/v0/models")).await
         && let Some(b) = found(parse_lm_studio(&body, &model), BudgetSource::LmStudio)
     {
         return Ok(Some(b));
     }
-    if let Some(body) = answer(client, &client.api_url("models")).await? {
+    if let Ok(body) = client.probe_json(&client.api_url("models")).await {
         if let Some(b) = found(parse_vllm(&body, &model), BudgetSource::Vllm) {
             return Ok(Some(b));
         }
@@ -135,20 +141,10 @@ pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
             return Ok(Some(b));
         }
     }
-    if let Some(body) = answer(client, &client.root_url("props")).await?
+    if let Ok(body) = client.probe_json(&client.root_url("props")).await
         && let Some(b) = found(parse_llama_cpp(&body), BudgetSource::LlamaCpp)
     {
         return Ok(Some(b));
     }
     Ok(None)
-}
-
-/// The JSON body at `url`. `None` when the endpoint answers with no usable
-/// body, and an error when it cannot be reached.
-async fn answer(client: &Client, url: &str) -> Result<Option<Value>, SummarizeError> {
-    match client.probe_json(url).await {
-        Ok(body) => Ok(Some(body)),
-        Err(e @ SummarizeError::Transport(_)) => Err(e),
-        Err(_) => Ok(None),
-    }
 }

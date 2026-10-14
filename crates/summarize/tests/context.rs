@@ -152,6 +152,33 @@ async fn an_endpoint_that_cannot_be_reached_is_an_error_not_the_default() {
     );
 }
 
+#[tokio::test]
+async fn a_later_probe_that_fails_after_an_answer_is_a_miss() {
+    // The first probe got an answer, so the endpoint is reachable. A later
+    // probe that the server drops tells nothing more about the context.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut first = true;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            if first {
+                first = false;
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 404 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            }
+            drop(socket);
+        }
+    });
+    let probed = context::probe(&client(&base, "m")).await.unwrap();
+    assert_eq!(probed, None);
+}
+
 #[test]
 fn the_user_setting_wins_and_a_learned_limit_caps_it() {
     let lm = Budget {
