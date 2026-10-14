@@ -21,7 +21,6 @@ const idle: RecordingStatus = {
   session_id: null,
   state: null,
   recording: false,
-  processing_waits: false,
   reconnecting: false,
   interruption: null,
   working_free_bytes: null,
@@ -55,6 +54,7 @@ const recordingEntry: SessionEntry = {
   remote: null,
   note_type: null,
   tags: [],
+  waits_for: null,
 };
 
 function mockApp(

@@ -17,7 +17,7 @@ use models::recognition::{ExecutionSpec, ProcessingMode, RecognitionConfig, Spea
 use pipeline::join::TRANSCRIPT_FILE;
 use pipeline::progress::{SpeakerProgress, SpeakerWork};
 use pipeline::reprocess::{Readiness, Refusal};
-use pipeline::runner::Outcome;
+use pipeline::runner::{Outcome, Wait};
 use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SharedStore,
@@ -686,7 +686,7 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
     // note starts after the earlier note leaves Verify.
     let earlier_waits = event_at(
         &r,
-        |e| matches!(e, RunnerEvent::WaitingToSummarize { session_id } if session_id == "earlier"),
+        |e| matches!(e, RunnerEvent::Waits { session_id, wait: Some(Wait::SummaryTurn) } if session_id == "earlier"),
     )
     .unwrap();
     assert!(earlier_waits < event_at(&r, stage_started("later", Stage::Assemble)).unwrap());
@@ -889,7 +889,13 @@ async fn after_its_audio_stages_a_note_is_saved_during_a_recording() {
         suspended: Box::new(move || flag.load(Ordering::SeqCst)),
         events: Box::new(move |e| {
             // A recording starts when the note waits for the summary queue.
-            if matches!(e, RunnerEvent::WaitingToSummarize { .. }) {
+            if matches!(
+                e,
+                RunnerEvent::Waits {
+                    wait: Some(Wait::SummaryTurn),
+                    ..
+                }
+            ) {
                 capturing.store(true, Ordering::SeqCst);
             }
             sink.lock().unwrap().push(e)
@@ -9187,7 +9193,7 @@ async fn a_new_note_transcribes_while_another_note_waits_for_its_summary() {
     assert!(
         event_at(
             &r,
-            |e| matches!(e, RunnerEvent::WaitingToSummarize { session_id } if session_id == "b")
+            |e| matches!(e, RunnerEvent::Waits { session_id, wait: Some(Wait::SummaryTurn) } if session_id == "b")
         )
         .is_some()
     );
@@ -9331,6 +9337,128 @@ async fn a_recording_does_not_pause_a_summary_but_keeps_the_next_note_waiting() 
     runner.shutdown();
     run.await.unwrap();
     assert_eq!(held.load(Ordering::SeqCst), 0);
+}
+
+/// The wait of `id` that the runner reports now, from the state and the
+/// stage in the store (KTD10).
+fn wait_of(runner: &Runner, store: &SharedStore, id: &str) -> Option<Wait> {
+    // The waits come before the store lock, as in the app.
+    let waits = runner.waits();
+    let store = store.lock().unwrap();
+    let record = store.session(id).unwrap().unwrap();
+    let stage = store.current_stage(id).unwrap();
+    waits.of(id, &record.state, stage)
+}
+
+/// KTD10: a note that waits for the local permit waits for another note,
+/// a note that waits for its turn in the summary queue waits for its
+/// summary turn, and a note waits for nothing when its stage starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_runner_reports_what_a_note_waits_for() {
+    let r = rig().await;
+    let (_mock, gate) = gated_summaries(&r).await;
+    // The wait of each note when each of its stages starts.
+    type AtStart = Vec<(String, Stage, Option<Wait>)>;
+    let at_start: Arc<Mutex<AtStart>> = Arc::default();
+    let probe: Arc<std::sync::OnceLock<std::sync::Weak<Runner>>> = Arc::default();
+    let sink = Arc::clone(&r.events);
+    let (seen, runner_of) = (Arc::clone(&at_start), Arc::clone(&probe));
+    let processing = SessionState::Processing {
+        stopped_at: chrono::Local::now().fixed_offset(),
+    };
+    let runner = Runner::new(Environment {
+        store: Arc::clone(&r.store),
+        working_root: r.root.clone(),
+        engines: Box::new(Provider(Arc::clone(&r.script))),
+        suspended: Box::new(|| false),
+        events: Box::new(move |e| {
+            if let RunnerEvent::StageStarted { session_id, stage } = &e
+                && let Some(runner) = runner_of.get().and_then(std::sync::Weak::upgrade)
+            {
+                let wait = runner.waits().of(session_id, &processing, Some(*stage));
+                seen.lock()
+                    .unwrap()
+                    .push((session_id.clone(), *stage, wait));
+            }
+            sink.lock().unwrap().push(e)
+        }),
+    });
+    probe.set(Arc::downgrade(&runner)).unwrap();
+    queue_session(
+        &r.store,
+        &r.root,
+        "a",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    queue_session(
+        &r.store,
+        &r.root,
+        "b",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    // A holds the local permit in its speaker stage.
+    let (reached, release) = hold_analyses(&r, 0);
+    let first = tokio::spawn({
+        let runner = Arc::clone(&runner);
+        async move { runner.run_next().await }
+    });
+    until("A is in its speaker stage", || {
+        reached.load(Ordering::SeqCst)
+    })
+    .await;
+    assert_eq!(
+        wait_of(&runner, &r.store, "b"),
+        Some(Wait::AnotherNote),
+        "a queued note waits for the note in its audio stages"
+    );
+    // B is claimed while A has the local permit.
+    let second = tokio::spawn({
+        let runner = Arc::clone(&runner);
+        async move { runner.run_next().await }
+    });
+    until("B waits for the local permit", || {
+        event_at(&r, |e| {
+            matches!(e, RunnerEvent::Waits { session_id, wait: Some(Wait::AnotherNote) }
+                if session_id == "b")
+        })
+        .is_some()
+    })
+    .await;
+    assert!(matches!(
+        state(&r.store, "b"),
+        SessionState::Processing { .. }
+    ));
+    assert_eq!(wait_of(&runner, &r.store, "b"), Some(Wait::AnotherNote));
+    assert_eq!(event_at(&r, stage_started("b", Stage::Assemble)), None);
+    assert_eq!(wait_of(&runner, &r.store, "a"), None, "A runs");
+
+    release.store(true, Ordering::SeqCst);
+    until("one note waits for its summary turn", || {
+        runner.waits_to_summarize("a") || runner.waits_to_summarize("b")
+    })
+    .await;
+    let waiting = if runner.waits_to_summarize("a") {
+        "a"
+    } else {
+        "b"
+    };
+    assert_eq!(wait_of(&runner, &r.store, waiting), Some(Wait::SummaryTurn));
+    gate.open();
+    let (first, second) = (first.await.unwrap(), second.await.unwrap());
+    assert_eq!(first.unwrap().1, Outcome::Finished);
+    assert_eq!(second.unwrap().1, Outcome::Finished);
+    for id in ["a", "b"] {
+        assert_eq!(wait_of(&runner, &r.store, id), None, "{id} is saved");
+    }
+    let at_start = at_start.lock().unwrap();
+    assert_eq!(at_start.len(), 2 * pipeline::runner::STAGES.len());
+    for (id, stage, wait) in at_start.iter() {
+        assert_eq!(*wait, None, "{id} waits for nothing when {stage:?} starts");
+    }
 }
 
 /// A resume of a note that waits for its turn: the note leaves the

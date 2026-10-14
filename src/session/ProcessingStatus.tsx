@@ -7,7 +7,7 @@
 // shows the summarize stage in the same form.
 
 import { useEffect, useState } from "react";
-import { commands, type SessionDetail, type SpeakerProgressView } from "../bindings";
+import { commands, type SessionDetail, type SpeakerProgressView, type WaitView } from "../bindings";
 import {
   type SpeakerMeter,
   type StageRow,
@@ -16,6 +16,7 @@ import {
   stageLabel,
   stageRows,
   stoppedAt,
+  waitText,
 } from "../processing/describe";
 import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { useFolderChange } from "../settings/OldNotesDialog";
@@ -211,27 +212,26 @@ export function ProcessingStatus({
   detail,
   live,
   speakers,
-  waitsForRecording,
+  waits = detail.entry.waits_for,
   onChanged,
 }: {
   detail: SessionDetail;
   live: Live | undefined;
   /// The latest speaker progress event.
   speakers?: SpeakerProgressView;
-  /// Processing waits for a recording to finish (KTD20).
-  waitsForRecording: boolean;
+  /// What the note waits for, from the newest read of the note (KTD10).
+  waits?: WaitView | null;
   onChanged: () => void;
 }) {
   const state = detail.entry.state;
-  const waiting = state === "queued" || state === "processing";
+  const active = state === "queued" || state === "processing";
   return (
     <div className="grid gap-5">
-      {waiting && waitsForRecording && (
-        <p className="text-label-secondary">Processing waits for the current recording to finish.</p>
-      )}
+      {/* A status line, not a notice: a wait is normal (CLAUDE.md). */}
+      {active && waits && <p className="text-label-secondary">{waitText(waits)}</p>}
       <Exception detail={detail} onDone={onChanged} />
       <Group>
-        {stageRows(detail).map((row) => (
+        {stageRows(detail, active ? waits : null).map((row) => (
           <StageLine
             key={row.stage}
             row={row}
@@ -288,11 +288,23 @@ function StageLine({
 }
 
 /// A saved note whose summary is written again: the summarize stage alone,
-/// as the processing view shows it. The progress shows only when the
+/// as the processing view shows it. It waits for its turn in the summary
+/// queue until `started` (KTD10). The progress shows only when the
 /// transcript is summarized in more than one part.
-export function RegenerateStatus({ detail, live }: { detail: SessionDetail; live: Live | undefined }) {
-  const row: StageRow = { stage: "summarize", label: stageLabel("summarize"), status: "running" };
-  const fraction = live && live.stage === "summarize" && live.total > 1 ? live.done / live.total : null;
+export function RegenerateStatus({
+  detail,
+  live,
+  started,
+}: {
+  detail: SessionDetail;
+  live: Live | undefined;
+  /// The regeneration has its turn: its summarize stage started.
+  started: boolean;
+}) {
+  const row: StageRow = started
+    ? { stage: "summarize", label: stageLabel("summarize"), status: "running" }
+    : { stage: "summarize", label: waitText("summary_turn"), status: "pending" };
+  const fraction = started && live && live.stage === "summarize" && live.total > 1 ? live.done / live.total : null;
   return (
     <Group>
       <StageLine row={row} detail={{ ...detail, summary_problem: null }} fraction={fraction} sent={false} />

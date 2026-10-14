@@ -65,6 +65,11 @@ pub enum ProcessingStep {
     Waiting {
         what: String,
     },
+    /// What the note waits for changed (KTD10). `None` when its wait
+    /// ended. The note's entry gives the current wait.
+    Waits {
+        wait: Option<WaitView>,
+    },
     /// Summarization failed; the session is saved with a stub summary.
     SummaryUnavailable {
         message: String,
@@ -88,6 +93,33 @@ pub enum ProcessingStep {
     },
     Cancelled,
     Finished,
+}
+
+/// What a note waits for before its next stage can run (KTD10).
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitView {
+    /// A recording is active, and the next stage is an audio stage.
+    Recording,
+    /// Another note has the local permit or is in its audio stages.
+    AnotherNote,
+    /// The note waits for its turn in the summary queue: a new note, or a
+    /// regeneration of a saved note.
+    SummaryTurn,
+    /// A model that the note needs is not on disk.
+    Model,
+}
+
+impl From<pipeline::runner::Wait> for WaitView {
+    fn from(wait: pipeline::runner::Wait) -> Self {
+        use pipeline::runner::Wait;
+        match wait {
+            Wait::Recording => Self::Recording,
+            Wait::AnotherNote => Self::AnotherNote,
+            Wait::SummaryTurn => Self::SummaryTurn,
+            Wait::Model => Self::Model,
+        }
+    }
 }
 
 /// What the Move of the notes to a new storage folder does (KTD9).
@@ -236,8 +268,6 @@ enum Sent {
     /// sync does. Home and the note page read the note again on it
     /// (KTD13).
     Library(LibraryChanged),
-    /// The app sends nothing for the event.
-    Nothing,
 }
 
 impl From<RunnerEvent> for Sent {
@@ -249,8 +279,12 @@ impl From<RunnerEvent> for Sent {
                     removed: Vec::new(),
                 });
             }
-            // The app does not show this wait yet.
-            RunnerEvent::WaitingToSummarize { .. } => return Self::Nothing,
+            RunnerEvent::Waits { session_id, wait } => (
+                session_id,
+                ProcessingStep::Waits {
+                    wait: wait.map(WaitView::from),
+                },
+            ),
             RunnerEvent::StageStarted { session_id, stage } => (
                 session_id,
                 ProcessingStep::StageStarted {
@@ -801,7 +835,6 @@ impl ProcessingManager {
                         }
                     }
                     Sent::Library(changes) => emit_library_changed(&events, changes),
-                    Sent::Nothing => {}
                 }
             }),
         });
@@ -972,6 +1005,12 @@ impl ProcessingManager {
     /// be. The regeneration continues when the user leaves the note.
     pub fn is_regenerating(&self, session_id: &str) -> bool {
         self.runner.is_regenerating(session_id)
+    }
+
+    /// What each note waits for now (KTD10). This locks the capture
+    /// state, so call it before the store lock.
+    pub fn waits(&self) -> pipeline::runner::Waits {
+        self.runner.waits()
     }
 
     /// What the latest library scans found about each note.
@@ -2038,7 +2077,6 @@ mod tests {
         match Sent::from(event) {
             Sent::Processing(update) => update,
             Sent::Library(_) => panic!("a library change, not a processing update"),
-            Sent::Nothing => panic!("no update, not a processing update"),
         }
     }
 

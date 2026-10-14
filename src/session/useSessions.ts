@@ -10,8 +10,14 @@ export type Live = { stage: string; segment: number; done: number; total: number
 
 export type Sessions = {
   entries: SessionEntry[];
-  /// The stage each session last started, from events.
+  /// The stage each processing session last started, from events. It
+  /// goes when the session waits or is not processing, so an old run's
+  /// stage does not show for a later run.
   stages: Record<string, string>;
+  /// The number of stage starts per session since the page opened. A view
+  /// compares it with its value when a run started, to know that a stage
+  /// of that run started (KTD10).
+  starts: Record<string, number>;
   /// The latest progress event per session.
   live: Record<string, Live>;
   /// The latest speaker progress event per session.
@@ -43,6 +49,7 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
   const request = useRef(0);
   const [entries, setEntries] = useState<SessionEntry[]>([]);
   const [stages, setStages] = useState<Record<string, string>>({});
+  const [starts, setStarts] = useState<Record<string, number>>({});
   const [live, setLive] = useState<Record<string, Live>>({});
   const [speakers, setSpeakers] = useState<Record<string, SpeakerProgressView>>({});
   const [version, setVersion] = useState<Record<string, number>>({});
@@ -58,6 +65,15 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
       if (result.status === "ok") {
         acceptedRevision.current = current;
         setEntries(result.data);
+        // A stage of a run that ended does not show for a later run.
+        const notProcessing = new Set(result.data.filter((e) => e.state !== "processing").map((e) => e.id));
+        setStages((s) => {
+          const gone = Object.keys(s).filter((id) => notProcessing.has(id));
+          if (gone.length === 0) return s;
+          const next = { ...s };
+          for (const id of gone) delete next[id];
+          return next;
+        });
         setListRevision(current);
         setLoaded(true);
         setLoadError(null);
@@ -100,8 +116,11 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
         setSpeakers(forget);
         if (update.kind === "stage_started") {
           setStages((s) => ({ ...s, [id]: update.stage }));
+          setStarts(increment([id]));
           setLive(forget);
         }
+        // A note that waits runs no stage until the next start (KTD10).
+        if (update.kind === "waits" && update.wait) setStages(forget);
         bump(id);
         void refresh();
       }),
@@ -127,5 +146,5 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
     };
   }, [refresh, bump]);
 
-  return { entries, loaded, loadError, listRevision, getListRevision, stages, live, speakers, version, synced, removed, refresh };
+  return { entries, loaded, loadError, listRevision, getListRevision, stages, starts, live, speakers, version, synced, removed, refresh };
 }

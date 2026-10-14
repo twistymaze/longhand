@@ -37,6 +37,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   remote: null,
   note_type: null,
   tags: [],
+  waits_for: null,
   ...over,
 });
 
@@ -79,7 +80,6 @@ const document = (body: string): SessionDocument => ({
 function renderHome({
   entries = [] as SessionEntry[],
   recording = null as RecordingNow | null,
-  processingWaits = false,
   chord = "⌥⇧L" as string | null,
   onOpen = (_id: string) => {},
   onChanged = () => {},
@@ -89,7 +89,6 @@ function renderHome({
       entries={entries}
       stages={{}}
       recording={recording}
-      processingWaits={processingWaits}
       readiness={null}
       chord={chord}
       onOpen={onOpen}
@@ -363,11 +362,32 @@ describe("Home", () => {
       session_detail: () => detail(entry("p"), null),
     });
     renderHome({
-      entries: [entry("p", { state: "processing", stage: "assemble", title: "Budget review" })],
-      processingWaits: true,
+      entries: [entry("p", { state: "processing", stage: "assemble", title: "Budget review", waits_for: "recording" })],
     });
-    expect(within(row("Budget review")).getByText("Waiting for the recording")).toBeTruthy();
+    expect(within(row("Budget review")).getByText("Waiting for the recording to end")).toBeTruthy();
     expect(screen.queryByText("Preparing the audio")).toBeNull();
+  });
+
+  test("a row says what its note waits for, with the texts of the note page", () => {
+    mockTauri({
+      session_document: () => document("Text."),
+      session_detail: () => detail(entry("p"), null),
+    });
+    renderHome({
+      entries: [
+        entry("a", { state: "processing", stage: "assemble", title: "Claimed", waits_for: "another_note" }),
+        entry("q", { state: "queued", title: "Queued", waits_for: "another_note" }),
+        // A recording is active, but the note waits for its summary turn.
+        entry("s", { state: "processing", stage: "summarize", title: "Summary", waits_for: "summary_turn" }),
+        entry("m", { state: "queued", title: "Model", waits_for: "model" }),
+      ],
+    });
+    expect(within(row("Claimed")).getByText("Waiting for another note to finish")).toBeTruthy();
+    expect(within(row("Queued")).getByText("Waiting for another note to finish")).toBeTruthy();
+    expect(within(row("Summary")).getByText("Waiting to summarize")).toBeTruthy();
+    expect(within(row("Model")).getByText("Waiting for the model to download")).toBeTruthy();
+    expect(screen.queryByText("Preparing the audio")).toBeNull();
+    expect(screen.queryByText("Summarizing")).toBeNull();
   });
 
   // Covers AE5.

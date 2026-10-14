@@ -23,7 +23,7 @@ use asr::Recognizer;
 use chrono::{DateTime, FixedOffset, Local};
 use session_core::jobs::{Claims, RegenerateRefusal};
 use session_core::{Event, SessionState, Stage};
-use tokio::sync::{Notify, Semaphore, oneshot};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::summary_queue::{Class, SummaryQueue, Turn};
@@ -176,11 +176,15 @@ pub enum RunnerEvent {
         session_id: String,
         stage: Stage,
     },
-    /// The audio stages of the note have ended, and the note waits for its
-    /// turn in the summary queue (KTD10). A `StageStarted` event follows
-    /// when the note gets its turn.
-    WaitingToSummarize {
+    /// What the note waits for changed (KTD10). `Some` when the note
+    /// starts to wait: for the local permit, for its turn in the summary
+    /// queue (a new note or a regeneration), for a model, or for a
+    /// recording to end. `None` when the wait ends and the stage runs
+    /// again. A `StageStarted` event also ends a wait. [`Runner::waits`]
+    /// gives the current wait of each note.
+    Waits {
         session_id: String,
+        wait: Option<Wait>,
     },
     /// Per window of the transcribe stage.
     Progress {
@@ -256,6 +260,66 @@ pub enum RunnerEvent {
     },
 }
 
+/// What a note waits for before its next stage can run (KTD10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// A recording is active, and the next stage of the note is an audio
+    /// stage. A queued note also waits: no note is claimed during a
+    /// recording.
+    Recording,
+    /// Another note has the local permit or is in its audio stages.
+    AnotherNote,
+    /// The note waits for its turn in the summary queue: a new note after
+    /// its audio stages, or a regeneration of a saved note.
+    SummaryTurn,
+    /// A model that the note needs is not on disk.
+    Model,
+}
+
+/// The waits of the notes at one time (KTD10). Get it with
+/// [`Runner::waits`] before the store lock, and give it the state and the
+/// stage of each note from the store.
+#[derive(Debug, Clone, Default)]
+pub struct Waits {
+    recording: bool,
+    marks: HashMap<String, Wait>,
+    no_model: HashSet<String>,
+    audio: HashSet<String>,
+}
+
+impl Waits {
+    /// What the note `id` waits for, if anything. `stage` is the stage in
+    /// the job row of the note.
+    pub fn of(&self, id: &str, state: &SessionState, stage: Option<Stage>) -> Option<Wait> {
+        let mark = self.marks.get(id).copied();
+        if mark == Some(Wait::SummaryTurn) {
+            return mark;
+        }
+        match state {
+            SessionState::Processing { .. } => {
+                let audio_stage = stage.is_none_or(|s| !SUMMARY_STAGES.contains(&s));
+                if self.recording && audio_stage {
+                    Some(Wait::Recording)
+                } else {
+                    mark
+                }
+            }
+            SessionState::Queued { .. } => {
+                if self.recording {
+                    Some(Wait::Recording)
+                } else if self.no_model.contains(id) {
+                    Some(Wait::Model)
+                } else if self.audio.iter().any(|other| other != id) {
+                    Some(Wait::AnotherNote)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 /// What a title job did (KTD13).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TitleJob {
@@ -309,9 +373,17 @@ pub struct Runner {
     /// The summary queue: one job at a time that sends requests to the
     /// summary endpoint and writes a note folder (KTD1, KTD2).
     summary: SummaryQueue,
-    /// The notes that wait for their turn in the summary queue: a new note
-    /// after its audio stages, or a regeneration (KTD10).
-    waiting_to_summarize: Mutex<HashSet<String>>,
+    /// The notes that wait now in the runner (KTD10): for the local permit
+    /// (`AnotherNote`), or for their turn in the summary queue
+    /// (`SummaryTurn`, a new note after its audio stages or a
+    /// regeneration). A note leaves the map when its wait ends.
+    marks: Mutex<HashMap<String, Wait>>,
+    /// The queued notes that the last claims skipped because a model is
+    /// not on disk, and the notes whose stage gave `Waiting`.
+    no_model: Mutex<HashSet<String>>,
+    /// The claimed notes that have not left their audio stages. The queued
+    /// notes wait for them (KTD3).
+    audio: Mutex<HashSet<String>>,
     /// True while a task runs the queued title jobs.
     titles_running: AtomicBool,
     /// Summary regenerations and deletes that run on a session. They
@@ -324,6 +396,12 @@ pub struct Runner {
 
 fn now() -> DateTime<FixedOffset> {
     Local::now().fixed_offset()
+}
+
+/// Lock a map of the runner. A panic in another holder does not stop the
+/// runner.
+fn held<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The control of a stage of a note. It stops on cancel, on quit, and when
@@ -352,6 +430,14 @@ impl StageControl {
 
 impl Control for StageControl {
     fn proceed(&self) -> Result<(), StageError> {
+        // The app shows the pause and its end (KTD10).
+        let tell = |wait| {
+            (self.env.events)(RunnerEvent::Waits {
+                session_id: self.session_id.clone(),
+                wait,
+            })
+        };
+        let mut paused = false;
         loop {
             if self.cancel.is_cancelled() || self.taken_back() {
                 return Err(StageError::Cancelled);
@@ -360,7 +446,14 @@ impl Control for StageControl {
             // lock the capture state.
             if !self.pause || !(self.env.suspended)() {
                 self.power.resume();
+                if paused {
+                    tell(None);
+                }
                 return Ok(());
+            }
+            if !paused {
+                paused = true;
+                tell(Some(Wait::Recording));
             }
             self.power.suspend();
             std::thread::sleep(SUSPENDED_POLL);
@@ -393,7 +486,9 @@ impl Runner {
             engine: Arc::new(Mutex::new(None)),
             permit: Arc::new(Semaphore::new(1)),
             summary: SummaryQueue::default(),
-            waiting_to_summarize: Mutex::default(),
+            marks: Mutex::default(),
+            no_model: Mutex::default(),
+            audio: Mutex::default(),
             titles_running: AtomicBool::new(false),
             claims: Claims::default(),
             power,
@@ -557,7 +652,7 @@ impl Runner {
         // the summary queue (KTD1). A quit stops the wait.
         let cancel = self.shutdown.child_token();
         let _turn = {
-            let _waits = WaitMark::new(&self.waiting_to_summarize, session_id);
+            let _waits = WaitMark::new(self, session_id, Wait::SummaryTurn);
             let started = Instant::now();
             let turn = tokio::select! {
                 turn = self.summary.acquire(Class::Regeneration) => Ok(turn),
@@ -683,10 +778,34 @@ impl Runner {
     /// after its audio stages, or for a regeneration of its summary
     /// (KTD10). A title job that waits does not count.
     pub fn waits_to_summarize(&self, session_id: &str) -> bool {
-        self.waiting_to_summarize
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(session_id)
+        held(&self.marks).get(session_id) == Some(&Wait::SummaryTurn)
+    }
+
+    /// The waits of the notes now (KTD10). This reads the capture state,
+    /// so call it before the store lock: the capture manager locks its
+    /// state and then the store.
+    pub fn waits(&self) -> Waits {
+        let recording = (self.env.suspended)();
+        Waits {
+            recording,
+            marks: held(&self.marks).clone(),
+            no_model: held(&self.no_model).clone(),
+            audio: held(&self.audio).clone(),
+        }
+    }
+
+    /// Mark that `session_id` waits for `wait`, and tell the app.
+    fn mark(&self, session_id: &str, wait: Wait) {
+        held(&self.marks).insert(session_id.to_string(), wait);
+        (self.env.events)(RunnerEvent::Waits {
+            session_id: session_id.to_string(),
+            wait: Some(wait),
+        });
+    }
+
+    /// Remove the wait mark of `session_id`. Returns whether it had one.
+    fn unmark(&self, session_id: &str) -> bool {
+        held(&self.marks).remove(session_id).is_some()
     }
 
     /// True while `session_id` has its summary regenerated or waits to.
@@ -1074,7 +1193,40 @@ impl Runner {
         if self.shutdown.is_cancelled() || (self.env.suspended)() {
             return None;
         }
-        let (id, model) = {
+        // Each queued note that this pass reads, and whether its models are
+        // on disk.
+        let mut scanned: Vec<(String, bool)> = Vec::new();
+        let claimed = self.claim_ready(&mut scanned);
+        // The model marks change after the store lock, so that the app
+        // can read the store when it gets the event.
+        let mut missing = Vec::new();
+        {
+            let mut no_model = held(&self.no_model);
+            for (id, ready) in scanned {
+                if ready {
+                    no_model.remove(&id);
+                } else if no_model.insert(id.clone()) {
+                    missing.push(id);
+                }
+            }
+        }
+        for id in missing {
+            (self.env.events)(RunnerEvent::Waits {
+                session_id: id,
+                wait: Some(Wait::Model),
+            });
+        }
+        let (id, model) = claimed?;
+        // A quit stops the work on every note (KTD4).
+        let cancel = self.shutdown.child_token();
+        held(&self.current).insert(id.clone(), cancel.clone());
+        Some((id, model, cancel))
+    }
+
+    /// Dequeue the first queued session whose models are on disk. Each
+    /// session that it reads goes in `scanned` with its readiness.
+    fn claim_ready(&self, scanned: &mut Vec<(String, bool)>) -> Option<(String, String)> {
+        {
             let mut store = lock(&self.env.store);
             let (next, model) = store.queue().ok()?.into_iter().find_map(|id| {
                 let record = store.session(&id).ok()??;
@@ -1096,6 +1248,7 @@ impl Runner {
                 } else {
                     self.env.engines.ready(&model)
                 };
+                scanned.push((id.clone(), ready));
                 ready.then_some((id, model))
             })?;
             let id = match store.dequeue_session(&next, &self.owner, now()) {
@@ -1106,15 +1259,11 @@ impl Runner {
                     return None;
                 }
             };
-            (id, model)
-        };
-        // A quit stops the work on every note (KTD4).
-        let cancel = self.shutdown.child_token();
-        self.current
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.clone(), cancel.clone());
-        Some((id, model, cancel))
+            // The queued notes wait for this note until it leaves its
+            // audio stages.
+            held(&self.audio).insert(id.clone());
+            Some((id, model))
+        }
     }
 
     /// The task of a claimed note, from dequeue to the end of its Save
@@ -1150,24 +1299,17 @@ impl Runner {
         stage: Stage,
         cancel: &CancellationToken,
     ) -> Result<(Turn, Duration), StageError> {
+        // The mark comes before the stage, so that no read sees the
+        // summarize stage with no wait.
+        let mark = WaitMark::new(self, id, Wait::SummaryTurn);
         lock(&self.env.store).set_stage(id, stage)?;
-        self.waiting_to_summarize
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.to_string());
-        (self.env.events)(RunnerEvent::WaitingToSummarize {
-            session_id: id.to_string(),
-        });
         log::info!("{id} waits for its turn in the summary queue");
         let started = Instant::now();
         let turn = tokio::select! {
             turn = self.summary.acquire(Class::NewNote) => Ok(turn),
             _ = cancel.cancelled() => Err(StageError::Cancelled),
         };
-        self.waiting_to_summarize
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(id);
+        drop(mark);
         let waited = started.elapsed();
         if turn.is_ok() {
             log::info!(
@@ -1226,7 +1368,9 @@ impl Runner {
             if turn.is_none() && SUMMARY_STAGES.contains(&stage) {
                 // The audio stages have ended: the next note can start its
                 // audio stages (KTD3). A note whose Save has begun comes
-                // here first and takes no local permit.
+                // here first and takes no local permit. The queued notes
+                // no longer wait for this note.
+                held(&self.audio).remove(id);
                 if let Some(done) = audio_done.take() {
                     let _ = done.send(None);
                 }
@@ -1311,6 +1455,7 @@ impl Runner {
                 Err(StageError::Waiting(what)) => {
                     log::info!("{id} waits for {what}");
                     // Back to its place in line; it runs once the models are in.
+                    held(&self.no_model).insert(id.to_string());
                     if let Err(e) = lock(&self.env.store).apply(id, &Event::ClaimLost) {
                         log::warn!("could not return {id} to the queue: {e}");
                     }
@@ -1461,6 +1606,31 @@ impl Runner {
         Outcome::Failed { stage, message }
     }
 
+    /// The local permit for an audio stage of `id`. While another note has
+    /// the permit, `id` is marked as waiting for another note (KTD10).
+    async fn local_permit(&self, id: &str) -> Result<OwnedSemaphorePermit, StageError> {
+        match self.permit.clone().try_acquire_owned() {
+            Ok(permit) => return Ok(permit),
+            Err(TryAcquireError::Closed) => {
+                return Err(StageError::Failed("the local permit is closed".into()));
+            }
+            Err(TryAcquireError::NoPermits) => {}
+        }
+        let mark = WaitMark::new(self, id, Wait::AnotherNote);
+        let permit = self
+            .permit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| StageError::Failed(e.to_string()))?;
+        drop(mark);
+        (self.env.events)(RunnerEvent::Waits {
+            session_id: id.to_string(),
+            wait: None,
+        });
+        Ok(permit)
+    }
+
     async fn run_stage(
         &self,
         id: &str,
@@ -1478,13 +1648,7 @@ impl Runner {
         // queue already has its turn (KTD1).
         let audio = !SUMMARY_STAGES.contains(&stage);
         let _permit = if audio {
-            Some(
-                self.permit
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|e| StageError::Failed(e.to_string()))?,
-            )
+            Some(self.local_permit(id).await?)
         } else {
             None
         };
@@ -2078,22 +2242,20 @@ impl ActivePower {
     }
 }
 
-/// The mark that a regeneration of a note waits for its turn in the summary
-/// queue (KTD10). Dropping the mark removes it, also when the wait is
-/// cancelled.
+/// The mark that a note waits (KTD10): for the local permit, or for its
+/// turn in the summary queue. Making the mark tells the app. Dropping the
+/// mark removes it, also when the wait is cancelled. The event that ends
+/// the wait (`StageStarted`, or `Waits` with `None`) comes from the caller.
 struct WaitMark<'a> {
-    waiting: &'a Mutex<HashSet<String>>,
+    runner: &'a Runner,
     id: String,
 }
 
 impl<'a> WaitMark<'a> {
-    fn new(waiting: &'a Mutex<HashSet<String>>, id: &str) -> Self {
-        waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id.to_string());
+    fn new(runner: &'a Runner, id: &str, wait: Wait) -> Self {
+        runner.mark(id, wait);
         Self {
-            waiting,
+            runner,
             id: id.to_string(),
         }
     }
@@ -2101,10 +2263,7 @@ impl<'a> WaitMark<'a> {
 
 impl Drop for WaitMark<'_> {
     fn drop(&mut self) {
-        self.waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
+        self.runner.unmark(&self.id);
     }
 }
 
@@ -2165,11 +2324,8 @@ impl<'a> NoteTask<'a> {
 impl Drop for NoteTask<'_> {
     fn drop(&mut self) {
         self.heartbeat.abort();
-        self.runner
-            .waiting_to_summarize
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
+        self.runner.unmark(&self.id);
+        held(&self.runner.audio).remove(&self.id);
         self.runner
             .current
             .lock()
@@ -2242,8 +2398,18 @@ mod tests {
 
     #[tokio::test]
     async fn an_audio_stage_waiting_for_the_local_permit_acquires_no_power() {
-        let (runner, acquired, _root) =
-            counted_runner(Box::new(|_| panic!("a waiting stage must not start")));
+        let (runner, acquired, _root) = counted_runner(Box::new(|event| {
+            assert!(
+                matches!(
+                    event,
+                    RunnerEvent::Waits {
+                        wait: Some(Wait::AnotherNote),
+                        ..
+                    }
+                ),
+                "a waiting stage must not start: {event:?}"
+            );
+        }));
         // Another job owns the permit, including while it is suspended.
         let _other_job = runner.permit.clone().acquire_owned().await.unwrap();
         let mut attempt = crate::recognition::durable::Attempt::default();
@@ -2255,7 +2421,7 @@ mod tests {
             &mut attempt,
             Duration::ZERO,
         );
-        let mut stage = std::pin::pin!(stage);
+        let mut stage = Box::pin(stage);
         let mut context = Context::from_waker(Waker::noop());
         assert!(matches!(stage.as_mut().poll(&mut context), Poll::Pending));
         assert_eq!(
@@ -2263,13 +2429,81 @@ mod tests {
             0,
             "waiting for another job must not acquire processing power"
         );
+        let processing = SessionState::Processing { stopped_at: now() };
+        assert_eq!(
+            runner
+                .waits()
+                .of("waiting", &processing, Some(Stage::Assemble)),
+            Some(Wait::AnotherNote)
+        );
+        // A cancelled wait leaves no mark.
+        drop(stage);
+        assert_eq!(
+            runner
+                .waits()
+                .of("waiting", &processing, Some(Stage::Assemble)),
+            None
+        );
+    }
+
+    /// The wait of a note from the runner's marks, the claimed notes and
+    /// the capture state (KTD10).
+    #[test]
+    fn a_note_waits_for_the_recording_only_before_an_audio_stage() {
+        let processing = SessionState::Processing { stopped_at: now() };
+        let queued = SessionState::Queued { stopped_at: now() };
+        let mut waits = Waits {
+            recording: true,
+            ..Waits::default()
+        };
+        assert_eq!(
+            waits.of("a", &processing, Some(Stage::Transcribe)),
+            Some(Wait::Recording)
+        );
+        assert_eq!(waits.of("a", &queued, None), Some(Wait::Recording));
+        assert_eq!(waits.of("a", &processing, Some(Stage::Summarize)), None);
+        // A note that waits for its summary turn says so also during a
+        // recording.
+        waits.marks.insert("a".into(), Wait::SummaryTurn);
+        assert_eq!(
+            waits.of("a", &processing, Some(Stage::Summarize)),
+            Some(Wait::SummaryTurn)
+        );
+        assert_eq!(
+            waits.of("a", &SessionState::Saved, None),
+            Some(Wait::SummaryTurn),
+            "a regeneration waits for its turn"
+        );
+
+        let mut waits = Waits::default();
+        assert_eq!(waits.of("q", &queued, None), None);
+        waits.audio.insert("other".into());
+        assert_eq!(waits.of("q", &queued, None), Some(Wait::AnotherNote));
+        waits.no_model.insert("q".into());
+        assert_eq!(waits.of("q", &queued, None), Some(Wait::Model));
+        assert_eq!(
+            waits.of("other", &processing, Some(Stage::Assemble)),
+            None,
+            "a note in its audio stages does not wait for itself"
+        );
+        assert_eq!(
+            waits.of("q", &SessionState::Saved, None),
+            None,
+            "only a queued note waits for a model"
+        );
     }
 
     #[tokio::test]
     async fn a_note_waiting_for_the_summary_queue_acquires_no_power_and_frees_the_local_permit() {
         let (runner, acquired, _root) = counted_runner(Box::new(|event| {
             assert!(
-                matches!(event, RunnerEvent::WaitingToSummarize { .. }),
+                matches!(
+                    event,
+                    RunnerEvent::Waits {
+                        wait: Some(Wait::SummaryTurn),
+                        ..
+                    }
+                ),
                 "a waiting note must not start: {event:?}"
             );
         }));

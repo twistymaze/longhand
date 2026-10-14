@@ -445,6 +445,10 @@ export function SessionPage({
   // The progress event of an earlier run stays in `sessions.live`. Only an
   // event that arrives after this run starts shows as its progress.
   const liveAtStart = useRef(sessions.live[id]);
+  // The number of stage starts of the note when this page started a
+  // regeneration. A larger number says that the regeneration has its turn
+  // (KTD10). `null` while this page has started no regeneration.
+  const startsAtRegenerate = useRef<number | null>(null);
 
   // The offer to regenerate the summary after a type change (R9, R10,
   // KTD5). Only a type change of the user on this page sets the trigger,
@@ -476,6 +480,7 @@ export function SessionPage({
 
   const regenerate = () => {
     liveAtStart.current = sessions.live[id];
+    startsAtRegenerate.current = sessions.starts[id] ?? 0;
     setOfferAsked(false);
     setRegenerating(true);
     setNotice(null);
@@ -631,6 +636,17 @@ export function SessionPage({
   const summaryKept = phase === "saved" && detail?.summary_not_updated != null;
 
   const live = sessions.live[id];
+  // What the note waits for (KTD10). The list is read again on each
+  // processing update and on each recording change, so it is the newer
+  // read; the detail serves until the list has the note.
+  const waits = entry ? entry.waits_for : (detail?.entry.waits_for ?? null);
+  // A regeneration that this page started has its turn after a stage start
+  // that came after the click. A regeneration found running has its turn
+  // when the note does not wait for its summary turn.
+  const regenerationStarted =
+    regenerating && startsAtRegenerate.current !== null
+      ? (sessions.starts[id] ?? 0) > startsAtRegenerate.current
+      : waits !== "summary_turn";
   const regenerateControl = (
     // A disabled button gets no pointer events, so the reason is on the
     // element around it. The reason is the reason of the "…" menu item.
@@ -662,7 +678,7 @@ export function SessionPage({
         detail={detail}
         live={live}
         speakers={sessions.speakers[id]}
-        waitsForRecording={capture.status?.processing_waits ?? false}
+        waits={waits}
         onChanged={changed}
       />
     ) : null;
@@ -687,7 +703,7 @@ export function SessionPage({
     // While the summary is written again, Summary shows the summarize stage
     // in place of the previous summary. A failed run shows it again.
     if (which === "summary" && summarizing && detail) {
-      return <RegenerateStatus detail={detail} live={live === liveAtStart.current ? undefined : live} />;
+      return <RegenerateStatus detail={detail} live={live === liveAtStart.current ? undefined : live} started={regenerationStarted} />;
     }
     if (!doc) return which === "transcript" && liveMode ? liveView("loading") : null;
     return which === "summary" ? (

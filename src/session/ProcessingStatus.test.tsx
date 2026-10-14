@@ -19,6 +19,7 @@ const waiting: SessionDetail = {
     remote: null,
     note_type: null,
     tags: [],
+    waits_for: null,
   },
   done: ["transcribe", "summarize"],
   current: null,
@@ -53,7 +54,7 @@ function open() {
     change_storage_folder: () => ({ storage_folder: "/Volumes/Disk/Notes" }) as Settings,
   });
   let changed = 0;
-  render(<ProcessingStatus detail={waiting} live={undefined} waitsForRecording={false} onChanged={() => changed++} />);
+  render(<ProcessingStatus detail={waiting} live={undefined} onChanged={() => changed++} />);
   return { tauri, user: userEvent.setup(), changed: () => changed };
 }
 
@@ -93,7 +94,7 @@ describe("Choose Folder on a note that waits for a folder", () => {
         throw "This folder is already the storage folder.";
       },
     });
-    render(<ProcessingStatus detail={waiting} live={undefined} waitsForRecording={false} onChanged={() => {}} />);
+    render(<ProcessingStatus detail={waiting} live={undefined} onChanged={() => {}} />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Choose Folder…" }));
     await user.click(await screen.findByRole("button", { name: "Move Notes" }));

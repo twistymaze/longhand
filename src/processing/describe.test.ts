@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Readiness, SessionDetail } from "../bindings";
+import type { Readiness, SessionDetail, SessionEntry } from "../bindings";
 import {
   entryStatus,
   formatDuration,
@@ -9,10 +9,11 @@ import {
   speakerMeter,
   stageRows,
   stoppedAt,
+  waitText,
 } from "./describe";
 
 const detail = (over: Partial<SessionDetail>): SessionDetail => ({
-  entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing", stage: null, title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [] },
+  entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing", stage: null, title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null },
   done: [],
   current: null,
   windows_done: null,
@@ -50,7 +51,7 @@ describe("stage rows", () => {
   test("a failed verify names the stage and runs nothing", () => {
     const rows = stageRows(
       detail({
-        entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing_failed", stage: "verify", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [] },
+        entry: { id: "s", started: "2026-09-22T14:05:00Z", duration_ms: 0, state: "processing_failed", stage: "verify", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null },
         done: ["assemble", "diarize", "transcribe", "join"],
         current: "verify",
         failed_stage: "verify",
@@ -58,6 +59,31 @@ describe("stage rows", () => {
     );
     expect(rows.find((r) => r.status === "failed")?.stage).toBe("verify");
     expect(rows.some((r) => r.status === "running")).toBe(false);
+  });
+
+  test("a claimed note that waits before its first stage starts runs no stage", () => {
+    // At the claim, the job row names Assemble before Assemble starts.
+    const claimed = detail({ current: "assemble" });
+    claimed.entry = { ...claimed.entry, stage: "assemble", waits_for: "another_note" };
+    const rows = stageRows(claimed);
+    expect(rows.map((r) => r.status)).toEqual(["pending", "pending", "pending", "pending", "pending", "pending", "pending"]);
+  });
+
+  test("a note that waits for its summary turn shows the summarize row as to do", () => {
+    const waiting = detail({ done: ["assemble", "diarize", "transcribe", "join", "verify"], current: "summarize" });
+    waiting.entry = { ...waiting.entry, stage: "summarize", waits_for: "summary_turn" };
+    const rows = stageRows(waiting);
+    expect(rows.find((r) => r.stage === "summarize")?.status).toBe("pending");
+    expect(rows.some((r) => r.status === "running")).toBe(false);
+    // The turn comes: the summarize row runs.
+    waiting.entry = { ...waiting.entry, waits_for: null };
+    expect(stageRows(waiting).find((r) => r.stage === "summarize")?.status).toBe("running");
+  });
+
+  test("a note paused by a recording keeps its done steps and runs none", () => {
+    const paused = detail({ done: ["assemble", "diarize"], current: "transcribe" });
+    paused.entry = { ...paused.entry, stage: "transcribe", waits_for: "recording" };
+    expect(stageRows(paused).map((r) => r.status)).toEqual(["done", "done", "pending", "pending", "pending", "pending", "pending"]);
   });
 });
 
@@ -97,31 +123,43 @@ describe("speaker meter", () => {
 
 describe("wording", () => {
   test("the speaker stage finds speakers and does not name people", () => {
-    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "diarize", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [] };
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "diarize", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null };
     expect(entryStatus(entry, null)).toBe("Finding speakers");
     expect(stoppedAt("diarize")).toBe("Stopped while finding speakers");
   });
 
   test("a blocked session says what it needs, not that it failed", () => {
-    const status = entryStatus({ id: "s", started: "", duration_ms: 0, state: "blocked", stage: null, title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [] }, null);
+    const status = entryStatus({ id: "s", started: "", duration_ms: 0, state: "blocked", stage: null, title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null }, null);
     expect(status).toBe("Needs the keychain");
     expect(status.toLowerCase()).not.toContain("fail");
   });
 
   test("a failed session says where it stopped, and a reload keeps the stage", () => {
     expect(stoppedAt("verify")).toBe("Stopped while checking the transcript");
-    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "transcribe", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [] };
+    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "transcribe", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null };
     expect(entryStatus(entry, null)).toBe("Transcribing");
     expect(entryStatus({ ...entry, state: "processing_failed" }, null)).toBe("Needs a retry");
   });
 
-  test("a session that waits for a recording to finish says so, not its stage", () => {
-    const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "assemble", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [] };
-    expect(entryStatus(entry, null, true)).toBe("Waiting for the recording");
-    expect(entryStatus({ ...entry, state: "queued" }, null, true)).toBe("Waiting for the recording");
-    expect(entryStatus(entry, null, false)).toBe("Preparing the audio");
-    // Only processing waits; a session that needs an action says what it needs.
-    expect(entryStatus({ ...entry, state: "blocked" }, null, true)).toBe("Needs the keychain");
+  test("a note that waits says what it waits for, not its stage", () => {
+    const entry: SessionEntry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "assemble", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null };
+    expect(entryStatus({ ...entry, waits_for: "recording" }, null)).toBe("Waiting for the recording to end");
+    expect(entryStatus({ ...entry, state: "queued", waits_for: "recording" }, null)).toBe("Waiting for the recording to end");
+    expect(entryStatus({ ...entry, waits_for: "another_note" }, null)).toBe("Waiting for another note to finish");
+    expect(entryStatus({ ...entry, state: "queued", waits_for: "another_note" }, null)).toBe("Waiting for another note to finish");
+    expect(entryStatus({ ...entry, stage: "summarize", waits_for: "summary_turn" }, "verify")).toBe("Waiting to summarize");
+    expect(entryStatus({ ...entry, state: "queued", waits_for: "model" }, null)).toBe("Waiting for the model to download");
+    expect(entryStatus(entry, null)).toBe("Preparing the audio");
+    expect(entryStatus({ ...entry, state: "queued" }, null)).toBe("Waiting to process");
+    // A note that needs an action says what it needs.
+    expect(entryStatus({ ...entry, state: "blocked", waits_for: "recording" }, null)).toBe("Needs the keychain");
+  });
+
+  test("each wait has one text, on Home and on the note page", () => {
+    expect(waitText("recording")).toBe("Waiting for the recording to end");
+    expect(waitText("another_note")).toBe("Waiting for another note to finish");
+    expect(waitText("summary_turn")).toBe("Waiting to summarize");
+    expect(waitText("model")).toBe("Waiting for the model to download");
   });
 
   test("backend messages read as sentences", () => {

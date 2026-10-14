@@ -138,9 +138,6 @@ pub struct RecordingStatus {
     /// The audio that the kept segments of the open note hold, gaps
     /// excluded. While paused, it is the elapsed time that the page shows.
     pub recorded_ms: u64,
-    /// Processing waits: a note records, or a live worker saves its last
-    /// part after Stop (KTD9, KTD20). The same test as the runner's.
-    pub processing_waits: bool,
     /// The microphone went away and is being reopened (U14); the session
     /// still counts as recording.
     pub reconnecting: bool,
@@ -2150,10 +2147,6 @@ impl CaptureManager {
             recording,
             paused,
             recorded_ms: kept_ms,
-            processing_waits: recording
-                || app
-                    .try_state::<Arc<LiveManager>>()
-                    .is_some_and(|live| live.busy()),
             reconnecting,
             interruption,
             working_free_bytes: recorder::storage::available_space(

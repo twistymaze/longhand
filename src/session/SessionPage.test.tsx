@@ -30,7 +30,6 @@ const idle: RecordingStatus = {
   session_id: null,
   state: null,
   recording: false,
-  processing_waits: false,
   reconnecting: false,
   interruption: null,
   working_free_bytes: null,
@@ -66,6 +65,7 @@ const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   remote: null,
   note_type: null,
   tags: [],
+  waits_for: null,
   ...over,
 });
 
@@ -127,7 +127,7 @@ const recordingCapture = (id: string, over: Partial<Capture> = {}) =>
   });
 
 function sessionsOf(entries: SessionEntry[]): Sessions {
-  return { entries, stages: {}, live: {}, speakers: {}, version: {}, synced: {}, removed: {}, refresh: mock(async () => {}) };
+  return { entries, stages: {}, starts: {}, live: {}, speakers: {}, version: {}, synced: {}, removed: {}, refresh: mock(async () => {}) };
 }
 
 function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Record<string, CommandHandler> = {}) {
@@ -278,16 +278,34 @@ describe("SessionPage", () => {
     expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
   });
 
-  test("a processing note says it waits while processing waits, also after the other recording stops", async () => {
-    const e = entry("prev", { state: "processing", stage: "assemble" });
+  test("a processing note says what it waits for above its steps, and runs no step while it waits", async () => {
+    const e = entry("prev", { state: "processing", stage: "assemble", waits_for: "recording" });
     mockPage(e, { current: "assemble" });
-    const notice = "Processing waits for the current recording to finish.";
-    // The other note stopped, but its live transcript still saves its last part.
-    const finishing = captureOf({ status: { ...idle, recording: false, processing_waits: true } });
-    const view = renderPage({ id: "prev", capture: finishing, sessions: sessionsOf([e]) });
-    expect(await screen.findByText(notice)).toBeTruthy();
-    view.rerenderWith(captureOf(), sessionsOf([e]));
-    expect(screen.queryByText(notice)).toBeNull();
+    const view = renderPage({ id: "prev", sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Waiting for the recording to end")).toBeTruthy();
+    expect(screen.queryByLabelText("in progress")).toBeNull();
+    for (const [waits, text] of [
+      ["another_note", "Waiting for another note to finish"],
+      ["summary_turn", "Waiting to summarize"],
+      ["model", "Waiting for the model to download"],
+    ] as const) {
+      view.rerenderWith(captureOf(), sessionsOf([{ ...e, waits_for: waits }]));
+      expect(screen.getByText(text)).toBeTruthy();
+      expect(screen.queryByLabelText("in progress")).toBeNull();
+    }
+    // The wait ends: the step runs, and the line goes.
+    view.rerenderWith(captureOf(), sessionsOf([{ ...e, waits_for: null }]));
+    expect(screen.queryByText(/^Waiting/)).toBeNull();
+    expect(screen.getByLabelText("in progress")).toBeTruthy();
+  });
+
+  test("a note in the summary queue says it waits to summarize, also during a recording", async () => {
+    const e = entry("prev", { state: "processing", stage: "summarize", waits_for: "summary_turn" });
+    mockPage(e, { current: "summarize", done: ["assemble", "diarize", "transcribe", "join", "verify"] });
+    renderPage({ id: "prev", capture: recordingCapture("other"), sessions: sessionsOf([e]) });
+    expect(await screen.findByText("Waiting to summarize")).toBeTruthy();
+    expect(screen.queryByText("Waiting for the recording to end")).toBeNull();
+    expect(screen.queryByLabelText("in progress")).toBeNull();
   });
 
   test("Resume hides Summary and moves the page to My Notes, and Stop shows it again", async () => {
@@ -1184,8 +1202,36 @@ describe("SessionPage", () => {
       };
     }
 
+    test("a regeneration waits to summarize, and summarizes after its stage starts", async () => {
+      const { e, page } = await start();
+      expect(screen.getByText("Waiting to summarize")).toBeTruthy();
+      expect(screen.queryByText("Summarizing")).toBeNull();
+      expect(screen.queryByLabelText("in progress")).toBeNull();
+      // The runner says that the regeneration waits for its turn.
+      await act(async () => page.rerenderWith(captureOf(), sessionsOf([{ ...e, waits_for: "summary_turn" }])));
+      expect(screen.getByText("Waiting to summarize")).toBeTruthy();
+      // Its turn comes: StageStarted { summarize }.
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), stages: { s: "summarize" }, starts: { s: 1 } }));
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+      expect(screen.queryByText("Waiting to summarize")).toBeNull();
+      expect(screen.getByLabelText("in progress")).toBeTruthy();
+    });
+
+    test("the stage start of an earlier run does not start a later regeneration", async () => {
+      const e = entry("s");
+      mockPage(e, { endpoint }, { regenerate_summary: pending().run });
+      // An earlier regeneration started its stage once, and left its stage.
+      renderPage({ id: "s", sessions: { ...sessionsOf([e]), stages: { s: "summarize" }, starts: { s: 1 } } });
+      await screen.findByText("We agreed the budget.");
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Regenerate Summary" }));
+      expect(screen.getByText("Waiting to summarize")).toBeTruthy();
+      expect(screen.queryByText("Summarizing")).toBeNull();
+    });
+
     test("the summarize stage shows in place of the summary, and Transcript still shows", async () => {
-      const { user } = await start();
+      const { user, e, page } = await start();
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), starts: { s: 1 } }));
       expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
       expect(screen.getByText("Summarizing")).toBeTruthy();
       expect(screen.getByText(/Sends the transcript and notes to api\.example\.com \(m\)/)).toBeTruthy();
@@ -1201,7 +1247,7 @@ describe("SessionPage", () => {
       const { e, page } = await start();
       expect(screen.queryByRole("progressbar")).toBeNull();
       const live = { s: { stage: "summarize", segment: 0, done: 1, total: 3 } };
-      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), live }));
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), live, starts: { s: 1 } }));
       expect(screen.getByText("33%")).toBeTruthy();
       expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("33");
     });
@@ -1210,10 +1256,12 @@ describe("SessionPage", () => {
       const e = entry("s");
       const live = { s: { stage: "summarize", segment: 0, done: 3, total: 3 } };
       mockPage(e, { endpoint }, { regenerate_summary: pending().run });
-      renderPage({ id: "s", sessions: { ...sessionsOf([e]), live } });
+      const page = renderPage({ id: "s", sessions: { ...sessionsOf([e]), live } });
       await screen.findByText("We agreed the budget.");
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: "Regenerate Summary" }));
+      // The regeneration has its turn; the old progress event stays.
+      await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), live, starts: { s: 1 } }));
       expect(screen.getByText("Summarizing")).toBeTruthy();
       expect(screen.queryByRole("progressbar")).toBeNull();
     });
@@ -1236,7 +1284,7 @@ describe("SessionPage", () => {
     test("Regenerate from the menu on Transcript moves the page to Summary", async () => {
       await start("transcript");
       expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
-      expect(screen.getByText("Summarizing")).toBeTruthy();
+      expect(screen.getByText("Waiting to summarize")).toBeTruthy();
     });
 
     test("a regeneration that still runs when the user comes back to the note shows, and its result shows when it ends", async () => {

@@ -57,7 +57,6 @@ export function SessionRow({
   title,
   time,
   stage,
-  processingWaits = false,
   selected,
   renaming,
   onSelect,
@@ -76,8 +75,6 @@ export function SessionRow({
   time: string;
   /// The stage an event named since the list was read.
   stage: string | null;
-  /// Processing waits for a recording to finish (KTD20).
-  processingWaits?: boolean;
   selected: boolean;
   renaming: boolean;
   onSelect: () => void;
@@ -94,7 +91,7 @@ export function SessionRow({
     ? remoteLabels[entry.remote]
     : entry.state === "saved"
       ? null
-      : entryStatus(entry, stage, processingWaits);
+      : entryStatus(entry, stage);
   const tone = entryTone(entry.state) ?? "neutral";
   // An untitled row shows the start time as its title already.
   // A note whose storage folder is unavailable says so in place of its
