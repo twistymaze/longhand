@@ -28,3 +28,6 @@ The user asked. Today Copy writes only markdown, so a paste into Mail or Notes s
 - Decided: the plain-text format stays markdown, not text with the marks removed.
 - For planning: write both formats with `navigator.clipboard.write` and a `ClipboardItem` (`text/html` and `text/plain`) in WKWebView and WebView2. Make the HTML with the markdown renderer that the app already uses. Find out whether a click in WKWebView is a sufficient user gesture, and whether some apps need RTF also.
 - If the formatted write fails, write the markdown only. Show the current error only when both fail.
+
+## Outcome
+Shipped in PR #18 (https://github.com/twistymaze/longhand/pull/18). Copy writes HTML first and the markdown as plain text. The summary HTML uses the Summary tab's parser, so the paste keeps the nesting that the tab shows. No RTF was necessary: the user's paste test into rich-text apps passed.

@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** When a person copies a summary, a transcript or My Notes and pastes it into Mail, Notes, Slack, Word or Google Docs, the paste shows headings, bold, lists and links, not `#` and `**` marks. A paste into a plain-text app still gives the same markdown as today.
 - **Means:** One clipboard item with an HTML format and a plain-text format, written with the web Clipboard API (KTD1).
-- **Product authority:** This Product Contract. The idea file is `docs/ideas/next/formatted-copy.md`.
+- **Product authority:** This Product Contract. The idea file is `docs/ideas/done/formatted-copy.md`.
 - **Open blockers:** None.
 
 ## Product Contract
