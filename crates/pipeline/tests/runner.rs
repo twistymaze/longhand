@@ -6185,19 +6185,41 @@ async fn transcribe_again_stores_no_title_request_and_keeps_the_folder_name() {
     let r = rig().await;
     let title = title_reply("First");
     let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
-    let folder = saved_session(&r, None).await;
-    // The title job of the first run sent its request (U6).
-    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    saved_session(&r, None).await;
+    // The title job of the first run proposes its title (U6).
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().text, "First");
+    let folder = saved_folder(&r, "s");
     let before = completions(&mock).len();
 
     confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(completions(&mock).len(), before + 1, "one summary call");
-    assert!(title_calls(&mock).is_empty());
     assert_eq!(pending(&r), None);
-    assert_eq!(title_of(&r), None);
+    assert_eq!(title_of(&r).unwrap().source, TitleSource::Proposed);
+    assert_eq!(title_of(&r).unwrap().text, "First");
     assert_eq!(saved_folder(&r, "s"), folder);
-    assert_eq!(destination_entries(&r), [name_for(None)]);
+    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_on_a_note_with_no_title_stores_a_title_request() {
+    // The first run had no title: its summary failed, so no title turn was
+    // stored. Transcribe Again has no title to keep, so it proposes one.
+    let r = rig().await;
+    let title = title_reply("First");
+    let _mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    assert_eq!(title_of(&r), None);
+
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(pending(&r).is_some(), "a title request for the note");
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().source, TitleSource::Proposed);
+    assert_eq!(title_of(&r).unwrap().text, "First");
+    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
 }
 
 /// The transcript that the stored checkpoints of "s" give.

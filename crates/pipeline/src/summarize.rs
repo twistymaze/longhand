@@ -847,27 +847,30 @@ impl<'a> Calls<'a> {
 
     /// Store the title turn of the final call `done` as the pending title
     /// request (KTD3), unless no title turn is due: the user set a title, a
-    /// Transcribe Again run keeps the title (R16, KTD14), or a title was
-    /// proposed before. The stage sends no call here. When the context
+    /// Transcribe Again run keeps the title that the note has (R16, KTD14),
+    /// or a title was proposed before. A Transcribe Again of a note with no
+    /// title proposes one. The stage sends no call here. When the context
     /// leaves less than [`prompts::TITLE_REPLY_MIN`] for the reply (KTD12),
     /// the stage stores no request and the summary still completes (R14).
     fn store_title_request(&self, done: &Final) -> Result<(), StageError> {
         let proposed =
             checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, TITLE)?
                 .is_some();
-        let (user_title, again) = {
+        let (user_title, keeps_title) = {
             let guard = lock(self.store);
+            let title = guard.title(self.session_id)?;
             (
-                guard
-                    .title(self.session_id)?
+                title
+                    .as_ref()
                     .is_some_and(|t| t.source == TitleSource::User),
-                guard
-                    .transcribe_again_marks(self.session_id)?
-                    .model
-                    .is_some(),
+                title.is_some()
+                    && guard
+                        .transcribe_again_marks(self.session_id)?
+                        .model
+                        .is_some(),
             )
         };
-        if proposed || user_title || again {
+        if proposed || user_title || keeps_title {
             return delete_title_request(self.store, self.session_id);
         }
         let messages =
