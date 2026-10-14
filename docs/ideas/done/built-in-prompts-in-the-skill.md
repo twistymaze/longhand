@@ -21,3 +21,6 @@ The built-in prompts have no file in the storage folder. An agent can see their 
 - The skill updates from `main`, so a user with an older app can see newer text. The built-in prompts seldom change. Accepted for now (user decision, 2026-10-14). [app-command-line-tool](../someday/app-command-line-tool.md) is the later alternative.
 - `crates/library/tests/skill_drift.rs` already checks that the skill and the app agree. The new test can go there.
 - The fixed rules that Longhand adds to each prompt stay described in `references/prompts.md`, not copied.
+
+## Outcome
+Shipped in PR #19 (https://github.com/twistymaze/longhand/pull/19). `references/built-in-prompts.md` holds both built-in prompts as prompt-file bodies, and `prompts.md` gives the copy steps. Two skill drift tests compare the copy with the app and read a pasted copy back through the prompt scan. Open follow-ups are in the PR's "Unapplied review findings".

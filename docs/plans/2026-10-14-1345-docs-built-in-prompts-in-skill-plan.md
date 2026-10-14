@@ -139,4 +139,4 @@ The built-in prompts have no file in the storage folder. Their text is only in `
 - The reference file and both guidance changes are on one branch, and the PR title has the type `docs`.
 - The drift tests pass locally and in CI.
 - No experimental code or temporary test edits stay in the diff.
-- The idea `docs/ideas/next/built-in-prompts-in-the-skill.md` has `plan:` set to this plan.
+- The idea `docs/ideas/done/built-in-prompts-in-the-skill.md` has `plan:` set to this plan.
