@@ -35,7 +35,7 @@ To make a prompt from an existing prompt, copy its text into a new file, and alw
 
 1. Make a snapshot.
 2. Get a new id: `python3 SKILL_DIR/scripts/new_id.py`.
-3. Write a new file in `.longhand/prompts/` with the new id and a new name in the frontmatter. After the frontmatter and one empty line, put the block of the built-in prompt from `references/built-in-prompts.md`, with no change.
+3. Write a new file in `.longhand/prompts/` with the new id and a new name in the frontmatter. Use a file name that no other file in `.longhand/prompts/` has. After the frontmatter and one empty line, put the block of the built-in prompt from `references/built-in-prompts.md`, with no change.
 4. Make the change that the user asked for in the text or in the title instructions.
 5. Compare.
 
