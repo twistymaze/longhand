@@ -37,7 +37,7 @@ import { NotesTab } from "./NotesTab";
 import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { PauseButton, RecordingBar, StopButton } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
-import { copyText, tabMarkdown } from "./copy";
+import { copyText, tabHtml, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
@@ -682,7 +682,7 @@ export function SessionPage({
   useEffect(() => setCopied(false), [tab]);
   const copy = async () => {
     if (copyable === null) return;
-    const done = await copyText(copyable);
+    const done = await copyText(copyable, tabHtml(tab, copyable));
     setNotice(done ? null : { tone: "negative", text: "The text could not be copied to the clipboard." });
     setCopied(done);
     clearTimeout(copyTimer.current);

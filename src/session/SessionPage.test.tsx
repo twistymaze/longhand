@@ -1076,7 +1076,7 @@ describe("SessionPage", () => {
     expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
   });
 
-  test("Copy writes the open tab's markdown: the transcript file, or the notes", async () => {
+  test("Copy writes the open tab's markdown and its HTML: the transcript file, or the notes", async () => {
     const e = entry("s", { title: "Budget review" });
     mockTauri({
       load_session_notes: () => ({ markdown: "# Agenda\n\n- ask about headcount", fingerprint: "f0" }),
@@ -1087,17 +1087,34 @@ describe("SessionPage", () => {
     renderPage({ id: "s", sessions: sessionsOf([e]) });
     const user = userEvent.setup();
     // After setup, which puts its own clipboard in place.
-    const writeText = mock(async (_t: string) => {});
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    class FakeClipboardItem {
+      constructor(readonly items: Record<string, Blob>) {}
+    }
+    Object.defineProperty(globalThis, "ClipboardItem", { value: FakeClipboardItem, configurable: true, writable: true });
+    const written: Record<string, string>[] = [];
+    const write = mock(async ([item]: FakeClipboardItem[]) => {
+      const formats: Record<string, string> = {};
+      for (const [type, blob] of Object.entries(item.items)) formats[type] = await blob.text();
+      written.push(formats);
+    });
+    Object.defineProperty(navigator, "clipboard", { value: { write }, configurable: true });
     await screen.findByText("We agreed the budget.");
     await user.click(tab("Transcript"));
     await user.click(screen.getByRole("button", { name: "Copy" }));
-    expect(writeText).toHaveBeenLastCalledWith("# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n");
+    await waitFor(() => expect(written).toHaveLength(1));
+    expect(written[0]).toEqual({
+      "text/html": "<h1>Transcript</h1>\n<ul>\n<li>[00:00:00] Speaker 1: Hello.</li>\n</ul>\n",
+      "text/plain": "# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n",
+    });
     expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
     await user.click(tab("My Notes"));
     await screen.findByRole("textbox", { name: "My Notes" });
     await user.click(screen.getByRole("button", { name: /^Cop/ }));
-    expect(writeText).toHaveBeenLastCalledWith("# Agenda\n\n- ask about headcount");
+    await waitFor(() => expect(written).toHaveLength(2));
+    expect(written[1]).toEqual({
+      "text/html": "<h1>Agenda</h1>\n<ul>\n<li>ask about headcount</li>\n</ul>\n",
+      "text/plain": "# Agenda\n\n- ask about headcount",
+    });
   });
 
   test("a stub summary shows its text and Regenerate, which summarizes again", async () => {
