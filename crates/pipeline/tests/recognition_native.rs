@@ -70,7 +70,6 @@ impl EngineProvider for Provider {
     fn background(&self) -> String {
         String::new()
     }
-    fn learn_limit(&self, _: &str, _: &str, _: u32) {}
     fn destination(&self) -> Option<PathBuf> {
         None
     }

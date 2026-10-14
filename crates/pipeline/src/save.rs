@@ -1213,7 +1213,6 @@ pub fn regenerate_summary(
     working_root: &Path,
     endpoint: SummaryEndpoint,
     resolve: &dyn Fn(Option<&str>) -> Prompt,
-    learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
@@ -1223,7 +1222,6 @@ pub fn regenerate_summary(
         working_root,
         endpoint,
         resolve,
-        learn,
         control,
         progress,
     );
@@ -1248,7 +1246,6 @@ fn summarize_again(
     working_root: &Path,
     endpoint: SummaryEndpoint,
     resolve: &dyn Fn(Option<&str>) -> Prompt,
-    learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
@@ -1356,7 +1353,7 @@ fn summarize_again(
     let expected = current.run_fingerprint();
     let source_notes = folder::fingerprint(lock(store).notes(session_id)?.as_bytes());
     let summary = summarize::produce(
-        store, session_id, &home, endpoint, active, learn, control, progress,
+        store, session_id, &home, endpoint, active, control, progress,
     )?;
     // The last point where a cancel stops the regeneration: after the
     // record, the publication only rolls forward.

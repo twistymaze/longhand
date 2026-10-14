@@ -375,10 +375,6 @@ fn endpoint_from_settings(
         // A blank key is no key (see `key_state`): send no Bearer header.
         .filter(|key| !key.trim().is_empty());
     Ok(SummaryEndpoint {
-        learned_limit: s
-            .learned_context_limits
-            .get(&settings::learned_limit_key(&base_url, &s.endpoint_model))
-            .copied(),
         base_url,
         model: s.endpoint_model,
         credential,
@@ -517,16 +513,6 @@ impl EngineProvider for Models {
     /// Background file or the storage folder is not available (KTD3).
     fn background(&self) -> String {
         settings::get_background(&self.app)
-    }
-
-    fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {
-        let key = settings::learned_limit_key(base_url, model);
-        if let Err(e) = settings::update_settings(&self.app, |s| {
-            s.learned_context_limits.insert(key, limit);
-            Ok(())
-        }) {
-            log::warn!("could not remember the context limit for {model}: {e}");
-        }
     }
 
     /// Read when the note is saved, so a note that records during a change
@@ -2214,17 +2200,6 @@ mod tests {
                 .unwrap();
         assert_eq!(endpoint.base_url, "http://localhost:11434/v1");
         assert_eq!(endpoint.credential, None);
-    }
-
-    #[test]
-    fn a_learned_limit_is_read_for_the_effective_base_url() {
-        let mut s = with_model(None);
-        s.learned_context_limits.insert(
-            settings::learned_limit_key("https://api.openai.com/v1", "gpt-4o"),
-            8000,
-        );
-        let endpoint = endpoint_from_settings(s, |_| Ok(Some("k".into()))).unwrap();
-        assert_eq!(endpoint.learned_limit, Some(8000));
     }
 
     #[test]

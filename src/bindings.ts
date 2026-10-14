@@ -2505,11 +2505,6 @@ check_updates_automatically: boolean;
  */
 audio_removal: AudioRemovalSetting; 
 /**
- * Context limits endpoints have shown by rejecting longer prompts,
- * keyed by [`learned_limit_key`] (KTD16).
- */
-learned_context_limits: Partial<{ [key in string]: number }>; 
-/**
  * A shared setting. The custom summary prompts, in the order that
  * Settings shows them (KTD6).
  */

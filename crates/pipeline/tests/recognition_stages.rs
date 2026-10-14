@@ -120,7 +120,6 @@ impl EngineProvider for Provider {
     fn background(&self) -> String {
         String::new()
     }
-    fn learn_limit(&self, _: &str, _: &str, _: u32) {}
     fn destination(&self) -> Option<PathBuf> {
         None
     }
@@ -1939,9 +1938,6 @@ impl EngineProvider for WithAnalyzer {
     fn background(&self) -> String {
         self.0.background()
     }
-    fn learn_limit(&self, base_url: &str, model: &str, limit: u32) {
-        self.0.learn_limit(base_url, model, limit)
-    }
     fn destination(&self) -> Option<PathBuf> {
         self.0.destination()
     }
@@ -2054,9 +2050,6 @@ impl EngineProvider for WordlessProvider {
     }
     fn background(&self) -> String {
         self.0.background()
-    }
-    fn learn_limit(&self, model: &str, id: &str, limit: u32) {
-        self.0.learn_limit(model, id, limit)
     }
     fn destination(&self) -> Option<PathBuf> {
         self.0.destination()

@@ -132,7 +132,7 @@ async fn a_server_answering_no_probe_resolves_to_the_default() {
     let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
     assert_eq!(probed, None);
     assert_eq!(
-        context::resolve(None, probed, None),
+        context::resolve(None, probed),
         Budget {
             limit: DEFAULT_LIMIT,
             source: BudgetSource::Default
@@ -182,7 +182,10 @@ async fn a_server_error_from_a_later_probe_is_an_error_not_the_default() {
     .await;
     let probed = context::probe(&client(&mock.base, "m")).await;
     assert!(
-        matches!(probed, Err(summarize::SummarizeError::Http { status: 503, .. })),
+        matches!(
+            probed,
+            Err(summarize::SummarizeError::Http { status: 503, .. })
+        ),
         "{probed:?}"
     );
 }
@@ -215,26 +218,18 @@ async fn a_later_probe_that_fails_after_an_answer_is_a_miss() {
 }
 
 #[test]
-fn the_user_setting_wins_and_a_learned_limit_caps_it() {
+fn the_user_setting_wins_over_the_probe() {
     let lm = Budget {
         limit: 8_192,
         source: BudgetSource::LmStudio,
     };
     let probed = Some(lm);
     assert_eq!(
-        context::resolve(Some(32_000), probed, None),
+        context::resolve(Some(32_000), probed),
         Budget {
             limit: 32_000,
             source: BudgetSource::User
         }
     );
-    assert_eq!(
-        context::resolve(Some(32_000), probed, Some(20_000)),
-        Budget {
-            limit: 20_000,
-            source: BudgetSource::Learned
-        }
-    );
-    // A learned limit above the resolved one says nothing new.
-    assert_eq!(context::resolve(None, probed, Some(50_000)), lm);
+    assert_eq!(context::resolve(None, probed), lm);
 }

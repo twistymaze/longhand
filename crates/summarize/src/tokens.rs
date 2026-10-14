@@ -1,8 +1,8 @@
 //! Client-side token estimates (KTD16). No tokenizer is portable across
 //! endpoints, so the estimate is bytes over a conservative ratio plus the
 //! per-message framing chat templates add, and every budget check applies a
-//! 15% margin. A server that tokenizes denser still is caught by its own
-//! rejection, and the budget learned from it (see `pipeline::summarize`).
+//! 15% margin. A server that tokenizes denser still rejects the prompt, and
+//! the run stops (see `pipeline::summarize`).
 
 /// English prose runs near four bytes a token; three and a half leaves room
 /// for names, numbers and punctuation-heavy speech.

@@ -10,13 +10,14 @@ use serde_json::Value;
 
 use crate::client::{Client, SummarizeError};
 
-pub const DEFAULT_LIMIT: u32 = 8_192;
+pub const DEFAULT_LIMIT: u32 = 128_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BudgetSource {
     User,
-    /// A server rejected a prompt the estimate believed would fit.
+    /// A limit that an older version learned from a rejection. Only a
+    /// saved plan can have it.
     Learned,
     Litellm,
     LmStudio,
@@ -32,10 +33,9 @@ pub struct Budget {
     pub source: BudgetSource,
 }
 
-/// The setting, else the probe, else the default; a learned limit below
-/// the result caps it, since the server has shown it takes no more.
-pub fn resolve(user: Option<u32>, probed: Option<Budget>, learned: Option<u32>) -> Budget {
-    let base = match (user, probed) {
+/// The setting, else the probe, else the default.
+pub fn resolve(user: Option<u32>, probed: Option<Budget>) -> Budget {
+    match (user, probed) {
         (Some(limit), _) => Budget {
             limit,
             source: BudgetSource::User,
@@ -45,13 +45,6 @@ pub fn resolve(user: Option<u32>, probed: Option<Budget>, learned: Option<u32>) 
             limit: DEFAULT_LIMIT,
             source: BudgetSource::Default,
         },
-    };
-    match learned {
-        Some(limit) if limit < base.limit => Budget {
-            limit,
-            source: BudgetSource::Learned,
-        },
-        _ => base,
     }
 }
 

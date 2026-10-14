@@ -2,9 +2,9 @@
 //! read from `transcript.md` (KTD4), the context budget resolved, and the
 //! summary produced in one call when it fits, which is the normal case, or
 //! in parts merged layer by layer when it does not. Every call's result is
-//! checkpointed, so a quit resumes at the first missing one; a rejection
-//! showing the model's context is smaller than assumed shrinks the budget,
-//! learns it for the endpoint, and re-chunks that layer.
+//! checkpointed, so a quit resumes at the first missing one. A rejection
+//! that shows the model's context is smaller than the budget stops the
+//! run: only the user changes the context limit.
 //!
 //! The notes document goes whole with every call (KTD6), as it was when the
 //! run started (R36). The note details (the shown type, the tags and a
@@ -27,7 +27,7 @@ use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
 use summarize::client::Message;
 use summarize::prompts::{Details, UserText};
-use summarize::{Budget, Client, Endpoint, SummarizeError, context, prompts, tokens};
+use summarize::{Budget, BudgetSource, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
 use crate::join::TRANSCRIPT_FILE;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
@@ -66,10 +66,7 @@ pub const INPUT: &str = "input";
 /// save writes it into `longhand.json`, because `summary.md` has no
 /// frontmatter (R1).
 pub const META: &str = "meta";
-/// How far a context rejection shrinks the budget, and the floor below
-/// which a model is too small to summarize with.
-const SHRINK: f64 = 0.7;
-const MIN_LIMIT: u32 = 2_048;
+/// How many times a cut-off reply gets more room.
 const MAX_SHRINKS: usize = 6;
 const CANCEL_POLL: Duration = Duration::from_millis(250);
 
@@ -81,8 +78,6 @@ pub struct SummaryEndpoint {
     pub credential: Option<String>,
     /// The user's context setting, which overrides the probe.
     pub context_limit: Option<u32>,
-    /// A limit an earlier rejection taught for this endpoint and model.
-    pub learned_limit: Option<u32>,
     /// The waits before each new try of a request that could not reach the
     /// endpoint ([`summarize::client::RETRY_WAITS`] in the app).
     pub retry_waits: Vec<Duration>,
@@ -114,6 +109,20 @@ impl Room {
 }
 
 impl Plan {
+    /// True when the context limit setting `user` still gives this plan's
+    /// budget. A set limit gives only a plan under that limit. With no set
+    /// limit, a plan under a set limit, under a learned limit of an older
+    /// version, or under an older default is made again.
+    fn agrees_with(&self, user: Option<u32>) -> bool {
+        match (user, self.budget.source) {
+            (Some(limit), BudgetSource::User) => self.budget.limit == limit,
+            (Some(_), _) => false,
+            (None, BudgetSource::User | BudgetSource::Learned) => false,
+            (None, BudgetSource::Default) => self.budget.limit == context::DEFAULT_LIMIT,
+            (None, _) => true,
+        }
+    }
+
     fn room(&self, layer: usize) -> Room {
         *self
             .layers
@@ -422,7 +431,6 @@ pub fn run(
     segments: &[Segment],
     endpoint: SummaryEndpoint,
     active: Prompt,
-    learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
@@ -432,7 +440,6 @@ pub fn run(
         session_dir,
         endpoint,
         active,
-        learn,
         control,
         progress,
     )?;
@@ -458,7 +465,6 @@ pub fn produce(
     folder: &Path,
     endpoint: SummaryEndpoint,
     active: Prompt,
-    learn: &dyn Fn(u32),
     control: &dyn Control,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
@@ -517,7 +523,17 @@ pub fn produce(
         }
     };
 
-    let mut plan = match checkpoint::get::<Plan>(store, session_id, Stage::Summarize, PLAN)? {
+    // A plan whose budget the context limit setting does not give now is
+    // made again, with its calls.
+    let saved = checkpoint::get::<Plan>(store, session_id, Stage::Summarize, PLAN)?;
+    let saved = match saved {
+        Some(plan) if !plan.agrees_with(endpoint.context_limit) => {
+            forget_calls(store, session_id)?;
+            None
+        }
+        other => other,
+    };
+    let mut plan = match saved {
         Some(plan) => plan,
         None => {
             control.proceed()?;
@@ -530,7 +546,7 @@ pub fn produce(
                     .block_on(context::probe(&client), control)?
                     .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
             };
-            let budget = context::resolve(endpoint.context_limit, probed, endpoint.learned_limit);
+            let budget = context::resolve(endpoint.context_limit, probed);
             log::info!(
                 "summarizing {session_id} with {} on {}: budget {} tokens ({:?})",
                 endpoint.model,
@@ -568,29 +584,20 @@ pub fn produce(
         Some(loop {
             match calls.summarize(&lines, &plan) {
                 Ok(done) => break done,
-                Err(Pressure { layer, room }) if shrinks < MAX_SHRINKS => {
-                    shrinks += 1;
-                    let smaller = ((room.limit as f64 * SHRINK) as u32).max(MIN_LIMIT);
-                    if smaller >= room.limit {
-                        return Err(StageError::Failed(format!(
-                            "the model's context is too small to summarize with (under {MIN_LIMIT} tokens)"
-                        )));
-                    }
+                // The model takes less than the budget. Only the user
+                // changes the context limit, so the run stops and says so.
+                Err(Pressure { layer, room }) => {
                     log::warn!(
-                        "{} rejected a layer-{layer} prompt under {} tokens; retrying at {smaller}",
+                        "{} rejected a layer-{layer} prompt under {} tokens ({:?})",
                         client.host(),
+                        room.limit,
+                        plan.budget.source
+                    );
+                    return Err(StageError::Failed(format!(
+                        "the model did not accept {} tokens of text; enter the model's context \
+                         length in Settings > Summaries > Context limit",
                         room.limit
-                    );
-                    learn(smaller);
-                    forget_layers_from(store, session_id, layer)?;
-                    plan.replace_from(
-                        layer,
-                        Room {
-                            limit: smaller,
-                            reserve: room.reserve.min(smaller / 2),
-                        },
-                    );
-                    checkpoint::put(store, session_id, Stage::Summarize, PLAN, &plan)?;
+                    )));
                 }
                 Err(CutOff { layer, room }) if shrinks < MAX_SHRINKS => {
                     // The prompt fit and the reply did not: give the reply
@@ -617,9 +624,9 @@ pub fn produce(
                     );
                     checkpoint::put(store, session_id, Stage::Summarize, PLAN, &plan)?;
                 }
-                Err(Pressure { .. } | CutOff { .. }) => {
+                Err(CutOff { .. }) => {
                     return Err(StageError::Failed(
-                        "the endpoint kept rejecting prompts or cutting off replies".into(),
+                        "the endpoint kept cutting off replies".into(),
                     ));
                 }
                 Err(Stop(e)) => return Err(e),
