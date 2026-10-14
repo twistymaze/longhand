@@ -637,7 +637,7 @@ export function SessionPage({
     <span title={held ? heldReason : (remoteReason ?? undefined)} className="inline-flex">
       <Button
         prominent={!doc?.summary || doc.summary.stub || summaryKept}
-        disabled={held || remote !== null}
+        disabled={summarizing || held || remote !== null}
         onClick={regenerate}
       >
         Regenerate Summary
@@ -900,7 +900,7 @@ export function SessionPage({
               <div className="flex items-center gap-1.5">
                 {/* The same availability and reason as the menu item. */}
                 <span title={held ? heldReason : (remoteReason ?? undefined)} className="inline-flex">
-                  <Button disabled={held || remote !== null} onClick={regenerate}>
+                  <Button disabled={summarizing || held || remote !== null} onClick={regenerate}>
                     Regenerate Summary
                   </Button>
                 </span>

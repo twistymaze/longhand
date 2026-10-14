@@ -7773,7 +7773,7 @@ async fn processing_power_covers_stage_preparation_and_start() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn processing_power_releases_during_capture_and_after_summary_regeneration() {
+async fn processing_power_releases_during_capture_and_a_regeneration_keeps_it_during_a_recording() {
     let r = rig().await;
     let (power, held, acquired) = observed_power();
     let script = Arc::clone(&r.script);
@@ -7825,21 +7825,37 @@ async fn processing_power_releases_during_capture_and_after_summary_regeneration
     assert_eq!(held.load(Ordering::SeqCst), 0);
     let before = acquired.load(Ordering::SeqCst);
     let active = Arc::clone(&held);
+    let leases = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&leases);
     let mock = summaries_from(
         &r,
         http::Reply::With(Arc::new(move |_| {
-            assert_eq!(
-                active.load(Ordering::SeqCst),
-                1,
-                "summary request holds protection"
-            );
+            seen.lock().unwrap().push(active.load(Ordering::SeqCst));
             (200, http::completion("A replacement summary."))
         })),
         None,
     )
     .await;
-    runner.regenerate_summary("s").await.unwrap();
+    // A recording does not pause a regeneration (R5, KTD6), and the
+    // regeneration keeps its lease during the recording.
+    capturing.store(true, Ordering::SeqCst);
+    let regenerated = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        runner.regenerate_summary("s"),
+    )
+    .await;
+    // The recording ends before the asserts, so a paused job can end and
+    // the test runtime can stop.
+    capturing.store(false, Ordering::SeqCst);
+    regenerated
+        .expect("a recording does not pause the regeneration")
+        .unwrap();
     assert!(!chat_calls(&mock).is_empty());
+    let leases = leases.lock().unwrap().clone();
+    assert!(
+        !leases.is_empty() && leases.iter().all(|n| *n == 1),
+        "each summary request holds protection: {leases:?}"
+    );
     assert!(acquired.load(Ordering::SeqCst) > before);
     assert_eq!(held.load(Ordering::SeqCst), 0);
 }
@@ -8182,6 +8198,7 @@ async fn a_regeneration_stopped_before_its_record_changes_nothing_and_keeps_the_
                 endpoint,
                 &|_| summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap(),
                 &control,
+                std::time::Duration::ZERO,
                 &mut |_, _| {},
             )
         })
@@ -9019,12 +9036,13 @@ async fn a_title_job_stopped_by_the_quit_keeps_its_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn deleting_the_note_while_its_title_job_waits_for_the_permit_cancels_the_job() {
+async fn deleting_the_note_while_its_title_job_waits_for_the_summary_queue_cancels_the_job() {
     let r = rig().await;
     saved_session(&r, None).await;
     assert!(pending(&r).is_some());
 
-    // The summary of another note holds the permit: its call never ends.
+    // The summary of another note has the turn in the summary queue: its
+    // call never ends.
     let mock = hanging_endpoint(&r).await;
     queue_session(
         &r.store,
@@ -9044,7 +9062,7 @@ async fn deleting_the_note_while_its_title_job_waits_for_the_permit_cancels_the_
     let claims = r.runner.claims().clone();
     session_core::jobs::delete_session(&r.store, "s", &r.root.join("s"), &claims, remove_now)
         .unwrap();
-    // The other note's summary stops, and its stage frees the permit.
+    // The other note's summary stops, and the title job gets its turn.
     r.runner.cancel("t");
     let jobs = tokio::time::timeout(std::time::Duration::from_secs(30), titles)
         .await
@@ -9632,4 +9650,285 @@ async fn a_note_that_waits_for_its_turn_keeps_its_claim() {
     .await;
     r.runner.shutdown();
     run.await.unwrap();
+}
+
+// ------------------------------------------------- second regeneration (U2)
+
+/// The message of a Regenerate Summary that a regeneration of the same
+/// note refuses (R9).
+const AGAIN: &str = "This note's summary is already being made again.";
+
+/// AE4: a second Regenerate Summary of a note whose regeneration runs is
+/// refused at once, and only one regeneration sends requests. A
+/// regeneration after the first one ended runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_regeneration_of_a_note_is_refused_at_once() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let (mock, gate) = gated_summaries(&r).await;
+    let runner = Arc::clone(&r.runner);
+    let first = tokio::spawn(async move { runner.regenerate_summary("s").await });
+    until_called(&mock).await;
+
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        r.runner.regenerate_summary("s"),
+    )
+    .await
+    .expect("the second regeneration is refused at once");
+    assert_eq!(second.unwrap_err().to_string(), AGAIN);
+    assert!(r.runner.is_regenerating("s"), "the first one still runs");
+
+    gate.open();
+    first.await.unwrap().unwrap();
+    let one = chat_calls(&mock).len();
+    assert!(!r.runner.is_regenerating("s"));
+
+    // A regeneration after the first one ended runs.
+    r.runner.regenerate_summary("s").await.unwrap();
+    assert_eq!(
+        chat_calls(&mock).len(),
+        2 * one,
+        "each regeneration that ran sent the same requests"
+    );
+}
+
+/// R10: a Regenerate Summary of a note that is not saved is refused before
+/// it waits for its turn, while another note holds the summary queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_of_a_note_in_processing_is_refused_before_it_waits() {
+    let r = rig().await;
+    let (mock, gate) = gated_summaries(&r).await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "a",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    queue_session(
+        &r.store,
+        &r.root,
+        "b",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let run = tokio::spawn(Arc::clone(&r.runner).run());
+    until_called(&mock).await;
+    until("B waits for its turn", || r.runner.waits_to_summarize("b")).await;
+
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        r.runner.regenerate_summary("b"),
+    )
+    .await
+    .expect("the regeneration is refused before it waits");
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "a summary can be regenerated only once the note has finished processing"
+    );
+    assert!(!r.runner.is_regenerating("b"));
+
+    gate.open();
+    until("both notes are saved", || {
+        event_at(&r, saved_event("a")).is_some() && event_at(&r, saved_event("b")).is_some()
+    })
+    .await;
+    r.runner.shutdown();
+    run.await.unwrap();
+    assert_eq!(chat_calls(&mock).len(), 2, "one request for each new note");
+}
+
+// ------------------------------- regenerations and title jobs in the queue (U4)
+
+/// The note `id` processed and saved with the summaries of the rig.
+async fn saved_with_id(r: &Rig, id: &str, start: i64) {
+    queue_session(
+        &r.store,
+        &r.root,
+        id,
+        start,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    assert_eq!(
+        r.runner.run_next().await.unwrap(),
+        (id.to_string(), Outcome::Finished)
+    );
+}
+
+/// AE2: two regenerations wait for the summary queue behind the request of
+/// a new note. A second new note reaches the summary queue after them, and
+/// its Summarize and Save run before the regenerations.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_note_reaches_the_summary_queue_before_waiting_regenerations() {
+    let r = rig().await;
+    saved_with_id(&r, "x", 10).await;
+    saved_with_id(&r, "y", 20).await;
+    let (mock, gate) = gated_summaries(&r).await;
+    r.events.lock().unwrap().clear();
+    queue_session(
+        &r.store,
+        &r.root,
+        "a",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let run = tokio::spawn(Arc::clone(&r.runner).run());
+    until_called(&mock).await;
+
+    let mut regenerations = Vec::new();
+    for id in ["x", "y"] {
+        let runner = Arc::clone(&r.runner);
+        regenerations.push(tokio::spawn(
+            async move { runner.regenerate_summary(id).await },
+        ));
+        until("the regeneration waits for its turn", || {
+            r.runner.waits_to_summarize(id)
+        })
+        .await;
+    }
+    queue_session(
+        &r.store,
+        &r.root,
+        "c",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    r.runner.wake();
+    until("C waits for its turn", || r.runner.waits_to_summarize("c")).await;
+    assert_eq!(event_at(&r, stage_started("x", Stage::Summarize)), None);
+
+    gate.open();
+    for regeneration in regenerations {
+        regeneration.await.unwrap().unwrap();
+    }
+    r.runner.shutdown();
+    run.await.unwrap();
+
+    let c_saved = event_at(&r, saved_event("c")).expect("C is saved");
+    let x = event_at(&r, stage_started("x", Stage::Summarize)).expect("X gets its turn");
+    let y = event_at(&r, stage_started("y", Stage::Summarize)).expect("Y gets its turn");
+    assert!(c_saved < x, "C is saved before the regenerations");
+    assert!(x < y, "the regenerations run in the order they arrived");
+    assert!(!r.runner.waits_to_summarize("x") && !r.runner.waits_to_summarize("y"));
+    assert!(!r.script.overlapped.load(Ordering::SeqCst));
+}
+
+/// A title job of a saved note runs while another note is in its audio
+/// stages: it does not wait for the local permit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_job_runs_while_another_note_transcribes() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let (reached, release) = hold_analyses(&r, r.script.analyses.load(Ordering::SeqCst));
+    queue_session(
+        &r.store,
+        &r.root,
+        "t",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let runner = Arc::clone(&r.runner);
+    let other = tokio::spawn(async move { runner.run_next().await });
+    until("the other note is in its speaker stage", || {
+        reached.load(Ordering::SeqCst)
+    })
+    .await;
+
+    let jobs = tokio::time::timeout(std::time::Duration::from_secs(30), r.runner.run_titles())
+        .await
+        .expect("the title job does not wait for the audio stages");
+    assert!(
+        reached.load(Ordering::SeqCst),
+        "the other note still transcribes"
+    );
+    release.store(true, Ordering::SeqCst);
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert_eq!(other.await.unwrap(), Some(("t".into(), Outcome::Finished)));
+}
+
+/// A title job waits while the Summarize stage of a new note runs, and
+/// runs after its Save.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_job_waits_for_the_summarize_and_save_of_a_new_note() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let gate = http::Gate::default();
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::Gated(
+            gate.clone(),
+            Box::new(http::Reply::With(Arc::new(|b: &str| {
+                if is_title_call(b) {
+                    (200, http::completion("Weekly sync"))
+                } else {
+                    (200, http::completion("A short summary."))
+                }
+            }))),
+        ),
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    queue_session(
+        &r.store,
+        &r.root,
+        "t",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let runner = Arc::clone(&r.runner);
+    let other = tokio::spawn(async move { runner.run_next().await });
+    until_called(&mock).await;
+    let runner = Arc::clone(&r.runner);
+    let titles = tokio::spawn(async move { runner.run_titles().await });
+
+    gate.open();
+    assert_eq!(other.await.unwrap(), Some(("t".into(), Outcome::Finished)));
+    let jobs = titles.await.unwrap();
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    let calls = completions(&mock);
+    assert!(!is_title_call(&calls[0]), "the new note's request is first");
+    assert!(is_title_call(calls.last().unwrap()));
+    let saved = event_at(&r, saved_event("t")).unwrap();
+    let proposed = event_at(
+        &r,
+        |e| matches!(e, RunnerEvent::TitleProposed { session_id, .. } if session_id == "s"),
+    )
+    .unwrap();
+    assert!(saved < proposed, "the title job runs after the Save");
+}
+
+/// A recording does not pause a title job (R5, KTD6).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_job_runs_during_a_recording() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    r.script.capturing.store(true, Ordering::SeqCst);
+    let jobs = tokio::time::timeout(std::time::Duration::from_secs(30), r.runner.run_titles())
+        .await
+        .expect("a recording does not pause the title job");
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert!(r.script.capturing.load(Ordering::SeqCst));
 }

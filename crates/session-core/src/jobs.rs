@@ -2453,6 +2453,17 @@ enum ClaimKind {
     Hold,
 }
 
+/// Why [`Claims::regenerate`] refuses a regeneration of a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegenerateRefusal {
+    /// Another regeneration of the session runs or waits for its turn.
+    Regenerating,
+    /// A delete runs on the session.
+    Deleting,
+    /// The Move holds the session for its final check.
+    Held,
+}
+
 /// A claim on a session, released when it is dropped, also when the work
 /// fails or its future is dropped.
 pub struct Claim {
@@ -2466,15 +2477,24 @@ impl Claims {
         self.set.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Claim the session for a summary regeneration. None while a delete
-    /// runs on it, or while the Move holds it.
-    pub fn regenerate(&self, session_id: &str) -> Option<Claim> {
+    /// Claim the session for a summary regeneration. The check and the new
+    /// claim happen under one lock (KTD8). The error tells which work
+    /// refuses the regeneration: another regeneration of the session runs
+    /// or waits for its turn (R9), a delete runs on it, or the Move holds
+    /// it.
+    pub fn regenerate(&self, session_id: &str) -> std::result::Result<Claim, RegenerateRefusal> {
         let mut set = self.set();
-        if ClaimSet::has(&set.deleting, session_id) || ClaimSet::has(&set.holding, session_id) {
-            return None;
+        if ClaimSet::has(&set.regenerating, session_id) {
+            return Err(RegenerateRefusal::Regenerating);
+        }
+        if ClaimSet::has(&set.deleting, session_id) {
+            return Err(RegenerateRefusal::Deleting);
+        }
+        if ClaimSet::has(&set.holding, session_id) {
+            return Err(RegenerateRefusal::Held);
         }
         set.regenerating.push(session_id.to_string());
-        Some(self.claim(session_id, ClaimKind::Regenerate))
+        Ok(self.claim(session_id, ClaimKind::Regenerate))
     }
 
     /// Claim the session for a delete. The error is the name of the work

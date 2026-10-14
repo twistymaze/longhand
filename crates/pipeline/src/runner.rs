@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use asr::Recognizer;
 use chrono::{DateTime, FixedOffset, Local};
-use session_core::jobs::Claims;
+use session_core::jobs::{Claims, RegenerateRefusal};
 use session_core::{Event, SessionState, Stage};
 use tokio::sync::{Notify, Semaphore, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -58,6 +58,10 @@ const SUMMARY_STAGES: [Stage; 2] = [Stage::Summarize, Stage::Save];
 
 /// The stage that the last Retry of a failed note continued from.
 const RETRIED_STAGE: &str = "retried-stage";
+
+/// The message of a Regenerate Summary that a regeneration of the same
+/// note refuses (R9).
+const REGENERATING: &str = "This note's summary is already being made again.";
 
 /// The stages whose repeated failure a start-over can clear: each stage
 /// that derives the transcript from the recorded audio.
@@ -305,7 +309,8 @@ pub struct Runner {
     /// The summary queue: one job at a time that sends requests to the
     /// summary endpoint and writes a note folder (KTD1, KTD2).
     summary: SummaryQueue,
-    /// The notes that wait for their turn in the summary queue (KTD10).
+    /// The notes that wait for their turn in the summary queue: a new note
+    /// after its audio stages, or a regeneration (KTD10).
     waiting_to_summarize: Mutex<HashSet<String>>,
     /// True while a task runs the queued title jobs.
     titles_running: AtomicBool,
@@ -506,41 +511,76 @@ impl Runner {
     /// the new summary is queued after the regeneration releases its claim
     /// and its turn (R16).
     pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
-        let regenerated = self.regenerate_claimed(session_id).await;
+        let started = Instant::now();
+        let mut waited = Duration::ZERO;
+        let regenerated = self.regenerate_claimed(session_id, &mut waited).await;
+        // One log line for each regeneration (R14).
+        let took = started.elapsed().saturating_sub(waited);
+        let (level, line) = regeneration_end(session_id, waited, took, &regenerated);
+        log::log!(level, "{line}");
         if regenerated.is_ok() {
             self.queue_title_if_pending(session_id);
         }
         regenerated
     }
 
-    async fn regenerate_claimed(&self, session_id: &str) -> Result<PathBuf, StageError> {
+    /// The regeneration. `waited` gets the time that the regeneration
+    /// waited for its turn in the summary queue.
+    async fn regenerate_claimed(
+        &self,
+        session_id: &str,
+        waited: &mut Duration,
+    ) -> Result<PathBuf, StageError> {
         // While the Move holds the note for its final check, the
-        // regeneration waits (KTD9).
+        // regeneration waits (KTD9). A second regeneration of the note is
+        // refused at once (R9, KTD8).
         let _claim = loop {
-            if let Some(claim) = self.claims.regenerate(session_id) {
-                break claim;
+            match self.claims.regenerate(session_id) {
+                Ok(claim) => break claim,
+                Err(RegenerateRefusal::Regenerating) => {
+                    return Err(StageError::Failed(REGENERATING.into()));
+                }
+                Err(RegenerateRefusal::Deleting) => {
+                    return Err(StageError::Failed(
+                        "This note is being deleted, so its summary cannot be made again.".into(),
+                    ));
+                }
+                Err(RegenerateRefusal::Held) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
             }
-            if !self.claims.is_held(session_id) {
-                return Err(StageError::Failed(
-                    "This note is being deleted, so its summary cannot be made again.".into(),
-                ));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         };
+        // A note that is not saved is refused before the wait for a turn
+        // (R10). `save::regenerate_summary` checks again after the wait.
+        save::require_saved(&lock(&self.env.store), session_id)?;
         // The regeneration writes the note folder, so it takes a turn in
-        // the summary queue (KTD1).
-        let _turn = self.summary.acquire(Class::Regeneration).await;
-        let env = Arc::clone(&self.env);
+        // the summary queue (KTD1). A quit stops the wait.
         let cancel = self.shutdown.child_token();
+        let _turn = {
+            let _waits = WaitMark::new(&self.waiting_to_summarize, session_id);
+            let started = Instant::now();
+            let turn = tokio::select! {
+                turn = self.summary.acquire(Class::Regeneration) => Ok(turn),
+                _ = cancel.cancelled() => Err(StageError::Cancelled),
+            };
+            *waited = started.elapsed();
+            turn?
+        };
+        let queued = *waited;
+        let env = Arc::clone(&self.env);
         let id = session_id.to_string();
         let power = self.power.clone();
         tokio::task::spawn_blocking(move || {
             let control = Unattended {
                 cancel,
-                env: Arc::clone(&env),
                 power: ActivePower::new(power),
             };
             control.proceed()?;
+            // The regeneration has its turn (KTD10).
+            (env.events)(RunnerEvent::StageStarted {
+                session_id: id.clone(),
+                stage: Stage::Summarize,
+            });
             let endpoint = endpoint(&env)?;
             // Regenerate uses the prompt of the note type after the row
             // follows its folder (R3, KTD3), and the current Background
@@ -556,6 +596,7 @@ impl Runner {
                 endpoint,
                 &resolve,
                 &control,
+                queued,
                 &mut |done, total| {
                     (env.events)(RunnerEvent::Progress {
                         session_id: id.clone(),
@@ -638,8 +679,9 @@ impl Runner {
                 .is_empty()
     }
 
-    /// True while `session_id` waits for its turn in the summary queue
-    /// after its audio stages (KTD10).
+    /// True while `session_id` waits for its turn in the summary queue:
+    /// after its audio stages, or for a regeneration of its summary
+    /// (KTD10). A title job that waits does not count.
     pub fn waits_to_summarize(&self, session_id: &str) -> bool {
         self.waiting_to_summarize
             .lock()
@@ -702,11 +744,12 @@ impl Runner {
     }
 
     /// Run the queued title jobs, one at a time, each with a turn in the
-    /// summary queue (KTD13). Nothing starts while capture is active or
-    /// after [`Runner::shutdown`]. Returns what each job did.
+    /// summary queue (KTD13). A recording does not stop them (R5, KTD6).
+    /// Nothing starts after [`Runner::shutdown`]. Returns what each job
+    /// did.
     pub async fn run_titles(&self) -> Vec<(String, TitleJob)> {
         let mut done = Vec::new();
-        while !self.shutdown.is_cancelled() && !(self.env.suspended)() {
+        while !self.shutdown.is_cancelled() {
             let next = self
                 .titles
                 .lock()
@@ -751,24 +794,32 @@ impl Runner {
             return job;
         }
         // The title job can rename the note folder, so it takes a turn in
-        // the summary queue (KTD1).
-        let _turn = self.summary.acquire(Class::Title).await;
+        // the summary queue (KTD1). A quit stops the wait, and the request
+        // stays for the next launch.
+        let cancel = self.shutdown.child_token();
+        let started = Instant::now();
+        let _turn = tokio::select! {
+            turn = self.summary.acquire(Class::Title) => turn,
+            _ = cancel.cancelled() => return TitleJob::Skipped,
+        };
+        let queued = started.elapsed();
         let env = Arc::clone(&self.env);
         let claims = self.claims.clone();
         let id = session_id.to_string();
         let control = TitleControl {
-            cancel: self.shutdown.child_token(),
+            cancel,
             env: Arc::clone(&self.env),
             claims: self.claims.clone(),
             session_id: id.clone(),
             power: ActivePower::new(self.power.clone()),
         };
-        let job = tokio::task::spawn_blocking(move || send_title(&env, &claims, &id, &control))
-            .await
-            .unwrap_or_else(|e| {
-                log::error!("the title job of {session_id} stopped unexpectedly: {e}");
-                TitleJob::Skipped
-            });
+        let job =
+            tokio::task::spawn_blocking(move || send_title(&env, &claims, &id, &control, queued))
+                .await
+                .unwrap_or_else(|e| {
+                    log::error!("the title job of {session_id} stopped unexpectedly: {e}");
+                    TitleJob::Skipped
+                });
         if let TitleJob::Proposed(title) = &job {
             (self.env.events)(RunnerEvent::TitleProposed {
                 session_id: session_id.to_string(),
@@ -1813,12 +1864,13 @@ fn drop_title_request(store: &session_core::Store, session_id: &str) {
 }
 
 /// The blocking part of a title job (KTD13). The caller holds a turn in
-/// the summary queue.
+/// the summary queue, after a wait of `queued`.
 fn send_title(
     env: &Environment,
     claims: &Claims,
     session_id: &str,
     control: &TitleControl,
+    queued: Duration,
 ) -> TitleJob {
     // The job can wait long for its turn.
     if let Some(job) = title_gate(&lock(&env.store), claims, session_id) {
@@ -1845,19 +1897,20 @@ fn send_title(
         // wait for the settings.
         Err(EndpointProblem::Unconfigured(message)) => return kept(&message),
     };
-    let title = match summarize::send_title_request(session_id, &endpoint, &request, control) {
-        Ok(Ok(title)) => title,
-        Ok(Err(why)) => return kept(&why),
-        Err(StageError::Cancelled) => {
-            // A quit leaves the request for the next launch. A delete, a
-            // Move or a regeneration deletes it.
-            if let TitleDue::Dropped = title_due(&lock(&env.store), claims, session_id) {
-                drop_title_request(&lock(&env.store), session_id);
+    let title =
+        match summarize::send_title_request(session_id, &endpoint, &request, control, queued) {
+            Ok(Ok(title)) => title,
+            Ok(Err(why)) => return kept(&why),
+            Err(StageError::Cancelled) => {
+                // A quit leaves the request for the next launch. A delete, a
+                // Move or a regeneration deletes it.
+                if let TitleDue::Dropped = title_due(&lock(&env.store), claims, session_id) {
+                    drop_title_request(&lock(&env.store), session_id);
+                }
+                return TitleJob::Skipped;
             }
-            return TitleJob::Skipped;
-        }
-        Err(e) => return kept(&e.to_string()),
-    };
+            Err(e) => return kept(&e.to_string()),
+        };
 
     // The title changes as a rename does: it waits while the Move holds
     // the note, and the folder takes the name under the same lock.
@@ -1916,7 +1969,9 @@ fn send_title(
 
 /// The control of a title job: it stops on shutdown, and when a delete, a
 /// Move or a regeneration starts on the note, or the note is no longer
-/// saved with a pending request. It waits out capture.
+/// saved with a pending request. A title job is a job of the summary
+/// queue, so it does not wait while capture is active, and it keeps its
+/// power lease (KTD6).
 struct TitleControl {
     cancel: CancellationToken,
     env: Arc<Environment>,
@@ -1937,17 +1992,11 @@ impl TitleControl {
 
 impl Control for TitleControl {
     fn proceed(&self) -> Result<(), StageError> {
-        loop {
-            if self.stopped() {
-                return Err(StageError::Cancelled);
-            }
-            if !(self.env.suspended)() {
-                self.power.resume();
-                return Ok(());
-            }
-            self.power.suspend();
-            std::thread::sleep(SUSPENDED_POLL);
+        if self.stopped() {
+            return Err(StageError::Cancelled);
         }
+        self.power.resume();
+        Ok(())
     }
 
     fn is_cancelled(&self) -> bool {
@@ -1976,27 +2025,22 @@ fn unload_if<E: ?Sized>(
     }
 }
 
-/// For work on a saved session: stops on shutdown and waits out capture,
-/// with no processing state to be taken back from.
+/// The control of a regeneration of a saved note: it stops on shutdown,
+/// with no processing state to be taken back from. A regeneration is a
+/// job of the summary queue, so it does not wait while capture is active,
+/// and it keeps its power lease (KTD6).
 struct Unattended {
     cancel: CancellationToken,
-    env: Arc<Environment>,
     power: ActivePower,
 }
 
 impl Control for Unattended {
     fn proceed(&self) -> Result<(), StageError> {
-        loop {
-            if self.cancel.is_cancelled() {
-                return Err(StageError::Cancelled);
-            }
-            if !(self.env.suspended)() {
-                self.power.resume();
-                return Ok(());
-            }
-            self.power.suspend();
-            std::thread::sleep(SUSPENDED_POLL);
+        if self.cancel.is_cancelled() {
+            return Err(StageError::Cancelled);
         }
+        self.power.resume();
+        Ok(())
     }
 
     fn is_cancelled(&self) -> bool {
@@ -2031,6 +2075,59 @@ impl ActivePower {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
+    }
+}
+
+/// The mark that a regeneration of a note waits for its turn in the summary
+/// queue (KTD10). Dropping the mark removes it, also when the wait is
+/// cancelled.
+struct WaitMark<'a> {
+    waiting: &'a Mutex<HashSet<String>>,
+    id: String,
+}
+
+impl<'a> WaitMark<'a> {
+    fn new(waiting: &'a Mutex<HashSet<String>>, id: &str) -> Self {
+        waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string());
+        Self {
+            waiting,
+            id: id.to_string(),
+        }
+    }
+}
+
+impl Drop for WaitMark<'_> {
+    fn drop(&mut self) {
+        self.waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
+}
+
+/// The log level and the log text at the end of a regeneration (R14): the
+/// note, the time that the regeneration waited for its turn, the time
+/// that it took after that, and the path of the summary or the error.
+fn regeneration_end(
+    session_id: &str,
+    waited: Duration,
+    took: Duration,
+    result: &Result<PathBuf, StageError>,
+) -> (log::Level, String) {
+    let head = format!(
+        "regeneration end: note {session_id}, {} ms waiting for its turn, {} ms",
+        waited.as_millis(),
+        took.as_millis()
+    );
+    match result {
+        Ok(path) => (
+            log::Level::Info,
+            format!("{head}, saved {}", path.display()),
+        ),
+        Err(e) => (log::Level::Warn, format!("{head}, failed: {e}")),
     }
 }
 
@@ -2270,5 +2367,37 @@ mod tests {
         let engine = slot(Some("whisper"));
         let _stage = engine.lock().unwrap();
         assert!(!unload_if(&engine, "whisper", id));
+    }
+
+    /// R14: a failed regeneration writes one warning line with the error.
+    #[test]
+    fn a_failed_regeneration_writes_one_end_line_with_the_error() {
+        let failed = Err(StageError::Failed("the endpoint did not answer".into()));
+        let (level, line) = regeneration_end(
+            "2026-10-14-0900",
+            Duration::from_millis(4_200),
+            Duration::from_millis(91_000),
+            &failed,
+        );
+        assert_eq!(level, log::Level::Warn);
+        assert_eq!(
+            line,
+            "regeneration end: note 2026-10-14-0900, 4200 ms waiting for its turn, \
+             91000 ms, failed: the endpoint did not answer"
+        );
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn a_regeneration_that_saves_writes_its_end_line_at_info_with_the_path() {
+        let saved = Ok(PathBuf::from("/notes/Weekly sync/summary.md"));
+        let (level, line) =
+            regeneration_end("s", Duration::ZERO, Duration::from_millis(30), &saved);
+        assert_eq!(level, log::Level::Info);
+        assert_eq!(
+            line,
+            "regeneration end: note s, 0 ms waiting for its turn, 30 ms, \
+             saved /notes/Weekly sync/summary.md"
+        );
     }
 }

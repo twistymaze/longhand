@@ -211,12 +211,14 @@ pub fn delete_title_request(store: &SharedStore, session_id: &str) -> Result<(),
 /// Send the title turn `request` to `endpoint` with its reply cap, and
 /// clean the reply with [`clean_title`] (KTD13). The inner error is a
 /// failed turn or a reply that was cut off: the note then keeps its title
-/// (R14). Only a cancel is an outer error.
+/// (R14). Only a cancel is an outer error. `queued` is the time that the
+/// job waited for its turn in the summary queue, for the request log.
 pub fn send_title_request(
     session_id: &str,
     endpoint: &SummaryEndpoint,
     request: &TitleRequest,
     control: &dyn Control,
+    queued: Duration,
 ) -> Result<Result<String, String>, StageError> {
     // The title job holds a turn in the summary queue, and a title is
     // optional. The request is sent once, with no retry waits, so an
@@ -238,7 +240,7 @@ pub fn send_title_request(
     }
     let runtime = Runtime::new()?;
     control.proceed()?;
-    let label = Label::note(session_id, RequestKind::Title);
+    let label = Label::note(session_id, RequestKind::Title).queued(queued);
     let reply = runtime.block_on(
         client.complete(&label, &request.messages, request.cap),
         control,

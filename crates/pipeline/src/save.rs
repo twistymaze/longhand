@@ -1000,6 +1000,20 @@ fn write_working(dir: &Path, name: &str, contents: &str) -> Result<(), StageErro
 }
 
 /// The home folder of a session, if it is saved.
+/// The error of a regeneration of a note that is not saved.
+fn not_saved() -> StageError {
+    StageError::Failed(
+        "a summary can be regenerated only once the note has finished processing".into(),
+    )
+}
+
+/// Refuse a regeneration of a note that is not saved or has no home folder
+/// (R10). [`regenerate_summary`] does the same check again.
+pub fn require_saved(store: &Store, session_id: &str) -> Result<(), StageError> {
+    home_path(store, session_id)?.ok_or_else(not_saved)?;
+    Ok(())
+}
+
 fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
     Ok(store
         .session(session_id)?
@@ -1206,7 +1220,8 @@ pub fn rescue_notes(
 /// path is in the folder under its name after that rename. `resolve` gives
 /// the summary prompt of a note type. The regeneration calls it after the
 /// row follows its folder, so a type change from another computer counts
-/// (R3, KTD3).
+/// (R3, KTD3). `queued` is the time that the regeneration waited for its
+/// turn in the summary queue, for the request log.
 #[allow(clippy::too_many_arguments)]
 pub fn regenerate_summary(
     store: &SharedStore,
@@ -1215,6 +1230,7 @@ pub fn regenerate_summary(
     endpoint: SummaryEndpoint,
     resolve: &dyn Fn(Option<&str>) -> Prompt,
     control: &dyn Control,
+    queued: std::time::Duration,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
     let regenerated = summarize_again(
@@ -1224,6 +1240,7 @@ pub fn regenerate_summary(
         endpoint,
         resolve,
         control,
+        queued,
         progress,
     );
     // A failed regeneration publishes no new summary, so the title request
@@ -1248,13 +1265,9 @@ fn summarize_again(
     endpoint: SummaryEndpoint,
     resolve: &dyn Fn(Option<&str>) -> Prompt,
     control: &dyn Control,
+    queued: std::time::Duration,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<PathBuf, StageError> {
-    let not_saved = || {
-        StageError::Failed(
-            "a summary can be regenerated only once the note has finished processing".into(),
-        )
-    };
     // The row follows its folder first (KTD3): the summary uses the notes
     // and the title that another computer wrote. The caller holds the
     // regeneration claim. A publication that an earlier regeneration left
@@ -1354,14 +1367,7 @@ fn summarize_again(
     let expected = current.run_fingerprint();
     let source_notes = folder::fingerprint(lock(store).notes(session_id)?.as_bytes());
     let summary = summarize::produce(
-        store,
-        session_id,
-        &home,
-        endpoint,
-        active,
-        control,
-        std::time::Duration::ZERO,
-        progress,
+        store, session_id, &home, endpoint, active, control, queued, progress,
     )?;
     // The last point where a cancel stops the regeneration: after the
     // record, the publication only rolls forward.

@@ -1218,6 +1218,21 @@ describe("SessionPage", () => {
       expect(screen.queryByRole("progressbar")).toBeNull();
     });
 
+    test("the Summary tab's Regenerate Summary is disabled while a regeneration runs", async () => {
+      // The note detail is not read yet, so the Summary tab still shows the
+      // summary and its button during the regeneration (R9).
+      const e = entry("s");
+      const tauri = mockPage(e, { endpoint }, { session_detail: () => new Promise(() => {}), regenerate_summary: pending().run });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      await screen.findByText("We agreed the budget.");
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Regenerate Summary" }));
+      const button = screen.getByRole("button", { name: "Regenerate Summary" });
+      expect(button.hasAttribute("disabled")).toBe(true);
+      await user.click(button);
+      expect(tauri.calls.filter((c) => c.cmd === "regenerate_summary").length).toBe(1);
+    });
+
     test("Regenerate from the menu on Transcript moves the page to Summary", async () => {
       await start("transcript");
       expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
