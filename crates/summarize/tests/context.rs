@@ -172,21 +172,33 @@ async fn a_server_error_from_a_probe_is_an_error_not_the_default() {
 }
 
 #[tokio::test]
-async fn a_server_error_from_a_later_probe_is_an_error_not_the_default() {
-    // LiteLLM's route is absent on other servers (404), so the chain goes
-    // on. A 503 on the next route is a server problem, not a miss.
+async fn a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss() {
+    // A gateway can answer 503 for a route that it does not have, so only
+    // the first probe stops on a server error. The chain goes on to the
+    // route that names the context.
+    let vllm = r#"{"data":[{"id":"m","max_model_len":32768}]}"#;
+    let mock = serve(HashMap::from([
+        ("/api/v0/models", Reply::Json(503, "{}".into())),
+        ("/v1/models", Reply::Json(200, vllm.into())),
+    ]))
+    .await;
+    let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
+    assert_eq!(
+        probed,
+        Some(Budget {
+            limit: 32_768,
+            source: BudgetSource::Vllm
+        })
+    );
+    // 501 says that the server does not have the route.
     let mock = serve(HashMap::from([(
-        "/v1/models",
-        Reply::Json(503, "{}".into()),
+        "/v1/model/info",
+        Reply::Json(501, "{}".into()),
     )]))
     .await;
-    let probed = context::probe(&client(&mock.base, "m")).await;
-    assert!(
-        matches!(
-            probed,
-            Err(summarize::SummarizeError::Http { status: 503, .. })
-        ),
-        "{probed:?}"
+    assert_eq!(
+        context::probe(&client(&mock.base, "m")).await.unwrap(),
+        None
     );
 }
 

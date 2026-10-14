@@ -110,13 +110,13 @@ impl Room {
 
 impl Plan {
     /// True when the context limit setting `user` still gives this plan's
-    /// budget. A set limit gives only a plan under that limit. With no set
-    /// limit, a plan under a set limit, under a learned limit of an older
-    /// version, or under an older default is made again.
+    /// budget. A set limit keeps a plan under the same limit, whatever gave
+    /// it, so its calls are not sent again. With no set limit, a plan under
+    /// a set limit, under a learned limit of an older version, or under an
+    /// older default is made again.
     fn agrees_with(&self, user: Option<u32>) -> bool {
         match (user, self.budget.source) {
-            (Some(limit), BudgetSource::User) => self.budget.limit == limit,
-            (Some(_), _) => false,
+            (Some(limit), _) => self.budget.limit == limit,
             (None, BudgetSource::User | BudgetSource::Learned) => false,
             (None, BudgetSource::Default) => self.budget.limit == context::DEFAULT_LIMIT,
             (None, _) => true,
@@ -593,9 +593,16 @@ pub fn produce(
                         room.limit,
                         plan.budget.source
                     );
+                    // The default is a guess. A limit that the user set or
+                    // that the server reported is too large now.
+                    let action = if plan.budget.source == BudgetSource::Default {
+                        "enter the model's context length".to_string()
+                    } else {
+                        format!("enter a limit lower than {}", room.limit)
+                    };
                     return Err(StageError::Failed(format!(
-                        "the model did not accept {} tokens of text; enter the model's context \
-                         length in Settings > Summaries > Context limit",
+                        "the model did not accept {} tokens of text; {action} in \
+                         Settings > Summaries > Context limit",
                         room.limit
                     )));
                 }
@@ -1055,6 +1062,33 @@ mod tests {
     use summarize::chunk::{Line, Turn};
 
     use super::{Details, clean_title, input_fingerprint, lines_of, read_transcript};
+
+    #[test]
+    fn a_saved_plan_is_kept_only_while_the_context_limit_setting_gives_its_budget() {
+        use summarize::{Budget, BudgetSource};
+        let plan = |limit, source| super::Plan {
+            budget: Budget { limit, source },
+            layers: vec![super::Room::new(limit)],
+        };
+        let default = summarize::context::DEFAULT_LIMIT;
+        let cases = [
+            // A set limit keeps a plan under the same limit, whatever gave it.
+            (plan(32_000, BudgetSource::User), Some(32_000), true),
+            (plan(32_000, BudgetSource::Litellm), Some(32_000), true),
+            (plan(32_000, BudgetSource::User), Some(64_000), false),
+            (plan(default, BudgetSource::Default), Some(32_000), false),
+            // With no set limit, a probed plan stays.
+            (plan(1_000_000, BudgetSource::Litellm), None, true),
+            (plan(default, BudgetSource::Default), None, true),
+            // A cleared limit, a learned limit or an older default plans again.
+            (plan(32_000, BudgetSource::User), None, false),
+            (plan(20_000, BudgetSource::Learned), None, false),
+            (plan(8_192, BudgetSource::Default), None, false),
+        ];
+        for (plan, user, kept) in cases {
+            assert_eq!(plan.agrees_with(user), kept, "{plan:?} with {user:?}");
+        }
+    }
 
     /// A note with no details has the fingerprint of an earlier build, so a
     /// checkpoint from that build stays valid.

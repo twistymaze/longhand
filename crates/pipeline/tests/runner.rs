@@ -1700,13 +1700,28 @@ async fn a_rejection_for_length_stops_the_summary_and_asks_for_the_context_limit
         stub.body
     );
 
+    // A limit that the user set and that is still too large asks for a
+    // lower one.
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(100_000),
+        ..endpoint(&mock.base)
+    }));
+    let error = r.runner.regenerate_summary("s").await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("enter a limit lower than 100000"),
+        "{error}"
+    );
+    let before = chat_calls(&mock).len();
+
     // The user sets the limit, and the summary is made in parts under it.
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
         context_limit: Some(2_048),
         ..endpoint(&mock.base)
     }));
     r.runner.regenerate_summary("s").await.unwrap();
-    let after = &chat_calls(&mock)[1..];
+    let after = &chat_calls(&mock)[before..];
     assert!(after.len() > 1, "{}", after.len());
     assert!(
         after[0].contains("<transcript part=\"1\">"),

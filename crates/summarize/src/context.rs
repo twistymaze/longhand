@@ -3,7 +3,8 @@
 //! each answer is read defensively: a gateway may list the model with no
 //! context metadata at all (an alias row, a locally served model), and a
 //! partial answer is a miss, not an error. The user's setting wins; with
-//! neither, 8,192, the smallest window a current server ships with.
+//! neither, [`DEFAULT_LIMIT`], which most current models accept. A model
+//! that accepts less rejects the prompt, and the user sets the limit.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -104,10 +105,10 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 
 /// Ask the endpoint, in order, until one answer names the model's context.
 /// `Ok(None)` when the endpoint answers and no answer names it. An error
-/// when nothing is known about the context, so that the default budget is
-/// not kept for the run: the first probe cannot reach the endpoint, or a
-/// probe gets a server error ([`is_server_problem`]). After the endpoint
-/// answered once, a later probe that cannot connect is a miss.
+/// when the first probe cannot reach the endpoint or gets a server error
+/// ([`is_server_problem`]): then nothing is known about the context, and
+/// the default budget must not be kept for the run. A later probe asks a
+/// route that the server can lack, so any failure there is a miss.
 pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
@@ -149,14 +150,15 @@ fn answer(
     match result {
         Ok(body) => Ok(Some(body)),
         Err(e @ SummarizeError::Transport(_)) if first => Err(e),
-        Err(e) if is_server_problem(&e) => Err(e),
+        Err(e) if first && is_server_problem(&e) => Err(e),
         Err(_) => Ok(None),
     }
 }
 
 /// A server error (5xx), a timeout (408) or a rate limit (429). The server
 /// has a problem now, so its answer tells nothing about the context. A
-/// route that the server does not have (404) is a miss.
+/// route that the server does not have (404, 501) is a miss.
 fn is_server_problem(e: &SummarizeError) -> bool {
-    matches!(e, SummarizeError::Http { status, .. } if *status >= 500 || matches!(status, 408 | 429))
+    matches!(e, SummarizeError::Http { status, .. }
+        if (*status >= 500 && *status != 501) || matches!(status, 408 | 429))
 }

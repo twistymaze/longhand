@@ -328,8 +328,20 @@ export function SessionPage({
   const regeneratingEarlier = !regenerating && detail?.regenerating === true;
   useEffect(() => {
     if (!regeneratingEarlier) return;
-    const timer = setInterval(() => void loadDetail(), REGENERATION_POLL_MS);
-    return () => clearInterval(timer);
+    // The next read starts after the last one ends. A read that starts
+    // first would make a slow read's result old, and the page would not
+    // see the end.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const poll = async () => {
+      await loadDetail().catch((e) => console.error("The note detail could not be read:", e));
+      if (!stopped) timer = setTimeout(() => void poll(), REGENERATION_POLL_MS);
+    };
+    timer = setTimeout(() => void poll(), REGENERATION_POLL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
   }, [regeneratingEarlier, loadDetail]);
   const earlierRan = useRef(false);
   useEffect(() => {
@@ -481,6 +493,9 @@ export function SessionPage({
         console.error("Regenerate failed:", e);
         setNotice({ tone: "negative", text: "The summary could not be updated." });
       } finally {
+        // A detail read during the run can say that it runs. Read it again
+        // first, or that old detail shows the status after the end.
+        await loadDetail().catch((e) => console.error("The note detail could not be read:", e));
         setRegenerating(false);
       }
       // Regenerate can propose a new title (R31).

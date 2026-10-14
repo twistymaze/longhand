@@ -94,8 +94,8 @@ pub enum SummarizeError {
 }
 
 impl SummarizeError {
-    /// The model's context is smaller than the budget assumed: shrink the
-    /// budget and chunk again rather than fail.
+    /// The prompt is longer than the model accepts: the model's context is
+    /// smaller than the budget. The run stops, and the user sets the limit.
     pub fn is_context_pressure(&self) -> bool {
         matches!(self, Self::ContextExceeded)
     }

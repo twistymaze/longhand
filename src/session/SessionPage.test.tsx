@@ -1231,6 +1231,30 @@ describe("SessionPage", () => {
       expect(screen.queryByText("Summarizing")).toBeNull();
     });
 
+    test("a detail read slower than the poll still ends the status of an earlier regeneration", async () => {
+      const e = entry("s");
+      let running = true;
+      let current = doc;
+      let reads = 0;
+      mockTauri({
+        load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
+        // Each read after the first takes longer than the poll interval.
+        session_detail: async () => {
+          const now = running;
+          if (reads++ > 0) await new Promise((r) => setTimeout(r, 1300));
+          return detail(e, { endpoint, regenerating: now });
+        },
+        session_document: () => current,
+        note_types: () => ({ types: [], default_type: null }),
+        list_tags: () => [],
+      });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      expect(await screen.findByText("Summarizing")).toBeTruthy();
+      running = false;
+      current = newDoc;
+      expect(await screen.findByText("The launch moves to May 12.", {}, { timeout: 6000 })).toBeTruthy();
+    }, 10000);
+
     test("when it completes, the new summary shows", async () => {
       const { succeed } = await start();
       await succeed();
