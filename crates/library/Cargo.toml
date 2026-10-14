@@ -21,4 +21,6 @@ pipeline = { path = "../pipeline" }
 models = { path = "../models" }
 # The settings file and the prompt files of the test storage folder.
 shared-settings = { path = "../shared-settings" }
+# The built-in prompts that the skill copies.
+summarize = { path = "../summarize" }
 tempfile = "3"

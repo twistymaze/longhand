@@ -31,7 +31,10 @@ use session_save::note_files::{new_session_md, write_record};
 use shared_settings::file::{
     AudioRemoval, SharedValue, default_settings, save_settings, settings_path,
 };
-use shared_settings::prompts::{prompts_folder, render_prompt_file, scan_prompts};
+use shared_settings::prompts::{
+    prompts_folder, render_prompt_file, render_prompt_file_with_title, scan_prompts,
+};
+use summarize::prompts::{Prompt, built_ins};
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -436,5 +439,93 @@ fn folder_names_match_the_shared_cases() {
             "{}",
             case["case"]
         );
+    }
+}
+
+/// The skill's copy of the built-in prompts.
+fn built_in_reference() -> String {
+    let path = repo().join("plugins/longhand/skills/longhand-notes/references/built-in-prompts.md");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The first fenced block in the section whose `## ` heading names `id` in
+/// a code span, or `None` when there is no such section or block.
+fn reference_block(reference: &str, id: &str) -> Option<String> {
+    let name = format!("`{id}`");
+    let mut lines = reference
+        .lines()
+        .skip_while(|line| !(line.starts_with("## ") && line.contains(&name)))
+        .skip(1);
+    for line in lines.by_ref() {
+        if line.starts_with("## ") {
+            return None;
+        }
+        if line.starts_with("```") {
+            break;
+        }
+    }
+    let mut block = String::new();
+    for line in lines {
+        if line == "```" {
+            return Some(block);
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+    None
+}
+
+/// The text after the front matter of the prompt file that Longhand writes
+/// for `prompt`.
+fn prompt_file_body(prompt: &Prompt) -> String {
+    let file =
+        render_prompt_file_with_title(&prompt.id, &prompt.name, &prompt.text, &prompt.title_text);
+    let (_, body) = file
+        .split_once("\n---\n\n")
+        .expect("a prompt file has front matter");
+    body.to_string()
+}
+
+#[test]
+fn the_skill_has_the_text_of_each_built_in_prompt() {
+    let reference = built_in_reference();
+    for prompt in built_ins() {
+        let block = reference_block(&reference, &prompt.id).unwrap_or_else(|| {
+            panic!(
+                "references/built-in-prompts.md has no block for the built-in prompt `{}`",
+                prompt.id
+            )
+        });
+        assert_eq!(
+            block,
+            prompt_file_body(&prompt),
+            "the block of `{}` in references/built-in-prompts.md is not the text of the app",
+            prompt.id
+        );
+    }
+}
+
+/// An agent copies a block after new front matter. Longhand reads the copy
+/// as a prompt with the text of the built-in prompt.
+#[test]
+fn a_copied_block_scans_as_the_built_in_prompt() {
+    let reference = built_in_reference();
+    let ids = [
+        "3c1e9a52-6f0b-4d27-9e84-b2a7c5d10f36",
+        "a94d0e17-2b8c-4f61-8d3a-57e6c0b2f489",
+    ];
+    for (prompt, id) in built_ins().iter().zip(ids) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let block = reference_block(&reference, &prompt.id).unwrap();
+        let file = format!("---\nid: {id}\nname: \"My copy\"\n---\n\n{block}");
+        let prompts = prompts_folder(root);
+        fs::create_dir_all(&prompts).unwrap();
+        write_atomic(&prompts, "My copy.md", file.as_bytes()).unwrap();
+
+        let scan = scan_prompts(root).unwrap();
+        let copy = scan.get(id).expect("the scan lists the copy by its id");
+        assert_eq!(copy.text, prompt.text, "`{}`", prompt.id);
+        assert_eq!(copy.title_text, prompt.title_text, "`{}`", prompt.id);
     }
 }
