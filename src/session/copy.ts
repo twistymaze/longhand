@@ -22,6 +22,12 @@ export function tabMarkdown(tab: CopyTab, doc: SessionDocument | null, notes: st
 const markdown = MarkdownIt("commonmark", { html: false }).disable(["image"]);
 markdown.use(strikethroughPlugin);
 markdown.use(highlightPlugin);
+// A code fence's language would become a class on the code element.
+const renderFence = markdown.renderer.rules.fence!;
+markdown.renderer.rules.fence = (tokens, idx, ...rest) => {
+  tokens[idx].info = "";
+  return renderFence(tokens, idx, ...rest);
+};
 
 // The run kinds other than "text" ("strong", "em", "code") are also the HTML tag names.
 const runsHtml = (content: Inline[]) =>

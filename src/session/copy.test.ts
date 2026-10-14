@@ -79,7 +79,7 @@ describe("tabHtml", () => {
 
   test("the HTML has no style or class", () => {
     for (const tab of ["summary", "transcript", "notes"] as const) {
-      const html = tabHtml(tab, "# A\n\n- **b** `c`\n\n~~d~~ ==e==");
+      const html = tabHtml(tab, "# A\n\n- **b** `c`\n\n~~d~~ ==e==\n\n```js\nf()\n```");
       expect(html).not.toMatch(/\s(style|class)=/);
     }
   });
