@@ -517,7 +517,11 @@ pub fn produce(
             let probed = if endpoint.context_limit.is_some() {
                 None
             } else {
-                runtime.block_on(context::probe(&client), control)?
+                // An endpoint that cannot be reached fails the stage before
+                // a plan is kept, so the next run probes it again.
+                runtime
+                    .block_on(context::probe(&client), control)?
+                    .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
             };
             let budget = context::resolve(endpoint.context_limit, probed, endpoint.learned_limit);
             log::info!(
