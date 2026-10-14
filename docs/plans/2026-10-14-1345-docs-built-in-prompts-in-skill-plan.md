@@ -11,7 +11,7 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** An agent that uses the `longhand-notes` skill can read the full text of the two built-in summary prompts. It can explain what the default summary does, and it can make a changed copy of a built-in prompt as a new custom prompt without the user opening Settings.
+- **Objective:** An agent that uses the `longhand-notes` skill can read the full text of the two built-in summary prompts. It can explain what the default summary does, and it can make a changed copy of a built-in prompt as a new summary prompt without the user opening Settings.
 - **Means:** a reference file in the skill holds a copy of the text, and a Rust test keeps the copy equal to the app (KTD1, KTD2).
 - **Authority:** this plan, then `CLAUDE.md`, then `docs/development-workflow.md`.
 - **Stop conditions:** stop and ask when the copy cannot be made byte-equal to the app text, or when the change needs an app code change other than a test or a code comment.
@@ -53,7 +53,7 @@ The built-in prompts have no file in the storage folder. Their text is only in `
 
 ### Scope Boundaries
 
-- The fixed rules that Longhand adds to each prompt (data rule, naming rule) stay as a description in `references/prompts.md`. They are not copied, because a user prompt cannot change them.
+- The fixed rules that Longhand adds to each prompt (data rule, naming rule) stay as a description in `references/prompts.md`. They are not copied, because a summary prompt cannot change them.
 - No change to the app's behavior, to Settings, or to the built-in prompt text.
 
 #### Deferred to Follow-Up Work
@@ -118,6 +118,7 @@ The built-in prompts have no file in the storage folder. Their text is only in `
   1. In `prompts.md`, change the opening paragraph: the built-in prompts have no file, but `references/built-in-prompts.md` has their text.
   2. Add the steps for "Make a changed copy of a built-in prompt" next to "Make a new prompt". Keep the existing rule: always a new id.
   3. Add one row to the task table in `SKILL.md`.
+  4. Change the opening rule of `SKILL.md` that stops when there is no `.longhand/library` file: reading `references/built-in-prompts.md` needs no storage folder. Each task that reads or edits user files still needs one.
 - **Patterns to follow:** the step lists in `references/prompts.md`.
 - **Test expectation:** none -- Markdown guidance only; U1's tests cover the file that it points to.
 - **Verification:** each link and file name in the changed text names a file that exists.
