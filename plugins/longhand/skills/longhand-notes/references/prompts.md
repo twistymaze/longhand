@@ -1,6 +1,6 @@
 # Summary prompts
 
-A summary prompt tells the model what a summary contains and how it is organized. Each custom prompt is one file in `.longhand/prompts/`. Two prompts are built in, "Topic summary" (id `topic-summary`) and "Play-by-play summary" (id `play-by-play`). They have no file, and you cannot change them.
+A summary prompt tells the model what a summary contains and how it is organized. Each custom prompt is one file in `.longhand/prompts/`. Two prompts are built in, "Topic summary" (id `topic-summary`) and "Play-by-play summary" (id `play-by-play`). They have no file, and you cannot change them. `references/built-in-prompts.md` has their text and their title instructions.
 
 ## The prompt file
 
@@ -30,6 +30,16 @@ Use the main action item as the title.
 4. Compare.
 
 To make a prompt from an existing prompt, copy its text into a new file, and always write a new id from `new_id.py`. A copy with the id of its original is a conflict, and Longhand shows the two files as one prompt.
+
+## Make a changed copy of a built-in prompt
+
+1. Make a snapshot.
+2. Get a new id: `python3 SKILL_DIR/scripts/new_id.py`.
+3. Write a new file in `.longhand/prompts/` with the new id and a new name in the frontmatter. After the frontmatter and one empty line, put the block of the built-in prompt from `references/built-in-prompts.md`, with no change.
+4. Make the change that the user asked for in the text or in the title instructions.
+5. Compare.
+
+To use the copy, put its id in `active_summary_prompt` or in `note_type_prompts` (see below).
 
 ## Change the text
 

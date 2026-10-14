@@ -7,7 +7,7 @@ description: Read and change the notes and shared settings in a Longhand storage
 
 Longhand records a meeting or a conversation and saves each note as plain files in a storage folder. This skill tells you the layout of that folder, the files that you can edit, and the steps for each permitted edit.
 
-A storage folder has the file `.longhand/library`. Start in the root of the storage folder. If the folder has no `.longhand/library` file, it is not a storage folder: stop, and ask the user for the path.
+A storage folder has the file `.longhand/library`. Start in the root of the storage folder. If the folder has no `.longhand/library` file, it is not a storage folder: stop, and ask the user for the path. One task needs no storage folder: to read the text of a built-in prompt, read `references/built-in-prompts.md`.
 
 ## Rules
 
@@ -60,6 +60,7 @@ A script that prints "Stopped:" did no work. Read the reason, and correct it.
 | Add, remove or change tags | `references/tags.md` |
 | Change the type of a note, or add, rename or remove a note type | `references/types.md` |
 | Make, change, rename or delete a summary prompt | `references/prompts.md` |
+| Read the text of a built-in prompt | `references/built-in-prompts.md` |
 | Change a shared setting or the Background | `references/settings.md` |
 
 ## Scripts
