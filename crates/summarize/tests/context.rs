@@ -27,7 +27,9 @@ async fn lm_studio_reports_the_loaded_context() {
         ),
     )]))
     .await;
-    let budget = context::probe(&client(&mock.base, "qwen3-8b")).await;
+    let budget = context::probe(&client(&mock.base, "qwen3-8b"))
+        .await
+        .unwrap();
     assert_eq!(
         budget,
         Some(Budget {
@@ -51,7 +53,7 @@ async fn litellm_reports_the_input_limit_not_the_output_cap() {
         ),
     )]))
     .await;
-    let budget = context::probe(&client(&mock.base, "claude")).await;
+    let budget = context::probe(&client(&mock.base, "claude")).await.unwrap();
     assert_eq!(
         budget,
         Some(Budget {
@@ -80,7 +82,7 @@ async fn a_row_without_context_metadata_falls_through_to_the_next_probe() {
         ),
     ]))
     .await;
-    let budget = context::probe(&client(&mock.base, "local")).await;
+    let budget = context::probe(&client(&mock.base, "local")).await.unwrap();
     assert_eq!(
         budget,
         Some(Budget {
@@ -101,7 +103,7 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
     )]))
     .await;
     assert_eq!(
-        context::probe(&client(&llama.base, "any")).await,
+        context::probe(&client(&llama.base, "any")).await.unwrap(),
         Some(Budget {
             limit: 16_384,
             source: BudgetSource::LlamaCpp
@@ -116,7 +118,7 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
     )]))
     .await;
     assert_eq!(
-        context::probe(&client(&router.base, "x/y")).await,
+        context::probe(&client(&router.base, "x/y")).await.unwrap(),
         Some(Budget {
             limit: 1_000_000,
             source: BudgetSource::Openrouter
@@ -127,7 +129,7 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
 #[tokio::test]
 async fn a_server_answering_no_probe_resolves_to_the_default() {
     let mock = serve(HashMap::new()).await;
-    let probed = context::probe(&client(&mock.base, "m")).await;
+    let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
     assert_eq!(probed, None);
     assert_eq!(
         context::resolve(None, probed, None),
@@ -136,6 +138,45 @@ async fn a_server_answering_no_probe_resolves_to_the_default() {
             source: BudgetSource::Default
         }
     );
+}
+
+#[tokio::test]
+async fn an_endpoint_that_cannot_be_reached_is_an_error_not_the_default() {
+    // A Mac that wakes from sleep for a few seconds can have no network.
+    // That is not an endpoint with no context data, so the caller must not
+    // use the default budget for the run.
+    let probed = context::probe(&client(&common::closed_base(), "m")).await;
+    assert!(
+        matches!(probed, Err(summarize::SummarizeError::Transport(_))),
+        "{probed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_later_probe_that_fails_after_an_answer_is_a_miss() {
+    // The first probe got an answer, so the endpoint is reachable. A later
+    // probe that the server drops tells nothing more about the context.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut first = true;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            if first {
+                first = false;
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 404 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            }
+            drop(socket);
+        }
+    });
+    let probed = context::probe(&client(&base, "m")).await.unwrap();
+    assert_eq!(probed, None);
 }
 
 #[test]

@@ -83,6 +83,9 @@ pub struct SummaryEndpoint {
     pub context_limit: Option<u32>,
     /// A limit an earlier rejection taught for this endpoint and model.
     pub learned_limit: Option<u32>,
+    /// The waits before each new try of a request that could not reach the
+    /// endpoint ([`summarize::client::RETRY_WAITS`] in the app).
+    pub retry_waits: Vec<Duration>,
 }
 
 /// The layer structure a run committed to, so a resumed run reuses the
@@ -206,6 +209,9 @@ pub fn send_title_request(
     request: &TitleRequest,
     control: &dyn Control,
 ) -> Result<Result<String, String>, StageError> {
+    // The title job holds the processing permit, and a title is optional.
+    // The request is sent once, with no retry waits, so an endpoint that
+    // cannot be reached does not stop the processing of other notes.
     let client = match Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
@@ -488,7 +494,8 @@ pub fn produce(
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
     })
-    .map_err(|e| StageError::Failed(e.to_string()))?;
+    .map_err(|e| StageError::Failed(e.to_string()))?
+    .with_retry_waits(endpoint.retry_waits.clone());
     if client.crosses_network_unencrypted() {
         log::warn!(
             "summarizing {session_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
@@ -517,7 +524,11 @@ pub fn produce(
             let probed = if endpoint.context_limit.is_some() {
                 None
             } else {
-                runtime.block_on(context::probe(&client), control)?
+                // An endpoint that cannot be reached fails the stage before
+                // a plan is kept, so the next run probes it again.
+                runtime
+                    .block_on(context::probe(&client), control)?
+                    .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
             };
             let budget = context::resolve(endpoint.context_limit, probed, endpoint.learned_limit);
             log::info!(
@@ -847,27 +858,30 @@ impl<'a> Calls<'a> {
 
     /// Store the title turn of the final call `done` as the pending title
     /// request (KTD3), unless no title turn is due: the user set a title, a
-    /// Transcribe Again run keeps the title (R16, KTD14), or a title was
-    /// proposed before. The stage sends no call here. When the context
+    /// Transcribe Again run keeps the title that the note has (R16, KTD14),
+    /// or a title was proposed before. A Transcribe Again of a note with no
+    /// title proposes one. The stage sends no call here. When the context
     /// leaves less than [`prompts::TITLE_REPLY_MIN`] for the reply (KTD12),
     /// the stage stores no request and the summary still completes (R14).
     fn store_title_request(&self, done: &Final) -> Result<(), StageError> {
         let proposed =
             checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, TITLE)?
                 .is_some();
-        let (user_title, again) = {
+        let (user_title, keeps_title) = {
             let guard = lock(self.store);
+            let title = guard.title(self.session_id)?;
             (
-                guard
-                    .title(self.session_id)?
+                title
+                    .as_ref()
                     .is_some_and(|t| t.source == TitleSource::User),
-                guard
-                    .transcribe_again_marks(self.session_id)?
-                    .model
-                    .is_some(),
+                title.is_some()
+                    && guard
+                        .transcribe_again_marks(self.session_id)?
+                        .model
+                        .is_some(),
             )
         };
-        if proposed || user_title || again {
+        if proposed || user_title || keeps_title {
             return delete_title_request(self.store, self.session_id);
         }
         let messages =

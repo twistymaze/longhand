@@ -468,6 +468,7 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         credential: Some("sk-secret-test".into()),
         context_limit: None,
         learned_limit: None,
+        retry_waits: Vec::new(),
     }
 }
 
@@ -4794,6 +4795,76 @@ async fn a_resumed_summary_sends_no_final_call_again_and_stores_the_same_title_t
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_summary_that_cannot_reach_the_endpoint_keeps_no_budget_plan() {
+    // A Mac woke from sleep for a few seconds with no network, and the
+    // summary ran then. The probe could not reach the endpoint, so the run
+    // must not keep a plan with the default budget: a later Regenerate
+    // Summary probes the endpoint again.
+    let r = rig().await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&http::closed_base())));
+    let folder = saved_session(&r, None).await;
+    assert!(!summary_is_complete(&folder));
+    let plan = r
+        .store
+        .lock()
+        .unwrap()
+        .checkpoint_value("s", Stage::Summarize, pipeline::summarize::PLAN)
+        .unwrap();
+    assert_eq!(plan, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
+    // The same wake with no network, but the network comes back while the
+    // summary waits to try again: the note is saved with its summary.
+    let r = rig().await;
+    let port = http::free_port();
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        retry_waits: vec![std::time::Duration::from_millis(50); 100],
+        ..endpoint(&format!("http://127.0.0.1:{port}/v1"))
+    }));
+    let events = Arc::clone(&r.events);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        // Each connection is refused, as without a network, until some time
+        // after the summary starts. Then the endpoint answers.
+        let summarizing = || {
+            events.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    RunnerEvent::StageStarted {
+                        stage: Stage::Summarize,
+                        ..
+                    }
+                )
+            })
+        };
+        while !summarizing() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let _ = sender.send(http::serve_on(
+            listener,
+            std::collections::HashMap::from([(
+                "/v1/chat/completions",
+                http::Reply::Json(200, http::completion("A short summary.")),
+            )]),
+        ));
+    });
+    let folder = saved_session(&r, None).await;
+    assert!(summary_is_complete(&folder));
+    assert_eq!(
+        summary_at(&folder.join("summary.md")).body.trim(),
+        "A short summary."
+    );
+    let mock = receiver.await.unwrap();
+    assert_eq!(chat_calls(&mock).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split() {
     // KTD4.
     use summarize::tokens::{reply_reserve, with_margin};
@@ -6185,19 +6256,41 @@ async fn transcribe_again_stores_no_title_request_and_keeps_the_folder_name() {
     let r = rig().await;
     let title = title_reply("First");
     let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
-    let folder = saved_session(&r, None).await;
-    // The title job of the first run sent its request (U6).
-    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    saved_session(&r, None).await;
+    // The title job of the first run proposes its title (U6).
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().text, "First");
+    let folder = saved_folder(&r, "s");
     let before = completions(&mock).len();
 
     confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(completions(&mock).len(), before + 1, "one summary call");
-    assert!(title_calls(&mock).is_empty());
     assert_eq!(pending(&r), None);
-    assert_eq!(title_of(&r), None);
+    assert_eq!(title_of(&r).unwrap().source, TitleSource::Proposed);
+    assert_eq!(title_of(&r).unwrap().text, "First");
     assert_eq!(saved_folder(&r, "s"), folder);
-    assert_eq!(destination_entries(&r), [name_for(None)]);
+    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transcribe_again_on_a_note_with_no_title_stores_a_title_request() {
+    // The first run had no title: its summary failed, so no title turn was
+    // stored. Transcribe Again has no title to keep, so it proposes one.
+    let r = rig().await;
+    let title = title_reply("First");
+    let _mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    assert_eq!(title_of(&r), None);
+
+    confirm_again(&r).unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(pending(&r).is_some(), "a title request for the note");
+    r.runner.run_titles().await;
+    assert_eq!(title_of(&r).unwrap().source, TitleSource::Proposed);
+    assert_eq!(title_of(&r).unwrap().text, "First");
+    assert_eq!(destination_entries(&r), [name_for(Some("First"))]);
 }
 
 /// The transcript that the stored checkpoints of "s" give.

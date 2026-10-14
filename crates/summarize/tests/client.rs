@@ -48,6 +48,109 @@ async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
 }
 
 #[tokio::test]
+async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure() {
+    // A Mac that wakes from sleep can have no network for some seconds. The
+    // request tries again after each wait, and the endpoint answers later.
+    let port = common::free_port();
+    let client = Client::new(endpoint(&format!("http://127.0.0.1:{port}/v1"), None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(50); 40]);
+    tokio::spawn(async move {
+        // Until then, each connection is refused.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
+        // The server task owns the listener and keeps it open.
+        common::serve_on(
+            listener,
+            HashMap::from([("/v1/chat/completions", Reply::Json(200, completion("back")))]),
+        );
+    });
+    let reply = client.complete(&hello(), 100).await.unwrap();
+    assert_eq!(reply.text, "back");
+}
+
+#[tokio::test]
+async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
+    // The endpoint read the request, so the model can be at work on it.
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&connections);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            drop(socket);
+        }
+    });
+    let client = Client::new(endpoint(&base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(10); 3]);
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
+    assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_request_with_no_retry_waits_fails_at_once_without_the_network() {
+    let client = Client::new(endpoint(&common::closed_base(), None)).unwrap();
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_reply_that_breaks_after_it_starts_is_not_sent_again() {
+    // The endpoint received the prompt and began to answer. A new try would
+    // make the model write the reply again.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&connections);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"cho")
+                .await;
+            drop(socket);
+        }
+    });
+    let client = Client::new(endpoint(&base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(10); 3]);
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
+    assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_request_that_reaches_the_endpoint_is_not_sent_again() {
+    // Only a failure to reach the endpoint is tried again. An answer, also
+    // an error status, is the result.
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(500, r#"{"error":"down"}"#.into()),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(10); 3]);
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 500, .. }),
+        "{err:?}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn an_endpoint_that_never_answers_hits_the_deadline() {
     let mock = serve(HashMap::from([("/v1/chat/completions", Reply::Hang)])).await;
     let quick = Limits {
