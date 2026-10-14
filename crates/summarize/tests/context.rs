@@ -27,7 +27,9 @@ async fn lm_studio_reports_the_loaded_context() {
         ),
     )]))
     .await;
-    let budget = context::probe(&client(&mock.base, "qwen3-8b")).await.unwrap();
+    let budget = context::probe(&client(&mock.base, "qwen3-8b"))
+        .await
+        .unwrap();
     assert_eq!(
         budget,
         Some(Budget {
