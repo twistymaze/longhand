@@ -963,6 +963,12 @@ impl ProcessingManager {
         &self.own_runs
     }
 
+    /// True while the summary of `session_id` is regenerated or waits to
+    /// be. The regeneration continues when the user leaves the note.
+    pub fn is_regenerating(&self, session_id: &str) -> bool {
+        self.runner.is_regenerating(session_id)
+    }
+
     /// What the latest library scans found about each note.
     pub fn library_status(&self) -> &library::status::LibraryStatus {
         &self.library_status

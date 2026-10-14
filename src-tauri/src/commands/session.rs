@@ -433,6 +433,9 @@ pub struct SessionDetail {
     pub live_transcript: bool,
     /// A Transcribe Again run waits or runs (KTD14). It has no live text.
     pub transcribe_again: bool,
+    /// A summary regeneration waits or runs. It continues when the user
+    /// leaves the note, so the page reads it here when the user comes back.
+    pub regenerating: bool,
     /// The same stage failed again after a Retry. The next Retry starts
     /// over from the recorded audio, after the user confirms.
     pub retry_starts_over: bool,
@@ -848,6 +851,7 @@ pub fn session_detail(
         asr_model: record.asr_model.clone(),
         live_transcript: record.live_transcript == Some(true),
         transcribe_again: again.model.is_some(),
+        regenerating: processing.is_regenerating(&session_id),
         transcribe_again_error: again.error,
         retry_starts_over: pipeline::runner::retry_starts_over(&shared, &session_id).map_err(e)?,
         summary_not_updated: again.summary_error,
