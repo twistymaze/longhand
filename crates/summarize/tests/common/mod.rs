@@ -36,7 +36,13 @@ pub struct Mock {
 }
 
 pub async fn serve(routes: HashMap<&'static str, Reply>) -> Mock {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    serve_on(TcpListener::bind("127.0.0.1:0").await.unwrap(), routes)
+}
+
+/// Serve `routes` on `listener`, for a test that starts the server on a
+/// port that it chose before.
+#[allow(dead_code)]
+pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> Mock {
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);

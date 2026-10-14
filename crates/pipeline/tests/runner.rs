@@ -468,6 +468,7 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         credential: Some("sk-secret-test".into()),
         context_limit: None,
         learned_limit: None,
+        retry_waits: Vec::new(),
     }
 }
 
@@ -4818,6 +4819,43 @@ async fn a_summary_that_cannot_reach_the_endpoint_keeps_no_budget_plan() {
         .checkpoint_value("s", Stage::Summarize, pipeline::summarize::PLAN)
         .unwrap();
     assert_eq!(plan, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
+    // The same wake with no network, but the network comes back while the
+    // summary waits to try again: the note is saved with its summary.
+    let r = rig().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        retry_waits: vec![std::time::Duration::from_millis(50); 5],
+        ..endpoint(&base)
+    }));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        // The first three connections close with no answer, as without a
+        // network. Then the endpoint answers.
+        for _ in 0..3 {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        }
+        let _ = sender.send(http::serve_on(
+            listener,
+            std::collections::HashMap::from([(
+                "/v1/chat/completions",
+                http::Reply::Json(200, http::completion("A short summary.")),
+            )]),
+        ));
+    });
+    let folder = saved_session(&r, None).await;
+    assert!(summary_is_complete(&folder));
+    assert_eq!(
+        summary_at(&folder.join("summary.md")).body.trim(),
+        "A short summary."
+    );
+    let mock = receiver.await.unwrap();
+    assert_eq!(chat_calls(&mock).len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

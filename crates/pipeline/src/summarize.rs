@@ -83,6 +83,9 @@ pub struct SummaryEndpoint {
     pub context_limit: Option<u32>,
     /// A limit an earlier rejection taught for this endpoint and model.
     pub learned_limit: Option<u32>,
+    /// The waits before each new try of a request that could not reach the
+    /// endpoint ([`summarize::client::RETRY_WAITS`] in the app).
+    pub retry_waits: Vec<Duration>,
 }
 
 /// The layer structure a run committed to, so a resumed run reuses the
@@ -211,7 +214,7 @@ pub fn send_title_request(
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
     }) {
-        Ok(client) => client,
+        Ok(client) => client.with_retry_waits(endpoint.retry_waits.clone()),
         Err(e) => return Ok(Err(e.to_string())),
     };
     if client.crosses_network_unencrypted() {
@@ -488,7 +491,8 @@ pub fn produce(
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
     })
-    .map_err(|e| StageError::Failed(e.to_string()))?;
+    .map_err(|e| StageError::Failed(e.to_string()))?
+    .with_retry_waits(endpoint.retry_waits.clone());
     if client.crosses_network_unencrypted() {
         log::warn!(
             "summarizing {session_id} over plain HTTP to {}: the transcript crosses the network unencrypted",

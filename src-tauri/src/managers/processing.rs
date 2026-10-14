@@ -383,6 +383,7 @@ fn endpoint_from_settings(
         model: s.endpoint_model,
         credential,
         context_limit: s.context_limit_tokens,
+        retry_waits: summarize::client::RETRY_WAITS.to_vec(),
     })
 }
 

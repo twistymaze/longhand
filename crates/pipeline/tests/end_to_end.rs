@@ -71,6 +71,7 @@ impl EngineProvider for RealModel {
                 credential: var("LONGHAND_SUMMARY_KEY"),
                 context_limit: var("LONGHAND_SUMMARY_CONTEXT").map(|v| v.parse().unwrap()),
                 learned_limit: None,
+                retry_waits: Vec::new(),
             }),
             _ => Err(pipeline::EndpointProblem::Unconfigured(
                 "no summary endpoint in the environment".into(),

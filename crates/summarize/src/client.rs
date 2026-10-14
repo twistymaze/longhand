@@ -113,6 +113,24 @@ pub struct Completion {
     pub finish_reason: Option<String>,
 }
 
+/// The waits before each new try of a request that could not reach the
+/// endpoint: about 7 minutes in total. A Mac can wake from sleep for some
+/// seconds with no network. The time of a wait does not advance while the
+/// Mac sleeps, so a request that started in such a wake tries again after
+/// the next full wake.
+pub const RETRY_WAITS: [Duration; 10] = [
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+    Duration::from_secs(60),
+];
+
 pub struct Client {
     endpoint: Endpoint,
     base: Url,
@@ -121,6 +139,9 @@ pub struct Client {
     probe_http: reqwest::Client,
     completion: Limits,
     probe: Limits,
+    /// The waits before each new try of a request that could not reach the
+    /// endpoint. Empty: a request is sent once.
+    retry_waits: Vec<Duration>,
 }
 
 impl Client {
@@ -154,7 +175,15 @@ impl Client {
             probe_http,
             completion,
             probe,
+            retry_waits: Vec::new(),
         })
+    }
+
+    /// Try a request again after each of `waits` when it cannot reach the
+    /// endpoint. A request that reaches the endpoint is never sent again.
+    pub fn with_retry_waits(mut self, waits: Vec<Duration>) -> Self {
+        self.retry_waits = waits;
+        self
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -240,7 +269,36 @@ impl Client {
         parse_completion(&reply)
     }
 
+    /// Send `request`, and send it again after each retry wait while it
+    /// cannot reach the endpoint.
     async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        limits: &Limits,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), SummarizeError> {
+        let mut waits = self.retry_waits.iter();
+        loop {
+            let attempt = request.try_clone().ok_or_else(|| {
+                SummarizeError::Transport("the request cannot be sent again".into())
+            })?;
+            match self.send_once(attempt, limits).await {
+                Err(SummarizeError::Transport(e)) => {
+                    let Some(wait) = waits.next() else {
+                        return Err(SummarizeError::Transport(e));
+                    };
+                    log::warn!(
+                        "could not reach {}: {e}; trying again in {} ms",
+                        self.host(),
+                        wait.as_millis()
+                    );
+                    tokio::time::sleep(*wait).await;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn send_once(
         &self,
         request: reqwest::RequestBuilder,
         limits: &Limits,
