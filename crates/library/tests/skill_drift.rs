@@ -464,6 +464,7 @@ fn reference_block(reference: &str, id: &str) -> Option<String> {
             break;
         }
     }
+    // The iterator is now after the opening fence.
     let mut block = String::new();
     for line in lines {
         if line == "```" {
@@ -510,11 +511,9 @@ fn the_skill_has_the_text_of_each_built_in_prompt() {
 #[test]
 fn a_copied_block_scans_as_the_built_in_prompt() {
     let reference = built_in_reference();
-    let ids = [
-        "3c1e9a52-6f0b-4d27-9e84-b2a7c5d10f36",
-        "a94d0e17-2b8c-4f61-8d3a-57e6c0b2f489",
-    ];
-    for (prompt, id) in built_ins().iter().zip(ids) {
+    for (n, prompt) in built_ins().iter().enumerate() {
+        let id = format!("00000000-0000-4000-8000-{n:012}");
+        let id = id.as_str();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let block = reference_block(&reference, &prompt.id).unwrap();
