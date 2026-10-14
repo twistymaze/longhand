@@ -5,8 +5,13 @@ mod common;
 use std::collections::HashMap;
 
 use common::{Reply, serve};
+use summarize::client::{Label, RequestKind};
 use summarize::context::{self, DEFAULT_LIMIT};
 use summarize::{Budget, BudgetSource, Client, Endpoint};
+
+fn probe_label() -> Label {
+    Label::note("s1", RequestKind::Probe)
+}
 
 fn client(base: &str, model: &str) -> Client {
     Client::new(Endpoint {
@@ -27,7 +32,7 @@ async fn lm_studio_reports_the_loaded_context() {
         ),
     )]))
     .await;
-    let budget = context::probe(&client(&mock.base, "qwen3-8b"))
+    let budget = context::probe(&client(&mock.base, "qwen3-8b"), &probe_label())
         .await
         .unwrap();
     assert_eq!(
@@ -53,7 +58,9 @@ async fn litellm_reports_the_input_limit_not_the_output_cap() {
         ),
     )]))
     .await;
-    let budget = context::probe(&client(&mock.base, "claude")).await.unwrap();
+    let budget = context::probe(&client(&mock.base, "claude"), &probe_label())
+        .await
+        .unwrap();
     assert_eq!(
         budget,
         Some(Budget {
@@ -82,7 +89,9 @@ async fn a_row_without_context_metadata_falls_through_to_the_next_probe() {
         ),
     ]))
     .await;
-    let budget = context::probe(&client(&mock.base, "local")).await.unwrap();
+    let budget = context::probe(&client(&mock.base, "local"), &probe_label())
+        .await
+        .unwrap();
     assert_eq!(
         budget,
         Some(Budget {
@@ -103,7 +112,9 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
     )]))
     .await;
     assert_eq!(
-        context::probe(&client(&llama.base, "any")).await.unwrap(),
+        context::probe(&client(&llama.base, "any"), &probe_label())
+            .await
+            .unwrap(),
         Some(Budget {
             limit: 16_384,
             source: BudgetSource::LlamaCpp
@@ -118,7 +129,9 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
     )]))
     .await;
     assert_eq!(
-        context::probe(&client(&router.base, "x/y")).await.unwrap(),
+        context::probe(&client(&router.base, "x/y"), &probe_label())
+            .await
+            .unwrap(),
         Some(Budget {
             limit: 1_000_000,
             source: BudgetSource::Openrouter
@@ -129,7 +142,9 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
 #[tokio::test]
 async fn a_server_answering_no_probe_resolves_to_the_default() {
     let mock = serve(HashMap::new()).await;
-    let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
+    let probed = context::probe(&client(&mock.base, "m"), &probe_label())
+        .await
+        .unwrap();
     assert_eq!(probed, None);
     assert_eq!(
         context::resolve(None, probed),
@@ -145,7 +160,7 @@ async fn an_endpoint_that_cannot_be_reached_is_an_error_not_the_default() {
     // A Mac that wakes from sleep for a few seconds can have no network.
     // That is not an endpoint with no context data, so the caller must not
     // use the default budget for the run.
-    let probed = context::probe(&client(&common::closed_base(), "m")).await;
+    let probed = context::probe(&client(&common::closed_base(), "m"), &probe_label()).await;
     assert!(
         matches!(probed, Err(summarize::SummarizeError::Transport(_))),
         "{probed:?}"
@@ -163,7 +178,7 @@ async fn a_server_error_from_a_probe_is_an_error_not_the_default() {
             Reply::Json(status, "{}".into()),
         )]))
         .await;
-        let probed = context::probe(&client(&mock.base, "m")).await;
+        let probed = context::probe(&client(&mock.base, "m"), &probe_label()).await;
         assert!(
             matches!(probed, Err(summarize::SummarizeError::Http { status: s, .. }) if s == status),
             "HTTP {status}: {probed:?}"
@@ -182,7 +197,9 @@ async fn a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss(
         ("/v1/models", Reply::Json(200, vllm.into())),
     ]))
     .await;
-    let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
+    let probed = context::probe(&client(&mock.base, "m"), &probe_label())
+        .await
+        .unwrap();
     assert_eq!(
         probed,
         Some(Budget {
@@ -197,7 +214,9 @@ async fn a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss(
     )]))
     .await;
     assert_eq!(
-        context::probe(&client(&mock.base, "m")).await.unwrap(),
+        context::probe(&client(&mock.base, "m"), &probe_label())
+            .await
+            .unwrap(),
         None
     );
 }
@@ -225,7 +244,9 @@ async fn a_later_probe_that_fails_after_an_answer_is_a_miss() {
             drop(socket);
         }
     });
-    let probed = context::probe(&client(&base, "m")).await.unwrap();
+    let probed = context::probe(&client(&base, "m"), &probe_label())
+        .await
+        .unwrap();
     assert_eq!(probed, None);
 }
 

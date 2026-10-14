@@ -20,6 +20,8 @@ pub enum Reply {
     Hang,
     /// Answer with a function of the request body.
     With(Responder),
+    /// Wait for the time, then answer with the status and the JSON body.
+    Later(std::time::Duration, u16, String),
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +87,10 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
                         return;
                     }
                     Reply::Json(status, body) => (status, String::new(), body),
+                    Reply::Later(wait, status, body) => {
+                        tokio::time::sleep(wait).await;
+                        (status, String::new(), body)
+                    }
                     Reply::Redirect(status, location) => {
                         (status, format!("Location: {location}\r\n"), String::new())
                     }

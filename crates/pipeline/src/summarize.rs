@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
-use summarize::client::Message;
+use summarize::client::{Label, Message, RequestKind};
 use summarize::prompts::{Details, UserText};
 use summarize::{Budget, BudgetSource, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
@@ -237,7 +237,11 @@ pub fn send_title_request(
     }
     let runtime = Runtime::new()?;
     control.proceed()?;
-    let reply = runtime.block_on(client.complete(&request.messages, request.cap), control)?;
+    let label = Label::note(session_id, RequestKind::Title);
+    let reply = runtime.block_on(
+        client.complete(&label, &request.messages, request.cap),
+        control,
+    )?;
     Ok(reply
         .map(|completion| clean_title(&completion.text))
         .map_err(|e| e.to_string()))
@@ -543,7 +547,10 @@ pub fn produce(
                 // An endpoint that cannot be reached fails the stage before
                 // a plan is kept, so the next run probes it again.
                 runtime
-                    .block_on(context::probe(&client), control)?
+                    .block_on(
+                        context::probe(&client, &Label::note(session_id, RequestKind::Probe)),
+                        control,
+                    )?
                     .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
             };
             let budget = context::resolve(endpoint.context_limit, probed);
@@ -949,9 +956,18 @@ impl<'a> Calls<'a> {
             return Ok(done);
         }
         self.control.proceed()?;
-        let reply = self
-            .runtime
-            .block_on(self.client.complete(messages, room.reserve), self.control)?;
+        let kind = if key == WHOLE {
+            RequestKind::Single
+        } else if layer == 0 {
+            RequestKind::Chunk
+        } else {
+            RequestKind::Merge
+        };
+        let label = Label::note(self.session_id, kind);
+        let reply = self.runtime.block_on(
+            self.client.complete(&label, messages, room.reserve),
+            self.control,
+        )?;
         match reply {
             Ok(completion) => {
                 checkpoint::put(

@@ -3,12 +3,18 @@
 //! The client follows no redirects: a 3xx is a typed failure naming where
 //! it pointed, so nothing the app does by itself sends the transcript or
 //! the credential to a host the user did not enter. Every request runs
-//! under connect, response, idle and total deadlines with a size cap,
-//! because the queue runs one stage at a time and an endpoint that accepts
-//! a connection and never answers would otherwise hold every later session.
+//! under connect, response, idle and total deadlines with a size cap. The
+//! summary queue sends one request at a time, so an endpoint that accepts a
+//! connection and never answers would otherwise stop the summary queue.
+//! The audio stages of other notes do not wait for the summary queue.
+//!
+//! Each request writes one log line when it starts and one when it ends
+//! (R13). The lines give the [`Label`] of the caller, the host, the model,
+//! the duration and the HTTP status or the kind of error. They never give
+//! the URL path, the credential, the prompt or the reply.
 
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::Url;
 use serde::Serialize;
@@ -41,9 +47,11 @@ impl Limits {
     pub fn completion() -> Self {
         Self {
             connect: Duration::from_secs(10),
-            response: Duration::from_secs(600),
+            // A slow model can take more than 10 minutes to write a summary
+            // (R7). `total` adds time to read the reply.
+            response: Duration::from_secs(30 * 60),
             idle: Duration::from_secs(60),
-            total: Duration::from_secs(900),
+            total: Duration::from_secs(32 * 60),
             max_bytes: 8 << 20,
         }
     }
@@ -56,6 +64,113 @@ impl Limits {
             total: Duration::from_secs(15),
             max_bytes: 4 << 20,
         }
+    }
+}
+
+/// The kind of a request to the endpoint. The request log names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKind {
+    /// A request for the model's context limit.
+    Probe,
+    /// The summary of one part of a transcript that does not fit in one call.
+    Chunk,
+    /// A request that combines the summaries of the parts.
+    Merge,
+    /// The summary of a transcript that fits in one call.
+    Single,
+    /// The title turn after a summary.
+    Title,
+    /// The request for the list of models in Settings.
+    Models,
+}
+
+impl RequestKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Probe => "probe",
+            Self::Chunk => "chunk",
+            Self::Merge => "merge",
+            Self::Single => "single",
+            Self::Title => "title",
+            Self::Models => "models",
+        }
+    }
+}
+
+/// What the request log says about a request: the note, the kind of
+/// request and the time that the request waited in the queue before it
+/// was sent. The caller supplies the label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Label {
+    /// The note id. `None` for a request that is not for a note.
+    pub note: Option<String>,
+    pub kind: RequestKind,
+    /// The time from when the caller put the job in the queue until the
+    /// job started.
+    pub queued: Duration,
+}
+
+impl Label {
+    /// A request for the note `id` that did not wait in a queue.
+    pub fn note(id: &str, kind: RequestKind) -> Self {
+        Self {
+            note: Some(id.to_string()),
+            kind,
+            queued: Duration::ZERO,
+        }
+    }
+
+    /// A request that is not for a note.
+    pub fn without_note(kind: RequestKind) -> Self {
+        Self {
+            note: None,
+            kind,
+            queued: Duration::ZERO,
+        }
+    }
+
+    /// The same label, with `queued` as the time in the queue.
+    pub fn queued(mut self, queued: Duration) -> Self {
+        self.queued = queued;
+        self
+    }
+}
+
+/// The log text at the start of a request. It has no URL path, no
+/// credential, no prompt and no reply text.
+fn start_line(label: &Label, host: &str, model: &str) -> String {
+    format!("request start: {}", describe(label, host, model))
+}
+
+/// The log text at the end of a request. `result` is the HTTP status or
+/// the kind of error, from [`result_text`].
+fn end_line(label: &Label, host: &str, model: &str, elapsed: Duration, result: &str) -> String {
+    format!(
+        "request end: {}, {} ms, {result}",
+        describe(label, host, model),
+        elapsed.as_millis()
+    )
+}
+
+fn describe(label: &Label, host: &str, model: &str) -> String {
+    format!(
+        "note {}, {}, host {host}, model {model}, {} ms in the queue",
+        label.note.as_deref().unwrap_or("none"),
+        label.kind.name(),
+        label.queued.as_millis()
+    )
+}
+
+/// The HTTP status of an answer, or the kind of error. The text of an
+/// error is not used, because it can contain the endpoint's reply.
+fn result_text(result: &Result<(reqwest::StatusCode, Vec<u8>), SummarizeError>) -> String {
+    match result {
+        Ok((status, _)) => format!("HTTP {}", status.as_u16()),
+        Err(SummarizeError::Redirect { status, .. }) => format!("redirect, HTTP {status}"),
+        Err(SummarizeError::Deadline(what)) => format!("no {what} within the deadline"),
+        Err(SummarizeError::TooLarge(_)) => "reply too large".into(),
+        Err(SummarizeError::Transport(_)) => "connection error".into(),
+        Err(_) => "error".into(),
     }
 }
 
@@ -219,9 +334,9 @@ impl Client {
         }
     }
 
-    pub async fn probe_json(&self, url: &str) -> Result<Value, SummarizeError> {
+    pub async fn probe_json(&self, label: &Label, url: &str) -> Result<Value, SummarizeError> {
         let request = self.authorize(self.probe_http.get(url));
-        let (status, body) = self.send(request, &self.probe).await?;
+        let (status, body) = self.send(label, request, &self.probe).await?;
         if !status.is_success() {
             return Err(http_error(status.as_u16(), &body));
         }
@@ -230,16 +345,20 @@ impl Client {
 
     pub async fn complete(
         &self,
+        label: &Label,
         messages: &[Message],
         max_tokens: u32,
     ) -> Result<Completion, SummarizeError> {
-        match self.complete_with(messages, "max_tokens", max_tokens).await {
+        match self
+            .complete_with(label, messages, "max_tokens", max_tokens)
+            .await
+        {
             // Some hosted reasoning models refuse `max_tokens` by name.
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
             }) if excerpt.contains("max_completion_tokens") => {
-                self.complete_with(messages, "max_completion_tokens", max_tokens)
+                self.complete_with(label, messages, "max_completion_tokens", max_tokens)
                     .await
             }
             other => other,
@@ -248,6 +367,7 @@ impl Client {
 
     async fn complete_with(
         &self,
+        label: &Label,
         messages: &[Message],
         cap_field: &str,
         max_tokens: u32,
@@ -261,7 +381,7 @@ impl Client {
         let request = self
             .authorize(self.http.post(self.api_url("chat/completions")))
             .json(&body);
-        let (status, bytes) = self.send(request, &self.completion).await?;
+        let (status, bytes) = self.send(label, request, &self.completion).await?;
         if !status.is_success() {
             return Err(http_error(status.as_u16(), &bytes));
         }
@@ -270,9 +390,34 @@ impl Client {
         parse_completion(&reply)
     }
 
+    /// Send `request`, and log one line at its start and one at its end
+    /// (R13).
+    async fn send(
+        &self,
+        label: &Label,
+        request: reqwest::RequestBuilder,
+        limits: &Limits,
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), SummarizeError> {
+        let (host, model) = (self.host(), &self.endpoint.model);
+        log::info!("{}", start_line(label, &host, model));
+        let started = Instant::now();
+        let result = self.send_with_retries(request, limits).await;
+        log::info!(
+            "{}",
+            end_line(
+                label,
+                &host,
+                model,
+                started.elapsed(),
+                &result_text(&result)
+            )
+        );
+        result
+    }
+
     /// Send `request`, and send it again after each retry wait while it
     /// cannot reach the endpoint.
-    async fn send(
+    async fn send_with_retries(
         &self,
         request: reqwest::RequestBuilder,
         limits: &Limits,
@@ -454,4 +599,64 @@ pub fn parse_completion(reply: &Value) -> Result<Completion, SummarizeError> {
         text,
         finish_reason,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_request_log_names_the_request_and_not_its_content() {
+        let label =
+            Label::note("2026-10-14-0900", RequestKind::Chunk).queued(Duration::from_millis(4_200));
+        let start = start_line(&label, "llm.example.net", "qwen3-30b");
+        assert_eq!(
+            start,
+            "request start: note 2026-10-14-0900, chunk, host llm.example.net, \
+             model qwen3-30b, 4200 ms in the queue"
+        );
+        let reply = Ok((reqwest::StatusCode::OK, b"secret summary text".to_vec()));
+        let end = end_line(
+            &label,
+            "llm.example.net",
+            "qwen3-30b",
+            Duration::from_millis(91_000),
+            &result_text(&reply),
+        );
+        assert_eq!(
+            end,
+            "request end: note 2026-10-14-0900, chunk, host llm.example.net, \
+             model qwen3-30b, 4200 ms in the queue, 91000 ms, HTTP 200"
+        );
+        assert!(!end.contains("secret"));
+    }
+
+    #[test]
+    fn the_end_line_gives_the_error_kind_and_not_the_error_text() {
+        // An error text can hold the endpoint's reply or a URL.
+        let cases = [
+            (
+                SummarizeError::Deadline("response"),
+                "no response within the deadline",
+            ),
+            (
+                SummarizeError::Transport("http://h/v1?key=sk-secret refused".into()),
+                "connection error",
+            ),
+            (
+                SummarizeError::Redirect {
+                    status: 307,
+                    location: "https://other/?key=sk-secret".into(),
+                },
+                "redirect, HTTP 307",
+            ),
+            (SummarizeError::TooLarge(8), "reply too large"),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(result_text(&Err(error)), expected);
+        }
+        let label = Label::without_note(RequestKind::Models);
+        let line = end_line(&label, "h", "m", Duration::ZERO, "connection error");
+        assert!(line.starts_with("request end: note none, models, host h,"));
+    }
 }

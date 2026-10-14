@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::client::{Client, SummarizeError};
+use crate::client::{Client, Label, SummarizeError};
 
 pub const DEFAULT_LIMIT: u32 = 128_000;
 
@@ -109,23 +109,33 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 /// ([`is_server_problem`]): then nothing is known about the context, and
 /// the default budget must not be kept for the run. A later probe asks a
 /// route that the server can lack, so any failure there is a miss.
-pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
+pub async fn probe(client: &Client, label: &Label) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
 
-    let first = answer(client.probe_json(&client.api_url("model/info")).await, true)?;
+    let first = answer(
+        client
+            .probe_json(label, &client.api_url("model/info"))
+            .await,
+        true,
+    )?;
     if let Some(body) = first
         && let Some(b) = found(parse_litellm(&body, &model), BudgetSource::Litellm)
     {
         return Ok(Some(b));
     }
-    let lm_studio = client.probe_json(&client.root_url("api/v0/models")).await;
+    let lm_studio = client
+        .probe_json(label, &client.root_url("api/v0/models"))
+        .await;
     if let Some(body) = answer(lm_studio, false)?
         && let Some(b) = found(parse_lm_studio(&body, &model), BudgetSource::LmStudio)
     {
         return Ok(Some(b));
     }
-    if let Some(body) = answer(client.probe_json(&client.api_url("models")).await, false)? {
+    if let Some(body) = answer(
+        client.probe_json(label, &client.api_url("models")).await,
+        false,
+    )? {
         if let Some(b) = found(parse_vllm(&body, &model), BudgetSource::Vllm) {
             return Ok(Some(b));
         }
@@ -133,8 +143,10 @@ pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
             return Ok(Some(b));
         }
     }
-    if let Some(body) = answer(client.probe_json(&client.root_url("props")).await, false)?
-        && let Some(b) = found(parse_llama_cpp(&body), BudgetSource::LlamaCpp)
+    if let Some(body) = answer(
+        client.probe_json(label, &client.root_url("props")).await,
+        false,
+    )? && let Some(b) = found(parse_llama_cpp(&body), BudgetSource::LlamaCpp)
     {
         return Ok(Some(b));
     }

@@ -11,7 +11,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::client::{Client, NO_LOCATION, SummarizeError};
+use crate::client::{Client, Label, NO_LOCATION, RequestKind, SummarizeError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -72,7 +72,10 @@ pub async fn list_models(client: &Client) -> ModelList {
         .credential
         .as_deref()
         .is_some_and(|key| !key.is_empty());
-    match client.probe_json(&url).await {
+    match client
+        .probe_json(&Label::without_note(RequestKind::Models), &url)
+        .await
+    {
         Ok(body) => match parse_ids(&body) {
             Some(ids) => ModelList::Listed { ids },
             None => ModelList::NotListed,
