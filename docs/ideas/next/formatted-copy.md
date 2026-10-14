@@ -5,6 +5,7 @@ area: library-and-sharing
 added: 2026-10-14
 source: "brainstorm about copy formats, 2026-10-14"
 related: []
+plan: docs/plans/2026-10-14-1224-feat-formatted-copy-plan.md
 ---
 
 # Copy with formatting
