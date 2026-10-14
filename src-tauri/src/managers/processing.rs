@@ -236,6 +236,8 @@ enum Sent {
     /// sync does. Home and the note page read the note again on it
     /// (KTD13).
     Library(LibraryChanged),
+    /// The app sends nothing for the event.
+    Nothing,
 }
 
 impl From<RunnerEvent> for Sent {
@@ -247,6 +249,8 @@ impl From<RunnerEvent> for Sent {
                     removed: Vec::new(),
                 });
             }
+            // The app does not show this wait yet.
+            RunnerEvent::WaitingToSummarize { .. } => return Self::Nothing,
             RunnerEvent::StageStarted { session_id, stage } => (
                 session_id,
                 ProcessingStep::StageStarted {
@@ -797,6 +801,7 @@ impl ProcessingManager {
                         }
                     }
                     Sent::Library(changes) => emit_library_changed(&events, changes),
+                    Sent::Nothing => {}
                 }
             }),
         });
@@ -2033,6 +2038,7 @@ mod tests {
         match Sent::from(event) {
             Sent::Processing(update) => update,
             Sent::Library(_) => panic!("a library change, not a processing update"),
+            Sent::Nothing => panic!("no update, not a processing update"),
         }
     }
 

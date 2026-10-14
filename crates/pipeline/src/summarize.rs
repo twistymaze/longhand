@@ -218,9 +218,10 @@ pub fn send_title_request(
     request: &TitleRequest,
     control: &dyn Control,
 ) -> Result<Result<String, String>, StageError> {
-    // The title job holds the processing permit, and a title is optional.
-    // The request is sent once, with no retry waits, so an endpoint that
-    // cannot be reached does not stop the processing of other notes.
+    // The title job holds a turn in the summary queue, and a title is
+    // optional. The request is sent once, with no retry waits, so an
+    // endpoint that cannot be reached does not stop the other jobs of the
+    // summary queue.
     let client = match Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
@@ -426,7 +427,9 @@ pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 }
 
 /// The summarize stage: produce the summary and write it into the working
-/// directory, where the save stage picks it up.
+/// directory, where the save stage picks it up. `queued` is the time that
+/// the note waited for its turn in the summary queue. The request log
+/// gives it.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
@@ -436,6 +439,7 @@ pub fn run(
     endpoint: SummaryEndpoint,
     active: Prompt,
     control: &dyn Control,
+    queued: Duration,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
@@ -445,6 +449,7 @@ pub fn run(
         endpoint,
         active,
         control,
+        queued,
         progress,
     )?;
     // `summary.md` has no frontmatter: the save writes the summary data
@@ -461,7 +466,8 @@ pub fn run(
 /// Summarize the `transcript.md` in `folder`, resuming any calls already
 /// made. Writes nothing but checkpoints. `active` is the summary prompt of
 /// the note type, which the run uses when it saved no snapshot before, or
-/// when its inputs changed and every call runs again (KTD3).
+/// when its inputs changed and every call runs again (KTD3). `queued` is
+/// the time that the job waited for its turn in the summary queue.
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
@@ -470,6 +476,7 @@ pub fn produce(
     endpoint: SummaryEndpoint,
     active: Prompt,
     control: &dyn Control,
+    queued: Duration,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
@@ -548,7 +555,10 @@ pub fn produce(
                 // a plan is kept, so the next run probes it again.
                 runtime
                     .block_on(
-                        context::probe(&client, &Label::note(session_id, RequestKind::Probe)),
+                        context::probe(
+                            &client,
+                            &Label::note(session_id, RequestKind::Probe).queued(queued),
+                        ),
                         control,
                     )?
                     .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
@@ -582,6 +592,7 @@ pub fn produce(
         title_text: &prompt.title_text,
         background: &prompt.background,
         details: &details,
+        queued,
         progress: &mut *progress,
     };
     let done = if !said {
@@ -755,6 +766,8 @@ struct Calls<'a> {
     /// The note details as they were when the run started. Every call
     /// carries them, so every budget counts them.
     details: &'a Details,
+    /// The time that the job waited for its turn in the summary queue.
+    queued: Duration,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
@@ -963,7 +976,7 @@ impl<'a> Calls<'a> {
         } else {
             RequestKind::Merge
         };
-        let label = Label::note(self.session_id, kind);
+        let label = Label::note(self.session_id, kind).queued(self.queued);
         let reply = self.runtime.block_on(
             self.client.complete(&label, messages, room.reserve),
             self.control,

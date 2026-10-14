@@ -940,7 +940,8 @@ fn unreadable(path: &Path, why: &str) -> StageError {
 /// recorded when it began (KTD7). A title that changed since then renames
 /// the folder now (KTD8). Returns the folder's path. A failed rename does
 /// not fail the save: the reconcile at the next launch tries again. No
-/// regeneration runs, because the stage holds the one processing permit.
+/// regeneration and no title job runs, because the stage holds the turn
+/// of the summary queue.
 fn reconcile_after_done(store: &Store, session_id: &str, path: PathBuf, fs: &dyn Fs) -> PathBuf {
     moved_to(
         session_id,
@@ -1232,8 +1233,8 @@ pub fn regenerate_summary(
     {
         log::warn!("could not delete the title request of {session_id}: {e}");
     }
-    // The regeneration has ended, and the caller holds the one processing
-    // permit, so no other regeneration runs.
+    // The regeneration has ended, and the caller holds the turn of the
+    // summary queue, so no other regeneration, Save or title job runs.
     let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
     let path = regenerated?;
     Ok(moved_to(session_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
@@ -1353,7 +1354,14 @@ fn summarize_again(
     let expected = current.run_fingerprint();
     let source_notes = folder::fingerprint(lock(store).notes(session_id)?.as_bytes());
     let summary = summarize::produce(
-        store, session_id, &home, endpoint, active, control, progress,
+        store,
+        session_id,
+        &home,
+        endpoint,
+        active,
+        control,
+        std::time::Duration::ZERO,
+        progress,
     )?;
     // The last point where a cancel stops the regeneration: after the
     // record, the publication only rolls forward.

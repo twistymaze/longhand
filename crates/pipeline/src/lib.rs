@@ -31,6 +31,7 @@ pub mod resample;
 pub mod runner;
 pub mod save;
 pub mod summarize;
+pub mod summary_queue;
 pub mod tags;
 pub mod transcribe;
 pub mod type_move;
