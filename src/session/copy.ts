@@ -23,13 +23,11 @@ const markdown = MarkdownIt("commonmark", { html: false }).disable(["image"]);
 markdown.use(strikethroughPlugin);
 markdown.use(highlightPlugin);
 
-const escapeHtml = (text: string) =>
-  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
+// The run kinds other than "text" ("strong", "em", "code") are also the HTML tag names.
 const runsHtml = (content: Inline[]) =>
   content
     .map((run) => {
-      const text = escapeHtml(run.text);
+      const text = markdown.utils.escapeHtml(run.text);
       return run.kind === "text" ? text : `<${run.kind}>${text}</${run.kind}>`;
     })
     .join("");
