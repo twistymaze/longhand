@@ -4818,20 +4818,34 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
     // The same wake with no network, but the network comes back while the
     // summary waits to try again: the note is saved with its summary.
     let r = rig().await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let port = http::free_port();
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
-        retry_waits: vec![std::time::Duration::from_millis(50); 5],
-        ..endpoint(&base)
+        retry_waits: vec![std::time::Duration::from_millis(50); 100],
+        ..endpoint(&format!("http://127.0.0.1:{port}/v1"))
     }));
+    let events = Arc::clone(&r.events);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        // The first three connections close with no answer, as without a
-        // network. Then the endpoint answers.
-        for _ in 0..3 {
-            let (socket, _) = listener.accept().await.unwrap();
-            drop(socket);
+        // Each connection is refused, as without a network, until some time
+        // after the summary starts. Then the endpoint answers.
+        let summarizing = || {
+            events.lock().unwrap().iter().any(|e| {
+                matches!(
+                    e,
+                    RunnerEvent::StageStarted {
+                        stage: Stage::Summarize,
+                        ..
+                    }
+                )
+            })
+        };
+        while !summarizing() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
         let _ = sender.send(http::serve_on(
             listener,
             std::collections::HashMap::from([(

@@ -51,17 +51,16 @@ async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
 async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure() {
     // A Mac that wakes from sleep can have no network for some seconds. The
     // request tries again after each wait, and the endpoint answers later.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
-    let client = Client::new(endpoint(&base, None))
+    let port = common::free_port();
+    let client = Client::new(endpoint(&format!("http://127.0.0.1:{port}/v1"), None))
         .unwrap()
-        .with_retry_waits(vec![Duration::from_millis(50); 5]);
+        .with_retry_waits(vec![Duration::from_millis(50); 40]);
     tokio::spawn(async move {
-        // The first three connections close with no answer.
-        for _ in 0..3 {
-            let (socket, _) = listener.accept().await.unwrap();
-            drop(socket);
-        }
+        // Until then, each connection is refused.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .unwrap();
         // The server task owns the listener and keeps it open.
         common::serve_on(
             listener,
@@ -70,6 +69,30 @@ async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure()
     });
     let reply = client.complete(&hello(), 100).await.unwrap();
     assert_eq!(reply.text, "back");
+}
+
+#[tokio::test]
+async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
+    // The endpoint read the request, so the model can be at work on it.
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&connections);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            drop(socket);
+        }
+    });
+    let client = Client::new(endpoint(&base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(10); 3]);
+    let err = client.complete(&hello(), 100).await.unwrap_err();
+    assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
+    assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

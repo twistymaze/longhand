@@ -209,12 +209,15 @@ pub fn send_title_request(
     request: &TitleRequest,
     control: &dyn Control,
 ) -> Result<Result<String, String>, StageError> {
+    // The title job holds the processing permit, and a title is optional.
+    // The request is sent once, with no retry waits, so an endpoint that
+    // cannot be reached does not stop the processing of other notes.
     let client = match Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
     }) {
-        Ok(client) => client.with_retry_waits(endpoint.retry_waits.clone()),
+        Ok(client) => client,
         Err(e) => return Ok(Err(e.to_string())),
     };
     if client.crosses_network_unencrypted() {

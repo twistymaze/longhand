@@ -179,8 +179,9 @@ impl Client {
         })
     }
 
-    /// Try a request again after each of `waits` when it cannot reach the
-    /// endpoint. A request that reaches the endpoint is never sent again.
+    /// Try a request again after each of `waits` when the connection to the
+    /// endpoint fails. A request that can have reached the endpoint is never
+    /// sent again.
     pub fn with_retry_waits(mut self, waits: Vec<Duration>) -> Self {
         self.retry_waits = waits;
         self
@@ -309,12 +310,13 @@ impl Client {
                 .await
                 .map_err(|_| SummarizeError::Deadline("response"))?
                 .map_err(|e| {
-                    // A request that could not be built fails the same way
-                    // on each try.
-                    if e.is_builder() {
-                        Failure::Answered(SummarizeError::Transport(without_url(e)))
-                    } else {
+                    // Only a failed connection proves that the endpoint did
+                    // not receive the request. A connection that closes
+                    // later can follow a request that the endpoint runs.
+                    if e.is_connect() {
                         Failure::NotReached(without_url(e))
+                    } else {
+                        Failure::Answered(SummarizeError::Transport(without_url(e)))
                     }
                 })?;
             let status = response.status();
@@ -355,11 +357,11 @@ impl Client {
 
 /// How one try of a request failed.
 enum Failure {
-    /// The request did not reach the endpoint: no answer started. A new try
-    /// can succeed.
+    /// The connection to the endpoint failed, so the endpoint did not receive
+    /// the request. A new try can succeed.
     NotReached(String),
-    /// The endpoint answered, or the request cannot be sent. A new try would
-    /// send the prompt again for the same result.
+    /// The endpoint can have received the request. A new try could make the
+    /// model do the same work again.
     Answered(SummarizeError),
 }
 
