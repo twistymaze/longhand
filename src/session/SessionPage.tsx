@@ -54,6 +54,9 @@ type TabItem = Segment<Tab>;
 // Summary is first, because a reader who returns to a note wants the summary.
 /// The time after a recording starts before Stop is available.
 export const STOP_DELAY_MS = 1000;
+/// How often the page reads the detail again while a regeneration that
+/// started before the page opened runs.
+const REGENERATION_POLL_MS = 1000;
 
 const tabs: TabItem[] = [
   { value: "summary", label: "Summary" },
@@ -318,6 +321,35 @@ export function SessionPage({
     if (phase === "saved" && !noAudio) void loadDocument();
   }, [phase, noAudio, loadDocument, version]);
 
+  // A regeneration continues when the user leaves the note. When the user
+  // comes back, only the detail says that it runs, and no call of this page
+  // ends with it. The page reads the detail again until the regeneration
+  // ends, and then reads the summary.
+  const regeneratingEarlier = !regenerating && detail?.regenerating === true;
+  useEffect(() => {
+    if (!regeneratingEarlier) return;
+    // The next read starts after the last one ends. A read that starts
+    // first would make a slow read's result old, and the page would not
+    // see the end.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    const poll = async () => {
+      await loadDetail().catch((e) => console.error("The note detail could not be read:", e));
+      if (!stopped) timer = setTimeout(() => void poll(), REGENERATION_POLL_MS);
+    };
+    timer = setTimeout(() => void poll(), REGENERATION_POLL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [regeneratingEarlier, loadDetail]);
+  const earlierRan = useRef(false);
+  useEffect(() => {
+    if (earlierRan.current && !regeneratingEarlier) void loadDocument();
+    earlierRan.current = regeneratingEarlier;
+  }, [regeneratingEarlier, loadDocument]);
+  const summarizing = regenerating || regeneratingEarlier;
+
   // The note's actions and notes edits wait while a document waits for the
   // sync or the storage folder is unavailable (R6, R16). Audio that waits
   // holds only Resume and Transcribe Again (R12).
@@ -461,6 +493,9 @@ export function SessionPage({
         console.error("Regenerate failed:", e);
         setNotice({ tone: "negative", text: "The summary could not be updated." });
       } finally {
+        // A detail read during the run can say that it runs. Read it again
+        // first, or that old detail shows the status after the end.
+        await loadDetail().catch((e) => console.error("The note detail could not be read:", e));
         setRegenerating(false);
       }
       // Regenerate can propose a new title (R31).
@@ -482,7 +517,7 @@ export function SessionPage({
 
   const again = useTranscribeAgain({
     sessionId: id,
-    available: phase === "saved" && !heldForAudio && !regenerating && !removed,
+    available: phase === "saved" && !heldForAudio && !summarizing && !removed,
     onQueued: () => {
       setNotice(null);
       changed();
@@ -541,13 +576,13 @@ export function SessionPage({
   if (phase === "saved" && !noAudio) {
     items.push({
       label: "Regenerate Summary",
-      disabled: regenerating || held || remote !== null,
+      disabled: summarizing || held || remote !== null,
       reason: held ? heldReason : (remoteReason ?? undefined),
       onSelect: regenerate,
     });
     items.push({
       label: "Transcribe Again…",
-      disabled: regenerating || heldForAudio || removed || remote !== null,
+      disabled: summarizing || heldForAudio || removed || remote !== null,
       reason: removed
         ? REMOVED_REASON
         : heldForAudio
@@ -569,12 +604,12 @@ export function SessionPage({
   if (phase === "saved" && !deleted && !noAudio) {
     items.push({
       label: "Remove Audio…",
-      disabled: !detail || removed || folderHeld || regenerating || remote !== null,
+      disabled: !detail || removed || folderHeld || summarizing || remote !== null,
       reason: removed
         ? REMOVED_REASON
         : folderHeld
           ? heldReason
-          : regenerating
+          : summarizing
             ? "Wait until the summary is ready."
             : (remoteReason ?? undefined),
       onSelect: removal.ask,
@@ -615,7 +650,7 @@ export function SessionPage({
   // regeneration, and a type whose prompt is another prompt (KTD4, KTD5).
   // The conditions are read again at each render, so the offer shows when
   // processing ends and goes when the type changes back.
-  const offer = offerAsked && phase === "saved" && !regenerating && !staleDocument ? offerFor(doc?.summary, entry, typePrompts) : null;
+  const offer = offerAsked && phase === "saved" && !summarizing && !staleDocument ? offerFor(doc?.summary, entry, typePrompts) : null;
 
   // The note's own live mode decides, not the model selected now (R9). A
   // Transcribe Again run has no live text.
@@ -651,7 +686,7 @@ export function SessionPage({
     if (error) return unavailable ? null : <p className="text-negative">{error}</p>;
     // While the summary is written again, Summary shows the summarize stage
     // in place of the previous summary. A failed run shows it again.
-    if (which === "summary" && regenerating && detail) {
+    if (which === "summary" && summarizing && detail) {
       return <RegenerateStatus detail={detail} live={live === liveAtStart.current ? undefined : live} />;
     }
     if (!doc) return which === "transcript" && liveMode ? liveView("loading") : null;

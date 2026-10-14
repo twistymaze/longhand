@@ -89,6 +89,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   asr_model: null,
   live_transcript: false,
   transcribe_again: false,
+  regenerating: false,
   transcribe_again_error: null,
   retry_starts_over: false,
   summary_not_updated: null,
@@ -1222,6 +1223,54 @@ describe("SessionPage", () => {
       expect(tab("Summary").getAttribute("aria-selected")).toBe("true");
       expect(screen.getByText("Summarizing")).toBeTruthy();
     });
+
+    test("a regeneration that still runs when the user comes back to the note shows, and its result shows when it ends", async () => {
+      // The page was left during the regeneration, so this page did not
+      // start it. Only the detail says that it runs.
+      const e = entry("s");
+      let running = true;
+      let current = doc;
+      mockTauri({
+        load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
+        session_detail: () => detail(e, { endpoint, regenerating: running }),
+        session_document: () => current,
+        note_types: () => ({ types: [], default_type: null }),
+        list_tags: () => [],
+      });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      expect(await screen.findByText("Summarizing")).toBeTruthy();
+      expect(screen.queryByText("We agreed the budget.")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Regenerate Summary" })).toBeNull();
+
+      running = false;
+      current = newDoc;
+      expect(await screen.findByText("The launch moves to May 12.", {}, { timeout: 3000 })).toBeTruthy();
+      expect(screen.queryByText("Summarizing")).toBeNull();
+    });
+
+    test("a detail read slower than the poll still ends the status of an earlier regeneration", async () => {
+      const e = entry("s");
+      let running = true;
+      let current = doc;
+      let reads = 0;
+      mockTauri({
+        load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
+        // Each read after the first takes longer than the poll interval.
+        session_detail: async () => {
+          const now = running;
+          if (reads++ > 0) await new Promise((r) => setTimeout(r, 1300));
+          return detail(e, { endpoint, regenerating: now });
+        },
+        session_document: () => current,
+        note_types: () => ({ types: [], default_type: null }),
+        list_tags: () => [],
+      });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      expect(await screen.findByText("Summarizing")).toBeTruthy();
+      running = false;
+      current = newDoc;
+      expect(await screen.findByText("The launch moves to May 12.", {}, { timeout: 6000 })).toBeTruthy();
+    }, 10000);
 
     test("when it completes, the new summary shows", async () => {
       const { succeed } = await start();

@@ -51,8 +51,6 @@ struct Script {
     saved_at_start: Mutex<Vec<Option<String>>>,
     /// Where summaries go; unset is an unconfigured endpoint.
     summary: Mutex<Option<Result<SummaryEndpoint, EndpointProblem>>>,
-    /// Limits the summarize stage learned.
-    learned: Mutex<Vec<u32>>,
     /// Filler sentences each window decodes, to make transcripts long.
     sentences: AtomicUsize,
     /// A sentence the given call decodes as well.
@@ -453,9 +451,6 @@ impl EngineProvider for Provider {
     fn background(&self) -> String {
         self.0.background.lock().unwrap().clone()
     }
-    fn learn_limit(&self, _: &str, _: &str, limit: u32) {
-        self.0.learned.lock().unwrap().push(limit);
-    }
     fn destination(&self) -> Option<std::path::PathBuf> {
         self.0.destination.lock().unwrap().clone()
     }
@@ -467,7 +462,6 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         model: "summarizer".into(),
         credential: Some("sk-secret-test".into()),
         context_limit: None,
-        learned_limit: None,
         retry_waits: Vec::new(),
     }
 }
@@ -1678,9 +1672,9 @@ async fn a_locked_keychain_blocks_and_unlocking_resumes_without_redoing_work() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_rejection_the_estimate_did_not_foresee_shrinks_the_budget_and_learns_it() {
+async fn a_rejection_for_length_stops_the_summary_and_asks_for_the_context_limit() {
     let r = rig().await;
-    // The server takes far less than the default budget it never reports.
+    // The server takes far less than the default budget, and never says so.
     let reply = http::Reply::With(Arc::new(|body: &str| {
         if body.len() > 6_000 {
             (
@@ -1692,14 +1686,48 @@ async fn a_rejection_the_estimate_did_not_foresee_shrinks_the_budget_and_learns_
             (200, http::completion("Notes."))
         }
     }));
-    let _mock = summaries_from(&r, reply, None).await;
+    let mock = summaries_from(&r, reply, None).await;
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
-    let learned = r.script.learned.lock().unwrap().clone();
-    assert!(!learned.is_empty());
-    assert!(learned.windows(2).all(|w| w[1] < w[0]), "{learned:?}");
-    assert!(*learned.last().unwrap() < 8_192);
+    // Only the user changes the context: the run does not try smaller
+    // budgets.
+    assert_eq!(chat_calls(&mock).len(), 1);
+    let stub = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert!(
+        stub.body.contains("Settings > Summaries > Context limit"),
+        "{}",
+        stub.body
+    );
+
+    // A limit that the user set and that is still too large asks for a
+    // lower one.
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(100_000),
+        ..endpoint(&mock.base)
+    }));
+    let error = r.runner.regenerate_summary("s").await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("enter a limit lower than 100000"),
+        "{error}"
+    );
+    let before = chat_calls(&mock).len();
+
+    // The user sets the limit, and the summary is made in parts under it.
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        ..endpoint(&mock.base)
+    }));
+    r.runner.regenerate_summary("s").await.unwrap();
+    let after = &chat_calls(&mock)[before..];
+    assert!(after.len() > 1, "{}", after.len());
+    assert!(
+        after[0].contains("<transcript part=\"1\">"),
+        "{}",
+        &after[0][..80]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1882,7 +1910,7 @@ async fn no_endpoint_saves_the_session_with_a_stub_naming_the_setting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
+async fn a_reply_cut_off_gets_more_room() {
     let r = rig().await;
     // A reasoning model: it needs 1,500 tokens of reply before it answers.
     let reply = http::Reply::With(Arc::new(|body: &str| {
@@ -1900,7 +1928,6 @@ async fn a_reply_cut_off_gets_more_room_and_teaches_no_limit() {
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
-    assert!(r.script.learned.lock().unwrap().is_empty());
 }
 
 // ------------------------------------------------------ summary prompts (U2)
@@ -2372,6 +2399,45 @@ async fn regenerating_a_stub_with_the_same_prompt_reuses_its_part_notes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn regenerating_a_stub_planned_under_an_old_default_budget_plans_again() {
+    // An older version used 8,192 tokens when the probe found nothing, and
+    // kept that plan with the stub. Its reply room is too small for a
+    // whole summary, so a regeneration that keeps the plan never finishes.
+    let r = rig().await;
+    let (mock, path) = stub_after_part_five_at(&r, 8_192).await;
+    let mut plan: serde_json::Value =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN)
+            .unwrap()
+            .unwrap();
+    plan["budget"]["source"] = "default".into();
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Summarize,
+        pipeline::summarize::PLAN,
+        &plan,
+    )
+    .unwrap();
+    // No context limit is set, and the server reports none.
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    let before = chat_calls(&mock).len();
+
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    let after = &chat_calls(&mock)[before..];
+    assert_eq!(after.len(), 1, "the whole transcript fits the new default");
+    assert!(
+        !after[0].contains("<transcript part="),
+        "{}",
+        &after[0][..80]
+    );
+    let plan: serde_json::Value =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN)
+            .unwrap()
+            .unwrap_or_default();
+    assert_ne!(plan["budget"]["limit"], 8_192, "{plan}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn regenerating_a_stub_after_the_prompt_changes_makes_every_call_again() {
     let r = rig().await;
     let (mock, path) = stub_after_part_five(&r).await;
@@ -2553,7 +2619,6 @@ async fn a_prompt_too_long_for_the_context_fails_the_summary_before_any_call() {
     let path = saved_folder(&r, "s").join("summary.md");
     let stub = summary_at(&path);
     assert!(stub.body.contains(expected), "{}", stub.body);
-    assert!(r.script.learned.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -8061,7 +8126,6 @@ async fn a_regeneration_stopped_before_its_record_changes_nothing_and_keeps_the_
                 &root,
                 endpoint,
                 &|_| summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap(),
-                &|_| {},
                 &control,
                 &mut |_, _| {},
             )

@@ -94,8 +94,8 @@ pub enum SummarizeError {
 }
 
 impl SummarizeError {
-    /// The model's context is smaller than the budget assumed: shrink the
-    /// budget and chunk again rather than fail.
+    /// The prompt is longer than the model accepts: the model's context is
+    /// smaller than the budget. The run stops, and the user sets the limit.
     pub fn is_context_pressure(&self) -> bool {
         matches!(self, Self::ContextExceeded)
     }
@@ -371,8 +371,21 @@ impl From<SummarizeError> for Failure {
     }
 }
 
+/// The error with each of its causes, with no URL. reqwest's own text is
+/// often only "error sending request", which does not tell why.
 fn without_url(e: reqwest::Error) -> String {
-    e.without_url().to_string()
+    let e = e.without_url();
+    let mut text = e.to_string();
+    let mut cause = std::error::Error::source(&e);
+    while let Some(c) = cause {
+        let part = c.to_string();
+        if !text.ends_with(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        cause = c.source();
+    }
+    text
 }
 
 fn is_loopback(url: &Url) -> bool {

@@ -262,7 +262,6 @@ pub struct LocalSettings {
     /// sound (R9). Local to this computer (KTD1).
     pub alert_sound: bool,
     pub hide_from_dock: bool,
-    pub learned_context_limits: std::collections::BTreeMap<String, u32>,
 }
 
 impl Default for LocalSettings {
@@ -529,9 +528,6 @@ pub struct Settings {
     /// `SharedSnapshot::audio_removal_days`, which gives no delay for such a
     /// value or while the shared settings are read-only.
     pub audio_removal: AudioRemovalSetting,
-    /// Context limits endpoints have shown by rejecting longer prompts,
-    /// keyed by [`learned_limit_key`] (KTD16).
-    pub learned_context_limits: std::collections::BTreeMap<String, u32>,
     /// A shared setting. The custom summary prompts, in the order that
     /// Settings shows them (KTD6).
     pub summary_prompts: Vec<SummaryPrompt>,
@@ -605,11 +601,6 @@ pub fn emit_settings_changed(app: &AppHandle) {
     if let Err(e) = (SettingsChanged { settings }).emit(app) {
         log::warn!("failed to emit the settings change: {e}");
     }
-}
-
-/// One endpoint and model: a limit learned for one says nothing of another.
-pub fn learned_limit_key(base_url: &str, model: &str) -> String {
-    format!("{} {}", base_url.trim(), model.trim())
 }
 
 /// The state of the saved key for the host of the effective Base URL.
@@ -720,7 +711,6 @@ impl Default for Settings {
             show_recording_widget: true,
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
-            learned_context_limits: Default::default(),
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
             shared: SharedState::default(),
@@ -782,7 +772,6 @@ impl Settings {
                 defaults.check_updates_automatically,
             ),
             audio_removal: known_or(&fields.audio_removal, AudioRemoval::default()).into(),
-            learned_context_limits: local.learned_context_limits,
             summary_prompts: shared
                 .view
                 .prompts
@@ -838,7 +827,6 @@ impl Settings {
             system_audio_default: self.system_audio_default,
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
-            learned_context_limits: self.learned_context_limits.clone(),
         }
     }
 
@@ -2444,15 +2432,12 @@ mod tests {
     }
 
     #[test]
-    fn a_learned_limit_changes_only_local_fields() {
-        // `learn_limit` saves with this change. It sets no shared value, so
-        // the save does not write the shared settings file (R15).
+    fn a_change_of_a_local_value_changes_only_local_fields() {
+        // A local value is not a shared value, so the save does not write
+        // the shared settings file (R15).
         let before = Settings::default();
         let mut after = before.clone();
-        after.learned_context_limits.insert(
-            learned_limit_key("http://localhost:11434/v1", "llama3"),
-            8192,
-        );
+        after.hide_from_dock = !before.hide_from_dock;
         assert!(shared_patch(&before, &after).is_empty());
         assert_ne!(after.local(), before.local());
     }

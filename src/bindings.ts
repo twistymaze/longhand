@@ -2299,6 +2299,11 @@ live_transcript: boolean;
  */
 transcribe_again: boolean; 
 /**
+ * A summary regeneration waits or runs. It continues when the user
+ * leaves the note, so the page reads it here when the user comes back.
+ */
+regenerating: boolean; 
+/**
  * The same stage failed again after a Retry. The next Retry starts
  * over from the recorded audio, after the user confirms.
  */
@@ -2504,11 +2509,6 @@ check_updates_automatically: boolean;
  * value or while the shared settings are read-only.
  */
 audio_removal: AudioRemovalSetting; 
-/**
- * Context limits endpoints have shown by rejecting longer prompts,
- * keyed by [`learned_limit_key`] (KTD16).
- */
-learned_context_limits: Partial<{ [key in string]: number }>; 
 /**
  * A shared setting. The custom summary prompts, in the order that
  * Settings shows them (KTD6).

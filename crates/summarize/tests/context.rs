@@ -132,7 +132,7 @@ async fn a_server_answering_no_probe_resolves_to_the_default() {
     let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
     assert_eq!(probed, None);
     assert_eq!(
-        context::resolve(None, probed, None),
+        context::resolve(None, probed),
         Budget {
             limit: DEFAULT_LIMIT,
             source: BudgetSource::Default
@@ -149,6 +149,56 @@ async fn an_endpoint_that_cannot_be_reached_is_an_error_not_the_default() {
     assert!(
         matches!(probed, Err(summarize::SummarizeError::Transport(_))),
         "{probed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_error_from_a_probe_is_an_error_not_the_default() {
+    // A proxy that restarts answers 502 for a few seconds. That tells
+    // nothing about the context, so the run must not use the small default
+    // budget and keep it with the note.
+    for status in [500, 502, 503, 504, 408, 429] {
+        let mock = serve(HashMap::from([(
+            "/v1/model/info",
+            Reply::Json(status, "{}".into()),
+        )]))
+        .await;
+        let probed = context::probe(&client(&mock.base, "m")).await;
+        assert!(
+            matches!(probed, Err(summarize::SummarizeError::Http { status: s, .. }) if s == status),
+            "HTTP {status}: {probed:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss() {
+    // A gateway can answer 503 for a route that it does not have, so only
+    // the first probe stops on a server error. The chain goes on to the
+    // route that names the context.
+    let vllm = r#"{"data":[{"id":"m","max_model_len":32768}]}"#;
+    let mock = serve(HashMap::from([
+        ("/api/v0/models", Reply::Json(503, "{}".into())),
+        ("/v1/models", Reply::Json(200, vllm.into())),
+    ]))
+    .await;
+    let probed = context::probe(&client(&mock.base, "m")).await.unwrap();
+    assert_eq!(
+        probed,
+        Some(Budget {
+            limit: 32_768,
+            source: BudgetSource::Vllm
+        })
+    );
+    // 501 says that the server does not have the route.
+    let mock = serve(HashMap::from([(
+        "/v1/model/info",
+        Reply::Json(501, "{}".into()),
+    )]))
+    .await;
+    assert_eq!(
+        context::probe(&client(&mock.base, "m")).await.unwrap(),
+        None
     );
 }
 
@@ -180,26 +230,18 @@ async fn a_later_probe_that_fails_after_an_answer_is_a_miss() {
 }
 
 #[test]
-fn the_user_setting_wins_and_a_learned_limit_caps_it() {
+fn the_user_setting_wins_over_the_probe() {
     let lm = Budget {
         limit: 8_192,
         source: BudgetSource::LmStudio,
     };
     let probed = Some(lm);
     assert_eq!(
-        context::resolve(Some(32_000), probed, None),
+        context::resolve(Some(32_000), probed),
         Budget {
             limit: 32_000,
             source: BudgetSource::User
         }
     );
-    assert_eq!(
-        context::resolve(Some(32_000), probed, Some(20_000)),
-        Budget {
-            limit: 20_000,
-            source: BudgetSource::Learned
-        }
-    );
-    // A learned limit above the resolved one says nothing new.
-    assert_eq!(context::resolve(None, probed, Some(50_000)), lm);
+    assert_eq!(context::resolve(None, probed), lm);
 }

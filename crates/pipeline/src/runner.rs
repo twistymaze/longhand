@@ -127,8 +127,6 @@ pub trait EngineProvider: Send + Sync {
     /// the Background file cannot be used (KTD3), and empty when the user
     /// has none.
     fn background(&self) -> String;
-    /// Remember that `model` at `base_url` takes no more than `limit` tokens.
-    fn learn_limit(&self, base_url: &str, model: &str, limit: u32);
     /// The destination folder chosen now. It is read when the session is saved,
     /// so a change during recording saves the session in the last one (AE7).
     fn destination(&self) -> Option<PathBuf>;
@@ -505,7 +503,6 @@ impl Runner {
             };
             control.proceed()?;
             let endpoint = endpoint(&env)?;
-            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             // Regenerate uses the prompt of the note type after the row
             // follows its folder (R3, KTD3), and the current Background
             // (R10, KTD6).
@@ -519,7 +516,6 @@ impl Runner {
                 &env.working_root,
                 endpoint,
                 &resolve,
-                &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 &control,
                 &mut |done, total| {
                     (env.events)(RunnerEvent::Progress {
@@ -1463,7 +1459,6 @@ fn execute(
         Stage::Verify => verify::run(&env.store, id, &dir, segments),
         Stage::Summarize => {
             let endpoint = endpoint(env)?;
-            let (base_url, model_id) = (endpoint.base_url.clone(), endpoint.model.clone());
             // The type that the note shows when the step starts chooses
             // the prompt (R3, KTD3). A pending type counts.
             let record = summarize::note_record(&env.store, id)?;
@@ -1480,7 +1475,6 @@ fn execute(
                 segments,
                 endpoint,
                 prompt,
-                &|limit| env.engines.learn_limit(&base_url, &model_id, limit),
                 control,
                 &mut |done, total| {
                     (env.events)(RunnerEvent::Progress {
@@ -1885,9 +1879,6 @@ mod tests {
             unreachable!()
         }
         fn background(&self) -> String {
-            unreachable!()
-        }
-        fn learn_limit(&self, _: &str, _: &str, _: u32) {
             unreachable!()
         }
         fn destination(&self) -> Option<PathBuf> {

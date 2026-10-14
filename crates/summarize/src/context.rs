@@ -3,20 +3,22 @@
 //! each answer is read defensively: a gateway may list the model with no
 //! context metadata at all (an alias row, a locally served model), and a
 //! partial answer is a miss, not an error. The user's setting wins; with
-//! neither, 8,192, the smallest window a current server ships with.
+//! neither, [`DEFAULT_LIMIT`], which most current models accept. A model
+//! that accepts less rejects the prompt, and the user sets the limit.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::client::{Client, SummarizeError};
 
-pub const DEFAULT_LIMIT: u32 = 8_192;
+pub const DEFAULT_LIMIT: u32 = 128_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BudgetSource {
     User,
-    /// A server rejected a prompt the estimate believed would fit.
+    /// A limit that an older version learned from a rejection. Only a
+    /// saved plan can have it.
     Learned,
     Litellm,
     LmStudio,
@@ -32,10 +34,9 @@ pub struct Budget {
     pub source: BudgetSource,
 }
 
-/// The setting, else the probe, else the default; a learned limit below
-/// the result caps it, since the server has shown it takes no more.
-pub fn resolve(user: Option<u32>, probed: Option<Budget>, learned: Option<u32>) -> Budget {
-    let base = match (user, probed) {
+/// The setting, else the probe, else the default.
+pub fn resolve(user: Option<u32>, probed: Option<Budget>) -> Budget {
+    match (user, probed) {
         (Some(limit), _) => Budget {
             limit,
             source: BudgetSource::User,
@@ -45,13 +46,6 @@ pub fn resolve(user: Option<u32>, probed: Option<Budget>, learned: Option<u32>) 
             limit: DEFAULT_LIMIT,
             source: BudgetSource::Default,
         },
-    };
-    match learned {
-        Some(limit) if limit < base.limit => Budget {
-            limit,
-            source: BudgetSource::Learned,
-        },
-        _ => base,
     }
 }
 
@@ -111,29 +105,27 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 
 /// Ask the endpoint, in order, until one answer names the model's context.
 /// `Ok(None)` when the endpoint answers and no answer names it. An error
-/// when the first probe cannot reach the endpoint: then nothing is known
-/// about the context, and the default budget must not be kept for the run.
-/// After the endpoint answered once, a later probe that fails is a miss.
+/// when the first probe cannot reach the endpoint or gets a server error
+/// ([`is_server_problem`]): then nothing is known about the context, and
+/// the default budget must not be kept for the run. A later probe asks a
+/// route that the server can lack, so any failure there is a miss.
 pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
 
-    let first = match client.probe_json(&client.api_url("model/info")).await {
-        Ok(body) => Some(body),
-        Err(e @ SummarizeError::Transport(_)) => return Err(e),
-        Err(_) => None,
-    };
+    let first = answer(client.probe_json(&client.api_url("model/info")).await, true)?;
     if let Some(body) = first
         && let Some(b) = found(parse_litellm(&body, &model), BudgetSource::Litellm)
     {
         return Ok(Some(b));
     }
-    if let Ok(body) = client.probe_json(&client.root_url("api/v0/models")).await
+    let lm_studio = client.probe_json(&client.root_url("api/v0/models")).await;
+    if let Some(body) = answer(lm_studio, false)?
         && let Some(b) = found(parse_lm_studio(&body, &model), BudgetSource::LmStudio)
     {
         return Ok(Some(b));
     }
-    if let Ok(body) = client.probe_json(&client.api_url("models")).await {
+    if let Some(body) = answer(client.probe_json(&client.api_url("models")).await, false)? {
         if let Some(b) = found(parse_vllm(&body, &model), BudgetSource::Vllm) {
             return Ok(Some(b));
         }
@@ -141,10 +133,32 @@ pub async fn probe(client: &Client) -> Result<Option<Budget>, SummarizeError> {
             return Ok(Some(b));
         }
     }
-    if let Ok(body) = client.probe_json(&client.root_url("props")).await
+    if let Some(body) = answer(client.probe_json(&client.root_url("props")).await, false)?
         && let Some(b) = found(parse_llama_cpp(&body), BudgetSource::LlamaCpp)
     {
         return Ok(Some(b));
     }
     Ok(None)
+}
+
+/// The body of a probe's answer, `None` for a miss, or the error that stops
+/// the probe. `first` is true for the first probe of the chain.
+fn answer(
+    result: Result<Value, SummarizeError>,
+    first: bool,
+) -> Result<Option<Value>, SummarizeError> {
+    match result {
+        Ok(body) => Ok(Some(body)),
+        Err(e @ SummarizeError::Transport(_)) if first => Err(e),
+        Err(e) if first && is_server_problem(&e) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// A server error (5xx), a timeout (408) or a rate limit (429). The server
+/// has a problem now, so its answer tells nothing about the context. A
+/// route that the server does not have (404, 501) is a miss.
+fn is_server_problem(e: &SummarizeError) -> bool {
+    matches!(e, SummarizeError::Http { status, .. }
+        if (*status >= 500 && *status != 501) || matches!(status, 408 | 429))
 }

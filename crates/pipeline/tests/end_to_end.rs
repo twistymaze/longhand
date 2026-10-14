@@ -70,7 +70,6 @@ impl EngineProvider for RealModel {
                 model,
                 credential: var("LONGHAND_SUMMARY_KEY"),
                 context_limit: var("LONGHAND_SUMMARY_CONTEXT").map(|v| v.parse().unwrap()),
-                learned_limit: None,
                 retry_waits: Vec::new(),
             }),
             _ => Err(pipeline::EndpointProblem::Unconfigured(
@@ -83,9 +82,6 @@ impl EngineProvider for RealModel {
     }
     fn background(&self) -> String {
         String::new()
-    }
-    fn learn_limit(&self, _: &str, _: &str, limit: u32) {
-        eprintln!("learned a context limit of {limit}");
     }
     fn destination(&self) -> Option<std::path::PathBuf> {
         self.destination.lock().unwrap().clone()

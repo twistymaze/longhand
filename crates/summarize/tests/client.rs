@@ -93,6 +93,11 @@ async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
     let err = client.complete(&hello(), 100).await.unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // The error names the cause, not only "error sending request".
+    let SummarizeError::Transport(text) = err else {
+        unreachable!()
+    };
+    assert!(text.starts_with("error sending request: "), "{text}");
 }
 
 #[tokio::test]

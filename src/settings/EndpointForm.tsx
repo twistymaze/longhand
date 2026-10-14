@@ -377,7 +377,7 @@ export function EndpointForm({
 
       <Group
         header="Context"
-        footer="Longhand asks the server how much text the model accepts. Set a limit only if the server reports it wrongly."
+        footer="Longhand asks the server how much text the model accepts. If the server does not say, Longhand uses 128,000 tokens. Enter the model's limit if the server reports it wrongly, or if the model accepts less."
       >
         <Row label="Context limit">
           <CommitField
