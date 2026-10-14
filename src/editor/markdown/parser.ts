@@ -53,11 +53,11 @@ function wrappedMarkRule(
   );
 }
 
-function strikethroughPlugin(md: MarkdownIt) {
+export function strikethroughPlugin(md: MarkdownIt) {
   wrappedMarkRule(md, "s", "s", 0x7e /* ~ */, "~~");
 }
 
-function highlightPlugin(md: MarkdownIt) {
+export function highlightPlugin(md: MarkdownIt) {
   wrappedMarkRule(md, "highlight", "mark", 0x3d /* = */, "==");
 }
 
