@@ -484,6 +484,10 @@ mod panel {
                     .full_screen_auxiliary(),
             )
             .build()?;
+        // Hide (Cmd-H) does not hide the pill. A show of a window in a
+        // hidden app unhides the app, so the sync would show the main
+        // window again in one second.
+        panel.as_panel().setCanHide(false);
         panel.hide();
 
         let events = WidgetPanelEvents::new();
