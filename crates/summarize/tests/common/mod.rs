@@ -35,6 +35,15 @@ pub struct Mock {
     pub seen: Arc<Mutex<Vec<Seen>>>,
 }
 
+/// A base URL on a local port that nothing listens on.
+#[allow(dead_code)]
+pub fn closed_base() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}/v1")
+}
+
 pub async fn serve(routes: HashMap<&'static str, Reply>) -> Mock {
     serve_on(TcpListener::bind("127.0.0.1:0").await.unwrap(), routes)
 }

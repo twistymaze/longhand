@@ -140,20 +140,12 @@ async fn a_server_answering_no_probe_resolves_to_the_default() {
     );
 }
 
-/// A base URL on a local port that nothing listens on.
-fn closed_base() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}/v1")
-}
-
 #[tokio::test]
 async fn an_endpoint_that_cannot_be_reached_is_an_error_not_the_default() {
     // A Mac that wakes from sleep for a few seconds can have no network.
     // That is not an endpoint with no context data, so the caller must not
     // use the default budget for the run.
-    let probed = context::probe(&client(&closed_base(), "m")).await;
+    let probed = context::probe(&client(&common::closed_base(), "m")).await;
     assert!(
         matches!(probed, Err(summarize::SummarizeError::Transport(_))),
         "{probed:?}"

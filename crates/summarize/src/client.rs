@@ -282,7 +282,9 @@ impl Client {
                 SummarizeError::Transport("the request cannot be sent again".into())
             })?;
             match self.send_once(attempt, limits).await {
-                Err(SummarizeError::Transport(e)) => {
+                Ok(answer) => return Ok(answer),
+                Err(Failure::Answered(e)) => return Err(e),
+                Err(Failure::NotReached(e)) => {
                     let Some(wait) = waits.next() else {
                         return Err(SummarizeError::Transport(e));
                     };
@@ -293,7 +295,6 @@ impl Client {
                     );
                     tokio::time::sleep(*wait).await;
                 }
-                other => return other,
             }
         }
     }
@@ -302,12 +303,20 @@ impl Client {
         &self,
         request: reqwest::RequestBuilder,
         limits: &Limits,
-    ) -> Result<(reqwest::StatusCode, Vec<u8>), SummarizeError> {
+    ) -> Result<(reqwest::StatusCode, Vec<u8>), Failure> {
         let work = async {
             let mut response = timeout(limits.response, request.send())
                 .await
                 .map_err(|_| SummarizeError::Deadline("response"))?
-                .map_err(|e| SummarizeError::Transport(without_url(e)))?;
+                .map_err(|e| {
+                    // A request that could not be built fails the same way
+                    // on each try.
+                    if e.is_builder() {
+                        Failure::Answered(SummarizeError::Transport(without_url(e)))
+                    } else {
+                        Failure::NotReached(without_url(e))
+                    }
+                })?;
             let status = response.status();
             if status.is_redirection() {
                 let location = response
@@ -319,17 +328,18 @@ impl Client {
                 return Err(SummarizeError::Redirect {
                     status: status.as_u16(),
                     location,
-                });
+                }
+                .into());
             }
             let mut body = Vec::new();
             loop {
                 match timeout(limits.idle, response.chunk()).await {
-                    Err(_) => return Err(SummarizeError::Deadline("data")),
-                    Ok(Err(e)) => return Err(SummarizeError::Transport(without_url(e))),
+                    Err(_) => return Err(SummarizeError::Deadline("data").into()),
+                    Ok(Err(e)) => return Err(SummarizeError::Transport(without_url(e)).into()),
                     Ok(Ok(None)) => break,
                     Ok(Ok(Some(bytes))) => {
                         if body.len() + bytes.len() > limits.max_bytes {
-                            return Err(SummarizeError::TooLarge(limits.max_bytes));
+                            return Err(SummarizeError::TooLarge(limits.max_bytes).into());
                         }
                         body.extend_from_slice(&bytes);
                     }
@@ -340,6 +350,22 @@ impl Client {
         timeout(limits.total, work)
             .await
             .map_err(|_| SummarizeError::Deadline("complete reply"))?
+    }
+}
+
+/// How one try of a request failed.
+enum Failure {
+    /// The request did not reach the endpoint: no answer started. A new try
+    /// can succeed.
+    NotReached(String),
+    /// The endpoint answered, or the request cannot be sent. A new try would
+    /// send the prompt again for the same result.
+    Answered(SummarizeError),
+}
+
+impl From<SummarizeError> for Failure {
+    fn from(e: SummarizeError) -> Self {
+        Self::Answered(e)
     }
 }
 

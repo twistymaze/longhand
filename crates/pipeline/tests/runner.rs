@@ -4794,14 +4794,6 @@ async fn a_resumed_summary_sends_no_final_call_again_and_stores_the_same_title_t
     assert_eq!(pending(&r), Some(first));
 }
 
-/// A base URL on a local port that nothing listens on.
-fn closed_base() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    format!("http://127.0.0.1:{port}/v1")
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_summary_that_cannot_reach_the_endpoint_keeps_no_budget_plan() {
     // A Mac woke from sleep for a few seconds with no network, and the
@@ -4809,7 +4801,7 @@ async fn a_summary_that_cannot_reach_the_endpoint_keeps_no_budget_plan() {
     // must not keep a plan with the default budget: a later Regenerate
     // Summary probes the endpoint again.
     let r = rig().await;
-    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&closed_base())));
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&http::closed_base())));
     let folder = saved_session(&r, None).await;
     assert!(!summary_is_complete(&folder));
     let plan = r
